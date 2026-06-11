@@ -85,6 +85,24 @@ data** (clearly labeled in the UI) so you can explore everything immediately.
 To use live data, set `MARKET_DATA_PROVIDER=tradier` and a `TRADIER_API_TOKEN` in
 `server/.env`, then restart.
 
+### Run with Docker
+
+A multi-stage image builds both packages and serves the built frontend directly
+from the Express server (single origin, single port):
+
+```bash
+cp .env.example .env          # optional — edit for live Tradier data
+docker compose up --build     # then open http://localhost:3001
+```
+
+The SQLite database is persisted in the `stockdb` named volume. To run the image
+directly without compose:
+
+```bash
+docker build -t stock-app .
+docker run -p 3001:3001 -e MARKET_DATA_PROVIDER=mock stock-app
+```
+
 ## Environment variables
 
 Copy `.env.example` to `server/.env`. All keys are read **server-side only**.

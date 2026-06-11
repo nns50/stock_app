@@ -1,0 +1,21 @@
+# One-command run: `docker compose up --build` then open http://localhost:3001
+# Reads variables from a root .env (copy from .env.example). Defaults to the
+# keyless mock provider so it runs with no configuration.
+services:
+  app:
+    build: .
+    ports:
+      - '3001:3001'
+    environment:
+      MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-mock}
+      TRADIER_API_TOKEN: ${TRADIER_API_TOKEN:-}
+      TRADIER_BASE_URL: ${TRADIER_BASE_URL:-https://sandbox.tradier.com/v1}
+      RISK_FREE_RATE: ${RISK_FREE_RATE:-0.04}
+      # The frontend is same-origin in this image, so CORS can stay narrow.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3001}
+    volumes:
+      - stockdb:/app/data
+    restart: unless-stopped
+
+volumes:
+  stockdb:

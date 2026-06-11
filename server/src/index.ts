@@ -1,5 +1,7 @@
 import express, { NextFunction, Request, Response } from 'express';
 import cors from 'cors';
+import fs from 'fs';
+import path from 'path';
 import { config } from './config';
 import { initDb } from './db';
 import { getProviderStatus } from './providers';
@@ -37,6 +39,16 @@ app.use('/api/settings', settingsRouter);
 app.use('/api', (_req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
+
+// In production, serve the built frontend and fall back to index.html for SPA
+// client-side routes. Enabled by setting PUBLIC_DIR (e.g. in Docker).
+if (config.publicDir && fs.existsSync(config.publicDir)) {
+  app.use(express.static(config.publicDir));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) return next();
+    res.sendFile(path.join(config.publicDir, 'index.html'));
+  });
+}
 
 // Centralized error handler: maps ProviderError / HttpError / Zod issues to JSON.
 app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {

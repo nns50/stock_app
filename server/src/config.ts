@@ -35,6 +35,8 @@ export const config = {
   corsOrigins: list(process.env.CORS_ORIGINS, ['http://localhost:5173']),
   /** Annualized risk-free rate used by the Black–Scholes helper. */
   riskFreeRate: num(process.env.RISK_FREE_RATE, 0.04),
+  /** When set, the built frontend is served from this directory (production). */
+  publicDir: process.env.PUBLIC_DIR ? path.resolve(process.env.PUBLIC_DIR) : '',
 };
 
 export type AppConfig = typeof config;
