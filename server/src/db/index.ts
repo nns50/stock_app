@@ -70,6 +70,14 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS iv_history (
+  symbol      TEXT NOT NULL,
+  date        TEXT NOT NULL,           -- YYYY-MM-DD
+  atm_iv      REAL NOT NULL,           -- at-the-money implied vol (decimal)
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY (symbol, date)
+);
+
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_exits_position ON position_exits(position_id);
 `;

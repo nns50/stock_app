@@ -131,6 +131,7 @@ function ChainView({ symbol, expiration }: { symbol: string; expiration: string 
       <div className="flex items-center justify-between p-3 border-b border-ink-600/60">
         <div className="text-sm text-slate-400">
           {symbol} {expiration} · underlying <span className="text-slate-200">{fmtUsd(u)}</span>
+          {chain.data.atmIv != null && <> · ATM IV <span className="text-slate-200">{(chain.data.atmIv * 100).toFixed(0)}%</span></>}
         </div>
         <div className="flex rounded-md overflow-hidden border border-ink-600 text-sm">
           <button className={cx('px-3 py-1', side === 'call' ? 'bg-bull/20 text-bull' : 'text-slate-400')} onClick={() => setSide('call')}>Calls</button>
@@ -232,6 +233,8 @@ function EntryScanView({ symbol, expiration }: { symbol: string; expiration: str
           <Field label="Max DTE"><NumberInput value={config.maxDaysToExpiration} onChange={(v) => set('maxDaysToExpiration', v)} /></Field>
           <Field label="IV min %"><NumberInput value={config.ivMin === undefined ? undefined : config.ivMin * 100} onChange={(v) => set('ivMin', v === undefined ? undefined : v / 100)} /></Field>
           <Field label="IV max %"><NumberInput value={config.ivMax === undefined ? undefined : config.ivMax * 100} onChange={(v) => set('ivMax', v === undefined ? undefined : v / 100)} /></Field>
+          <Field label="IV rank min"><NumberInput value={config.ivRankMin} onChange={(v) => set('ivRankMin', v)} min={0} max={100} /></Field>
+          <Field label="IV rank max"><NumberInput value={config.ivRankMax} onChange={(v) => set('ivRankMax', v)} min={0} max={100} /></Field>
         </div>
         <button className="btn-primary w-full" onClick={run} disabled={running || !expiration}>{running ? 'Scanning…' : 'Scan contracts'}</button>
         <PresetBar
@@ -248,8 +251,20 @@ function EntryScanView({ symbol, expiration }: { symbol: string; expiration: str
         {!result && !error && <Card><EmptyState title="Configure a strategy and scan" hint="Candidates are ranked by spread tightness, liquidity, and how well delta fits your band — with the full rule breakdown." /></Card>}
         {result && (
           <Card className="overflow-x-auto">
-            <div className="p-3 text-sm text-slate-400 border-b border-ink-600/60">
-              {result.candidates.filter((c) => c.passed).length} pass / {result.candidates.length} evaluated · underlying {fmtUsd(result.underlyingPrice)}
+            <div className="p-3 border-b border-ink-600/60 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-400">
+              <span>{result.candidates.filter((c) => c.passed).length} pass / {result.candidates.length} evaluated</span>
+              <span>underlying {fmtUsd(result.underlyingPrice)}</span>
+              {result.ivContext.atmIv !== null && (
+                <span>ATM IV <b className="text-slate-200">{(result.ivContext.atmIv * 100).toFixed(0)}%</b></span>
+              )}
+              {result.ivContext.ivRank !== null ? (
+                <span title={`${result.ivContext.method} · ${result.ivContext.samples} samples`}>
+                  IV rank <b className="text-slate-200">{result.ivContext.ivRank.toFixed(0)}</b> · pctile {result.ivContext.ivPercentile?.toFixed(0)}
+                  {result.ivContext.method === 'hv-estimate' && <span className="text-amber-400"> (est.)</span>}
+                </span>
+              ) : (
+                <span className="text-slate-600">IV rank: building history ({result.ivContext.samples})</span>
+              )}
             </div>
             <table className="w-full">
               <thead className="border-b border-ink-600/60">

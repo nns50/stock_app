@@ -157,7 +157,18 @@ export interface OptionsChain {
   underlyingPrice?: number;
   calls: OptionContract[];
   puts: OptionContract[];
+  atmIv?: number | null;
   synthetic?: boolean;
+}
+
+export interface IvContext {
+  atmIv: number | null;
+  ivRank: number | null;
+  ivPercentile: number | null;
+  method: 'history' | 'hv-estimate' | 'insufficient';
+  samples: number;
+  min: number | null;
+  max: number | null;
 }
 
 export interface EntryStrategyConfig {
@@ -171,6 +182,8 @@ export interface EntryStrategyConfig {
   maxDaysToExpiration?: number;
   ivMin?: number;
   ivMax?: number;
+  ivRankMin?: number;
+  ivRankMax?: number;
   weights?: { spread: number; liquidity: number; deltaFit: number };
 }
 

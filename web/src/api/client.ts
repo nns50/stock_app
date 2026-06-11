@@ -5,6 +5,7 @@ import type {
   EntryStrategyConfig,
   ExitCheckRow,
   ExitRulesConfig,
+  IvContext,
   JournalStats,
   OptionsChain,
   Position,
@@ -87,10 +88,13 @@ export const client = {
   entryDefault: () => api<EntryStrategyConfig>('/options/entry/default'),
   exitDefault: () => api<ExitRulesConfig>('/options/exit/default'),
   entryScan: (body: { symbol: string; expiration: string; config?: Partial<EntryStrategyConfig> }) =>
-    api<{ underlyingPrice: number | null; config: EntryStrategyConfig; candidates: EntryCandidate[]; synthetic: boolean }>(
-      '/options/entry-scan',
-      { method: 'POST', body: JSON.stringify(body) },
-    ),
+    api<{
+      underlyingPrice: number | null;
+      config: EntryStrategyConfig;
+      ivContext: IvContext;
+      candidates: EntryCandidate[];
+      synthetic: boolean;
+    }>('/options/entry-scan', { method: 'POST', body: JSON.stringify(body) }),
   exitCheck: (config: ExitRulesConfig) =>
     api<{ config: ExitRulesConfig; evaluations: ExitCheckRow[]; checkedAt: number; synthetic: boolean }>('/options/exit-check', {
       method: 'POST',

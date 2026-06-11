@@ -31,6 +31,9 @@ export interface EntryStrategyConfig {
   /** Implied-vol band (decimal, e.g. 0.20..0.80). */
   ivMin?: number;
   ivMax?: number;
+  /** Underlying IV-rank gate (0..100). Applies to the whole side. */
+  ivRankMin?: number;
+  ivRankMax?: number;
   weights?: EntryRankWeights;
 }
 
@@ -82,7 +85,12 @@ function spreadPctOf(c: OptionContract): number | null {
 }
 
 /** Evaluate one contract against the strategy rules (pure, deterministic). */
-function evaluateContract(c: OptionContract, cfg: EntryStrategyConfig, now: Date): EntryCandidate {
+function evaluateContract(
+  c: OptionContract,
+  cfg: EntryStrategyConfig,
+  now: Date,
+  ivRank?: number | null,
+): EntryCandidate {
   const absDelta = c.greeks?.delta !== undefined ? Math.abs(c.greeks.delta) : null;
   const iv = c.greeks?.iv ?? null;
   const dte = daysToExpiration(c.expiration, now);
@@ -114,6 +122,12 @@ function evaluateContract(c: OptionContract, cfg: EntryStrategyConfig, now: Date
     add('min IV', iv !== null && iv >= cfg.ivMin, `IV ${iv === null ? '—' : (iv * 100).toFixed(0) + '%'} ≥ ${(cfg.ivMin * 100).toFixed(0)}%`);
   if (cfg.ivMax !== undefined)
     add('max IV', iv !== null && iv <= cfg.ivMax, `IV ${iv === null ? '—' : (iv * 100).toFixed(0) + '%'} ≤ ${(cfg.ivMax * 100).toFixed(0)}%`);
+  if (cfg.ivRankMin !== undefined || cfg.ivRankMax !== undefined) {
+    const lo = cfg.ivRankMin ?? 0;
+    const hi = cfg.ivRankMax ?? 100;
+    const ok = ivRank !== null && ivRank !== undefined && ivRank >= lo && ivRank <= hi;
+    add('IV rank', ok, `IV rank ${ivRank === null || ivRank === undefined ? '—' : ivRank.toFixed(0)} in [${lo}, ${hi}]`);
+  }
 
   const passed = rules.every((r) => r.passed);
 
@@ -141,9 +155,10 @@ export function scanEntries(
   chain: OptionsChain,
   cfg: EntryStrategyConfig,
   now: Date = new Date(),
+  ivRank?: number | null,
 ): EntryCandidate[] {
   const contracts = cfg.side === 'call' ? chain.calls : chain.puts;
-  const evaluated = contracts.map((c) => evaluateContract(c, cfg, now));
+  const evaluated = contracts.map((c) => evaluateContract(c, cfg, now, ivRank));
   return evaluated.sort((a, b) => {
     if (a.passed !== b.passed) return a.passed ? -1 : 1;
     return b.score - a.score;

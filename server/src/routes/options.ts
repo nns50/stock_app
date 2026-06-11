@@ -10,6 +10,9 @@ import {
   scanEntries,
 } from '../options/entryRules';
 import { defaultExitConfig, evaluateExit, ExitRulesConfig } from '../options/exitRules';
+import { atmIvOfChain, computeIvContext } from '../services/ivRank';
+import { getIvHistory, recordAtmIv } from '../db/ivHistory';
+import { Candle } from '../providers/types';
 
 export const optionsRouter = Router();
 
@@ -50,7 +53,9 @@ optionsRouter.get(
     requireCapability('options');
     const { expiration } = parseQuery(chainQuery, req);
     const chain = await getProvider().getOptionsChain(req.params.symbol, expiration);
-    res.json({ ...chain, synthetic: getProviderStatus().synthetic });
+    const atmIv = atmIvOfChain(chain);
+    if (atmIv !== undefined) recordAtmIv(chain.underlying, atmIv); // accrue IV history
+    res.json({ ...chain, atmIv: atmIv ?? null, synthetic: getProviderStatus().synthetic });
   }),
 );
 
@@ -69,6 +74,8 @@ const entryScanBody = z.object({
       maxDaysToExpiration: z.number().optional(),
       ivMin: z.number().optional(),
       ivMax: z.number().optional(),
+      ivRankMin: z.number().optional(),
+      ivRankMax: z.number().optional(),
       weights: z
         .object({ spread: z.number(), liquidity: z.number(), deltaFit: z.number() })
         .partial()
@@ -89,13 +96,27 @@ optionsRouter.post(
       side,
       weights: { ...defaultEntryConfig(side).weights!, ...(body.config?.weights ?? {}) },
     };
-    const chain = await getProvider().getOptionsChain(body.symbol, body.expiration);
-    const candidates = scanEntries(chain, cfg);
+    const provider = getProvider();
+    const chain = await provider.getOptionsChain(body.symbol, body.expiration);
+
+    // IV context: record today's ATM IV, then rank it vs accumulated history
+    // (or realized-vol as a labeled fallback until history builds).
+    const atmIv = atmIvOfChain(chain);
+    if (atmIv !== undefined) recordAtmIv(chain.underlying, atmIv);
+    const history = getIvHistory(chain.underlying);
+    let candles: Candle[] = [];
+    if (history.length < 15 && atmIv !== undefined) {
+      candles = await provider.getCandles(body.symbol, 'daily', { limit: 260 }).catch(() => []);
+    }
+    const ivContext = computeIvContext(atmIv, history, candles);
+
+    const candidates = scanEntries(chain, cfg, new Date(), ivContext.ivRank);
     res.json({
       symbol: body.symbol.toUpperCase(),
       expiration: body.expiration,
       underlyingPrice: chain.underlyingPrice ?? null,
       config: cfg,
+      ivContext,
       candidates,
       synthetic: getProviderStatus().synthetic,
     });
