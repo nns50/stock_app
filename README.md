@@ -82,8 +82,15 @@ npm run dev
 Open <http://localhost:5173>. With no `.env`, the app runs on **synthetic mock
 data** (clearly labeled in the UI) so you can explore everything immediately.
 
-To use live data, set `MARKET_DATA_PROVIDER=tradier` and a `TRADIER_API_TOKEN` in
-`server/.env`, then restart.
+For **free live data with no API key**, set `MARKET_DATA_PROVIDER=yahoo` (Yahoo
+Finance — covers stocks **and** options chains; Greeks computed locally). It's
+unofficial, so it's intended for personal use and may rate-limit or change. For
+Tradier, set `MARKET_DATA_PROVIDER=tradier` and `TRADIER_API_TOKEN` (note: Tradier
+requires a brokerage account / data subscription for real-time data). Restart
+after changing.
+
+Verify any provider with the **provider chip → "Run connection test"** in the UI,
+or the CLI: `npm run check:provider [SYMBOL]`.
 
 ### Run with Docker
 
@@ -109,7 +116,7 @@ Copy `.env.example` to `server/.env`. All keys are read **server-side only**.
 
 | Variable                | Default                            | Description                                                     |
 | ----------------------- | ---------------------------------- | --------------------------------------------------------------- |
-| `MARKET_DATA_PROVIDER`  | `mock`                             | `tradier` or `mock`.                                            |
+| `MARKET_DATA_PROVIDER`  | `mock`                             | `yahoo` (free, no key), `tradier`, or `mock`.                   |
 | `TRADIER_API_TOKEN`     | _(empty)_                          | Tradier access token (sandbox or brokerage).                    |
 | `TRADIER_BASE_URL`      | `https://sandbox.tradier.com/v1`   | Use `https://api.tradier.com/v1` for production data.           |
 | `PORT`                  | `3001`                             | API port.                                                       |
@@ -132,8 +139,9 @@ Copy `.env.example` to `server/.env`. All keys are read **server-side only**.
 The options module is feature-gated on `capabilities.options`. The app reads
 `GET /api/provider` and, if the active provider can't serve options (or isn't
 configured), shows a clear **"data not configured"** state instead of fabricating
-data. Tradier and the mock provider both support options; the mock's data is
-flagged `synthetic` everywhere so it's never mistaken for real quotes.
+data. Tradier, Yahoo, and the mock provider all support options (Yahoo's Greeks
+are computed locally from its implied vol); the mock's data is flagged
+`synthetic` everywhere so it's never mistaken for real quotes.
 
 ## Scripts
 

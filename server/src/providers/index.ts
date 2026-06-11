@@ -8,6 +8,7 @@ import {
 import { Candle, Fundamentals, OptionsChain, Quote } from './types';
 import { MockProvider } from './MockProvider';
 import { TradierProvider } from './TradierProvider';
+import { YahooProvider } from './YahooProvider';
 import { CachingProvider } from './CachingProvider';
 
 export interface ProviderStatus {
@@ -76,6 +77,25 @@ function build(): { provider: MarketDataProvider; status: ProviderStatus } {
     return {
       provider,
       status: { name: 'tradier', synthetic: false, configured: true, capabilities: base.capabilities },
+    };
+  }
+
+  if (config.provider === 'yahoo') {
+    // Free, key-less, and covers stocks + options (Greeks computed locally).
+    const base = new YahooProvider();
+    const provider = new CachingProvider(base, {
+      quoteTtlMs: config.quoteCacheTtlMs,
+      candleTtlMs: config.candleCacheTtlMs,
+    });
+    return {
+      provider,
+      status: {
+        name: 'yahoo',
+        synthetic: false,
+        configured: true,
+        capabilities: base.capabilities,
+        message: 'Yahoo Finance (free, no key). Unofficial — for personal use; may rate-limit or change without notice.',
+      },
     };
   }
 
