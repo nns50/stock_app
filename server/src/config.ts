@@ -19,7 +19,7 @@ function list(value: string | undefined, fallback: string[]): string[] {
 const databasePath = resolveFromRoot(process.env.DATABASE_PATH || './data/stock_app.db');
 ensureDir(path.dirname(databasePath));
 
-export type ProviderName = 'tradier' | 'mock';
+export type ProviderName = 'tradier' | 'yahoo' | 'mock';
 
 export const config = {
   port: num(process.env.PORT, 3001),
