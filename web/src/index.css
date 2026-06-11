@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-ink-900 text-slate-200 antialiased;
+  font-feature-settings: 'tnum' 1;
+}
+
+@layer components {
+  .card {
+    @apply bg-ink-800 border border-ink-600/60 rounded-lg;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-accent-muted text-white hover:bg-accent;
+  }
+  .btn-ghost {
+    @apply btn bg-ink-700 text-slate-200 hover:bg-ink-600;
+  }
+  .btn-danger {
+    @apply btn bg-bear/80 text-white hover:bg-bear;
+  }
+  .input {
+    @apply bg-ink-900 border border-ink-600 rounded-md px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-accent w-full;
+  }
+  .label {
+    @apply block text-xs font-medium text-slate-400 mb-1;
+  }
+  .th {
+    @apply text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400 px-3 py-2 select-none whitespace-nowrap;
+  }
+  .td {
+    @apply px-3 py-1.5 text-sm tabular-nums whitespace-nowrap;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium;
+  }
+}
+
+/* thin scrollbars for dense tables */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-ink-600 rounded;
+}
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}

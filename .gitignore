@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+server/.env
+
+# SQLite databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/*.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Vite
+web/dist/
+.vite/
+
+# Test coverage
+coverage/
