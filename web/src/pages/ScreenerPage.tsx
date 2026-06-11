@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
@@ -44,9 +44,19 @@ export default function ScreenerPage() {
   const defaults = useAsync(() => client.screenerDefault(), []);
   const presets = useAsync(() => client.presets('screener'), []);
   const universe = useAsync(() => client.universe(), []);
+  const settings = useAsync(() => client.settings(), []);
 
   const [config, setConfig] = useState<ScreenerConfig | null>(null);
   const cfg = config ?? defaults.data ?? null;
+
+  // Initialize from the last-saved config (persisted in SQLite), falling back to
+  // the server defaults.
+  useEffect(() => {
+    if (config !== null) return;
+    const saved = settings.data?.['screener.config'] as ScreenerConfig | undefined;
+    if (saved) setConfig({ ...(defaults.data ?? saved), ...saved });
+    else if (defaults.data) setConfig(defaults.data);
+  }, [settings.data, defaults.data, config]);
 
   const [useCustom, setUseCustom] = useState(false);
   const [customText, setCustomText] = useState('');
@@ -87,6 +97,7 @@ export default function ScreenerPage() {
         : undefined;
       const res = await client.runScreener({ config: cfg, symbols, maxSymbols, includeFailed });
       setResult(res);
+      client.saveSetting('screener.config', cfg).catch(() => {}); // remember last config
     } catch (e) {
       setError(e as Error);
     } finally {
@@ -122,7 +133,7 @@ export default function ScreenerPage() {
     presets.reload();
   };
 
-  if (defaults.loading || !cfg) return <Spinner label="Loading screener…" />;
+  if (defaults.loading || settings.loading || !cfg) return <Spinner label="Loading screener…" />;
 
   return (
     <div className="flex flex-col lg:flex-row gap-5">

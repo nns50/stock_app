@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { client } from '../api/client';
 import { useProvider } from '../components/ProviderContext';
 import { useAsync } from '../lib/hooks';
@@ -16,6 +16,8 @@ export default function OptionsPage() {
   const [tab, setTab] = useState<Tab>('chain');
 
   const expirations = useAsync(() => client.expirations(activeSymbol), [activeSymbol]);
+  const settings = useAsync(() => client.settings(), []);
+  const inited = useRef(false);
 
   useEffect(() => {
     if (expirations.data?.expirations.length && !expirations.data.expirations.includes(expiration)) {
@@ -23,6 +25,17 @@ export default function OptionsPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expirations.data]);
+
+  // Restore the last-used options symbol (persisted in SQLite).
+  useEffect(() => {
+    if (inited.current || !settings.data) return;
+    inited.current = true;
+    const saved = settings.data['options.symbol'] as string | undefined;
+    if (saved) {
+      setSymbol(saved);
+      setActiveSymbol(saved);
+    }
+  }, [settings.data]);
 
   if (loading) return <Spinner label="Checking provider…" />;
 
@@ -47,7 +60,10 @@ export default function OptionsPage() {
 
   const load = () => {
     const s = symbol.trim().toUpperCase();
-    if (s) setActiveSymbol(s);
+    if (s) {
+      setActiveSymbol(s);
+      client.saveSetting('options.symbol', s).catch(() => {}); // remember last symbol
+    }
   };
 
   return (

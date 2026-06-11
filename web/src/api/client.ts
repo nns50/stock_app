@@ -116,4 +116,12 @@ export const client = {
   // --- journal ---
   journalStats: () => api<JournalStats>('/journal/stats'),
   journalTags: () => api<{ tags: string[] }>('/journal/tags'),
+
+  // --- settings (persisted UI state) ---
+  settings: () => api<Record<string, unknown>>('/settings'),
+  saveSetting: (key: string, value: unknown) =>
+    api<{ key: string; value: unknown }>(`/settings/${encodeURIComponent(key)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ value }),
+    }),
 };

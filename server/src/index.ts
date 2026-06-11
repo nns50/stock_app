@@ -12,6 +12,7 @@ import { presetsRouter } from './routes/presets';
 import { optionsRouter } from './routes/options';
 import { positionsRouter } from './routes/positions';
 import { journalRouter } from './routes/journal';
+import { settingsRouter } from './routes/settings';
 
 initDb();
 
@@ -30,6 +31,7 @@ app.use('/api/presets', presetsRouter);
 app.use('/api/options', optionsRouter);
 app.use('/api/positions', positionsRouter);
 app.use('/api/journal', journalRouter);
+app.use('/api/settings', settingsRouter);
 
 // Unknown API route
 app.use('/api', (_req, res) => {
