@@ -1,0 +1,319 @@
+// Frontend mirror of the server's response shapes (only the fields the UI uses).
+
+export interface ProviderStatus {
+  name: string;
+  synthetic: boolean;
+  configured: boolean;
+  capabilities: { quotes: boolean; candles: boolean; options: boolean; fundamentals: boolean };
+  message?: string;
+}
+
+export interface Quote {
+  symbol: string;
+  last: number;
+  bid?: number;
+  ask?: number;
+  open?: number;
+  high?: number;
+  low?: number;
+  prevClose?: number;
+  change?: number;
+  changePct?: number;
+  volume?: number;
+  avgVolume?: number;
+  timestamp: number;
+}
+
+export interface Candle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export type IndicatorKey = 'momentum' | 'relativeVolume' | 'rsi' | 'volatility' | 'gap' | 'trend';
+
+export interface ComponentScore {
+  key: IndicatorKey;
+  label: string;
+  value: number | null;
+  display: string;
+  score: number;
+  weight: number;
+  contribution: number;
+  note: string;
+}
+
+export interface IndicatorSnapshot {
+  price: number;
+  changePct: number | null;
+  maShort: number | null;
+  maLong: number | null;
+  distShortPct: number | null;
+  distLongPct: number | null;
+  rsi: number | null;
+  atr: number | null;
+  atrPct: number | null;
+  relVolume: number | null;
+  avgVolume: number | null;
+  volume: number | null;
+  gapPct: number | null;
+}
+
+export interface SymbolScore {
+  symbol: string;
+  price: number;
+  total: number;
+  passedFilters: boolean;
+  filterReasons: string[];
+  components: ComponentScore[];
+  indicators: IndicatorSnapshot;
+}
+
+export interface ScreenerFilters {
+  minPrice?: number;
+  maxPrice?: number;
+  minAvgVolume?: number;
+  minRelVol?: number;
+  rsiMin?: number;
+  rsiMax?: number;
+  requireTrendAlignment?: boolean;
+}
+
+export interface ScreenerConfig {
+  direction: 'long' | 'short';
+  weights: Record<IndicatorKey, number>;
+  maShort: number;
+  maLong: number;
+  rsiPeriod: number;
+  atrPeriod: number;
+  momentumScale: number;
+  relVolTarget: number;
+  rsiSweetSpot: number;
+  rsiWidth: number;
+  atrPctScale: number;
+  gapScale: number;
+  filters: ScreenerFilters;
+}
+
+export interface ScreenerResult {
+  generatedAt: number;
+  provider: { name: string; synthetic: boolean };
+  config: ScreenerConfig;
+  universeCount: number;
+  scannedCount: number;
+  quoteWarmup: boolean;
+  results: SymbolScore[];
+  filteredOut: Array<SymbolScore | { symbol: string; price: number; total: number; filterReasons: string[] }>;
+  errors: { symbol: string; message: string }[];
+}
+
+export interface UniverseSymbol {
+  symbol: string;
+  name: string | null;
+  sector: string | null;
+  addedAt: number;
+}
+
+export interface Preset {
+  id: number;
+  name: string;
+  kind: 'screener' | 'option_entry' | 'option_exit';
+  config: unknown;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface OptionGreeks {
+  delta?: number;
+  gamma?: number;
+  theta?: number;
+  vega?: number;
+  rho?: number;
+  iv?: number;
+  computed?: boolean;
+}
+
+export interface OptionContract {
+  symbol: string;
+  underlying: string;
+  type: 'call' | 'put';
+  strike: number;
+  expiration: string;
+  bid?: number;
+  ask?: number;
+  last?: number;
+  mark?: number;
+  volume?: number;
+  openInterest?: number;
+  greeks?: OptionGreeks;
+}
+
+export interface OptionsChain {
+  underlying: string;
+  expiration: string;
+  underlyingPrice?: number;
+  calls: OptionContract[];
+  puts: OptionContract[];
+  synthetic?: boolean;
+}
+
+export interface EntryStrategyConfig {
+  side: 'call' | 'put';
+  deltaMin: number;
+  deltaMax: number;
+  maxSpreadPct: number;
+  minOpenInterest: number;
+  minVolume: number;
+  minDaysToExpiration?: number;
+  maxDaysToExpiration?: number;
+  ivMin?: number;
+  ivMax?: number;
+  weights?: { spread: number; liquidity: number; deltaFit: number };
+}
+
+export interface EntryCandidate {
+  contract: OptionContract;
+  passed: boolean;
+  score: number;
+  rules: { rule: string; passed: boolean; detail: string }[];
+  metrics: {
+    spreadPct: number | null;
+    delta: number | null;
+    iv: number | null;
+    dte: number;
+    openInterest: number | null;
+    volume: number | null;
+    mark: number | null;
+  };
+}
+
+export interface ExitRulesConfig {
+  takeProfitPct?: number;
+  stopLossPct?: number;
+  timeExitDaysBeforeExpiry?: number;
+  deltaMin?: number;
+  deltaMax?: number;
+}
+
+export interface ExitEvaluation {
+  unrealizedPct: number | null;
+  dte: number;
+  triggered: boolean;
+  activeRule: string | null;
+  triggers: { rule: string; triggered: boolean; detail: string }[];
+}
+
+export interface ExitCheckRow {
+  position: {
+    id: number;
+    symbol: string;
+    optionType: 'call' | 'put' | null;
+    strike: number | null;
+    expiration: string | null;
+    side: 'long' | 'short';
+    quantity: number;
+    entryPrice: number;
+  };
+  currentMark: number | null;
+  currentDelta: number | null;
+  evaluation: ExitEvaluation;
+}
+
+export interface PositionExit {
+  id: number;
+  positionId: number;
+  quantity: number;
+  exitPrice: number;
+  exitDate: string;
+  fees: number;
+  notes: string | null;
+  createdAt: number;
+}
+
+export interface Position {
+  id: number;
+  assetType: 'stock' | 'option';
+  symbol: string;
+  side: 'long' | 'short';
+  quantity: number;
+  entryPrice: number;
+  entryDate: string;
+  fees: number;
+  optionType: 'call' | 'put' | null;
+  strike: number | null;
+  expiration: string | null;
+  multiplier: number;
+  status: 'open' | 'closed';
+  tags: string[];
+  grade: string | null;
+  notes: string | null;
+  createdAt: number;
+  updatedAt: number;
+  exits: PositionExit[];
+  remainingQuantity: number;
+}
+
+export interface PositionPnl {
+  positionId: number;
+  currentPrice: number | null;
+  costBasis: number;
+  realizedPnl: number;
+  unrealizedPnl: number | null;
+  totalPnl: number;
+  returnPct: number | null;
+  marketValue: number | null;
+  remainingQuantity: number;
+  closedQuantity: number;
+}
+
+export interface PositionWithPnl {
+  position: Position;
+  price: number | null;
+  stale: boolean;
+  asOf: number | null;
+  pnl: PositionPnl;
+}
+
+export interface AggregatePnl {
+  realized: number;
+  unrealized: number;
+  total: number;
+  openMarketValue: number;
+  openCount: number;
+  closedCount: number;
+}
+
+export interface JournalStats {
+  totalClosed: number;
+  wins: number;
+  losses: number;
+  breakeven: number;
+  winRate: number;
+  avgWin: number;
+  avgLoss: number;
+  expectancy: number;
+  profitFactor: number | null;
+  totalRealized: number;
+  bestTrade: number;
+  worstTrade: number;
+  equityCurve: { date: string; pnl: number; cumulative: number }[];
+}
+
+export interface SymbolDetail {
+  symbol: string;
+  timeframe: string;
+  quote: Quote | null;
+  candles: Candle[];
+  overlays: {
+    maShortPeriod: number;
+    maLongPeriod: number;
+    maShort: (number | null)[];
+    maLong: (number | null)[];
+  };
+  indicators: IndicatorSnapshot | null;
+  fundamentals: Record<string, unknown> | null;
+  synthetic: boolean;
+}

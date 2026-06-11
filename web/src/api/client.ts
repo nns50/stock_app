@@ -1,0 +1,119 @@
+import type {
+  AggregatePnl,
+  Candle,
+  EntryCandidate,
+  EntryStrategyConfig,
+  ExitCheckRow,
+  ExitRulesConfig,
+  JournalStats,
+  OptionsChain,
+  Position,
+  PositionWithPnl,
+  Preset,
+  ProviderStatus,
+  Quote,
+  ScreenerConfig,
+  ScreenerResult,
+  SymbolDetail,
+  UniverseSymbol,
+} from './types';
+
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly code?: string,
+  ) {
+    super(message);
+  }
+}
+
+async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
+  const res = await fetch(`/api${path}`, {
+    headers: { 'content-type': 'application/json' },
+    ...opts,
+  });
+  const text = await res.text();
+  const body = text ? JSON.parse(text) : {};
+  if (!res.ok) {
+    throw new ApiError(res.status, body.error || `Request failed (${res.status})`, body.code);
+  }
+  return body as T;
+}
+
+const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) });
+
+export const client = {
+  // --- meta ---
+  provider: () => api<ProviderStatus>('/provider'),
+  refresh: () => api<{ ok: boolean }>('/refresh', { method: 'POST' }),
+
+  // --- market data ---
+  quote: (symbol: string) => api<Quote>(`/quotes/${encodeURIComponent(symbol)}`),
+  quotes: (symbols: string[]) => api<{ quotes: Quote[]; asOf: number }>(`/quotes?symbols=${symbols.join(',')}`),
+  candles: (symbol: string, timeframe = 'daily', limit = 200) =>
+    api<{ candles: Candle[] }>(`/candles/${encodeURIComponent(symbol)}?timeframe=${timeframe}&limit=${limit}`),
+  symbolDetail: (symbol: string, q: { timeframe?: string; limit?: number; maShort?: number; maLong?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (q.timeframe) params.set('timeframe', q.timeframe);
+    if (q.limit) params.set('limit', String(q.limit));
+    if (q.maShort) params.set('maShort', String(q.maShort));
+    if (q.maLong) params.set('maLong', String(q.maLong));
+    return api<SymbolDetail>(`/symbol/${encodeURIComponent(symbol)}?${params.toString()}`);
+  },
+
+  // --- universe ---
+  universe: () => api<{ symbols: UniverseSymbol[] }>('/universe'),
+  universeSource: () => api<{ symbols: { symbol: string; name?: string; sector?: string }[] }>('/universe/source'),
+  addSymbols: (symbols: (string | { symbol: string; name?: string; sector?: string })[]) =>
+    api<{ added: number; symbols: UniverseSymbol[] }>('/universe', post({ symbols })),
+  removeSymbol: (symbol: string) => api<{ removed: string }>(`/universe/${encodeURIComponent(symbol)}`, { method: 'DELETE' }),
+
+  // --- screener ---
+  screenerDefault: () => api<ScreenerConfig>('/screener/config/default'),
+  runScreener: (body: { symbols?: string[]; config?: Partial<ScreenerConfig>; maxSymbols?: number; includeFailed?: boolean }) =>
+    api<ScreenerResult>('/screener/run', { method: 'POST', body: JSON.stringify(body) }),
+
+  // --- presets ---
+  presets: (kind?: string) => api<{ presets: Preset[] }>(`/presets${kind ? `?kind=${kind}` : ''}`),
+  savePreset: (name: string, kind: string, config: unknown) =>
+    api<Preset>('/presets', { method: 'POST', body: JSON.stringify({ name, kind, config }) }),
+  deletePreset: (id: number) => api<{ deleted: number }>(`/presets/${id}`, { method: 'DELETE' }),
+
+  // --- options ---
+  expirations: (symbol: string) => api<{ expirations: string[] }>(`/options/${encodeURIComponent(symbol)}/expirations`),
+  chain: (symbol: string, expiration: string) =>
+    api<OptionsChain>(`/options/${encodeURIComponent(symbol)}/chain?expiration=${expiration}`),
+  entryDefault: () => api<EntryStrategyConfig>('/options/entry/default'),
+  exitDefault: () => api<ExitRulesConfig>('/options/exit/default'),
+  entryScan: (body: { symbol: string; expiration: string; config?: Partial<EntryStrategyConfig> }) =>
+    api<{ underlyingPrice: number | null; config: EntryStrategyConfig; candidates: EntryCandidate[]; synthetic: boolean }>(
+      '/options/entry-scan',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  exitCheck: (config: ExitRulesConfig) =>
+    api<{ config: ExitRulesConfig; evaluations: ExitCheckRow[]; checkedAt: number; synthetic: boolean }>('/options/exit-check', {
+      method: 'POST',
+      body: JSON.stringify({ config }),
+    }),
+
+  // --- positions ---
+  positions: (params: { status?: string; symbol?: string; assetType?: string } = {}) => {
+    const qs = new URLSearchParams(params as Record<string, string>).toString();
+    return api<{ positions: Position[] }>(`/positions${qs ? `?${qs}` : ''}`);
+  },
+  positionsWithPnl: (params: { status?: string } = {}) => {
+    const qs = new URLSearchParams({ ...params, withPnl: 'true' } as Record<string, string>).toString();
+    return api<{ positions: PositionWithPnl[]; aggregate: AggregatePnl }>(`/positions?${qs}`);
+  },
+  createPosition: (body: Record<string, unknown>) => api<Position>('/positions', { method: 'POST', body: JSON.stringify(body) }),
+  updatePosition: (id: number, patch: Record<string, unknown>) =>
+    api<Position>(`/positions/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deletePosition: (id: number) => api<{ deleted: number }>(`/positions/${id}`, { method: 'DELETE' }),
+  addExit: (id: number, body: Record<string, unknown>) =>
+    api<Position>(`/positions/${id}/exits`, { method: 'POST', body: JSON.stringify(body) }),
+
+  // --- journal ---
+  journalStats: () => api<JournalStats>('/journal/stats'),
+  journalTags: () => api<{ tags: string[] }>('/journal/tags'),
+};
