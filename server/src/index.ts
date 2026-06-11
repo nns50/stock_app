@@ -15,6 +15,7 @@ import { optionsRouter } from './routes/options';
 import { positionsRouter } from './routes/positions';
 import { journalRouter } from './routes/journal';
 import { settingsRouter } from './routes/settings';
+import { toolsRouter } from './routes/tools';
 
 initDb();
 
@@ -34,6 +35,7 @@ app.use('/api/options', optionsRouter);
 app.use('/api/positions', positionsRouter);
 app.use('/api/journal', journalRouter);
 app.use('/api/settings', settingsRouter);
+app.use('/api/tools', toolsRouter);
 
 // Unknown API route
 app.use('/api', (_req, res) => {

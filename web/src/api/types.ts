@@ -8,6 +8,29 @@ export interface ProviderStatus {
   message?: string;
 }
 
+export interface ProviderTestResult {
+  provider: string;
+  configured: boolean;
+  synthetic: boolean;
+  symbol: string;
+  ok: boolean;
+  checks: { name: string; ok: boolean; ms: number; detail: string }[];
+}
+
+export interface RiskSizingResult {
+  maxRiskDollars: number;
+  stopDistance: number;
+  riskPerUnit: number;
+  suggestedQuantity: number;
+  positionCost: number;
+  positionPctOfAccount: number;
+  riskOfPosition: number;
+  targetPrice: number | null;
+  targetProfit: number | null;
+  rewardRiskRatio: number | null;
+  warnings: string[];
+}
+
 export interface Quote {
   symbol: string;
   last: number;

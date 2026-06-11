@@ -5,6 +5,7 @@ import { getProvider, getProviderStatus } from '../providers';
 import { CachingProvider } from '../providers/CachingProvider';
 import { Timeframe } from '../providers/types';
 import { saveQuote } from '../services/quotes';
+import { runProviderTest } from '../services/providerTest';
 import { smaSeries } from '../indicators/indicators';
 import { computeIndicators, defaultScreenerConfig } from '../indicators/screener';
 
@@ -15,6 +16,15 @@ const TIMEFRAMES = ['1min', '5min', '15min', 'daily', 'weekly'] as const;
 marketRouter.get('/provider', (_req, res) => {
   res.json(getProviderStatus());
 });
+
+// Live connectivity check — exercises the provider with real calls.
+marketRouter.get(
+  '/provider/test',
+  asyncHandler(async (req, res) => {
+    const symbol = typeof req.query.symbol === 'string' && req.query.symbol ? req.query.symbol : 'AAPL';
+    res.json(await runProviderTest(symbol));
+  }),
+);
 
 // Force a refresh by clearing the in-memory quote/candle caches.
 marketRouter.post('/refresh', (_req, res) => {

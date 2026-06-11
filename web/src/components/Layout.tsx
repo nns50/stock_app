@@ -1,7 +1,8 @@
-import { ReactNode } from 'react';
+import { ReactNode, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { cx } from '../lib/format';
 import { useProvider } from './ProviderContext';
+import { ProviderStatusModal } from './ProviderStatusModal';
 
 const TABS = [
   { to: '/screener', label: 'Screener' },
@@ -10,12 +11,16 @@ const TABS = [
   { to: '/journal', label: 'Journal' },
 ];
 
-function ProviderChip() {
+function ProviderChip({ onClick }: { onClick: () => void }) {
   const { status } = useProvider();
   if (!status) return null;
   const color = !status.configured ? 'bg-bear/15 text-bear' : status.synthetic ? 'bg-amber-500/15 text-amber-400' : 'bg-bull/15 text-bull';
   const label = !status.configured ? `${status.name} · not configured` : `${status.name}${status.synthetic ? ' · demo' : ' · live'}`;
-  return <span className={cx('chip', color)} title={status.message}>{label}</span>;
+  return (
+    <button className={cx('chip hover:ring-1 hover:ring-ink-500', color)} title="Provider status & connection test" onClick={onClick}>
+      {label}
+    </button>
+  );
 }
 
 function ProviderBanner() {
@@ -40,6 +45,7 @@ function ProviderBanner() {
 }
 
 export function Layout({ children }: { children: ReactNode }) {
+  const [providerOpen, setProviderOpen] = useState(false);
   return (
     <div className="min-h-full flex flex-col">
       <header className="sticky top-0 z-40 bg-ink-800/95 backdrop-blur border-b border-ink-600/60">
@@ -66,10 +72,12 @@ export function Layout({ children }: { children: ReactNode }) {
             ))}
           </nav>
           <div className="ml-auto">
-            <ProviderChip />
+            <ProviderChip onClick={() => setProviderOpen(true)} />
           </div>
         </div>
       </header>
+
+      <ProviderStatusModal open={providerOpen} onClose={() => setProviderOpen(false)} />
 
       <ProviderBanner />
 
