@@ -1,25 +1,32 @@
+import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { ProviderProvider } from './components/ProviderContext';
-import ScreenerPage from './pages/ScreenerPage';
-import SymbolDetailPage from './pages/SymbolDetailPage';
-import OptionsPage from './pages/OptionsPage';
-import PositionsPage from './pages/PositionsPage';
-import JournalPage from './pages/JournalPage';
+import { Spinner } from './components/ui';
+
+// Lazy-load pages so each (and its heavier deps like Recharts) ships as its own
+// chunk, keeping the initial bundle small.
+const ScreenerPage = lazy(() => import('./pages/ScreenerPage'));
+const SymbolDetailPage = lazy(() => import('./pages/SymbolDetailPage'));
+const OptionsPage = lazy(() => import('./pages/OptionsPage'));
+const PositionsPage = lazy(() => import('./pages/PositionsPage'));
+const JournalPage = lazy(() => import('./pages/JournalPage'));
 
 export default function App() {
   return (
     <ProviderProvider>
       <Layout>
-        <Routes>
-          <Route path="/" element={<Navigate to="/screener" replace />} />
-          <Route path="/screener" element={<ScreenerPage />} />
-          <Route path="/symbol/:symbol" element={<SymbolDetailPage />} />
-          <Route path="/options" element={<OptionsPage />} />
-          <Route path="/positions" element={<PositionsPage />} />
-          <Route path="/journal" element={<JournalPage />} />
-          <Route path="*" element={<Navigate to="/screener" replace />} />
-        </Routes>
+        <Suspense fallback={<Spinner label="Loading…" />}>
+          <Routes>
+            <Route path="/" element={<Navigate to="/screener" replace />} />
+            <Route path="/screener" element={<ScreenerPage />} />
+            <Route path="/symbol/:symbol" element={<SymbolDetailPage />} />
+            <Route path="/options" element={<OptionsPage />} />
+            <Route path="/positions" element={<PositionsPage />} />
+            <Route path="/journal" element={<JournalPage />} />
+            <Route path="*" element={<Navigate to="/screener" replace />} />
+          </Routes>
+        </Suspense>
       </Layout>
     </ProviderProvider>
   );
