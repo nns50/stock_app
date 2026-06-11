@@ -96,9 +96,20 @@ export class YahooProvider implements MarketDataProvider {
 
   async getQuotes(symbols: string[]): Promise<Quote[]> {
     if (symbols.length === 0) return [];
-    const res = await this.call('quote', () => this.yf.quote(symbols));
-    const arr = Array.isArray(res) ? res : [res];
-    return arr.filter(Boolean).map((q) => this.mapQuote(q));
+    // Prefer the single batched call (one network round-trip), but never let a
+    // batch issue break callers: fall back to resolving symbols individually.
+    try {
+      const res = await this.yf.quote(symbols);
+      const arr = Array.isArray(res) ? res : [res];
+      const mapped = arr.filter(Boolean).map((q) => this.mapQuote(q));
+      if (mapped.length > 0) return mapped;
+    } catch {
+      // fall through to per-symbol resolution
+    }
+    const settled = await Promise.allSettled(symbols.map((s) => this.getQuote(s)));
+    return settled
+      .filter((r): r is PromiseFulfilledResult<Quote> => r.status === 'fulfilled')
+      .map((r) => r.value);
   }
 
   private lookbackStart(timeframe: Timeframe, limit: number, end: Date): Date {
