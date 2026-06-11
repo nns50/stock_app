@@ -10,7 +10,8 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check:provider": "tsx src/scripts/checkProvider.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.0",

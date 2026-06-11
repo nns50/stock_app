@@ -7,6 +7,7 @@ import { pnlClass } from '../lib/format';
 import { Badge, Card, EmptyState, ErrorState, Spinner, StatTile } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
 import { ExitModal, JournalEditModal, LogTradeModal } from '../components/PositionForms';
+import { RiskSizingModal } from '../components/RiskSizingModal';
 import type { Position, PositionWithPnl } from '../api/types';
 
 type StatusFilter = 'all' | 'open' | 'closed';
@@ -19,6 +20,7 @@ export default function PositionsPage() {
   );
 
   const [logOpen, setLogOpen] = useState(false);
+  const [sizerOpen, setSizerOpen] = useState(false);
   const [exitPos, setExitPos] = useState<Position | null>(null);
   const [editPos, setEditPos] = useState<Position | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
@@ -42,6 +44,7 @@ export default function PositionsPage() {
         <h1 className="text-xl font-semibold">Positions &amp; P&amp;L</h1>
         <div className="flex items-center gap-3">
           <RefreshBar onRefresh={reload} lastUpdated={lastUpdated} loading={data.loading} />
+          <button className="btn-ghost" onClick={() => setSizerOpen(true)}>Calc size</button>
           <button className="btn-primary" onClick={() => setLogOpen(true)}>+ Log trade</button>
         </div>
       </div>
@@ -109,6 +112,7 @@ export default function PositionsPage() {
       )}
 
       <LogTradeModal open={logOpen} onClose={() => setLogOpen(false)} onSaved={reload} />
+      <RiskSizingModal open={sizerOpen} onClose={() => setSizerOpen(false)} />
       <ExitModal position={exitPos} onClose={() => setExitPos(null)} onSaved={reload} />
       <JournalEditModal position={editPos} onClose={() => setEditPos(null)} onSaved={reload} />
     </div>

@@ -12,7 +12,9 @@ import type {
   PositionWithPnl,
   Preset,
   ProviderStatus,
+  ProviderTestResult,
   Quote,
+  RiskSizingResult,
   ScreenerConfig,
   ScreenerResult,
   SymbolDetail,
@@ -47,7 +49,20 @@ const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.strin
 export const client = {
   // --- meta ---
   provider: () => api<ProviderStatus>('/provider'),
+  testProvider: (symbol?: string) =>
+    api<ProviderTestResult>(`/provider/test${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ''}`),
   refresh: () => api<{ ok: boolean }>('/refresh', { method: 'POST' }),
+
+  // --- tools ---
+  positionSize: (body: {
+    accountSize: number;
+    riskPct: number;
+    entryPrice: number;
+    stopPrice: number;
+    assetType: 'stock' | 'option';
+    side?: 'long' | 'short';
+    targetRMultiple?: number;
+  }) => api<RiskSizingResult>('/tools/position-size', post(body)),
 
   // --- market data ---
   quote: (symbol: string) => api<Quote>(`/quotes/${encodeURIComponent(symbol)}`),
