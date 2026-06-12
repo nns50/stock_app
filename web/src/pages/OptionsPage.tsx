@@ -4,9 +4,10 @@ import { useProvider } from '../components/ProviderContext';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtNum, fmtPct, fmtUsd } from '../lib/format';
 import { Badge, Card, EmptyState, ErrorState, Field, NumberInput, ScoreBar, Spinner } from '../components/ui';
+import { StrategyBuilder } from '../components/StrategyBuilder';
 import type { EntryStrategyConfig, ExitRulesConfig, OptionContract, OptionsChain } from '../api/types';
 
-type Tab = 'chain' | 'entry' | 'exit';
+type Tab = 'chain' | 'entry' | 'exit' | 'strategy';
 
 export default function OptionsPage() {
   const { status, loading } = useProvider();
@@ -96,7 +97,7 @@ export default function OptionsPage() {
       </div>
 
       <div className="flex gap-1 border-b border-ink-600/60">
-        {(['chain', 'entry', 'exit'] as Tab[]).map((t) => (
+        {(['chain', 'entry', 'exit', 'strategy'] as Tab[]).map((t) => (
           <button
             key={t}
             className={cx(
@@ -105,7 +106,7 @@ export default function OptionsPage() {
             )}
             onClick={() => setTab(t)}
           >
-            {t === 'chain' ? 'Chain' : t === 'entry' ? 'Entry scan' : 'Exit rules'}
+            {t === 'chain' ? 'Chain' : t === 'entry' ? 'Entry scan' : t === 'exit' ? 'Exit rules' : 'Strategy'}
           </button>
         ))}
       </div>
@@ -113,6 +114,7 @@ export default function OptionsPage() {
       {tab === 'chain' && <ChainView symbol={activeSymbol} expiration={expiration} />}
       {tab === 'entry' && <EntryScanView symbol={activeSymbol} expiration={expiration} />}
       {tab === 'exit' && <ExitRulesView />}
+      {tab === 'strategy' && <StrategyBuilder />}
     </div>
   );
 }

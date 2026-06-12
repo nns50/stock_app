@@ -398,3 +398,24 @@ export interface Alert {
   createdAt: number;
   updatedAt: number;
 }
+
+export interface StrategyLeg {
+  type: 'call' | 'put';
+  action: 'buy' | 'sell';
+  strike: number;
+  quantity: number;
+  premium: number;
+  iv?: number;
+}
+
+export interface StrategyAnalysis {
+  netPremium: number;
+  maxProfit: number | null;
+  maxLoss: number | null;
+  unboundedProfit: boolean;
+  unboundedLoss: boolean;
+  breakevens: number[];
+  greeks: { delta: number; gamma: number; theta: number; vega: number };
+  payoff: { price: number; pnl: number }[];
+  probabilityOfProfit: number | null;
+}
