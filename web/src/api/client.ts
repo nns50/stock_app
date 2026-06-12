@@ -20,6 +20,8 @@ import type {
   ScreenerResult,
   SnapshotPerformance,
   SnapshotSummary,
+  StrategyAnalysis,
+  StrategyLeg,
   SymbolDetail,
   UniverseSymbol,
 } from './types';
@@ -66,6 +68,13 @@ export const client = {
     side?: 'long' | 'short';
     targetRMultiple?: number;
   }) => api<RiskSizingResult>('/tools/position-size', post(body)),
+  analyzeStrategy: (body: {
+    underlyingPrice: number;
+    dte: number;
+    ivForPop?: number;
+    riskFreeRate?: number;
+    legs: StrategyLeg[];
+  }) => api<StrategyAnalysis>('/tools/strategy', post(body)),
 
   // --- market data ---
   quote: (symbol: string) => api<Quote>(`/quotes/${encodeURIComponent(symbol)}`),
