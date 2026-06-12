@@ -382,3 +382,19 @@ export interface SnapshotPerformance {
   bestReturnPct: number | null;
   worstReturnPct: number | null;
 }
+
+export interface Alert {
+  id: number;
+  symbol: string;
+  kind: 'price' | 'change' | 'relvol' | 'rsi';
+  operator: 'above' | 'below';
+  threshold: number;
+  note: string | null;
+  enabled: boolean;
+  triggered: boolean;
+  lastValue: number | null;
+  triggerMessage: string | null;
+  lastTriggeredAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}

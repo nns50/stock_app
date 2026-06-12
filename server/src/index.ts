@@ -17,6 +17,7 @@ import { journalRouter } from './routes/journal';
 import { settingsRouter } from './routes/settings';
 import { toolsRouter } from './routes/tools';
 import { snapshotsRouter } from './routes/snapshots';
+import { alertsRouter } from './routes/alerts';
 
 initDb();
 
@@ -38,6 +39,7 @@ app.use('/api/journal', journalRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/tools', toolsRouter);
 app.use('/api/snapshots', snapshotsRouter);
+app.use('/api/alerts', alertsRouter);
 
 // Unknown API route
 app.use('/api', (_req, res) => {

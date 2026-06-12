@@ -15,6 +15,7 @@ import type {
   ProviderTestResult,
   Quote,
   RiskSizingResult,
+  Alert,
   ScreenerConfig,
   ScreenerResult,
   SnapshotPerformance,
@@ -168,4 +169,20 @@ export const client = {
       performance: SnapshotPerformance;
     }>(`/snapshots/${id}/performance`),
   deleteSnapshot: (id: number) => api<{ deleted: number }>(`/snapshots/${id}`, { method: 'DELETE' }),
+
+  // --- alerts ---
+  alerts: () => api<{ alerts: Alert[] }>('/alerts'),
+  createAlert: (body: { symbol: string; kind: string; operator: string; threshold: number; note?: string }) =>
+    api<Alert>('/alerts', post(body)),
+  updateAlert: (
+    id: number,
+    patch: { threshold?: number; note?: string | null; enabled?: boolean; triggered?: boolean },
+  ) => api<Alert>(`/alerts/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteAlert: (id: number) => api<{ deleted: number }>(`/alerts/${id}`, { method: 'DELETE' }),
+  evaluateAlerts: () =>
+    api<{
+      alerts: Alert[];
+      newlyTriggered: { id: number; symbol: string; message: string | null }[];
+      checkedAt: number;
+    }>('/alerts/evaluate', { method: 'POST' }),
 };
