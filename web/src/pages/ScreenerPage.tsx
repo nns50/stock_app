@@ -3,7 +3,19 @@ import { Link } from 'react-router-dom';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtCompact, fmtNum, fmtPct, fmtUsd } from '../lib/format';
-import { Card, EmptyState, ErrorState, Field, NumberInput, ScoreBar, SortTh, Spinner, StatTile, Badge, SortDir } from '../components/ui';
+import {
+  Card,
+  EmptyState,
+  ErrorState,
+  Field,
+  NumberInput,
+  ScoreBar,
+  SortTh,
+  Spinner,
+  StatTile,
+  Badge,
+  SortDir,
+} from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
 import { UniverseModal } from '../components/UniverseModal';
 import type { IndicatorKey, ScreenerConfig, ScreenerResult, SymbolScore } from '../api/types';
@@ -93,7 +105,10 @@ export default function ScreenerPage() {
     setError(undefined);
     try {
       const symbols = useCustom
-        ? customText.split(/[\s,]+/).map((s) => s.trim().toUpperCase()).filter(Boolean)
+        ? customText
+            .split(/[\s,]+/)
+            .map((s) => s.trim().toUpperCase())
+            .filter(Boolean)
         : undefined;
       const res = await client.runScreener({ config: cfg, symbols, maxSymbols, includeFailed });
       setResult(res);
@@ -146,7 +161,11 @@ export default function ScreenerPage() {
           </div>
 
           <Field label="Direction">
-            <select className="input" value={cfg.direction} onChange={(e) => set('direction', e.target.value as 'long' | 'short')}>
+            <select
+              className="input"
+              value={cfg.direction}
+              onChange={(e) => set('direction', e.target.value as 'long' | 'short')}
+            >
               <option value="long">Long (bullish)</option>
               <option value="short">Short (bearish)</option>
             </select>
@@ -155,10 +174,16 @@ export default function ScreenerPage() {
           <div>
             <div className="label">Scan source</div>
             <div className="flex rounded-md overflow-hidden border border-ink-600 text-sm">
-              <button className={cx('flex-1 px-2 py-1', !useCustom ? 'bg-ink-600 text-white' : 'text-slate-400')} onClick={() => setUseCustom(false)}>
+              <button
+                className={cx('flex-1 px-2 py-1', !useCustom ? 'bg-ink-600 text-white' : 'text-slate-400')}
+                onClick={() => setUseCustom(false)}
+              >
                 Universe ({universe.data?.symbols.length ?? '…'})
               </button>
-              <button className={cx('flex-1 px-2 py-1', useCustom ? 'bg-ink-600 text-white' : 'text-slate-400')} onClick={() => setUseCustom(true)}>
+              <button
+                className={cx('flex-1 px-2 py-1', useCustom ? 'bg-ink-600 text-white' : 'text-slate-400')}
+                onClick={() => setUseCustom(true)}
+              >
                 Custom list
               </button>
             </div>
@@ -195,24 +220,54 @@ export default function ScreenerPage() {
           </div>
 
           <div className="grid grid-cols-4 gap-2">
-            <Field label="MA-s"><NumberInput value={cfg.maShort} onChange={(v) => set('maShort', v ?? 20)} min={2} /></Field>
-            <Field label="MA-l"><NumberInput value={cfg.maLong} onChange={(v) => set('maLong', v ?? 50)} min={2} /></Field>
-            <Field label="RSI"><NumberInput value={cfg.rsiPeriod} onChange={(v) => set('rsiPeriod', v ?? 14)} min={2} /></Field>
-            <Field label="ATR"><NumberInput value={cfg.atrPeriod} onChange={(v) => set('atrPeriod', v ?? 14)} min={2} /></Field>
+            <Field label="MA-s">
+              <NumberInput value={cfg.maShort} onChange={(v) => set('maShort', v ?? 20)} min={2} />
+            </Field>
+            <Field label="MA-l">
+              <NumberInput value={cfg.maLong} onChange={(v) => set('maLong', v ?? 50)} min={2} />
+            </Field>
+            <Field label="RSI">
+              <NumberInput value={cfg.rsiPeriod} onChange={(v) => set('rsiPeriod', v ?? 14)} min={2} />
+            </Field>
+            <Field label="ATR">
+              <NumberInput value={cfg.atrPeriod} onChange={(v) => set('atrPeriod', v ?? 14)} min={2} />
+            </Field>
           </div>
 
           <div>
             <div className="label">Filters (hard gates)</div>
             <div className="grid grid-cols-2 gap-2">
-              <label className="text-xs text-slate-400">Min price<NumberInput value={cfg.filters.minPrice} onChange={(v) => setFilter('minPrice', v)} /></label>
-              <label className="text-xs text-slate-400">Max price<NumberInput value={cfg.filters.maxPrice} onChange={(v) => setFilter('maxPrice', v)} /></label>
-              <label className="text-xs text-slate-400">Min avg vol<NumberInput value={cfg.filters.minAvgVolume} onChange={(v) => setFilter('minAvgVolume', v)} /></label>
-              <label className="text-xs text-slate-400">Min rel vol<NumberInput value={cfg.filters.minRelVol} onChange={(v) => setFilter('minRelVol', v)} step={0.1} /></label>
-              <label className="text-xs text-slate-400">RSI min<NumberInput value={cfg.filters.rsiMin} onChange={(v) => setFilter('rsiMin', v)} /></label>
-              <label className="text-xs text-slate-400">RSI max<NumberInput value={cfg.filters.rsiMax} onChange={(v) => setFilter('rsiMax', v)} /></label>
+              <label className="text-xs text-slate-400">
+                Min price
+                <NumberInput value={cfg.filters.minPrice} onChange={(v) => setFilter('minPrice', v)} />
+              </label>
+              <label className="text-xs text-slate-400">
+                Max price
+                <NumberInput value={cfg.filters.maxPrice} onChange={(v) => setFilter('maxPrice', v)} />
+              </label>
+              <label className="text-xs text-slate-400">
+                Min avg vol
+                <NumberInput value={cfg.filters.minAvgVolume} onChange={(v) => setFilter('minAvgVolume', v)} />
+              </label>
+              <label className="text-xs text-slate-400">
+                Min rel vol
+                <NumberInput value={cfg.filters.minRelVol} onChange={(v) => setFilter('minRelVol', v)} step={0.1} />
+              </label>
+              <label className="text-xs text-slate-400">
+                RSI min
+                <NumberInput value={cfg.filters.rsiMin} onChange={(v) => setFilter('rsiMin', v)} />
+              </label>
+              <label className="text-xs text-slate-400">
+                RSI max
+                <NumberInput value={cfg.filters.rsiMax} onChange={(v) => setFilter('rsiMax', v)} />
+              </label>
             </div>
             <label className="flex items-center gap-2 text-xs text-slate-400 mt-2">
-              <input type="checkbox" checked={!!cfg.filters.requireTrendAlignment} onChange={(e) => setFilter('requireTrendAlignment', e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={!!cfg.filters.requireTrendAlignment}
+                onChange={(e) => setFilter('requireTrendAlignment', e.target.checked)}
+              />
               Require trend alignment
             </label>
             <label className="flex items-center gap-2 text-xs text-slate-400 mt-1">
@@ -226,12 +281,29 @@ export default function ScreenerPage() {
           </button>
           {advanced && (
             <div className="grid grid-cols-2 gap-2">
-              <label className="text-xs text-slate-400">Momentum scale %<NumberInput value={cfg.momentumScale} onChange={(v) => set('momentumScale', v ?? 5)} step={0.5} /></label>
-              <label className="text-xs text-slate-400">Rel-vol target ×<NumberInput value={cfg.relVolTarget} onChange={(v) => set('relVolTarget', v ?? 2)} step={0.1} /></label>
-              <label className="text-xs text-slate-400">RSI sweet spot<NumberInput value={cfg.rsiSweetSpot} onChange={(v) => set('rsiSweetSpot', v ?? 60)} /></label>
-              <label className="text-xs text-slate-400">RSI width<NumberInput value={cfg.rsiWidth} onChange={(v) => set('rsiWidth', v ?? 25)} /></label>
-              <label className="text-xs text-slate-400">ATR% scale<NumberInput value={cfg.atrPctScale} onChange={(v) => set('atrPctScale', v ?? 5)} step={0.5} /></label>
-              <label className="text-xs text-slate-400">Gap scale %<NumberInput value={cfg.gapScale} onChange={(v) => set('gapScale', v ?? 3)} step={0.5} /></label>
+              <label className="text-xs text-slate-400">
+                Momentum scale %
+                <NumberInput value={cfg.momentumScale} onChange={(v) => set('momentumScale', v ?? 5)} step={0.5} />
+              </label>
+              <label className="text-xs text-slate-400">
+                Rel-vol target ×
+                <NumberInput value={cfg.relVolTarget} onChange={(v) => set('relVolTarget', v ?? 2)} step={0.1} />
+              </label>
+              <label className="text-xs text-slate-400">
+                RSI sweet spot
+                <NumberInput value={cfg.rsiSweetSpot} onChange={(v) => set('rsiSweetSpot', v ?? 60)} />
+              </label>
+              <label className="text-xs text-slate-400">
+                RSI width
+                <NumberInput value={cfg.rsiWidth} onChange={(v) => set('rsiWidth', v ?? 25)} />
+              </label>
+              <label className="text-xs text-slate-400">
+                ATR% scale
+                <NumberInput value={cfg.atrPctScale} onChange={(v) => set('atrPctScale', v ?? 5)} step={0.5} />
+              </label>
+              <label className="text-xs text-slate-400">
+                Gap scale %<NumberInput value={cfg.gapScale} onChange={(v) => set('gapScale', v ?? 3)} step={0.5} />
+              </label>
             </div>
           )}
 
@@ -244,13 +316,18 @@ export default function ScreenerPage() {
         <Card className="p-4 space-y-2">
           <div className="flex items-center justify-between">
             <h3 className="font-medium text-sm">Presets</h3>
-            <button className="text-xs text-accent" onClick={savePreset}>+ Save current</button>
+            <button className="text-xs text-accent" onClick={savePreset}>
+              + Save current
+            </button>
           </div>
           {presets.data?.presets.length ? (
             <div className="space-y-1">
               {presets.data.presets.map((p) => (
                 <div key={p.id} className="flex items-center justify-between text-sm">
-                  <button className="text-slate-300 hover:text-accent text-left" onClick={() => setConfig(p.config as ScreenerConfig)}>
+                  <button
+                    className="text-slate-300 hover:text-accent text-left"
+                    onClick={() => setConfig(p.config as ScreenerConfig)}
+                  >
                     {p.name}
                   </button>
                   <button
@@ -280,21 +357,34 @@ export default function ScreenerPage() {
               <p className="text-sm text-slate-500">
                 Ranked <span className="text-slate-300">{result.results.length}</span> of {result.scannedCount} scanned
                 {result.scannedCount < result.universeCount && <> · universe {result.universeCount}</>}
-                {result.errors.length > 0 && <> · <span className="text-bear">{result.errors.length} errors</span></>}
+                {result.errors.length > 0 && (
+                  <>
+                    {' '}
+                    · <span className="text-bear">{result.errors.length} errors</span>
+                  </>
+                )}
               </p>
             )}
           </div>
           {result && <RefreshBar onRefresh={run} lastUpdated={result.generatedAt} loading={running} />}
         </div>
 
-        {error && <Card><ErrorState error={error} onRetry={run} /></Card>}
+        {error && (
+          <Card>
+            <ErrorState error={error} onRetry={run} />
+          </Card>
+        )}
 
         {!result && !error && (
           <Card>
             <EmptyState
               title="Run the screener to rank your universe"
               hint="Each symbol is scored from transparent, weighted indicators. Expand any row to see exactly why it ranked where it did."
-              action={<button className="btn-primary" onClick={run} disabled={running}>{running ? 'Scanning…' : 'Run screener'}</button>}
+              action={
+                <button className="btn-primary" onClick={run} disabled={running}>
+                  {running ? 'Scanning…' : 'Run screener'}
+                </button>
+              }
             />
           </Card>
         )}
@@ -320,7 +410,10 @@ export default function ScreenerPage() {
                 {sorted.length === 0 && (
                   <tr>
                     <td colSpan={10}>
-                      <EmptyState title="No symbols passed the filters" hint="Loosen the hard filters on the left, or enable “Include filtered-out”." />
+                      <EmptyState
+                        title="No symbols passed the filters"
+                        hint="Loosen the hard filters on the left, or enable “Include filtered-out”."
+                      />
                     </td>
                   </tr>
                 )}
@@ -332,18 +425,31 @@ export default function ScreenerPage() {
                       <tr className={cx('border-b border-ink-700/60 hover:bg-ink-700/40', open && 'bg-ink-700/40')}>
                         <td className="td text-slate-500">{i + 1}</td>
                         <td className="td">
-                          <button className="font-semibold text-slate-100 hover:text-accent" onClick={() => setExpanded(open ? null : r.symbol)}>
+                          <button
+                            className="font-semibold text-slate-100 hover:text-accent"
+                            onClick={() => setExpanded(open ? null : r.symbol)}
+                          >
                             {open ? '▾' : '▸'} {r.symbol}
                           </button>
                         </td>
                         <td className="td text-right">{fmtUsd(r.price)}</td>
-                        <td className="td"><ScoreBar value={r.total} /></td>
-                        <td className={cx('td text-right', (ind.changePct ?? 0) >= 0 ? 'text-bull' : 'text-bear')}>{fmtPct(ind.changePct)}</td>
+                        <td className="td">
+                          <ScoreBar value={r.total} />
+                        </td>
+                        <td className={cx('td text-right', (ind.changePct ?? 0) >= 0 ? 'text-bull' : 'text-bear')}>
+                          {fmtPct(ind.changePct)}
+                        </td>
                         <td className="td text-right">{ind.relVolume === null ? '—' : `${fmtNum(ind.relVolume)}×`}</td>
                         <td className="td text-right">{fmtNum(ind.rsi, 1)}</td>
                         <td className="td text-right">{ind.atrPct === null ? '—' : `${fmtNum(ind.atrPct)}%`}</td>
-                        <td className={cx('td text-right', (ind.gapPct ?? 0) >= 0 ? 'text-bull' : 'text-bear')}>{fmtPct(ind.gapPct)}</td>
-                        <td className="td text-right"><Link className="text-accent hover:underline" to={`/symbol/${r.symbol}`}>chart →</Link></td>
+                        <td className={cx('td text-right', (ind.gapPct ?? 0) >= 0 ? 'text-bull' : 'text-bear')}>
+                          {fmtPct(ind.gapPct)}
+                        </td>
+                        <td className="td text-right">
+                          <Link className="text-accent hover:underline" to={`/symbol/${r.symbol}`}>
+                            chart →
+                          </Link>
+                        </td>
                       </tr>
                       {open && (
                         <tr className="bg-ink-900/40">
@@ -408,7 +514,9 @@ function ScoreBreakdown({ row }: { row: SymbolScore }) {
             <tr key={c.key} className="border-t border-ink-700/60">
               <td className="py-1.5 text-sm font-medium">{c.label}</td>
               <td className="text-sm tabular-nums text-slate-300">{c.display}</td>
-              <td><ScoreBar value={c.score} width={56} /></td>
+              <td>
+                <ScoreBar value={c.score} width={56} />
+              </td>
               <td className="text-right text-sm text-slate-400 tabular-nums">{c.weight}</td>
               <td className="text-right text-sm tabular-nums">{c.contribution.toFixed(1)}</td>
               <td className="pl-3 text-xs text-slate-500">{c.note}</td>

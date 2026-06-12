@@ -40,7 +40,13 @@ export function ErrorState({ error, onRetry }: { error: Error; onRetry?: () => v
   );
 }
 
-export function Badge({ color = 'slate', children }: { color?: 'slate' | 'green' | 'red' | 'blue' | 'amber'; children: ReactNode }) {
+export function Badge({
+  color = 'slate',
+  children,
+}: {
+  color?: 'slate' | 'green' | 'red' | 'blue' | 'amber';
+  children: ReactNode;
+}) {
   const map: Record<string, string> = {
     slate: 'bg-ink-600 text-slate-300',
     green: 'bg-bull/15 text-bull',
@@ -148,7 +154,10 @@ export function Modal({
 
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 overflow-y-auto" onMouseDown={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 overflow-y-auto"
+      onMouseDown={onClose}
+    >
       <div
         className={cx('card w-full mt-12 mb-12', wide ? 'max-w-3xl' : 'max-w-lg')}
         onMouseDown={(e) => e.stopPropagation()}
@@ -193,7 +202,9 @@ export function SortTh({
     >
       <span className="inline-flex items-center gap-1">
         {label}
-        <span className={cx('text-[9px]', is ? 'text-accent' : 'text-slate-600')}>{is ? (dir === 'asc' ? '▲' : '▼') : '↕'}</span>
+        <span className={cx('text-[9px]', is ? 'text-accent' : 'text-slate-600')}>
+          {is ? (dir === 'asc' ? '▲' : '▼') : '↕'}
+        </span>
       </span>
     </th>
   );

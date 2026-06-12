@@ -1,11 +1,4 @@
-import {
-  Candle,
-  CandleQuery,
-  Fundamentals,
-  OptionsChain,
-  Quote,
-  Timeframe,
-} from './types';
+import { Candle, CandleQuery, Fundamentals, OptionsChain, Quote, Timeframe } from './types';
 
 /** What a provider supports. Drives feature gating (e.g. the options module). */
 export interface ProviderCapabilities {

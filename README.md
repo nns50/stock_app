@@ -150,9 +150,14 @@ npm run dev            # run API + web together (concurrently)
 npm run dev:server     # API only (tsx watch)
 npm run dev:web        # web only (vite)
 npm run build          # typecheck + build server and web
-npm test               # backend unit tests (vitest)
+npm test               # unit tests (vitest) for server + web
 npm run typecheck      # typecheck both packages
+npm run lint           # ESLint (flat config) over the monorepo
+npm run format         # Prettier --write
+npm run check:provider # verify the configured market-data provider
 ```
+
+CI runs lint, format-check, typecheck, tests, and build on every PR.
 
 ## How the screener score works (no black boxes)
 

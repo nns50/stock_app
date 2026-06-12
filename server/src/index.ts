@@ -65,7 +65,6 @@ app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
     message = err.message;
   }
   if (status >= 500) {
-    // eslint-disable-next-line no-console
     console.error(err);
   }
   res.status(status).json({ error: message, code });
@@ -75,7 +74,7 @@ app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
 if (require.main === module) {
   app.listen(config.port, () => {
     const status = getProviderStatus();
-    // eslint-disable-next-line no-console
+
     console.log(
       `[stock-app] API on http://localhost:${config.port}  provider=${status.name}` +
         `${status.synthetic ? ' (synthetic)' : ''}${status.configured ? '' : ' [NOT CONFIGURED]'}`,

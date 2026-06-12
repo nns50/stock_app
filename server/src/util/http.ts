@@ -22,7 +22,6 @@ export async function getJson<T = unknown>(url: string, opts: GetJsonOptions = {
   const { headers = {}, retries = 3, baseDelayMs = 500, timeoutMs = 15000 } = opts;
   let attempt = 0;
 
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);

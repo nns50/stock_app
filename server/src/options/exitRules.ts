@@ -58,7 +58,8 @@ export function evaluateExit(input: ExitEvaluationInput, cfg: ExitRulesConfig, n
   const dte = daysToExpiration(input.expiration, now);
   const pct =
     input.currentPrice !== null ? unrealizedReturnPct(input.entryPrice, input.currentPrice, input.side) : null;
-  const absDelta = input.currentDelta !== undefined && input.currentDelta !== null ? Math.abs(input.currentDelta) : null;
+  const absDelta =
+    input.currentDelta !== undefined && input.currentDelta !== null ? Math.abs(input.currentDelta) : null;
 
   // Ordered by priority: risk (stop) first, then profit, then time, then drift.
   const triggers: ExitTrigger[] = [];

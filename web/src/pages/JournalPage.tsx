@@ -40,7 +40,12 @@ export default function JournalPage() {
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
         <StatTile label="Closed" value={s.totalClosed} sub={`${s.wins}W · ${s.losses}L`} />
         <StatTile label="Win rate" value={`${fmtNum(s.winRate, 1)}%`} />
-        <StatTile label="Expectancy" value={fmtSignedUsd(s.expectancy)} valueClass={pnlClass(s.expectancy)} sub="per trade" />
+        <StatTile
+          label="Expectancy"
+          value={fmtSignedUsd(s.expectancy)}
+          valueClass={pnlClass(s.expectancy)}
+          sub="per trade"
+        />
         <StatTile label="Profit factor" value={s.profitFactor === null ? '∞' : fmtNum(s.profitFactor)} />
         <StatTile label="Avg win" value={fmtSignedUsd(s.avgWin)} valueClass="text-bull" />
         <StatTile label="Avg loss" value={fmtSignedUsd(s.avgLoss)} valueClass="text-bear" />
@@ -55,14 +60,26 @@ export default function JournalPage() {
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={s.equityCurve} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
               <CartesianGrid stroke="#243042" strokeDasharray="2 4" vertical={false} />
-              <XAxis dataKey="date" tick={{ fill: '#7c8aa0', fontSize: 11 }} axisLine={{ stroke: '#243042' }} tickLine={false} />
+              <XAxis
+                dataKey="date"
+                tick={{ fill: '#7c8aa0', fontSize: 11 }}
+                axisLine={{ stroke: '#243042' }}
+                tickLine={false}
+              />
               <YAxis tick={{ fill: '#7c8aa0', fontSize: 11 }} axisLine={false} tickLine={false} width={56} />
               <Tooltip
                 contentStyle={{ background: '#111722', border: '1px solid #243042', borderRadius: 8, fontSize: 12 }}
                 labelStyle={{ color: '#cbd5e1' }}
                 formatter={(v: number) => [fmtSignedUsd(v), 'Cumulative']}
               />
-              <Line type="monotone" dataKey="cumulative" stroke="#38bdf8" strokeWidth={2} dot={{ r: 2 }} isAnimationActive={false} />
+              <Line
+                type="monotone"
+                dataKey="cumulative"
+                stroke="#38bdf8"
+                strokeWidth={2}
+                dot={{ r: 2 }}
+                isAnimationActive={false}
+              />
             </LineChart>
           </ResponsiveContainer>
         )}
@@ -71,15 +88,31 @@ export default function JournalPage() {
       {allTags.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-slate-500">Tags:</span>
-          <button className={cx('chip', !tagFilter ? 'bg-accent/20 text-accent' : 'bg-ink-600 text-slate-300')} onClick={() => setTagFilter(null)}>all</button>
+          <button
+            className={cx('chip', !tagFilter ? 'bg-accent/20 text-accent' : 'bg-ink-600 text-slate-300')}
+            onClick={() => setTagFilter(null)}
+          >
+            all
+          </button>
           {allTags.map((t) => (
-            <button key={t} className={cx('chip', tagFilter === t ? 'bg-accent/20 text-accent' : 'bg-ink-600 text-slate-300')} onClick={() => setTagFilter(t)}>{t}</button>
+            <button
+              key={t}
+              className={cx('chip', tagFilter === t ? 'bg-accent/20 text-accent' : 'bg-ink-600 text-slate-300')}
+              onClick={() => setTagFilter(t)}
+            >
+              {t}
+            </button>
           ))}
         </div>
       )}
 
       {rows.length === 0 ? (
-        <Card><EmptyState title="No closed trades yet" hint="Closed positions appear here with tags, grades, notes, and stats." /></Card>
+        <Card>
+          <EmptyState
+            title="No closed trades yet"
+            hint="Closed positions appear here with tags, grades, notes, and stats."
+          />
+        </Card>
       ) : (
         <Card className="overflow-x-auto">
           <table className="w-full">
@@ -102,20 +135,50 @@ export default function JournalPage() {
                 return (
                   <tr key={p.id} className="border-b border-ink-700/50 hover:bg-ink-700/30 align-top">
                     <td className="td">
-                      <Link to={`/symbol/${p.symbol}`} className="font-semibold hover:text-accent">{p.symbol}</Link>
-                      {p.assetType === 'option' && <div className="text-[11px] text-slate-500">{fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : 'P'}</div>}
+                      <Link to={`/symbol/${p.symbol}`} className="font-semibold hover:text-accent">
+                        {p.symbol}
+                      </Link>
+                      {p.assetType === 'option' && (
+                        <div className="text-[11px] text-slate-500">
+                          {fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : 'P'}
+                        </div>
+                      )}
                     </td>
-                    <td className="td text-slate-400 text-xs">{fmtDate(p.entryDate)} → {fmtDate(lastExit)}</td>
-                    <td className="td">{p.grade ? <Badge color={p.grade <= 'B' ? 'green' : p.grade === 'C' ? 'amber' : 'red'}>{p.grade}</Badge> : <span className="text-slate-600">—</span>}</td>
+                    <td className="td text-slate-400 text-xs">
+                      {fmtDate(p.entryDate)} → {fmtDate(lastExit)}
+                    </td>
+                    <td className="td">
+                      {p.grade ? (
+                        <Badge color={p.grade <= 'B' ? 'green' : p.grade === 'C' ? 'amber' : 'red'}>{p.grade}</Badge>
+                      ) : (
+                        <span className="text-slate-600">—</span>
+                      )}
+                    </td>
                     <td className="td">
                       <div className="flex flex-wrap gap-1">
-                        {p.tags.length ? p.tags.map((t) => <span key={t} className="chip bg-ink-600 text-slate-300">{t}</span>) : <span className="text-slate-600 text-xs">—</span>}
+                        {p.tags.length ? (
+                          p.tags.map((t) => (
+                            <span key={t} className="chip bg-ink-600 text-slate-300">
+                              {t}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-slate-600 text-xs">—</span>
+                        )}
                       </div>
                     </td>
-                    <td className={cx('td text-right font-semibold', pnlClass(r.pnl.totalPnl))}>{fmtSignedUsd(r.pnl.totalPnl)}</td>
+                    <td className={cx('td text-right font-semibold', pnlClass(r.pnl.totalPnl))}>
+                      {fmtSignedUsd(r.pnl.totalPnl)}
+                    </td>
                     <td className={cx('td text-right', pnlClass(r.pnl.returnPct))}>{fmtPct(r.pnl.returnPct)}</td>
-                    <td className="td max-w-[220px] truncate text-slate-400 text-xs" title={p.notes ?? ''}>{p.notes || '—'}</td>
-                    <td className="td"><button className="text-xs text-accent" onClick={() => setEditPos(p)}>edit</button></td>
+                    <td className="td max-w-[220px] truncate text-slate-400 text-xs" title={p.notes ?? ''}>
+                      {p.notes || '—'}
+                    </td>
+                    <td className="td">
+                      <button className="text-xs text-accent" onClick={() => setEditPos(p)}>
+                        edit
+                      </button>
+                    </td>
                   </tr>
                 );
               })}

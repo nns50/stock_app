@@ -23,15 +23,11 @@ export function listUniverse(): UniverseSymbol[] {
 }
 
 export function listUniverseSymbols(): string[] {
-  return (db.prepare('SELECT symbol FROM universe ORDER BY symbol').all() as { symbol: string }[]).map(
-    (r) => r.symbol,
-  );
+  return (db.prepare('SELECT symbol FROM universe ORDER BY symbol').all() as { symbol: string }[]).map((r) => r.symbol);
 }
 
 export function addSymbols(symbols: { symbol: string; name?: string; sector?: string }[]): number {
-  const insert = db.prepare(
-    'INSERT OR IGNORE INTO universe(symbol, name, sector, added_at) VALUES (?, ?, ?, ?)',
-  );
+  const insert = db.prepare('INSERT OR IGNORE INTO universe(symbol, name, sector, added_at) VALUES (?, ?, ?, ?)');
   const now = Date.now();
   let added = 0;
   const tx = db.transaction((items: { symbol: string; name?: string; sector?: string }[]) => {

@@ -38,9 +38,14 @@ marketRouter.get(
   '/quotes',
   asyncHandler(async (req, res) => {
     const { symbols } = parseQuery(quotesQuery, req);
-    const list = symbols.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+    const list = symbols
+      .split(',')
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
     const provider = getProvider();
-    const quotes = provider.getQuotes ? await provider.getQuotes(list) : await Promise.all(list.map((s) => provider.getQuote(s)));
+    const quotes = provider.getQuotes
+      ? await provider.getQuotes(list)
+      : await Promise.all(list.map((s) => provider.getQuote(s)));
     quotes.forEach(saveQuote);
     res.json({ quotes, asOf: Date.now() });
   }),

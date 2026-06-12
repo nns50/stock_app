@@ -77,14 +77,18 @@ export default function OptionsPage() {
               onChange={(e) => setSymbol(e.target.value.toUpperCase())}
               onKeyDown={(e) => e.key === 'Enter' && load()}
             />
-            <button className="btn-primary" onClick={load}>Load</button>
+            <button className="btn-primary" onClick={load}>
+              Load
+            </button>
           </div>
         </Field>
         <Field label="Expiration">
           <select className="input !w-44" value={expiration} onChange={(e) => setExpiration(e.target.value)}>
             {expirations.loading && <option>loading…</option>}
             {expirations.data?.expirations.map((e) => (
-              <option key={e} value={e}>{e}</option>
+              <option key={e} value={e}>
+                {e}
+              </option>
             ))}
           </select>
         </Field>
@@ -95,7 +99,10 @@ export default function OptionsPage() {
         {(['chain', 'entry', 'exit'] as Tab[]).map((t) => (
           <button
             key={t}
-            className={cx('px-4 py-2 text-sm font-medium border-b-2 -mb-px', tab === t ? 'border-accent text-white' : 'border-transparent text-slate-400 hover:text-slate-200')}
+            className={cx(
+              'px-4 py-2 text-sm font-medium border-b-2 -mb-px',
+              tab === t ? 'border-accent text-white' : 'border-transparent text-slate-400 hover:text-slate-200',
+            )}
             onClick={() => setTab(t)}
           >
             {t === 'chain' ? 'Chain' : t === 'entry' ? 'Entry scan' : 'Exit rules'}
@@ -117,9 +124,19 @@ function ChainView({ symbol, expiration }: { symbol: string; expiration: string 
   const [side, setSide] = useState<'call' | 'put'>('call');
   const chain = useAsync<OptionsChain>(() => client.chain(symbol, expiration), [symbol, expiration]);
 
-  if (!expiration) return <Card><EmptyState title="Pick a symbol and expiration" /></Card>;
+  if (!expiration)
+    return (
+      <Card>
+        <EmptyState title="Pick a symbol and expiration" />
+      </Card>
+    );
   if (chain.loading) return <Spinner label="Loading chain…" />;
-  if (chain.error) return <Card><ErrorState error={chain.error} onRetry={chain.reload} /></Card>;
+  if (chain.error)
+    return (
+      <Card>
+        <ErrorState error={chain.error} onRetry={chain.reload} />
+      </Card>
+    );
   if (!chain.data) return null;
 
   const contracts = side === 'call' ? chain.data.calls : chain.data.puts;
@@ -131,11 +148,26 @@ function ChainView({ symbol, expiration }: { symbol: string; expiration: string 
       <div className="flex items-center justify-between p-3 border-b border-ink-600/60">
         <div className="text-sm text-slate-400">
           {symbol} {expiration} · underlying <span className="text-slate-200">{fmtUsd(u)}</span>
-          {chain.data.atmIv != null && <> · ATM IV <span className="text-slate-200">{(chain.data.atmIv * 100).toFixed(0)}%</span></>}
+          {chain.data.atmIv != null && (
+            <>
+              {' '}
+              · ATM IV <span className="text-slate-200">{(chain.data.atmIv * 100).toFixed(0)}%</span>
+            </>
+          )}
         </div>
         <div className="flex rounded-md overflow-hidden border border-ink-600 text-sm">
-          <button className={cx('px-3 py-1', side === 'call' ? 'bg-bull/20 text-bull' : 'text-slate-400')} onClick={() => setSide('call')}>Calls</button>
-          <button className={cx('px-3 py-1', side === 'put' ? 'bg-bear/20 text-bear' : 'text-slate-400')} onClick={() => setSide('put')}>Puts</button>
+          <button
+            className={cx('px-3 py-1', side === 'call' ? 'bg-bull/20 text-bull' : 'text-slate-400')}
+            onClick={() => setSide('call')}
+          >
+            Calls
+          </button>
+          <button
+            className={cx('px-3 py-1', side === 'put' ? 'bg-bear/20 text-bear' : 'text-slate-400')}
+            onClick={() => setSide('put')}
+          >
+            Puts
+          </button>
         </div>
       </div>
       <table className="w-full">
@@ -165,7 +197,9 @@ function ChainView({ symbol, expiration }: { symbol: string; expiration: string 
                 <td className="td text-right">{fmtNum(c.mark)}</td>
                 <td className="td text-right text-slate-400">{c.volume ?? '—'}</td>
                 <td className="td text-right text-slate-400">{c.openInterest ?? '—'}</td>
-                <td className="td text-right">{c.greeks?.iv === undefined ? '—' : `${(c.greeks.iv * 100).toFixed(0)}%`}</td>
+                <td className="td text-right">
+                  {c.greeks?.iv === undefined ? '—' : `${(c.greeks.iv * 100).toFixed(0)}%`}
+                </td>
                 <td className="td text-right">{fmtNum(c.greeks?.delta, 3)}</td>
                 <td className="td text-right text-slate-400">{fmtNum(c.greeks?.theta, 3)}</td>
                 <td className="td text-right text-slate-400">{fmtNum(c.greeks?.gamma, 4)}</td>
@@ -176,7 +210,9 @@ function ChainView({ symbol, expiration }: { symbol: string; expiration: string 
         </tbody>
       </table>
       {anyComputed && (
-        <div className="p-2 text-[11px] text-slate-500">Greeks marked here are computed locally via Black–Scholes (provider didn't supply them).</div>
+        <div className="p-2 text-[11px] text-slate-500">
+          Greeks marked here are computed locally via Black–Scholes (provider didn't supply them).
+        </div>
       )}
     </Card>
   );
@@ -224,19 +260,49 @@ function EntryScanView({ symbol, expiration }: { symbol: string; expiration: str
           </select>
         </Field>
         <div className="grid grid-cols-2 gap-2">
-          <Field label="Delta min"><NumberInput value={config.deltaMin} onChange={(v) => set('deltaMin', v ?? 0)} step={0.05} /></Field>
-          <Field label="Delta max"><NumberInput value={config.deltaMax} onChange={(v) => set('deltaMax', v ?? 1)} step={0.05} /></Field>
-          <Field label="Max spread %"><NumberInput value={config.maxSpreadPct} onChange={(v) => set('maxSpreadPct', v ?? 10)} /></Field>
-          <Field label="Min OI"><NumberInput value={config.minOpenInterest} onChange={(v) => set('minOpenInterest', v ?? 0)} /></Field>
-          <Field label="Min volume"><NumberInput value={config.minVolume} onChange={(v) => set('minVolume', v ?? 0)} /></Field>
-          <Field label="Min DTE"><NumberInput value={config.minDaysToExpiration} onChange={(v) => set('minDaysToExpiration', v)} /></Field>
-          <Field label="Max DTE"><NumberInput value={config.maxDaysToExpiration} onChange={(v) => set('maxDaysToExpiration', v)} /></Field>
-          <Field label="IV min %"><NumberInput value={config.ivMin === undefined ? undefined : config.ivMin * 100} onChange={(v) => set('ivMin', v === undefined ? undefined : v / 100)} /></Field>
-          <Field label="IV max %"><NumberInput value={config.ivMax === undefined ? undefined : config.ivMax * 100} onChange={(v) => set('ivMax', v === undefined ? undefined : v / 100)} /></Field>
-          <Field label="IV rank min"><NumberInput value={config.ivRankMin} onChange={(v) => set('ivRankMin', v)} min={0} max={100} /></Field>
-          <Field label="IV rank max"><NumberInput value={config.ivRankMax} onChange={(v) => set('ivRankMax', v)} min={0} max={100} /></Field>
+          <Field label="Delta min">
+            <NumberInput value={config.deltaMin} onChange={(v) => set('deltaMin', v ?? 0)} step={0.05} />
+          </Field>
+          <Field label="Delta max">
+            <NumberInput value={config.deltaMax} onChange={(v) => set('deltaMax', v ?? 1)} step={0.05} />
+          </Field>
+          <Field label="Max spread %">
+            <NumberInput value={config.maxSpreadPct} onChange={(v) => set('maxSpreadPct', v ?? 10)} />
+          </Field>
+          <Field label="Min OI">
+            <NumberInput value={config.minOpenInterest} onChange={(v) => set('minOpenInterest', v ?? 0)} />
+          </Field>
+          <Field label="Min volume">
+            <NumberInput value={config.minVolume} onChange={(v) => set('minVolume', v ?? 0)} />
+          </Field>
+          <Field label="Min DTE">
+            <NumberInput value={config.minDaysToExpiration} onChange={(v) => set('minDaysToExpiration', v)} />
+          </Field>
+          <Field label="Max DTE">
+            <NumberInput value={config.maxDaysToExpiration} onChange={(v) => set('maxDaysToExpiration', v)} />
+          </Field>
+          <Field label="IV min %">
+            <NumberInput
+              value={config.ivMin === undefined ? undefined : config.ivMin * 100}
+              onChange={(v) => set('ivMin', v === undefined ? undefined : v / 100)}
+            />
+          </Field>
+          <Field label="IV max %">
+            <NumberInput
+              value={config.ivMax === undefined ? undefined : config.ivMax * 100}
+              onChange={(v) => set('ivMax', v === undefined ? undefined : v / 100)}
+            />
+          </Field>
+          <Field label="IV rank min">
+            <NumberInput value={config.ivRankMin} onChange={(v) => set('ivRankMin', v)} min={0} max={100} />
+          </Field>
+          <Field label="IV rank max">
+            <NumberInput value={config.ivRankMax} onChange={(v) => set('ivRankMax', v)} min={0} max={100} />
+          </Field>
         </div>
-        <button className="btn-primary w-full" onClick={run} disabled={running || !expiration}>{running ? 'Scanning…' : 'Scan contracts'}</button>
+        <button className="btn-primary w-full" onClick={run} disabled={running || !expiration}>
+          {running ? 'Scanning…' : 'Scan contracts'}
+        </button>
         <PresetBar
           kind="option_entry"
           presets={presets.data?.presets ?? []}
@@ -247,19 +313,35 @@ function EntryScanView({ symbol, expiration }: { symbol: string; expiration: str
       </Card>
 
       <div className="flex-1 min-w-0">
-        {error && <Card><ErrorState error={error} onRetry={run} /></Card>}
-        {!result && !error && <Card><EmptyState title="Configure a strategy and scan" hint="Candidates are ranked by spread tightness, liquidity, and how well delta fits your band — with the full rule breakdown." /></Card>}
+        {error && (
+          <Card>
+            <ErrorState error={error} onRetry={run} />
+          </Card>
+        )}
+        {!result && !error && (
+          <Card>
+            <EmptyState
+              title="Configure a strategy and scan"
+              hint="Candidates are ranked by spread tightness, liquidity, and how well delta fits your band — with the full rule breakdown."
+            />
+          </Card>
+        )}
         {result && (
           <Card className="overflow-x-auto">
             <div className="p-3 border-b border-ink-600/60 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-400">
-              <span>{result.candidates.filter((c) => c.passed).length} pass / {result.candidates.length} evaluated</span>
+              <span>
+                {result.candidates.filter((c) => c.passed).length} pass / {result.candidates.length} evaluated
+              </span>
               <span>underlying {fmtUsd(result.underlyingPrice)}</span>
               {result.ivContext.atmIv !== null && (
-                <span>ATM IV <b className="text-slate-200">{(result.ivContext.atmIv * 100).toFixed(0)}%</b></span>
+                <span>
+                  ATM IV <b className="text-slate-200">{(result.ivContext.atmIv * 100).toFixed(0)}%</b>
+                </span>
               )}
               {result.ivContext.ivRank !== null ? (
                 <span title={`${result.ivContext.method} · ${result.ivContext.samples} samples`}>
-                  IV rank <b className="text-slate-200">{result.ivContext.ivRank.toFixed(0)}</b> · pctile {result.ivContext.ivPercentile?.toFixed(0)}
+                  IV rank <b className="text-slate-200">{result.ivContext.ivRank.toFixed(0)}</b> · pctile{' '}
+                  {result.ivContext.ivPercentile?.toFixed(0)}
                   {result.ivContext.method === 'hv-estimate' && <span className="text-amber-400"> (est.)</span>}
                 </span>
               ) : (
@@ -288,17 +370,28 @@ function EntryScanView({ symbol, expiration }: { symbol: string; expiration: str
                   return (
                     <Fragment key={id}>
                       <tr className={cx('border-b border-ink-700/50', !cand.passed && 'opacity-50')}>
-                        <td className="td font-medium">{fmtNum(c.strike)} {c.type === 'call' ? 'C' : 'P'}</td>
+                        <td className="td font-medium">
+                          {fmtNum(c.strike)} {c.type === 'call' ? 'C' : 'P'}
+                        </td>
                         <td className="td text-right">{fmtNum(cand.metrics.mark)}</td>
                         <td className="td text-right">{fmtNum(cand.metrics.delta, 3)}</td>
-                        <td className="td text-right">{cand.metrics.iv === null ? '—' : `${(cand.metrics.iv * 100).toFixed(0)}%`}</td>
-                        <td className="td text-right">{cand.metrics.spreadPct === null ? '—' : `${fmtNum(cand.metrics.spreadPct, 1)}%`}</td>
-                        <td className="td text-right text-slate-400">{cand.metrics.openInterest ?? '—'}/{cand.metrics.volume ?? '—'}</td>
+                        <td className="td text-right">
+                          {cand.metrics.iv === null ? '—' : `${(cand.metrics.iv * 100).toFixed(0)}%`}
+                        </td>
+                        <td className="td text-right">
+                          {cand.metrics.spreadPct === null ? '—' : `${fmtNum(cand.metrics.spreadPct, 1)}%`}
+                        </td>
+                        <td className="td text-right text-slate-400">
+                          {cand.metrics.openInterest ?? '—'}/{cand.metrics.volume ?? '—'}
+                        </td>
                         <td className="td text-right">{cand.metrics.dte.toFixed(0)}</td>
-                        <td className="td"><ScoreBar value={cand.score} /></td>
+                        <td className="td">
+                          <ScoreBar value={cand.score} />
+                        </td>
                         <td className="td">
                           <button className="text-xs" onClick={() => setExpanded(open ? null : id)}>
-                            {cand.passed ? <Badge color="green">pass</Badge> : <Badge color="red">fail</Badge>} {open ? '▾' : '▸'}
+                            {cand.passed ? <Badge color="green">pass</Badge> : <Badge color="red">fail</Badge>}{' '}
+                            {open ? '▾' : '▸'}
                           </button>
                         </td>
                       </tr>
@@ -307,7 +400,11 @@ function EntryScanView({ symbol, expiration }: { symbol: string; expiration: str
                           <td colSpan={9} className="px-3 py-2">
                             <div className="flex flex-wrap gap-2">
                               {cand.rules.map((r) => (
-                                <span key={r.rule} className={cx('chip', r.passed ? 'bg-bull/15 text-bull' : 'bg-bear/15 text-bear')} title={r.detail}>
+                                <span
+                                  key={r.rule}
+                                  className={cx('chip', r.passed ? 'bg-bull/15 text-bull' : 'bg-bear/15 text-bear')}
+                                  title={r.detail}
+                                >
                                   {r.passed ? '✓' : '✕'} {r.rule}: {r.detail}
                                 </span>
                               ))}
@@ -361,14 +458,26 @@ function ExitRulesView() {
     <div className="flex flex-col lg:flex-row gap-4">
       <Card className="p-4 lg:w-72 shrink-0 space-y-3">
         <h3 className="font-medium">Exit rules</h3>
-        <Field label="Take-profit %"><NumberInput value={config.takeProfitPct} onChange={(v) => set('takeProfitPct', v)} /></Field>
-        <Field label="Stop-loss %"><NumberInput value={config.stopLossPct} onChange={(v) => set('stopLossPct', v)} /></Field>
-        <Field label="Exit N days before expiry"><NumberInput value={config.timeExitDaysBeforeExpiry} onChange={(v) => set('timeExitDaysBeforeExpiry', v)} /></Field>
+        <Field label="Take-profit %">
+          <NumberInput value={config.takeProfitPct} onChange={(v) => set('takeProfitPct', v)} />
+        </Field>
+        <Field label="Stop-loss %">
+          <NumberInput value={config.stopLossPct} onChange={(v) => set('stopLossPct', v)} />
+        </Field>
+        <Field label="Exit N days before expiry">
+          <NumberInput value={config.timeExitDaysBeforeExpiry} onChange={(v) => set('timeExitDaysBeforeExpiry', v)} />
+        </Field>
         <div className="grid grid-cols-2 gap-2">
-          <Field label="|Δ| min"><NumberInput value={config.deltaMin} onChange={(v) => set('deltaMin', v)} step={0.05} /></Field>
-          <Field label="|Δ| max"><NumberInput value={config.deltaMax} onChange={(v) => set('deltaMax', v)} step={0.05} /></Field>
+          <Field label="|Δ| min">
+            <NumberInput value={config.deltaMin} onChange={(v) => set('deltaMin', v)} step={0.05} />
+          </Field>
+          <Field label="|Δ| max">
+            <NumberInput value={config.deltaMax} onChange={(v) => set('deltaMax', v)} step={0.05} />
+          </Field>
         </div>
-        <button className="btn-primary w-full" onClick={run} disabled={running}>{running ? 'Checking…' : 'Check open positions'}</button>
+        <button className="btn-primary w-full" onClick={run} disabled={running}>
+          {running ? 'Checking…' : 'Check open positions'}
+        </button>
         <PresetBar
           kind="option_exit"
           presets={presets.data?.presets ?? []}
@@ -379,9 +488,27 @@ function ExitRulesView() {
       </Card>
 
       <div className="flex-1 min-w-0">
-        {error && <Card><ErrorState error={error} onRetry={run} /></Card>}
-        {!result && !error && <Card><EmptyState title="Evaluate exit rules against open option positions" hint="Add option positions in the Positions tab, then check which exit rule (if any) is currently triggered." /></Card>}
-        {result && result.evaluations.length === 0 && <Card><EmptyState title="No open option positions" hint="Log an option position in the Positions tab to use the exit engine." /></Card>}
+        {error && (
+          <Card>
+            <ErrorState error={error} onRetry={run} />
+          </Card>
+        )}
+        {!result && !error && (
+          <Card>
+            <EmptyState
+              title="Evaluate exit rules against open option positions"
+              hint="Add option positions in the Positions tab, then check which exit rule (if any) is currently triggered."
+            />
+          </Card>
+        )}
+        {result && result.evaluations.length === 0 && (
+          <Card>
+            <EmptyState
+              title="No open option positions"
+              hint="Log an option position in the Positions tab to use the exit engine."
+            />
+          </Card>
+        )}
         {result && result.evaluations.length > 0 && (
           <Card className="overflow-x-auto">
             <table className="w-full">
@@ -398,16 +525,34 @@ function ExitRulesView() {
               </thead>
               <tbody>
                 {result.evaluations.map((ev) => (
-                  <tr key={ev.position.id} className={cx('border-b border-ink-700/50', ev.evaluation.triggered && 'bg-amber-500/5')}>
-                    <td className="td">{ev.position.symbol} {fmtNum(ev.position.strike)} {ev.position.optionType === 'call' ? 'C' : 'P'} {ev.position.expiration}</td>
+                  <tr
+                    key={ev.position.id}
+                    className={cx('border-b border-ink-700/50', ev.evaluation.triggered && 'bg-amber-500/5')}
+                  >
+                    <td className="td">
+                      {ev.position.symbol} {fmtNum(ev.position.strike)} {ev.position.optionType === 'call' ? 'C' : 'P'}{' '}
+                      {ev.position.expiration}
+                    </td>
                     <td className="td text-right">{fmtNum(ev.position.entryPrice)}</td>
                     <td className="td text-right">{fmtNum(ev.currentMark)}</td>
-                    <td className={cx('td text-right', (ev.evaluation.unrealizedPct ?? 0) >= 0 ? 'text-bull' : 'text-bear')}>{fmtPct(ev.evaluation.unrealizedPct)}</td>
+                    <td
+                      className={cx(
+                        'td text-right',
+                        (ev.evaluation.unrealizedPct ?? 0) >= 0 ? 'text-bull' : 'text-bear',
+                      )}
+                    >
+                      {fmtPct(ev.evaluation.unrealizedPct)}
+                    </td>
                     <td className="td text-right">{ev.evaluation.dte.toFixed(1)}</td>
                     <td className="td text-right">{fmtNum(ev.currentDelta, 3)}</td>
                     <td className="td">
                       {ev.evaluation.triggered ? (
-                        <span title={ev.evaluation.triggers.filter((t) => t.triggered).map((t) => t.detail).join(' · ')}>
+                        <span
+                          title={ev.evaluation.triggers
+                            .filter((t) => t.triggered)
+                            .map((t) => t.detail)
+                            .join(' · ')}
+                        >
                           <Badge color="amber">{ev.evaluation.activeRule}</Badge>
                         </span>
                       ) : (
@@ -459,7 +604,9 @@ function PresetBar({
         <div className="flex flex-wrap gap-1">
           {presets.map((p) => (
             <span key={p.id} className="chip bg-ink-600 text-slate-300">
-              <button className="hover:text-accent" onClick={() => onLoad(p.config)}>{p.name}</button>
+              <button className="hover:text-accent" onClick={() => onLoad(p.config)}>
+                {p.name}
+              </button>
               <button
                 className="text-slate-500 hover:text-bear ml-1"
                 onClick={async () => {

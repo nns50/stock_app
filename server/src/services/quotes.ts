@@ -49,7 +49,12 @@ export async function resolveStockPrices(symbols: string[]): Promise<Map<string,
         : await Promise.all(group.map((s) => provider.getQuote(s)));
       for (const q of quotes) {
         saveQuote(q);
-        out.set(q.symbol.toUpperCase(), { symbol: q.symbol.toUpperCase(), price: q.last, stale: false, asOf: q.timestamp });
+        out.set(q.symbol.toUpperCase(), {
+          symbol: q.symbol.toUpperCase(),
+          price: q.last,
+          stale: false,
+          asOf: q.timestamp,
+        });
       }
     } catch {
       // fall through to cache for this group
@@ -59,9 +64,12 @@ export async function resolveStockPrices(symbols: string[]): Promise<Map<string,
   for (const sym of upper) {
     if (out.has(sym)) continue;
     const cached = readCachedQuote(sym);
-    out.set(sym, cached
-      ? { symbol: sym, price: cached.quote.last, stale: true, asOf: cached.updatedAt }
-      : { symbol: sym, price: null, stale: false, asOf: null });
+    out.set(
+      sym,
+      cached
+        ? { symbol: sym, price: cached.quote.last, stale: true, asOf: cached.updatedAt }
+        : { symbol: sym, price: null, stale: false, asOf: null },
+    );
   }
   return out;
 }
