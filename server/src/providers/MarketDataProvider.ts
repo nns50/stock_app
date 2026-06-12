@@ -40,6 +40,10 @@ export interface MarketDataProvider {
   getOptionsChain(symbol: string, expiration: string): Promise<OptionsChain>;
 
   getFundamentals(symbol: string): Promise<Fundamentals>;
+
+  /** Optional: prime any first-call cost (e.g. an auth cookie/crumb) at startup
+   *  so the user's first real request is fast. */
+  warmup?(): Promise<void>;
 }
 
 /** Raised by providers for upstream failures so routes can map them to HTTP. */

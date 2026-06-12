@@ -36,4 +36,9 @@ describe('YahooProvider retry/backoff', () => {
     await expect(p.getQuote('ZZZZ')).rejects.toThrow(/not found/i);
     expect(spy).not.toHaveBeenCalled();
   });
+
+  it('warmup never throws, even when the priming call fails', async () => {
+    const p = new YahooProvider();
+    await expect(p.warmup()).resolves.toBeUndefined();
+  });
 });
