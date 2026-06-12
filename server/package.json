@@ -25,9 +25,9 @@
     "@types/better-sqlite3": "^7.6.11",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.6",
-    "@types/node": "^22.5.0",
+    "@types/node": "^25.9.3",
     "tsx": "^4.16.2",
-    "typescript": "^5.5.4",
-    "vitest": "^2.0.5"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
   }
 }
