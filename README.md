@@ -16,18 +16,31 @@ trade journal.
 - **Daily screener** — ranks a watchlist with composable, weighted indicators
   (momentum, relative volume, RSI, ATR volatility, gap %, trend). Every score is
   fully explainable: you see each component's raw value, sub-score, weight, and
-  contribution. Save filter presets. Drill into a per-symbol chart with MA
-  overlays.
+  contribution. Save filter presets and drill into a per-symbol chart with MA
+  overlays. **Edge-tracking:** snapshot a run's top picks and later measure their
+  direction-adjusted forward returns (hit rate, avg/median, best/worst) to see
+  whether your rules actually work.
 - **Options entry/exit** — pull the chain for a symbol + expiration (strikes,
   bid/ask, volume, OI, IV, Greeks). Greeks come from the provider when available,
   otherwise computed locally via Black–Scholes. Configure entry strategies
-  (delta band, max spread %, min OI/volume, IV band, DTE) and rank candidate
-  contracts with a rule breakdown. Run exit rules (take-profit %, stop-loss %,
-  time-based, delta-drift) against open option positions.
+  (delta band, max spread %, min OI/volume, IV band, **IV rank**, DTE) and rank
+  candidate contracts with a rule breakdown. Run exit rules (take-profit %,
+  stop-loss %, time-based, delta-drift) against open option positions.
+- **Multi-leg strategies** — build verticals, straddles, strangles, iron condors,
+  or custom; get net debit/credit, a **payoff diagram**, breakevens, max
+  profit/loss, **combined Greeks**, and a lognormal **probability-of-profit**.
 - **Positions, journal & P&L** — log stock and option trades (entries + partial
   exits), see live realized/unrealized P&L per trade and in aggregate, and review
   a journal with tags, grades, and stats (win rate, avg win/loss, expectancy,
   profit factor, equity curve).
+- **Alerts** — rule-based triggers on price / change % / relative volume / RSI
+  (above or below a threshold), one-shot with acknowledge to re-arm.
+- **Risk / position-size calculator** — account size + risk % + entry/stop →
+  suggested quantity (stock or option), R-multiple target, and guard-rails.
+- **Providers** — swappable behind one interface: free **Yahoo Finance** (no key,
+  stocks + options), **Tradier** (brokerage data), or a keyless **mock** provider.
+  A built-in **connection test** (UI + `npm run check:provider`) verifies a live
+  provider without exposing keys.
 
 ## Architecture
 
@@ -37,13 +50,15 @@ web/  (React + Vite + TS + Tailwind + Recharts)
   ▼
 server/  (Node + Express + TS)            ← holds ALL market-data API keys
   ├─ MarketDataProvider  (single swappable interface)
-  │    ├─ TradierProvider   (live data: quotes, candles, options + Greeks)
+  │    ├─ YahooProvider     (free, no key: quotes, candles, options + computed Greeks)
+  │    ├─ TradierProvider   (brokerage data: quotes, candles, options + Greeks)
   │    ├─ MockProvider      (keyless deterministic synthetic data — default)
   │    └─ CachingProvider   (TTL cache + rate-limit backoff wrapper)
   ├─ indicators/  (pure indicator math + transparent scoring engine)
-  ├─ options/     (Black–Scholes, entry rules, exit rules)
-  ├─ services/    (P&L, quote persistence/fallback)
-  └─ SQLite (better-sqlite3): universe, presets, positions, exits, quote cache
+  ├─ options/     (Black–Scholes, entry/exit rules, multi-leg strategy analytics)
+  ├─ services/    (P&L, IV rank, snapshot performance, alerts, provider test, …)
+  └─ SQLite (better-sqlite3): universe, presets, positions, exits, quote cache,
+       settings, iv_history, screener snapshots, alerts
 ```
 
 The frontend **never** talks to a data provider and **never** holds a key — all
@@ -205,8 +220,13 @@ UI has a manual **Refresh** and an **optional** polling interval (off by default
 ## Testing
 
 ```bash
-npm test   # 34 unit tests covering indicators, the scoring engine, and Black–Scholes
+npm test   # ~100 unit tests: indicators, scoring engine, Black–Scholes, option
+           # entry/exit rules, multi-leg strategy math, P&L, IV rank, risk sizing,
+           # alerts, snapshot performance, the Yahoo provider mapping, and the web
+           # formatters / UI / API client
 ```
+
+CI runs lint, format-check, typecheck, tests, and build on every PR.
 
 ## Non-goals & safety
 
