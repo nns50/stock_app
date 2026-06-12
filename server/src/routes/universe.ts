@@ -2,7 +2,7 @@ import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { z } from 'zod';
-import { asyncHandler, HttpError, parseBody } from './_helpers';
+import { asyncHandler, HttpError, param, parseBody } from './_helpers';
 import { addSymbols, listUniverse, removeSymbol, replaceUniverse } from '../db/universe';
 import { DATA_DIR } from '../util/paths';
 
@@ -54,8 +54,8 @@ universeRouter.put(
 universeRouter.delete(
   '/:symbol',
   asyncHandler(async (req, res) => {
-    const ok = removeSymbol(req.params.symbol);
-    if (!ok) throw new HttpError(404, `${req.params.symbol} not in universe`);
-    res.json({ removed: req.params.symbol.toUpperCase() });
+    const ok = removeSymbol(param(req, 'symbol'));
+    if (!ok) throw new HttpError(404, `${param(req, 'symbol')} not in universe`);
+    res.json({ removed: param(req, 'symbol').toUpperCase() });
   }),
 );

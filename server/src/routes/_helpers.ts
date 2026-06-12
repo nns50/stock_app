@@ -38,3 +38,9 @@ export function parseQuery<S extends z.ZodTypeAny>(schema: S, req: Request): z.i
   if (!result.success) throw new HttpError(400, formatIssues(result.error));
   return result.data;
 }
+
+/** Read a route param as a single string (Express 5 types params as string | string[]). */
+export function param(req: Request, name: string): string {
+  const v = req.params[name];
+  return Array.isArray(v) ? (v[0] ?? '') : (v ?? '');
+}

@@ -22,7 +22,7 @@ screenerRouter.get('/config/default', (_req, res) => {
 
 const runBody = z.object({
   symbols: z.array(z.string().min(1)).optional(),
-  config: z.record(z.unknown()).optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
   /** Cap the scan to respect provider rate limits (real providers). */
   maxSymbols: z.number().int().min(1).max(500).default(75),
   includeFailed: z.boolean().default(false),

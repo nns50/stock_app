@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { asyncHandler, HttpError, parseQuery } from './_helpers';
+import { asyncHandler, HttpError, param, parseQuery } from './_helpers';
 import { getProvider, getProviderStatus } from '../providers';
 import { CachingProvider } from '../providers/CachingProvider';
 import { Timeframe } from '../providers/types';
@@ -54,7 +54,7 @@ marketRouter.get(
 marketRouter.get(
   '/quotes/:symbol',
   asyncHandler(async (req, res) => {
-    const quote = await getProvider().getQuote(req.params.symbol);
+    const quote = await getProvider().getQuote(param(req, 'symbol'));
     saveQuote(quote);
     res.json(quote);
   }),
@@ -70,19 +70,19 @@ marketRouter.get(
   '/candles/:symbol',
   asyncHandler(async (req, res) => {
     const q = parseQuery(candlesQuery, req);
-    const candles = await getProvider().getCandles(req.params.symbol, q.timeframe as Timeframe, {
+    const candles = await getProvider().getCandles(param(req, 'symbol'), q.timeframe as Timeframe, {
       limit: q.limit,
       start: q.start,
       end: q.end,
     });
-    res.json({ symbol: req.params.symbol.toUpperCase(), timeframe: q.timeframe, candles });
+    res.json({ symbol: param(req, 'symbol').toUpperCase(), timeframe: q.timeframe, candles });
   }),
 );
 
 marketRouter.get(
   '/fundamentals/:symbol',
   asyncHandler(async (req, res) => {
-    const fundamentals = await getProvider().getFundamentals(req.params.symbol);
+    const fundamentals = await getProvider().getFundamentals(param(req, 'symbol'));
     res.json(fundamentals);
   }),
 );
@@ -99,7 +99,7 @@ marketRouter.get(
   '/symbol/:symbol',
   asyncHandler(async (req, res) => {
     const q = parseQuery(detailQuery, req);
-    const symbol = req.params.symbol.toUpperCase();
+    const symbol = param(req, 'symbol').toUpperCase();
     const provider = getProvider();
 
     const [candles, quote] = await Promise.all([

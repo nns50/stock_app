@@ -126,7 +126,7 @@ function seedUniverseIfEmpty(): void {
   if (row.n > 0) return;
 
   const file = path.join(DATA_DIR, 'sp500.json');
-  let list: SeedRow[] = [];
+  let list: SeedRow[];
   try {
     list = JSON.parse(fs.readFileSync(file, 'utf8')) as SeedRow[];
   } catch {

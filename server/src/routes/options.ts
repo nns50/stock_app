@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { asyncHandler, parseBody, parseQuery } from './_helpers';
+import { asyncHandler, param, parseBody, parseQuery } from './_helpers';
 import { getProvider, getProviderStatus, requireCapability } from '../providers';
 import { listPositions } from '../db/positions';
 import { resolveOptionMarks } from '../services/quotes';
@@ -37,8 +37,8 @@ optionsRouter.get(
   '/:symbol/expirations',
   asyncHandler(async (req, res) => {
     requireCapability('options');
-    const expirations = await getProvider().getOptionsExpirations(req.params.symbol);
-    res.json({ symbol: req.params.symbol.toUpperCase(), expirations });
+    const expirations = await getProvider().getOptionsExpirations(param(req, 'symbol'));
+    res.json({ symbol: param(req, 'symbol').toUpperCase(), expirations });
   }),
 );
 
@@ -48,7 +48,7 @@ optionsRouter.get(
   asyncHandler(async (req, res) => {
     requireCapability('options');
     const { expiration } = parseQuery(chainQuery, req);
-    const chain = await getProvider().getOptionsChain(req.params.symbol, expiration);
+    const chain = await getProvider().getOptionsChain(param(req, 'symbol'), expiration);
     const atmIv = atmIvOfChain(chain);
     if (atmIv !== undefined) recordAtmIv(chain.underlying, atmIv); // accrue IV history
     res.json({ ...chain, atmIv: atmIv ?? null, synthetic: getProviderStatus().synthetic });

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { asyncHandler, HttpError, parseBody } from './_helpers';
+import { asyncHandler, HttpError, param, parseBody } from './_helpers';
 import { deleteSetting, getAllSettings, getSetting, setSetting } from '../db/settings';
 
 export const settingsRouter = Router();
@@ -12,9 +12,9 @@ settingsRouter.get('/', (_req, res) => {
 settingsRouter.get(
   '/:key',
   asyncHandler(async (req, res) => {
-    const value = getSetting(req.params.key);
+    const value = getSetting(param(req, 'key'));
     if (value === undefined) throw new HttpError(404, 'setting not found');
-    res.json({ key: req.params.key, value });
+    res.json({ key: param(req, 'key'), value });
   }),
 );
 
@@ -23,15 +23,15 @@ settingsRouter.put(
   '/:key',
   asyncHandler(async (req, res) => {
     const { value } = parseBody(putBody, req);
-    setSetting(req.params.key, value);
-    res.json({ key: req.params.key, value });
+    setSetting(param(req, 'key'), value);
+    res.json({ key: param(req, 'key'), value });
   }),
 );
 
 settingsRouter.delete(
   '/:key',
   asyncHandler(async (req, res) => {
-    if (!deleteSetting(req.params.key)) throw new HttpError(404, 'setting not found');
-    res.json({ deleted: req.params.key });
+    if (!deleteSetting(param(req, 'key'))) throw new HttpError(404, 'setting not found');
+    res.json({ deleted: param(req, 'key') });
   }),
 );
