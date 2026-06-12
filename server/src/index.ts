@@ -50,8 +50,10 @@ app.use('/api', (_req, res) => {
 // client-side routes. Enabled by setting PUBLIC_DIR (e.g. in Docker).
 if (config.publicDir && fs.existsSync(config.publicDir)) {
   app.use(express.static(config.publicDir));
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api')) return next();
+  // SPA fallback. Express 5 (path-to-regexp 8) rejects a bare '*' route, so use a
+  // pathless middleware and serve index.html for non-API GETs.
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' || req.path.startsWith('/api')) return next();
     res.sendFile(path.join(config.publicDir, 'index.html'));
   });
 }
@@ -61,7 +63,6 @@ app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
   if (res.headersSent) return next(err);
   let status = 500;
   let message = 'Internal server error';
-  let code: string | undefined;
   if (err instanceof HttpError || err instanceof ProviderError) {
     status = err.status;
     message = err.message;
@@ -71,7 +72,7 @@ app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
   if (status >= 500) {
     console.error(err);
   }
-  res.status(status).json({ error: message, code });
+  res.status(status).json({ error: message });
 });
 
 // Only listen when run directly (tests import `app` without binding a port).
