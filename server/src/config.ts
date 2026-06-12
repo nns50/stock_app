@@ -3,8 +3,8 @@ import path from 'path';
 import { SERVER_ROOT, resolveFromRoot, ensureDir } from './util/paths';
 
 // Load server/.env (if present). Defaults below let the app boot with the mock
-// provider and zero configuration.
-dotenv.config({ path: path.join(SERVER_ROOT, '.env') });
+// provider and zero configuration. `quiet` silences dotenv v17's startup banner.
+dotenv.config({ path: path.join(SERVER_ROOT, '.env'), quiet: true });
 
 function num(value: string | undefined, fallback: number): number {
   const n = value === undefined ? NaN : Number(value);
