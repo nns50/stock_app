@@ -61,6 +61,16 @@ export class YahooProvider implements MarketDataProvider {
   // v3 requires an instance. suppressNotices silences the first-run survey log.
   private readonly yf = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
 
+  /** Prime Yahoo's cookie/crumb handshake so the first user request is fast.
+   *  (The first call to Yahoo fetches an auth cookie + crumb; it's cached after.) */
+  async warmup(): Promise<void> {
+    try {
+      await this.yf.quote('SPY');
+    } catch {
+      // ignore — this is only priming the auth handshake
+    }
+  }
+
   // Yahoo's free endpoints occasionally blip (especially the first chart call).
   // Retry transient failures with backoff so they self-heal; don't retry
   // deterministic ones (not-found / schema-validation).

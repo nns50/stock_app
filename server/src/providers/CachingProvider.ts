@@ -61,6 +61,10 @@ export class CachingProvider implements MarketDataProvider {
     return this.base.getFundamentals(symbol);
   }
 
+  warmup(): Promise<void> {
+    return this.base.warmup ? this.base.warmup() : Promise.resolve();
+  }
+
   /** Invalidate cached quotes/candles (used by a forced "Refresh"). */
   clearCaches(): void {
     this.quoteCache.clear();

@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { config } from './config';
 import { initDb } from './db';
-import { getProviderStatus } from './providers';
+import { getProvider, getProviderStatus } from './providers';
 import { ProviderError } from './providers/MarketDataProvider';
 import { HttpError } from './routes/_helpers';
 import { marketRouter } from './routes/market';
@@ -80,5 +80,9 @@ if (require.main === module) {
       `[stock-app] API on http://localhost:${config.port}  provider=${status.name}` +
         `${status.synthetic ? ' (synthetic)' : ''}${status.configured ? '' : ' [NOT CONFIGURED]'}`,
     );
+    // Prime any first-call cost (e.g. Yahoo's cookie/crumb) in the background so
+    // the user's first request doesn't pay for it.
+    const warm = getProvider().warmup?.();
+    if (warm) warm.catch(() => {});
   });
 }
