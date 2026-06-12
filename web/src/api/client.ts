@@ -17,6 +17,8 @@ import type {
   RiskSizingResult,
   ScreenerConfig,
   ScreenerResult,
+  SnapshotPerformance,
+  SnapshotSummary,
   SymbolDetail,
   UniverseSymbol,
 } from './types';
@@ -152,4 +154,18 @@ export const client = {
       method: 'PUT',
       body: JSON.stringify({ value }),
     }),
+
+  // --- screener snapshots (edge tracking) ---
+  listSnapshots: () => api<{ snapshots: SnapshotSummary[] }>('/snapshots'),
+  createSnapshot: (body: {
+    direction: string;
+    note?: string;
+    picks: { symbol: string; score: number; price: number }[];
+  }) => api<{ id: number }>('/snapshots', post(body)),
+  snapshotPerformance: (id: number) =>
+    api<{
+      snapshot: { id: number; createdAt: number; direction: 'long' | 'short'; note: string | null };
+      performance: SnapshotPerformance;
+    }>(`/snapshots/${id}/performance`),
+  deleteSnapshot: (id: number) => api<{ deleted: number }>(`/snapshots/${id}`, { method: 'DELETE' }),
 };

@@ -18,6 +18,7 @@ import {
 } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
 import { UniverseModal } from '../components/UniverseModal';
+import { SnapshotsModal } from '../components/SnapshotsModal';
 import type { IndicatorKey, ScreenerConfig, ScreenerResult, SymbolScore } from '../api/types';
 
 const WEIGHT_KEYS: { key: IndicatorKey; label: string }[] = [
@@ -76,6 +77,7 @@ export default function ScreenerPage() {
   const [includeFailed, setIncludeFailed] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [universeOpen, setUniverseOpen] = useState(false);
+  const [snapshotsOpen, setSnapshotsOpen] = useState(false);
 
   const [result, setResult] = useState<ScreenerResult>();
   const [running, setRunning] = useState(false);
@@ -146,6 +148,19 @@ export default function ScreenerPage() {
     if (!name) return;
     await client.savePreset(name, 'screener', cfg);
     presets.reload();
+  };
+
+  // Save the current run's top picks so their forward performance can be tracked.
+  const saveSnapshot = async () => {
+    if (!result || !cfg) return;
+    const picks = result.results.slice(0, 15).map((r) => ({ symbol: r.symbol, score: r.total, price: r.price }));
+    if (!picks.length) {
+      window.alert('No passing picks to snapshot.');
+      return;
+    }
+    const note = window.prompt(`Snapshot the top ${picks.length} picks. Note (optional):`) ?? undefined;
+    await client.createSnapshot({ direction: cfg.direction, note: note || undefined, picks });
+    setSnapshotsOpen(true);
   };
 
   if (defaults.loading || settings.loading || !cfg) return <Spinner label="Loading screener…" />;
@@ -366,7 +381,21 @@ export default function ScreenerPage() {
               </p>
             )}
           </div>
-          {result && <RefreshBar onRefresh={run} lastUpdated={result.generatedAt} loading={running} />}
+          <div className="flex items-center gap-2">
+            <button className="btn-ghost" onClick={() => setSnapshotsOpen(true)}>
+              Snapshots
+            </button>
+            {result && (
+              <button
+                className="btn-ghost"
+                onClick={saveSnapshot}
+                title="Save the top picks to track their forward performance"
+              >
+                Save snapshot
+              </button>
+            )}
+            {result && <RefreshBar onRefresh={run} lastUpdated={result.generatedAt} loading={running} />}
+          </div>
         </div>
 
         {error && (
@@ -486,6 +515,7 @@ export default function ScreenerPage() {
       </section>
 
       <UniverseModal open={universeOpen} onClose={() => setUniverseOpen(false)} onChanged={() => universe.reload()} />
+      <SnapshotsModal open={snapshotsOpen} onClose={() => setSnapshotsOpen(false)} />
     </div>
   );
 }

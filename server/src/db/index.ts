@@ -78,8 +78,25 @@ CREATE TABLE IF NOT EXISTS iv_history (
   PRIMARY KEY (symbol, date)
 );
 
+CREATE TABLE IF NOT EXISTS screener_snapshots (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at    INTEGER NOT NULL,
+  direction     TEXT NOT NULL CHECK(direction IN ('long','short')),
+  note          TEXT
+);
+
+CREATE TABLE IF NOT EXISTS screener_picks (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  snapshot_id   INTEGER NOT NULL REFERENCES screener_snapshots(id) ON DELETE CASCADE,
+  rank          INTEGER NOT NULL,
+  symbol        TEXT NOT NULL,
+  score         REAL NOT NULL,
+  price_at_run  REAL NOT NULL            -- entry-reference price when snapshotted
+);
+
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_exits_position ON position_exits(position_id);
+CREATE INDEX IF NOT EXISTS idx_picks_snapshot ON screener_picks(snapshot_id);
 `;
 
 interface SeedRow {

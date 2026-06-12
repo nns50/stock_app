@@ -353,3 +353,32 @@ export interface SymbolDetail {
   fundamentals: Record<string, unknown> | null;
   synthetic: boolean;
 }
+
+export interface SnapshotSummary {
+  id: number;
+  createdAt: number;
+  direction: 'long' | 'short';
+  note: string | null;
+  pickCount: number;
+}
+
+export interface PickPerformance {
+  rank: number;
+  symbol: string;
+  score: number;
+  priceAtRun: number;
+  currentPrice: number | null;
+  returnPct: number | null;
+  win: boolean | null;
+}
+
+export interface SnapshotPerformance {
+  direction: 'long' | 'short';
+  picks: PickPerformance[];
+  evaluated: number;
+  avgReturnPct: number | null;
+  medianReturnPct: number | null;
+  hitRate: number | null;
+  bestReturnPct: number | null;
+  worstReturnPct: number | null;
+}
