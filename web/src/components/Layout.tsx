@@ -9,6 +9,7 @@ const TABS = [
   { to: '/options', label: 'Options' },
   { to: '/positions', label: 'Positions' },
   { to: '/journal', label: 'Journal' },
+  { to: '/alerts', label: 'Alerts' },
 ];
 
 function ProviderChip({ onClick }: { onClick: () => void }) {

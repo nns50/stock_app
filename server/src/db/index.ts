@@ -94,6 +94,22 @@ CREATE TABLE IF NOT EXISTS screener_picks (
   price_at_run  REAL NOT NULL            -- entry-reference price when snapshotted
 );
 
+CREATE TABLE IF NOT EXISTS alerts (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol            TEXT NOT NULL,
+  kind              TEXT NOT NULL CHECK(kind IN ('price','change','relvol','rsi')),
+  operator          TEXT NOT NULL CHECK(operator IN ('above','below')),
+  threshold         REAL NOT NULL,
+  note              TEXT,
+  enabled           INTEGER NOT NULL DEFAULT 1,
+  triggered         INTEGER NOT NULL DEFAULT 0,
+  last_value        REAL,
+  trigger_message   TEXT,
+  last_triggered_at INTEGER,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_exits_position ON position_exits(position_id);
 CREATE INDEX IF NOT EXISTS idx_picks_snapshot ON screener_picks(snapshot_id);
