@@ -1,10 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Candle } from '../src/providers/types';
-import {
-  defaultScreenerConfig,
-  resolveScreenerConfig,
-  scoreSymbol,
-} from '../src/indicators/screener';
+import { defaultScreenerConfig, resolveScreenerConfig, scoreSymbol } from '../src/indicators/screener';
 
 function candlesFromCloses(closes: number[], volume = 1_000_000): Candle[] {
   let prev = closes[0];

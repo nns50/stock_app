@@ -102,17 +102,11 @@ export function bsGreeks(inputs: BsInputs): BsGreeks {
   let rhoPerWhole: number;
   if (type === 'call') {
     delta = dq * normCdf(d1);
-    thetaPerYear =
-      (-(S * dq * pdf * sigma) / (2 * sqrtT)) -
-      r * K * df * normCdf(d2) +
-      q * S * dq * normCdf(d1);
+    thetaPerYear = -(S * dq * pdf * sigma) / (2 * sqrtT) - r * K * df * normCdf(d2) + q * S * dq * normCdf(d1);
     rhoPerWhole = K * T * df * normCdf(d2);
   } else {
     delta = -dq * normCdf(-d1);
-    thetaPerYear =
-      (-(S * dq * pdf * sigma) / (2 * sqrtT)) +
-      r * K * df * normCdf(-d2) -
-      q * S * dq * normCdf(-d1);
+    thetaPerYear = -(S * dq * pdf * sigma) / (2 * sqrtT) + r * K * df * normCdf(-d2) - q * S * dq * normCdf(-d1);
     rhoPerWhole = -K * T * df * normCdf(-d2);
   }
 

@@ -129,9 +129,7 @@ export class YahooProvider implements MarketDataProvider {
       // fall through to per-symbol resolution
     }
     const settled = await Promise.allSettled(symbols.map((s) => this.getQuote(s)));
-    return settled
-      .filter((r): r is PromiseFulfilledResult<Quote> => r.status === 'fulfilled')
-      .map((r) => r.value);
+    return settled.filter((r): r is PromiseFulfilledResult<Quote> => r.status === 'fulfilled').map((r) => r.value);
   }
 
   private lookbackStart(timeframe: Timeframe, limit: number, end: Date): Date {
@@ -173,7 +171,14 @@ export class YahooProvider implements MarketDataProvider {
     return dates.map((d) => isoUTC(d));
   }
 
-  private mapContract(c: any, type: 'call' | 'put', underlying: string, expiration: string, S: number | undefined, T: number): OptionContract {
+  private mapContract(
+    c: any,
+    type: 'call' | 'put',
+    underlying: string,
+    expiration: string,
+    S: number | undefined,
+    T: number,
+  ): OptionContract {
     const bid = num(c.bid);
     const ask = num(c.ask);
     const last = num(c.lastPrice);
@@ -219,7 +224,9 @@ export class YahooProvider implements MarketDataProvider {
     const underlyingPrice = num((res as any)?.quote?.regularMarketPrice);
     const T = yearsToExpiration(expiration);
 
-    const calls = (chain.calls ?? []).map((c: any) => this.mapContract(c, 'call', symbol, expiration, underlyingPrice, T));
+    const calls = (chain.calls ?? []).map((c: any) =>
+      this.mapContract(c, 'call', symbol, expiration, underlyingPrice, T),
+    );
     const puts = (chain.puts ?? []).map((c: any) => this.mapContract(c, 'put', symbol, expiration, underlyingPrice, T));
     calls.sort((a: OptionContract, b: OptionContract) => a.strike - b.strike);
     puts.sort((a: OptionContract, b: OptionContract) => a.strike - b.strike);

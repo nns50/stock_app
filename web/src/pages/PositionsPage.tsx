@@ -44,8 +44,12 @@ export default function PositionsPage() {
         <h1 className="text-xl font-semibold">Positions &amp; P&amp;L</h1>
         <div className="flex items-center gap-3">
           <RefreshBar onRefresh={reload} lastUpdated={lastUpdated} loading={data.loading} />
-          <button className="btn-ghost" onClick={() => setSizerOpen(true)}>Calc size</button>
-          <button className="btn-primary" onClick={() => setLogOpen(true)}>+ Log trade</button>
+          <button className="btn-ghost" onClick={() => setSizerOpen(true)}>
+            Calc size
+          </button>
+          <button className="btn-primary" onClick={() => setLogOpen(true)}>
+            + Log trade
+          </button>
         </div>
       </div>
 
@@ -64,7 +68,10 @@ export default function PositionsPage() {
         {(['open', 'closed', 'all'] as StatusFilter[]).map((s) => (
           <button
             key={s}
-            className={cx('px-3 py-1 rounded-md text-sm capitalize', statusFilter === s ? 'bg-ink-600 text-white' : 'text-slate-400 hover:bg-ink-700')}
+            className={cx(
+              'px-3 py-1 rounded-md text-sm capitalize',
+              statusFilter === s ? 'bg-ink-600 text-white' : 'text-slate-400 hover:bg-ink-700',
+            )}
             onClick={() => setStatusFilter(s)}
           >
             {s}
@@ -75,13 +82,19 @@ export default function PositionsPage() {
       {data.loading && !data.data ? (
         <Spinner />
       ) : data.error ? (
-        <Card><ErrorState error={data.error} onRetry={reload} /></Card>
+        <Card>
+          <ErrorState error={data.error} onRetry={reload} />
+        </Card>
       ) : data.data && data.data.positions.length === 0 ? (
         <Card>
           <EmptyState
             title="No positions yet"
             hint="Log your stock and option trades to track live P&L, realized vs unrealized, and build your journal."
-            action={<button className="btn-primary" onClick={() => setLogOpen(true)}>+ Log trade</button>}
+            action={
+              <button className="btn-primary" onClick={() => setLogOpen(true)}>
+                + Log trade
+              </button>
+            }
           />
         </Card>
       ) : (
@@ -104,7 +117,13 @@ export default function PositionsPage() {
             </thead>
             <tbody>
               {data.data!.positions.map((row) => (
-                <PositionRow key={row.position.id} row={row} onExit={setExitPos} onEdit={setEditPos} onDelete={remove} />
+                <PositionRow
+                  key={row.position.id}
+                  row={row}
+                  onExit={setExitPos}
+                  onEdit={setEditPos}
+                  onDelete={remove}
+                />
               ))}
             </tbody>
           </table>
@@ -136,30 +155,55 @@ function PositionRow({
   return (
     <tr className="border-b border-ink-700/50 hover:bg-ink-700/30">
       <td className="td">
-        <Link to={`/symbol/${p.symbol}`} className="font-semibold hover:text-accent">{p.symbol}</Link>
+        <Link to={`/symbol/${p.symbol}`} className="font-semibold hover:text-accent">
+          {p.symbol}
+        </Link>
         {isOption && (
           <span className="ml-2 text-xs text-slate-500">
             {fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : 'P'} {p.expiration}
           </span>
         )}
-        {p.status === 'closed' && <span className="ml-2"><Badge>closed</Badge></span>}
+        {p.status === 'closed' && (
+          <span className="ml-2">
+            <Badge>closed</Badge>
+          </span>
+        )}
       </td>
-      <td className="td"><span className={p.side === 'long' ? 'text-bull' : 'text-bear'}>{p.side}</span></td>
-      <td className="td text-right">{p.remainingQuantity}{p.remainingQuantity !== p.quantity && <span className="text-slate-500">/{p.quantity}</span>}</td>
+      <td className="td">
+        <span className={p.side === 'long' ? 'text-bull' : 'text-bear'}>{p.side}</span>
+      </td>
+      <td className="td text-right">
+        {p.remainingQuantity}
+        {p.remainingQuantity !== p.quantity && <span className="text-slate-500">/{p.quantity}</span>}
+      </td>
       <td className="td text-right">{fmtUsd(p.entryPrice)}</td>
       <td className="td text-right">
         {pnl.currentPrice === null ? <span className="text-slate-600">—</span> : fmtUsd(pnl.currentPrice)}
-        {row.stale && <span className="ml-1 chip bg-amber-500/15 text-amber-400" title="last-known cached price">stale</span>}
+        {row.stale && (
+          <span className="ml-1 chip bg-amber-500/15 text-amber-400" title="last-known cached price">
+            stale
+          </span>
+        )}
       </td>
       <td className="td text-right text-slate-400">{fmtUsd(pnl.costBasis)}</td>
       <td className={cx('td text-right', pnlClass(pnl.realizedPnl))}>{fmtSignedUsd(pnl.realizedPnl)}</td>
-      <td className={cx('td text-right', pnlClass(pnl.unrealizedPnl))}>{pnl.unrealizedPnl === null ? '—' : fmtSignedUsd(pnl.unrealizedPnl)}</td>
+      <td className={cx('td text-right', pnlClass(pnl.unrealizedPnl))}>
+        {pnl.unrealizedPnl === null ? '—' : fmtSignedUsd(pnl.unrealizedPnl)}
+      </td>
       <td className={cx('td text-right font-semibold', pnlClass(pnl.totalPnl))}>{fmtSignedUsd(pnl.totalPnl)}</td>
       <td className={cx('td text-right', pnlClass(pnl.returnPct))}>{fmtPct(pnl.returnPct)}</td>
       <td className="td text-right whitespace-nowrap">
-        {p.status === 'open' && <button className="text-xs text-accent hover:underline mr-2" onClick={() => onExit(p)}>exit</button>}
-        <button className="text-xs text-slate-400 hover:text-slate-200 mr-2" onClick={() => onEdit(p)}>journal</button>
-        <button className="text-xs text-slate-500 hover:text-bear" onClick={() => onDelete(p.id)}>del</button>
+        {p.status === 'open' && (
+          <button className="text-xs text-accent hover:underline mr-2" onClick={() => onExit(p)}>
+            exit
+          </button>
+        )}
+        <button className="text-xs text-slate-400 hover:text-slate-200 mr-2" onClick={() => onEdit(p)}>
+          journal
+        </button>
+        <button className="text-xs text-slate-500 hover:text-bear" onClick={() => onDelete(p.id)}>
+          del
+        </button>
       </td>
     </tr>
   );

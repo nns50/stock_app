@@ -171,7 +171,10 @@ export function computeJournalStats(closed: Position[]): JournalStats {
 
 function lastExitDate(p: Position): string | null {
   if (p.exits.length === 0) return null;
-  return p.exits.map((e) => e.exitDate).sort().slice(-1)[0];
+  return p.exits
+    .map((e) => e.exitDate)
+    .sort()
+    .slice(-1)[0];
 }
 
 function round2(n: number): number {

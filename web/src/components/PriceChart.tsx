@@ -152,10 +152,36 @@ export function PriceChart({
         <Bar yAxisId="vol" dataKey="volume" fill="#33415a" opacity={0.5} isAnimationActive={false} />
         {mode === 'candles' && <Customized component={Candles} />}
         {mode === 'line' && (
-          <Line yAxisId="price" type="monotone" dataKey="close" stroke="#38bdf8" dot={false} strokeWidth={1.5} isAnimationActive={false} />
+          <Line
+            yAxisId="price"
+            type="monotone"
+            dataKey="close"
+            stroke="#38bdf8"
+            dot={false}
+            strokeWidth={1.5}
+            isAnimationActive={false}
+          />
         )}
-        <Line yAxisId="price" type="monotone" dataKey="maShort" stroke="#38bdf8" dot={false} strokeWidth={1} isAnimationActive={false} connectNulls />
-        <Line yAxisId="price" type="monotone" dataKey="maLong" stroke="#a78bfa" dot={false} strokeWidth={1} isAnimationActive={false} connectNulls />
+        <Line
+          yAxisId="price"
+          type="monotone"
+          dataKey="maShort"
+          stroke="#38bdf8"
+          dot={false}
+          strokeWidth={1}
+          isAnimationActive={false}
+          connectNulls
+        />
+        <Line
+          yAxisId="price"
+          type="monotone"
+          dataKey="maLong"
+          stroke="#a78bfa"
+          dot={false}
+          strokeWidth={1}
+          isAnimationActive={false}
+          connectNulls
+        />
       </ComposedChart>
     </ResponsiveContainer>
   );

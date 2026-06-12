@@ -22,7 +22,11 @@ describe('api client', () => {
   it('throws ApiError with status, message and code on failure', async () => {
     vi.stubGlobal('fetch', mockFetch(503, { error: 'not configured', code: 'not_configured' }));
     await expect(client.provider()).rejects.toBeInstanceOf(ApiError);
-    await expect(client.provider()).rejects.toMatchObject({ status: 503, message: 'not configured', code: 'not_configured' });
+    await expect(client.provider()).rejects.toMatchObject({
+      status: 503,
+      message: 'not configured',
+      code: 'not_configured',
+    });
   });
 
   it('sends PUT with a JSON body for settings', async () => {

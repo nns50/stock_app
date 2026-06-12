@@ -15,10 +15,20 @@
     "start": "npm run start -w server",
     "test": "npm run test -w server && npm run test -w web",
     "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "check:provider": "npm run check:provider -w server"
   },
   "devDependencies": {
-    "concurrently": "^9.0.1"
+    "@eslint/js": "^9.13.0",
+    "concurrently": "^9.0.1",
+    "eslint": "^9.13.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-react-hooks": "^5.0.0",
+    "prettier": "^3.3.3",
+    "typescript-eslint": "^8.11.0"
   },
   "engines": {
     "node": ">=20"

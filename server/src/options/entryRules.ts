@@ -119,14 +119,26 @@ function evaluateContract(
   if (cfg.maxDaysToExpiration !== undefined)
     add('max DTE', dte <= cfg.maxDaysToExpiration, `${dte.toFixed(0)}d ≤ ${cfg.maxDaysToExpiration}d`);
   if (cfg.ivMin !== undefined)
-    add('min IV', iv !== null && iv >= cfg.ivMin, `IV ${iv === null ? '—' : (iv * 100).toFixed(0) + '%'} ≥ ${(cfg.ivMin * 100).toFixed(0)}%`);
+    add(
+      'min IV',
+      iv !== null && iv >= cfg.ivMin,
+      `IV ${iv === null ? '—' : (iv * 100).toFixed(0) + '%'} ≥ ${(cfg.ivMin * 100).toFixed(0)}%`,
+    );
   if (cfg.ivMax !== undefined)
-    add('max IV', iv !== null && iv <= cfg.ivMax, `IV ${iv === null ? '—' : (iv * 100).toFixed(0) + '%'} ≤ ${(cfg.ivMax * 100).toFixed(0)}%`);
+    add(
+      'max IV',
+      iv !== null && iv <= cfg.ivMax,
+      `IV ${iv === null ? '—' : (iv * 100).toFixed(0) + '%'} ≤ ${(cfg.ivMax * 100).toFixed(0)}%`,
+    );
   if (cfg.ivRankMin !== undefined || cfg.ivRankMax !== undefined) {
     const lo = cfg.ivRankMin ?? 0;
     const hi = cfg.ivRankMax ?? 100;
     const ok = ivRank !== null && ivRank !== undefined && ivRank >= lo && ivRank <= hi;
-    add('IV rank', ok, `IV rank ${ivRank === null || ivRank === undefined ? '—' : ivRank.toFixed(0)} in [${lo}, ${hi}]`);
+    add(
+      'IV rank',
+      ok,
+      `IV rank ${ivRank === null || ivRank === undefined ? '—' : ivRank.toFixed(0)} in [${lo}, ${hi}]`,
+    );
   }
 
   const passed = rules.every((r) => r.passed);

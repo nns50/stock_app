@@ -4,11 +4,7 @@ import { asyncHandler, parseBody, parseQuery } from './_helpers';
 import { getProvider, getProviderStatus, requireCapability } from '../providers';
 import { listPositions } from '../db/positions';
 import { resolveOptionMarks } from '../services/quotes';
-import {
-  defaultEntryConfig,
-  EntryStrategyConfig,
-  scanEntries,
-} from '../options/entryRules';
+import { defaultEntryConfig, EntryStrategyConfig, scanEntries } from '../options/entryRules';
 import { defaultExitConfig, evaluateExit, ExitRulesConfig } from '../options/exitRules';
 import { atmIvOfChain, computeIvContext } from '../services/ivRank';
 import { getIvHistory, recordAtmIv } from '../db/ivHistory';
@@ -76,10 +72,7 @@ const entryScanBody = z.object({
       ivMax: z.number().optional(),
       ivRankMin: z.number().optional(),
       ivRankMax: z.number().optional(),
-      weights: z
-        .object({ spread: z.number(), liquidity: z.number(), deltaFit: z.number() })
-        .partial()
-        .optional(),
+      weights: z.object({ spread: z.number(), liquidity: z.number(), deltaFit: z.number() }).partial().optional(),
     })
     .optional(),
 });

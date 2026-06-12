@@ -23,13 +23,7 @@ import {
 
 export type Direction = 'long' | 'short';
 
-export type IndicatorKey =
-  | 'momentum'
-  | 'relativeVolume'
-  | 'rsi'
-  | 'volatility'
-  | 'gap'
-  | 'trend';
+export type IndicatorKey = 'momentum' | 'relativeVolume' | 'rsi' | 'volatility' | 'gap' | 'trend';
 
 export type IndicatorWeights = Record<IndicatorKey, number>;
 
@@ -171,8 +165,7 @@ export function computeIndicators(
   const rsiVal = latest(rsiSeries(closes, cfg.rsiPeriod));
   const atrVal = latest(atrSeries(candles, cfg.atrPeriod));
 
-  const changePct =
-    quote?.changePct ?? percentChange(last.close, prev.close);
+  const changePct = quote?.changePct ?? percentChange(last.close, prev.close);
   const avgVolume = quote?.avgVolume ?? meanOfLast(volumes.slice(0, -1), 20) ?? meanOfLast(volumes, 20);
   const volume = quote?.volume ?? last.volume;
   const relVol = avgVolume ? relativeVolume(volume, avgVolume) : null;
@@ -352,8 +345,7 @@ function applyFilters(ind: IndicatorSnapshot, cfg: ScreenerConfig): { passed: bo
   if (f.maxPrice !== undefined && ind.price > f.maxPrice) reasons.push(`price > ${f.maxPrice}`);
   if (f.minAvgVolume !== undefined && (ind.avgVolume ?? 0) < f.minAvgVolume)
     reasons.push(`avg vol < ${f.minAvgVolume.toLocaleString()}`);
-  if (f.minRelVol !== undefined && (ind.relVolume ?? 0) < f.minRelVol)
-    reasons.push(`rel vol < ${f.minRelVol}`);
+  if (f.minRelVol !== undefined && (ind.relVolume ?? 0) < f.minRelVol) reasons.push(`rel vol < ${f.minRelVol}`);
   if (f.rsiMin !== undefined && (ind.rsi ?? -1) < f.rsiMin) reasons.push(`RSI < ${f.rsiMin}`);
   if (f.rsiMax !== undefined && (ind.rsi ?? 101) > f.rsiMax) reasons.push(`RSI > ${f.rsiMax}`);
   if (f.requireTrendAlignment) {

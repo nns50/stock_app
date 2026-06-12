@@ -14,10 +14,20 @@ const TABS = [
 function ProviderChip({ onClick }: { onClick: () => void }) {
   const { status } = useProvider();
   if (!status) return null;
-  const color = !status.configured ? 'bg-bear/15 text-bear' : status.synthetic ? 'bg-amber-500/15 text-amber-400' : 'bg-bull/15 text-bull';
-  const label = !status.configured ? `${status.name} · not configured` : `${status.name}${status.synthetic ? ' · demo' : ' · live'}`;
+  const color = !status.configured
+    ? 'bg-bear/15 text-bear'
+    : status.synthetic
+      ? 'bg-amber-500/15 text-amber-400'
+      : 'bg-bull/15 text-bull';
+  const label = !status.configured
+    ? `${status.name} · not configured`
+    : `${status.name}${status.synthetic ? ' · demo' : ' · live'}`;
   return (
-    <button className={cx('chip hover:ring-1 hover:ring-ink-500', color)} title="Provider status & connection test" onClick={onClick}>
+    <button
+      className={cx('chip hover:ring-1 hover:ring-ink-500', color)}
+      title="Provider status & connection test"
+      onClick={onClick}
+    >
       {label}
     </button>
   );
@@ -85,8 +95,9 @@ export function Layout({ children }: { children: ReactNode }) {
 
       <footer className="border-t border-ink-700 bg-ink-800/60">
         <div className="max-w-[1400px] mx-auto px-4 py-3 text-[12px] text-slate-500 text-center">
-          ⚠️ Rule-based heuristics for personal research — <strong className="text-slate-400">not financial advice</strong>. No
-          guarantees of accuracy or performance. This tool does not place trades.
+          ⚠️ Rule-based heuristics for personal research —{' '}
+          <strong className="text-slate-400">not financial advice</strong>. No guarantees of accuracy or performance.
+          This tool does not place trades.
         </div>
       </footer>
     </div>

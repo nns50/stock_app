@@ -64,7 +64,9 @@ const listQuery = z.object({
 });
 
 /** Resolve a current price per position (stocks via quote, options via mark). */
-async function priceMap(positions: Position[]): Promise<Map<number, { price: number | null; stale: boolean; asOf: number | null }>> {
+async function priceMap(
+  positions: Position[],
+): Promise<Map<number, { price: number | null; stale: boolean; asOf: number | null }>> {
   const out = new Map<number, { price: number | null; stale: boolean; asOf: number | null }>();
   const stocks = positions.filter((p) => p.assetType === 'stock');
   const options = positions.filter((p) => p.assetType === 'option');
@@ -90,7 +92,13 @@ async function withPnlPayload(positions: Position[]) {
   const prices = await priceMap(positions);
   const items = positions.map((p) => {
     const info = prices.get(p.id) ?? { price: null, stale: false, asOf: null };
-    return { position: p, price: info.price, stale: info.stale, asOf: info.asOf, pnl: computePositionPnl(p, info.price) };
+    return {
+      position: p,
+      price: info.price,
+      stale: info.stale,
+      asOf: info.asOf,
+      pnl: computePositionPnl(p, info.price),
+    };
   });
   const aggregate = aggregatePnl(
     items.map((i) => i.pnl),
@@ -120,7 +128,13 @@ positionsRouter.get(
     if (!pos) throw new HttpError(404, 'position not found');
     const prices = await priceMap([pos]);
     const info = prices.get(pos.id) ?? { price: null, stale: false, asOf: null };
-    res.json({ position: pos, price: info.price, stale: info.stale, asOf: info.asOf, pnl: computePositionPnl(pos, info.price) });
+    res.json({
+      position: pos,
+      price: info.price,
+      stale: info.stale,
+      asOf: info.asOf,
+      pnl: computePositionPnl(pos, info.price),
+    });
   }),
 );
 

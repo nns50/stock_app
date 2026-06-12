@@ -83,12 +83,17 @@ export const client = {
   universeSource: () => api<{ symbols: { symbol: string; name?: string; sector?: string }[] }>('/universe/source'),
   addSymbols: (symbols: (string | { symbol: string; name?: string; sector?: string })[]) =>
     api<{ added: number; symbols: UniverseSymbol[] }>('/universe', post({ symbols })),
-  removeSymbol: (symbol: string) => api<{ removed: string }>(`/universe/${encodeURIComponent(symbol)}`, { method: 'DELETE' }),
+  removeSymbol: (symbol: string) =>
+    api<{ removed: string }>(`/universe/${encodeURIComponent(symbol)}`, { method: 'DELETE' }),
 
   // --- screener ---
   screenerDefault: () => api<ScreenerConfig>('/screener/config/default'),
-  runScreener: (body: { symbols?: string[]; config?: Partial<ScreenerConfig>; maxSymbols?: number; includeFailed?: boolean }) =>
-    api<ScreenerResult>('/screener/run', { method: 'POST', body: JSON.stringify(body) }),
+  runScreener: (body: {
+    symbols?: string[];
+    config?: Partial<ScreenerConfig>;
+    maxSymbols?: number;
+    includeFailed?: boolean;
+  }) => api<ScreenerResult>('/screener/run', { method: 'POST', body: JSON.stringify(body) }),
 
   // --- presets ---
   presets: (kind?: string) => api<{ presets: Preset[] }>(`/presets${kind ? `?kind=${kind}` : ''}`),
@@ -111,10 +116,13 @@ export const client = {
       synthetic: boolean;
     }>('/options/entry-scan', { method: 'POST', body: JSON.stringify(body) }),
   exitCheck: (config: ExitRulesConfig) =>
-    api<{ config: ExitRulesConfig; evaluations: ExitCheckRow[]; checkedAt: number; synthetic: boolean }>('/options/exit-check', {
-      method: 'POST',
-      body: JSON.stringify({ config }),
-    }),
+    api<{ config: ExitRulesConfig; evaluations: ExitCheckRow[]; checkedAt: number; synthetic: boolean }>(
+      '/options/exit-check',
+      {
+        method: 'POST',
+        body: JSON.stringify({ config }),
+      },
+    ),
 
   // --- positions ---
   positions: (params: { status?: string; symbol?: string; assetType?: string } = {}) => {
@@ -125,7 +133,8 @@ export const client = {
     const qs = new URLSearchParams({ ...params, withPnl: 'true' } as Record<string, string>).toString();
     return api<{ positions: PositionWithPnl[]; aggregate: AggregatePnl }>(`/positions?${qs}`);
   },
-  createPosition: (body: Record<string, unknown>) => api<Position>('/positions', { method: 'POST', body: JSON.stringify(body) }),
+  createPosition: (body: Record<string, unknown>) =>
+    api<Position>('/positions', { method: 'POST', body: JSON.stringify(body) }),
   updatePosition: (id: number, patch: Record<string, unknown>) =>
     api<Position>(`/positions/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deletePosition: (id: number) => api<{ deleted: number }>(`/positions/${id}`, { method: 'DELETE' }),

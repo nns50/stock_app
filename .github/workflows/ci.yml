@@ -16,9 +16,16 @@ jobs:
           cache: npm
       - name: Install
         run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Format check
+        run: npm run format:check
       - name: Typecheck
         run: npm run typecheck
       - name: Unit tests
         run: npm test
       - name: Build
         run: npm run build
+      - name: Security audit (non-blocking)
+        run: npm audit --audit-level=high
+        continue-on-error: true

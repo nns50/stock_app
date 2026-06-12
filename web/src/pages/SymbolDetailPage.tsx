@@ -29,7 +29,9 @@ export default function SymbolDetailPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-baseline gap-3">
-          <Link to="/screener" className="text-slate-500 hover:text-slate-300 text-sm">← Screener</Link>
+          <Link to="/screener" className="text-slate-500 hover:text-slate-300 text-sm">
+            ← Screener
+          </Link>
           <h1 className="text-2xl font-semibold">{symbol.toUpperCase()}</h1>
           {quote && (
             <span className="text-lg tabular-nums">
@@ -50,7 +52,10 @@ export default function SymbolDetailPage() {
             {TIMEFRAMES.map((tf) => (
               <button
                 key={tf}
-                className={cx('px-2.5 py-1', timeframe === tf ? 'bg-ink-600 text-white' : 'text-slate-400 hover:text-slate-200')}
+                className={cx(
+                  'px-2.5 py-1',
+                  timeframe === tf ? 'bg-ink-600 text-white' : 'text-slate-400 hover:text-slate-200',
+                )}
                 onClick={() => setTimeframe(tf)}
               >
                 {tf}
@@ -58,18 +63,44 @@ export default function SymbolDetailPage() {
             ))}
           </div>
           <div className="flex rounded-md overflow-hidden border border-ink-600">
-            <button className={cx('px-2.5 py-1', mode === 'candles' ? 'bg-ink-600 text-white' : 'text-slate-400')} onClick={() => setMode('candles')}>Candles</button>
-            <button className={cx('px-2.5 py-1', mode === 'line' ? 'bg-ink-600 text-white' : 'text-slate-400')} onClick={() => setMode('line')}>Line</button>
+            <button
+              className={cx('px-2.5 py-1', mode === 'candles' ? 'bg-ink-600 text-white' : 'text-slate-400')}
+              onClick={() => setMode('candles')}
+            >
+              Candles
+            </button>
+            <button
+              className={cx('px-2.5 py-1', mode === 'line' ? 'bg-ink-600 text-white' : 'text-slate-400')}
+              onClick={() => setMode('line')}
+            >
+              Line
+            </button>
           </div>
           <label className="flex items-center gap-1 text-xs text-slate-400">
             <span className="text-accent">MA</span>
-            <input type="number" className="input !w-16 py-0.5" value={maShort} min={2} onChange={(e) => setMaShort(Number(e.target.value) || 20)} />
+            <input
+              type="number"
+              className="input !w-16 py-0.5"
+              value={maShort}
+              min={2}
+              onChange={(e) => setMaShort(Number(e.target.value) || 20)}
+            />
             <span className="text-violet-400">MA</span>
-            <input type="number" className="input !w-16 py-0.5" value={maLong} min={2} onChange={(e) => setMaLong(Number(e.target.value) || 50)} />
+            <input
+              type="number"
+              className="input !w-16 py-0.5"
+              value={maLong}
+              min={2}
+              onChange={(e) => setMaLong(Number(e.target.value) || 50)}
+            />
           </label>
           <div className="ml-auto flex items-center gap-3 text-xs text-slate-500">
-            <span><span className="inline-block w-3 h-0.5 bg-accent align-middle" /> MA{maShort}</span>
-            <span><span className="inline-block w-3 h-0.5 bg-violet-400 align-middle" /> MA{maLong}</span>
+            <span>
+              <span className="inline-block w-3 h-0.5 bg-accent align-middle" /> MA{maShort}
+            </span>
+            <span>
+              <span className="inline-block w-3 h-0.5 bg-violet-400 align-middle" /> MA{maLong}
+            </span>
           </div>
         </div>
 
@@ -78,7 +109,12 @@ export default function SymbolDetailPage() {
         ) : detail.error ? (
           <ErrorState error={detail.error} onRetry={detail.reload} />
         ) : detail.data && detail.data.candles.length > 0 ? (
-          <PriceChart candles={detail.data.candles} maShort={detail.data.overlays.maShort} maLong={detail.data.overlays.maLong} mode={mode} />
+          <PriceChart
+            candles={detail.data.candles}
+            maShort={detail.data.overlays.maShort}
+            maLong={detail.data.overlays.maLong}
+            mode={mode}
+          />
         ) : (
           <div className="text-center text-slate-500 py-10">No candle data for this timeframe.</div>
         )}
@@ -86,9 +122,17 @@ export default function SymbolDetailPage() {
 
       {ind && (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          <StatTile label="Change" value={fmtPct(ind.changePct)} valueClass={(ind.changePct ?? 0) >= 0 ? 'text-bull' : 'text-bear'} />
+          <StatTile
+            label="Change"
+            value={fmtPct(ind.changePct)}
+            valueClass={(ind.changePct ?? 0) >= 0 ? 'text-bull' : 'text-bear'}
+          />
           <StatTile label="RSI" value={fmtNum(ind.rsi, 1)} />
-          <StatTile label="ATR%" value={ind.atrPct === null ? '—' : `${fmtNum(ind.atrPct)}%`} sub={`ATR ${fmtNum(ind.atr)}`} />
+          <StatTile
+            label="ATR%"
+            value={ind.atrPct === null ? '—' : `${fmtNum(ind.atrPct)}%`}
+            sub={`ATR ${fmtNum(ind.atr)}`}
+          />
           <StatTile label="Rel volume" value={ind.relVolume === null ? '—' : `${fmtNum(ind.relVolume)}×`} />
           <StatTile label={`Dist MA${maShort}`} value={fmtPct(ind.distShortPct)} />
           <StatTile label={`Dist MA${maLong}`} value={fmtPct(ind.distLongPct)} />
@@ -96,7 +140,9 @@ export default function SymbolDetailPage() {
           <StatTile label="Volume" value={fmtCompact(ind.volume)} sub={`avg ${fmtCompact(ind.avgVolume)}`} />
           <StatTile label={`MA${maShort}`} value={fmtNum(ind.maShort)} />
           <StatTile label={`MA${maLong}`} value={fmtNum(ind.maLong)} />
-          {quote?.bid !== undefined && <StatTile label="Bid / Ask" value={`${fmtNum(quote.bid)} / ${fmtNum(quote.ask)}`} />}
+          {quote?.bid !== undefined && (
+            <StatTile label="Bid / Ask" value={`${fmtNum(quote.bid)} / ${fmtNum(quote.ask)}`} />
+          )}
           <StatTile label="Day range" value={quote ? `${fmtNum(quote.low)}–${fmtNum(quote.high)}` : '—'} />
         </div>
       )}

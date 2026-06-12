@@ -39,9 +39,7 @@ export class CachingProvider implements MarketDataProvider {
         : await Promise.all(missing.map((s) => this.base.getQuote(s)));
       for (const q of fetched) this.quoteCache.set(q.symbol.toUpperCase(), q);
     }
-    return upper
-      .map((s) => this.quoteCache.get(s))
-      .filter((q): q is Quote => q !== undefined);
+    return upper.map((s) => this.quoteCache.get(s)).filter((q): q is Quote => q !== undefined);
   }
 
   getCandles(symbol: string, timeframe: Timeframe, query?: CandleQuery): Promise<Candle[]> {

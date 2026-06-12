@@ -36,10 +36,9 @@ export function atmIvOfChain(chain: OptionsChain): number | undefined {
   const nearest = (arr: OptionsChain['calls']) =>
     arr
       .filter((c) => typeof c.greeks?.iv === 'number')
-      .reduce<OptionsChain['calls'][number] | undefined>(
-        (best, c) => (!best || Math.abs(c.strike - u) < Math.abs(best.strike - u) ? c : best),
-        undefined,
-      );
+      .reduce<
+        OptionsChain['calls'][number] | undefined
+      >((best, c) => (!best || Math.abs(c.strike - u) < Math.abs(best.strike - u) ? c : best), undefined);
   const ivs = [nearest(chain.calls)?.greeks?.iv, nearest(chain.puts)?.greeks?.iv].filter(
     (x): x is number => typeof x === 'number',
   );
@@ -76,16 +75,48 @@ export function computeIvContext(
   candles: Candle[] = [],
 ): IvContext {
   if (currentAtmIv === undefined) {
-    return { atmIv: null, ivRank: null, ivPercentile: null, method: 'insufficient', samples: history.length, min: null, max: null };
+    return {
+      atmIv: null,
+      ivRank: null,
+      ivPercentile: null,
+      method: 'insufficient',
+      samples: history.length,
+      min: null,
+      max: null,
+    };
   }
   if (history.length >= MIN_SAMPLES) {
     const { rank, pct, min, max } = rankFrom(currentAtmIv, history);
-    return { atmIv: currentAtmIv, ivRank: rank, ivPercentile: pct, method: 'history', samples: history.length, min, max };
+    return {
+      atmIv: currentAtmIv,
+      ivRank: rank,
+      ivPercentile: pct,
+      method: 'history',
+      samples: history.length,
+      min,
+      max,
+    };
   }
   const hv = realizedVolSeries(candles);
   if (hv.length >= MIN_SAMPLES) {
     const { rank, pct, min, max } = rankFrom(currentAtmIv, hv);
-    return { atmIv: currentAtmIv, ivRank: rank, ivPercentile: pct, method: 'hv-estimate', samples: hv.length, min, max };
+    return {
+      atmIv: currentAtmIv,
+      ivRank: rank,
+      ivPercentile: pct,
+      method: 'hv-estimate',
+      samples: hv.length,
+      min,
+      max,
+    };
   }
-  return { atmIv: currentAtmIv, ivRank: null, ivPercentile: null, method: 'insufficient', samples: history.length, min: null, max: null };
+  return {
+    atmIv: currentAtmIv,
+    ivRank: null,
+    ivPercentile: null,
+    method: 'insufficient',
+    samples: history.length,
+    min: null,
+    max: null,
+  };
 }

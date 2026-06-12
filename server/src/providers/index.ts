@@ -1,10 +1,5 @@
 import { config } from '../config';
-import {
-  CapabilityError,
-  MarketDataProvider,
-  ProviderCapabilities,
-  ProviderError,
-} from './MarketDataProvider';
+import { CapabilityError, MarketDataProvider, ProviderCapabilities, ProviderError } from './MarketDataProvider';
 import { Candle, Fundamentals, OptionsChain, Quote } from './types';
 import { MockProvider } from './MockProvider';
 import { TradierProvider } from './TradierProvider';
@@ -62,7 +57,8 @@ let cached: { provider: MarketDataProvider; status: ProviderStatus } | null = nu
 function build(): { provider: MarketDataProvider; status: ProviderStatus } {
   if (config.provider === 'tradier') {
     if (!config.tradier.token) {
-      const message = 'Tradier is selected but TRADIER_API_TOKEN is not set. Add it to server/.env (or set MARKET_DATA_PROVIDER=mock) to use the app.';
+      const message =
+        'Tradier is selected but TRADIER_API_TOKEN is not set. Add it to server/.env (or set MARKET_DATA_PROVIDER=mock) to use the app.';
       const provider = new UnconfiguredProvider('tradier', message);
       return {
         provider,
@@ -94,7 +90,8 @@ function build(): { provider: MarketDataProvider; status: ProviderStatus } {
         synthetic: false,
         configured: true,
         capabilities: base.capabilities,
-        message: 'Yahoo Finance (free, no key). Unofficial — for personal use; may rate-limit or change without notice.',
+        message:
+          'Yahoo Finance (free, no key). Unofficial — for personal use; may rate-limit or change without notice.',
       },
     };
   }

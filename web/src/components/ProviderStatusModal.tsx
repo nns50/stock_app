@@ -35,7 +35,12 @@ export function ProviderStatusModal({ open, onClose }: { open: boolean; onClose:
             </div>
             <div>
               <div className="label">Mode</div>
-              <div className={cx('font-medium', !status.configured ? 'text-bear' : status.synthetic ? 'text-amber-400' : 'text-bull')}>
+              <div
+                className={cx(
+                  'font-medium',
+                  !status.configured ? 'text-bear' : status.synthetic ? 'text-amber-400' : 'text-bull',
+                )}
+              >
                 {!status.configured ? 'not configured' : status.synthetic ? 'demo (synthetic)' : 'live'}
               </div>
             </div>
@@ -59,7 +64,8 @@ export function ProviderStatusModal({ open, onClose }: { open: boolean; onClose:
               {testing ? 'Testing…' : 'Run connection test'}
             </button>
             <p className="text-[11px] text-slate-500 mt-1">
-              Makes real provider calls — use this to confirm a Tradier token works after setting it in <code>server/.env</code>.
+              Makes real provider calls — use this to confirm a Tradier token works after setting it in{' '}
+              <code>server/.env</code>.
             </p>
           </div>
 

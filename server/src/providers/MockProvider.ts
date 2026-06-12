@@ -1,13 +1,5 @@
 import { MarketDataProvider, ProviderCapabilities } from './MarketDataProvider';
-import {
-  Candle,
-  CandleQuery,
-  Fundamentals,
-  OptionContract,
-  OptionsChain,
-  Quote,
-  Timeframe,
-} from './types';
+import { Candle, CandleQuery, Fundamentals, OptionContract, OptionsChain, Quote, Timeframe } from './types';
 import { bsGreeks, yearsToExpiration } from '../options/blackScholes';
 
 // ---------------------------------------------------------------------------

@@ -53,7 +53,14 @@ describe('computeRiskSizing', () => {
   });
 
   it('warns when the stop is on the wrong side', () => {
-    const r = computeRiskSizing({ accountSize: 10_000, riskPct: 1, entryPrice: 50, stopPrice: 51, assetType: 'stock', side: 'long' });
+    const r = computeRiskSizing({
+      accountSize: 10_000,
+      riskPct: 1,
+      entryPrice: 50,
+      stopPrice: 51,
+      assetType: 'stock',
+      side: 'long',
+    });
     expect(r.warnings.join(' ')).toContain('long');
   });
 

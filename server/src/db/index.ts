@@ -100,9 +100,7 @@ function seedUniverseIfEmpty(): void {
     list = [];
   }
 
-  const insert = db.prepare(
-    'INSERT OR IGNORE INTO universe(symbol, name, sector, added_at) VALUES (?, ?, ?, ?)',
-  );
+  const insert = db.prepare('INSERT OR IGNORE INTO universe(symbol, name, sector, added_at) VALUES (?, ?, ?, ?)');
   const now = Date.now();
   const tx = db.transaction((items: SeedRow[]) => {
     for (const it of items) {

@@ -39,8 +39,30 @@ vi.mock('yahoo-finance2', () => ({
         quote: { regularMarketPrice: 100 },
         options: [
           {
-            calls: [{ contractSymbol: 'C1', strike: 100, bid: 4.9, ask: 5.1, lastPrice: 5.0, volume: 500, openInterest: 1000, impliedVolatility: 0.3 }],
-            puts: [{ contractSymbol: 'P1', strike: 100, bid: 4.5, ask: 4.7, lastPrice: 4.6, volume: 300, openInterest: 800, impliedVolatility: 0.32 }],
+            calls: [
+              {
+                contractSymbol: 'C1',
+                strike: 100,
+                bid: 4.9,
+                ask: 5.1,
+                lastPrice: 5.0,
+                volume: 500,
+                openInterest: 1000,
+                impliedVolatility: 0.3,
+              },
+            ],
+            puts: [
+              {
+                contractSymbol: 'P1',
+                strike: 100,
+                bid: 4.5,
+                ask: 4.7,
+                lastPrice: 4.6,
+                volume: 300,
+                openInterest: 800,
+                impliedVolatility: 0.32,
+              },
+            ],
           },
         ],
       };
@@ -48,7 +70,14 @@ vi.mock('yahoo-finance2', () => ({
     async quoteSummary() {
       return {
         price: { longName: 'Test Co', shortName: 'TST', marketCap: 1e12 },
-        summaryDetail: { trailingPE: 25, dividendYield: 0.005, beta: 1.1, fiftyTwoWeekHigh: 120, fiftyTwoWeekLow: 80, averageVolume: 950_000 },
+        summaryDetail: {
+          trailingPE: 25,
+          dividendYield: 0.005,
+          beta: 1.1,
+          fiftyTwoWeekHigh: 120,
+          fiftyTwoWeekLow: 80,
+          averageVolume: 950_000,
+        },
         defaultKeyStatistics: { trailingEps: 4 },
         assetProfile: { sector: 'Tech', industry: 'Software' },
       };

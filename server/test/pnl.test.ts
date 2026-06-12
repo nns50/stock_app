@@ -4,7 +4,9 @@ import { computePositionPnl, realizedPnlOf, computeJournalStats } from '../src/s
 
 let nextId = 1;
 
-function makePosition(over: Partial<Position> & Pick<Position, 'assetType' | 'side' | 'quantity' | 'entryPrice'>): Position {
+function makePosition(
+  over: Partial<Position> & Pick<Position, 'assetType' | 'side' | 'quantity' | 'entryPrice'>,
+): Position {
   const exits = (over.exits ?? []) as PositionExit[];
   const closed = exits.reduce((s, e) => s + e.quantity, 0);
   return {
@@ -69,7 +71,15 @@ describe('computePositionPnl', () => {
   });
 
   it('applies the 100x multiplier for options', () => {
-    const p = makePosition({ assetType: 'option', side: 'long', quantity: 2, entryPrice: 5, optionType: 'call', strike: 100, expiration: '2026-07-01' });
+    const p = makePosition({
+      assetType: 'option',
+      side: 'long',
+      quantity: 2,
+      entryPrice: 5,
+      optionType: 'call',
+      strike: 100,
+      expiration: '2026-07-01',
+    });
     const pnl = computePositionPnl(p, 8);
     expect(pnl.unrealizedPnl).toBe(600); // (8-5)*2*100
     expect(pnl.costBasis).toBe(1000);
@@ -100,9 +110,27 @@ describe('realizedPnlOf', () => {
 
 describe('computeJournalStats', () => {
   const trades: Position[] = [
-    makePosition({ assetType: 'stock', side: 'long', quantity: 10, entryPrice: 100, exits: [exit({ quantity: 10, exitPrice: 110, exitDate: '2026-01-10' })] }), // +100
-    makePosition({ assetType: 'stock', side: 'long', quantity: 10, entryPrice: 100, exits: [exit({ quantity: 10, exitPrice: 96, exitDate: '2026-01-11' })] }), // -40
-    makePosition({ assetType: 'stock', side: 'long', quantity: 10, entryPrice: 100, exits: [exit({ quantity: 10, exitPrice: 106, exitDate: '2026-01-12' })] }), // +60
+    makePosition({
+      assetType: 'stock',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      exits: [exit({ quantity: 10, exitPrice: 110, exitDate: '2026-01-10' })],
+    }), // +100
+    makePosition({
+      assetType: 'stock',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      exits: [exit({ quantity: 10, exitPrice: 96, exitDate: '2026-01-11' })],
+    }), // -40
+    makePosition({
+      assetType: 'stock',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      exits: [exit({ quantity: 10, exitPrice: 106, exitDate: '2026-01-12' })],
+    }), // +60
   ];
   const s = computeJournalStats(trades);
 

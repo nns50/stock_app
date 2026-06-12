@@ -13,7 +13,10 @@ function num(value: string | undefined, fallback: number): number {
 
 function list(value: string | undefined, fallback: string[]): string[] {
   if (!value) return fallback;
-  return value.split(',').map((s) => s.trim()).filter(Boolean);
+  return value
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 const databasePath = resolveFromRoot(process.env.DATABASE_PATH || './data/stock_app.db');
@@ -24,7 +27,7 @@ export type ProviderName = 'tradier' | 'yahoo' | 'mock';
 export const config = {
   port: num(process.env.PORT, 3001),
   /** Selected market-data provider. Falls back to the keyless mock provider. */
-  provider: ((process.env.MARKET_DATA_PROVIDER || 'mock').toLowerCase() as ProviderName),
+  provider: (process.env.MARKET_DATA_PROVIDER || 'mock').toLowerCase() as ProviderName,
   tradier: {
     token: process.env.TRADIER_API_TOKEN || '',
     baseUrl: (process.env.TRADIER_BASE_URL || 'https://sandbox.tradier.com/v1').replace(/\/$/, ''),

@@ -3,7 +3,15 @@ import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { Modal, Spinner } from './ui';
 
-export function UniverseModal({ open, onClose, onChanged }: { open: boolean; onClose: () => void; onChanged: () => void }) {
+export function UniverseModal({
+  open,
+  onClose,
+  onChanged,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
   const universe = useAsync(() => client.universe(), []);
   const source = useAsync(() => client.universeSource(), []);
   const [text, setText] = useState('');
@@ -23,7 +31,10 @@ export function UniverseModal({ open, onClose, onChanged }: { open: boolean; onC
   };
 
   const addFromText = async () => {
-    const syms = text.split(/[\s,]+/).map((s) => s.trim().toUpperCase()).filter(Boolean);
+    const syms = text
+      .split(/[\s,]+/)
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
     if (!syms.length) return;
     setBusy(true);
     try {
@@ -84,7 +95,12 @@ export function UniverseModal({ open, onClose, onChanged }: { open: boolean; onC
 
         <div>
           <h4 className="font-medium text-sm mb-2">Add from S&amp;P 500 reference</h4>
-          <input className="input mb-3" placeholder="Search symbol or name…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+          <input
+            className="input mb-3"
+            placeholder="Search symbol or name…"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
           {source.loading ? (
             <Spinner />
           ) : (
