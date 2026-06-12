@@ -11,6 +11,7 @@ import {
   Timeframe,
 } from './types';
 import { bsGreeks, yearsToExpiration } from '../options/blackScholes';
+import { sleep } from '../util/http';
 
 // ---------------------------------------------------------------------------
 // Yahoo Finance provider via `yahoo-finance2`. Free and key-less, and the only
@@ -60,14 +61,25 @@ export class YahooProvider implements MarketDataProvider {
   // v3 requires an instance. suppressNotices silences the first-run survey log.
   private readonly yf = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
 
-  private async call<T>(label: string, fn: () => Promise<T>): Promise<T> {
-    try {
-      return await fn();
-    } catch (err) {
-      const message = (err as Error).message || String(err);
-      const status = /not found|no data|404/i.test(message) ? 404 : 502;
-      throw new ProviderError(`Yahoo ${label} failed: ${message}`, status, err);
+  // Yahoo's free endpoints occasionally blip (especially the first chart call).
+  // Retry transient failures with backoff so they self-heal; don't retry
+  // deterministic ones (not-found / schema-validation).
+  private async call<T>(label: string, fn: () => Promise<T>, retries = 2): Promise<T> {
+    const deterministic = /not found|no data|404|validation/i;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastErr = err;
+        const message = (err as Error).message || String(err);
+        if (deterministic.test(message) || attempt === retries) break;
+        await sleep(250 * 2 ** attempt + Math.random() * 150);
+      }
     }
+    const message = (lastErr as Error)?.message || String(lastErr);
+    const status = /not found|no data|404/i.test(message) ? 404 : 502;
+    throw new ProviderError(`Yahoo ${label} failed: ${message}`, status, lastErr);
   }
 
   private mapQuote(q: any): Quote {
