@@ -1,8 +1,9 @@
-import { ReactNode, useState } from 'react';
+import { ReactNode, useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { cx } from '../lib/format';
 import { useProvider } from './ProviderContext';
 import { ProviderStatusModal } from './ProviderStatusModal';
+import { useAlerts } from './AlertsContext';
 
 const TABS = [
   { to: '/screener', label: 'Screener' },
@@ -31,6 +32,67 @@ function ProviderChip({ onClick }: { onClick: () => void }) {
     >
       {label}
     </button>
+  );
+}
+
+function AlertsBell() {
+  const { triggeredCount, intervalMs, setIntervalMs, checkNow } = useAlerts();
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [open]);
+
+  return (
+    <div className="relative" onClick={(e) => e.stopPropagation()}>
+      <button
+        className="relative p-1.5 rounded hover:bg-ink-700 text-slate-300"
+        title="Alerts"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="text-lg leading-none">🔔</span>
+        {triggeredCount > 0 && (
+          <span className="absolute -top-1 -right-1 bg-bear text-white text-[9px] leading-none rounded-full px-1 py-0.5">
+            {triggeredCount}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-1 w-56 card p-3 z-50 text-sm space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="font-medium">Alerts</span>
+            {triggeredCount > 0 ? (
+              <span className="chip bg-amber-500/15 text-amber-400">{triggeredCount} triggered</span>
+            ) : (
+              <span className="text-xs text-slate-500">none triggered</span>
+            )}
+          </div>
+          <label className="block text-xs text-slate-400">
+            Auto-check
+            <select
+              className="input mt-1"
+              value={intervalMs ?? 'off'}
+              onChange={(e) => setIntervalMs(e.target.value === 'off' ? null : Number(e.target.value))}
+            >
+              <option value="off">Off</option>
+              <option value="30000">Every 30s</option>
+              <option value="60000">Every 1m</option>
+              <option value="300000">Every 5m</option>
+            </select>
+          </label>
+          <div className="flex gap-2">
+            <button className="btn-ghost flex-1 text-xs" onClick={() => checkNow()}>
+              Check now
+            </button>
+            <NavLink to="/alerts" className="btn-ghost flex-1 text-xs text-center" onClick={() => setOpen(false)}>
+              View all
+            </NavLink>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -82,7 +144,8 @@ export function Layout({ children }: { children: ReactNode }) {
               </NavLink>
             ))}
           </nav>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            <AlertsBell />
             <ProviderChip onClick={() => setProviderOpen(true)} />
           </div>
         </div>

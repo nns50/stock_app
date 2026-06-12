@@ -5,6 +5,7 @@ import { useAsync } from '../lib/hooks';
 import { ago, cx, fmtNum, fmtPct, fmtUsd } from '../lib/format';
 import { Badge, Card, EmptyState, ErrorState, Field, NumberInput, Spinner } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
+import { useAlerts } from '../components/AlertsContext';
 import type { Alert } from '../api/types';
 
 const KIND_LABEL: Record<Alert['kind'], string> = {
@@ -23,6 +24,7 @@ function fmtThreshold(kind: Alert['kind'], v: number): string {
 
 export default function AlertsPage() {
   const data = useAsync(() => client.alerts(), []);
+  const { refreshCount } = useAlerts();
   const [lastChecked, setLastChecked] = useState<number | null>(null);
   const [newly, setNewly] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -41,6 +43,7 @@ export default function AlertsPage() {
       setLastChecked(r.checkedAt);
       setNewly(r.newlyTriggered.map((t) => t.message || `${t.symbol} triggered`));
       data.reload();
+      refreshCount();
     } finally {
       setBusy(false);
     }
@@ -63,6 +66,7 @@ export default function AlertsPage() {
     setThreshold(undefined);
     setNote('');
     data.reload();
+    refreshCount();
   };
 
   const alerts = data.data?.alerts ?? [];
@@ -205,6 +209,7 @@ export default function AlertsPage() {
                         onClick={async () => {
                           await client.updateAlert(a.id, { triggered: false });
                           data.reload();
+                          refreshCount();
                         }}
                       >
                         ack
@@ -224,6 +229,7 @@ export default function AlertsPage() {
                       onClick={async () => {
                         await client.deleteAlert(a.id);
                         data.reload();
+                        refreshCount();
                       }}
                     >
                       del
