@@ -8,7 +8,7 @@ import {
   Tooltip,
   XAxis,
   YAxis,
-} from 'recharts';
+} from '../lib/recharts';
 import { client } from '../api/client';
 import { fmtNum, fmtSignedUsd, fmtUsd, pnlClass } from '../lib/format';
 import { Card, ErrorState, Field, NumberInput, StatTile } from './ui';
@@ -250,20 +250,20 @@ export function StrategyBuilder() {
                     type="number"
                     domain={['dataMin', 'dataMax']}
                     tick={{ fill: '#7c8aa0', fontSize: 11 }}
-                    tickFormatter={(v) => `$${Math.round(v)}`}
+                    tickFormatter={(v: number) => `$${Math.round(v)}`}
                     axisLine={{ stroke: '#243042' }}
                     tickLine={false}
                   />
                   <YAxis
                     tick={{ fill: '#7c8aa0', fontSize: 11 }}
-                    tickFormatter={(v) => `$${v}`}
+                    tickFormatter={(v: number) => `$${v}`}
                     axisLine={false}
                     tickLine={false}
                     width={56}
                   />
                   <Tooltip
                     contentStyle={{ background: '#111722', border: '1px solid #243042', borderRadius: 8, fontSize: 12 }}
-                    labelFormatter={(l) => `Underlying $${fmtNum(Number(l))}`}
+                    labelFormatter={(l: number | string) => `Underlying $${fmtNum(Number(l))}`}
                     formatter={(v: number) => [fmtSignedUsd(v), 'P&L']}
                   />
                   <Area

@@ -133,7 +133,7 @@ export function Layout({ children }: { children: ReactNode }) {
               <NavLink
                 key={t.to}
                 to={t.to}
-                className={({ isActive }) =>
+                className={({ isActive }: { isActive: boolean }) =>
                   cx(
                     'px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
                     isActive ? 'bg-ink-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-ink-700',
