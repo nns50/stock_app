@@ -79,6 +79,7 @@ const importedPosition = z.object({
   tags: z.array(z.string()).optional(),
   grade: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
+  checklist: z.array(z.object({ rule: z.string(), checked: z.boolean() })).optional(),
   createdAt: z.number().optional(),
   updatedAt: z.number().optional(),
   exits: z.array(importedExit).optional(),

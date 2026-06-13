@@ -4,6 +4,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd } from '../lib/format';
+import { disciplineCount } from '../lib/checklist';
 import { Badge, Card, EmptyState, PnL, Spinner, StatTile } from '../components/ui';
 import { JournalEditModal } from '../components/PositionForms';
 import { DataTools } from '../components/DataTools';
@@ -133,6 +134,7 @@ export default function JournalPage() {
                 <th className="th">Symbol</th>
                 <th className="th">Entry → last exit</th>
                 <th className="th">Grade</th>
+                <th className="th">Rules</th>
                 <th className="th">Tags</th>
                 <th className="th text-right">Realized P&L</th>
                 <th className="th text-right">Return</th>
@@ -165,6 +167,22 @@ export default function JournalPage() {
                       ) : (
                         <span className="text-slate-600">—</span>
                       )}
+                    </td>
+                    <td className="td">
+                      {(() => {
+                        const { checked, total } = disciplineCount(p.checklist);
+                        if (total === 0) return <span className="text-slate-600">—</span>;
+                        const all = checked === total;
+                        return (
+                          <span
+                            className="chip bg-ink-600 text-slate-300 tabular-nums"
+                            title={`${checked} of ${total} pre-trade rules checked`}
+                          >
+                            <span className={all ? 'text-bull' : 'text-amber-400'}>{all ? '✓' : '!'}</span> {checked}/
+                            {total}
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td className="td">
                       <div className="flex flex-wrap gap-1">

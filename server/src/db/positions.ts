@@ -4,6 +4,12 @@ export type AssetType = 'stock' | 'option';
 export type Side = 'long' | 'short';
 export type OptionType = 'call' | 'put';
 
+/** One acknowledged pre-trade discipline rule, recorded with the entry. */
+export interface ChecklistItem {
+  rule: string;
+  checked: boolean;
+}
+
 export interface PositionInput {
   assetType: AssetType;
   symbol: string;
@@ -19,6 +25,7 @@ export interface PositionInput {
   tags?: string[];
   grade?: string | null;
   notes?: string | null;
+  checklist?: ChecklistItem[] | null;
 }
 
 export interface PositionExit {
@@ -49,6 +56,7 @@ export interface Position {
   tags: string[];
   grade: string | null;
   notes: string | null;
+  checklist: ChecklistItem[];
   createdAt: number;
   updatedAt: number;
   exits: PositionExit[];
@@ -73,6 +81,7 @@ interface PositionRow {
   tags: string | null;
   grade: string | null;
   notes: string | null;
+  checklist: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -127,6 +136,7 @@ function mapPosition(row: PositionRow): Position {
     tags: row.tags ? (JSON.parse(row.tags) as string[]) : [],
     grade: row.grade,
     notes: row.notes,
+    checklist: row.checklist ? (JSON.parse(row.checklist) as ChecklistItem[]) : [],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     exits,
@@ -171,8 +181,8 @@ export function createPosition(input: PositionInput): Position {
     .prepare(
       `INSERT INTO positions
         (asset_type, symbol, side, quantity, entry_price, entry_date, fees,
-         option_type, strike, expiration, multiplier, status, tags, grade, notes, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?)`,
+         option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?)`,
     )
     .run(
       input.assetType,
@@ -189,6 +199,7 @@ export function createPosition(input: PositionInput): Position {
       input.tags ? JSON.stringify(input.tags) : null,
       input.grade ?? null,
       input.notes ?? null,
+      input.checklist && input.checklist.length ? JSON.stringify(input.checklist) : null,
       now,
       now,
     );
@@ -287,6 +298,7 @@ export interface ImportablePosition {
   tags?: string[];
   grade?: string | null;
   notes?: string | null;
+  checklist?: ChecklistItem[] | null;
   createdAt?: number;
   updatedAt?: number;
   exits?: ImportableExit[];
@@ -306,8 +318,8 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
   const insertPos = db.prepare(
     `INSERT INTO positions
        (asset_type, symbol, side, quantity, entry_price, entry_date, fees,
-        option_type, strike, expiration, multiplier, status, tags, grade, notes, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   );
   const insertExit = db.prepare(
     `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, created_at)
@@ -335,6 +347,7 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
         p.tags && p.tags.length ? JSON.stringify(p.tags) : null,
         p.grade ?? null,
         p.notes ?? null,
+        p.checklist && p.checklist.length ? JSON.stringify(p.checklist) : null,
         p.createdAt ?? now,
         p.updatedAt ?? now,
       );

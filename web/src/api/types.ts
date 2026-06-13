@@ -286,10 +286,16 @@ export interface Position {
   tags: string[];
   grade: string | null;
   notes: string | null;
+  checklist: ChecklistItem[];
   createdAt: number;
   updatedAt: number;
   exits: PositionExit[];
   remainingQuantity: number;
+}
+
+export interface ChecklistItem {
+  rule: string;
+  checked: boolean;
 }
 
 export interface PositionPnl {

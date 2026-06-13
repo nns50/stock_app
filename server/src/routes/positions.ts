@@ -33,6 +33,7 @@ const createBody = z
     tags: z.array(z.string()).optional(),
     grade: z.string().nullish(),
     notes: z.string().nullish(),
+    checklist: z.array(z.object({ rule: z.string(), checked: z.boolean() })).optional(),
   })
   .refine((d) => d.assetType !== 'option' || (d.optionType && d.strike && d.expiration), {
     message: 'option positions require optionType, strike and expiration',
