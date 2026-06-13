@@ -4,6 +4,7 @@ import { cx } from '../lib/format';
 import { useProvider } from './ProviderContext';
 import { ProviderStatusModal } from './ProviderStatusModal';
 import { useAlerts } from './AlertsContext';
+import { CommandPalette, OPEN_PALETTE_EVENT } from './CommandPalette';
 
 const TABS = [
   { to: '/screener', label: 'Screener' },
@@ -146,6 +147,14 @@ export function Layout({ children }: { children: ReactNode }) {
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-2">
+            <button
+              className="hidden sm:inline-flex items-center gap-1 chip bg-ink-700 text-slate-400 hover:text-slate-200"
+              onClick={() => window.dispatchEvent(new Event(OPEN_PALETTE_EVENT))}
+              title="Command palette"
+            >
+              <span>Jump to</span>
+              <kbd className="text-[10px] px-1 rounded bg-ink-600 border border-ink-500">⌘K</kbd>
+            </button>
             <AlertsBell />
             <ProviderChip onClick={() => setProviderOpen(true)} />
           </div>
@@ -153,6 +162,7 @@ export function Layout({ children }: { children: ReactNode }) {
       </header>
 
       <ProviderStatusModal open={providerOpen} onClose={() => setProviderOpen(false)} />
+      <CommandPalette />
 
       <ProviderBanner />
 
