@@ -56,7 +56,10 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
   const [showSizer, setShowSizer] = useState(false);
   const [accountSize, setAccountSize] = useLocalStorage<number>('risk.accountSize', 25000);
   const [riskPct, setRiskPct] = useLocalStorage<number>('risk.riskPct', 1);
+  // Planned stop (also drives the risk sizer) and target — saved with the trade
+  // and watched by the proactive exit alerts.
   const [stopPrice, setStopPrice] = useState<number | undefined>();
+  const [targetPrice, setTargetPrice] = useState<number | undefined>();
   const [sizing, setSizing] = useState<RiskSizingResult>();
   const [sizingErr, setSizingErr] = useState<string>();
   const [sizingBusy, setSizingBusy] = useState(false);
@@ -102,6 +105,9 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
     setTags('');
     setGrade('');
     setNotes('');
+    setStopPrice(undefined);
+    setTargetPrice(undefined);
+    setSizing(undefined);
     setChecked(rules.map(() => false));
     setError(undefined);
   };
@@ -129,6 +135,8 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
         grade: grade || null,
         notes: notes || null,
         checklist: rules.map((rule, i) => ({ rule, checked: !!checked[i] })),
+        stopPrice: stopPrice ?? null,
+        targetPrice: targetPrice ?? null,
       });
       reset();
       onSaved();
@@ -217,6 +225,15 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
           </div>
         )}
 
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Stop (optional)" hint="Watched by exit alerts">
+            <NumberInput value={stopPrice} onChange={setStopPrice} step={0.01} />
+          </Field>
+          <Field label="Target (optional)">
+            <NumberInput value={targetPrice} onChange={setTargetPrice} step={0.01} />
+          </Field>
+        </div>
+
         <div className="border-t border-ink-700 pt-2">
           <button
             type="button"
@@ -228,19 +245,16 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
           </button>
           {showSizer && (
             <div className="mt-2 space-y-2 rounded-md bg-ink-700/40 p-2.5">
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-2">
                 <Field label="Account $">
                   <NumberInput value={accountSize} onChange={(v) => setAccountSize(v ?? 0)} />
                 </Field>
                 <Field label="Risk %">
                   <NumberInput value={riskPct} onChange={(v) => setRiskPct(v ?? 0)} step={0.1} />
                 </Field>
-                <Field label="Stop price">
-                  <NumberInput value={stopPrice} onChange={setStopPrice} step={0.01} />
-                </Field>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-[11px] text-slate-500">Uses entry, side &amp; type above.</span>
+                <span className="text-[11px] text-slate-500">Uses entry, side, type &amp; the Stop above.</span>
                 <button className="btn-ghost text-xs" type="button" onClick={calcSize} disabled={sizingBusy}>
                   {sizingBusy ? 'Sizing…' : 'Calculate'}
                 </button>

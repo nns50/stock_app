@@ -170,6 +170,13 @@ function PositionRow({
             <Badge>closed</Badge>
           </span>
         )}
+        {p.status === 'open' && (p.stopPrice != null || p.targetPrice != null) && (
+          <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
+            {p.stopPrice != null && <span className="text-bear">SL {fmtNum(p.stopPrice)}</span>}
+            {p.stopPrice != null && p.targetPrice != null && ' · '}
+            {p.targetPrice != null && <span className="text-bull">TP {fmtNum(p.targetPrice)}</span>}
+          </div>
+        )}
       </td>
       <td className="td">
         <span className={p.side === 'long' ? 'text-bull' : 'text-bear'}>{p.side}</span>

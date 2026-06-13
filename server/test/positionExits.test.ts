@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildPositionExitAlerts } from '../src/services/positionExits';
+import { buildPositionExitAlerts, buildStopTargetAlerts } from '../src/services/positionExits';
 import { defaultExitConfig } from '../src/options/exitRules';
 import type { Position } from '../src/db/positions';
 
@@ -22,6 +22,8 @@ function opt(over: Partial<Position>): Position {
     grade: null,
     notes: null,
     checklist: [],
+    stopPrice: null,
+    targetPrice: null,
     createdAt: 0,
     updatedAt: 0,
     exits: [],
@@ -57,5 +59,38 @@ describe('buildPositionExitAlerts', () => {
     const soon = [opt({ id: 9, expiration: '2026-06-15' })]; // 2 days out, < 7
     const a = buildPositionExitAlerts(soon, () => ({ mark: 1.05, delta: 0.5 }), cfg, now);
     expect(a[0].rule).toBe('time-exit');
+  });
+});
+
+describe('buildStopTargetAlerts', () => {
+  const stock = (over: Partial<Position>) => opt({ assetType: 'stock', optionType: null, strike: null, ...over });
+
+  it('fires stop-hit / target-hit by side, and nothing in between', () => {
+    const positions = [
+      stock({ id: 1, side: 'long', entryPrice: 100, stopPrice: 95, targetPrice: 110 }),
+      stock({ id: 2, side: 'short', entryPrice: 100, stopPrice: 105, targetPrice: 90 }),
+      stock({ id: 3, side: 'long', entryPrice: 100, stopPrice: 95, targetPrice: 110 }),
+    ];
+    const price = new Map<number, number>([
+      [1, 94], // long below stop -> stop-hit
+      [2, 106], // short above stop -> stop-hit
+      [3, 102], // between -> nothing
+    ]);
+    const alerts = buildStopTargetAlerts(positions, (p) => price.get(p.id) ?? null);
+    expect(alerts.map((a) => `${a.positionId}:${a.rule}`).sort()).toEqual(['1:stop-hit', '2:stop-hit']);
+  });
+
+  it('fires target-hit for a long reaching its target', () => {
+    const a = buildStopTargetAlerts([stock({ id: 5, side: 'long', entryPrice: 100, targetPrice: 110 })], () => 112);
+    expect(a[0].rule).toBe('target-hit');
+    expect(a[0].message).toContain('target $110');
+  });
+
+  it('ignores positions without a price or without levels', () => {
+    const positions = [
+      stock({ id: 6, stopPrice: 95 }), // no price
+      stock({ id: 7 }), // no levels
+    ];
+    expect(buildStopTargetAlerts(positions, (p) => (p.id === 7 ? 50 : null))).toEqual([]);
   });
 });

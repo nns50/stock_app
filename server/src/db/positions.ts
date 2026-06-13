@@ -26,6 +26,8 @@ export interface PositionInput {
   grade?: string | null;
   notes?: string | null;
   checklist?: ChecklistItem[] | null;
+  stopPrice?: number | null;
+  targetPrice?: number | null;
 }
 
 export interface PositionExit {
@@ -57,6 +59,8 @@ export interface Position {
   grade: string | null;
   notes: string | null;
   checklist: ChecklistItem[];
+  stopPrice: number | null;
+  targetPrice: number | null;
   createdAt: number;
   updatedAt: number;
   exits: PositionExit[];
@@ -82,6 +86,8 @@ interface PositionRow {
   grade: string | null;
   notes: string | null;
   checklist: string | null;
+  stop_price: number | null;
+  target_price: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -137,6 +143,8 @@ function mapPosition(row: PositionRow): Position {
     grade: row.grade,
     notes: row.notes,
     checklist: row.checklist ? (JSON.parse(row.checklist) as ChecklistItem[]) : [],
+    stopPrice: row.stop_price,
+    targetPrice: row.target_price,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     exits,
@@ -181,8 +189,9 @@ export function createPosition(input: PositionInput): Position {
     .prepare(
       `INSERT INTO positions
         (asset_type, symbol, side, quantity, entry_price, entry_date, fees,
-         option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?)`,
+         option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
+         stop_price, target_price, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?)`,
     )
     .run(
       input.assetType,
@@ -200,6 +209,8 @@ export function createPosition(input: PositionInput): Position {
       input.grade ?? null,
       input.notes ?? null,
       input.checklist && input.checklist.length ? JSON.stringify(input.checklist) : null,
+      input.stopPrice ?? null,
+      input.targetPrice ?? null,
       now,
       now,
     );
@@ -214,6 +225,8 @@ export interface PositionPatch {
   quantity?: number;
   fees?: number;
   entryDate?: string;
+  stopPrice?: number | null;
+  targetPrice?: number | null;
 }
 
 export function updatePosition(id: number, patch: PositionPatch): Position | undefined {
@@ -232,6 +245,8 @@ export function updatePosition(id: number, patch: PositionPatch): Position | und
   if (patch.quantity !== undefined) set('quantity', patch.quantity);
   if (patch.fees !== undefined) set('fees', patch.fees);
   if (patch.entryDate !== undefined) set('entry_date', patch.entryDate);
+  if (patch.stopPrice !== undefined) set('stop_price', patch.stopPrice);
+  if (patch.targetPrice !== undefined) set('target_price', patch.targetPrice);
   if (fields.length === 0) return existing;
   set('updated_at', Date.now());
   params.push(id);
@@ -299,6 +314,8 @@ export interface ImportablePosition {
   grade?: string | null;
   notes?: string | null;
   checklist?: ChecklistItem[] | null;
+  stopPrice?: number | null;
+  targetPrice?: number | null;
   createdAt?: number;
   updatedAt?: number;
   exits?: ImportableExit[];
@@ -318,8 +335,9 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
   const insertPos = db.prepare(
     `INSERT INTO positions
        (asset_type, symbol, side, quantity, entry_price, entry_date, fees,
-        option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
+        stop_price, target_price, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   );
   const insertExit = db.prepare(
     `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, created_at)
@@ -348,6 +366,8 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
         p.grade ?? null,
         p.notes ?? null,
         p.checklist && p.checklist.length ? JSON.stringify(p.checklist) : null,
+        p.stopPrice ?? null,
+        p.targetPrice ?? null,
         p.createdAt ?? now,
         p.updatedAt ?? now,
       );

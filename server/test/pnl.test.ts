@@ -23,6 +23,8 @@ function makePosition(
     grade: null,
     notes: null,
     checklist: [],
+    stopPrice: null,
+    targetPrice: null,
     createdAt: 0,
     updatedAt: 0,
     exits,

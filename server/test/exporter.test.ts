@@ -21,6 +21,8 @@ function pos(overrides: Partial<Position> = {}): Position {
     grade: 'A',
     notes: 'clean setup',
     checklist: [],
+    stopPrice: null,
+    targetPrice: null,
     createdAt: 1,
     updatedAt: 1,
     exits: [
