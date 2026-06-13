@@ -17,6 +17,8 @@ import type {
   ProviderTestResult,
   Quote,
   RiskSizingResult,
+  RuinParams,
+  RuinResult,
   Alert,
   ScreenerConfig,
   ScreenerResult,
@@ -163,6 +165,15 @@ export const client = {
   // --- data export / restore ---
   importPositions: (positions: unknown[], mode: 'merge' | 'replace') =>
     api<{ imported: number; replaced: boolean; totalNow: number }>('/export/import', post({ positions, mode })),
+
+  riskOfRuin: (body: {
+    winRate?: number;
+    payoffRatio?: number;
+    riskPct?: number;
+    ruinThresholdPct?: number;
+    trades?: number;
+    sims?: number;
+  }) => api<{ params: RuinParams; result: RuinResult }>('/tools/risk-of-ruin', post(body)),
 
   // --- watchlist ---
   watchlist: () => api<{ symbols: string[] }>('/watchlist'),

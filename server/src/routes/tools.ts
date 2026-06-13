@@ -3,8 +3,26 @@ import { z } from 'zod';
 import { asyncHandler, parseBody } from './_helpers';
 import { computeRiskSizing } from '../services/riskSizing';
 import { analyzeStrategy } from '../options/optionStrategy';
+import { normalizeRuinParams, simulateRiskOfRuin } from '../services/riskOfRuin';
 
 export const toolsRouter = Router();
+
+const ruinBody = z.object({
+  winRate: z.number().optional(),
+  payoffRatio: z.number().optional(),
+  riskPct: z.number().optional(),
+  ruinThresholdPct: z.number().optional(),
+  trades: z.number().optional(),
+  sims: z.number().optional(),
+});
+
+toolsRouter.post(
+  '/risk-of-ruin',
+  asyncHandler(async (req, res) => {
+    const params = normalizeRuinParams(parseBody(ruinBody, req));
+    res.json({ params, result: simulateRiskOfRuin(params) });
+  }),
+);
 
 const sizeBody = z.object({
   accountSize: z.number().positive(),
