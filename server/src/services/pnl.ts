@@ -114,6 +114,15 @@ export function aggregatePnl(items: PositionPnl[], positions: Position[]): Aggre
   };
 }
 
+export interface GroupStat {
+  key: string;
+  trades: number;
+  wins: number;
+  winRate: number; // %
+  totalPnl: number;
+  avgPnl: number; // expectancy within the group
+}
+
 export interface JournalStats {
   totalClosed: number;
   wins: number;
@@ -128,6 +137,41 @@ export interface JournalStats {
   bestTrade: number;
   worstTrade: number;
   equityCurve: { date: string; pnl: number; cumulative: number }[];
+  /** Realized P&L broken down by tag, grade, and checklist discipline. */
+  byTag: GroupStat[];
+  byGrade: GroupStat[];
+  byDiscipline: GroupStat[];
+}
+
+interface Acc {
+  trades: number;
+  wins: number;
+  total: number;
+}
+
+function accumulate(map: Map<string, Acc>, key: string, pnl: number): void {
+  const a = map.get(key) ?? { trades: 0, wins: 0, total: 0 };
+  a.trades += 1;
+  if (pnl > 0) a.wins += 1;
+  a.total += pnl;
+  map.set(key, a);
+}
+
+function toGroupStats(map: Map<string, Acc>): GroupStat[] {
+  return [...map.entries()].map(([key, a]) => ({
+    key,
+    trades: a.trades,
+    wins: a.wins,
+    winRate: a.trades ? round2((a.wins / a.trades) * 100) : 0,
+    totalPnl: round2(a.total),
+    avgPnl: a.trades ? round2(a.total / a.trades) : 0,
+  }));
+}
+
+/** Which discipline bucket a closed trade falls into, from its saved checklist. */
+function disciplineBucket(p: Position): string {
+  if (!p.checklist || p.checklist.length === 0) return 'No checklist';
+  return p.checklist.every((c) => c.checked) ? 'Followed all rules' : 'Skipped a rule';
 }
 
 /** Stats over CLOSED positions (each closed position = one completed trade). */
@@ -152,6 +196,19 @@ export function computeJournalStats(closed: Position[]): JournalStats {
     return { date: t.date, pnl: t.pnl, cumulative };
   });
 
+  // Breakdowns: attribute each closed trade's realized P&L to its tags (a trade
+  // counts once per distinct tag), its grade, and its discipline bucket.
+  const tagMap = new Map<string, Acc>();
+  const gradeMap = new Map<string, Acc>();
+  const discMap = new Map<string, Acc>();
+  for (const p of closed) {
+    const pnl = round2(realizedPnlOf(p));
+    for (const tag of new Set(p.tags)) accumulate(tagMap, tag, pnl);
+    accumulate(gradeMap, p.grade || 'Ungraded', pnl);
+    accumulate(discMap, disciplineBucket(p), pnl);
+  }
+  const byTotalDesc = (a: GroupStat, b: GroupStat) => b.totalPnl - a.totalPnl;
+
   return {
     totalClosed: trades.length,
     wins: wins.length,
@@ -166,6 +223,9 @@ export function computeJournalStats(closed: Position[]): JournalStats {
     bestTrade: trades.length ? round2(Math.max(...trades.map((t) => t.pnl))) : 0,
     worstTrade: trades.length ? round2(Math.min(...trades.map((t) => t.pnl))) : 0,
     equityCurve,
+    byTag: toGroupStats(tagMap).sort(byTotalDesc),
+    byGrade: toGroupStats(gradeMap).sort((a, b) => a.key.localeCompare(b.key)),
+    byDiscipline: toGroupStats(discMap).sort(byTotalDesc),
   };
 }
 
