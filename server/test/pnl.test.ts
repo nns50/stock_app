@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Position, PositionExit } from '../src/db/positions';
-import { computePositionPnl, realizedPnlOf, computeJournalStats } from '../src/services/pnl';
+import { computePositionPnl, realizedPnlOf, computeJournalStats, kellySuggestion } from '../src/services/pnl';
 
 let nextId = 1;
 
@@ -118,6 +118,27 @@ describe('computePositionPnl', () => {
       exits: [exit({ quantity: 10, exitPrice: 110 })],
     });
     expect(computePositionPnl(p, null).rMultiple).toBeNull();
+  });
+});
+
+describe('kellySuggestion', () => {
+  it('computes the Kelly fraction and a clamped quarter-Kelly risk %', () => {
+    // W=0.6, avgWin=200, avgLoss=-100 -> b=2; f* = 0.6 - 0.4/2 = 0.4
+    const k = kellySuggestion(60, 200, -100, 30)!;
+    expect(k.payoffRatio).toBe(2);
+    expect(k.fraction).toBeCloseTo(0.4);
+    // quarter-Kelly = 0.4*0.25*100 = 10% -> clamped to 3
+    expect(k.suggestedRiskPct).toBe(3);
+    expect(k.reliable).toBe(true);
+  });
+  it('floors a negative edge at 0% and flags small samples', () => {
+    // W=0.4, b=1 -> f* = 0.4 - 0.6 = -0.2 -> suggested 0
+    const k = kellySuggestion(40, 100, -100, 8)!;
+    expect(k.suggestedRiskPct).toBe(0);
+    expect(k.reliable).toBe(false);
+  });
+  it('returns null without both winners and losers', () => {
+    expect(kellySuggestion(100, 100, 0, 5)).toBeNull();
   });
 });
 

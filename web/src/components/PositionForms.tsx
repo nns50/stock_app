@@ -54,6 +54,19 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
   // Risk-based position sizing, folded into the entry flow. Account size + risk%
   // persist per-browser (shared with the standalone Risk sizing tool).
   const [showSizer, setShowSizer] = useState(false);
+  // Suggested risk-% from realized edge (undefined = not fetched, null = none).
+  const [kellyPct, setKellyPct] = useState<number | null | undefined>(undefined);
+  useEffect(() => {
+    if (!showSizer || kellyPct !== undefined) return;
+    let active = true;
+    client
+      .journalStats()
+      .then((s) => active && setKellyPct(s.kelly?.suggestedRiskPct ?? null))
+      .catch(() => active && setKellyPct(null));
+    return () => {
+      active = false;
+    };
+  }, [showSizer, kellyPct]);
   const [accountSize, setAccountSize] = useLocalStorage<number>('risk.accountSize', 25000);
   const [riskPct, setRiskPct] = useLocalStorage<number>('risk.riskPct', 1);
   // Planned stop (also drives the risk sizer) and target — saved with the trade
@@ -253,6 +266,16 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
                   <NumberInput value={riskPct} onChange={(v) => setRiskPct(v ?? 0)} step={0.1} />
                 </Field>
               </div>
+              {typeof kellyPct === 'number' && kellyPct > 0 && (
+                <button
+                  type="button"
+                  className="text-[11px] text-accent"
+                  onClick={() => setRiskPct(kellyPct)}
+                  title="Quarter-Kelly from your realized edge"
+                >
+                  History suggests {kellyPct}% — use
+                </button>
+              )}
               <div className="flex items-center justify-between">
                 <span className="text-[11px] text-slate-500">Uses entry, side, type &amp; the Stop above.</span>
                 <button className="btn-ghost text-xs" type="button" onClick={calcSize} disabled={sizingBusy}>

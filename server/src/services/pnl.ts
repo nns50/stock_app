@@ -163,6 +163,8 @@ export interface JournalStats {
   bestR: number | null;
   worstR: number | null;
   rBuckets: { label: string; count: number }[];
+  /** Suggested risk-% per trade from realized edge (null until both W/L exist). */
+  kelly: KellySuggestion | null;
 }
 
 const R_BUCKETS: { label: string; test: (r: number) => boolean }[] = [
@@ -176,6 +178,45 @@ const R_BUCKETS: { label: string; test: (r: number) => boolean }[] = [
 
 function bucketRMultiples(rs: number[]): { label: string; count: number }[] {
   return R_BUCKETS.map((b) => ({ label: b.label, count: rs.filter((r) => b.test(r)).length }));
+}
+
+export interface KellySuggestion {
+  /** Full Kelly fraction f* = W − (1−W)/b (can be negative when there's no edge). */
+  fraction: number;
+  /** Win/loss payoff ratio b = avgWin / |avgLoss|. */
+  payoffRatio: number;
+  /** Conservative suggestion: quarter-Kelly, clamped to [0, 3]% per trade. */
+  suggestedRiskPct: number;
+  sampleSize: number;
+  /** Whether the sample is large enough (≥ 20 decisive trades) to lean on. */
+  reliable: boolean;
+}
+
+/**
+ * Position-size suggestion from realized edge (Kelly criterion). Needs both
+ * winners and losers to estimate the payoff ratio. Kelly is aggressive and
+ * assumes the historical edge persists, so we return a quarter-Kelly, capped at
+ * 3% — a sane ceiling, not a recommendation.
+ */
+export function kellySuggestion(
+  winRate: number,
+  avgWin: number,
+  avgLoss: number,
+  sampleSize: number,
+): KellySuggestion | null {
+  const w = winRate / 100;
+  const loss = Math.abs(avgLoss);
+  if (avgWin <= 0 || loss <= 0) return null;
+  const b = avgWin / loss;
+  const fraction = w - (1 - w) / b;
+  const suggestedRiskPct = round2(Math.max(0, Math.min(3, fraction * 0.25 * 100)));
+  return {
+    fraction: round2(fraction),
+    payoffRatio: round2(b),
+    suggestedRiskPct,
+    sampleSize,
+    reliable: sampleSize >= 20,
+  };
 }
 
 interface Acc {
@@ -247,14 +288,18 @@ export function computeJournalStats(closed: Position[]): JournalStats {
   // Edge in R: closed trades that logged a stop, scored as realized P&L / initial risk.
   const rs = closed.map((p) => rMultipleOf(p, round2(realizedPnlOf(p)))).filter((r): r is number => r !== null);
 
+  const winRate = trades.length ? round2((wins.length / trades.length) * 100) : 0;
+  const avgWin = wins.length ? round2(grossProfit / wins.length) : 0;
+  const avgLoss = losses.length ? round2(-grossLoss / losses.length) : 0;
+
   return {
     totalClosed: trades.length,
     wins: wins.length,
     losses: losses.length,
     breakeven: breakeven.length,
-    winRate: trades.length ? round2((wins.length / trades.length) * 100) : 0,
-    avgWin: wins.length ? round2(grossProfit / wins.length) : 0,
-    avgLoss: losses.length ? round2(-grossLoss / losses.length) : 0,
+    winRate,
+    avgWin,
+    avgLoss,
     expectancy: trades.length ? round2(totalRealized / trades.length) : 0,
     profitFactor: grossLoss > 0 ? round2(grossProfit / grossLoss) : grossProfit > 0 ? null : 0,
     totalRealized: round2(totalRealized),
@@ -269,6 +314,7 @@ export function computeJournalStats(closed: Position[]): JournalStats {
     bestR: rs.length ? Math.max(...rs) : null,
     worstR: rs.length ? Math.min(...rs) : null,
     rBuckets: bucketRMultiples(rs),
+    kelly: kellySuggestion(winRate, avgWin, avgLoss, wins.length + losses.length),
   };
 }
 
