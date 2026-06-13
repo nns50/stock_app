@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { Badge, EmptyState, ScoreBar, StatTile } from './ui';
+import { Badge, EmptyState, InfoTip, ScoreBar, StatTile } from './ui';
 
 describe('ScoreBar', () => {
   it('renders the numeric score label', () => {
@@ -28,6 +28,18 @@ describe('StatTile', () => {
     expect(screen.getByText('Win rate')).toBeInTheDocument();
     expect(screen.getByText('66%')).toBeInTheDocument();
     expect(screen.getByText('2W · 1L')).toBeInTheDocument();
+  });
+  it('renders an info affordance when given info text', () => {
+    render(<StatTile label="Expectancy" value="$5" info="Average P&L per trade." />);
+    expect(screen.getByLabelText('About Expectancy')).toBeInTheDocument();
+  });
+});
+
+describe('InfoTip', () => {
+  it('exposes its text via an accessible label and tooltip', () => {
+    render(<InfoTip text="Gross profit ÷ gross loss." />);
+    expect(screen.getByRole('button', { name: 'Gross profit ÷ gross loss.' })).toBeInTheDocument();
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Gross profit ÷ gross loss.');
   });
 });
 

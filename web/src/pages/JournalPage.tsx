@@ -39,14 +39,23 @@ export default function JournalPage() {
 
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
         <StatTile label="Closed" value={s.totalClosed} sub={`${s.wins}W · ${s.losses}L`} />
-        <StatTile label="Win rate" value={`${fmtNum(s.winRate, 1)}%`} />
+        <StatTile
+          label="Win rate"
+          value={`${fmtNum(s.winRate, 1)}%`}
+          info="Share of closed trades that were profitable."
+        />
         <StatTile
           label="Expectancy"
           value={fmtSignedUsd(s.expectancy)}
           valueClass={pnlClass(s.expectancy)}
           sub="per trade"
+          info="Average P&L per trade = (win rate × avg win) − (loss rate × avg loss)."
         />
-        <StatTile label="Profit factor" value={s.profitFactor === null ? '∞' : fmtNum(s.profitFactor)} />
+        <StatTile
+          label="Profit factor"
+          value={s.profitFactor === null ? '∞' : fmtNum(s.profitFactor)}
+          info="Gross profit ÷ gross loss. Above 1 means winners outweigh losers."
+        />
         <StatTile label="Avg win" value={fmtSignedUsd(s.avgWin)} valueClass="text-bull" />
         <StatTile label="Avg loss" value={fmtSignedUsd(s.avgLoss)} valueClass="text-bear" />
         <StatTile label="Total realized" value={fmtSignedUsd(s.totalRealized)} valueClass={pnlClass(s.totalRealized)} />

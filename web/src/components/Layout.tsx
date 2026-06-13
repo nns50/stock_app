@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import { Link, NavLink } from 'react-router-dom';
 import { cx } from '../lib/format';
 import { useProvider } from './ProviderContext';
 import { ProviderStatusModal } from './ProviderStatusModal';
@@ -161,7 +161,10 @@ export function Layout({ children }: { children: ReactNode }) {
         <div className="max-w-[1400px] mx-auto px-4 py-3 text-[12px] text-slate-500 text-center">
           ⚠️ Rule-based heuristics for personal research —{' '}
           <strong className="text-slate-400">not financial advice</strong>. No guarantees of accuracy or performance.
-          This tool does not place trades.
+          This tool does not place trades.{' '}
+          <Link to="/about" className="text-slate-400 underline decoration-dotted underline-offset-2 hover:text-accent">
+            How it works &amp; disclaimers
+          </Link>
         </div>
       </footer>
     </div>
