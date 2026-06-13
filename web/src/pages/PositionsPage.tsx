@@ -170,11 +170,29 @@ function PositionRow({
             <Badge>closed</Badge>
           </span>
         )}
-        {p.status === 'open' && (p.stopPrice != null || p.targetPrice != null) && (
-          <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
-            {p.stopPrice != null && <span className="text-bear">SL {fmtNum(p.stopPrice)}</span>}
-            {p.stopPrice != null && p.targetPrice != null && ' · '}
-            {p.targetPrice != null && <span className="text-bull">TP {fmtNum(p.targetPrice)}</span>}
+        {p.status === 'open' && (p.stopPrice != null || p.targetPrice != null || pnl.rMultiple != null) && (
+          <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums flex flex-wrap gap-x-2">
+            {p.stopPrice != null && (
+              <span className="text-bear" title="Stop level (distance from current price)">
+                SL {fmtNum(p.stopPrice)}
+                {row.price != null && ` ${fmtNum(Math.abs((row.price - p.stopPrice) / row.price) * 100, 0)}%`}
+              </span>
+            )}
+            {p.targetPrice != null && (
+              <span className="text-bull" title="Target level (distance from current price)">
+                TP {fmtNum(p.targetPrice)}
+                {row.price != null && ` ${fmtNum(Math.abs((row.price - p.targetPrice) / row.price) * 100, 0)}%`}
+              </span>
+            )}
+            {pnl.rMultiple != null && (
+              <span
+                className={pnl.rMultiple >= 0 ? 'text-bull' : 'text-bear'}
+                title="Current open P&L in R (vs initial risk)"
+              >
+                {pnl.rMultiple >= 0 ? '+' : ''}
+                {fmtNum(pnl.rMultiple, 2)}R
+              </span>
+            )}
           </div>
         )}
       </td>
