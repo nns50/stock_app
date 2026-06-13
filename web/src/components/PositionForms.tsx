@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { client } from '../api/client';
 import { todayISO } from '../lib/format';
+import { CHECKLIST_SETTING_KEY, DEFAULT_CHECKLIST_RULES, rulesFromSetting } from '../lib/checklist';
 import { Field, Modal, NumberInput } from './ui';
 import type { Position } from '../api/types';
 
@@ -23,6 +24,48 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
 
+  // Pre-trade discipline checklist: an editable rule list (persisted in settings)
+  // the user ticks before logging an entry; the result is saved with the trade.
+  const [rules, setRules] = useState<string[]>(DEFAULT_CHECKLIST_RULES);
+  const [checked, setChecked] = useState<boolean[]>(() => DEFAULT_CHECKLIST_RULES.map(() => false));
+  const [editingRules, setEditingRules] = useState(false);
+  const [rulesDraft, setRulesDraft] = useState('');
+  const checkedCount = checked.filter(Boolean).length;
+
+  // Load the (possibly customized) rule list whenever the modal opens.
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    const apply = (r: string[]) => {
+      if (!active) return;
+      setRules(r);
+      setChecked(r.map(() => false));
+    };
+    client
+      .settings()
+      .then((s) => apply(rulesFromSetting(s[CHECKLIST_SETTING_KEY])))
+      .catch(() => apply(DEFAULT_CHECKLIST_RULES));
+    return () => {
+      active = false;
+    };
+  }, [open]);
+
+  const saveRules = async () => {
+    const next = rulesDraft
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const finalRules = next.length ? next : DEFAULT_CHECKLIST_RULES;
+    setRules(finalRules);
+    setChecked(finalRules.map(() => false));
+    setEditingRules(false);
+    try {
+      await client.saveSetting(CHECKLIST_SETTING_KEY, finalRules);
+    } catch {
+      /* non-fatal — the list still applies for this trade */
+    }
+  };
+
   const reset = () => {
     setSymbol('');
     setEntryPrice(undefined);
@@ -31,6 +74,7 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
     setTags('');
     setGrade('');
     setNotes('');
+    setChecked(rules.map(() => false));
     setError(undefined);
   };
 
@@ -56,6 +100,7 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
           .filter(Boolean),
         grade: grade || null,
         notes: notes || null,
+        checklist: rules.map((rule, i) => ({ rule, checked: !!checked[i] })),
       });
       reset();
       onSaved();
@@ -165,6 +210,62 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
         <Field label="Notes">
           <textarea className="input h-16" value={notes} onChange={(e) => setNotes(e.target.value)} />
         </Field>
+
+        <div className="border-t border-ink-700 pt-3">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="label !mb-0">
+              Pre-trade checklist{' '}
+              <span className="text-slate-500 tabular-nums">
+                ({checkedCount}/{rules.length})
+              </span>
+            </span>
+            <button
+              className="text-xs text-accent"
+              type="button"
+              onClick={() => {
+                setRulesDraft(rules.join('\n'));
+                setEditingRules((v) => !v);
+              }}
+            >
+              {editingRules ? 'Done' : 'Edit rules'}
+            </button>
+          </div>
+          {editingRules ? (
+            <div className="space-y-2">
+              <textarea
+                className="input h-28 text-sm"
+                value={rulesDraft}
+                onChange={(e) => setRulesDraft(e.target.value)}
+                placeholder="One rule per line"
+              />
+              <div className="flex justify-end">
+                <button className="btn-ghost text-xs" type="button" onClick={saveRules}>
+                  Save rules
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {rules.map((rule, i) => (
+                <label key={i} className="flex items-start gap-2 text-sm text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 accent-accent"
+                    checked={!!checked[i]}
+                    onChange={(e) => setChecked((c) => c.map((v, idx) => (idx === i ? e.target.checked : v)))}
+                  />
+                  <span>{rule}</span>
+                </label>
+              ))}
+              {rules.length > 0 && checkedCount < rules.length && (
+                <div className="text-[11px] text-amber-400/90 pt-0.5">
+                  {rules.length - checkedCount} unchecked — a nudge, not a blocker. You can still save.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         {error && <div className="text-bear text-sm">{error}</div>}
       </div>
     </Modal>

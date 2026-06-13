@@ -20,6 +20,7 @@ function pos(overrides: Partial<Position> = {}): Position {
     tags: ['breakout', 'a+'],
     grade: 'A',
     notes: 'clean setup',
+    checklist: [],
     createdAt: 1,
     updatedAt: 1,
     exits: [
@@ -78,6 +79,18 @@ describe('positionsToCsv', () => {
   it('escapes a note containing a comma', () => {
     const csv = positionsToCsv([pos({ notes: 'sold, too early' })]);
     expect(csv).toContain('"sold, too early"');
+  });
+  it('summarizes the pre-trade checklist as checked/total', () => {
+    const csv = positionsToCsv([
+      pos({
+        checklist: [
+          { rule: 'a', checked: true },
+          { rule: 'b', checked: false },
+          { rule: 'c', checked: true },
+        ],
+      }),
+    ]);
+    expect(csv.trim().split('\r\n')[1]).toMatch(/,2\/3$/);
   });
 });
 

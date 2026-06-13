@@ -39,6 +39,7 @@ const POSITION_COLUMNS = [
   'grade',
   'tags',
   'notes',
+  'rulesChecked',
 ] as const;
 
 function positionRow(p: Position): unknown[] {
@@ -64,6 +65,7 @@ function positionRow(p: Position): unknown[] {
     p.grade ?? '',
     p.tags.join('|'),
     p.notes ?? '',
+    p.checklist.length ? `${p.checklist.filter((c) => c.checked).length}/${p.checklist.length}` : '',
   ];
 }
 

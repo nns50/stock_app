@@ -22,6 +22,7 @@ function makePosition(
     tags: [],
     grade: null,
     notes: null,
+    checklist: [],
     createdAt: 0,
     updatedAt: 0,
     exits,

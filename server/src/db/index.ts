@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS positions (
   tags        TEXT,                    -- JSON array of strings
   grade       TEXT,                    -- 'A'..'F' or null
   notes       TEXT,
+  checklist   TEXT,                    -- JSON array of {rule, checked} (pre-trade discipline)
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
@@ -144,8 +145,17 @@ function seedUniverseIfEmpty(): void {
   tx(list);
 }
 
+/** Add columns introduced after the initial schema (for already-created DBs). */
+function migrate(): void {
+  const cols = db.prepare('PRAGMA table_info(positions)').all() as { name: string }[];
+  if (!cols.some((c) => c.name === 'checklist')) {
+    db.exec('ALTER TABLE positions ADD COLUMN checklist TEXT');
+  }
+}
+
 /** Run migrations and seed the default universe. Call once at startup. */
 export function initDb(): void {
   db.exec(SCHEMA);
+  migrate();
   seedUniverseIfEmpty();
 }
