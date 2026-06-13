@@ -91,3 +91,90 @@ export function computeSnapshotPerformance(
     worstReturnPct: round2(Math.min(...returns)),
   };
 }
+
+// --- cross-snapshot edge report ---------------------------------------------
+
+export interface EdgeBucket {
+  label: string;
+  picks: number;
+  hitRate: number; // %
+  avgReturnPct: number;
+}
+
+export interface EdgeReport {
+  snapshots: number;
+  evaluated: number; // picks that had a current price
+  hitRate: number | null;
+  avgReturnPct: number | null;
+  /** Average forward return by rank tier — the edge signal: do top ranks lead? */
+  byRank: EdgeBucket[];
+  byDirection: EdgeBucket[];
+}
+
+const RANK_BUCKETS: { label: string; max: number }[] = [
+  { label: 'Rank 1-3', max: 3 },
+  { label: 'Rank 4-10', max: 10 },
+  { label: 'Rank 11+', max: Infinity },
+];
+
+function rankBucketLabel(rank: number): string {
+  return (RANK_BUCKETS.find((b) => rank <= b.max) ?? RANK_BUCKETS[RANK_BUCKETS.length - 1]).label;
+}
+
+interface EdgeAcc {
+  n: number;
+  wins: number;
+  sum: number;
+}
+
+/**
+ * Aggregate forward-return edge across many snapshots. For each pick, compute
+ * the direction-adjusted move from its snapshot price to the current price, then
+ * roll it up overall, by rank tier (does the score rank lead?), and by direction.
+ */
+export function computeEdgeReport(
+  snaps: { direction: Direction; picks: SnapshotPick[] }[],
+  priceOf: (symbol: string) => number | null,
+): EdgeReport {
+  const all: EdgeAcc = { n: 0, wins: 0, sum: 0 };
+  const rank = new Map<string, EdgeAcc>();
+  const dir = new Map<string, EdgeAcc>();
+  const add = (m: Map<string, EdgeAcc>, key: string, ret: number) => {
+    const a = m.get(key) ?? { n: 0, wins: 0, sum: 0 };
+    a.n += 1;
+    if (ret > 0) a.wins += 1;
+    a.sum += ret;
+    m.set(key, a);
+  };
+
+  for (const s of snaps) {
+    for (const p of s.picks) {
+      const cur = priceOf(p.symbol);
+      if (cur === null) continue;
+      const ret = round2(directionalReturn(p.priceAtRun, cur, s.direction));
+      all.n += 1;
+      if (ret > 0) all.wins += 1;
+      all.sum += ret;
+      add(rank, rankBucketLabel(p.rank), ret);
+      add(dir, s.direction, ret);
+    }
+  }
+
+  const toBucket = (label: string, a: EdgeAcc): EdgeBucket => ({
+    label,
+    picks: a.n,
+    hitRate: round2((a.wins / a.n) * 100),
+    avgReturnPct: round2(a.sum / a.n),
+  });
+
+  return {
+    snapshots: snaps.length,
+    evaluated: all.n,
+    hitRate: all.n ? round2((all.wins / all.n) * 100) : null,
+    avgReturnPct: all.n ? round2(all.sum / all.n) : null,
+    byRank: RANK_BUCKETS.map((b) => b.label)
+      .filter((l) => rank.has(l))
+      .map((l) => toBucket(l, rank.get(l)!)),
+    byDirection: ['long', 'short'].filter((l) => dir.has(l)).map((l) => toBucket(l, dir.get(l)!)),
+  };
+}

@@ -405,6 +405,22 @@ export interface SymbolDetail {
   synthetic: boolean;
 }
 
+export interface EdgeBucket {
+  label: string;
+  picks: number;
+  hitRate: number;
+  avgReturnPct: number;
+}
+
+export interface EdgeReport {
+  snapshots: number;
+  evaluated: number;
+  hitRate: number | null;
+  avgReturnPct: number | null;
+  byRank: EdgeBucket[];
+  byDirection: EdgeBucket[];
+}
+
 export interface SnapshotSummary {
   id: number;
   createdAt: number;

@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
-import { cx, fmtDate, fmtPct, fmtUsd, pnlClass } from '../lib/format';
+import { cx, fmtDate, fmtNum, fmtPct, fmtUsd, pnlClass } from '../lib/format';
 import { Badge, Card, EmptyState, ErrorState, Modal, Spinner, StatTile } from './ui';
-import type { SnapshotSummary } from '../api/types';
+import type { EdgeReport, SnapshotSummary } from '../api/types';
 
 export function SnapshotsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const snaps = useAsync(() => client.listSnapshots(), [open]);
+  const edge = useAsync(() => client.snapshotsEdge(), [open]);
   const [expanded, setExpanded] = useState<number | null>(null);
 
   return (
@@ -20,6 +21,7 @@ export function SnapshotsModal({ open, onClose }: { open: boolean; onClose: () =
         />
       ) : (
         <div className="space-y-2">
+          <EdgeSummary data={edge.data} loading={edge.loading} />
           {snaps.data.snapshots.map((s) => (
             <SnapshotRow
               key={s.id}
@@ -32,6 +34,52 @@ export function SnapshotsModal({ open, onClose }: { open: boolean; onClose: () =
         </div>
       )}
     </Modal>
+  );
+}
+
+function EdgeSummary({ data, loading }: { data?: EdgeReport; loading: boolean }) {
+  if (loading) return <Spinner label="Computing edge…" />;
+  if (!data || data.evaluated === 0) return null;
+  return (
+    <Card className="p-3 mb-1 ring-1 ring-accent/20">
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="font-medium text-sm">Edge across {data.snapshots} snapshots</h3>
+        <span className="text-xs text-slate-500">{data.evaluated} picks evaluated</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <StatTile
+          label="Avg forward return"
+          value={fmtPct(data.avgReturnPct)}
+          valueClass={pnlClass(data.avgReturnPct)}
+        />
+        <StatTile label="Hit rate" value={data.hitRate == null ? '—' : `${fmtNum(data.hitRate, 0)}%`} />
+      </div>
+      <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">By rank tier — do top picks lead?</div>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-[11px] uppercase tracking-wide text-slate-500 text-left border-b border-ink-600/60">
+            <th className="py-1 font-medium">Tier</th>
+            <th className="py-1 font-medium text-right">Picks</th>
+            <th className="py-1 font-medium text-right">Hit%</th>
+            <th className="py-1 font-medium text-right">Avg return</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.byRank.map((b) => (
+            <tr key={b.label} className="border-b border-ink-700/40 last:border-0">
+              <td className="py-1 text-slate-200">{b.label}</td>
+              <td className="py-1 text-right tabular-nums text-slate-400">{b.picks}</td>
+              <td className="py-1 text-right tabular-nums text-slate-400">{fmtNum(b.hitRate, 0)}%</td>
+              <td className={cx('py-1 text-right tabular-nums', pnlClass(b.avgReturnPct))}>{fmtPct(b.avgReturnPct)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="text-[11px] text-slate-500 mt-1.5">
+        Forward return = direction-adjusted move from each pick’s snapshot price to now. Higher tiers should out-return
+        lower ones if the score has edge.
+      </p>
+    </Card>
   );
 }
 
