@@ -384,6 +384,28 @@ export interface KellySuggestion {
   reliable: boolean;
 }
 
+export interface TradeExcursion {
+  positionId: number;
+  symbol: string;
+  side: 'long' | 'short';
+  entryDate: string;
+  mfePct: number;
+  maePct: number;
+  mfeR: number | null;
+  maeR: number | null;
+  realizedR: number | null;
+  capturedPct: number | null;
+}
+
+export interface ExcursionReport {
+  trades: number;
+  avgMfeR: number | null;
+  avgMaeR: number | null;
+  avgRealizedR: number | null;
+  capturePct: number | null;
+  rows: TradeExcursion[];
+}
+
 export interface RuinParams {
   winRate: number;
   payoffRatio: number;
