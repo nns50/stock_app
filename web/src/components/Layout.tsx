@@ -7,6 +7,7 @@ import { useAlerts } from './AlertsContext';
 import { CommandPalette, OPEN_PALETTE_EVENT } from './CommandPalette';
 
 const TABS = [
+  { to: '/today', label: 'Today' },
   { to: '/screener', label: 'Screener' },
   { to: '/watchlist', label: 'Watch' },
   { to: '/options', label: 'Options' },
