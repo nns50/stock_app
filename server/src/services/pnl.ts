@@ -18,6 +18,8 @@ export interface PositionPnl {
   unrealizedPnl: number | null;
   totalPnl: number;
   returnPct: number | null;
+  /** P&L in units of initial risk (entry→stop). Null when no stop was logged. */
+  rMultiple: number | null;
   /** Current market value of the still-open quantity. */
   marketValue: number | null;
   remainingQuantity: number;
@@ -37,6 +39,19 @@ export function realizedPnlOf(p: Position): number {
   );
   const exitFees = p.exits.reduce((s, e) => s + e.fees, 0);
   return grossRealized - exitFees - p.fees; // all entry fees count once the math is whole-position
+}
+
+/** Dollars at risk if the logged stop is hit: |entry−stop| × qty × multiplier. */
+export function initialRiskOf(p: Position): number | null {
+  if (p.stopPrice == null || !p.entryPrice) return null;
+  const risk = Math.abs(p.entryPrice - p.stopPrice) * p.quantity * p.multiplier;
+  return risk > 0 ? risk : null;
+}
+
+/** P&L expressed in R (multiples of initial risk). Null when no stop was logged. */
+export function rMultipleOf(p: Position, pnl: number): number | null {
+  const risk = initialRiskOf(p);
+  return risk === null ? null : round2(pnl / risk);
 }
 
 export function computePositionPnl(p: Position, currentPrice: number | null): PositionPnl {
@@ -74,6 +89,7 @@ export function computePositionPnl(p: Position, currentPrice: number | null): Po
     unrealizedPnl: unrealizedPnl === null ? null : round2(unrealizedPnl),
     totalPnl: round2(totalPnl),
     returnPct: returnPct === null ? null : round2(returnPct),
+    rMultiple: rMultipleOf(p, totalPnl),
     marketValue: marketValue === null ? null : round2(marketValue),
     remainingQuantity: p.remainingQuantity,
     closedQuantity: round2(closedQty),
@@ -141,6 +157,25 @@ export interface JournalStats {
   byTag: GroupStat[];
   byGrade: GroupStat[];
   byDiscipline: GroupStat[];
+  /** Edge in R (multiples of initial risk) over closed trades that logged a stop. */
+  rTrades: number;
+  avgR: number | null;
+  bestR: number | null;
+  worstR: number | null;
+  rBuckets: { label: string; count: number }[];
+}
+
+const R_BUCKETS: { label: string; test: (r: number) => boolean }[] = [
+  { label: '≤ -2R', test: (r) => r <= -2 },
+  { label: '-2 to -1R', test: (r) => r > -2 && r <= -1 },
+  { label: '-1 to 0', test: (r) => r > -1 && r < 0 },
+  { label: '0 to 1R', test: (r) => r >= 0 && r < 1 },
+  { label: '1 to 2R', test: (r) => r >= 1 && r < 2 },
+  { label: '≥ 2R', test: (r) => r >= 2 },
+];
+
+function bucketRMultiples(rs: number[]): { label: string; count: number }[] {
+  return R_BUCKETS.map((b) => ({ label: b.label, count: rs.filter((r) => b.test(r)).length }));
 }
 
 interface Acc {
@@ -209,6 +244,9 @@ export function computeJournalStats(closed: Position[]): JournalStats {
   }
   const byTotalDesc = (a: GroupStat, b: GroupStat) => b.totalPnl - a.totalPnl;
 
+  // Edge in R: closed trades that logged a stop, scored as realized P&L / initial risk.
+  const rs = closed.map((p) => rMultipleOf(p, round2(realizedPnlOf(p)))).filter((r): r is number => r !== null);
+
   return {
     totalClosed: trades.length,
     wins: wins.length,
@@ -226,6 +264,11 @@ export function computeJournalStats(closed: Position[]): JournalStats {
     byTag: toGroupStats(tagMap).sort(byTotalDesc),
     byGrade: toGroupStats(gradeMap).sort((a, b) => a.key.localeCompare(b.key)),
     byDiscipline: toGroupStats(discMap).sort(byTotalDesc),
+    rTrades: rs.length,
+    avgR: rs.length ? round2(rs.reduce((a, b) => a + b, 0) / rs.length) : null,
+    bestR: rs.length ? Math.max(...rs) : null,
+    worstR: rs.length ? Math.min(...rs) : null,
+    rBuckets: bucketRMultiples(rs),
   };
 }
 

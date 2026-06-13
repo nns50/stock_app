@@ -5,7 +5,7 @@ import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd } from '../lib/format';
 import { disciplineCount } from '../lib/checklist';
-import { Badge, Card, EmptyState, PnL, Spinner, StatTile } from '../components/ui';
+import { Badge, Card, EmptyState, InfoTip, PnL, Spinner, StatTile } from '../components/ui';
 import { JournalEditModal } from '../components/PositionForms';
 import { DataTools } from '../components/DataTools';
 import type { GroupStat, Position } from '../api/types';
@@ -98,6 +98,45 @@ export default function JournalPage() {
         <StatTile label="Avg loss" value={fmtSignedUsd(s.avgLoss)} valueClass="text-bear" />
         <StatTile label="Total realized" value={<PnL value={s.totalRealized} />} />
       </div>
+
+      {s.rTrades > 0 && s.avgR != null && (
+        <Card className="p-4">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-medium text-sm flex items-center">
+              Edge (R-multiples)
+              <InfoTip text="P&L per trade in multiples of initial risk (entry→stop). A positive expectancy means an edge, independent of position size." />
+            </h3>
+            <span className="text-xs text-slate-500">{s.rTrades} closed trades with a stop</span>
+          </div>
+          <div className="grid grid-cols-3 gap-3 mb-3">
+            <StatTile
+              label="Expectancy"
+              value={`${s.avgR >= 0 ? '+' : ''}${fmtNum(s.avgR, 2)}R`}
+              valueClass={s.avgR >= 0 ? 'text-bull' : 'text-bear'}
+              sub="per trade"
+            />
+            <StatTile label="Best" value={`+${fmtNum(s.bestR, 2)}R`} valueClass="text-bull" />
+            <StatTile label="Worst" value={`${fmtNum(s.worstR, 2)}R`} valueClass="text-bear" />
+          </div>
+          <div className="space-y-1">
+            {s.rBuckets.map((b, i) => {
+              const max = Math.max(1, ...s.rBuckets.map((x) => x.count));
+              return (
+                <div key={b.label} className="flex items-center gap-2 text-xs">
+                  <span className="w-20 text-right text-slate-400">{b.label}</span>
+                  <div className="flex-1 h-3 bg-ink-600 rounded overflow-hidden">
+                    <div
+                      className={cx('h-full', i < 3 ? 'bg-bear' : 'bg-bull')}
+                      style={{ width: `${(b.count / max) * 100}%` }}
+                    />
+                  </div>
+                  <span className="w-6 tabular-nums text-slate-400">{b.count}</span>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
 
       <Card className="p-4">
         <h3 className="font-medium text-sm mb-2">P&L over time (cumulative realized)</h3>
@@ -250,6 +289,12 @@ export default function JournalPage() {
                     </td>
                     <td className="td text-right">
                       <PnL value={r.pnl.returnPct} format={fmtPct} />
+                      {r.pnl.rMultiple != null && (
+                        <div className="text-[11px] text-slate-500 tabular-nums">
+                          {r.pnl.rMultiple >= 0 ? '+' : ''}
+                          {fmtNum(r.pnl.rMultiple, 2)}R
+                        </div>
+                      )}
                     </td>
                     <td className="td max-w-[220px] truncate text-slate-400 text-xs" title={p.notes ?? ''}>
                       {p.notes || '—'}

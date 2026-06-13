@@ -308,6 +308,7 @@ export interface PositionPnl {
   unrealizedPnl: number | null;
   totalPnl: number;
   returnPct: number | null;
+  rMultiple: number | null;
   marketValue: number | null;
   remainingQuantity: number;
   closedQuantity: number;
@@ -363,6 +364,11 @@ export interface JournalStats {
   byTag: GroupStat[];
   byGrade: GroupStat[];
   byDiscipline: GroupStat[];
+  rTrades: number;
+  avgR: number | null;
+  bestR: number | null;
+  worstR: number | null;
+  rBuckets: { label: string; count: number }[];
 }
 
 export interface GroupStat {
