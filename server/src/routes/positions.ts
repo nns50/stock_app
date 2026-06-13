@@ -14,6 +14,8 @@ import {
 } from '../db/positions';
 import { resolveOptionMarks, resolveStockPrices } from '../services/quotes';
 import { aggregatePnl, computePositionPnl } from '../services/pnl';
+import { computeExposure, ExposureInput } from '../services/exposure';
+import { listUniverse } from '../db/universe';
 
 export const positionsRouter = Router();
 
@@ -105,7 +107,19 @@ async function withPnlPayload(positions: Position[]) {
     items.map((i) => i.pnl),
     positions,
   );
-  return { positions: items, aggregate };
+
+  // Concentration/exposure across the OPEN book, by direction and sector.
+  const sectorBySymbol = new Map(listUniverse().map((u) => [u.symbol, u.sector]));
+  const openInputs: ExposureInput[] = items
+    .filter((i) => i.position.status === 'open')
+    .map((i) => ({
+      symbol: i.position.symbol,
+      side: i.position.side,
+      value: i.pnl.marketValue ?? i.pnl.costBasis,
+    }));
+  const exposure = computeExposure(openInputs, (s) => sectorBySymbol.get(s.toUpperCase()) ?? null);
+
+  return { positions: items, aggregate, exposure };
 }
 
 positionsRouter.get(

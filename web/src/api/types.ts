@@ -328,6 +328,22 @@ export interface AggregatePnl {
   closedCount: number;
 }
 
+export interface ExposureSlice {
+  key: string;
+  gross: number;
+  pct: number;
+  count: number;
+}
+
+export interface Exposure {
+  gross: number;
+  net: number;
+  long: number;
+  short: number;
+  bySector: ExposureSlice[];
+  largest: { symbol: string; pct: number } | null;
+}
+
 export interface JournalStats {
   totalClosed: number;
   wins: number;
