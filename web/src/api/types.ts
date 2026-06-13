@@ -384,6 +384,23 @@ export interface KellySuggestion {
   reliable: boolean;
 }
 
+export interface RuinParams {
+  winRate: number;
+  payoffRatio: number;
+  riskPct: number;
+  ruinThresholdPct: number;
+  trades: number;
+  sims: number;
+}
+
+export interface RuinResult {
+  riskOfRuinPct: number;
+  medianReturnPct: number;
+  p5ReturnPct: number;
+  p95ReturnPct: number;
+  medianMaxDrawdownPct: number;
+}
+
 export interface GroupStat {
   key: string;
   trades: number;

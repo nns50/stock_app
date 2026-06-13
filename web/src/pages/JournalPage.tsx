@@ -8,6 +8,7 @@ import { disciplineCount } from '../lib/checklist';
 import { Badge, Card, EmptyState, InfoTip, PnL, Spinner, StatTile } from '../components/ui';
 import { JournalEditModal } from '../components/PositionForms';
 import { DataTools } from '../components/DataTools';
+import { RiskOfRuinModal } from '../components/RiskOfRuinModal';
 import type { GroupStat, Position } from '../api/types';
 
 /** Compact "realized P&L grouped by X" table used in the Performance breakdown. */
@@ -49,6 +50,7 @@ export default function JournalPage() {
   const closed = useAsync(() => client.positionsWithPnl({ status: 'closed' }), []);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [editPos, setEditPos] = useState<Position | null>(null);
+  const [ruinOpen, setRuinOpen] = useState(false);
 
   const reload = () => {
     stats.reload();
@@ -73,7 +75,12 @@ export default function JournalPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-xl font-semibold">Trade journal</h1>
-        <DataTools onImported={reload} />
+        <div className="flex items-center gap-2">
+          <button className="btn-ghost" onClick={() => setRuinOpen(true)}>
+            Risk of ruin
+          </button>
+          <DataTools onImported={reload} />
+        </div>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
@@ -362,6 +369,7 @@ export default function JournalPage() {
       )}
 
       <JournalEditModal position={editPos} onClose={() => setEditPos(null)} onSaved={reload} />
+      <RiskOfRuinModal open={ruinOpen} onClose={() => setRuinOpen(false)} />
     </div>
   );
 }
