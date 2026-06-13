@@ -13,6 +13,7 @@ const OptionsPage = lazy(() => import('./pages/OptionsPage'));
 const PositionsPage = lazy(() => import('./pages/PositionsPage'));
 const JournalPage = lazy(() => import('./pages/JournalPage'));
 const AlertsPage = lazy(() => import('./pages/AlertsPage'));
+const AboutPage = lazy(() => import('./pages/AboutPage'));
 
 export default function App() {
   return (
@@ -28,6 +29,7 @@ export default function App() {
               <Route path="/positions" element={<PositionsPage />} />
               <Route path="/journal" element={<JournalPage />} />
               <Route path="/alerts" element={<AlertsPage />} />
+              <Route path="/about" element={<AboutPage />} />
               <Route path="*" element={<Navigate to="/screener" replace />} />
             </Routes>
           </Suspense>

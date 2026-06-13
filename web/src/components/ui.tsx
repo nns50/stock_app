@@ -71,20 +71,51 @@ export function ScoreBar({ value, width = 64 }: { value: number; width?: number 
   );
 }
 
+/**
+ * Small "ⓘ" affordance with an on-hover/on-focus explanation. Keyboard
+ * accessible (it's a focusable button) and carries a native `title` so the
+ * text is reachable even without the popover.
+ */
+export function InfoTip({ text, label }: { text: string; label?: string }) {
+  return (
+    <span className="relative inline-flex group align-middle">
+      <button
+        type="button"
+        title={text}
+        aria-label={label ?? text}
+        className="ml-1 h-3.5 w-3.5 inline-flex items-center justify-center rounded-full bg-ink-600 text-slate-400 text-[9px] font-semibold leading-none hover:bg-ink-500 hover:text-slate-200 focus:outline-none focus:ring-1 focus:ring-accent"
+      >
+        i
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute left-1/2 bottom-full z-50 mb-1 hidden w-56 -translate-x-1/2 rounded-md border border-ink-600 bg-ink-800 px-2.5 py-1.5 text-left text-[11px] font-normal normal-case tracking-normal text-slate-300 shadow-xl group-hover:block group-focus-within:block"
+      >
+        {text}
+      </span>
+    </span>
+  );
+}
+
 export function StatTile({
   label,
   value,
   sub,
   valueClass,
+  info,
 }: {
   label: string;
   value: ReactNode;
   sub?: ReactNode;
   valueClass?: string;
+  info?: string;
 }) {
   return (
     <Card className="px-3 py-2.5">
-      <div className="text-[11px] uppercase tracking-wide text-slate-400">{label}</div>
+      <div className="text-[11px] uppercase tracking-wide text-slate-400 flex items-center">
+        {label}
+        {info && <InfoTip text={info} label={`About ${label}`} />}
+      </div>
       <div className={cx('text-lg font-semibold tabular-nums mt-0.5', valueClass)}>{value}</div>
       {sub !== undefined && <div className="text-xs text-slate-500 mt-0.5">{sub}</div>}
     </Card>
