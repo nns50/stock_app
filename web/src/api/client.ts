@@ -157,6 +157,10 @@ export const client = {
   journalStats: () => api<JournalStats>('/journal/stats'),
   journalTags: () => api<{ tags: string[] }>('/journal/tags'),
 
+  // --- data export / restore ---
+  importPositions: (positions: unknown[], mode: 'merge' | 'replace') =>
+    api<{ imported: number; replaced: boolean; totalNow: number }>('/export/import', post({ positions, mode })),
+
   // --- settings (persisted UI state) ---
   settings: () => api<Record<string, unknown>>('/settings'),
   saveSetting: (key: string, value: unknown) =>
