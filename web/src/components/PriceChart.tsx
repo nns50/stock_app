@@ -9,7 +9,7 @@ import {
   Tooltip,
   XAxis,
   YAxis,
-} from 'recharts';
+} from '../lib/recharts';
 import type { Candle } from '../api/types';
 import { fmtCompact, fmtNum, fmtDate } from '../lib/format';
 
