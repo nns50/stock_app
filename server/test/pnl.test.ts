@@ -95,6 +95,30 @@ describe('computePositionPnl', () => {
     expect(pnl.unrealizedPnl).toBeNull();
     expect(pnl.marketValue).toBeNull();
   });
+
+  it('computes R-multiple from the logged stop (risk = |entry-stop|*qty*mult)', () => {
+    const p = makePosition({
+      assetType: 'stock',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      stopPrice: 90,
+      exits: [exit({ quantity: 10, exitPrice: 120 })],
+    });
+    // risk = 10*10 = 100; realized = (120-100)*10 = 200 -> +2R
+    expect(computePositionPnl(p, null).rMultiple).toBe(2);
+  });
+
+  it('R-multiple is null without a stop', () => {
+    const p = makePosition({
+      assetType: 'stock',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      exits: [exit({ quantity: 10, exitPrice: 110 })],
+    });
+    expect(computePositionPnl(p, null).rMultiple).toBeNull();
+  });
 });
 
 describe('realizedPnlOf', () => {
@@ -190,5 +214,41 @@ describe('computeJournalStats', () => {
     expect(r.byGrade.find((g) => g.key === 'A')!.totalPnl).toBe(100);
     expect(r.byDiscipline.find((g) => g.key === 'Followed all rules')!.totalPnl).toBe(100);
     expect(r.byDiscipline.find((g) => g.key === 'Skipped a rule')!.totalPnl).toBe(-100);
+  });
+
+  it('aggregates edge in R over closed trades that logged a stop', () => {
+    const ts: Position[] = [
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        stopPrice: 95,
+        exits: [exit({ quantity: 10, exitPrice: 110, exitDate: '2026-03-01' })],
+      }), // risk 50, realized +100 -> +2R
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        stopPrice: 95,
+        exits: [exit({ quantity: 10, exitPrice: 95, exitDate: '2026-03-02' })],
+      }), // risk 50, realized -50 -> -1R
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        exits: [exit({ quantity: 10, exitPrice: 105, exitDate: '2026-03-03' })],
+      }), // no stop -> excluded from R
+    ];
+    const r = computeJournalStats(ts);
+    expect(r.rTrades).toBe(2);
+    expect(r.avgR).toBeCloseTo(0.5); // (2 + -1) / 2
+    expect(r.bestR).toBe(2);
+    expect(r.worstR).toBe(-1);
+    const b = Object.fromEntries(r.rBuckets.map((x) => [x.label, x.count]));
+    expect(b['≥ 2R']).toBe(1);
+    expect(b['-2 to -1R']).toBe(1);
   });
 });
