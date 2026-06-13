@@ -5,6 +5,7 @@ import type {
   EntryStrategyConfig,
   ExitCheckRow,
   ExitRulesConfig,
+  Exposure,
   IvContext,
   JournalStats,
   OptionsChain,
@@ -143,7 +144,7 @@ export const client = {
   },
   positionsWithPnl: (params: { status?: string } = {}) => {
     const qs = new URLSearchParams({ ...params, withPnl: 'true' } as Record<string, string>).toString();
-    return api<{ positions: PositionWithPnl[]; aggregate: AggregatePnl }>(`/positions?${qs}`);
+    return api<{ positions: PositionWithPnl[]; aggregate: AggregatePnl; exposure: Exposure }>(`/positions?${qs}`);
   },
   createPosition: (body: Record<string, unknown>) =>
     api<Position>('/positions', { method: 'POST', body: JSON.stringify(body) }),

@@ -7,6 +7,7 @@ import { Badge, Card, EmptyState, ErrorState, PnL, Spinner, StatTile } from '../
 import { RefreshBar } from '../components/RefreshBar';
 import { ExitModal, JournalEditModal, LogTradeModal } from '../components/PositionForms';
 import { RiskSizingModal } from '../components/RiskSizingModal';
+import { ExposurePanel } from '../components/ExposurePanel';
 import type { Position, PositionWithPnl } from '../api/types';
 
 type StatusFilter = 'all' | 'open' | 'closed';
@@ -62,6 +63,8 @@ export default function PositionsPage() {
           <StatTile label="Closed" value={agg.closedCount} />
         </div>
       )}
+
+      {data.data?.exposure && data.data.exposure.gross > 0 && <ExposurePanel exposure={data.data.exposure} />}
 
       <div className="flex items-center gap-1">
         {(['open', 'closed', 'all'] as StatusFilter[]).map((s) => (
