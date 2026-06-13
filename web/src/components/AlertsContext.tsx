@@ -31,10 +31,14 @@ const Ctx = createContext<AlertsCtx>({
 });
 
 export function AlertsProvider({ children }: { children: ReactNode }) {
-  const [triggeredCount, setTriggeredCount] = useState(0);
+  const [symbolCount, setSymbolCount] = useState(0);
+  const [exitCount, setExitCount] = useState(0);
   const [intervalMs, setIntervalMs] = useLocalStorage<number | null>('alerts.pollMs', null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const nextId = useRef(0);
+  // Exit alerts are stateless each poll; remember which we've toasted so a
+  // standing exit notifies once but can re-fire if it clears and recurs.
+  const notifiedExits = useRef<Set<string>>(new Set());
 
   const pushToast = useCallback((message: string) => {
     const id = ++nextId.current;
@@ -47,7 +51,7 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
   const refreshCount = useCallback(async () => {
     try {
       const r = await client.alerts();
-      setTriggeredCount(r.alerts.filter((a) => a.triggered).length);
+      setSymbolCount(r.alerts.filter((a) => a.triggered).length);
     } catch {
       // ignore — provider may be unavailable
     }
@@ -57,8 +61,18 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
   const checkNow = useCallback(async () => {
     try {
       const r = await client.evaluateAlerts();
-      setTriggeredCount(r.alerts.filter((a) => a.triggered).length);
+      setSymbolCount(r.alerts.filter((a) => a.triggered).length);
       for (const t of r.newlyTriggered) pushToast(t.message || `${t.symbol} triggered`);
+
+      // Position exit alerts: toast keys not seen last round; re-arm cleared ones.
+      const seen = new Set<string>();
+      for (const e of r.positionAlerts) {
+        const key = `${e.positionId}:${e.rule}`;
+        seen.add(key);
+        if (!notifiedExits.current.has(key)) pushToast(e.message);
+      }
+      notifiedExits.current = seen;
+      setExitCount(r.positionAlerts.length);
     } catch {
       // ignore — provider may be unavailable
     }
@@ -70,7 +84,9 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
   usePolling(checkNow, intervalMs);
 
   return (
-    <Ctx.Provider value={{ triggeredCount, intervalMs, setIntervalMs, checkNow, refreshCount }}>
+    <Ctx.Provider
+      value={{ triggeredCount: symbolCount + exitCount, intervalMs, setIntervalMs, checkNow, refreshCount }}
+    >
       {children}
       {toasts.length > 0 && (
         <div className="fixed bottom-4 right-4 z-50 w-80 space-y-2">

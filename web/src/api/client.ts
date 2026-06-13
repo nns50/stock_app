@@ -10,6 +10,7 @@ import type {
   JournalStats,
   OptionsChain,
   Position,
+  PositionExitAlert,
   PositionWithPnl,
   Preset,
   ProviderStatus,
@@ -197,6 +198,7 @@ export const client = {
     api<{
       alerts: Alert[];
       newlyTriggered: { id: number; symbol: string; message: string | null }[];
+      positionAlerts: PositionExitAlert[];
       checkedAt: number;
     }>('/alerts/evaluate', { method: 'POST' }),
 };
