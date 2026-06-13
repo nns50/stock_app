@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { client } from '../api/client';
-import { todayISO } from '../lib/format';
+import { fmtNum, fmtUsd, todayISO } from '../lib/format';
+import { useLocalStorage } from '../lib/hooks';
 import { CHECKLIST_SETTING_KEY, DEFAULT_CHECKLIST_RULES, rulesFromSetting } from '../lib/checklist';
 import { Field, Modal, NumberInput } from './ui';
-import type { Position } from '../api/types';
+import type { Position, RiskSizingResult } from '../api/types';
 
 const GRADES = ['', 'A', 'B', 'C', 'D', 'F'];
 
@@ -49,6 +50,33 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
       active = false;
     };
   }, [open]);
+
+  // Risk-based position sizing, folded into the entry flow. Account size + risk%
+  // persist per-browser (shared with the standalone Risk sizing tool).
+  const [showSizer, setShowSizer] = useState(false);
+  const [accountSize, setAccountSize] = useLocalStorage<number>('risk.accountSize', 25000);
+  const [riskPct, setRiskPct] = useLocalStorage<number>('risk.riskPct', 1);
+  const [stopPrice, setStopPrice] = useState<number | undefined>();
+  const [sizing, setSizing] = useState<RiskSizingResult>();
+  const [sizingErr, setSizingErr] = useState<string>();
+  const [sizingBusy, setSizingBusy] = useState(false);
+
+  const calcSize = async () => {
+    setSizingErr(undefined);
+    setSizing(undefined);
+    if (!accountSize || !riskPct || entryPrice === undefined || stopPrice === undefined) {
+      setSizingErr('Need account size, risk %, entry price and a stop.');
+      return;
+    }
+    setSizingBusy(true);
+    try {
+      setSizing(await client.positionSize({ accountSize, riskPct, entryPrice, stopPrice, side, assetType }));
+    } catch (e) {
+      setSizingErr((e as Error).message);
+    } finally {
+      setSizingBusy(false);
+    }
+  };
 
   const saveRules = async () => {
     const next = rulesDraft
@@ -188,6 +216,69 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
             </Field>
           </div>
         )}
+
+        <div className="border-t border-ink-700 pt-2">
+          <button
+            type="button"
+            className="text-xs text-accent"
+            onClick={() => setShowSizer((v) => !v)}
+            aria-expanded={showSizer}
+          >
+            {showSizer ? '− Hide' : '+ Size by risk'}
+          </button>
+          {showSizer && (
+            <div className="mt-2 space-y-2 rounded-md bg-ink-700/40 p-2.5">
+              <div className="grid grid-cols-3 gap-2">
+                <Field label="Account $">
+                  <NumberInput value={accountSize} onChange={(v) => setAccountSize(v ?? 0)} />
+                </Field>
+                <Field label="Risk %">
+                  <NumberInput value={riskPct} onChange={(v) => setRiskPct(v ?? 0)} step={0.1} />
+                </Field>
+                <Field label="Stop price">
+                  <NumberInput value={stopPrice} onChange={setStopPrice} step={0.01} />
+                </Field>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-slate-500">Uses entry, side &amp; type above.</span>
+                <button className="btn-ghost text-xs" type="button" onClick={calcSize} disabled={sizingBusy}>
+                  {sizingBusy ? 'Sizing…' : 'Calculate'}
+                </button>
+              </div>
+              {sizingErr && <div className="text-bear text-xs">{sizingErr}</div>}
+              {sizing && (
+                <div className="text-xs space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-300">
+                      Suggested:{' '}
+                      <span className="font-semibold tabular-nums text-slate-100">
+                        {sizing.suggestedQuantity} {assetType === 'option' ? 'contracts' : 'shares'}
+                      </span>
+                    </span>
+                    <button
+                      className="text-accent disabled:text-slate-600"
+                      type="button"
+                      disabled={sizing.suggestedQuantity <= 0}
+                      onClick={() => setQuantity(sizing.suggestedQuantity)}
+                    >
+                      Apply
+                    </button>
+                  </div>
+                  <div className="text-slate-500 tabular-nums">
+                    risk {fmtUsd(sizing.riskOfPosition)} · cost {fmtUsd(sizing.positionCost)} ·{' '}
+                    {fmtNum(sizing.positionPctOfAccount, 0)}% of account
+                  </div>
+                  {sizing.warnings.map((w, i) => (
+                    <div key={i} className="text-amber-400/90">
+                      {w}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         <div className="grid grid-cols-2 gap-3">
           <Field label="Tags (comma-sep)">
             <input
