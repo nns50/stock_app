@@ -262,6 +262,94 @@ export function deleteExit(exitId: number): boolean {
   return changed;
 }
 
+export interface ImportableExit {
+  quantity: number;
+  exitPrice: number;
+  exitDate: string;
+  fees?: number;
+  notes?: string | null;
+  createdAt?: number;
+}
+
+export interface ImportablePosition {
+  assetType: AssetType;
+  symbol: string;
+  side: Side;
+  quantity: number;
+  entryPrice: number;
+  entryDate: string;
+  fees?: number;
+  optionType?: OptionType | null;
+  strike?: number | null;
+  expiration?: string | null;
+  multiplier?: number;
+  status?: 'open' | 'closed';
+  tags?: string[];
+  grade?: string | null;
+  notes?: string | null;
+  createdAt?: number;
+  updatedAt?: number;
+  exits?: ImportableExit[];
+}
+
+export interface ImportResult {
+  imported: number;
+  replaced: boolean;
+}
+
+/**
+ * Restore positions (and their exits) from a previous export. In 'replace' mode
+ * existing positions are cleared first; 'merge' appends. Runs in a single
+ * transaction so a bad payload leaves the DB untouched. New IDs are assigned.
+ */
+export function importPositions(positions: ImportablePosition[], mode: 'merge' | 'replace'): ImportResult {
+  const insertPos = db.prepare(
+    `INSERT INTO positions
+       (asset_type, symbol, side, quantity, entry_price, entry_date, fees,
+        option_type, strike, expiration, multiplier, status, tags, grade, notes, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  );
+  const insertExit = db.prepare(
+    `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, created_at)
+     VALUES (?,?,?,?,?,?,?)`,
+  );
+  const tx = db.transaction((items: ImportablePosition[]) => {
+    if (mode === 'replace') db.prepare('DELETE FROM positions').run();
+    const now = Date.now();
+    let imported = 0;
+    for (const p of items) {
+      const multiplier = p.multiplier ?? (p.assetType === 'option' ? 100 : 1);
+      const res = insertPos.run(
+        p.assetType,
+        p.symbol.toUpperCase(),
+        p.side,
+        p.quantity,
+        p.entryPrice,
+        p.entryDate,
+        p.fees ?? 0,
+        p.optionType ?? null,
+        p.strike ?? null,
+        p.expiration ?? null,
+        multiplier,
+        p.status === 'closed' ? 'closed' : 'open',
+        p.tags && p.tags.length ? JSON.stringify(p.tags) : null,
+        p.grade ?? null,
+        p.notes ?? null,
+        p.createdAt ?? now,
+        p.updatedAt ?? now,
+      );
+      const pid = Number(res.lastInsertRowid);
+      for (const e of p.exits ?? []) {
+        insertExit.run(pid, e.quantity, e.exitPrice, e.exitDate, e.fees ?? 0, e.notes ?? null, e.createdAt ?? now);
+      }
+      recomputeStatus(pid);
+      imported++;
+    }
+    return imported;
+  });
+  return { imported: tx(positions), replaced: mode === 'replace' };
+}
+
 /** Flip status to 'closed' once the position is fully exited (within epsilon). */
 function recomputeStatus(positionId: number): void {
   const pos = getPosition(positionId);

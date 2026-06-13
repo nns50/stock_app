@@ -6,6 +6,7 @@ import { useAsync } from '../lib/hooks';
 import { cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd } from '../lib/format';
 import { Badge, Card, EmptyState, PnL, Spinner, StatTile } from '../components/ui';
 import { JournalEditModal } from '../components/PositionForms';
+import { DataTools } from '../components/DataTools';
 import type { Position } from '../api/types';
 
 export default function JournalPage() {
@@ -35,7 +36,10 @@ export default function JournalPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Trade journal</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-xl font-semibold">Trade journal</h1>
+        <DataTools onImported={reload} />
+      </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
         <StatTile label="Closed" value={s.totalClosed} sub={`${s.wins}W · ${s.losses}L`} />
