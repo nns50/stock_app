@@ -3,6 +3,7 @@ import type {
   Candle,
   EntryCandidate,
   EntryStrategyConfig,
+  ExcursionReport,
   ExitCheckRow,
   ExitRulesConfig,
   Exposure,
@@ -160,6 +161,7 @@ export const client = {
 
   // --- journal ---
   journalStats: () => api<JournalStats>('/journal/stats'),
+  journalExcursions: () => api<ExcursionReport>('/journal/excursions'),
   journalTags: () => api<{ tags: string[] }>('/journal/tags'),
 
   // --- data export / restore ---

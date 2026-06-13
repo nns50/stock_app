@@ -9,6 +9,7 @@ import { Badge, Card, EmptyState, InfoTip, PnL, Spinner, StatTile } from '../com
 import { JournalEditModal } from '../components/PositionForms';
 import { DataTools } from '../components/DataTools';
 import { RiskOfRuinModal } from '../components/RiskOfRuinModal';
+import { ExcursionsModal } from '../components/ExcursionsModal';
 import type { GroupStat, Position } from '../api/types';
 
 /** Compact "realized P&L grouped by X" table used in the Performance breakdown. */
@@ -51,6 +52,7 @@ export default function JournalPage() {
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [editPos, setEditPos] = useState<Position | null>(null);
   const [ruinOpen, setRuinOpen] = useState(false);
+  const [excOpen, setExcOpen] = useState(false);
 
   const reload = () => {
     stats.reload();
@@ -76,6 +78,9 @@ export default function JournalPage() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-xl font-semibold">Trade journal</h1>
         <div className="flex items-center gap-2">
+          <button className="btn-ghost" onClick={() => setExcOpen(true)}>
+            Excursions
+          </button>
           <button className="btn-ghost" onClick={() => setRuinOpen(true)}>
             Risk of ruin
           </button>
@@ -370,6 +375,7 @@ export default function JournalPage() {
 
       <JournalEditModal position={editPos} onClose={() => setEditPos(null)} onSaved={reload} />
       <RiskOfRuinModal open={ruinOpen} onClose={() => setRuinOpen(false)} />
+      <ExcursionsModal open={excOpen} onClose={() => setExcOpen(false)} />
     </div>
   );
 }
