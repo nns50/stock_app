@@ -1,5 +1,35 @@
 import { ReactNode, useEffect } from 'react';
-import { cx } from '../lib/format';
+import { cx, fmtSignedUsd, pnlClass } from '../lib/format';
+
+/**
+ * Gain/loss readout that doesn't rely on color alone: a ▲/▼ caret encodes
+ * direction for color-blind users, alongside the (already-signed) value and the
+ * green/red color. The caret is aria-hidden — the signed value carries the
+ * meaning for screen readers. `format` controls how the number is rendered
+ * (defaults to signed USD; pass fmtPct for percentages).
+ */
+export function PnL({
+  value,
+  format = fmtSignedUsd,
+  className,
+}: {
+  value: number | null | undefined;
+  format?: (n: number | null | undefined) => string;
+  className?: string;
+}) {
+  const dir = value === null || value === undefined || value === 0 ? 0 : value > 0 ? 1 : -1;
+  const caret = dir > 0 ? '▲' : dir < 0 ? '▼' : '';
+  return (
+    <span className={cx('inline-flex items-center gap-1 tabular-nums', pnlClass(value), className)}>
+      {caret && (
+        <span aria-hidden="true" className="text-[0.7em] leading-none">
+          {caret}
+        </span>
+      )}
+      {format(value)}
+    </span>
+  );
+}
 
 export function Card({ className, children }: { className?: string; children: ReactNode }) {
   return <div className={cx('card', className)}>{children}</div>;

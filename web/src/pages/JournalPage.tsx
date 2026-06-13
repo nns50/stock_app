@@ -3,8 +3,8 @@ import { Link } from 'react-router-dom';
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from '../lib/recharts';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
-import { cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd, pnlClass } from '../lib/format';
-import { Badge, Card, EmptyState, Spinner, StatTile } from '../components/ui';
+import { cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd } from '../lib/format';
+import { Badge, Card, EmptyState, PnL, Spinner, StatTile } from '../components/ui';
 import { JournalEditModal } from '../components/PositionForms';
 import type { Position } from '../api/types';
 
@@ -46,8 +46,7 @@ export default function JournalPage() {
         />
         <StatTile
           label="Expectancy"
-          value={fmtSignedUsd(s.expectancy)}
-          valueClass={pnlClass(s.expectancy)}
+          value={<PnL value={s.expectancy} />}
           sub="per trade"
           info="Average P&L per trade = (win rate × avg win) − (loss rate × avg loss)."
         />
@@ -58,7 +57,7 @@ export default function JournalPage() {
         />
         <StatTile label="Avg win" value={fmtSignedUsd(s.avgWin)} valueClass="text-bull" />
         <StatTile label="Avg loss" value={fmtSignedUsd(s.avgLoss)} valueClass="text-bear" />
-        <StatTile label="Total realized" value={fmtSignedUsd(s.totalRealized)} valueClass={pnlClass(s.totalRealized)} />
+        <StatTile label="Total realized" value={<PnL value={s.totalRealized} />} />
       </div>
 
       <Card className="p-4">
@@ -176,10 +175,12 @@ export default function JournalPage() {
                         )}
                       </div>
                     </td>
-                    <td className={cx('td text-right font-semibold', pnlClass(r.pnl.totalPnl))}>
-                      {fmtSignedUsd(r.pnl.totalPnl)}
+                    <td className="td text-right">
+                      <PnL value={r.pnl.totalPnl} className="font-semibold" />
                     </td>
-                    <td className={cx('td text-right', pnlClass(r.pnl.returnPct))}>{fmtPct(r.pnl.returnPct)}</td>
+                    <td className="td text-right">
+                      <PnL value={r.pnl.returnPct} format={fmtPct} />
+                    </td>
                     <td className="td max-w-[220px] truncate text-slate-400 text-xs" title={p.notes ?? ''}>
                       {p.notes || '—'}
                     </td>
