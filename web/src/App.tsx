@@ -15,6 +15,7 @@ const JournalPage = lazy(() => import('./pages/JournalPage'));
 const AlertsPage = lazy(() => import('./pages/AlertsPage'));
 const AboutPage = lazy(() => import('./pages/AboutPage'));
 const WatchlistPage = lazy(() => import('./pages/WatchlistPage'));
+const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 
 export default function App() {
   return (
@@ -23,7 +24,8 @@ export default function App() {
         <Layout>
           <Suspense fallback={<Spinner label="Loading…" />}>
             <Routes>
-              <Route path="/" element={<Navigate to="/screener" replace />} />
+              <Route path="/" element={<Navigate to="/today" replace />} />
+              <Route path="/today" element={<DashboardPage />} />
               <Route path="/screener" element={<ScreenerPage />} />
               <Route path="/watchlist" element={<WatchlistPage />} />
               <Route path="/symbol/:symbol" element={<SymbolDetailPage />} />
@@ -32,7 +34,7 @@ export default function App() {
               <Route path="/journal" element={<JournalPage />} />
               <Route path="/alerts" element={<AlertsPage />} />
               <Route path="/about" element={<AboutPage />} />
-              <Route path="*" element={<Navigate to="/screener" replace />} />
+              <Route path="*" element={<Navigate to="/today" replace />} />
             </Routes>
           </Suspense>
         </Layout>
