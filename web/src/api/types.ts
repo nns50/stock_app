@@ -384,6 +384,19 @@ export interface KellySuggestion {
   reliable: boolean;
 }
 
+export interface BenchmarkResult {
+  symbol: string;
+  startDate: string | null;
+  endDate: string | null;
+  benchStart: number | null;
+  benchEnd: number | null;
+  benchmarkReturnPct: number | null;
+  totalRealized: number;
+  accountSize: number | null;
+  userReturnPct: number | null;
+  alphaPct: number | null;
+}
+
 export interface TradeExcursion {
   positionId: number;
   symbol: string;
