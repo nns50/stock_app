@@ -20,6 +20,7 @@ import type {
   Alert,
   ScreenerConfig,
   ScreenerResult,
+  EdgeReport,
   SnapshotPerformance,
   SnapshotSummary,
   StrategyAnalysis,
@@ -179,6 +180,7 @@ export const client = {
 
   // --- screener snapshots (edge tracking) ---
   listSnapshots: () => api<{ snapshots: SnapshotSummary[] }>('/snapshots'),
+  snapshotsEdge: () => api<EdgeReport>('/snapshots/edge'),
   createSnapshot: (body: {
     direction: string;
     note?: string;
