@@ -433,6 +433,14 @@ export interface Alert {
   updatedAt: number;
 }
 
+export interface PositionExitAlert {
+  positionId: number;
+  symbol: string;
+  rule: string;
+  unrealizedPct: number | null;
+  message: string;
+}
+
 export interface StrategyLeg {
   type: 'call' | 'put';
   action: 'buy' | 'sell';

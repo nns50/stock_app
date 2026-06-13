@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { asyncHandler, HttpError, parseBody } from './_helpers';
 import { applyEvaluation, createAlert, deleteAlert, listAlerts, updateAlert } from '../db/alerts';
 import { AlertMetrics, evaluateAlert } from '../services/alertEngine';
+import { evaluateOpenPositionExits } from '../services/positionExits';
 import { getProvider } from '../providers';
 import { rsi } from '../indicators/indicators';
 
@@ -104,6 +105,9 @@ alertsRouter.post(
       if (ev.triggered && !wasTriggered) newlyTriggered.push({ id: a.id, symbol: a.symbol, message: ev.message });
     }
 
-    res.json({ alerts: listAlerts(), newlyTriggered, checkedAt: Date.now() });
+    // Also surface open option positions that have hit an exit rule.
+    const positionAlerts = await evaluateOpenPositionExits().catch(() => []);
+
+    res.json({ alerts: listAlerts(), newlyTriggered, positionAlerts, checkedAt: Date.now() });
   }),
 );
