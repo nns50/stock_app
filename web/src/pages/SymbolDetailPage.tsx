@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtCompact, fmtNum, fmtPct, fmtUsd } from '../lib/format';
-import { Card, ErrorState, Spinner, StatTile } from '../components/ui';
+import { Card, ErrorState, PnL, Spinner, StatTile } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
 import { PriceChart } from '../components/PriceChart';
 
@@ -35,10 +35,7 @@ export default function SymbolDetailPage() {
           <h1 className="text-2xl font-semibold">{symbol.toUpperCase()}</h1>
           {quote && (
             <span className="text-lg tabular-nums">
-              {fmtUsd(quote.last)}{' '}
-              <span className={cx('text-sm', (quote.changePct ?? 0) >= 0 ? 'text-bull' : 'text-bear')}>
-                {fmtPct(quote.changePct)}
-              </span>
+              {fmtUsd(quote.last)} <PnL value={quote.changePct} format={fmtPct} className="text-sm" />
             </span>
           )}
           {detail.data?.synthetic && <span className="chip bg-amber-500/15 text-amber-400">synthetic</span>}
@@ -122,11 +119,7 @@ export default function SymbolDetailPage() {
 
       {ind && (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          <StatTile
-            label="Change"
-            value={fmtPct(ind.changePct)}
-            valueClass={(ind.changePct ?? 0) >= 0 ? 'text-bull' : 'text-bear'}
-          />
+          <StatTile label="Change" value={<PnL value={ind.changePct} format={fmtPct} />} />
           <StatTile label="RSI" value={fmtNum(ind.rsi, 1)} />
           <StatTile
             label="ATR%"

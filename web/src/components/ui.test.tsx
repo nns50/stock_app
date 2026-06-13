@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { Badge, EmptyState, InfoTip, ScoreBar, StatTile } from './ui';
+import { Badge, EmptyState, InfoTip, PnL, ScoreBar, StatTile } from './ui';
 
 describe('ScoreBar', () => {
   it('renders the numeric score label', () => {
@@ -32,6 +32,27 @@ describe('StatTile', () => {
   it('renders an info affordance when given info text', () => {
     render(<StatTile label="Expectancy" value="$5" info="Average P&L per trade." />);
     expect(screen.getByLabelText('About Expectancy')).toBeInTheDocument();
+  });
+});
+
+describe('PnL', () => {
+  it('shows an up caret + bull color for gains', () => {
+    render(<PnL value={12.5} />);
+    const el = screen.getByText(/\+\$12\.50/);
+    expect(el.className).toContain('text-bull');
+    expect(el.textContent).toContain('▲');
+  });
+  it('shows a down caret + bear color for losses', () => {
+    render(<PnL value={-8} />);
+    const el = screen.getByText(/-\$8\.00/);
+    expect(el.className).toContain('text-bear');
+    expect(el.textContent).toContain('▼');
+  });
+  it('is neutral (no caret) at zero', () => {
+    render(<PnL value={0} />);
+    const el = screen.getByText('+$0.00');
+    expect(el.textContent).not.toContain('▲');
+    expect(el.textContent).not.toContain('▼');
   });
 });
 

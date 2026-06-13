@@ -2,9 +2,8 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
-import { cx, fmtNum, fmtPct, fmtSignedUsd, fmtUsd } from '../lib/format';
-import { pnlClass } from '../lib/format';
-import { Badge, Card, EmptyState, ErrorState, Spinner, StatTile } from '../components/ui';
+import { cx, fmtNum, fmtPct, fmtUsd } from '../lib/format';
+import { Badge, Card, EmptyState, ErrorState, PnL, Spinner, StatTile } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
 import { ExitModal, JournalEditModal, LogTradeModal } from '../components/PositionForms';
 import { RiskSizingModal } from '../components/RiskSizingModal';
@@ -55,9 +54,9 @@ export default function PositionsPage() {
 
       {agg && (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          <StatTile label="Total P&L" value={fmtSignedUsd(agg.total)} valueClass={pnlClass(agg.total)} />
-          <StatTile label="Realized" value={fmtSignedUsd(agg.realized)} valueClass={pnlClass(agg.realized)} />
-          <StatTile label="Unrealized" value={fmtSignedUsd(agg.unrealized)} valueClass={pnlClass(agg.unrealized)} />
+          <StatTile label="Total P&L" value={<PnL value={agg.total} />} />
+          <StatTile label="Realized" value={<PnL value={agg.realized} />} />
+          <StatTile label="Unrealized" value={<PnL value={agg.unrealized} />} />
           <StatTile label="Open mkt value" value={fmtUsd(agg.openMarketValue)} />
           <StatTile label="Open" value={agg.openCount} />
           <StatTile label="Closed" value={agg.closedCount} />
@@ -186,12 +185,16 @@ function PositionRow({
         )}
       </td>
       <td className="td text-right text-slate-400">{fmtUsd(pnl.costBasis)}</td>
-      <td className={cx('td text-right', pnlClass(pnl.realizedPnl))}>{fmtSignedUsd(pnl.realizedPnl)}</td>
-      <td className={cx('td text-right', pnlClass(pnl.unrealizedPnl))}>
-        {pnl.unrealizedPnl === null ? '—' : fmtSignedUsd(pnl.unrealizedPnl)}
+      <td className="td text-right">
+        <PnL value={pnl.realizedPnl} />
       </td>
-      <td className={cx('td text-right font-semibold', pnlClass(pnl.totalPnl))}>{fmtSignedUsd(pnl.totalPnl)}</td>
-      <td className={cx('td text-right', pnlClass(pnl.returnPct))}>{fmtPct(pnl.returnPct)}</td>
+      <td className="td text-right">{pnl.unrealizedPnl === null ? '—' : <PnL value={pnl.unrealizedPnl} />}</td>
+      <td className="td text-right">
+        <PnL value={pnl.totalPnl} className="font-semibold" />
+      </td>
+      <td className="td text-right">
+        <PnL value={pnl.returnPct} format={fmtPct} />
+      </td>
       <td className="td text-right whitespace-nowrap">
         {p.status === 'open' && (
           <button className="text-xs text-accent hover:underline mr-2" onClick={() => onExit(p)}>

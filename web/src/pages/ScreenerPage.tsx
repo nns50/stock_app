@@ -9,6 +9,7 @@ import {
   ErrorState,
   Field,
   NumberInput,
+  PnL,
   ScoreBar,
   SortTh,
   Spinner,
@@ -465,8 +466,8 @@ export default function ScreenerPage() {
                         <td className="td">
                           <ScoreBar value={r.total} />
                         </td>
-                        <td className={cx('td text-right', (ind.changePct ?? 0) >= 0 ? 'text-bull' : 'text-bear')}>
-                          {fmtPct(ind.changePct)}
+                        <td className="td text-right">
+                          <PnL value={ind.changePct} format={fmtPct} />
                         </td>
                         <td className="td text-right">{ind.relVolume === null ? '—' : `${fmtNum(ind.relVolume)}×`}</td>
                         <td className="td text-right">{fmtNum(ind.rsi, 1)}</td>
