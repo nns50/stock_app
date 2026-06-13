@@ -8,7 +8,41 @@ import { disciplineCount } from '../lib/checklist';
 import { Badge, Card, EmptyState, PnL, Spinner, StatTile } from '../components/ui';
 import { JournalEditModal } from '../components/PositionForms';
 import { DataTools } from '../components/DataTools';
-import type { Position } from '../api/types';
+import type { GroupStat, Position } from '../api/types';
+
+/** Compact "realized P&L grouped by X" table used in the Performance breakdown. */
+function Breakdown({ title, colLabel, rows }: { title: string; colLabel: string; rows: GroupStat[] }) {
+  if (!rows.length) return null;
+  return (
+    <Card className="p-3">
+      <h3 className="font-medium text-sm mb-2">{title}</h3>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-[11px] uppercase tracking-wide text-slate-500 text-left border-b border-ink-600/60">
+            <th className="py-1 pr-2 font-medium">{colLabel}</th>
+            <th className="py-1 px-2 font-medium text-right">Trades</th>
+            <th className="py-1 px-2 font-medium text-right">Win%</th>
+            <th className="py-1 pl-2 font-medium text-right">Realized P&L</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.key} className="border-b border-ink-700/40 last:border-0">
+              <td className="py-1 pr-2 text-slate-200 truncate max-w-[140px]" title={r.key}>
+                {r.key}
+              </td>
+              <td className="py-1 px-2 text-right tabular-nums text-slate-400">{r.trades}</td>
+              <td className="py-1 px-2 text-right tabular-nums text-slate-400">{fmtNum(r.winRate, 0)}%</td>
+              <td className="py-1 pl-2 text-right">
+                <PnL value={r.totalPnl} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Card>
+  );
+}
 
 export default function JournalPage() {
   const stats = useAsync(() => client.journalStats(), []);
@@ -97,6 +131,20 @@ export default function JournalPage() {
           </ResponsiveContainer>
         )}
       </Card>
+
+      {s.totalClosed > 0 && (s.byTag.length > 0 || s.byGrade.length > 0 || s.byDiscipline.length > 0) && (
+        <div>
+          <h2 className="text-sm font-semibold text-slate-300 mb-2">
+            Performance by setup
+            <span className="text-slate-500 font-normal"> — what’s actually working</span>
+          </h2>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 items-start">
+            <Breakdown title="By tag" colLabel="Tag" rows={s.byTag} />
+            <Breakdown title="By grade" colLabel="Grade" rows={s.byGrade} />
+            <Breakdown title="By discipline" colLabel="Checklist" rows={s.byDiscipline} />
+          </div>
+        </div>
+      )}
 
       {allTags.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">

@@ -156,4 +156,37 @@ describe('computeJournalStats', () => {
     const winsOnly = computeJournalStats([trades[0], trades[2]]);
     expect(winsOnly.profitFactor).toBeNull();
   });
+
+  it('breaks P&L down by tag, grade and discipline', () => {
+    const ts: Position[] = [
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        grade: 'A',
+        tags: ['breakout'],
+        checklist: [{ rule: 'r', checked: true }],
+        exits: [exit({ quantity: 10, exitPrice: 110, exitDate: '2026-02-01' })],
+      }), // +100
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        grade: 'C',
+        tags: ['breakout', 'earnings'],
+        checklist: [{ rule: 'r', checked: false }],
+        exits: [exit({ quantity: 10, exitPrice: 90, exitDate: '2026-02-02' })],
+      }), // -100
+    ];
+    const r = computeJournalStats(ts);
+    const breakout = r.byTag.find((g) => g.key === 'breakout')!;
+    expect(breakout.trades).toBe(2);
+    expect(breakout.totalPnl).toBe(0);
+    expect(r.byTag.find((g) => g.key === 'earnings')!.totalPnl).toBe(-100);
+    expect(r.byGrade.find((g) => g.key === 'A')!.totalPnl).toBe(100);
+    expect(r.byDiscipline.find((g) => g.key === 'Followed all rules')!.totalPnl).toBe(100);
+    expect(r.byDiscipline.find((g) => g.key === 'Skipped a rule')!.totalPnl).toBe(-100);
+  });
 });

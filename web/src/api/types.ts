@@ -342,6 +342,18 @@ export interface JournalStats {
   bestTrade: number;
   worstTrade: number;
   equityCurve: { date: string; pnl: number; cumulative: number }[];
+  byTag: GroupStat[];
+  byGrade: GroupStat[];
+  byDiscipline: GroupStat[];
+}
+
+export interface GroupStat {
+  key: string;
+  trades: number;
+  wins: number;
+  winRate: number;
+  totalPnl: number;
+  avgPnl: number;
 }
 
 export interface SymbolDetail {
