@@ -163,6 +163,12 @@ export const client = {
   importPositions: (positions: unknown[], mode: 'merge' | 'replace') =>
     api<{ imported: number; replaced: boolean; totalNow: number }>('/export/import', post({ positions, mode })),
 
+  // --- watchlist ---
+  watchlist: () => api<{ symbols: string[] }>('/watchlist'),
+  addWatch: (symbol: string) => api<{ symbols: string[] }>('/watchlist', post({ symbol })),
+  removeWatch: (symbol: string) =>
+    api<{ symbols: string[] }>(`/watchlist/${encodeURIComponent(symbol)}`, { method: 'DELETE' }),
+
   // --- settings (persisted UI state) ---
   settings: () => api<Record<string, unknown>>('/settings'),
   saveSetting: (key: string, value: unknown) =>

@@ -14,6 +14,7 @@ const PositionsPage = lazy(() => import('./pages/PositionsPage'));
 const JournalPage = lazy(() => import('./pages/JournalPage'));
 const AlertsPage = lazy(() => import('./pages/AlertsPage'));
 const AboutPage = lazy(() => import('./pages/AboutPage'));
+const WatchlistPage = lazy(() => import('./pages/WatchlistPage'));
 
 export default function App() {
   return (
@@ -24,6 +25,7 @@ export default function App() {
             <Routes>
               <Route path="/" element={<Navigate to="/screener" replace />} />
               <Route path="/screener" element={<ScreenerPage />} />
+              <Route path="/watchlist" element={<WatchlistPage />} />
               <Route path="/symbol/:symbol" element={<SymbolDetailPage />} />
               <Route path="/options" element={<OptionsPage />} />
               <Route path="/positions" element={<PositionsPage />} />

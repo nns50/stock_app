@@ -19,6 +19,7 @@ import { toolsRouter } from './routes/tools';
 import { snapshotsRouter } from './routes/snapshots';
 import { alertsRouter } from './routes/alerts';
 import { exportRouter } from './routes/export';
+import { watchlistRouter } from './routes/watchlist';
 
 initDb();
 
@@ -42,6 +43,7 @@ app.use('/api/tools', toolsRouter);
 app.use('/api/snapshots', snapshotsRouter);
 app.use('/api/alerts', alertsRouter);
 app.use('/api/export', exportRouter);
+app.use('/api/watchlist', watchlistRouter);
 
 // Unknown API route
 app.use('/api', (_req, res) => {
