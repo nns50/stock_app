@@ -164,7 +164,31 @@ export default function JournalPage() {
       )}
 
       <Card className="p-4">
-        <h3 className="font-medium text-sm mb-2">P&L over time (cumulative realized)</h3>
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <h3 className="font-medium text-sm">P&L over time (cumulative realized)</h3>
+          {s.totalClosed > 0 && (
+            <div className="text-xs text-slate-500 tabular-nums flex flex-wrap gap-x-3">
+              <span>
+                Max drawdown <span className="text-bear">{fmtSignedUsd(-s.maxDrawdown)}</span>
+              </span>
+              <span>
+                Streak{' '}
+                {s.currentStreak.count === 0 ? (
+                  <span className="text-slate-400">—</span>
+                ) : (
+                  <span className={s.currentStreak.type === 'win' ? 'text-bull' : 'text-bear'}>
+                    {s.currentStreak.count}
+                    {s.currentStreak.type === 'win' ? 'W' : 'L'}
+                  </span>
+                )}
+              </span>
+              <span>
+                Longest <span className="text-bull">{s.longestWinStreak}W</span> /{' '}
+                <span className="text-bear">{s.longestLossStreak}L</span>
+              </span>
+            </div>
+          )}
+        </div>
         {s.equityCurve.length === 0 ? (
           <div className="text-slate-500 text-sm py-8 text-center">Close some trades to build the equity curve.</div>
         ) : (

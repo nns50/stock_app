@@ -165,6 +165,11 @@ export interface JournalStats {
   rBuckets: { label: string; count: number }[];
   /** Suggested risk-% per trade from realized edge (null until both W/L exist). */
   kelly: KellySuggestion | null;
+  /** Max drawdown of the realized equity curve and win/loss streaks. */
+  maxDrawdown: number;
+  currentStreak: { type: 'win' | 'loss' | 'none'; count: number };
+  longestWinStreak: number;
+  longestLossStreak: number;
 }
 
 const R_BUCKETS: { label: string; test: (r: number) => boolean }[] = [
@@ -178,6 +183,49 @@ const R_BUCKETS: { label: string; test: (r: number) => boolean }[] = [
 
 function bucketRMultiples(rs: number[]): { label: string; count: number }[] {
   return R_BUCKETS.map((b) => ({ label: b.label, count: rs.filter((r) => b.test(r)).length }));
+}
+
+export interface StreakDrawdown {
+  /** Largest peak-to-trough drop in the cumulative realized-P&L curve ($). */
+  maxDrawdown: number;
+  /** The trailing run of same-result trades. */
+  currentStreak: { type: 'win' | 'loss' | 'none'; count: number };
+  longestWinStreak: number;
+  longestLossStreak: number;
+}
+
+/** Max drawdown and win/loss streaks over closed trades (in chronological order). */
+export function computeStreaksAndDrawdown(pnls: number[]): StreakDrawdown {
+  let peak = 0;
+  let cum = 0;
+  let maxDD = 0;
+  let type: 'win' | 'loss' | 'none' = 'none';
+  let count = 0;
+  let longW = 0;
+  let longL = 0;
+  for (const pnl of pnls) {
+    cum += pnl;
+    peak = Math.max(peak, cum);
+    maxDD = Math.max(maxDD, peak - cum);
+    const t = pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'none';
+    if (t === 'none') {
+      type = 'none';
+      count = 0;
+    } else if (t === type) {
+      count += 1;
+    } else {
+      type = t;
+      count = 1;
+    }
+    if (type === 'win') longW = Math.max(longW, count);
+    else if (type === 'loss') longL = Math.max(longL, count);
+  }
+  return {
+    maxDrawdown: round2(maxDD),
+    currentStreak: { type, count },
+    longestWinStreak: longW,
+    longestLossStreak: longL,
+  };
 }
 
 export interface KellySuggestion {
@@ -315,6 +363,7 @@ export function computeJournalStats(closed: Position[]): JournalStats {
     worstR: rs.length ? Math.min(...rs) : null,
     rBuckets: bucketRMultiples(rs),
     kelly: kellySuggestion(winRate, avgWin, avgLoss, wins.length + losses.length),
+    ...computeStreaksAndDrawdown(trades.map((t) => t.pnl)),
   };
 }
 
