@@ -370,6 +370,10 @@ export interface JournalStats {
   worstR: number | null;
   rBuckets: { label: string; count: number }[];
   kelly: KellySuggestion | null;
+  maxDrawdown: number;
+  currentStreak: { type: 'win' | 'loss' | 'none'; count: number };
+  longestWinStreak: number;
+  longestLossStreak: number;
 }
 
 export interface KellySuggestion {
