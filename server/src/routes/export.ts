@@ -80,6 +80,8 @@ const importedPosition = z.object({
   grade: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
   checklist: z.array(z.object({ rule: z.string(), checked: z.boolean() })).optional(),
+  stopPrice: z.number().nullable().optional(),
+  targetPrice: z.number().nullable().optional(),
   createdAt: z.number().optional(),
   updatedAt: z.number().optional(),
   exits: z.array(importedExit).optional(),

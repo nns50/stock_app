@@ -287,6 +287,8 @@ export interface Position {
   grade: string | null;
   notes: string | null;
   checklist: ChecklistItem[];
+  stopPrice: number | null;
+  targetPrice: number | null;
   createdAt: number;
   updatedAt: number;
   exits: PositionExit[];

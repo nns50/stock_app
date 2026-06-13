@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS positions (
   grade       TEXT,                    -- 'A'..'F' or null
   notes       TEXT,
   checklist   TEXT,                    -- JSON array of {rule, checked} (pre-trade discipline)
+  stop_price  REAL,                    -- planned stop (price level)
+  target_price REAL,                   -- planned target (price level)
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
@@ -148,9 +150,10 @@ function seedUniverseIfEmpty(): void {
 /** Add columns introduced after the initial schema (for already-created DBs). */
 function migrate(): void {
   const cols = db.prepare('PRAGMA table_info(positions)').all() as { name: string }[];
-  if (!cols.some((c) => c.name === 'checklist')) {
-    db.exec('ALTER TABLE positions ADD COLUMN checklist TEXT');
-  }
+  const has = (c: string) => cols.some((col) => col.name === c);
+  if (!has('checklist')) db.exec('ALTER TABLE positions ADD COLUMN checklist TEXT');
+  if (!has('stop_price')) db.exec('ALTER TABLE positions ADD COLUMN stop_price REAL');
+  if (!has('target_price')) db.exec('ALTER TABLE positions ADD COLUMN target_price REAL');
 }
 
 /** Run migrations and seed the default universe. Call once at startup. */
