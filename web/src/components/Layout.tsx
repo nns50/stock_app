@@ -7,6 +7,7 @@ import { useAlerts } from './AlertsContext';
 
 const TABS = [
   { to: '/screener', label: 'Screener' },
+  { to: '/watchlist', label: 'Watch' },
   { to: '/options', label: 'Options' },
   { to: '/positions', label: 'Positions' },
   { to: '/journal', label: 'Journal' },

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
@@ -25,6 +25,27 @@ export default function SymbolDetailPage() {
   const quote = detail.data?.quote;
   const fundamentals = (detail.data?.fundamentals ?? {}) as Record<string, unknown>;
 
+  const [watched, setWatched] = useState(false);
+  useEffect(() => {
+    let active = true;
+    client
+      .watchlist()
+      .then((r) => active && setWatched(r.symbols.includes(symbol.toUpperCase())))
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [symbol]);
+  const toggleWatch = async () => {
+    const sym = symbol.toUpperCase();
+    try {
+      const r = watched ? await client.removeWatch(sym) : await client.addWatch(sym);
+      setWatched(r.symbols.includes(sym));
+    } catch {
+      /* ignore */
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -33,6 +54,14 @@ export default function SymbolDetailPage() {
             ← Screener
           </Link>
           <h1 className="text-2xl font-semibold">{symbol.toUpperCase()}</h1>
+          <button
+            className={cx('text-lg leading-none', watched ? 'text-amber-400' : 'text-slate-500 hover:text-amber-400')}
+            onClick={toggleWatch}
+            title={watched ? 'Remove from watchlist' : 'Add to watchlist'}
+            aria-label={watched ? 'Remove from watchlist' : 'Add to watchlist'}
+          >
+            {watched ? '★' : '☆'}
+          </button>
           {quote && (
             <span className="text-lg tabular-nums">
               {fmtUsd(quote.last)} <PnL value={quote.changePct} format={fmtPct} className="text-sm" />
