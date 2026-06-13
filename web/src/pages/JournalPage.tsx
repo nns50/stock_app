@@ -10,6 +10,7 @@ import { JournalEditModal } from '../components/PositionForms';
 import { DataTools } from '../components/DataTools';
 import { RiskOfRuinModal } from '../components/RiskOfRuinModal';
 import { ExcursionsModal } from '../components/ExcursionsModal';
+import { BenchmarkCard } from '../components/BenchmarkCard';
 import type { GroupStat, Position } from '../api/types';
 
 /** Compact "realized P&L grouped by X" table used in the Performance breakdown. */
@@ -231,6 +232,8 @@ export default function JournalPage() {
           </ResponsiveContainer>
         )}
       </Card>
+
+      {s.totalClosed > 0 && <BenchmarkCard />}
 
       {s.totalClosed > 0 && (s.byTag.length > 0 || s.byGrade.length > 0 || s.byDiscipline.length > 0) && (
         <div>

@@ -1,6 +1,7 @@
 import type {
   AggregatePnl,
   Candle,
+  BenchmarkResult,
   EntryCandidate,
   EntryStrategyConfig,
   ExcursionReport,
@@ -162,6 +163,11 @@ export const client = {
   // --- journal ---
   journalStats: () => api<JournalStats>('/journal/stats'),
   journalExcursions: () => api<ExcursionReport>('/journal/excursions'),
+  journalBenchmark: (accountSize?: number, symbol = 'SPY') => {
+    const qs = new URLSearchParams({ symbol });
+    if (accountSize) qs.set('accountSize', String(accountSize));
+    return api<BenchmarkResult>(`/journal/benchmark?${qs.toString()}`);
+  },
   journalTags: () => api<{ tags: string[] }>('/journal/tags'),
 
   // --- data export / restore ---
