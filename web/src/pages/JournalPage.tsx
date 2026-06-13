@@ -138,6 +138,31 @@ export default function JournalPage() {
         </Card>
       )}
 
+      {s.kelly && (
+        <Card className="p-4">
+          <h3 className="font-medium text-sm flex items-center">
+            Edge-based sizing
+            <InfoTip text="Suggested risk per trade from your realized win rate and payoff ratio (quarter-Kelly, capped at 3%). Kelly is aggressive and assumes your edge persists — a ceiling, not a recommendation." />
+          </h3>
+          <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
+            <span>
+              Suggested:{' '}
+              <span className="font-semibold text-accent tabular-nums">{fmtNum(s.kelly.suggestedRiskPct, 2)}%</span>{' '}
+              <span className="text-slate-500">/ trade</span>
+            </span>
+            <span className="text-slate-500 text-xs tabular-nums">
+              from {fmtNum(s.winRate, 0)}% win rate · {fmtNum(s.kelly.payoffRatio, 2)}:1 payoff · full Kelly{' '}
+              {fmtNum(s.kelly.fraction * 100, 1)}%
+            </span>
+          </div>
+          {!s.kelly.reliable && (
+            <div className="text-[11px] text-amber-400/90 mt-1">
+              Only {s.kelly.sampleSize} decisive trades — too few to lean on; size conservatively.
+            </div>
+          )}
+        </Card>
+      )}
+
       <Card className="p-4">
         <h3 className="font-medium text-sm mb-2">P&L over time (cumulative realized)</h3>
         {s.equityCurve.length === 0 ? (

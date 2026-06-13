@@ -369,6 +369,15 @@ export interface JournalStats {
   bestR: number | null;
   worstR: number | null;
   rBuckets: { label: string; count: number }[];
+  kelly: KellySuggestion | null;
+}
+
+export interface KellySuggestion {
+  fraction: number;
+  payoffRatio: number;
+  suggestedRiskPct: number;
+  sampleSize: number;
+  reliable: boolean;
 }
 
 export interface GroupStat {
