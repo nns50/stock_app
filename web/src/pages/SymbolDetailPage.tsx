@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { ArrowLeft, Star } from 'lucide-react';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtCompact, fmtNum, fmtPct, fmtUsd } from '../lib/format';
-import { Card, ErrorState, PnL, Spinner, StatTile } from '../components/ui';
+import { Card, ErrorState, PnL, Segmented, Spinner, StatTile } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
 import { PriceChart } from '../components/PriceChart';
 
@@ -49,18 +50,25 @@ export default function SymbolDetailPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-baseline gap-3">
-          <Link to="/screener" className="text-slate-500 hover:text-slate-300 text-sm">
-            ← Screener
+        <div className="flex items-center gap-3">
+          <Link
+            to="/screener"
+            className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-200 transition-colors"
+          >
+            <ArrowLeft className="h-4 w-4" /> Screener
           </Link>
-          <h1 className="text-2xl font-semibold">{symbol.toUpperCase()}</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-100">{symbol.toUpperCase()}</h1>
           <button
-            className={cx('text-lg leading-none', watched ? 'text-amber-400' : 'text-slate-500 hover:text-amber-400')}
             onClick={toggleWatch}
             title={watched ? 'Remove from watchlist' : 'Add to watchlist'}
             aria-label={watched ? 'Remove from watchlist' : 'Add to watchlist'}
           >
-            {watched ? '★' : '☆'}
+            <Star
+              className={cx(
+                'h-5 w-5 transition-colors',
+                watched ? 'fill-amber-400 text-amber-400' : 'text-slate-500 hover:text-amber-400',
+              )}
+            />
           </button>
           {quote && (
             <span className="text-lg tabular-nums">
@@ -74,34 +82,19 @@ export default function SymbolDetailPage() {
 
       <Card className="p-4">
         <div className="flex flex-wrap items-center gap-3 mb-3 text-sm">
-          <div className="flex rounded-md overflow-hidden border border-ink-600">
-            {TIMEFRAMES.map((tf) => (
-              <button
-                key={tf}
-                className={cx(
-                  'px-2.5 py-1',
-                  timeframe === tf ? 'bg-ink-600 text-white' : 'text-slate-400 hover:text-slate-200',
-                )}
-                onClick={() => setTimeframe(tf)}
-              >
-                {tf}
-              </button>
-            ))}
-          </div>
-          <div className="flex rounded-md overflow-hidden border border-ink-600">
-            <button
-              className={cx('px-2.5 py-1', mode === 'candles' ? 'bg-ink-600 text-white' : 'text-slate-400')}
-              onClick={() => setMode('candles')}
-            >
-              Candles
-            </button>
-            <button
-              className={cx('px-2.5 py-1', mode === 'line' ? 'bg-ink-600 text-white' : 'text-slate-400')}
-              onClick={() => setMode('line')}
-            >
-              Line
-            </button>
-          </div>
+          <Segmented
+            options={TIMEFRAMES.map((tf) => ({ value: tf, label: tf }))}
+            value={timeframe}
+            onChange={setTimeframe}
+          />
+          <Segmented
+            options={[
+              { value: 'candles', label: 'Candles' },
+              { value: 'line', label: 'Line' },
+            ]}
+            value={mode}
+            onChange={setMode}
+          />
           <label className="flex items-center gap-1 text-xs text-slate-400">
             <span className="text-accent">MA</span>
             <input
