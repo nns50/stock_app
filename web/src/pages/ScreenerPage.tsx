@@ -420,9 +420,9 @@ export default function ScreenerPage() {
         )}
 
         {result && (
-          <Card className="overflow-x-auto">
+          <Card className="overflow-auto max-h-[75vh]">
             <table className="w-full border-collapse">
-              <thead className="border-b border-ink-600/60">
+              <thead className="sticky-thead">
                 <tr>
                   <th className="th w-8"></th>
                   <SortTh label="Symbol" k="symbol" active={sortKey} dir={sortDir} onSort={onSort} />

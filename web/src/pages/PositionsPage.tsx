@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtNum, fmtPct, fmtUsd } from '../lib/format';
-import { Badge, Card, EmptyState, ErrorState, PnL, Spinner, StatTile } from '../components/ui';
+import { Badge, Card, EmptyState, ErrorState, PnL, SkeletonStats, SkeletonTable, StatTile } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
 import { ExitModal, JournalEditModal, LogTradeModal } from '../components/PositionForms';
 import { RiskSizingModal } from '../components/RiskSizingModal';
@@ -76,7 +76,7 @@ export default function PositionsPage() {
         </div>
       </div>
 
-      {agg && (
+      {agg ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <StatTile label="Total P&L" value={<PnL value={agg.total} />} />
           <StatTile label="Realized" value={<PnL value={agg.realized} />} />
@@ -85,7 +85,9 @@ export default function PositionsPage() {
           <StatTile label="Open" value={agg.openCount} />
           <StatTile label="Closed" value={agg.closedCount} />
         </div>
-      )}
+      ) : data.loading ? (
+        <SkeletonStats count={6} />
+      ) : null}
 
       {data.data?.exposure && data.data.exposure.gross > 0 && <ExposurePanel exposure={data.data.exposure} />}
 
@@ -105,7 +107,9 @@ export default function PositionsPage() {
       </div>
 
       {data.loading && !data.data ? (
-        <Spinner />
+        <Card>
+          <SkeletonTable rows={6} cols={11} />
+        </Card>
       ) : data.error ? (
         <Card>
           <ErrorState error={data.error} onRetry={reload} />
@@ -123,9 +127,9 @@ export default function PositionsPage() {
           />
         </Card>
       ) : (
-        <Card className="overflow-x-auto">
+        <Card className="overflow-auto max-h-[70vh]">
           <table className="w-full">
-            <thead className="border-b border-ink-600/60">
+            <thead className="sticky-thead">
               <tr>
                 <th className="th">Symbol</th>
                 <th className="th">Side</th>
