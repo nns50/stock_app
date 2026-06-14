@@ -3,7 +3,7 @@ import { client } from '../api/client';
 import { fmtNum, fmtUsd, todayISO } from '../lib/format';
 import { useLocalStorage } from '../lib/hooks';
 import { CHECKLIST_SETTING_KEY, DEFAULT_CHECKLIST_RULES, rulesFromSetting } from '../lib/checklist';
-import { Field, Modal, NumberInput } from './ui';
+import { Field, Modal, NumberInput, Segmented } from './ui';
 import { useToast } from './ToastContext';
 import type { Position, RiskSizingResult } from '../api/types';
 
@@ -182,17 +182,15 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
       }
     >
       <div className="space-y-3">
-        <div className="flex rounded-md overflow-hidden border border-ink-600 text-sm">
-          {(['stock', 'option'] as const).map((t) => (
-            <button
-              key={t}
-              className={`flex-1 px-3 py-1.5 ${assetType === t ? 'bg-ink-600 text-white' : 'text-slate-400'}`}
-              onClick={() => setAssetType(t)}
-            >
-              {t === 'stock' ? 'Stock' : 'Option'}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          full
+          options={[
+            { value: 'stock', label: 'Stock' },
+            { value: 'option', label: 'Option' },
+          ]}
+          value={assetType}
+          onChange={setAssetType}
+        />
         <div className="grid grid-cols-2 gap-3">
           <Field label="Symbol">
             <input
