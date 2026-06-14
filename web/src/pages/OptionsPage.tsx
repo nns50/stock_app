@@ -157,7 +157,7 @@ function ChainView({ symbol, expiration }: { symbol: string; expiration: string 
   const anyComputed = contracts.some((c) => c.greeks?.computed);
 
   return (
-    <Card className="overflow-x-auto">
+    <Card>
       <div className="flex items-center justify-between p-3 border-b border-ink-600/60">
         <div className="text-sm text-slate-400">
           {symbol} {expiration} · underlying <span className="text-slate-200">{fmtUsd(u)}</span>
@@ -183,45 +183,47 @@ function ChainView({ symbol, expiration }: { symbol: string; expiration: string 
           </button>
         </div>
       </div>
-      <table className="w-full">
-        <thead className="border-b border-ink-600/60">
-          <tr>
-            <th className="th text-right">Strike</th>
-            <th className="th text-right">Bid</th>
-            <th className="th text-right">Ask</th>
-            <th className="th text-right">Mark</th>
-            <th className="th text-right">Vol</th>
-            <th className="th text-right">OI</th>
-            <th className="th text-right">IV</th>
-            <th className="th text-right">Δ</th>
-            <th className="th text-right">Θ</th>
-            <th className="th text-right">Γ</th>
-            <th className="th text-right">ν</th>
-          </tr>
-        </thead>
-        <tbody>
-          {contracts.map((c) => {
-            const itm = side === 'call' ? u !== null && c.strike < u : u !== null && c.strike > u;
-            return (
-              <tr key={c.symbol} className={cx('border-b border-ink-700/50', itm && 'bg-ink-700/30')}>
-                <td className="td text-right font-semibold">{fmtNum(c.strike)}</td>
-                <td className="td text-right">{fmtNum(c.bid)}</td>
-                <td className="td text-right">{fmtNum(c.ask)}</td>
-                <td className="td text-right">{fmtNum(c.mark)}</td>
-                <td className="td text-right text-slate-400">{c.volume ?? '—'}</td>
-                <td className="td text-right text-slate-400">{c.openInterest ?? '—'}</td>
-                <td className="td text-right">
-                  {c.greeks?.iv === undefined ? '—' : `${(c.greeks.iv * 100).toFixed(0)}%`}
-                </td>
-                <td className="td text-right">{fmtNum(c.greeks?.delta, 3)}</td>
-                <td className="td text-right text-slate-400">{fmtNum(c.greeks?.theta, 3)}</td>
-                <td className="td text-right text-slate-400">{fmtNum(c.greeks?.gamma, 4)}</td>
-                <td className="td text-right text-slate-400">{fmtNum(c.greeks?.vega, 3)}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      <div className="overflow-auto max-h-[60vh]">
+        <table className="w-full">
+          <thead className="sticky-thead">
+            <tr>
+              <th className="th text-right">Strike</th>
+              <th className="th text-right">Bid</th>
+              <th className="th text-right">Ask</th>
+              <th className="th text-right">Mark</th>
+              <th className="th text-right">Vol</th>
+              <th className="th text-right">OI</th>
+              <th className="th text-right">IV</th>
+              <th className="th text-right">Δ</th>
+              <th className="th text-right">Θ</th>
+              <th className="th text-right">Γ</th>
+              <th className="th text-right">ν</th>
+            </tr>
+          </thead>
+          <tbody>
+            {contracts.map((c) => {
+              const itm = side === 'call' ? u !== null && c.strike < u : u !== null && c.strike > u;
+              return (
+                <tr key={c.symbol} className={cx('border-b border-ink-700/50', itm && 'bg-ink-700/30')}>
+                  <td className="td text-right font-semibold">{fmtNum(c.strike)}</td>
+                  <td className="td text-right">{fmtNum(c.bid)}</td>
+                  <td className="td text-right">{fmtNum(c.ask)}</td>
+                  <td className="td text-right">{fmtNum(c.mark)}</td>
+                  <td className="td text-right text-slate-400">{c.volume ?? '—'}</td>
+                  <td className="td text-right text-slate-400">{c.openInterest ?? '—'}</td>
+                  <td className="td text-right">
+                    {c.greeks?.iv === undefined ? '—' : `${(c.greeks.iv * 100).toFixed(0)}%`}
+                  </td>
+                  <td className="td text-right">{fmtNum(c.greeks?.delta, 3)}</td>
+                  <td className="td text-right text-slate-400">{fmtNum(c.greeks?.theta, 3)}</td>
+                  <td className="td text-right text-slate-400">{fmtNum(c.greeks?.gamma, 4)}</td>
+                  <td className="td text-right text-slate-400">{fmtNum(c.greeks?.vega, 3)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
       {anyComputed && (
         <div className="p-2 text-[11px] text-slate-500">
           Greeks marked here are computed locally via Black–Scholes (provider didn't supply them).
