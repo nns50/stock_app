@@ -4,6 +4,7 @@ import { fmtNum, fmtUsd, todayISO } from '../lib/format';
 import { useLocalStorage } from '../lib/hooks';
 import { CHECKLIST_SETTING_KEY, DEFAULT_CHECKLIST_RULES, rulesFromSetting } from '../lib/checklist';
 import { Field, Modal, NumberInput } from './ui';
+import { useToast } from './ToastContext';
 import type { Position, RiskSizingResult } from '../api/types';
 
 const GRADES = ['', 'A', 'B', 'C', 'D', 'F'];
@@ -24,6 +25,7 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
   const [notes, setNotes] = useState('');
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const { toast } = useToast();
 
   // Pre-trade discipline checklist: an editable rule list (persisted in settings)
   // the user ticks before logging an entry; the result is saved with the trade.
@@ -151,9 +153,11 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
         stopPrice: stopPrice ?? null,
         targetPrice: targetPrice ?? null,
       });
+      const sym = symbol.trim().toUpperCase();
       reset();
       onSaved();
       onClose();
+      toast(`Logged ${quantity} ${sym}`, { type: 'success' });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -416,6 +420,7 @@ export function ExitModal({
   const [notes, setNotes] = useState('');
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const { toast } = useToast();
 
   const submit = async () => {
     if (!position) return;
@@ -424,8 +429,10 @@ export function ExitModal({
     setError(undefined);
     try {
       await client.addExit(position.id, { quantity, exitPrice, exitDate, fees: fees ?? 0, notes: notes || null });
+      const sym = position.symbol;
       onSaved();
       onClose();
+      toast(`Exit recorded for ${sym}`, { type: 'success' });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -492,6 +499,7 @@ export function JournalEditModal({
   const [grade, setGrade] = useState(position?.grade ?? '');
   const [notes, setNotes] = useState(position?.notes ?? '');
   const [busy, setBusy] = useState(false);
+  const { toast } = useToast();
 
   // Re-sync when a different position is opened.
   const key = position?.id;
@@ -517,6 +525,7 @@ export function JournalEditModal({
       });
       onSaved();
       onClose();
+      toast('Journal updated', { type: 'success' });
     } finally {
       setBusy(false);
     }

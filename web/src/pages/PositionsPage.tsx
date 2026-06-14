@@ -8,6 +8,8 @@ import { RefreshBar } from '../components/RefreshBar';
 import { ExitModal, JournalEditModal, LogTradeModal } from '../components/PositionForms';
 import { RiskSizingModal } from '../components/RiskSizingModal';
 import { ExposurePanel } from '../components/ExposurePanel';
+import { useToast } from '../components/ToastContext';
+import { useConfirm } from '../components/ConfirmContext';
 import type { Position, PositionWithPnl } from '../api/types';
 
 type StatusFilter = 'all' | 'open' | 'closed';
@@ -24,6 +26,8 @@ export default function PositionsPage() {
   const [exitPos, setExitPos] = useState<Position | null>(null);
   const [editPos, setEditPos] = useState<Position | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const { toast } = useToast();
+  const confirm = useConfirm();
 
   const reload = () => {
     setLastUpdated(Date.now());
@@ -31,9 +35,28 @@ export default function PositionsPage() {
   };
 
   const remove = async (id: number) => {
-    if (!window.confirm('Delete this position and its exits?')) return;
+    const found = data.data?.positions.find((r) => r.position.id === id)?.position;
+    const ok = await confirm({
+      title: 'Delete position?',
+      body: 'This removes the trade and its exits from your journal.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     await client.deletePosition(id);
     reload();
+    toast('Position deleted', {
+      type: 'success',
+      action: found
+        ? {
+            label: 'Undo',
+            onClick: async () => {
+              await client.importPositions([found], 'merge');
+              reload();
+            },
+          }
+        : undefined,
+    });
   };
 
   const agg = data.data?.aggregate;
