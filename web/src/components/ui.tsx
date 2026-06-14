@@ -1,4 +1,5 @@
 import { ReactNode, useEffect } from 'react';
+import { X } from 'lucide-react';
 import { cx, fmtSignedUsd, pnlClass } from '../lib/format';
 
 /**
@@ -274,22 +275,70 @@ export function Modal({
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 overflow-y-auto animate-overlay-in"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 backdrop-blur-sm p-4 overflow-y-auto animate-overlay-in"
       onMouseDown={onClose}
     >
       <div
-        className={cx('card w-full mt-12 mb-12 animate-modal-in', wide ? 'max-w-3xl' : 'max-w-lg')}
+        className={cx('card shadow-pop w-full mt-12 mb-12 animate-modal-in', wide ? 'max-w-3xl' : 'max-w-lg')}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-ink-600/60 px-4 py-3">
-          <h3 className="font-semibold">{title}</h3>
-          <button className="text-slate-400 hover:text-slate-200" onClick={onClose} aria-label="Close">
-            ✕
+        <div className="flex items-center justify-between border-b border-ink-600/60 px-5 py-3.5">
+          <h3 className="text-base font-semibold text-slate-100">{title}</h3>
+          <button
+            className="p-1 -mr-1 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-ink-700 transition-colors"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            <X className="h-[18px] w-[18px]" />
           </button>
         </div>
-        <div className="px-4 py-4">{children}</div>
-        {footer && <div className="flex justify-end gap-2 border-t border-ink-600/60 px-4 py-3">{footer}</div>}
+        <div className="px-5 py-4">{children}</div>
+        {footer && (
+          <div className="flex justify-end gap-2 border-t border-ink-600/60 px-5 py-3.5 bg-ink-850/40 rounded-b-xl">
+            {footer}
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Reusable segmented control (pill toggle). Replaces ad-hoc inline toggles for
+ * a consistent look. `full` makes it stretch with equal-width segments.
+ */
+export function Segmented<T extends string>({
+  options,
+  value,
+  onChange,
+  full,
+}: {
+  options: { value: T; label: ReactNode }[];
+  value: T;
+  onChange: (v: T) => void;
+  full?: boolean;
+}) {
+  return (
+    <div
+      className={cx('p-0.5 rounded-lg bg-ink-900 border border-ink-600 gap-0.5', full ? 'flex' : 'inline-flex')}
+      role="tablist"
+    >
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="tab"
+          aria-selected={value === o.value}
+          onClick={() => onChange(o.value)}
+          className={cx(
+            'px-3 py-1 rounded-md text-sm font-medium transition-colors',
+            full && 'flex-1',
+            value === o.value ? 'bg-ink-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200',
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
     </div>
   );
 }

@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Plus } from 'lucide-react';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
-import { cx, fmtNum, fmtPct, fmtUsd } from '../lib/format';
+import { fmtNum, fmtPct, fmtUsd } from '../lib/format';
 import {
   Badge,
   Card,
@@ -11,6 +11,7 @@ import {
   ErrorState,
   PageHeader,
   PnL,
+  Segmented,
   SkeletonStats,
   SkeletonTable,
   StatTile,
@@ -105,20 +106,15 @@ export default function PositionsPage() {
 
       {data.data?.exposure && data.data.exposure.gross > 0 && <ExposurePanel exposure={data.data.exposure} />}
 
-      <div className="flex items-center gap-1">
-        {(['open', 'closed', 'all'] as StatusFilter[]).map((s) => (
-          <button
-            key={s}
-            className={cx(
-              'px-3 py-1 rounded-md text-sm capitalize',
-              statusFilter === s ? 'bg-ink-600 text-white' : 'text-slate-400 hover:bg-ink-700',
-            )}
-            onClick={() => setStatusFilter(s)}
-          >
-            {s}
-          </button>
-        ))}
-      </div>
+      <Segmented
+        options={[
+          { value: 'open', label: 'Open' },
+          { value: 'closed', label: 'Closed' },
+          { value: 'all', label: 'All' },
+        ]}
+        value={statusFilter}
+        onChange={setStatusFilter}
+      />
 
       {data.loading && !data.data ? (
         <Card>

@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import { Badge, EmptyState, InfoTip, PnL, ScoreBar, SkeletonStats, SkeletonTable, StatTile } from './ui';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { Badge, EmptyState, InfoTip, PnL, ScoreBar, Segmented, SkeletonStats, SkeletonTable, StatTile } from './ui';
 
 describe('ScoreBar', () => {
   it('renders the numeric score label', () => {
@@ -69,6 +69,26 @@ describe('EmptyState', () => {
     render(<EmptyState title="Nothing here" hint="Add some data" />);
     expect(screen.getByText('Nothing here')).toBeInTheDocument();
     expect(screen.getByText('Add some data')).toBeInTheDocument();
+  });
+});
+
+describe('Segmented', () => {
+  it('marks the active option and fires onChange when another is picked', () => {
+    const onChange = vi.fn();
+    render(
+      <Segmented
+        value="a"
+        onChange={onChange}
+        options={[
+          { value: 'a', label: 'Alpha' },
+          { value: 'b', label: 'Beta' },
+        ]}
+      />,
+    );
+    expect(screen.getByRole('tab', { name: 'Alpha' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Beta' })).toHaveAttribute('aria-selected', 'false');
+    fireEvent.click(screen.getByRole('tab', { name: 'Beta' }));
+    expect(onChange).toHaveBeenCalledWith('b');
   });
 });
 
