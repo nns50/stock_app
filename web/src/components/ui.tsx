@@ -44,6 +44,40 @@ export function Spinner({ label }: { label?: string }) {
   );
 }
 
+/** A single shimmering placeholder block. Width/height via className. */
+export function Skeleton({ className }: { className?: string }) {
+  return <div className={cx('skeleton', className)} aria-hidden="true" />;
+}
+
+/** Placeholder for a stat-tile row while data loads. */
+export function SkeletonStats({ count = 5 }: { count?: number }) {
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3" aria-hidden="true">
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i} className="card p-3 space-y-2">
+          <Skeleton className="h-3 w-16" />
+          <Skeleton className="h-5 w-20" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Placeholder rows shaped like a table while it loads. */
+export function SkeletonTable({ rows = 6, cols = 5 }: { rows?: number; cols?: number }) {
+  return (
+    <div className="space-y-2 p-1" role="status" aria-label="Loading">
+      {Array.from({ length: rows }).map((_, r) => (
+        <div key={r} className="flex gap-3">
+          {Array.from({ length: cols }).map((_, c) => (
+            <Skeleton key={c} className={cx('h-4 flex-1', c === 0 ? 'max-w-24' : '')} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function EmptyState({ title, hint, action }: { title: string; hint?: string; action?: ReactNode }) {
   return (
     <div className="text-center py-10 px-4">
@@ -216,11 +250,11 @@ export function Modal({
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 overflow-y-auto animate-overlay-in"
       onMouseDown={onClose}
     >
       <div
-        className={cx('card w-full mt-12 mb-12', wide ? 'max-w-3xl' : 'max-w-lg')}
+        className={cx('card w-full mt-12 mb-12 animate-modal-in', wide ? 'max-w-3xl' : 'max-w-lg')}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-ink-600/60 px-4 py-3">

@@ -283,9 +283,9 @@ export default function JournalPage() {
           />
         </Card>
       ) : (
-        <Card className="overflow-x-auto">
+        <Card className="overflow-auto max-h-[70vh]">
           <table className="w-full">
-            <thead className="border-b border-ink-600/60">
+            <thead className="sticky-thead">
               <tr>
                 <th className="th">Symbol</th>
                 <th className="th">Entry → last exit</th>

@@ -47,6 +47,80 @@ body {
   .chip {
     @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium;
   }
+  /* Loading placeholder shaped like the content it stands in for. */
+  .skeleton {
+    @apply rounded bg-ink-700/60 relative overflow-hidden;
+  }
+  /* Pinned table header for tables that scroll inside their own container.
+     Pair with a scroll wrapper (e.g. `overflow-auto max-h-[70vh]`) — a sticky
+     header needs its scrollport to be that wrapper, not the page. */
+  .sticky-thead th {
+    @apply sticky top-0 z-10 bg-ink-800;
+    box-shadow: inset 0 -1px 0 0 rgb(71 85 105 / 0.4);
+  }
+}
+
+/* Consistent keyboard-focus ring across interactive controls (mouse clicks
+   stay clean via :focus-visible). */
+.btn-primary:focus-visible,
+.btn-ghost:focus-visible,
+.btn-danger:focus-visible,
+a:focus-visible,
+button:focus-visible,
+select:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px #0b0f17,
+    0 0 0 4px #38bdf8;
+}
+
+/* Subtle entrance animations. */
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.06), transparent);
+  transform: translateX(-100%);
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+}
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+}
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out both;
+}
+.animate-modal-in {
+  animation: modal-in 0.16s ease-out both;
+}
+.animate-overlay-in {
+  animation: overlay-in 0.15s ease-out both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in,
+  .animate-modal-in,
+  .animate-overlay-in,
+  .skeleton::after {
+    animation: none;
+  }
 }
 
 /* thin scrollbars for dense tables */

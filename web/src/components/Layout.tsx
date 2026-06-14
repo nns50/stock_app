@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useState } from 'react';
-import { Link, NavLink } from 'react-router-dom';
+import { Link, NavLink, useLocation } from 'react-router-dom';
 import { cx } from '../lib/format';
 import { useProvider } from './ProviderContext';
 import { ProviderStatusModal } from './ProviderStatusModal';
@@ -122,6 +122,7 @@ function ProviderBanner() {
 
 export function Layout({ children }: { children: ReactNode }) {
   const [providerOpen, setProviderOpen] = useState(false);
+  const { pathname } = useLocation();
   return (
     <div className="min-h-full flex flex-col">
       <header className="sticky top-0 z-40 bg-ink-800/95 backdrop-blur border-b border-ink-600/60">
@@ -177,7 +178,11 @@ export function Layout({ children }: { children: ReactNode }) {
 
       <ProviderBanner />
 
-      <main className="flex-1 max-w-[1400px] w-full mx-auto px-4 py-5">{children}</main>
+      <main className="flex-1 max-w-[1400px] w-full mx-auto px-4 py-5">
+        <div key={pathname} className="animate-fade-in">
+          {children}
+        </div>
+      </main>
 
       <footer className="border-t border-ink-700 bg-ink-800/60">
         <div className="max-w-[1400px] mx-auto px-4 py-3 text-[12px] text-slate-500 text-center">

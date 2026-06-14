@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { Badge, EmptyState, InfoTip, PnL, ScoreBar, StatTile } from './ui';
+import { Badge, EmptyState, InfoTip, PnL, ScoreBar, SkeletonStats, SkeletonTable, StatTile } from './ui';
 
 describe('ScoreBar', () => {
   it('renders the numeric score label', () => {
@@ -69,5 +69,18 @@ describe('EmptyState', () => {
     render(<EmptyState title="Nothing here" hint="Add some data" />);
     expect(screen.getByText('Nothing here')).toBeInTheDocument();
     expect(screen.getByText('Add some data')).toBeInTheDocument();
+  });
+});
+
+describe('skeletons', () => {
+  it('SkeletonTable exposes an accessible loading status with the requested rows', () => {
+    const { container } = render(<SkeletonTable rows={4} cols={3} />);
+    expect(screen.getByRole('status', { name: 'Loading' })).toBeInTheDocument();
+    expect(container.querySelectorAll('.skeleton').length).toBe(4 * 3);
+  });
+  it('SkeletonStats renders the requested number of tiles', () => {
+    const { container } = render(<SkeletonStats count={6} />);
+    // Two shimmer blocks per tile (label + value).
+    expect(container.querySelectorAll('.skeleton').length).toBe(12);
   });
 });
