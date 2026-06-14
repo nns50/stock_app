@@ -274,7 +274,12 @@ export default function JournalPage() {
         <Card>
           <EmptyState
             title="No closed trades yet"
-            hint="Closed positions appear here with tags, grades, notes, and stats."
+            hint="Closed positions appear here with tags, grades, notes, and stats. Log a trade and record an exit to start building your journal."
+            action={
+              <Link to="/positions" className="btn-primary">
+                Log a trade →
+              </Link>
+            }
           />
         </Card>
       ) : (

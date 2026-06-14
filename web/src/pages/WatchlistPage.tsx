@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { client } from '../api/client';
 import { fmtCompact, fmtPct, fmtUsd } from '../lib/format';
@@ -15,6 +15,7 @@ export default function WatchlistPage() {
   const [input, setInput] = useState('');
   const [err, setErr] = useState<string>();
   const { toast } = useToast();
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const loadQuotes = useCallback(async (syms: string[]) => {
     if (!syms.length) {
@@ -93,6 +94,7 @@ export default function WatchlistPage() {
       <Card className="p-3">
         <div className="flex items-center gap-2">
           <input
+            ref={inputRef}
             className="input max-w-[180px]"
             placeholder="Add symbol (e.g. AAPL)"
             value={input}
@@ -113,6 +115,11 @@ export default function WatchlistPage() {
           <EmptyState
             title="Nothing on your watchlist yet"
             hint="Add symbols above, or use the ☆ on a symbol's detail page. Your list is saved on the server."
+            action={
+              <button className="btn-primary" onClick={() => inputRef.current?.focus()}>
+                Add your first symbol
+              </button>
+            }
           />
         </Card>
       ) : (
