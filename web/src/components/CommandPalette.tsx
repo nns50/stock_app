@@ -20,6 +20,7 @@ const NAV: { label: string; to: string }[] = [
   { label: 'Positions', to: '/positions' },
   { label: 'Journal', to: '/journal' },
   { label: 'Alerts', to: '/alerts' },
+  { label: 'Settings', to: '/settings' },
   { label: 'About / How it works', to: '/about' },
 ];
 

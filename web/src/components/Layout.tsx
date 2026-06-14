@@ -157,6 +157,16 @@ export function Layout({ children }: { children: ReactNode }) {
               <kbd className="text-[10px] px-1 rounded bg-ink-600 border border-ink-500">⌘K</kbd>
             </button>
             <AlertsBell />
+            <NavLink
+              to="/settings"
+              className={({ isActive }: { isActive: boolean }) =>
+                cx('p-1.5 rounded hover:bg-ink-700 text-lg leading-none', isActive ? 'text-accent' : 'text-slate-300')
+              }
+              title="Settings"
+              aria-label="Settings"
+            >
+              ⚙
+            </NavLink>
             <ProviderChip onClick={() => setProviderOpen(true)} />
           </div>
         </div>
