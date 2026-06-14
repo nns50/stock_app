@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { client, ApiError } from '../api/client';
+import { useToast } from './ToastContext';
 
 type Pending = { positions: unknown[]; fileName: string };
 
@@ -14,6 +15,7 @@ export function DataTools({ onImported }: { onImported: () => void }) {
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const { toast } = useToast();
 
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -43,6 +45,7 @@ export function DataTools({ onImported }: { onImported: () => void }) {
       });
       setPending(null);
       onImported();
+      toast(`Imported ${res.imported} position(s)`, { type: 'success' });
     } catch (err) {
       const text = err instanceof ApiError ? err.message : 'Import failed';
       setMsg({ ok: false, text });

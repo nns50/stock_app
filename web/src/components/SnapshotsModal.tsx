@@ -3,6 +3,8 @@ import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtDate, fmtNum, fmtPct, fmtUsd, pnlClass } from '../lib/format';
 import { Badge, Card, EmptyState, ErrorState, Modal, Spinner, StatTile } from './ui';
+import { useConfirm } from './ConfirmContext';
+import { useToast } from './ToastContext';
 import type { EdgeReport, SnapshotSummary } from '../api/types';
 
 export function SnapshotsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -94,6 +96,8 @@ function SnapshotRow({
   onToggle: () => void;
   onDeleted: () => void;
 }) {
+  const confirm = useConfirm();
+  const { toast } = useToast();
   return (
     <Card className="p-2">
       <div className="flex items-center gap-2 text-sm">
@@ -106,10 +110,11 @@ function SnapshotRow({
         <button
           className="ml-auto text-xs text-slate-500 hover:text-bear"
           onClick={async () => {
-            if (window.confirm('Delete this snapshot?')) {
-              await client.deleteSnapshot(s.id);
-              onDeleted();
-            }
+            const ok = await confirm({ title: 'Delete snapshot?', confirmLabel: 'Delete', danger: true });
+            if (!ok) return;
+            await client.deleteSnapshot(s.id);
+            onDeleted();
+            toast('Snapshot deleted', { type: 'success' });
           }}
         >
           delete

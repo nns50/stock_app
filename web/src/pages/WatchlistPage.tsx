@@ -4,6 +4,7 @@ import { client } from '../api/client';
 import { fmtCompact, fmtPct, fmtUsd } from '../lib/format';
 import { Card, EmptyState, PnL, Spinner } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
+import { useToast } from '../components/ToastContext';
 import type { Quote } from '../api/types';
 
 export default function WatchlistPage() {
@@ -13,6 +14,7 @@ export default function WatchlistPage() {
   const [loading, setLoading] = useState(true);
   const [input, setInput] = useState('');
   const [err, setErr] = useState<string>();
+  const { toast } = useToast();
 
   const loadQuotes = useCallback(async (syms: string[]) => {
     if (!syms.length) {
@@ -63,6 +65,17 @@ export default function WatchlistPage() {
       const r = await client.removeWatch(sym);
       setSymbols(r.symbols);
       setQuotes((q) => q.filter((x) => x.symbol !== sym));
+      toast(`Removed ${sym}`, {
+        type: 'success',
+        action: {
+          label: 'Undo',
+          onClick: async () => {
+            const back = await client.addWatch(sym);
+            setSymbols(back.symbols);
+            await loadQuotes(back.symbols);
+          },
+        },
+      });
     } catch {
       /* ignore */
     }
