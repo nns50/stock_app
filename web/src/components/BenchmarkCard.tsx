@@ -9,7 +9,8 @@ import { Card, PnL, StatTile } from './ui';
  */
 export function BenchmarkCard() {
   const [accountSize] = useLocalStorage<number>('risk.accountSize', 25000);
-  const b = useAsync(() => client.journalBenchmark(accountSize), [accountSize]);
+  const [benchSymbol] = useLocalStorage<string>('benchmark.symbol', 'SPY');
+  const b = useAsync(() => client.journalBenchmark(accountSize, benchSymbol || 'SPY'), [accountSize, benchSymbol]);
   const d = b.data;
   if (!d || d.benchmarkReturnPct === null) return null;
   return (
