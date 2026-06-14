@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
@@ -35,6 +35,7 @@ export default function AlertsPage() {
   const [threshold, setThreshold] = useState<number | undefined>();
   const [note, setNote] = useState('');
   const [formErr, setFormErr] = useState<string>();
+  const symbolRef = useRef<HTMLInputElement>(null);
 
   const evaluate = async () => {
     setBusy(true);
@@ -101,6 +102,7 @@ export default function AlertsPage() {
         <div className="grid sm:grid-cols-6 gap-2 items-end">
           <Field label="Symbol">
             <input
+              ref={symbolRef}
               className="input"
               value={symbol}
               onChange={(e) => setSymbol(e.target.value.toUpperCase())}
@@ -150,6 +152,11 @@ export default function AlertsPage() {
           <EmptyState
             title="No alerts yet"
             hint="Create an alert above, then hit Refresh to evaluate it against current data."
+            action={
+              <button className="btn-primary" onClick={() => symbolRef.current?.focus()}>
+                Create your first alert
+              </button>
+            }
           />
         </Card>
       ) : (
