@@ -55,12 +55,15 @@ Everything lives under one top bar:
 
 | Element | What it does |
 |---|---|
-| **Nav tabs** | Today · Screener · Watch · Options · Positions · Journal · Alerts |
+| **Nav tabs** | Icon + label for each section: Today · Screener · Watch · Options · Positions · Journal · Alerts. The active tab is highlighted; on narrow screens the labels collapse to icons. |
 | **Jump to / ⌘K** | Command palette — fuzzy-jump to any page or symbol. Press `⌘K` (mac) / `Ctrl-K`. |
 | **🔔 Alerts bell** | Triggered-alert count; quick toggle for background auto-checking. |
 | **⚙ Settings** | The consolidated settings page (also reachable from `⌘K → Settings`). |
 | **Provider chip** | Shows `live` / `demo` / `not configured`. Click for status + a connection test. |
 | **Banner** | A colored strip appears when you're on demo data or the provider isn't configured. |
+
+Every page opens with a **bold title and a one-line subtitle** describing what it's for,
+with its primary actions on the right.
 
 **Feedback you can trust:** every action confirms itself with a toast (bottom-right).
 Destructive actions (delete a trade, delete a snapshot) ask first with a styled

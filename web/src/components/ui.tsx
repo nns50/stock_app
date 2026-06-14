@@ -35,6 +35,30 @@ export function Card({ className, children }: { className?: string; children: Re
   return <div className={cx('card', className)}>{children}</div>;
 }
 
+/**
+ * Consistent page header: a bold title, optional subtitle, and a right-aligned
+ * actions slot. Standardizes the top of every page.
+ */
+export function PageHeader({
+  title,
+  subtitle,
+  actions,
+}: {
+  title: ReactNode;
+  subtitle?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-end justify-between gap-3">
+      <div className="min-w-0">
+        <h1 className="text-2xl font-bold tracking-tight text-slate-100">{title}</h1>
+        {subtitle && <p className="text-sm text-slate-400 mt-0.5">{subtitle}</p>}
+      </div>
+      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+    </div>
+  );
+}
+
 export function Spinner({ label }: { label?: string }) {
   return (
     <div className="flex items-center gap-2 text-slate-400 text-sm py-6 justify-center">
@@ -175,12 +199,12 @@ export function StatTile({
   info?: string;
 }) {
   return (
-    <Card className="px-3 py-2.5">
-      <div className="text-[11px] uppercase tracking-wide text-slate-400 flex items-center">
+    <Card className="px-3.5 py-3">
+      <div className="text-[10px] uppercase tracking-wider text-slate-500 flex items-center font-medium">
         {label}
         {info && <InfoTip text={info} label={`About ${label}`} />}
       </div>
-      <div className={cx('text-lg font-semibold tabular-nums mt-0.5', valueClass)}>{value}</div>
+      <div className={cx('text-xl font-semibold tabular-nums mt-1', valueClass)}>{value}</div>
       {sub !== undefined && <div className="text-xs text-slate-500 mt-0.5">{sub}</div>}
     </Card>
   );

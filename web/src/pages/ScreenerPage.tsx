@@ -9,6 +9,7 @@ import {
   ErrorState,
   Field,
   NumberInput,
+  PageHeader,
   PnL,
   ScoreBar,
   SortTh,
@@ -366,11 +367,11 @@ export default function ScreenerPage() {
 
       {/* ---- Results ---- */}
       <section className="flex-1 min-w-0 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="text-xl font-semibold">Watch today</h1>
-            {result && (
-              <p className="text-sm text-slate-500">
+        <PageHeader
+          title="Watch today"
+          subtitle={
+            result ? (
+              <>
                 Ranked <span className="text-slate-300">{result.results.length}</span> of {result.scannedCount} scanned
                 {result.scannedCount < result.universeCount && <> · universe {result.universeCount}</>}
                 {result.errors.length > 0 && (
@@ -379,25 +380,29 @@ export default function ScreenerPage() {
                     · <span className="text-bear">{result.errors.length} errors</span>
                   </>
                 )}
-              </p>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <button className="btn-ghost" onClick={() => setSnapshotsOpen(true)}>
-              Snapshots
-            </button>
-            {result && (
-              <button
-                className="btn-ghost"
-                onClick={saveSnapshot}
-                title="Save the top picks to track their forward performance"
-              >
-                Save snapshot
+              </>
+            ) : (
+              'Rank your universe with transparent, weighted indicators.'
+            )
+          }
+          actions={
+            <>
+              <button className="btn-ghost" onClick={() => setSnapshotsOpen(true)}>
+                Snapshots
               </button>
-            )}
-            {result && <RefreshBar onRefresh={run} lastUpdated={result.generatedAt} loading={running} />}
-          </div>
-        </div>
+              {result && (
+                <button
+                  className="btn-ghost"
+                  onClick={saveSnapshot}
+                  title="Save the top picks to track their forward performance"
+                >
+                  Save snapshot
+                </button>
+              )}
+              {result && <RefreshBar onRefresh={run} lastUpdated={result.generatedAt} loading={running} />}
+            </>
+          }
+        />
 
         {error && (
           <Card>

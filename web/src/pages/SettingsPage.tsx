@@ -4,7 +4,7 @@ import { client } from '../api/client';
 import { useLocalStorage } from '../lib/hooks';
 import { cx } from '../lib/format';
 import { CHECKLIST_SETTING_KEY, DEFAULT_CHECKLIST_RULES, rulesFromSetting } from '../lib/checklist';
-import { Card, Field, NumberInput, Spinner } from '../components/ui';
+import { Card, Field, NumberInput, PageHeader, Spinner } from '../components/ui';
 import { DataTools } from '../components/DataTools';
 import { ProviderStatusModal } from '../components/ProviderStatusModal';
 import { useProvider } from '../components/ProviderContext';
@@ -81,7 +81,7 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-4 max-w-3xl">
-      <h1 className="text-xl font-semibold">Settings</h1>
+      <PageHeader title="Settings" subtitle="Provider, risk defaults, benchmark, checklist, alerts, and your data." />
 
       <Section
         title="Market data provider"

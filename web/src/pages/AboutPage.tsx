@@ -1,5 +1,5 @@
 import { ReactNode } from 'react';
-import { Card } from '../components/ui';
+import { Card, PageHeader } from '../components/ui';
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -57,13 +57,10 @@ const COMPONENTS: { name: string; weight: number; what: string }[] = [
 export default function AboutPage() {
   return (
     <div className="max-w-3xl mx-auto space-y-4">
-      <div>
-        <h1 className="text-xl font-semibold">How this works</h1>
-        <p className="text-sm text-slate-400 mt-1">
-          A transparent, rule-based research assistant — every number on screen is something you can trace back to a
-          formula here. It is not a signal service and it never places trades.
-        </p>
-      </div>
+      <PageHeader
+        title="How this works"
+        subtitle="A transparent, rule-based research assistant — every number on screen traces back to a formula here. It is not a signal service and it never places trades."
+      />
 
       <Section title="What this is (and isn’t)">
         <p>

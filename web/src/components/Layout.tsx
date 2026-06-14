@@ -1,5 +1,18 @@
 import { ReactNode, useEffect, useState } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
+import {
+  Bell,
+  BellRing,
+  BookOpen,
+  Briefcase,
+  CandlestickChart,
+  Command,
+  Layers,
+  LayoutDashboard,
+  Search,
+  Settings,
+  Star,
+} from 'lucide-react';
 import { cx } from '../lib/format';
 import { useProvider } from './ProviderContext';
 import { ProviderStatusModal } from './ProviderStatusModal';
@@ -7,13 +20,13 @@ import { useAlerts } from './AlertsContext';
 import { CommandPalette, OPEN_PALETTE_EVENT } from './CommandPalette';
 
 const TABS = [
-  { to: '/today', label: 'Today' },
-  { to: '/screener', label: 'Screener' },
-  { to: '/watchlist', label: 'Watch' },
-  { to: '/options', label: 'Options' },
-  { to: '/positions', label: 'Positions' },
-  { to: '/journal', label: 'Journal' },
-  { to: '/alerts', label: 'Alerts' },
+  { to: '/today', label: 'Today', Icon: LayoutDashboard },
+  { to: '/screener', label: 'Screener', Icon: Search },
+  { to: '/watchlist', label: 'Watch', Icon: Star },
+  { to: '/options', label: 'Options', Icon: Layers },
+  { to: '/positions', label: 'Positions', Icon: Briefcase },
+  { to: '/journal', label: 'Journal', Icon: BookOpen },
+  { to: '/alerts', label: 'Alerts', Icon: BellRing },
 ];
 
 function ProviderChip({ onClick }: { onClick: () => void }) {
@@ -51,13 +64,13 @@ function AlertsBell() {
   return (
     <div className="relative" onClick={(e) => e.stopPropagation()}>
       <button
-        className="relative p-1.5 rounded hover:bg-ink-700 text-slate-300"
+        className="relative p-2 rounded-lg hover:bg-ink-700 text-slate-300 hover:text-slate-100 transition-colors"
         title="Alerts"
         onClick={() => setOpen((o) => !o)}
       >
-        <span className="text-lg leading-none">🔔</span>
+        <Bell className="h-[18px] w-[18px]" />
         {triggeredCount > 0 && (
-          <span className="absolute -top-1 -right-1 bg-bear text-white text-[9px] leading-none rounded-full px-1 py-0.5">
+          <span className="absolute -top-0.5 -right-0.5 bg-bear text-white text-[9px] font-semibold leading-none rounded-full px-1 py-0.5 ring-2 ring-ink-800">
             {triggeredCount}
           </span>
         )}
@@ -125,48 +138,56 @@ export function Layout({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
   return (
     <div className="min-h-full flex flex-col">
-      <header className="sticky top-0 z-40 bg-ink-800/95 backdrop-blur border-b border-ink-600/60">
-        <div className="max-w-[1400px] mx-auto px-4 flex items-center gap-6 h-14">
-          <div className="flex items-center gap-2">
-            <span className="text-accent text-lg">◧</span>
-            <span className="font-semibold tracking-tight">stock-app</span>
-            <span className="hidden sm:inline text-[11px] text-slate-500">trading assistant</span>
-          </div>
-          <nav className="flex items-center gap-1">
+      <header className="sticky top-0 z-40 bg-ink-900/80 backdrop-blur-md border-b border-ink-600/60">
+        <div className="max-w-[1400px] mx-auto px-4 flex items-center gap-4 h-14">
+          <Link to="/today" className="flex items-center gap-2 shrink-0 group">
+            <span className="grid place-items-center h-8 w-8 rounded-lg bg-gradient-to-br from-accent to-accent-muted text-white shadow-glow">
+              <CandlestickChart className="h-[18px] w-[18px]" />
+            </span>
+            <span className="font-semibold tracking-tight hidden sm:inline">stock-app</span>
+          </Link>
+          <nav className="flex items-center gap-0.5 overflow-x-auto">
             {TABS.map((t) => (
               <NavLink
                 key={t.to}
                 to={t.to}
                 className={({ isActive }: { isActive: boolean }) =>
                   cx(
-                    'px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
-                    isActive ? 'bg-ink-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-ink-700',
+                    'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap',
+                    isActive
+                      ? 'bg-ink-700 text-white ring-1 ring-ink-500/60'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-ink-700/60',
                   )
                 }
               >
-                {t.label}
+                <t.Icon className="h-4 w-4" />
+                <span className="hidden md:inline">{t.label}</span>
               </NavLink>
             ))}
           </nav>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex items-center gap-1.5">
             <button
-              className="hidden sm:inline-flex items-center gap-1 chip bg-ink-700 text-slate-400 hover:text-slate-200"
+              className="hidden sm:inline-flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs text-slate-400 bg-ink-800 border border-ink-600 hover:text-slate-200 hover:border-ink-500 transition-colors"
               onClick={() => window.dispatchEvent(new Event(OPEN_PALETTE_EVENT))}
               title="Command palette"
             >
-              <span>Jump to</span>
-              <kbd className="text-[10px] px-1 rounded bg-ink-600 border border-ink-500">⌘K</kbd>
+              <Command className="h-3.5 w-3.5" />
+              <span className="hidden lg:inline">Jump to</span>
+              <kbd className="text-[10px] px-1 rounded bg-ink-700 border border-ink-500">⌘K</kbd>
             </button>
             <AlertsBell />
             <NavLink
               to="/settings"
               className={({ isActive }: { isActive: boolean }) =>
-                cx('p-1.5 rounded hover:bg-ink-700 text-lg leading-none', isActive ? 'text-accent' : 'text-slate-300')
+                cx(
+                  'p-2 rounded-lg hover:bg-ink-700 transition-colors',
+                  isActive ? 'text-accent bg-ink-700' : 'text-slate-300 hover:text-slate-100',
+                )
               }
               title="Settings"
               aria-label="Settings"
             >
-              ⚙
+              <Settings className="h-[18px] w-[18px]" />
             </NavLink>
             <ProviderChip onClick={() => setProviderOpen(true)} />
           </div>
