@@ -1,7 +1,8 @@
 import { Link } from 'react-router-dom';
+import { CalendarClock, Camera, Star, TriangleAlert } from 'lucide-react';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
-import { fmtDate, fmtPct, fmtUsd } from '../lib/format';
+import { cx, fmtDate, fmtPct, fmtUsd } from '../lib/format';
 import { Card, EmptyState, PageHeader, PnL, Spinner, StatTile } from '../components/ui';
 import { GettingStarted } from '../components/GettingStarted';
 
@@ -9,11 +10,24 @@ function daysToExpiry(exp: string): number {
   return Math.ceil((Date.parse(exp) - Date.now()) / 86_400_000);
 }
 
-function Panel({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
+function Panel({
+  title,
+  icon,
+  action,
+  children,
+}: {
+  title: string;
+  icon?: React.ReactNode;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <Card className="p-4">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="font-medium text-sm">{title}</h3>
+      <div className="flex items-center justify-between mb-3 pb-2 border-b border-ink-700/50">
+        <h3 className="font-medium text-sm flex items-center gap-2 text-slate-200">
+          {icon}
+          {title}
+        </h3>
         {action}
       </div>
       {children}
@@ -73,6 +87,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
         <Panel
           title="Needs attention"
+          icon={<TriangleAlert className={cx('h-4 w-4', attentionCount > 0 ? 'text-amber-400' : 'text-slate-500')} />}
           action={
             <Link to="/alerts" className="text-xs text-accent">
               Alerts →
@@ -107,6 +122,7 @@ export default function DashboardPage() {
 
         <Panel
           title="Watchlist"
+          icon={<Star className="h-4 w-4 text-slate-500" />}
           action={
             <Link to="/watchlist" className="text-xs text-accent">
               Watchlist →
@@ -145,6 +161,7 @@ export default function DashboardPage() {
 
         <Panel
           title="Upcoming expirations"
+          icon={<CalendarClock className="h-4 w-4 text-slate-500" />}
           action={
             <Link to="/positions" className="text-xs text-accent">
               Positions →
@@ -179,6 +196,7 @@ export default function DashboardPage() {
 
         <Panel
           title="Latest screener snapshot"
+          icon={<Camera className="h-4 w-4 text-slate-500" />}
           action={
             <Link to="/screener" className="text-xs text-accent">
               Screener →

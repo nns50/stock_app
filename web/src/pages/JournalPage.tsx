@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd } from '../lib/format';
@@ -209,7 +209,13 @@ export default function JournalPage() {
           <div className="text-slate-500 text-sm py-8 text-center">Close some trades to build the equity curve.</div>
         ) : (
           <ResponsiveContainer width="100%" height={260}>
-            <LineChart data={s.equityCurve} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
+            <AreaChart data={s.equityCurve} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
+              <defs>
+                <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#38bdf8" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="#38bdf8" stopOpacity={0} />
+                </linearGradient>
+              </defs>
               <CartesianGrid stroke="#243042" strokeDasharray="2 4" vertical={false} />
               <XAxis
                 dataKey="date"
@@ -219,19 +225,27 @@ export default function JournalPage() {
               />
               <YAxis tick={{ fill: '#7c8aa0', fontSize: 11 }} axisLine={false} tickLine={false} width={56} />
               <Tooltip
-                contentStyle={{ background: '#111722', border: '1px solid #243042', borderRadius: 8, fontSize: 12 }}
+                contentStyle={{
+                  background: '#0e141f',
+                  border: '1px solid #243042',
+                  borderRadius: 10,
+                  fontSize: 12,
+                  boxShadow: '0 12px 34px -12px rgb(0 0 0 / 0.55)',
+                }}
                 labelStyle={{ color: '#cbd5e1' }}
                 formatter={(v) => [fmtSignedUsd(Number(v)), 'Cumulative']}
               />
-              <Line
+              <Area
                 type="monotone"
                 dataKey="cumulative"
                 stroke="#38bdf8"
                 strokeWidth={2}
-                dot={{ r: 2 }}
+                fill="url(#equityGrad)"
+                dot={false}
+                activeDot={{ r: 3, strokeWidth: 0 }}
                 isAnimationActive={false}
               />
-            </LineChart>
+            </AreaChart>
           </ResponsiveContainer>
         )}
       </Card>
@@ -287,7 +301,7 @@ export default function JournalPage() {
         </Card>
       ) : (
         <Card className="overflow-auto max-h-[70vh]">
-          <table className="w-full">
+          <table className="w-full table-zebra">
             <thead className="sticky-thead">
               <tr>
                 <th className="th">Symbol</th>

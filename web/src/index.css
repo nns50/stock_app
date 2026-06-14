@@ -83,6 +83,18 @@ body {
   }
 }
 
+/* Subtle zebra striping + accent-tinted row hover for flat data tables.
+   Unlayered so it reliably wins over per-row `hover:` utilities. */
+.table-zebra tbody tr {
+  transition: background-color 0.12s ease;
+}
+.table-zebra tbody tr:nth-child(even) {
+  background-color: rgb(255 255 255 / 0.02);
+}
+.table-zebra tbody tr:hover {
+  background-color: rgb(56 189 248 / 0.08);
+}
+
 /* Consistent keyboard-focus ring across interactive controls (mouse clicks
    stay clean via :focus-visible). */
 .btn-primary:focus-visible,

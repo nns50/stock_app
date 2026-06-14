@@ -142,7 +142,7 @@ export default function PositionsPage() {
         </Card>
       ) : (
         <Card className="overflow-auto max-h-[70vh]">
-          <table className="w-full">
+          <table className="w-full table-zebra">
             <thead className="sticky-thead">
               <tr>
                 <th className="th">Symbol</th>
