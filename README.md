@@ -97,6 +97,23 @@ npm run dev
 Open <http://localhost:5173>. With no `.env`, the app runs on **synthetic mock
 data** (clearly labeled in the UI) so you can explore everything immediately.
 
+**Want demo data to explore with?** Seed a handful of trades + a watchlist:
+
+```bash
+npm run seed       # 5 closed + 2 open trades, 7 watchlist symbols (idempotent)
+```
+
+## 📚 Documentation
+
+- **[User Guide](docs/USER_GUIDE.md)** — a page-by-page walkthrough of every feature
+  and a recommended daily workflow.
+- **[Strategy Playbook](docs/STRATEGY_PLAYBOOK.md)** — how to use the app's tools
+  (risk sizing, the screener Edge Report, R-multiple analytics, MAE/MFE, risk-of-ruin,
+  the SPY benchmark) to trade with a real process edge — plus concrete long-stock,
+  short-fade, and options playbooks.
+- In-app **About** page — the live, authoritative description of the scoring formulas
+  and glossary.
+
 For **free live data with no API key**, set `MARKET_DATA_PROVIDER=yahoo` (Yahoo
 Finance — covers stocks **and** options chains; Greeks computed locally). It's
 unofficial, so it's intended for personal use and may rate-limit or change. For
