@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { fmtDate, fmtPct, fmtUsd } from '../lib/format';
-import { Card, EmptyState, PnL, Spinner, StatTile } from '../components/ui';
+import { Card, EmptyState, PageHeader, PnL, Spinner, StatTile } from '../components/ui';
 import { GettingStarted } from '../components/GettingStarted';
 
 function daysToExpiry(exp: string): number {
@@ -50,10 +50,11 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-baseline justify-between">
-        <h1 className="text-xl font-semibold">Today</h1>
-        <span className="text-xs text-slate-500">{fmtDate(Date.now())}</span>
-      </div>
+      <PageHeader
+        title="Today"
+        subtitle="Open risk, alerts, and what needs your attention."
+        actions={<span className="text-xs text-slate-500">{fmtDate(Date.now())}</span>}
+      />
 
       <GettingStarted />
 

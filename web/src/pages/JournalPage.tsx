@@ -5,7 +5,7 @@ import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd } from '../lib/format';
 import { disciplineCount } from '../lib/checklist';
-import { Badge, Card, EmptyState, InfoTip, PnL, Spinner, StatTile } from '../components/ui';
+import { Badge, Card, EmptyState, InfoTip, PageHeader, PnL, Spinner, StatTile } from '../components/ui';
 import { JournalEditModal } from '../components/PositionForms';
 import { DataTools } from '../components/DataTools';
 import { RiskOfRuinModal } from '../components/RiskOfRuinModal';
@@ -76,18 +76,21 @@ export default function JournalPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-xl font-semibold">Trade journal</h1>
-        <div className="flex items-center gap-2">
-          <button className="btn-ghost" onClick={() => setExcOpen(true)}>
-            Excursions
-          </button>
-          <button className="btn-ghost" onClick={() => setRuinOpen(true)}>
-            Risk of ruin
-          </button>
-          <DataTools onImported={reload} />
-        </div>
-      </div>
+      <PageHeader
+        title="Trade journal"
+        subtitle="Stats, edge, and risk analytics from your closed trades."
+        actions={
+          <>
+            <button className="btn-ghost" onClick={() => setExcOpen(true)}>
+              Excursions
+            </button>
+            <button className="btn-ghost" onClick={() => setRuinOpen(true)}>
+              Risk of ruin
+            </button>
+            <DataTools onImported={reload} />
+          </>
+        }
+      />
 
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
         <StatTile label="Closed" value={s.totalClosed} sub={`${s.wins}W · ${s.losses}L`} />

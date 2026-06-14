@@ -1,9 +1,20 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { Plus } from 'lucide-react';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtNum, fmtPct, fmtUsd } from '../lib/format';
-import { Badge, Card, EmptyState, ErrorState, PnL, SkeletonStats, SkeletonTable, StatTile } from '../components/ui';
+import {
+  Badge,
+  Card,
+  EmptyState,
+  ErrorState,
+  PageHeader,
+  PnL,
+  SkeletonStats,
+  SkeletonTable,
+  StatTile,
+} from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
 import { ExitModal, JournalEditModal, LogTradeModal } from '../components/PositionForms';
 import { RiskSizingModal } from '../components/RiskSizingModal';
@@ -63,18 +74,21 @@ export default function PositionsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">Positions &amp; P&amp;L</h1>
-        <div className="flex items-center gap-3">
-          <RefreshBar onRefresh={reload} lastUpdated={lastUpdated} loading={data.loading} />
-          <button className="btn-ghost" onClick={() => setSizerOpen(true)}>
-            Calc size
-          </button>
-          <button className="btn-primary" onClick={() => setLogOpen(true)}>
-            + Log trade
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        title="Positions & P&L"
+        subtitle="Live realized & unrealized P&L across your open and closed trades."
+        actions={
+          <>
+            <RefreshBar onRefresh={reload} lastUpdated={lastUpdated} loading={data.loading} />
+            <button className="btn-ghost" onClick={() => setSizerOpen(true)}>
+              Calc size
+            </button>
+            <button className="btn-primary" onClick={() => setLogOpen(true)}>
+              <Plus className="h-4 w-4" /> Log trade
+            </button>
+          </>
+        }
+      />
 
       {agg ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">

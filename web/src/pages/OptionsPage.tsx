@@ -3,7 +3,17 @@ import { client } from '../api/client';
 import { useProvider } from '../components/ProviderContext';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtNum, fmtPct, fmtUsd } from '../lib/format';
-import { Badge, Card, EmptyState, ErrorState, Field, NumberInput, ScoreBar, Spinner } from '../components/ui';
+import {
+  Badge,
+  Card,
+  EmptyState,
+  ErrorState,
+  Field,
+  NumberInput,
+  PageHeader,
+  ScoreBar,
+  Spinner,
+} from '../components/ui';
 import { StrategyBuilder } from '../components/StrategyBuilder';
 import type { EntryStrategyConfig, ExitRulesConfig, OptionContract, OptionsChain } from '../api/types';
 
@@ -69,6 +79,7 @@ export default function OptionsPage() {
 
   return (
     <div className="space-y-4">
+      <PageHeader title="Options" subtitle="Chain, entry scan, exit rules, and multi-leg strategy analytics." />
       <div className="flex flex-wrap items-end gap-3">
         <Field label="Symbol">
           <div className="flex gap-2">

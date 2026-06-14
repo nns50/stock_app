@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { client } from '../api/client';
 import { fmtCompact, fmtPct, fmtUsd } from '../lib/format';
-import { Card, EmptyState, PnL, Spinner } from '../components/ui';
+import { Card, EmptyState, PageHeader, PnL, Spinner } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
 import { useToast } from '../components/ToastContext';
 import type { Quote } from '../api/types';
@@ -86,10 +86,11 @@ export default function WatchlistPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">Watchlist</h1>
-        <RefreshBar onRefresh={() => loadQuotes(symbols)} lastUpdated={asOf} loading={loading} />
-      </div>
+      <PageHeader
+        title="Watchlist"
+        subtitle="Symbols you're tracking, with live quotes."
+        actions={<RefreshBar onRefresh={() => loadQuotes(symbols)} lastUpdated={asOf} loading={loading} />}
+      />
 
       <Card className="p-3">
         <div className="flex items-center gap-2">

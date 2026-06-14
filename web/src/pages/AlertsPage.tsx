@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { ago, cx, fmtNum, fmtPct, fmtUsd } from '../lib/format';
-import { Badge, Card, EmptyState, ErrorState, Field, NumberInput, Spinner } from '../components/ui';
+import { Badge, Card, EmptyState, ErrorState, Field, NumberInput, PageHeader, Spinner } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
 import { useAlerts } from '../components/AlertsContext';
 import type { Alert } from '../api/types';
@@ -75,16 +75,16 @@ export default function AlertsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">Alerts</h1>
-          <p className="text-sm text-slate-500">
+      <PageHeader
+        title="Alerts"
+        subtitle={
+          <>
             Rule-based triggers on price, change %, relative volume, and RSI.
             {triggeredCount > 0 && <span className="text-amber-400"> · {triggeredCount} triggered</span>}
-          </p>
-        </div>
-        <RefreshBar onRefresh={evaluate} lastUpdated={lastChecked} loading={busy} />
-      </div>
+          </>
+        }
+        actions={<RefreshBar onRefresh={evaluate} lastUpdated={lastChecked} loading={busy} />}
+      />
 
       {newly.length > 0 && (
         <Card className="p-3 border-amber-500/40 bg-amber-500/5">

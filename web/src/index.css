@@ -13,27 +13,50 @@ body,
 }
 
 body {
-  @apply bg-ink-900 text-slate-200 antialiased;
+  @apply text-slate-200 antialiased;
+  /* Layered backdrop: a deep base with two faint top glows for depth. */
+  background-color: #0b0f17;
+  background-image:
+    radial-gradient(1000px 600px at 100% -10%, rgb(56 189 248 / 0.06), transparent 55%),
+    radial-gradient(900px 520px at 0% -10%, rgb(139 92 246 / 0.05), transparent 55%);
+  background-attachment: fixed;
   font-feature-settings: 'tnum' 1;
 }
 
 @layer components {
   .card {
-    @apply bg-ink-800 border border-ink-600/60 rounded-lg;
+    @apply bg-ink-800 border border-ink-600/60 rounded-xl shadow-card;
+  }
+  /* Opt-in hover affordance for clickable cards. */
+  .card-interactive {
+    @apply transition-all duration-150 hover:border-ink-500 hover:shadow-pop;
   }
   /* Tailwind v4's @apply can't reference custom classes, so each button variant
      inlines the shared base utilities instead of @apply'ing a `.btn` class. */
   .btn-primary {
-    @apply inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-accent-muted text-white hover:bg-accent;
+    @apply inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed;
+    background-image: linear-gradient(180deg, #38bdf8, #0ea5e9);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
+  }
+  .btn-primary:hover {
+    filter: brightness(1.08);
+  }
+  .btn-primary:active {
+    transform: translateY(0.5px);
   }
   .btn-ghost {
-    @apply inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-ink-700 text-slate-200 hover:bg-ink-600;
+    @apply inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-ink-700 text-slate-200 border border-ink-600 hover:bg-ink-600 hover:border-ink-500;
   }
   .btn-danger {
-    @apply inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-bear/80 text-white hover:bg-bear;
+    @apply inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed;
+    background-image: linear-gradient(180deg, #f87171, #ef4444);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
+  }
+  .btn-danger:hover {
+    filter: brightness(1.06);
   }
   .input {
-    @apply bg-ink-900 border border-ink-600 rounded-md px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-accent w-full;
+    @apply bg-ink-900 border border-ink-600 rounded-lg px-2.5 py-1.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent w-full transition-colors;
   }
   .label {
     @apply block text-xs font-medium text-slate-400 mb-1;
@@ -45,7 +68,7 @@ body {
     @apply px-3 py-1.5 text-sm tabular-nums whitespace-nowrap;
   }
   .chip {
-    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium;
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ring-white/5;
   }
   /* Loading placeholder shaped like the content it stands in for. */
   .skeleton {
