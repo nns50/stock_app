@@ -1,6 +1,6 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+/* Keep the v3-style JS config (custom colors, content globs) under Tailwind v4. */
+@config '../tailwind.config.js';
 
 :root {
   color-scheme: dark;
@@ -21,17 +21,16 @@ body {
   .card {
     @apply bg-ink-800 border border-ink-600/60 rounded-lg;
   }
-  .btn {
-    @apply inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
-  }
+  /* Tailwind v4's @apply can't reference custom classes, so each button variant
+     inlines the shared base utilities instead of @apply'ing a `.btn` class. */
   .btn-primary {
-    @apply btn bg-accent-muted text-white hover:bg-accent;
+    @apply inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-accent-muted text-white hover:bg-accent;
   }
   .btn-ghost {
-    @apply btn bg-ink-700 text-slate-200 hover:bg-ink-600;
+    @apply inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-ink-700 text-slate-200 hover:bg-ink-600;
   }
   .btn-danger {
-    @apply btn bg-bear/80 text-white hover:bg-bear;
+    @apply inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-bear/80 text-white hover:bg-bear;
   }
   .input {
     @apply bg-ink-900 border border-ink-600 rounded-md px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-accent w-full;
