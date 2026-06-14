@@ -9,14 +9,17 @@ import {
   Command,
   Layers,
   LayoutDashboard,
+  Moon,
   Search,
   Settings,
   Star,
+  Sun,
 } from 'lucide-react';
 import { cx } from '../lib/format';
 import { useProvider } from './ProviderContext';
 import { ProviderStatusModal } from './ProviderStatusModal';
 import { useAlerts } from './AlertsContext';
+import { useTheme } from './ThemeContext';
 import { CommandPalette, OPEN_PALETTE_EVENT } from './CommandPalette';
 
 const TABS = [
@@ -112,6 +115,20 @@ function AlertsBell() {
   );
 }
 
+function ThemeToggle() {
+  const { theme, toggle } = useTheme();
+  return (
+    <button
+      className="p-2 rounded-lg hover:bg-ink-700 text-slate-300 hover:text-slate-100 transition-colors"
+      onClick={toggle}
+      title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+      aria-label="Toggle color theme"
+    >
+      {theme === 'dark' ? <Sun className="h-[18px] w-[18px]" /> : <Moon className="h-[18px] w-[18px]" />}
+    </button>
+  );
+}
+
 function ProviderBanner() {
   const { status } = useProvider();
   if (!status) return null;
@@ -155,7 +172,7 @@ export function Layout({ children }: { children: ReactNode }) {
                   cx(
                     'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap',
                     isActive
-                      ? 'bg-ink-700 text-white ring-1 ring-ink-500/60'
+                      ? 'bg-ink-700 text-slate-100 ring-1 ring-ink-500/60'
                       : 'text-slate-400 hover:text-slate-200 hover:bg-ink-700/60',
                   )
                 }
@@ -175,6 +192,7 @@ export function Layout({ children }: { children: ReactNode }) {
               <span className="hidden lg:inline">Jump to</span>
               <kbd className="text-[10px] px-1 rounded bg-ink-700 border border-ink-500">⌘K</kbd>
             </button>
+            <ThemeToggle />
             <AlertsBell />
             <NavLink
               to="/settings"

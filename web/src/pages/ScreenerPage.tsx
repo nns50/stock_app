@@ -192,13 +192,13 @@ export default function ScreenerPage() {
             <div className="label">Scan source</div>
             <div className="flex rounded-md overflow-hidden border border-ink-600 text-sm">
               <button
-                className={cx('flex-1 px-2 py-1', !useCustom ? 'bg-ink-600 text-white' : 'text-slate-400')}
+                className={cx('flex-1 px-2 py-1', !useCustom ? 'bg-ink-600 text-slate-100' : 'text-slate-400')}
                 onClick={() => setUseCustom(false)}
               >
                 Universe ({universe.data?.symbols.length ?? '…'})
               </button>
               <button
-                className={cx('flex-1 px-2 py-1', useCustom ? 'bg-ink-600 text-white' : 'text-slate-400')}
+                className={cx('flex-1 px-2 py-1', useCustom ? 'bg-ink-600 text-slate-100' : 'text-slate-400')}
                 onClick={() => setUseCustom(true)}
               >
                 Custom list

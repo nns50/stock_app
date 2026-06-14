@@ -57,6 +57,7 @@ Everything lives under one top bar:
 |---|---|
 | **Nav tabs** | Icon + label for each section: Today · Screener · Watch · Options · Positions · Journal · Alerts. The active tab is highlighted; on narrow screens the labels collapse to icons. |
 | **Jump to / ⌘K** | Command palette — fuzzy-jump to any page or symbol. Press `⌘K` (mac) / `Ctrl-K`. |
+| **☀/🌙 Theme** | Toggle between dark (default) and light. Your choice is remembered per browser. |
 | **🔔 Alerts bell** | Triggered-alert count; quick toggle for background auto-checking. |
 | **⚙ Settings** | The consolidated settings page (also reachable from `⌘K → Settings`). |
 | **Provider chip** | Shows `live` / `demo` / `not configured`. Click for status + a connection test. |
