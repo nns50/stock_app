@@ -8,7 +8,7 @@ import {
   Tooltip,
   XAxis,
   YAxis,
-} from '../lib/recharts';
+} from 'recharts';
 import { client } from '../api/client';
 import { fmtNum, fmtSignedUsd, fmtUsd, pnlClass } from '../lib/format';
 import { Card, ErrorState, Field, NumberInput, StatTile } from './ui';
@@ -263,8 +263,8 @@ export function StrategyBuilder() {
                   />
                   <Tooltip
                     contentStyle={{ background: '#111722', border: '1px solid #243042', borderRadius: 8, fontSize: 12 }}
-                    labelFormatter={(l: number | string) => `Underlying $${fmtNum(Number(l))}`}
-                    formatter={(v: number) => [fmtSignedUsd(v), 'P&L']}
+                    labelFormatter={(l) => `Underlying $${fmtNum(Number(l))}`}
+                    formatter={(v) => [fmtSignedUsd(Number(v)), 'P&L']}
                   />
                   <Area
                     type="monotone"

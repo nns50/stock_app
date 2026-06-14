@@ -3,13 +3,14 @@ import {
   Bar,
   CartesianGrid,
   ComposedChart,
-  Customized,
   Line,
   ResponsiveContainer,
   Tooltip,
+  useXAxisScale,
+  useYAxisScale,
   XAxis,
   YAxis,
-} from '../lib/recharts';
+} from 'recharts';
 import type { Candle } from '../api/types';
 import { fmtCompact, fmtNum, fmtDate } from '../lib/format';
 
@@ -28,38 +29,40 @@ interface Row {
 const UP = '#22c55e';
 const DOWN = '#ef4444';
 
-/** Candlestick layer drawn against the chart's price/x scales. */
-function makeCandles(rows: Row[]) {
-  return function Candles(props: any) {
-    const xAxis = props.xAxisMap?.[0] ?? Object.values(props.xAxisMap ?? {})[0];
-    const yMap = props.yAxisMap ?? {};
-    const yAxis = yMap.price ?? Object.values(yMap)[0];
-    if (!xAxis || !yAxis) return null;
-    const xScale = xAxis.scale as (v: number) => number;
-    const yScale = yAxis.scale as (v: number) => number;
-    const step = rows.length > 1 ? Math.abs(xScale(rows[1].i) - xScale(rows[0].i)) : 8;
-    const w = Math.max(1, Math.min(14, step * 0.62));
+/**
+ * Candlestick layer. recharts 3 renders arbitrary children directly (no
+ * `Customized`), and exposes the axis scales via hooks rather than passing
+ * xAxisMap/yAxisMap, so we read them with useXAxisScale / useYAxisScale.
+ */
+function Candles({ rows }: { rows: Row[] }) {
+  const xScaleFn = useXAxisScale();
+  const yScaleFn = useYAxisScale('price');
+  if (!xScaleFn || !yScaleFn || rows.length === 0) return null;
+  // recharts 3 scales return `number | undefined`; coerce to a safe number.
+  const xs = (v: number) => xScaleFn(v) ?? 0;
+  const ys = (v: number) => yScaleFn(v) ?? 0;
+  const step = rows.length > 1 ? Math.abs(xs(rows[1].i) - xs(rows[0].i)) : 8;
+  const w = Math.max(1, Math.min(14, step * 0.62));
 
-    return (
-      <g>
-        {rows.map((d) => {
-          const xc = xScale(d.i);
-          const up = d.close >= d.open;
-          const color = up ? UP : DOWN;
-          const yO = yScale(d.open);
-          const yC = yScale(d.close);
-          const top = Math.min(yO, yC);
-          const h = Math.max(1, Math.abs(yC - yO));
-          return (
-            <g key={d.i}>
-              <line x1={xc} x2={xc} y1={yScale(d.high)} y2={yScale(d.low)} stroke={color} strokeWidth={1} />
-              <rect x={xc - w / 2} y={top} width={w} height={h} fill={color} />
-            </g>
-          );
-        })}
-      </g>
-    );
-  };
+  return (
+    <g>
+      {rows.map((d) => {
+        const xc = xs(d.i);
+        const up = d.close >= d.open;
+        const color = up ? UP : DOWN;
+        const yO = ys(d.open);
+        const yC = ys(d.close);
+        const top = Math.min(yO, yC);
+        const h = Math.max(1, Math.abs(yC - yO));
+        return (
+          <g key={d.i}>
+            <line x1={xc} x2={xc} y1={ys(d.high)} y2={ys(d.low)} stroke={color} strokeWidth={1} />
+            <rect x={xc - w / 2} y={top} width={w} height={h} fill={color} />
+          </g>
+        );
+      })}
+    </g>
+  );
 }
 
 function CandleTooltip({ active, payload }: any) {
@@ -110,8 +113,6 @@ export function PriceChart({
     [candles, maShort, maLong],
   );
 
-  const Candles = useMemo(() => makeCandles(rows), [rows]);
-
   const priceDomain = useMemo(() => {
     if (!rows.length) return [0, 1] as [number, number];
     let lo = Infinity;
@@ -150,7 +151,7 @@ export function PriceChart({
         <YAxis yAxisId="vol" domain={[0, maxVol * 4.5]} hide />
         <Tooltip content={<CandleTooltip />} isAnimationActive={false} />
         <Bar yAxisId="vol" dataKey="volume" fill="#33415a" opacity={0.5} isAnimationActive={false} />
-        {mode === 'candles' && <Customized component={Candles} />}
+        {mode === 'candles' && <Candles rows={rows} />}
         {mode === 'line' && (
           <Line
             yAxisId="price"
