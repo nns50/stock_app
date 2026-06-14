@@ -333,7 +333,7 @@ export function Segmented<T extends string>({
           className={cx(
             'px-3 py-1 rounded-md text-sm font-medium transition-colors',
             full && 'flex-1',
-            value === o.value ? 'bg-ink-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200',
+            value === o.value ? 'bg-ink-600 text-slate-100 shadow-sm' : 'text-slate-400 hover:text-slate-200',
           )}
         >
           {o.label}

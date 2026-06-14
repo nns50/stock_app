@@ -164,7 +164,7 @@ export function CommandPalette() {
                 key={it.id}
                 className={cx(
                   'w-full flex items-center justify-between gap-3 px-4 py-2 text-left text-sm',
-                  i === sel ? 'bg-ink-600 text-white' : 'text-slate-300 hover:bg-ink-700',
+                  i === sel ? 'bg-ink-600 text-slate-100' : 'text-slate-300 hover:bg-ink-700',
                 )}
                 onMouseEnter={() => setSel(i)}
                 onClick={() => exec(i)}

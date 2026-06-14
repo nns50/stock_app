@@ -216,23 +216,23 @@ export default function JournalPage() {
                   <stop offset="100%" stopColor="#38bdf8" stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid stroke="#243042" strokeDasharray="2 4" vertical={false} />
+              <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="2 4" vertical={false} />
               <XAxis
                 dataKey="date"
-                tick={{ fill: '#7c8aa0', fontSize: 11 }}
-                axisLine={{ stroke: '#243042' }}
+                tick={{ fill: 'var(--chart-axis)', fontSize: 11 }}
+                axisLine={{ stroke: 'var(--chart-grid)' }}
                 tickLine={false}
               />
-              <YAxis tick={{ fill: '#7c8aa0', fontSize: 11 }} axisLine={false} tickLine={false} width={56} />
+              <YAxis tick={{ fill: 'var(--chart-axis)', fontSize: 11 }} axisLine={false} tickLine={false} width={56} />
               <Tooltip
                 contentStyle={{
-                  background: '#0e141f',
-                  border: '1px solid #243042',
+                  background: 'var(--chart-tooltip-bg)',
+                  border: '1px solid var(--chart-grid)',
                   borderRadius: 10,
                   fontSize: 12,
-                  boxShadow: '0 12px 34px -12px rgb(0 0 0 / 0.55)',
+                  boxShadow: '0 12px 34px -12px rgb(0 0 0 / 0.45)',
                 }}
-                labelStyle={{ color: '#cbd5e1' }}
+                labelStyle={{ color: 'var(--txt-300)' }}
                 formatter={(v) => [fmtSignedUsd(Number(v)), 'Cumulative']}
               />
               <Area

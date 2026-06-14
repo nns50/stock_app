@@ -5,14 +5,25 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Dark-mode-friendly dense dashboard palette
+        // Surface + text scales resolve to CSS variables so the whole app can
+        // re-theme (light/dark) by swapping those vars — see src/index.css.
         ink: {
-          900: '#0b0f17',
-          850: '#0e141f',
-          800: '#111722',
-          700: '#1a2230',
-          600: '#243042',
-          500: '#33415a',
+          900: 'var(--ink-900)',
+          850: 'var(--ink-850)',
+          800: 'var(--ink-800)',
+          700: 'var(--ink-700)',
+          600: 'var(--ink-600)',
+          500: 'var(--ink-500)',
+        },
+        // Override the slate text shades actually used (100–600) with theme
+        // vars; the rest of Tailwind's slate scale is untouched.
+        slate: {
+          100: 'var(--txt-100)',
+          200: 'var(--txt-200)',
+          300: 'var(--txt-300)',
+          400: 'var(--txt-400)',
+          500: 'var(--txt-500)',
+          600: 'var(--txt-600)',
         },
         accent: {
           DEFAULT: '#38bdf8',

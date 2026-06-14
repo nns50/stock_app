@@ -2,8 +2,58 @@
 /* Keep the v3-style JS config (custom colors, content globs) under Tailwind v4. */
 @config '../tailwind.config.js';
 
+/* Theme tokens. Dark is the default and its values are the original literals,
+   so the dark theme renders identically; `[data-theme='light']` swaps them.
+   The ink/slate scales resolve to these vars (see tailwind.config.js), so most
+   of the app re-themes with no per-component changes. */
 :root {
+  --ink-900: #0b0f17;
+  --ink-850: #0e141f;
+  --ink-800: #111722;
+  --ink-700: #1a2230;
+  --ink-600: #243042;
+  --ink-500: #33415a;
+  --txt-100: #f1f5f9;
+  --txt-200: #e2e8f0;
+  --txt-300: #cbd5e1;
+  --txt-400: #94a3b8;
+  --txt-500: #64748b;
+  --txt-600: #475569;
+  --app-bg: #0b0f17;
+  --glow-1: rgb(56 189 248 / 0.06);
+  --glow-2: rgb(139 92 246 / 0.05);
+  --ring-offset: #0b0f17;
+  --shimmer: rgb(255 255 255 / 0.06);
+  --zebra: rgb(255 255 255 / 0.02);
+  --chart-grid: #243042;
+  --chart-axis: #7c8aa0;
+  --chart-tooltip-bg: #0e141f;
   color-scheme: dark;
+}
+
+[data-theme='light'] {
+  --ink-900: #eef2f8;
+  --ink-850: #f8fafc;
+  --ink-800: #ffffff;
+  --ink-700: #e8edf4;
+  --ink-600: #d4dce6;
+  --ink-500: #b3becd;
+  --txt-100: #0f172a;
+  --txt-200: #1e293b;
+  --txt-300: #334155;
+  --txt-400: #52617a;
+  --txt-500: #64748b;
+  --txt-600: #8a97a8;
+  --app-bg: #eef2f8;
+  --glow-1: rgb(56 189 248 / 0.1);
+  --glow-2: rgb(139 92 246 / 0.08);
+  --ring-offset: #ffffff;
+  --shimmer: rgb(15 23 42 / 0.05);
+  --zebra: rgb(15 23 42 / 0.025);
+  --chart-grid: #e2e8f0;
+  --chart-axis: #64748b;
+  --chart-tooltip-bg: #ffffff;
+  color-scheme: light;
 }
 
 html,
@@ -15,10 +65,10 @@ body,
 body {
   @apply text-slate-200 antialiased;
   /* Layered backdrop: a deep base with two faint top glows for depth. */
-  background-color: #0b0f17;
+  background-color: var(--app-bg);
   background-image:
-    radial-gradient(1000px 600px at 100% -10%, rgb(56 189 248 / 0.06), transparent 55%),
-    radial-gradient(900px 520px at 0% -10%, rgb(139 92 246 / 0.05), transparent 55%);
+    radial-gradient(1000px 600px at 100% -10%, var(--glow-1), transparent 55%),
+    radial-gradient(900px 520px at 0% -10%, var(--glow-2), transparent 55%);
   background-attachment: fixed;
   font-feature-settings: 'tnum' 1;
 }
@@ -89,7 +139,7 @@ body {
   transition: background-color 0.12s ease;
 }
 .table-zebra tbody tr:nth-child(even) {
-  background-color: rgb(255 255 255 / 0.02);
+  background-color: var(--zebra);
 }
 .table-zebra tbody tr:hover {
   background-color: rgb(56 189 248 / 0.08);
@@ -105,7 +155,7 @@ button:focus-visible,
 select:focus-visible {
   outline: none;
   box-shadow:
-    0 0 0 2px #0b0f17,
+    0 0 0 2px var(--ring-offset),
     0 0 0 4px #38bdf8;
 }
 
@@ -119,7 +169,7 @@ select:focus-visible {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.06), transparent);
+  background: linear-gradient(90deg, transparent, var(--shimmer), transparent);
   transform: translateX(-100%);
   animation: skeleton-shimmer 1.4s ease-in-out infinite;
 }
