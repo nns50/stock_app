@@ -244,25 +244,30 @@ export function StrategyBuilder() {
               </div>
               <ResponsiveContainer width="100%" height={300}>
                 <ComposedChart data={result.payoff} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
-                  <CartesianGrid stroke="#243042" strokeDasharray="2 4" vertical={false} />
+                  <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="2 4" vertical={false} />
                   <XAxis
                     dataKey="price"
                     type="number"
                     domain={['dataMin', 'dataMax']}
-                    tick={{ fill: '#7c8aa0', fontSize: 11 }}
+                    tick={{ fill: 'var(--chart-axis)', fontSize: 11 }}
                     tickFormatter={(v: number) => `$${Math.round(v)}`}
-                    axisLine={{ stroke: '#243042' }}
+                    axisLine={{ stroke: 'var(--chart-grid)' }}
                     tickLine={false}
                   />
                   <YAxis
-                    tick={{ fill: '#7c8aa0', fontSize: 11 }}
+                    tick={{ fill: 'var(--chart-axis)', fontSize: 11 }}
                     tickFormatter={(v: number) => `$${v}`}
                     axisLine={false}
                     tickLine={false}
                     width={56}
                   />
                   <Tooltip
-                    contentStyle={{ background: '#111722', border: '1px solid #243042', borderRadius: 8, fontSize: 12 }}
+                    contentStyle={{
+                      background: 'var(--chart-tooltip-bg)',
+                      border: '1px solid var(--chart-grid)',
+                      borderRadius: 8,
+                      fontSize: 12,
+                    }}
                     labelFormatter={(l) => `Underlying $${fmtNum(Number(l))}`}
                     formatter={(v) => [fmtSignedUsd(Number(v)), 'P&L']}
                   />

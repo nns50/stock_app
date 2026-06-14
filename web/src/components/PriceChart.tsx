@@ -130,13 +130,13 @@ export function PriceChart({
   return (
     <ResponsiveContainer width="100%" height={height}>
       <ComposedChart data={rows} margin={{ top: 8, right: 8, bottom: 4, left: 0 }}>
-        <CartesianGrid stroke="#243042" strokeDasharray="2 4" vertical={false} />
+        <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="2 4" vertical={false} />
         <XAxis
           dataKey="i"
           type="number"
           domain={[0, Math.max(0, rows.length - 1)]}
           tick={false}
-          axisLine={{ stroke: '#243042' }}
+          axisLine={{ stroke: 'var(--chart-grid)' }}
           height={6}
         />
         <YAxis
@@ -144,13 +144,13 @@ export function PriceChart({
           orientation="right"
           domain={priceDomain}
           width={56}
-          tick={{ fill: '#7c8aa0', fontSize: 11 }}
+          tick={{ fill: 'var(--chart-axis)', fontSize: 11 }}
           axisLine={false}
           tickLine={false}
         />
         <YAxis yAxisId="vol" domain={[0, maxVol * 4.5]} hide />
         <Tooltip content={<CandleTooltip />} isAnimationActive={false} />
-        <Bar yAxisId="vol" dataKey="volume" fill="#33415a" opacity={0.5} isAnimationActive={false} />
+        <Bar yAxisId="vol" dataKey="volume" fill="var(--ink-500)" opacity={0.5} isAnimationActive={false} />
         {mode === 'candles' && <Candles rows={rows} />}
         {mode === 'line' && (
           <Line
