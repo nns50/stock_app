@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from '../lib/recharts';
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd } from '../lib/format';
@@ -218,7 +218,7 @@ export default function JournalPage() {
               <Tooltip
                 contentStyle={{ background: '#111722', border: '1px solid #243042', borderRadius: 8, fontSize: 12 }}
                 labelStyle={{ color: '#cbd5e1' }}
-                formatter={(v: number) => [fmtSignedUsd(v), 'Cumulative']}
+                formatter={(v) => [fmtSignedUsd(Number(v)), 'Cumulative']}
               />
               <Line
                 type="monotone"
