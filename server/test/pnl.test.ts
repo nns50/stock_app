@@ -303,4 +303,25 @@ describe('computeJournalStats', () => {
     expect(b['≥ 2R']).toBe(1);
     expect(b['-2 to -1R']).toBe(1);
   });
+
+  it('computes Kelly over decisive trades — break-evens do not dilute its win probability', () => {
+    const e = (exitPrice: number, exitDate: string) => exit({ quantity: 10, exitPrice, exitDate });
+    const ts: Position[] = [
+      makePosition({ assetType: 'stock', side: 'long', quantity: 10, entryPrice: 100, exits: [e(120, '2026-04-01')] }), // +200
+      makePosition({ assetType: 'stock', side: 'long', quantity: 10, entryPrice: 100, exits: [e(120, '2026-04-02')] }), // +200
+      makePosition({ assetType: 'stock', side: 'long', quantity: 10, entryPrice: 100, exits: [e(90, '2026-04-03')] }), // -100
+      makePosition({ assetType: 'stock', side: 'long', quantity: 10, entryPrice: 100, exits: [e(90, '2026-04-04')] }), // -100
+      makePosition({ assetType: 'stock', side: 'long', quantity: 10, entryPrice: 100, exits: [e(100, '2026-04-05')] }), // 0 (break-even)
+    ];
+    const r = computeJournalStats(ts);
+    // Displayed win rate counts the break-even in the denominator: 2 / 5 = 40%.
+    expect(r.breakeven).toBe(1);
+    expect(r.winRate).toBeCloseTo(40, 1);
+    // Kelly must use the DECISIVE win rate (2 wins / 4 decisive = 50%), not 40%.
+    // b = 200/100 = 2; f* = 0.5 - 0.5/2 = 0.25 (would be 0.1 if break-evens diluted W).
+    expect(r.kelly!.payoffRatio).toBe(2);
+    expect(r.kelly!.fraction).toBeCloseTo(0.25, 4);
+    expect(r.kelly!.sampleSize).toBe(4);
+    expect(r.kelly!.suggestedRiskPct).toBe(3); // 0.25 * 0.25 * 100 = 6.25%, clamped to 3
+  });
 });
