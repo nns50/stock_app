@@ -339,6 +339,11 @@ export function computeJournalStats(closed: Position[]): JournalStats {
   const winRate = trades.length ? round2((wins.length / trades.length) * 100) : 0;
   const avgWin = wins.length ? round2(grossProfit / wins.length) : 0;
   const avgLoss = losses.length ? round2(-grossLoss / losses.length) : 0;
+  // Kelly models a binary win/loss bet, so its win probability must be over
+  // DECISIVE trades (break-evens excluded) to stay consistent with avgWin/avgLoss;
+  // the displayed winRate above intentionally counts break-evens in the denominator.
+  const decisive = wins.length + losses.length;
+  const decisiveWinRate = decisive ? round2((wins.length / decisive) * 100) : 0;
 
   return {
     totalClosed: trades.length,
@@ -362,7 +367,7 @@ export function computeJournalStats(closed: Position[]): JournalStats {
     bestR: rs.length ? Math.max(...rs) : null,
     worstR: rs.length ? Math.min(...rs) : null,
     rBuckets: bucketRMultiples(rs),
-    kelly: kellySuggestion(winRate, avgWin, avgLoss, wins.length + losses.length),
+    kelly: kellySuggestion(decisiveWinRate, avgWin, avgLoss, decisive),
     ...computeStreaksAndDrawdown(trades.map((t) => t.pnl)),
   };
 }
