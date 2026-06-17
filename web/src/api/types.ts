@@ -361,6 +361,7 @@ export interface JournalStats {
   bestTrade: number;
   worstTrade: number;
   equityCurve: { date: string; pnl: number; cumulative: number }[];
+  rollingExpectancy: { date: string; value: number }[];
   byTag: GroupStat[];
   byGrade: GroupStat[];
   byDiscipline: GroupStat[];

@@ -268,6 +268,9 @@ trades.
 ### Curves & risk
 
 - **Equity curve** of cumulative realized P&L.
+- **Edge over time** — a rolling 20-trade expectancy ($/trade). Rising means your edge
+  is strengthening; drifting toward or below zero means it's decaying (shows once you
+  have ~8+ closed trades).
 - **Drawdown & streaks** — max drawdown, longest winning/losing streaks.
 - **Risk of ruin** (Monte Carlo) — set a per-trade risk and a "ruin" drawdown
   threshold; it simulates thousands of trade sequences from your edge and reports the

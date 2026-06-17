@@ -1,6 +1,17 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd } from '../lib/format';
@@ -268,6 +279,49 @@ export default function JournalPage() {
           </ResponsiveContainer>
         )}
       </Card>
+
+      {s.rollingExpectancy.length > 0 && (
+        <Card className="p-4">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-medium text-sm flex items-center">
+              Edge over time
+              <InfoTip text="Per-trade expectancy ($) over a trailing 20-trade window. Rising means your edge is strengthening; falling toward or below zero means it's decaying." />
+            </h3>
+            <span className="text-xs text-slate-500">rolling 20-trade expectancy</span>
+          </div>
+          <ResponsiveContainer width="100%" height={200}>
+            <LineChart data={s.rollingExpectancy} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
+              <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="2 4" vertical={false} />
+              <XAxis
+                dataKey="date"
+                tick={{ fill: 'var(--chart-axis)', fontSize: 11 }}
+                axisLine={{ stroke: 'var(--chart-grid)' }}
+                tickLine={false}
+              />
+              <YAxis tick={{ fill: 'var(--chart-axis)', fontSize: 11 }} axisLine={false} tickLine={false} width={56} />
+              <Tooltip
+                contentStyle={{
+                  background: 'var(--chart-tooltip-bg)',
+                  border: '1px solid var(--chart-grid)',
+                  borderRadius: 10,
+                  fontSize: 12,
+                }}
+                labelStyle={{ color: 'var(--txt-300)' }}
+                formatter={(v) => [fmtSignedUsd(Number(v)), 'Expectancy']}
+              />
+              <ReferenceLine y={0} stroke="var(--chart-axis)" strokeDasharray="3 3" />
+              <Line
+                type="monotone"
+                dataKey="value"
+                stroke="#38bdf8"
+                strokeWidth={2}
+                dot={false}
+                isAnimationActive={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </Card>
+      )}
 
       {s.totalClosed > 0 && <BenchmarkCard />}
 

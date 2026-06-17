@@ -153,6 +153,8 @@ export interface JournalStats {
   bestTrade: number;
   worstTrade: number;
   equityCurve: { date: string; pnl: number; cumulative: number }[];
+  /** Per-trade expectancy ($) over a trailing window — is the edge trending up or fading? */
+  rollingExpectancy: { date: string; value: number }[];
   /** Realized P&L broken down by tag, grade, and checklist discipline. */
   byTag: GroupStat[];
   byGrade: GroupStat[];
@@ -346,6 +348,19 @@ export function computeJournalStats(closed: Position[]): JournalStats {
     return { date: t.date, pnl: t.pnl, cumulative };
   });
 
+  // Rolling expectancy: mean realized P&L over a trailing window ending at each
+  // trade. Shows whether the edge is strengthening or decaying. Needs a few
+  // trades to be meaningful, so it's empty below a small floor.
+  const ROLL_WINDOW = 20;
+  const ROLL_MIN = 8;
+  const rollingExpectancy =
+    trades.length >= ROLL_MIN
+      ? trades.map((t, i) => {
+          const window = trades.slice(Math.max(0, i - ROLL_WINDOW + 1), i + 1);
+          return { date: t.date, value: round2(window.reduce((s, x) => s + x.pnl, 0) / window.length) };
+        })
+      : [];
+
   // Breakdowns: attribute each closed trade's realized P&L to its tags (a trade
   // counts once per distinct tag), its grade, discipline bucket, exit weekday,
   // and hold-time bucket.
@@ -397,6 +412,7 @@ export function computeJournalStats(closed: Position[]): JournalStats {
     bestTrade: trades.length ? round2(Math.max(...trades.map((t) => t.pnl))) : 0,
     worstTrade: trades.length ? round2(Math.min(...trades.map((t) => t.pnl))) : 0,
     equityCurve,
+    rollingExpectancy,
     byTag: toGroupStats(tagMap).sort(byTotalDesc),
     byGrade: toGroupStats(gradeMap).sort((a, b) => a.key.localeCompare(b.key)),
     byDiscipline: toGroupStats(discMap).sort(byTotalDesc),
