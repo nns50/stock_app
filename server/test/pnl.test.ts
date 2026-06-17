@@ -343,6 +343,45 @@ describe('computeJournalStats', () => {
     expect(r.sqn).toBeCloseTo(1, 2);
   });
 
+  it('breaks P&L down by exit weekday and hold-time bucket', () => {
+    const ts: Position[] = [
+      // Mon 2026-06-15, same-day (intraday), +100
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        entryDate: '2026-06-15',
+        exits: [exit({ quantity: 10, exitPrice: 110, exitDate: '2026-06-15' })],
+      }),
+      // closed Fri 2026-06-19, held 7 days, -50
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        entryDate: '2026-06-12',
+        exits: [exit({ quantity: 10, exitPrice: 95, exitDate: '2026-06-19' })],
+      }),
+      // closed Tue 2026-06-16, held 1 day, +30
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        entryDate: '2026-06-15',
+        exits: [exit({ quantity: 10, exitPrice: 103, exitDate: '2026-06-16' })],
+      }),
+    ];
+    const r = computeJournalStats(ts);
+    const wd = Object.fromEntries(r.byWeekday.map((g) => [g.key, g.totalPnl]));
+    expect(wd).toEqual({ Mon: 100, Tue: 30, Fri: -50 });
+    // weekdays come out in calendar order (Sun..Sat)
+    expect(r.byWeekday.map((g) => g.key)).toEqual(['Mon', 'Tue', 'Fri']);
+    const hold = Object.fromEntries(r.byHold.map((g) => [g.key, g.totalPnl]));
+    expect(hold).toEqual({ Intraday: 100, '1–3 days': 30, '4–10 days': -50 });
+  });
+
   it('leaves SQN / R std-dev null with fewer than two R trades', () => {
     const one = makePosition({
       assetType: 'stock',

@@ -260,7 +260,8 @@ trades.
 
 ### Breakdowns
 
-- **By tag**, **by grade**, and **by discipline** (checklist adherence) — each with
+- **By tag**, **by grade**, **by discipline** (checklist adherence), and **by timing**
+  (which **weekday** you closed on, and how long you **held**) — each with
   its own count, total, win rate, and expectancy. This is how you discover *which
   setups and which behaviors* make you money.
 

@@ -364,6 +364,8 @@ export interface JournalStats {
   byTag: GroupStat[];
   byGrade: GroupStat[];
   byDiscipline: GroupStat[];
+  byWeekday: GroupStat[];
+  byHold: GroupStat[];
   rTrades: number;
   avgR: number | null;
   bestR: number | null;
