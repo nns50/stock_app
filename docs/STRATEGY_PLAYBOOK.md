@@ -269,6 +269,9 @@ Spend 20 minutes every weekend in the **Journal**:
 - [ ] **Equity curve & drawdown** — trending up? Currently in a drawdown? How deep vs
       your max?
 - [ ] **Expectancy & profit factor** — still positive? Trending which way?
+- [ ] **SQN (System Quality Number)** — is your edge strong *and* consistent? Below ~2
+      means the system is hard to trade at size; aim to push it up by tightening
+      losers (lower R std-dev) more than by chasing bigger winners.
 - [ ] **By tag** — which setups earn? Drop or shrink the losers.
 - [ ] **By grade** — are your A-setups actually your best results? If not, your grading
       criteria need work.

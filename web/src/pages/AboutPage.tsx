@@ -143,6 +143,10 @@ export default function AboutPage() {
           </Term>
           <Term term="Expectancy">Average profit/loss per trade = (win rate × avg win) − (loss rate × avg loss).</Term>
           <Term term="Profit factor">Gross profit ÷ gross loss. Above 1 means winners outweigh losers.</Term>
+          <Term term="SQN">
+            System Quality Number (Van Tharp): mean R ÷ the standard deviation of R, × √N (N capped at 100). Rewards a
+            strong, consistent edge across many trades — roughly: ~2 average, 3+ excellent.
+          </Term>
         </dl>
       </Section>
 

@@ -162,6 +162,9 @@ export interface JournalStats {
   avgR: number | null;
   bestR: number | null;
   worstR: number | null;
+  /** Sample std-dev of R and Van Tharp's System Quality Number (edge × consistency). */
+  stdevR: number | null;
+  sqn: number | null;
   rBuckets: { label: string; count: number }[];
   /** Suggested risk-% per trade from realized edge (null until both W/L exist). */
   kelly: KellySuggestion | null;
@@ -335,6 +338,12 @@ export function computeJournalStats(closed: Position[]): JournalStats {
 
   // Edge in R: closed trades that logged a stop, scored as realized P&L / initial risk.
   const rs = closed.map((p) => rMultipleOf(p, round2(realizedPnlOf(p)))).filter((r): r is number => r !== null);
+  // System Quality Number (Van Tharp): edge ÷ consistency, scaled by sample size.
+  // SQN = (mean R / sample-stdev R) × √N, with N capped at 100 so a long record
+  // isn't flattered by size alone.
+  const meanR = rs.length ? rs.reduce((a, b) => a + b, 0) / rs.length : 0;
+  const stdevR = rs.length >= 2 ? Math.sqrt(rs.reduce((s, r) => s + (r - meanR) ** 2, 0) / (rs.length - 1)) : null;
+  const sqn = stdevR && stdevR > 0 ? round2((meanR / stdevR) * Math.sqrt(Math.min(rs.length, 100))) : null;
 
   const winRate = trades.length ? round2((wins.length / trades.length) * 100) : 0;
   const avgWin = wins.length ? round2(grossProfit / wins.length) : 0;
@@ -366,6 +375,8 @@ export function computeJournalStats(closed: Position[]): JournalStats {
     avgR: rs.length ? round2(rs.reduce((a, b) => a + b, 0) / rs.length) : null,
     bestR: rs.length ? Math.max(...rs) : null,
     worstR: rs.length ? Math.min(...rs) : null,
+    stdevR: stdevR === null ? null : round2(stdevR),
+    sqn,
     rBuckets: bucketRMultiples(rs),
     kelly: kellySuggestion(decisiveWinRate, avgWin, avgLoss, decisive),
     ...computeStreaksAndDrawdown(trades.map((t) => t.pnl)),

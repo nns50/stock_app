@@ -368,6 +368,8 @@ export interface JournalStats {
   avgR: number | null;
   bestR: number | null;
   worstR: number | null;
+  stdevR: number | null;
+  sqn: number | null;
   rBuckets: { label: string; count: number }[];
   kelly: KellySuggestion | null;
   maxDrawdown: number;
