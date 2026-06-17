@@ -268,6 +268,8 @@ Spend 20 minutes every weekend in the **Journal**:
 
 - [ ] **Equity curve & drawdown** — trending up? Currently in a drawdown? How deep vs
       your max?
+- [ ] **Edge over time** — is the rolling expectancy holding up, or quietly decaying?
+      A fading line is your cue to trade smaller and figure out what changed.
 - [ ] **Expectancy & profit factor** — still positive? Trending which way?
 - [ ] **SQN (System Quality Number)** — is your edge strong *and* consistent? Below ~2
       means the system is hard to trade at size; aim to push it up by tightening

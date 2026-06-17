@@ -343,6 +343,29 @@ describe('computeJournalStats', () => {
     expect(r.sqn).toBeCloseTo(1, 2);
   });
 
+  it('computes a trailing rolling expectancy (and stays empty below the floor)', () => {
+    const mk = (exitPrice: number, exitDate: string) =>
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        exits: [exit({ quantity: 10, exitPrice, exitDate })],
+      });
+    // 8 alternating ±100 trades — under the 20-trade window, so each point is the
+    // expanding mean: [100, 0, 33.33, 0, 20, 0, 14.29, 0].
+    const prices = [110, 90, 110, 90, 110, 90, 110, 90];
+    const ts = prices.map((px, i) => mk(px, `2026-07-0${i + 1}`));
+    const r = computeJournalStats(ts);
+    expect(r.rollingExpectancy).toHaveLength(8);
+    expect(r.rollingExpectancy[0].value).toBe(100);
+    expect(r.rollingExpectancy[1].value).toBe(0);
+    expect(r.rollingExpectancy[2].value).toBeCloseTo(33.33, 1);
+    expect(r.rollingExpectancy[7].value).toBe(0);
+    // Below the 8-trade floor it's empty.
+    expect(computeJournalStats(ts.slice(0, 3)).rollingExpectancy).toEqual([]);
+  });
+
   it('breaks P&L down by exit weekday and hold-time bucket', () => {
     const ts: Position[] = [
       // Mon 2026-06-15, same-day (intraday), +100
