@@ -13,6 +13,17 @@ import { ExcursionsModal } from '../components/ExcursionsModal';
 import { BenchmarkCard } from '../components/BenchmarkCard';
 import type { GroupStat, Position } from '../api/types';
 
+/** Van Tharp's qualitative band for a System Quality Number. */
+function sqnLabel(sqn: number): string {
+  if (sqn >= 7) return 'holy grail';
+  if (sqn >= 5) return 'superb';
+  if (sqn >= 3) return 'excellent';
+  if (sqn >= 2.5) return 'good';
+  if (sqn >= 2) return 'average';
+  if (sqn >= 1.6) return 'below average';
+  return 'hard to trade';
+}
+
 /** Compact "realized P&L grouped by X" table used in the Performance breakdown. */
 function Breakdown({ title, colLabel, rows }: { title: string; colLabel: string; rows: GroupStat[] }) {
   if (!rows.length) return null;
@@ -124,13 +135,21 @@ export default function JournalPage() {
             </h3>
             <span className="text-xs text-slate-500">{s.rTrades} closed trades with a stop</span>
           </div>
-          <div className="grid grid-cols-3 gap-3 mb-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
             <StatTile
               label="Expectancy"
               value={`${s.avgR >= 0 ? '+' : ''}${fmtNum(s.avgR, 2)}R`}
               valueClass={s.avgR >= 0 ? 'text-bull' : 'text-bear'}
               sub="per trade"
             />
+            {s.sqn != null && (
+              <StatTile
+                label="SQN"
+                value={fmtNum(s.sqn, 2)}
+                sub={sqnLabel(s.sqn)}
+                info="System Quality Number (Van Tharp): mean R ÷ std-dev of R × √N (N capped at 100). Rewards a strong, consistent edge over many trades. ~2 is average, 3+ excellent."
+              />
+            )}
             <StatTile label="Best" value={`+${fmtNum(s.bestR, 2)}R`} valueClass="text-bull" />
             <StatTile label="Worst" value={`${fmtNum(s.worstR, 2)}R`} valueClass="text-bear" />
           </div>

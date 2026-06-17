@@ -324,4 +324,37 @@ describe('computeJournalStats', () => {
     expect(r.kelly!.sampleSize).toBe(4);
     expect(r.kelly!.suggestedRiskPct).toBe(3); // 0.25 * 0.25 * 100 = 6.25%, clamped to 3
   });
+
+  it('computes R std-dev and the System Quality Number', () => {
+    const mk = (exitPrice: number, exitDate: string) =>
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        stopPrice: 95, // risk = 50
+        exits: [exit({ quantity: 10, exitPrice, exitDate })],
+      });
+    // R = [+2, +2, -1]; mean 1, sample stdev = √3 ≈ 1.73, SQN = (1/√3)·√3 = 1.
+    const r = computeJournalStats([mk(110, '2026-05-01'), mk(110, '2026-05-02'), mk(95, '2026-05-03')]);
+    expect(r.rTrades).toBe(3);
+    expect(r.avgR).toBeCloseTo(1, 4);
+    expect(r.stdevR).toBeCloseTo(1.73, 2);
+    expect(r.sqn).toBeCloseTo(1, 2);
+  });
+
+  it('leaves SQN / R std-dev null with fewer than two R trades', () => {
+    const one = makePosition({
+      assetType: 'stock',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      stopPrice: 95,
+      exits: [exit({ quantity: 10, exitPrice: 110 })],
+    });
+    const r = computeJournalStats([one]);
+    expect(r.rTrades).toBe(1);
+    expect(r.stdevR).toBeNull();
+    expect(r.sqn).toBeNull();
+  });
 });

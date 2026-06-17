@@ -254,7 +254,9 @@ trades.
   > 1 = winners outweigh losers), total/realized P&L, average win/loss.
 - **R-multiple analytics** — your results expressed in **R** (multiples of initial
   risk), the single best way to compare trades of different sizes. Requires a **stop**
-  on each trade (so always log one).
+  on each trade (so always log one). Includes the **expectancy in R**, the spread of
+  outcomes, and a **System Quality Number (SQN)** — Van Tharp's measure of edge ×
+  consistency (mean R ÷ std-dev of R × √N; ~2 is average, 3+ excellent).
 
 ### Breakdowns
 
