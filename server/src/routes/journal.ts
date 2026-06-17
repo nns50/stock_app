@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { asyncHandler, parseQuery } from './_helpers';
 import { listPositions, Position } from '../db/positions';
 import { computeJournalStats, realizedPnlOf } from '../services/pnl';
+import { computeDayStats } from '../services/dayGuard';
 import { aggregateExcursions, computeExcursion, TradeExcursion } from '../services/excursion';
 import { computeBenchmark } from '../services/benchmark';
 import { getProvider } from '../providers';
@@ -79,6 +80,17 @@ journalRouter.get(
   asyncHandler(async (_req, res) => {
     const closed = listPositions({ status: 'closed' });
     res.json(computeJournalStats(closed));
+  }),
+);
+
+// Daily guardrail: P&L booked and positions opened on a given day (the client
+// passes its own local date, so the day boundary matches the user's timezone).
+const todayQuery = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
+journalRouter.get(
+  '/today',
+  asyncHandler(async (req, res) => {
+    const { date } = parseQuery(todayQuery, req);
+    res.json(computeDayStats(listPositions({}), date));
   }),
 );
 

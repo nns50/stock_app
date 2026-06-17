@@ -248,6 +248,12 @@ setup.
 
 Two questions every serious trader must keep answering:
 
+**"Have I already lost enough today?" → Daily guardrails (Settings → dashboard).**
+Set a **daily loss limit** and a **max-new-trades-per-day** cap. The Today dashboard
+tracks your booked loss and trade count and turns red when you hit a limit — your cue to
+close the laptop. Tilt and revenge-trading happen *after* a bad morning; a pre-committed
+daily stop is the cheapest protection against turning a small red day into a disaster.
+
 **"Can this kill my account?" → Risk of ruin (Journal).**
 Set your per-trade risk and a "ruin" drawdown threshold (say 30–50%); the Monte Carlo
 sim runs thousands of trade sequences drawn from your edge and reports the **% that hit
@@ -283,6 +289,8 @@ Spend 20 minutes every weekend in the **Journal**:
       almost always do. Proof you can show yourself.)
 - [ ] **Edge Report** — are top-ranked screener picks outperforming? Re-weight if not.
 - [ ] **MAE/MFE** — any stop/target adjustments warranted?
+- [ ] **Daily guardrails** — are your loss limit and trade cap set to numbers you'll
+      actually respect?
 - [ ] **Risk of ruin** — still comfortably low at your current risk %?
 - [ ] **Alpha vs SPY** — beating buy-and-hold?
 - [ ] **Back up your data** (Journal → export `.db`).

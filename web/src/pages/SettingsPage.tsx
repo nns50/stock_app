@@ -37,6 +37,8 @@ export default function SettingsPage() {
   const [accountSize, setAccountSize] = useLocalStorage<number>('risk.accountSize', 25000);
   const [riskPct, setRiskPct] = useLocalStorage<number>('risk.riskPct', 1);
   const [benchSymbol, setBenchSymbol] = useLocalStorage<string>('benchmark.symbol', 'SPY');
+  const [dailyLossLimit, setDailyLossLimit] = useLocalStorage<number>('guard.dailyLossLimit', 0);
+  const [maxTradesPerDay, setMaxTradesPerDay] = useLocalStorage<number>('guard.maxTradesPerDay', 0);
 
   // Pre-trade checklist rules — persisted server-side so they follow the data.
   const [rulesDraft, setRulesDraft] = useState<string | null>(null);
@@ -123,6 +125,20 @@ export default function SettingsPage() {
           </Field>
           <Field label="Default risk per trade (%)" hint="Pre-fills the risk-based sizer.">
             <NumberInput value={riskPct} onChange={(v) => setRiskPct(v ?? 0)} step={0.1} min={0} />
+          </Field>
+        </div>
+      </Section>
+
+      <Section
+        title="Discipline guardrails"
+        desc="Opt-in daily circuit breaker. When today's booked loss or new-trade count reaches a limit, the dashboard warns you to step away. 0 = off. It never blocks or places trades."
+      >
+        <div className="grid sm:grid-cols-2 gap-3">
+          <Field label="Daily loss limit ($)" hint="Warn once today's realized loss reaches this.">
+            <NumberInput value={dailyLossLimit} onChange={(v) => setDailyLossLimit(v ?? 0)} min={0} />
+          </Field>
+          <Field label="Max new trades / day" hint="Warn once you've opened this many today.">
+            <NumberInput value={maxTradesPerDay} onChange={(v) => setMaxTradesPerDay(v ?? 0)} min={0} />
           </Field>
         </div>
       </Section>
