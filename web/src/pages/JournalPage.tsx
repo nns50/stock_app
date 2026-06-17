@@ -285,6 +285,19 @@ export default function JournalPage() {
         </div>
       )}
 
+      {s.totalClosed > 0 && (s.byWeekday.length > 0 || s.byHold.length > 0) && (
+        <div>
+          <h2 className="text-sm font-semibold text-slate-300 mb-2">
+            Performance by timing
+            <span className="text-slate-500 font-normal"> — when do you trade best?</span>
+          </h2>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
+            <Breakdown title="By weekday (exit)" colLabel="Day" rows={s.byWeekday} />
+            <Breakdown title="By hold time" colLabel="Held" rows={s.byHold} />
+          </div>
+        </div>
+      )}
+
       {allTags.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-slate-500">Tags:</span>

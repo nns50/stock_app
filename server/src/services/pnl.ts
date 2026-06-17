@@ -157,6 +157,9 @@ export interface JournalStats {
   byTag: GroupStat[];
   byGrade: GroupStat[];
   byDiscipline: GroupStat[];
+  /** Realized P&L by the weekday a trade was closed on, and by how long it was held. */
+  byWeekday: GroupStat[];
+  byHold: GroupStat[];
   /** Edge in R (multiples of initial risk) over closed trades that logged a stop. */
   rTrades: number;
   avgR: number | null;
@@ -301,6 +304,26 @@ function disciplineBucket(p: Position): string {
   return p.checklist.every((c) => c.checked) ? 'Followed all rules' : 'Skipped a rule';
 }
 
+// Timing breakdowns: which weekday a trade was closed on, and how long it was held.
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const HOLD_BUCKETS: { label: string; max: number }[] = [
+  { label: 'Intraday', max: 0 },
+  { label: '1–3 days', max: 3 },
+  { label: '4–10 days', max: 10 },
+  { label: '11–30 days', max: 30 },
+  { label: '30+ days', max: Infinity },
+];
+const HOLD_ORDER = HOLD_BUCKETS.map((b) => b.label);
+
+/** Whole calendar days held (entry→last exit), clamped at 0 for same-day/bad data. */
+function holdDaysOf(p: Position, exitDate: string): number {
+  return Math.max(0, Math.round((Date.parse(exitDate) - Date.parse(p.entryDate)) / 86_400_000));
+}
+
+function holdBucket(days: number): string {
+  return (HOLD_BUCKETS.find((b) => days <= b.max) ?? HOLD_BUCKETS[HOLD_BUCKETS.length - 1]).label;
+}
+
 /** Stats over CLOSED positions (each closed position = one completed trade). */
 export function computeJournalStats(closed: Position[]): JournalStats {
   const trades = closed
@@ -324,15 +347,21 @@ export function computeJournalStats(closed: Position[]): JournalStats {
   });
 
   // Breakdowns: attribute each closed trade's realized P&L to its tags (a trade
-  // counts once per distinct tag), its grade, and its discipline bucket.
+  // counts once per distinct tag), its grade, discipline bucket, exit weekday,
+  // and hold-time bucket.
   const tagMap = new Map<string, Acc>();
   const gradeMap = new Map<string, Acc>();
   const discMap = new Map<string, Acc>();
+  const weekdayMap = new Map<string, Acc>();
+  const holdMap = new Map<string, Acc>();
   for (const p of closed) {
     const pnl = round2(realizedPnlOf(p));
     for (const tag of new Set(p.tags)) accumulate(tagMap, tag, pnl);
     accumulate(gradeMap, p.grade || 'Ungraded', pnl);
     accumulate(discMap, disciplineBucket(p), pnl);
+    const exitDate = lastExitDate(p) ?? p.entryDate;
+    accumulate(weekdayMap, WEEKDAYS[new Date(`${exitDate}T00:00:00Z`).getUTCDay()], pnl);
+    accumulate(holdMap, holdBucket(holdDaysOf(p, exitDate)), pnl);
   }
   const byTotalDesc = (a: GroupStat, b: GroupStat) => b.totalPnl - a.totalPnl;
 
@@ -371,6 +400,8 @@ export function computeJournalStats(closed: Position[]): JournalStats {
     byTag: toGroupStats(tagMap).sort(byTotalDesc),
     byGrade: toGroupStats(gradeMap).sort((a, b) => a.key.localeCompare(b.key)),
     byDiscipline: toGroupStats(discMap).sort(byTotalDesc),
+    byWeekday: toGroupStats(weekdayMap).sort((a, b) => WEEKDAYS.indexOf(a.key) - WEEKDAYS.indexOf(b.key)),
+    byHold: toGroupStats(holdMap).sort((a, b) => HOLD_ORDER.indexOf(a.key) - HOLD_ORDER.indexOf(b.key)),
     rTrades: rs.length,
     avgR: rs.length ? round2(rs.reduce((a, b) => a + b, 0) / rs.length) : null,
     bestR: rs.length ? Math.max(...rs) : null,
