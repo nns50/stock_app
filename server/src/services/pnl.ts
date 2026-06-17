@@ -175,6 +175,7 @@ export interface JournalStats {
   kelly: KellySuggestion | null;
   /** Max drawdown of the realized equity curve and win/loss streaks. */
   maxDrawdown: number;
+  currentDrawdown: number;
   currentStreak: { type: 'win' | 'loss' | 'none'; count: number };
   longestWinStreak: number;
   longestLossStreak: number;
@@ -196,6 +197,8 @@ function bucketRMultiples(rs: number[]): { label: string; count: number }[] {
 export interface StreakDrawdown {
   /** Largest peak-to-trough drop in the cumulative realized-P&L curve ($). */
   maxDrawdown: number;
+  /** Current drop from the equity peak to now ($, 0 when at a fresh high). */
+  currentDrawdown: number;
   /** The trailing run of same-result trades. */
   currentStreak: { type: 'win' | 'loss' | 'none'; count: number };
   longestWinStreak: number;
@@ -230,6 +233,7 @@ export function computeStreaksAndDrawdown(pnls: number[]): StreakDrawdown {
   }
   return {
     maxDrawdown: round2(maxDD),
+    currentDrawdown: round2(peak - cum),
     currentStreak: { type, count },
     longestWinStreak: longW,
     longestLossStreak: longL,
