@@ -2,6 +2,7 @@ import type {
   AggregatePnl,
   Candle,
   BenchmarkResult,
+  DayStats,
   EntryCandidate,
   EntryStrategyConfig,
   ExcursionReport,
@@ -169,6 +170,7 @@ export const client = {
     return api<BenchmarkResult>(`/journal/benchmark?${qs.toString()}`);
   },
   journalTags: () => api<{ tags: string[] }>('/journal/tags'),
+  journalToday: (date: string) => api<DayStats>(`/journal/today?date=${encodeURIComponent(date)}`),
 
   // --- data export / restore ---
   importPositions: (positions: unknown[], mode: 'merge' | 'replace') =>

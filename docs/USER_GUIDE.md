@@ -88,6 +88,9 @@ Your at-a-glance morning screen.
 - **Getting started** — a dismissible checklist for new accounts (build a watchlist →
   run the screener → log a trade → set an alert). It reflects your *real* progress and
   disappears once all four are done.
+- **Daily guardrails** — appears only if you've set a daily loss limit or trade cap in
+  Settings. Shows today's booked P&L and new-trade count, and turns red to nudge you to
+  step away once a limit is reached.
 
 ---
 
@@ -333,6 +336,9 @@ One home (⚙ or `⌘K → Settings`) for everything:
   button. (The provider itself is configured server-side in `server/.env`.)
 - **Risk & sizing defaults** — your **account size** and **default risk %**, shared by
   the position sizer and the benchmark.
+- **Discipline guardrails** — an opt-in **daily loss limit ($)** and **max new trades
+  per day**. When today's booked loss or trade count reaches a limit, the **Today**
+  dashboard warns you to step away. `0` = off; it never blocks or places trades.
 - **Benchmark** — the index symbol the Journal measures you against (default `SPY`).
 - **Pre-trade checklist** — the canonical editor for your discipline rules (saved
   server-side).

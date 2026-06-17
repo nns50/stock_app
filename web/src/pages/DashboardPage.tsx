@@ -5,6 +5,7 @@ import { useAsync } from '../lib/hooks';
 import { cx, fmtDate, fmtPct, fmtUsd } from '../lib/format';
 import { Card, EmptyState, PageHeader, PnL, Spinner, StatTile } from '../components/ui';
 import { GettingStarted } from '../components/GettingStarted';
+import { DayGuardCard } from '../components/DayGuardCard';
 
 function daysToExpiry(exp: string): number {
   return Math.ceil((Date.parse(exp) - Date.now()) / 86_400_000);
@@ -71,6 +72,7 @@ export default function DashboardPage() {
       />
 
       <GettingStarted />
+      <DayGuardCard />
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <StatTile label="Open P&L" value={agg ? <PnL value={agg.total} /> : '—'} />

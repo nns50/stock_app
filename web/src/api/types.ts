@@ -402,6 +402,13 @@ export interface BenchmarkResult {
   alphaPct: number | null;
 }
 
+export interface DayStats {
+  date: string;
+  realizedPnl: number;
+  exits: number;
+  entries: number;
+}
+
 export interface TradeExcursion {
   positionId: number;
   symbol: string;
