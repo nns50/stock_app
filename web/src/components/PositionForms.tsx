@@ -9,7 +9,17 @@ import type { Position, RiskSizingResult } from '../api/types';
 
 const GRADES = ['', 'A', 'B', 'C', 'D', 'F'];
 
-export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: () => void }) {
+export function LogTradeModal({
+  open,
+  onClose,
+  onSaved,
+  initialSymbol,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+  initialSymbol?: string;
+}) {
   const [assetType, setAssetType] = useState<'stock' | 'option'>('stock');
   const [symbol, setSymbol] = useState('');
   const [side, setSide] = useState<'long' | 'short'>('long');
@@ -57,6 +67,11 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
       active = false;
     };
   }, [open]);
+
+  // Prefill the symbol when opened from a setup row / chart ("log this one").
+  useEffect(() => {
+    if (open && initialSymbol) setSymbol(initialSymbol.toUpperCase());
+  }, [open, initialSymbol]);
 
   // Risk-based position sizing, folded into the entry flow. Account size + risk%
   // persist per-browser (shared with the standalone Risk sizing tool).

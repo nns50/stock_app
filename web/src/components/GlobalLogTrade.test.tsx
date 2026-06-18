@@ -18,4 +18,12 @@ describe('GlobalLogTrade', () => {
     });
     expect(screen.getByRole('heading', { name: 'Log trade' })).toBeInTheDocument();
   });
+
+  it('prefills the symbol when the open event carries one', () => {
+    render(<GlobalLogTrade />);
+    act(() => {
+      window.dispatchEvent(new CustomEvent(OPEN_LOG_TRADE_EVENT, { detail: { symbol: 'nvda' } }));
+    });
+    expect(screen.getByPlaceholderText('AAPL')).toHaveValue('NVDA');
+  });
 });

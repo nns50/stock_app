@@ -11,14 +11,21 @@ export const TRADE_LOGGED_EVENT = 'trade-logged';
 
 export function GlobalLogTrade() {
   const [open, setOpen] = useState(false);
+  const [initialSymbol, setInitialSymbol] = useState<string | undefined>();
   useEffect(() => {
-    const onOpen = () => setOpen(true);
+    const onOpen = (e: Event) => {
+      // A plain Event (header / `n`) opens a blank form; a CustomEvent with a
+      // `symbol` (a setup row / chart) prefills it.
+      setInitialSymbol((e as CustomEvent<{ symbol?: string }>).detail?.symbol);
+      setOpen(true);
+    };
     window.addEventListener(OPEN_LOG_TRADE_EVENT, onOpen);
     return () => window.removeEventListener(OPEN_LOG_TRADE_EVENT, onOpen);
   }, []);
   return (
     <LogTradeModal
       open={open}
+      initialSymbol={initialSymbol}
       onClose={() => setOpen(false)}
       onSaved={() => window.dispatchEvent(new Event(TRADE_LOGGED_EVENT))}
     />

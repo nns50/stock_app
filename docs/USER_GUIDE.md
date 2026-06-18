@@ -93,11 +93,13 @@ Your at-a-glance morning screen.
 
 - **Stat tiles:** Open P&L, Unrealized, Open positions, Gross exposure, and **Needs
   attention** (a count that turns amber when something wants a decision).
-- **Today's setups** — a one-click morning shortlist. Hit **Scan** at the open and it
-  runs the screener and ranks your universe. Toggle **Long / Short**, and sort by
-  **Score**, **Gap**, or **Rel-vol** to surface the four things people watch at the bell;
-  each row shows the score, gap %, relative volume, RSI, and a suggested ATR-based stop,
-  and links to the chart. It's a transparent rule-based ranking — **not a buy signal**.
+- **Today's setups** — a morning shortlist that **auto-scans once** when you first land
+  on Today each session (or hit **Scan** / **↻ Rescan** anytime). It runs the screener
+  and ranks your universe. Toggle **Long / Short**, and sort by **Score**, **Gap**, or
+  **Rel-vol** to surface the four things people watch at the bell; each row shows the
+  score, gap %, relative volume, RSI, and a suggested ATR-based stop, links to the chart,
+  and has a **+** to log a trade in that symbol (the form opens with it pre-filled). It's
+  a transparent rule-based ranking — **not a buy signal**.
 - **Needs attention** panel — positions that hit their stop/target or option exit
   rules, plus any triggered symbol alerts, each linking to where you act.
 - **Watchlist** mini-view with last price and % change.
