@@ -1,7 +1,9 @@
+import { useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { CalendarClock, Camera, Star, TriangleAlert } from 'lucide-react';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
+import { TRADE_LOGGED_EVENT } from '../components/GlobalLogTrade';
 import { cx, fmtDate, fmtPct, fmtUsd } from '../lib/format';
 import { Card, EmptyState, PageHeader, PnL, Spinner, StatTile } from '../components/ui';
 import { GettingStarted } from '../components/GettingStarted';
@@ -45,6 +47,13 @@ export default function DashboardPage() {
     return { symbols: w.symbols, quotes };
   }, []);
   const snapshots = useAsync(() => client.listSnapshots(), []);
+
+  // Refresh open positions when a trade is logged from the global modal.
+  useEffect(() => {
+    const onLogged = () => positions.reload();
+    window.addEventListener(TRADE_LOGGED_EVENT, onLogged);
+    return () => window.removeEventListener(TRADE_LOGGED_EVENT, onLogged);
+  }, [positions.reload]);
 
   const agg = positions.data?.aggregate;
   const exposure = positions.data?.exposure;

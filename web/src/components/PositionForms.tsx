@@ -21,6 +21,7 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
   const [strike, setStrike] = useState<number | undefined>();
   const [expiration, setExpiration] = useState('');
   const [tags, setTags] = useState('');
+  const [knownTags, setKnownTags] = useState<string[]>([]);
   const [grade, setGrade] = useState('');
   const [notes, setNotes] = useState('');
   const [error, setError] = useState<string>();
@@ -48,6 +49,10 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
       .settings()
       .then((s) => apply(rulesFromSetting(s[CHECKLIST_SETTING_KEY])))
       .catch(() => apply(DEFAULT_CHECKLIST_RULES));
+    client
+      .journalTags()
+      .then((r) => active && setKnownTags(r.tags))
+      .catch(() => {});
     return () => {
       active = false;
     };
@@ -336,6 +341,34 @@ export function LogTradeModal({ open, onClose, onSaved }: { open: boolean; onClo
               ))}
             </select>
           </Field>
+          {(() => {
+            const current = tags
+              .split(',')
+              .map((t) => t.trim().toLowerCase())
+              .filter(Boolean);
+            const suggestions = knownTags.filter((t) => !current.includes(t.toLowerCase())).slice(0, 8);
+            if (suggestions.length === 0) return null;
+            const addTag = (t: string) =>
+              setTags((prev) => {
+                const trimmed = prev.trim();
+                const sep = trimmed === '' ? '' : trimmed.endsWith(',') ? ' ' : ', ';
+                return `${trimmed}${sep}${t}`;
+              });
+            return (
+              <div className="col-span-2 flex flex-wrap gap-1 -mt-1.5">
+                {suggestions.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    className="chip bg-ink-600 text-slate-300 hover:text-accent"
+                    onClick={() => addTag(t)}
+                  >
+                    + {t}
+                  </button>
+                ))}
+              </div>
+            );
+          })()}
         </div>
         <Field label="Notes">
           <textarea className="input h-16" value={notes} onChange={(e) => setNotes(e.target.value)} />

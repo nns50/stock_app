@@ -72,8 +72,11 @@ always sort last).
 
 **Keyboard shortcuts:** press `?` anytime for the cheat sheet. Quick-nav GitHub-style —
 `g` then `t`/`s`/`w`/`o`/`p`/`j`/`a` jumps to Today / Screener / Watch / Options /
-Positions / Journal / Alerts. `⌘K` opens the command palette; `Esc` closes dialogs.
-(Shortcuts never fire while you're typing in a field.)
+Positions / Journal / Alerts. `n` opens **Log trade** from anywhere, `⌘K` opens the
+command palette, `Esc` closes dialogs. (Shortcuts never fire while you're typing.)
+
+**Log a trade from anywhere:** the **+ Log** button in the header (or `n`) opens the
+trade form on any page — you don't have to be on Positions.
 
 **Feedback you can trust:** every action confirms itself with a toast (bottom-right).
 Destructive actions (delete a trade, delete a snapshot) ask first with a styled
@@ -216,9 +219,10 @@ Log trades, size them by risk, manage them, and track live P&L.
 
 ### Logging a trade (`+ Log trade`)
 
-Stock or option, with: symbol, side, quantity, entry price/premium, date, fees,
-(option) type/strike/expiration, **tags**, **grade (A–F)**, **notes**, an optional
-**stop** and **target**, and the **pre-trade checklist** (below).
+Open it with the header **+ Log** button or `n`. Stock or option, with: symbol, side,
+quantity, entry price/premium, date, fees, (option) type/strike/expiration, **tags**
+(click a suggestion chip to reuse a tag you've used before), **grade (A–F)**, **notes**,
+an optional **stop** and **target**, and the **pre-trade checklist** (below).
 
 ### Size by risk (the most important button)
 

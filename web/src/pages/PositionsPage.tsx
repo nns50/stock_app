@@ -1,6 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus } from 'lucide-react';
 import { client } from '../api/client';
 import { useAsync, useSort } from '../lib/hooks';
 import { fmtNum, fmtPct, fmtUsd } from '../lib/format';
@@ -18,7 +17,8 @@ import {
   StatTile,
 } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
-import { ExitModal, JournalEditModal, LogTradeModal } from '../components/PositionForms';
+import { ExitModal, JournalEditModal } from '../components/PositionForms';
+import { OPEN_LOG_TRADE_EVENT, TRADE_LOGGED_EVENT } from '../components/GlobalLogTrade';
 import { RiskSizingModal } from '../components/RiskSizingModal';
 import { ExposurePanel } from '../components/ExposurePanel';
 import { useToast } from '../components/ToastContext';
@@ -65,13 +65,22 @@ export default function PositionsPage() {
   );
   const { sorted: sortedPositions, sortKey, sortDir, onSort } = useSort(data.data?.positions ?? [], positionSortVal);
 
-  const [logOpen, setLogOpen] = useState(false);
   const [sizerOpen, setSizerOpen] = useState(false);
   const [exitPos, setExitPos] = useState<Position | null>(null);
   const [editPos, setEditPos] = useState<Position | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const { toast } = useToast();
   const confirm = useConfirm();
+
+  // Refresh when a trade is logged from the global modal (header / `n` / palette).
+  useEffect(() => {
+    const onLogged = () => {
+      setLastUpdated(Date.now());
+      data.reload();
+    };
+    window.addEventListener(TRADE_LOGGED_EVENT, onLogged);
+    return () => window.removeEventListener(TRADE_LOGGED_EVENT, onLogged);
+  }, [data.reload]);
 
   const reload = () => {
     setLastUpdated(Date.now());
@@ -116,9 +125,6 @@ export default function PositionsPage() {
             <button className="btn-ghost" onClick={() => setSizerOpen(true)}>
               Calc size
             </button>
-            <button className="btn-primary" onClick={() => setLogOpen(true)}>
-              <Plus className="h-4 w-4" /> Log trade
-            </button>
           </>
         }
       />
@@ -162,7 +168,7 @@ export default function PositionsPage() {
             title="No positions yet"
             hint="Log your stock and option trades to track live P&L, realized vs unrealized, and build your journal."
             action={
-              <button className="btn-primary" onClick={() => setLogOpen(true)}>
+              <button className="btn-primary" onClick={() => window.dispatchEvent(new Event(OPEN_LOG_TRADE_EVENT))}>
                 + Log trade
               </button>
             }
@@ -208,7 +214,6 @@ export default function PositionsPage() {
         </Card>
       )}
 
-      <LogTradeModal open={logOpen} onClose={() => setLogOpen(false)} onSaved={reload} />
       <RiskSizingModal open={sizerOpen} onClose={() => setSizerOpen(false)} />
       <ExitModal position={exitPos} onClose={() => setExitPos(null)} onSaved={reload} />
       <JournalEditModal position={editPos} onClose={() => setEditPos(null)} onSaved={reload} />

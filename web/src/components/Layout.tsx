@@ -10,6 +10,7 @@ import {
   Layers,
   LayoutDashboard,
   Moon,
+  Plus,
   Search,
   Settings,
   Star,
@@ -23,6 +24,7 @@ import { useTheme } from './ThemeContext';
 import { ErrorBoundary } from './ErrorBoundary';
 import { CommandPalette, OPEN_PALETTE_EVENT } from './CommandPalette';
 import { KeyboardShortcuts } from './KeyboardShortcuts';
+import { GlobalLogTrade, OPEN_LOG_TRADE_EVENT } from './GlobalLogTrade';
 
 const TABS = [
   { to: '/today', label: 'Today', Icon: LayoutDashboard },
@@ -186,6 +188,14 @@ export function Layout({ children }: { children: ReactNode }) {
           </nav>
           <div className="ml-auto flex items-center gap-1.5">
             <button
+              className="btn-primary !px-2.5"
+              onClick={() => window.dispatchEvent(new Event(OPEN_LOG_TRADE_EVENT))}
+              title="Log a trade (press n)"
+            >
+              <Plus className="h-4 w-4" />
+              <span className="hidden lg:inline">Log</span>
+            </button>
+            <button
               className="hidden sm:inline-flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs text-slate-400 bg-ink-800 border border-ink-600 hover:text-slate-200 hover:border-ink-500 transition-colors"
               onClick={() => window.dispatchEvent(new Event(OPEN_PALETTE_EVENT))}
               title="Command palette"
@@ -217,6 +227,7 @@ export function Layout({ children }: { children: ReactNode }) {
       <ProviderStatusModal open={providerOpen} onClose={() => setProviderOpen(false)} />
       <CommandPalette />
       <KeyboardShortcuts />
+      <GlobalLogTrade />
 
       <ProviderBanner />
 
