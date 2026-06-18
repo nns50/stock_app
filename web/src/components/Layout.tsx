@@ -22,6 +22,7 @@ import { useAlerts } from './AlertsContext';
 import { useTheme } from './ThemeContext';
 import { ErrorBoundary } from './ErrorBoundary';
 import { CommandPalette, OPEN_PALETTE_EVENT } from './CommandPalette';
+import { KeyboardShortcuts } from './KeyboardShortcuts';
 
 const TABS = [
   { to: '/today', label: 'Today', Icon: LayoutDashboard },
@@ -215,6 +216,7 @@ export function Layout({ children }: { children: ReactNode }) {
 
       <ProviderStatusModal open={providerOpen} onClose={() => setProviderOpen(false)} />
       <CommandPalette />
+      <KeyboardShortcuts />
 
       <ProviderBanner />
 

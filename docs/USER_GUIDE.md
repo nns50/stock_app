@@ -70,6 +70,11 @@ with its primary actions on the right.
 sort by any column — click a header to sort, click again to flip the direction (blanks
 always sort last).
 
+**Keyboard shortcuts:** press `?` anytime for the cheat sheet. Quick-nav GitHub-style —
+`g` then `t`/`s`/`w`/`o`/`p`/`j`/`a` jumps to Today / Screener / Watch / Options /
+Positions / Journal / Alerts. `⌘K` opens the command palette; `Esc` closes dialogs.
+(Shortcuts never fire while you're typing in a field.)
+
 **Feedback you can trust:** every action confirms itself with a toast (bottom-right).
 Destructive actions (delete a trade, delete a snapshot) ask first with a styled
 dialog, and many — like deleting a position or removing a watch symbol — offer a
