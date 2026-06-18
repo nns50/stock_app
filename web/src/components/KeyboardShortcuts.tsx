@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Modal } from './ui';
+import { OPEN_LOG_TRADE_EVENT } from './GlobalLogTrade';
 
 // Global keyboard shortcuts: GitHub-style "g then key" quick-nav, plus "?" for
 // this cheat sheet. Typing in a field is never hijacked, and ⌘/Ctrl/Alt combos
@@ -65,6 +66,11 @@ export function KeyboardShortcuts() {
         gTimer.current = setTimeout(() => (gPending.current = false), 1200);
         return;
       }
+      if (e.key === 'n') {
+        e.preventDefault();
+        window.dispatchEvent(new Event(OPEN_LOG_TRADE_EVENT));
+        return;
+      }
       if (e.key === '?') {
         e.preventDefault();
         setHelpOpen(true);
@@ -86,6 +92,7 @@ export function KeyboardShortcuts() {
             ))}
           </div>
         </div>
+        <Row keys={['n']} desc="Log a trade" />
         <Row keys={['?']} desc="Show this help" />
         <Row keys={['Esc']} desc="Close a dialog" />
       </div>
