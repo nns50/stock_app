@@ -4,7 +4,7 @@
 // the route gathers data and persists results.
 // ---------------------------------------------------------------------------
 
-export type AlertKind = 'price' | 'change' | 'relvol' | 'rsi';
+export type AlertKind = 'price' | 'change' | 'relvol' | 'rsi' | 'macross' | 'high52' | 'low52';
 export type AlertOperator = 'above' | 'below';
 
 export interface AlertCondition {
@@ -18,6 +18,9 @@ export interface AlertMetrics {
   changePct: number | null;
   relVol: number | null;
   rsi: number | null;
+  maSpreadPct: number | null;
+  pctFromHigh52: number | null;
+  pctFromLow52: number | null;
 }
 
 const LABEL: Record<AlertKind, string> = {
@@ -25,6 +28,9 @@ const LABEL: Record<AlertKind, string> = {
   change: 'change %',
   relvol: 'rel. volume',
   rsi: 'RSI',
+  macross: 'MA20−MA50 spread',
+  high52: '% from 52w high',
+  low52: '% from 52w low',
 };
 
 /** Pull the value an alert cares about out of a symbol's current metrics. */
@@ -38,12 +44,19 @@ export function metricValue(kind: AlertKind, m: AlertMetrics): number | null {
       return m.relVol;
     case 'rsi':
       return m.rsi;
+    case 'macross':
+      return m.maSpreadPct;
+    case 'high52':
+      return m.pctFromHigh52;
+    case 'low52':
+      return m.pctFromLow52;
   }
 }
 
 function fmt(kind: AlertKind, v: number): string {
   if (kind === 'price') return `$${v.toFixed(2)}`;
-  if (kind === 'change') return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+  if (kind === 'change' || kind === 'macross' || kind === 'high52' || kind === 'low52')
+    return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
   if (kind === 'relvol') return `${v.toFixed(2)}×`;
   return v.toFixed(1);
 }

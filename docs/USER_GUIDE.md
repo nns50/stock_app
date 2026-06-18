@@ -316,7 +316,10 @@ Get notified when the market — or one of your positions — needs a decision.
 
 Create an alert on a **symbol** with a **metric** and **operator**:
 
-- **Metric (`kind`)**: `price`, `change %`, `rel. volume`, or `RSI`.
+- **Metric (`kind`)**: `price`, `change %`, `rel. volume` (a volume-spike trigger),
+  `RSI`, **MA20−MA50 spread** (a level-based MA-cross proxy — `above 0` = the short
+  average is above the long), or **% from the 52-week high / low** (e.g. `above -2` on
+  *% from 52w high* fires within 2% of a new high).
 - **Operator**: `above` / `below`, with a **threshold** and optional note.
 - Click **Refresh** (or rely on background polling) to evaluate against current data.
   Newly-triggered alerts raise a toast anywhere in the app.

@@ -522,7 +522,7 @@ export interface SnapshotPerformance {
 export interface Alert {
   id: number;
   symbol: string;
-  kind: 'price' | 'change' | 'relvol' | 'rsi';
+  kind: 'price' | 'change' | 'relvol' | 'rsi' | 'macross' | 'high52' | 'low52';
   operator: 'above' | 'below';
   threshold: number;
   note: string | null;
