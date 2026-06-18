@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { TrendingUp } from 'lucide-react';
+import { Plus, TrendingUp } from 'lucide-react';
 import { client } from '../api/client';
 import { ago, fmtNum, fmtPct } from '../lib/format';
 import { Card, ScoreBar, Segmented, Spinner } from './ui';
+import { OPEN_LOG_TRADE_EVENT } from './GlobalLogTrade';
 import type { ScreenerResult, SymbolScore } from '../api/types';
 
 // "Today's setups" — a one-click morning shortlist. Runs the screener against
@@ -14,6 +15,10 @@ import type { ScreenerResult, SymbolScore } from '../api/types';
 type Dir = 'long' | 'short';
 type SortMode = 'score' | 'gap' | 'volume';
 const ROWS = 6;
+// Auto-scan once when you first land on Today in a session (sessionStorage, so it
+// survives navigating away/back but resets in a new tab — and doesn't re-scan on
+// every visit, to respect provider rate limits).
+const AUTO_SCAN_KEY = 'todaysSetups.autoScanned';
 
 function rank(rows: SymbolScore[], mode: SortMode): SymbolScore[] {
   const copy = [...rows];
@@ -47,6 +52,13 @@ export function TodaysSetups() {
     setResult(null);
     void scan(d);
   };
+
+  useEffect(() => {
+    if (sessionStorage.getItem(AUTO_SCAN_KEY)) return;
+    sessionStorage.setItem(AUTO_SCAN_KEY, '1');
+    void scan('long');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const top = result ? rank(result.results, sort) : [];
 
@@ -119,9 +131,23 @@ export function TodaysSetups() {
                 {top.map((s) => (
                   <tr key={s.symbol} className="border-b border-ink-700/40 last:border-0">
                     <td className="py-1.5">
-                      <Link to={`/symbol/${s.symbol}`} className="font-semibold hover:text-accent">
-                        {s.symbol}
-                      </Link>
+                      <div className="flex items-center gap-1.5">
+                        <Link to={`/symbol/${s.symbol}`} className="font-semibold hover:text-accent">
+                          {s.symbol}
+                        </Link>
+                        <button
+                          className="text-slate-500 hover:text-accent"
+                          title={`Log a trade in ${s.symbol}`}
+                          aria-label={`Log a trade in ${s.symbol}`}
+                          onClick={() =>
+                            window.dispatchEvent(
+                              new CustomEvent(OPEN_LOG_TRADE_EVENT, { detail: { symbol: s.symbol } }),
+                            )
+                          }
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     </td>
                     <td className="py-1.5 text-right">
                       <div className="inline-flex justify-end">
