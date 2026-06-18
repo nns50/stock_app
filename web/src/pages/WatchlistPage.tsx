@@ -1,11 +1,34 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { client } from '../api/client';
+import { useSort } from '../lib/hooks';
 import { fmtCompact, fmtPct, fmtUsd } from '../lib/format';
-import { Card, EmptyState, PageHeader, PnL, Spinner } from '../components/ui';
+import { Card, EmptyState, PageHeader, PnL, SortTh, Spinner } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
 import { useToast } from '../components/ToastContext';
 import type { Quote } from '../api/types';
+
+type WatchRow = { sym: string; q?: Quote };
+
+/** Comparable value for a sortable Watchlist column (module-level → stable). */
+function watchSortVal(row: WatchRow, key: string): number | string | null {
+  switch (key) {
+    case 'symbol':
+      return row.sym;
+    case 'last':
+      return row.q?.last ?? null;
+    case 'change':
+      return row.q?.changePct ?? null;
+    case 'bid':
+      return row.q?.bid ?? null;
+    case 'ask':
+      return row.q?.ask ?? null;
+    case 'volume':
+      return row.q?.volume ?? null;
+    default:
+      return null;
+  }
+}
 
 export default function WatchlistPage() {
   const [symbols, setSymbols] = useState<string[]>([]);
@@ -82,7 +105,11 @@ export default function WatchlistPage() {
     }
   };
 
-  const bySymbol = new Map(quotes.map((q) => [q.symbol.toUpperCase(), q]));
+  const watchRows = useMemo<WatchRow[]>(() => {
+    const m = new Map(quotes.map((q) => [q.symbol.toUpperCase(), q]));
+    return symbols.map((sym) => ({ sym, q: m.get(sym) }));
+  }, [symbols, quotes]);
+  const { sorted: sortedWatch, sortKey, sortDir, onSort } = useSort(watchRows, watchSortVal);
 
   return (
     <div className="space-y-4">
@@ -128,18 +155,17 @@ export default function WatchlistPage() {
           <table className="w-full table-zebra">
             <thead className="sticky-thead">
               <tr>
-                <th className="th">Symbol</th>
-                <th className="th text-right">Last</th>
-                <th className="th text-right">Change</th>
-                <th className="th text-right">Bid</th>
-                <th className="th text-right">Ask</th>
-                <th className="th text-right">Volume</th>
+                <SortTh label="Symbol" k="symbol" active={sortKey} dir={sortDir} onSort={onSort} />
+                <SortTh label="Last" k="last" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                <SortTh label="Change" k="change" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                <SortTh label="Bid" k="bid" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                <SortTh label="Ask" k="ask" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                <SortTh label="Volume" k="volume" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
                 <th className="th"></th>
               </tr>
             </thead>
             <tbody>
-              {symbols.map((sym) => {
-                const q = bySymbol.get(sym);
+              {sortedWatch.map(({ sym, q }) => {
                 return (
                   <tr key={sym} className="border-b border-ink-700/50 hover:bg-ink-700/30">
                     <td className="td">

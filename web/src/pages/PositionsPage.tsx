@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Plus } from 'lucide-react';
 import { client } from '../api/client';
-import { useAsync } from '../lib/hooks';
+import { useAsync, useSort } from '../lib/hooks';
 import { fmtNum, fmtPct, fmtUsd } from '../lib/format';
 import {
   Badge,
@@ -14,6 +14,7 @@ import {
   Segmented,
   SkeletonStats,
   SkeletonTable,
+  SortTh,
   StatTile,
 } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
@@ -26,12 +27,43 @@ import type { Position, PositionWithPnl } from '../api/types';
 
 type StatusFilter = 'all' | 'open' | 'closed';
 
+/** Comparable value for a sortable Positions column (module-level → stable). */
+function positionSortVal(row: PositionWithPnl, key: string): number | string | null {
+  const p = row.position;
+  const pnl = row.pnl;
+  switch (key) {
+    case 'symbol':
+      return p.symbol;
+    case 'side':
+      return p.side;
+    case 'qty':
+      return p.remainingQuantity;
+    case 'entry':
+      return p.entryPrice;
+    case 'price':
+      return pnl.currentPrice;
+    case 'cost':
+      return pnl.costBasis;
+    case 'realized':
+      return pnl.realizedPnl;
+    case 'unrealized':
+      return pnl.unrealizedPnl;
+    case 'total':
+      return pnl.totalPnl;
+    case 'return':
+      return pnl.returnPct;
+    default:
+      return null;
+  }
+}
+
 export default function PositionsPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('open');
   const data = useAsync(
     () => client.positionsWithPnl(statusFilter === 'all' ? {} : { status: statusFilter }),
     [statusFilter],
   );
+  const { sorted: sortedPositions, sortKey, sortDir, onSort } = useSort(data.data?.positions ?? [], positionSortVal);
 
   const [logOpen, setLogOpen] = useState(false);
   const [sizerOpen, setSizerOpen] = useState(false);
@@ -141,21 +173,28 @@ export default function PositionsPage() {
           <table className="w-full table-zebra">
             <thead className="sticky-thead">
               <tr>
-                <th className="th">Symbol</th>
-                <th className="th">Side</th>
-                <th className="th text-right">Qty</th>
-                <th className="th text-right">Entry</th>
-                <th className="th text-right">Price</th>
-                <th className="th text-right">Cost basis</th>
-                <th className="th text-right">Realized</th>
-                <th className="th text-right">Unrealized</th>
-                <th className="th text-right">Total P&L</th>
-                <th className="th text-right">Return</th>
+                <SortTh label="Symbol" k="symbol" active={sortKey} dir={sortDir} onSort={onSort} />
+                <SortTh label="Side" k="side" active={sortKey} dir={sortDir} onSort={onSort} />
+                <SortTh label="Qty" k="qty" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                <SortTh label="Entry" k="entry" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                <SortTh label="Price" k="price" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                <SortTh label="Cost basis" k="cost" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                <SortTh label="Realized" k="realized" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                <SortTh
+                  label="Unrealized"
+                  k="unrealized"
+                  active={sortKey}
+                  dir={sortDir}
+                  onSort={onSort}
+                  align="right"
+                />
+                <SortTh label="Total P&L" k="total" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                <SortTh label="Return" k="return" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
                 <th className="th text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {data.data!.positions.map((row) => (
+              {sortedPositions.map((row) => (
                 <PositionRow
                   key={row.position.id}
                   row={row}
