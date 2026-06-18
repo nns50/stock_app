@@ -10,6 +10,7 @@ import { ProviderStatusModal } from '../components/ProviderStatusModal';
 import { useProvider } from '../components/ProviderContext';
 import { useAlerts } from '../components/AlertsContext';
 import { useToast } from '../components/ToastContext';
+import { NOTIFY_KEY, requestNotificationPermission } from '../lib/notify';
 
 // One home for everything that used to be tucked into modals and dropdowns:
 // market-data provider, risk defaults, benchmark, the pre-trade checklist,
@@ -39,6 +40,15 @@ export default function SettingsPage() {
   const [benchSymbol, setBenchSymbol] = useLocalStorage<string>('benchmark.symbol', 'SPY');
   const [dailyLossLimit, setDailyLossLimit] = useLocalStorage<number>('guard.dailyLossLimit', 0);
   const [maxTradesPerDay, setMaxTradesPerDay] = useLocalStorage<number>('guard.maxTradesPerDay', 0);
+  const [notifyOn, setNotifyOn] = useLocalStorage<boolean>(NOTIFY_KEY, false);
+
+  // Desktop notifications need an explicit permission grant; only switch on if granted.
+  const toggleNotify = async (on: boolean) => {
+    if (!on) return setNotifyOn(false);
+    const granted = await requestNotificationPermission();
+    setNotifyOn(granted);
+    if (!granted) toast('Notifications were blocked by the browser.', { type: 'error' });
+  };
 
   // Pre-trade checklist rules — persisted server-side so they follow the data.
   const [rulesDraft, setRulesDraft] = useState<string | null>(null);
@@ -193,6 +203,20 @@ export default function SettingsPage() {
             <option value="300000">Every 5m</option>
           </select>
         </Field>
+        <label className="flex items-start gap-2 text-sm text-slate-300 mt-3 cursor-pointer">
+          <input
+            type="checkbox"
+            className="mt-0.5 accent-accent"
+            checked={notifyOn}
+            onChange={(e) => toggleNotify(e.target.checked)}
+          />
+          <span>
+            Desktop notifications when an alert fires
+            <span className="block text-[11px] text-slate-500">
+              Only while this tab is in the background — needs browser permission.
+            </span>
+          </span>
+        </label>
       </Section>
 
       <Section title="Data" desc="Export your trades, take a full database backup, or restore from a previous export.">
