@@ -13,11 +13,14 @@ const KIND_LABEL: Record<Alert['kind'], string> = {
   change: 'Change %',
   relvol: 'Rel volume',
   rsi: 'RSI',
+  macross: 'MA20−MA50 %',
+  high52: '% from 52w high',
+  low52: '% from 52w low',
 };
 
 function fmtThreshold(kind: Alert['kind'], v: number): string {
   if (kind === 'price') return fmtUsd(v);
-  if (kind === 'change') return fmtPct(v);
+  if (kind === 'change' || kind === 'macross' || kind === 'high52' || kind === 'low52') return fmtPct(v);
   if (kind === 'relvol') return `${fmtNum(v)}×`;
   return fmtNum(v, 1);
 }
@@ -79,7 +82,8 @@ export default function AlertsPage() {
         title="Alerts"
         subtitle={
           <>
-            Rule-based triggers on price, change %, relative volume, and RSI.
+            Rule-based triggers on price, change %, relative volume, RSI, MA20−MA50 spread, and distance from the
+            52-week high/low.
             {triggeredCount > 0 && <span className="text-amber-400"> · {triggeredCount} triggered</span>}
           </>
         }

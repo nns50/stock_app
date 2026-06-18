@@ -5,13 +5,13 @@ import { applyEvaluation, createAlert, deleteAlert, listAlerts, updateAlert } fr
 import { AlertMetrics, evaluateAlert } from '../services/alertEngine';
 import { evaluateOpenPositionExits } from '../services/positionExits';
 import { getProvider } from '../providers';
-import { rsi } from '../indicators/indicators';
+import { computeCandleMetrics, CandleMetrics } from '../services/alertMetrics';
 
 export const alertsRouter = Router();
 
 const createBody = z.object({
   symbol: z.string().min(1),
-  kind: z.enum(['price', 'change', 'relvol', 'rsi']),
+  kind: z.enum(['price', 'change', 'relvol', 'rsi', 'macross', 'high52', 'low52']),
   operator: z.enum(['above', 'below']),
   threshold: z.number(),
   note: z.string().max(200).optional(),
@@ -70,34 +70,38 @@ alertsRouter.post(
       // leave quotes empty; alerts simply won't trigger this round
     }
 
-    // RSI needs candle history; fetch only for symbols that have an RSI alert.
-    const rsiSymbols = Array.from(new Set(alerts.filter((a) => a.kind === 'rsi').map((a) => a.symbol.toUpperCase())));
-    const rsiValues = new Map<string, number | null>();
+    // RSI, MA-cross and 52-week-distance all need candle history; fetch once per
+    // symbol that has any such alert and derive them together.
+    const CANDLE_KINDS = ['rsi', 'macross', 'high52', 'low52'];
+    const EMPTY_CANDLE: CandleMetrics = { rsi: null, maSpreadPct: null, pctFromHigh52: null, pctFromLow52: null };
+    const candleSymbols = Array.from(
+      new Set(alerts.filter((a) => CANDLE_KINDS.includes(a.kind)).map((a) => a.symbol.toUpperCase())),
+    );
+    const candleMetrics = new Map<string, CandleMetrics>();
     await Promise.all(
-      rsiSymbols.map(async (s) => {
+      candleSymbols.map(async (s) => {
         try {
-          const candles = await provider.getCandles(s, 'daily', { limit: 60 });
-          rsiValues.set(
-            s,
-            rsi(
-              candles.map((c) => c.close),
-              14,
-            ),
-          );
+          const candles = await provider.getCandles(s, 'daily', { limit: 260 });
+          candleMetrics.set(s, computeCandleMetrics(candles, quotes.get(s)?.last ?? null));
         } catch {
-          rsiValues.set(s, null);
+          // leave unset → metrics stay null and the alert just won't trigger
         }
       }),
     );
 
     const newlyTriggered: { id: number; symbol: string; message: string | null }[] = [];
     for (const a of alerts) {
-      const q = quotes.get(a.symbol.toUpperCase());
+      const sym = a.symbol.toUpperCase();
+      const q = quotes.get(sym);
+      const cm = candleMetrics.get(sym) ?? EMPTY_CANDLE;
       const metrics: AlertMetrics = {
         price: q?.last ?? null,
         changePct: q?.changePct ?? null,
         relVol: q && q.avgVolume ? q.volume / q.avgVolume : null,
-        rsi: rsiValues.get(a.symbol.toUpperCase()) ?? null,
+        rsi: cm.rsi,
+        maSpreadPct: cm.maSpreadPct,
+        pctFromHigh52: cm.pctFromHigh52,
+        pctFromLow52: cm.pctFromLow52,
       };
       const ev = evaluateAlert(a.symbol, a, metrics);
       const wasTriggered = a.triggered;
