@@ -1,17 +1,19 @@
 import { useRef, useState } from 'react';
 import { client, ApiError } from '../api/client';
+import { parseTradeCsv } from '../lib/tradeCsv';
 import { useToast } from './ToastContext';
 
 type Pending = { positions: unknown[]; fileName: string };
 
 /**
  * Export / backup / restore controls. Downloads are plain links to the export
- * endpoints (proxied to the API). Import reads a positions.json file, then asks
- * whether to append or replace before sending it — replace is destructive, so
- * it's never the default.
+ * endpoints (proxied to the API). Import reads a positions.json file (or a trade
+ * CSV — a spreadsheet journal or broker export), then asks whether to append or
+ * replace before sending it — replace is destructive, so it's never the default.
  */
 export function DataTools({ onImported }: { onImported: () => void }) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const csvRef = useRef<HTMLInputElement>(null);
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -30,6 +32,24 @@ export function DataTools({ onImported }: { onImported: () => void }) {
       setPending({ positions, fileName: file.name });
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : 'Could not read file' });
+    }
+  };
+
+  const onCsvFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setMsg(null);
+    try {
+      const { positions, errors } = parseTradeCsv(await file.text());
+      if (positions.length === 0) {
+        setMsg({ ok: false, text: errors[0] ?? 'No valid trades found in that CSV.' });
+        return;
+      }
+      setPending({ positions, fileName: file.name });
+      if (errors.length) setMsg({ ok: false, text: `${errors.length} row(s) skipped — ${errors[0]}` });
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : 'Could not read CSV' });
     }
   };
 
@@ -82,10 +102,24 @@ export function DataTools({ onImported }: { onImported: () => void }) {
         >
           Backup .db
         </a>
-        <button className="btn-ghost !py-1 !px-2" onClick={() => fileRef.current?.click()} disabled={busy}>
+        <button
+          className="btn-ghost !py-1 !px-2"
+          onClick={() => fileRef.current?.click()}
+          disabled={busy}
+          title="Import a positions.json export"
+        >
           Import…
         </button>
+        <button
+          className="btn-ghost !py-1 !px-2"
+          onClick={() => csvRef.current?.click()}
+          disabled={busy}
+          title="Import trades from a spreadsheet or broker CSV"
+        >
+          Import CSV…
+        </button>
         <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={onFile} />
+        <input ref={csvRef} type="file" accept=".csv,text/csv" className="hidden" onChange={onCsvFile} />
       </div>
 
       {pending && (
