@@ -93,6 +93,11 @@ Your at-a-glance morning screen.
 
 - **Stat tiles:** Open P&L, Unrealized, Open positions, Gross exposure, and **Needs
   attention** (a count that turns amber when something wants a decision).
+- **Today's setups** — a one-click morning shortlist. Hit **Scan** at the open and it
+  runs the screener and ranks your universe. Toggle **Long / Short**, and sort by
+  **Score**, **Gap**, or **Rel-vol** to surface the four things people watch at the bell;
+  each row shows the score, gap %, relative volume, RSI, and a suggested ATR-based stop,
+  and links to the chart. It's a transparent rule-based ranking — **not a buy signal**.
 - **Needs attention** panel — positions that hit their stop/target or option exit
   rules, plus any triggered symbol alerts, each linking to where you act.
 - **Watchlist** mini-view with last price and % change.
@@ -385,8 +390,10 @@ One home (⚙ or `⌘K → Settings`) for everything:
 
 1. **Open Today.** Clear the *Needs attention* panel first — act on any stop/target/
    exit-rule hits and triggered alerts.
-2. **Run the Screener** (long and/or short). Expand the top names; sanity-check the
-   breakdown. **Save a snapshot** so you can measure this run's edge later.
+2. **Get your shortlist.** The fastest path at the open is **Today's setups** on the
+   dashboard (one **Scan**). For the full controls, open the **Screener** (long and/or
+   short), expand the top names, and sanity-check the breakdown. **Save a snapshot** so
+   you can measure this run's edge later.
 3. **Plan entries.** For each candidate, decide an **entry, stop, and target** *before*
    you commit. Use **Size by risk** so every trade risks the same small % (your "1R").
 4. **Run the pre-trade checklist** and **log the trade** with tags + grade. Set the
