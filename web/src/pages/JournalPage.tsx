@@ -218,6 +218,17 @@ export default function JournalPage() {
                 Max drawdown <span className="text-bear">{fmtSignedUsd(-s.maxDrawdown)}</span>
               </span>
               <span>
+                Current{' '}
+                {s.currentDrawdown <= 0 ? (
+                  <span className="text-bull">at peak ▲</span>
+                ) : (
+                  <span className={s.currentDrawdown >= s.maxDrawdown ? 'text-bear font-medium' : 'text-amber-400'}>
+                    {fmtSignedUsd(-s.currentDrawdown)}
+                    {s.currentDrawdown >= s.maxDrawdown ? ' (at max)' : ''}
+                  </span>
+                )}
+              </span>
+              <span>
                 Streak{' '}
                 {s.currentStreak.count === 0 ? (
                   <span className="text-slate-400">—</span>

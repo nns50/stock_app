@@ -153,19 +153,28 @@ describe('computeStreaksAndDrawdown', () => {
     // cum: 100, 60, 160, 110, 90 -> peak 160, trough-after-peak 90 -> DD 70
     const r = computeStreaksAndDrawdown([100, -40, 100, -50, -20]);
     expect(r.maxDrawdown).toBe(70);
+    expect(r.currentDrawdown).toBe(70); // still 70 below the 160 peak at the end
     expect(r.currentStreak).toEqual({ type: 'loss', count: 2 }); // last two are losses
     expect(r.longestWinStreak).toBe(1);
     expect(r.longestLossStreak).toBe(2);
   });
+  it('reports zero current drawdown when the last trade sets a new equity high', () => {
+    // cum: 100, 60, 160 -> peak 160, ends at the peak
+    const r = computeStreaksAndDrawdown([100, -40, 100]);
+    expect(r.maxDrawdown).toBe(40);
+    expect(r.currentDrawdown).toBe(0);
+  });
   it('handles an all-up curve (no drawdown) and a winning streak', () => {
     const r = computeStreaksAndDrawdown([10, 20, 30]);
     expect(r.maxDrawdown).toBe(0);
+    expect(r.currentDrawdown).toBe(0);
     expect(r.currentStreak).toEqual({ type: 'win', count: 3 });
     expect(r.longestWinStreak).toBe(3);
   });
   it('is empty-safe', () => {
     expect(computeStreaksAndDrawdown([])).toEqual({
       maxDrawdown: 0,
+      currentDrawdown: 0,
       currentStreak: { type: 'none', count: 0 },
       longestWinStreak: 0,
       longestLossStreak: 0,

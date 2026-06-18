@@ -376,6 +376,7 @@ export interface JournalStats {
   rBuckets: { label: string; count: number }[];
   kelly: KellySuggestion | null;
   maxDrawdown: number;
+  currentDrawdown: number;
   currentStreak: { type: 'win' | 'loss' | 'none'; count: number };
   longestWinStreak: number;
   longestLossStreak: number;

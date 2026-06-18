@@ -274,7 +274,9 @@ trades.
 - **Edge over time** — a rolling 20-trade expectancy ($/trade). Rising means your edge
   is strengthening; drifting toward or below zero means it's decaying (shows once you
   have ~8+ closed trades).
-- **Drawdown & streaks** — max drawdown, longest winning/losing streaks.
+- **Drawdown & streaks** — your **max** drawdown, your **current** drawdown (how far
+  below your equity peak you are right now — "at peak" when you've just made a new high,
+  red when you're at your worst point), and longest winning/losing streaks.
 - **Risk of ruin** (Monte Carlo) — set a per-trade risk and a "ruin" drawdown
   threshold; it simulates thousands of trade sequences from your edge and reports the
   **% that hit ruin** plus a median ending. Your guardrail against over-betting.
