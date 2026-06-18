@@ -296,6 +296,15 @@ trades.
 
 - **Export** CSV or JSON, take a full **`.db` backup**, or **import** a positions
   export (append or replace). Great for backups and moving between machines.
+- **Import CSV** — bring trades in from a spreadsheet journal or a broker export.
+  One row = one trade. Headers are matched loosely (case-insensitive, common
+  aliases), `$` and thousands-commas are tolerated, and each row is validated on
+  its own so one bad row doesn't sink the import.
+  - **Required:** `symbol`, `quantity`, `entryPrice` (aliases: price/avg price/cost),
+    `entryDate` (aliases: date/opened).
+  - **Optional:** `side` (buy→long, sell→short), `fees`, `assetType`/`type`,
+    `optionType`, `strike`, `expiration`, `exitPrice` + `exitDate` (attaches a
+    closing exit), `tags` (split on `;`/`|`), `grade`, `notes`, `stop`, `target`.
 
 ---
 
