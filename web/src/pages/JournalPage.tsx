@@ -13,16 +13,35 @@ import {
   YAxis,
 } from 'recharts';
 import { client } from '../api/client';
-import { useAsync } from '../lib/hooks';
+import { useAsync, useSort } from '../lib/hooks';
 import { cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd } from '../lib/format';
 import { disciplineCount } from '../lib/checklist';
-import { Badge, Card, EmptyState, InfoTip, PageHeader, PnL, Spinner, StatTile } from '../components/ui';
+import { Badge, Card, EmptyState, InfoTip, PageHeader, PnL, SortTh, Spinner, StatTile } from '../components/ui';
 import { JournalEditModal } from '../components/PositionForms';
 import { DataTools } from '../components/DataTools';
 import { RiskOfRuinModal } from '../components/RiskOfRuinModal';
 import { ExcursionsModal } from '../components/ExcursionsModal';
 import { BenchmarkCard } from '../components/BenchmarkCard';
-import type { GroupStat, Position } from '../api/types';
+import type { GroupStat, Position, PositionWithPnl } from '../api/types';
+
+/** Comparable value for a sortable Journal column (module-level → stable). */
+function journalSortVal(r: PositionWithPnl, key: string): number | string | null {
+  const p = r.position;
+  switch (key) {
+    case 'symbol':
+      return p.symbol;
+    case 'date':
+      return p.exits.length ? p.exits[p.exits.length - 1].exitDate : p.entryDate;
+    case 'grade':
+      return p.grade ?? null;
+    case 'realized':
+      return r.pnl.totalPnl;
+    case 'return':
+      return r.pnl.returnPct;
+    default:
+      return null;
+  }
+}
 
 /** Van Tharp's qualitative band for a System Quality Number. */
 function sqnLabel(sqn: number): string {
@@ -92,6 +111,7 @@ export default function JournalPage() {
     const list = closed.data?.positions ?? [];
     return tagFilter ? list.filter((r) => r.position.tags.includes(tagFilter)) : list;
   }, [closed.data, tagFilter]);
+  const { sorted: sortedRows, sortKey, sortDir, onSort } = useSort(rows, journalSortVal);
 
   if (stats.loading || closed.loading) return <Spinner label="Loading journal…" />;
   const s = stats.data!;
@@ -401,19 +421,26 @@ export default function JournalPage() {
           <table className="w-full table-zebra">
             <thead className="sticky-thead">
               <tr>
-                <th className="th">Symbol</th>
-                <th className="th">Entry → last exit</th>
-                <th className="th">Grade</th>
+                <SortTh label="Symbol" k="symbol" active={sortKey} dir={sortDir} onSort={onSort} />
+                <SortTh label="Entry → last exit" k="date" active={sortKey} dir={sortDir} onSort={onSort} />
+                <SortTh label="Grade" k="grade" active={sortKey} dir={sortDir} onSort={onSort} />
                 <th className="th">Rules</th>
                 <th className="th">Tags</th>
-                <th className="th text-right">Realized P&L</th>
-                <th className="th text-right">Return</th>
+                <SortTh
+                  label="Realized P&L"
+                  k="realized"
+                  active={sortKey}
+                  dir={sortDir}
+                  onSort={onSort}
+                  align="right"
+                />
+                <SortTh label="Return" k="return" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
                 <th className="th">Notes</th>
                 <th className="th"></th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
+              {sortedRows.map((r) => {
                 const p = r.position;
                 const lastExit = p.exits.length ? p.exits[p.exits.length - 1].exitDate : p.entryDate;
                 return (

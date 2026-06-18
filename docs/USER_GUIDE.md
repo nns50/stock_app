@@ -66,6 +66,10 @@ Everything lives under one top bar:
 Every page opens with a **bold title and a one-line subtitle** describing what it's for,
 with its primary actions on the right.
 
+**Sortable tables:** the dense data tables (Positions, Journal, Watchlist, Screener)
+sort by any column — click a header to sort, click again to flip the direction (blanks
+always sort last).
+
 **Feedback you can trust:** every action confirms itself with a toast (bottom-right).
 Destructive actions (delete a trade, delete a snapshot) ask first with a styled
 dialog, and many — like deleting a position or removing a watch symbol — offer a

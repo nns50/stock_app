@@ -1,4 +1,40 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+export type SortDir = 'asc' | 'desc';
+
+/**
+ * Click-to-sort state for a table. `getValue(row, key)` returns the comparable
+ * value for a column (numbers compare numerically, strings via localeCompare,
+ * null/undefined always sort last). Pass a STABLE `getValue` (module-level or
+ * memoized) to avoid needless re-sorts. Unsorted (no column active) returns the
+ * rows untouched, preserving their natural order.
+ */
+export function useSort<T>(
+  rows: T[],
+  getValue: (row: T, key: string) => number | string | null | undefined,
+  initial?: { key: string; dir: SortDir },
+): { sorted: T[]; sortKey: string; sortDir: SortDir; onSort: (key: string) => void } {
+  const [sort, setSort] = useState<{ key: string; dir: SortDir } | null>(initial ?? null);
+  const onSort = useCallback((key: string) => {
+    setSort((s) => (s && s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' }));
+  }, []);
+  const sorted = useMemo(() => {
+    if (!sort) return rows;
+    const mul = sort.dir === 'asc' ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const va = getValue(a, sort.key);
+      const vb = getValue(b, sort.key);
+      const na = va === null || va === undefined;
+      const nb = vb === null || vb === undefined;
+      if (na && nb) return 0;
+      if (na) return 1;
+      if (nb) return -1;
+      if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * mul;
+      return String(va).localeCompare(String(vb)) * mul;
+    });
+  }, [rows, sort, getValue]);
+  return { sorted, sortKey: sort?.key ?? '', sortDir: sort?.dir ?? 'desc', onSort };
+}
 
 export interface AsyncState<T> {
   data: T | undefined;
