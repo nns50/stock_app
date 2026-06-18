@@ -20,6 +20,7 @@ import { useProvider } from './ProviderContext';
 import { ProviderStatusModal } from './ProviderStatusModal';
 import { useAlerts } from './AlertsContext';
 import { useTheme } from './ThemeContext';
+import { ErrorBoundary } from './ErrorBoundary';
 import { CommandPalette, OPEN_PALETTE_EVENT } from './CommandPalette';
 
 const TABS = [
@@ -218,8 +219,9 @@ export function Layout({ children }: { children: ReactNode }) {
       <ProviderBanner />
 
       <main className="flex-1 max-w-[1400px] w-full mx-auto px-4 py-5">
+        {/* Keyed by route so a crashed page resets when you navigate away. */}
         <div key={pathname} className="animate-fade-in">
-          {children}
+          <ErrorBoundary>{children}</ErrorBoundary>
         </div>
       </main>
 

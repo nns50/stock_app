@@ -69,7 +69,9 @@ with its primary actions on the right.
 **Feedback you can trust:** every action confirms itself with a toast (bottom-right).
 Destructive actions (delete a trade, delete a snapshot) ask first with a styled
 dialog, and many — like deleting a position or removing a watch symbol — offer a
-one-click **Undo**.
+one-click **Undo**. If a page ever hits an unexpected error it shows a small
+"something went wrong" card (with **Try again**) instead of a blank screen — the
+nav and other tabs keep working.
 
 ---
 
