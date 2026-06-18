@@ -1,6 +1,7 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { client } from '../api/client';
 import { useLocalStorage, usePolling } from '../lib/hooks';
+import { notifyAlert } from '../lib/notify';
 import { useToast } from './ToastContext';
 
 // ---------------------------------------------------------------------------
@@ -50,14 +51,21 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
     try {
       const r = await client.evaluateAlerts();
       setSymbolCount(r.alerts.filter((a) => a.triggered).length);
-      for (const t of r.newlyTriggered) toast(t.message || `${t.symbol} triggered`, { type: 'info' });
+      for (const t of r.newlyTriggered) {
+        const msg = t.message || `${t.symbol} triggered`;
+        toast(msg, { type: 'info' });
+        notifyAlert('Alert triggered', msg);
+      }
 
       // Position exit alerts: toast keys not seen last round; re-arm cleared ones.
       const seen = new Set<string>();
       for (const e of r.positionAlerts) {
         const key = `${e.positionId}:${e.rule}`;
         seen.add(key);
-        if (!notifiedExits.current.has(key)) toast(e.message, { type: 'info' });
+        if (!notifiedExits.current.has(key)) {
+          toast(e.message, { type: 'info' });
+          notifyAlert('Position alert', e.message);
+        }
       }
       notifiedExits.current = seen;
       setExitCount(r.positionAlerts.length);

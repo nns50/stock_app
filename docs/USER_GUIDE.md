@@ -342,6 +342,10 @@ as toasts.
 Background polling is **off by default** (to respect provider rate limits). Turn it on
 (every 30s / 1m / 5m) from the bell or **Settings**.
 
+**Desktop notifications (optional):** enable them in **Settings → Alerts** (the browser
+will ask permission). When an alert fires while this tab is in the **background**, you
+get a desktop notification — when the tab is focused the in-app toast already covers it.
+
 ---
 
 ## Settings
@@ -358,7 +362,8 @@ One home (⚙ or `⌘K → Settings`) for everything:
 - **Benchmark** — the index symbol the Journal measures you against (default `SPY`).
 - **Pre-trade checklist** — the canonical editor for your discipline rules (saved
   server-side).
-- **Alerts** — the background auto-check interval.
+- **Alerts** — the background auto-check interval, and an opt-in toggle for **desktop
+  notifications** when an alert fires (while the tab is in the background).
 - **Data** — export / backup / restore.
 
 ---
