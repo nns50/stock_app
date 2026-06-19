@@ -584,8 +584,16 @@ export interface AlertSchedulerConfig {
 }
 
 export interface NotificationStatus {
-  webhook: { configured: boolean; format: 'json' | 'slack' | 'discord' };
+  /** Configured webhook destinations (Slack / Discord / generic), no URLs. */
+  channels: { label: string; format: 'json' | 'slack' | 'discord' }[];
+  configured: boolean;
   scheduler: AlertSchedulerConfig;
+}
+
+export interface NotificationTestResult {
+  delivered: boolean;
+  count: number;
+  results: { label: string; delivered: boolean; error?: string }[];
 }
 
 export interface PositionExitAlert {

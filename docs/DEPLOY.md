@@ -58,11 +58,17 @@ Set at least:
 # Free live data, no key (Yahoo) — or use tradier with a token. mock = demo only.
 MARKET_DATA_PROVIDER=yahoo
 
-# Where always-on alerts get pushed (this is a secret — never commit it).
-#   Slack/Discord incoming webhook, or an ntfy topic for phone push.
-ALERT_WEBHOOK_URL=https://ntfy.sh/your-private-topic
-ALERT_WEBHOOK_FORMAT=json        # json | slack | discord
+# Where always-on alerts get pushed (secrets — never commit). Set any/all; they
+# fire at once. A fired alert can hit Slack AND Discord AND your phone together.
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T000/B000/xxxx
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/000/xxxx
+ALERT_WEBHOOK_URL=https://ntfy.sh/your-private-topic   # generic/phone push (optional)
+ALERT_WEBHOOK_FORMAT=json                              # body shape for ALERT_WEBHOOK_URL
 ```
+
+> **Getting the URLs:** Slack → _Incoming Webhooks_ app → "Add to Slack", pick a
+> channel, copy the URL. Discord → _Server Settings → Integrations → Webhooks → New
+> Webhook_, pick a channel, copy. Paste them above; no format flag needed for these two.
 
 ```bash
 # 3. Build and start (detached, restarts on crash/reboot)

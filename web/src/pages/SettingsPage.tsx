@@ -273,14 +273,19 @@ function ServerWatchSection() {
     setTesting(true);
     try {
       const r = await client.testNotification();
-      if (r.delivered) toast('Test sent — check your webhook.', { type: 'success' });
-      else toast(`Not delivered: ${r.error ?? 'no webhook configured'}`, { type: 'error' });
+      if (!r.results.length) {
+        toast('No webhook configured.', { type: 'error' });
+      } else {
+        const summary = r.results.map((c) => `${c.label} ${c.delivered ? '✓' : `✕ (${c.error})`}`).join(' · ');
+        toast(`Test → ${summary}`, { type: r.delivered ? 'success' : 'error' });
+      }
     } finally {
       setTesting(false);
     }
   };
 
-  const webhook = status.data?.webhook;
+  const channels = status.data?.channels ?? [];
+  const configured = !!status.data?.configured;
 
   return (
     <Section
@@ -320,20 +325,27 @@ function ServerWatchSection() {
           </Field>
 
           <div className="text-xs text-slate-400">
-            {webhook?.configured ? (
+            {configured ? (
               <>
-                Webhook <span className="text-bull">configured</span> (format:{' '}
-                <span className="tabular-nums">{webhook.format}</span>).
+                Pushing to:{' '}
+                {channels.map((c, i) => (
+                  <span key={c.label}>
+                    {i > 0 && ' · '}
+                    <span className="text-bull capitalize">{c.label}</span>
+                  </span>
+                ))}
+                . Set in <code className="text-slate-300">server/.env</code>.
               </>
             ) : (
               <>
-                No webhook configured — set <code className="text-slate-300">ALERT_WEBHOOK_URL</code> in{' '}
+                No webhook configured — set <code className="text-slate-300">SLACK_WEBHOOK_URL</code> and/or{' '}
+                <code className="text-slate-300">DISCORD_WEBHOOK_URL</code> in{' '}
                 <code className="text-slate-300">server/.env</code> to receive pushes.
               </>
             )}
           </div>
 
-          <button className="btn-ghost text-sm" onClick={sendTest} disabled={testing || !webhook?.configured}>
+          <button className="btn-ghost text-sm" onClick={sendTest} disabled={testing || !configured}>
             {testing ? 'Sending…' : 'Send test notification'}
           </button>
         </div>

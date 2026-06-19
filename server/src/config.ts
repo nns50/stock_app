@@ -46,11 +46,15 @@ export const config = {
   /** When set, the built frontend is served from this directory (production). */
   publicDir: process.env.PUBLIC_DIR ? path.resolve(process.env.PUBLIC_DIR) : '',
   /**
-   * Outbound alert notifications (for the background poller). The webhook URL is
-   * a secret — keep it in server/.env, never commit it. Format adapts the JSON
-   * body to the target service.
+   * Outbound alert notifications (for the background poller). Each configured
+   * webhook is a destination an alert fans out to, so Slack + Discord (+ a
+   * generic/ntfy webhook) can all fire at once. URLs are secrets — keep them in
+   * server/.env, never commit them.
    */
   notifications: {
+    slackWebhookUrl: process.env.SLACK_WEBHOOK_URL || '',
+    discordWebhookUrl: process.env.DISCORD_WEBHOOK_URL || '',
+    // Generic webhook (ntfy / Zapier / custom). Format adapts the JSON body.
     webhookUrl: process.env.ALERT_WEBHOOK_URL || '',
     webhookFormat: oneOf(process.env.ALERT_WEBHOOK_FORMAT, ['json', 'slack', 'discord'] as const, 'json'),
   },

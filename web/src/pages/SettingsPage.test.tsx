@@ -19,7 +19,8 @@ beforeEach(() => {
   vi.spyOn(client, 'settings').mockResolvedValue({} as never);
   vi.spyOn(client, 'alerts').mockResolvedValue({ alerts: [] } as never);
   vi.spyOn(client, 'notifications').mockResolvedValue({
-    webhook: { configured: false, format: 'json' },
+    channels: [],
+    configured: false,
     scheduler: { enabled: false, intervalSeconds: 60 },
   } as never);
 });
