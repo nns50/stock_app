@@ -159,13 +159,15 @@ describe('alerts routes (integration)', () => {
     expect(Array.isArray(out.positionAlerts)).toBe(true);
   });
 
-  it('reports notification status (webhook + scheduler) and toggles the poller', async () => {
+  it('reports notification status (channels + scheduler) and toggles the poller', async () => {
     const status = (await getJson('/api/alerts/notifications')) as {
-      webhook: { configured: boolean; format: string };
+      channels: { label: string; format: string }[];
+      configured: boolean;
       scheduler: { enabled: boolean; intervalSeconds: number };
     };
     expect(status.scheduler).toEqual({ enabled: false, intervalSeconds: 60 }); // default off
-    expect(typeof status.webhook.configured).toBe('boolean');
+    expect(Array.isArray(status.channels)).toBe(true);
+    expect(typeof status.configured).toBe('boolean');
 
     const put = await fetch(`${base}/api/alerts/scheduler`, {
       method: 'PUT',

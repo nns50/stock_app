@@ -166,8 +166,10 @@ Copy `.env.example` to `server/.env`. All keys are read **server-side only**.
 | `CANDLE_CACHE_TTL_MS`   | `60000`                            | In-memory candle cache TTL.                                     |
 | `CORS_ORIGINS`          | `http://localhost:5173`            | Comma-separated allowed origins for the API.                    |
 | `RISK_FREE_RATE`        | `0.04`                             | Annual risk-free rate for Black–Scholes.                        |
-| `ALERT_WEBHOOK_URL`     | _(empty)_                          | Webhook the background alert poller POSTs fired alerts to (secret). Blank = disabled. |
-| `ALERT_WEBHOOK_FORMAT`  | `json`                             | Webhook body shape: `json`, `slack`, or `discord`.              |
+| `SLACK_WEBHOOK_URL`     | _(empty)_                          | Slack Incoming Webhook for fired alerts (secret). Blank = off.   |
+| `DISCORD_WEBHOOK_URL`   | _(empty)_                          | Discord channel webhook for fired alerts (secret). Blank = off.  |
+| `ALERT_WEBHOOK_URL`     | _(empty)_                          | Generic/ntfy webhook for fired alerts (secret). Fires alongside Slack/Discord. |
+| `ALERT_WEBHOOK_FORMAT`  | `json`                             | Body shape for `ALERT_WEBHOOK_URL`: `json`, `slack`, or `discord`. |
 
 ### Getting a Tradier token
 

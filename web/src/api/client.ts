@@ -26,6 +26,7 @@ import type {
   AlertPlan,
   AlertSchedulerConfig,
   NotificationStatus,
+  NotificationTestResult,
   ScreenerConfig,
   ScreenerResult,
   EdgeReport,
@@ -255,8 +256,5 @@ export const client = {
   notifications: () => api<NotificationStatus>('/alerts/notifications'),
   setAlertScheduler: (body: { enabled?: boolean; intervalSeconds?: number }) =>
     api<AlertSchedulerConfig>('/alerts/scheduler', { method: 'PUT', body: JSON.stringify(body) }),
-  testNotification: () =>
-    api<{ delivered: boolean; channel?: string; count?: number; error?: string }>('/alerts/notifications/test', {
-      method: 'POST',
-    }),
+  testNotification: () => api<NotificationTestResult>('/alerts/notifications/test', { method: 'POST' }),
 };

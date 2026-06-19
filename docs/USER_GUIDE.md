@@ -395,13 +395,16 @@ get a desktop notification — when the tab is focused the in-app toast already 
 The browser-based checks above stop when you close the tab. To keep watching **with no
 browser open**, turn on the **server-side poller** in **Settings → Server-side watching**:
 the server evaluates your alerts on a schedule (30s / 1m / 5m / 15m) and **POSTs anything
-that fires to a webhook** — so it can reach Slack, Discord, or your phone (e.g. via an
-[ntfy](https://ntfy.sh) topic).
+that fires to your webhooks**.
 
-- Configure the webhook **server-side** (it's a secret): set `ALERT_WEBHOOK_URL` (and
-  `ALERT_WEBHOOK_FORMAT` = `json` / `slack` / `discord`) in `server/.env`. See the README.
-- The status line in Settings shows whether a webhook is wired up; **Send test
-  notification** verifies it end-to-end.
+- Configure the destinations **server-side** (they're secrets), in `server/.env` — set any
+  or all; a fired alert **fans out to all of them at once**:
+  - `SLACK_WEBHOOK_URL` — a Slack Incoming Webhook.
+  - `DISCORD_WEBHOOK_URL` — a Discord channel webhook.
+  - `ALERT_WEBHOOK_URL` (+ `ALERT_WEBHOOK_FORMAT`) — a generic webhook, e.g. phone push via
+    an [ntfy](https://ntfy.sh) topic, Zapier, or your own endpoint.
+- The status line in Settings shows which destinations are wired up; **Send test
+  notification** posts to each and reports per-channel success/failure.
 - The **server process must stay running** for this to work (leave `npm run dev`/the
   server up, or run it as a service / in Docker). It's independent of any open tab.
 
