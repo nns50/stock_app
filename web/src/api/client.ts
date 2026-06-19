@@ -23,6 +23,7 @@ import type {
   RuinParams,
   RuinResult,
   Alert,
+  AlertPlan,
   ScreenerConfig,
   ScreenerResult,
   EdgeReport,
@@ -216,11 +217,28 @@ export const client = {
 
   // --- alerts ---
   alerts: () => api<{ alerts: Alert[] }>('/alerts'),
-  createAlert: (body: { symbol: string; kind: string; operator: string; threshold: number; note?: string }) =>
-    api<Alert>('/alerts', post(body)),
+  createAlert: (body: {
+    symbol: string;
+    assetType?: 'stock' | 'option';
+    kind: string;
+    operator: string;
+    threshold: number;
+    optionType?: 'call' | 'put';
+    strike?: number;
+    expiration?: string;
+    role?: 'entry' | 'exit';
+    plan?: AlertPlan;
+    note?: string;
+  }) => api<Alert>('/alerts', post(body)),
   updateAlert: (
     id: number,
-    patch: { threshold?: number; note?: string | null; enabled?: boolean; triggered?: boolean },
+    patch: {
+      threshold?: number;
+      note?: string | null;
+      plan?: AlertPlan | null;
+      enabled?: boolean;
+      triggered?: boolean;
+    },
   ) => api<Alert>(`/alerts/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteAlert: (id: number) => api<{ deleted: number }>(`/alerts/${id}`, { method: 'DELETE' }),
   evaluateAlerts: () =>

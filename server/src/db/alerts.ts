@@ -1,12 +1,32 @@
 import { db } from './index';
 import { AlertKind, AlertOperator } from '../services/alertEngine';
 
+export type AlertAssetType = 'stock' | 'option';
+export type AlertRole = 'entry' | 'exit';
+
+/** A written / auto-suggested trade plan attached to an option alert. */
+export interface AlertPlan {
+  /** Why this is a good entry (free text). */
+  entry?: string | null;
+  /** When/how to exit (free text). */
+  exit?: string | null;
+  /** Auto-suggested exit line from the exit-rules engine (entry alerts). */
+  suggestedExit?: string | null;
+}
+
 export interface Alert {
   id: number;
   symbol: string;
+  assetType: AlertAssetType;
   kind: AlertKind;
   operator: AlertOperator;
   threshold: number;
+  /** Option-contract target (option alerts only). */
+  optionType: 'call' | 'put' | null;
+  strike: number | null;
+  expiration: string | null;
+  role: AlertRole | null;
+  plan: AlertPlan | null;
   note: string | null;
   enabled: boolean;
   triggered: boolean;
@@ -20,9 +40,15 @@ export interface Alert {
 interface AlertRow {
   id: number;
   symbol: string;
+  asset_type: AlertAssetType;
   kind: AlertKind;
   operator: AlertOperator;
   threshold: number;
+  option_type: 'call' | 'put' | null;
+  strike: number | null;
+  expiration: string | null;
+  role: AlertRole | null;
+  plan: string | null;
   note: string | null;
   enabled: number;
   triggered: number;
@@ -33,13 +59,28 @@ interface AlertRow {
   updated_at: number;
 }
 
+function parsePlan(raw: string | null): AlertPlan | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as AlertPlan;
+  } catch {
+    return null;
+  }
+}
+
 function map(r: AlertRow): Alert {
   return {
     id: r.id,
     symbol: r.symbol,
+    assetType: r.asset_type,
     kind: r.kind,
     operator: r.operator,
     threshold: r.threshold,
+    optionType: r.option_type,
+    strike: r.strike,
+    expiration: r.expiration,
+    role: r.role,
+    plan: parsePlan(r.plan),
     note: r.note,
     enabled: !!r.enabled,
     triggered: !!r.triggered,
@@ -53,9 +94,15 @@ function map(r: AlertRow): Alert {
 
 export interface AlertInput {
   symbol: string;
+  assetType?: AlertAssetType;
   kind: AlertKind;
   operator: AlertOperator;
   threshold: number;
+  optionType?: 'call' | 'put' | null;
+  strike?: number | null;
+  expiration?: string | null;
+  role?: AlertRole | null;
+  plan?: AlertPlan | null;
   note?: string | null;
 }
 
@@ -73,16 +120,32 @@ export function createAlert(input: AlertInput): Alert {
   const now = Date.now();
   const res = db
     .prepare(
-      `INSERT INTO alerts(symbol, kind, operator, threshold, note, enabled, triggered, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?)`,
+      `INSERT INTO alerts(symbol, asset_type, kind, operator, threshold, option_type, strike, expiration, role, plan,
+                          note, enabled, triggered, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
     )
-    .run(input.symbol.toUpperCase(), input.kind, input.operator, input.threshold, input.note ?? null, now, now);
+    .run(
+      input.symbol.toUpperCase(),
+      input.assetType ?? 'stock',
+      input.kind,
+      input.operator,
+      input.threshold,
+      input.optionType ?? null,
+      input.strike ?? null,
+      input.expiration ?? null,
+      input.role ?? null,
+      input.plan ? JSON.stringify(input.plan) : null,
+      input.note ?? null,
+      now,
+      now,
+    );
   return getAlert(Number(res.lastInsertRowid))!;
 }
 
 export interface AlertPatch {
   threshold?: number;
   note?: string | null;
+  plan?: AlertPlan | null;
   enabled?: boolean;
   /** Acknowledge/re-arm: clears the triggered flag. */
   triggered?: boolean;
@@ -98,6 +161,7 @@ export function updateAlert(id: number, patch: AlertPatch): Alert | undefined {
   };
   if (patch.threshold !== undefined) set('threshold', patch.threshold);
   if (patch.note !== undefined) set('note', patch.note);
+  if (patch.plan !== undefined) set('plan', patch.plan ? JSON.stringify(patch.plan) : null);
   if (patch.enabled !== undefined) set('enabled', patch.enabled ? 1 : 0);
   if (patch.triggered !== undefined) {
     set('triggered', patch.triggered ? 1 : 0);

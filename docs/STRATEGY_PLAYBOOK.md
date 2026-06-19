@@ -62,6 +62,15 @@ Define the exit *before* you enter: a **stop**, a **target**, and for options a
 exit-rules engine** tell you when a line is crossed. Most account damage comes from
 moving stops and "hoping."
 
+For options specifically, set an **option-contract alert** (Alerts → Option) on the
+exact call/put you care about — trigger on the **underlying price**, the contract's
+**mark / bid / ask**, **|Δ|**, or **IV**. Give it a **role**: an **entry** alert flags a
+good entry *and auto-attaches a suggested exit* (your take-profit / stop / time rule) so
+the signal arrives with the exit already decided; an **exit** alert watches a contract
+you hold. From **Options → Entry scan**, the **＋ Alert** button turns a ranked contract
+into that entry alert in one click, with a strategy note pre-filled. The discipline win
+isn't the entry — it's that *you never enter without a written exit.*
+
 ### 5. Review on a cadence
 
 Edge decays and habits drift. The **Edge Report**, **by-tag/by-grade/by-discipline**

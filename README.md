@@ -33,8 +33,10 @@ trade journal.
   exits), see live realized/unrealized P&L per trade and in aggregate, and review
   a journal with tags, grades, and stats (win rate, avg win/loss, expectancy,
   profit factor, equity curve).
-- **Alerts** — rule-based triggers on price / change % / relative volume / RSI
-  (above or below a threshold), one-shot with acknowledge to re-arm.
+- **Alerts** — rule-based triggers on a stock (price / change % / relative volume /
+  RSI / MA-spread / 52-week distance) **or a specific option contract** (underlying
+  price, mark / bid / ask, |Δ|, IV) with an entry/exit **role** and a trade plan;
+  an entry alert auto-attaches a suggested exit. One-shot, with acknowledge to re-arm.
 - **Risk / position-size calculator** — account size + risk % + entry/stop →
   suggested quantity (stock or option), R-multiple target, and guard-rails.
 - **Providers** — swappable behind one interface: free **Yahoo Finance** (no key,
