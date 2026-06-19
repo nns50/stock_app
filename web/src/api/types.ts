@@ -519,12 +519,38 @@ export interface SnapshotPerformance {
   worstReturnPct: number | null;
 }
 
+export type AlertKind =
+  | 'price'
+  | 'change'
+  | 'relvol'
+  | 'rsi'
+  | 'macross'
+  | 'high52'
+  | 'low52'
+  | 'optmark'
+  | 'optbid'
+  | 'optask'
+  | 'optdelta'
+  | 'optiv';
+
+export interface AlertPlan {
+  entry?: string | null;
+  exit?: string | null;
+  suggestedExit?: string | null;
+}
+
 export interface Alert {
   id: number;
   symbol: string;
-  kind: 'price' | 'change' | 'relvol' | 'rsi' | 'macross' | 'high52' | 'low52';
+  assetType: 'stock' | 'option';
+  kind: AlertKind;
   operator: 'above' | 'below';
   threshold: number;
+  optionType: 'call' | 'put' | null;
+  strike: number | null;
+  expiration: string | null;
+  role: 'entry' | 'exit' | null;
+  plan: AlertPlan | null;
   note: string | null;
   enabled: boolean;
   triggered: boolean;
@@ -533,6 +559,23 @@ export interface Alert {
   lastTriggeredAt: number | null;
   createdAt: number;
   updatedAt: number;
+}
+
+/**
+ * Prefill payload passed via router state from the options Entry-scan to the
+ * Alerts page, so a ranked contract becomes a one-click entry alert with an
+ * auto-derived strategy note.
+ */
+export interface AlertPreset {
+  symbol: string;
+  optionType: 'call' | 'put';
+  strike: number;
+  expiration: string;
+  role: 'entry' | 'exit';
+  kind: AlertKind;
+  operator: 'above' | 'below';
+  threshold?: number;
+  entryPlan?: string;
 }
 
 export interface PositionExitAlert {

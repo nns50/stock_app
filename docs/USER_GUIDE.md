@@ -334,7 +334,7 @@ trades.
 
 Get notified when the market — or one of your positions — needs a decision.
 
-### Symbol alerts
+### Stock alerts
 
 Create an alert on a **symbol** with a **metric** and **operator**:
 
@@ -345,6 +345,29 @@ Create an alert on a **symbol** with a **metric** and **operator**:
 - **Operator**: `above` / `below`, with a **threshold** and optional note.
 - Click **Refresh** (or rely on background polling) to evaluate against current data.
   Newly-triggered alerts raise a toast anywhere in the app.
+
+### Option-contract alerts (entry & exit)
+
+Toggle the **New alert** form to **Option** to watch a specific contract (underlying +
+**call/put** + **strike** + **expiration**) with a **role** and a **trade plan**:
+
+- **Role** — **Entry signal** (you're watching for a good entry on a contract you
+  don't hold yet) or **Exit signal** (on a contract you do hold).
+- **Trigger metric** — the **underlying price**, or the contract's **mark**,
+  **bid**, **ask**, **|Δ|** (absolute delta), or **IV %** — `above` / `below` a
+  threshold. (Mark / bid-ask / |Δ| / IV need an options-capable provider; an
+  underlying-price trigger works with any provider.)
+- **Trade plan** — write your own **entry** and **exit** plan. For an **entry** alert
+  the app also **auto-attaches a suggested exit** from your exit rules (take-profit /
+  stop-loss / time-exit), so a signal always arrives with a pre-decided exit. When the
+  alert fires, that exit suggestion rides along in the message. Expand the row (chevron)
+  to read the full plan.
+- **One-click from the Entry-scan** — on **Options → Entry scan**, every ranked
+  contract has a **＋ Alert** button that opens this form pre-filled with the contract,
+  a sensible breakout trigger, and a strategy note summarizing the scan (delta / IV /
+  DTE / rank). Adjust and save.
+
+Option alerts are **rule-based heuristics you configure — not buy signals.**
 
 ### Position exit alerts (automatic)
 

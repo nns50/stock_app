@@ -108,6 +108,36 @@ export default function AboutPage() {
         </p>
       </Section>
 
+      <Section title="Alerts & the suggested exit">
+        <p>
+          An alert is a one-shot <strong className="text-slate-200">condition</strong> you set — never a buy/sell call.
+          Each evaluation reads the current value and trips when it crosses your threshold (
+          <span className="tabular-nums">above</span> / <span className="tabular-nums">below</span>).
+        </p>
+        <ul className="list-disc pl-5 space-y-1.5 text-slate-400 mt-2">
+          <li>
+            <strong className="text-slate-200">Stock metrics:</strong> price, change&nbsp;%, relative volume, RSI,
+            MA20−MA50 spread (a level-based MA-cross proxy), and % from the 52-week high / low.
+          </li>
+          <li>
+            <strong className="text-slate-200">Option-contract metrics</strong> (a specific call/put): the underlying
+            price, the contract’s <strong className="text-slate-200">mark</strong> ((bid+ask)/2),{' '}
+            <strong className="text-slate-200">bid</strong>, <strong className="text-slate-200">ask</strong>,{' '}
+            <strong className="text-slate-200">|Δ|</strong> (absolute delta, 0–1), and{' '}
+            <strong className="text-slate-200">IV&nbsp;%</strong> (implied volatility × 100). These read from the option
+            chain, so they need an options-capable provider; the underlying-price trigger works with any provider.
+          </li>
+          <li>
+            <strong className="text-slate-200">Suggested exit (entry alerts):</strong> an entry alert auto-attaches a
+            one-line exit from your exit-rules config — by default{' '}
+            <strong className="text-slate-200">take-profit +50%</strong>,{' '}
+            <strong className="text-slate-200">stop −50%</strong>, and{' '}
+            <strong className="text-slate-200">time-exit 7 days before expiry</strong> (plus a delta band if you set
+            one). Editing your option exit rules changes what gets suggested.
+          </li>
+        </ul>
+      </Section>
+
       <Section title="Glossary">
         <dl>
           <Term term="Moving average">

@@ -100,3 +100,62 @@ describe('positions + journal routes (integration)', () => {
     expect(stats.totalRealized).toBe(520); // (131 − 118) × 40
   });
 });
+
+describe('alerts routes (integration)', () => {
+  beforeEach(() => db.exec('DELETE FROM alerts;'));
+
+  it('creates a 52-week-distance stock alert (regression: kind CHECK)', async () => {
+    // On a fresh DB the old `kind` CHECK rejected high52/macross/low52 with a
+    // 500; the rebuilt schema drops it. Validation now lives in the route.
+    const res = await post('/api/alerts', { symbol: 'aapl', kind: 'high52', operator: 'above', threshold: -2 });
+    expect(res.status).toBe(201);
+    const a = (await res.json()) as { symbol: string; kind: string; assetType: string };
+    expect(a).toMatchObject({ symbol: 'AAPL', kind: 'high52', assetType: 'stock' });
+  });
+
+  it('creates an option entry alert and auto-attaches a suggested exit', async () => {
+    const res = await post('/api/alerts', {
+      symbol: 'AAPL',
+      assetType: 'option',
+      kind: 'optmark',
+      operator: 'above',
+      threshold: 3,
+      optionType: 'call',
+      strike: 150,
+      expiration: '2026-07-17',
+      role: 'entry',
+      plan: { entry: 'breakout over 150' },
+    });
+    expect(res.status).toBe(201);
+    const a = (await res.json()) as {
+      assetType: string;
+      optionType: string;
+      strike: number;
+      role: string;
+      plan: { entry: string; suggestedExit: string };
+    };
+    expect(a).toMatchObject({ assetType: 'option', optionType: 'call', strike: 150, role: 'entry' });
+    expect(a.plan.entry).toBe('breakout over 150');
+    expect(a.plan.suggestedExit).toContain('time-exit 7d before 2026-07-17');
+  });
+
+  it('rejects an option alert missing the contract fields with 400', async () => {
+    const res = await post('/api/alerts', {
+      symbol: 'AAPL',
+      assetType: 'option',
+      kind: 'optmark',
+      operator: 'above',
+      threshold: 3,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('evaluate returns the standard envelope', async () => {
+    const res = await post('/api/alerts/evaluate', {});
+    expect(res.status).toBe(200);
+    const out = (await res.json()) as { alerts: unknown[]; newlyTriggered: unknown[]; positionAlerts: unknown[] };
+    expect(Array.isArray(out.alerts)).toBe(true);
+    expect(Array.isArray(out.newlyTriggered)).toBe(true);
+    expect(Array.isArray(out.positionAlerts)).toBe(true);
+  });
+});

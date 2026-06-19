@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { client } from '../api/client';
 import { useProvider } from '../components/ProviderContext';
 import { useAsync } from '../lib/hooks';
@@ -15,7 +16,14 @@ import {
   Spinner,
 } from '../components/ui';
 import { StrategyBuilder } from '../components/StrategyBuilder';
-import type { EntryStrategyConfig, ExitRulesConfig, OptionContract, OptionsChain } from '../api/types';
+import type {
+  AlertPreset,
+  EntryCandidate,
+  EntryStrategyConfig,
+  ExitRulesConfig,
+  OptionContract,
+  OptionsChain,
+} from '../api/types';
 
 type Tab = 'chain' | 'entry' | 'exit' | 'strategy';
 
@@ -237,6 +245,7 @@ function ChainView({ symbol, expiration }: { symbol: string; expiration: string 
 // Entry scan
 // ----------------------------------------------------------------------------
 function EntryScanView({ symbol, expiration }: { symbol: string; expiration: string }) {
+  const navigate = useNavigate();
   const def = useAsync(() => client.entryDefault(), []);
   const presets = useAsync(() => client.presets('option_entry'), []);
   const [cfg, setCfg] = useState<EntryStrategyConfig | null>(null);
@@ -245,6 +254,35 @@ function EntryScanView({ symbol, expiration }: { symbol: string; expiration: str
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<Error>();
   const [expanded, setExpanded] = useState<string | null>(null);
+
+  // Turn a ranked contract into a one-click entry alert: default to an
+  // underlying-price breakout in the trade's direction, with a strategy note
+  // summarizing the scan. The server attaches the suggested exit.
+  const alertContract = (cand: EntryCandidate) => {
+    const c = cand.contract;
+    const m = cand.metrics;
+    const note = [
+      `Long ${c.type} ${fmtNum(c.strike)} (${m.dte.toFixed(0)}d)`,
+      m.delta !== null ? `|Δ| ${Math.abs(m.delta).toFixed(2)}` : null,
+      m.iv !== null ? `IV ${(m.iv * 100).toFixed(0)}%` : null,
+      m.spreadPct !== null ? `spread ${m.spreadPct.toFixed(1)}%` : null,
+      `entry-scan ${cand.score.toFixed(0)}/100`,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    const preset: AlertPreset = {
+      symbol,
+      optionType: c.type,
+      strike: c.strike,
+      expiration: c.expiration,
+      role: 'entry',
+      kind: 'price',
+      operator: c.type === 'call' ? 'above' : 'below',
+      threshold: result?.underlyingPrice ?? undefined,
+      entryPlan: note,
+    };
+    navigate('/alerts', { state: { presetAlert: preset } });
+  };
 
   const set = <K extends keyof EntryStrategyConfig>(k: K, v: EntryStrategyConfig[K]) =>
     setCfg((c) => ({ ...(c ?? (def.data as EntryStrategyConfig)), [k]: v }));
@@ -403,10 +441,17 @@ function EntryScanView({ symbol, expiration }: { symbol: string; expiration: str
                         <td className="td">
                           <ScoreBar value={cand.score} />
                         </td>
-                        <td className="td">
+                        <td className="td whitespace-nowrap">
                           <button className="text-xs" onClick={() => setExpanded(open ? null : id)}>
                             {cand.passed ? <Badge color="green">pass</Badge> : <Badge color="red">fail</Badge>}{' '}
                             {open ? '▾' : '▸'}
+                          </button>
+                          <button
+                            className="text-xs text-accent ml-2"
+                            title="Create an entry alert for this contract"
+                            onClick={() => alertContract(cand)}
+                          >
+                            ＋ Alert
                           </button>
                         </td>
                       </tr>

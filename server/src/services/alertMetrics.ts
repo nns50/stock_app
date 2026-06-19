@@ -1,4 +1,4 @@
-import { Candle } from '../providers/types';
+import { Candle, OptionsChain } from '../providers/types';
 import { rsi, sma } from '../indicators/indicators';
 
 // Candle-derived metrics for the alert engine: RSI, the 20/50 moving-average
@@ -17,6 +17,56 @@ export interface CandleMetrics {
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+/** Per-contract metrics an option alert can trigger on, pulled from a chain. */
+export interface OptionContractMetrics {
+  mark: number | null;
+  bid: number | null;
+  ask: number | null;
+  /** Absolute delta (|Δ|), 0..1. */
+  delta: number | null;
+  /** Implied volatility in percent (e.g. 42 for 42%). */
+  iv: number | null;
+  /** Underlying price from the chain (for `price`-kind option alerts). */
+  underlyingPrice: number | null;
+}
+
+const EMPTY_OPTION: OptionContractMetrics = {
+  mark: null,
+  bid: null,
+  ask: null,
+  delta: null,
+  iv: null,
+  underlyingPrice: null,
+};
+
+/**
+ * Locate a contract (by type + strike) in a chain and read the metrics an option
+ * alert cares about. Pure — the route fetches the chain. Delta is returned as an
+ * absolute value and IV as a percent, matching how the entry/exit engines and
+ * the UI express them.
+ */
+export function optionContractMetrics(
+  chain: OptionsChain,
+  optionType: 'call' | 'put',
+  strike: number,
+): OptionContractMetrics {
+  const pool = optionType === 'put' ? chain.puts : chain.calls;
+  const c = pool.find((x) => Math.abs(x.strike - strike) < 1e-6);
+  const underlyingPrice = chain.underlyingPrice ?? null;
+  if (!c) return { ...EMPTY_OPTION, underlyingPrice };
+  const mark = c.mark ?? (c.bid !== undefined && c.ask !== undefined ? (c.bid + c.ask) / 2 : (c.last ?? null));
+  const delta = c.greeks?.delta;
+  const iv = c.greeks?.iv;
+  return {
+    mark: mark ?? null,
+    bid: c.bid ?? null,
+    ask: c.ask ?? null,
+    delta: delta === undefined ? null : Math.abs(delta),
+    iv: iv === undefined ? null : iv * 100,
+    underlyingPrice,
+  };
+}
 
 export function computeCandleMetrics(candles: Candle[], price: number | null): CandleMetrics {
   if (candles.length === 0) return { rsi: null, maSpreadPct: null, pctFromHigh52: null, pctFromLow52: null };
