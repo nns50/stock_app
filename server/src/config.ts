@@ -11,6 +11,11 @@ function num(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function oneOf<T extends string>(value: string | undefined, allowed: readonly T[], fallback: T): T {
+  const v = (value || '').toLowerCase() as T;
+  return allowed.includes(v) ? v : fallback;
+}
+
 function list(value: string | undefined, fallback: string[]): string[] {
   if (!value) return fallback;
   return value
@@ -40,6 +45,15 @@ export const config = {
   riskFreeRate: num(process.env.RISK_FREE_RATE, 0.04),
   /** When set, the built frontend is served from this directory (production). */
   publicDir: process.env.PUBLIC_DIR ? path.resolve(process.env.PUBLIC_DIR) : '',
+  /**
+   * Outbound alert notifications (for the background poller). The webhook URL is
+   * a secret — keep it in server/.env, never commit it. Format adapts the JSON
+   * body to the target service.
+   */
+  notifications: {
+    webhookUrl: process.env.ALERT_WEBHOOK_URL || '',
+    webhookFormat: oneOf(process.env.ALERT_WEBHOOK_FORMAT, ['json', 'slack', 'discord'] as const, 'json'),
+  },
 };
 
 export type AppConfig = typeof config;

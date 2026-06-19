@@ -102,7 +102,7 @@ describe('positions + journal routes (integration)', () => {
 });
 
 describe('alerts routes (integration)', () => {
-  beforeEach(() => db.exec('DELETE FROM alerts;'));
+  beforeEach(() => db.exec("DELETE FROM alerts; DELETE FROM settings WHERE key = 'alertScheduler';"));
 
   it('creates a 52-week-distance stock alert (regression: kind CHECK)', async () => {
     // On a fresh DB the old `kind` CHECK rejected high52/macross/low52 with a
@@ -157,5 +157,38 @@ describe('alerts routes (integration)', () => {
     expect(Array.isArray(out.alerts)).toBe(true);
     expect(Array.isArray(out.newlyTriggered)).toBe(true);
     expect(Array.isArray(out.positionAlerts)).toBe(true);
+  });
+
+  it('reports notification status (webhook + scheduler) and toggles the poller', async () => {
+    const status = (await getJson('/api/alerts/notifications')) as {
+      webhook: { configured: boolean; format: string };
+      scheduler: { enabled: boolean; intervalSeconds: number };
+    };
+    expect(status.scheduler).toEqual({ enabled: false, intervalSeconds: 60 }); // default off
+    expect(typeof status.webhook.configured).toBe('boolean');
+
+    const put = await fetch(`${base}/api/alerts/scheduler`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: true, intervalSeconds: 30 }),
+    });
+    expect(put.status).toBe(200);
+    expect(await put.json()).toEqual({ enabled: true, intervalSeconds: 30 });
+  });
+
+  it('rejects an out-of-range poll interval with 400', async () => {
+    const put = await fetch(`${base}/api/alerts/scheduler`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ intervalSeconds: 5 }), // below the 15s floor
+    });
+    expect(put.status).toBe(400);
+  });
+
+  it('test notification is not delivered when no webhook is configured', async () => {
+    const res = await post('/api/alerts/notifications/test', {});
+    expect(res.status).toBe(200);
+    const out = (await res.json()) as { delivered: boolean };
+    expect(out.delivered).toBe(false); // no ALERT_WEBHOOK_URL in the test env
   });
 });

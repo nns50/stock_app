@@ -1,26 +1,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, HttpError, parseBody } from './_helpers';
-import {
-  Alert,
-  AlertInput,
-  AlertPatch,
-  AlertPlan,
-  applyEvaluation,
-  createAlert,
-  deleteAlert,
-  listAlerts,
-  updateAlert,
-} from '../db/alerts';
-import { AlertMetrics, evaluateAlert } from '../services/alertEngine';
-import { evaluateOpenPositionExits } from '../services/positionExits';
-import { getProvider } from '../providers';
-import {
-  computeCandleMetrics,
-  CandleMetrics,
-  OptionContractMetrics,
-  optionContractMetrics,
-} from '../services/alertMetrics';
+import { AlertInput, AlertPatch, AlertPlan, createAlert, deleteAlert, listAlerts, updateAlert } from '../db/alerts';
+import { runAlertEvaluation } from '../services/alertRun';
+import { dispatchNotifications, notificationStatus } from '../services/notifier';
+import { getSchedulerConfig, MIN_INTERVAL_SECONDS, setSchedulerConfig } from '../services/alertScheduler';
 import { suggestedExitText } from '../services/optionAlertPlan';
 import { defaultExitConfig, ExitRulesConfig } from '../options/exitRules';
 import { getSetting } from '../db/settings';
@@ -103,15 +87,6 @@ function toAlertInput(b: CreateBody): AlertInput {
   };
 }
 
-/** Human descriptor for an alert's message — bare symbol, or a contract. */
-function alertSubject(a: Alert): string {
-  if (a.assetType === 'option' && a.optionType && a.strike != null) {
-    const cp = a.optionType === 'call' ? 'C' : 'P';
-    return `${a.symbol.toUpperCase()} ${a.strike}${cp}${a.expiration ? ' ' + a.expiration : ''}`;
-  }
-  return a.symbol.toUpperCase();
-}
-
 alertsRouter.get('/', (_req, res) => {
   res.json({ alerts: listAlerts() });
 });
@@ -160,104 +135,35 @@ alertsRouter.delete(
 alertsRouter.post(
   '/evaluate',
   asyncHandler(async (_req, res) => {
-    const alerts = listAlerts(true);
-    const symbols = Array.from(new Set(alerts.map((a) => a.symbol.toUpperCase())));
-    const provider = getProvider();
+    res.json(await runAlertEvaluation());
+  }),
+);
 
-    const quotes = new Map<string, any>();
-    try {
-      const fetched = provider.getQuotes
-        ? await provider.getQuotes(symbols)
-        : await Promise.all(symbols.map((s) => provider.getQuote(s)));
-      for (const q of fetched) quotes.set(q.symbol.toUpperCase(), q);
-    } catch {
-      // leave quotes empty; alerts simply won't trigger this round
-    }
+// ---- Background watching: server-side poller + webhook notifications --------
 
-    // RSI, MA-cross and 52-week-distance all need candle history; fetch once per
-    // symbol that has any such alert and derive them together.
-    const CANDLE_KINDS = ['rsi', 'macross', 'high52', 'low52'];
-    const EMPTY_CANDLE: CandleMetrics = { rsi: null, maSpreadPct: null, pctFromHigh52: null, pctFromLow52: null };
-    const candleSymbols = Array.from(
-      new Set(
-        alerts
-          .filter((a) => a.assetType === 'stock' && CANDLE_KINDS.includes(a.kind))
-          .map((a) => a.symbol.toUpperCase()),
-      ),
-    );
-    const candleMetrics = new Map<string, CandleMetrics>();
-    await Promise.all(
-      candleSymbols.map(async (s) => {
-        try {
-          const candles = await provider.getCandles(s, 'daily', { limit: 260 });
-          candleMetrics.set(s, computeCandleMetrics(candles, quotes.get(s)?.last ?? null));
-        } catch {
-          // leave unset → metrics stay null and the alert just won't trigger
-        }
-      }),
-    );
+/** Channel status + the poller's enable/interval (no secrets). */
+alertsRouter.get('/notifications', (_req, res) => {
+  res.json({ ...notificationStatus(), scheduler: getSchedulerConfig() });
+});
 
-    // Option-contract alerts: fetch each needed (symbol, expiration) chain once
-    // and read the targeted contract's mark/bid/ask/delta/IV. Skipped silently
-    // when the provider has no options data (metrics stay null → no trigger).
-    const optionAlerts = alerts.filter(
-      (a) => a.assetType === 'option' && a.optionType && a.strike != null && a.expiration,
-    );
-    const optionMetrics = new Map<number, OptionContractMetrics>();
-    if (optionAlerts.length && provider.capabilities.options) {
-      const groups = new Map<string, Alert[]>();
-      for (const a of optionAlerts) {
-        const key = `${a.symbol.toUpperCase()}|${a.expiration}`;
-        (groups.get(key) ?? groups.set(key, []).get(key)!).push(a);
-      }
-      await Promise.all(
-        Array.from(groups.entries()).map(async ([key, members]) => {
-          const [sym, exp] = key.split('|');
-          try {
-            const chain = await provider.getOptionsChain(sym, exp);
-            for (const a of members) optionMetrics.set(a.id, optionContractMetrics(chain, a.optionType!, a.strike!));
-          } catch {
-            // leave unset → metrics null → alert won't trigger this round
-          }
-        }),
-      );
-    }
+const schedulerBody = z.object({
+  enabled: z.boolean().optional(),
+  intervalSeconds: z.number().int().min(MIN_INTERVAL_SECONDS).max(86400).optional(),
+});
+alertsRouter.put(
+  '/scheduler',
+  asyncHandler(async (req, res) => {
+    res.json(setSchedulerConfig(parseBody(schedulerBody, req)));
+  }),
+);
 
-    const newlyTriggered: { id: number; symbol: string; message: string | null }[] = [];
-    for (const a of alerts) {
-      const sym = a.symbol.toUpperCase();
-      const q = quotes.get(sym);
-      const cm = candleMetrics.get(sym) ?? EMPTY_CANDLE;
-      const om = optionMetrics.get(a.id);
-      const metrics: AlertMetrics = {
-        price: a.assetType === 'option' ? (om?.underlyingPrice ?? q?.last ?? null) : (q?.last ?? null),
-        changePct: q?.changePct ?? null,
-        relVol: q && q.avgVolume ? q.volume / q.avgVolume : null,
-        rsi: cm.rsi,
-        maSpreadPct: cm.maSpreadPct,
-        pctFromHigh52: cm.pctFromHigh52,
-        pctFromLow52: cm.pctFromLow52,
-        optMark: om?.mark ?? null,
-        optBid: om?.bid ?? null,
-        optAsk: om?.ask ?? null,
-        optDelta: om?.delta ?? null,
-        optIv: om?.iv ?? null,
-      };
-      const ev = evaluateAlert(a.symbol, a, metrics, alertSubject(a));
-      // An entry alert is "a good entry point with the suggestion of when to
-      // exit" — fold its planned exit into the fired message.
-      let message = ev.message;
-      if (ev.triggered && a.role === 'entry' && a.plan?.suggestedExit) {
-        message = `${message} — plan exit: ${a.plan.suggestedExit}`;
-      }
-      const wasTriggered = a.triggered;
-      applyEvaluation(a.id, ev.value, ev.triggered, message);
-      if (ev.triggered && !wasTriggered) newlyTriggered.push({ id: a.id, symbol: a.symbol, message });
-    }
-
-    // Also surface open option positions that have hit an exit rule.
-    const positionAlerts = await evaluateOpenPositionExits().catch(() => []);
-
-    res.json({ alerts: listAlerts(), newlyTriggered, positionAlerts, checkedAt: Date.now() });
+/** Send a test notification to verify the webhook is wired up. */
+alertsRouter.post(
+  '/notifications/test',
+  asyncHandler(async (_req, res) => {
+    const result = await dispatchNotifications([
+      { title: 'Test', message: 'Test alert from your stock app — webhook is working.' },
+    ]);
+    res.json(result);
   }),
 );

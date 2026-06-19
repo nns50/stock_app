@@ -20,6 +20,7 @@ import { snapshotsRouter } from './routes/snapshots';
 import { alertsRouter } from './routes/alerts';
 import { exportRouter } from './routes/export';
 import { watchlistRouter } from './routes/watchlist';
+import { startAlertScheduler } from './services/alertScheduler';
 
 initDb();
 
@@ -92,5 +93,7 @@ if (require.main === module) {
     // the user's first request doesn't pay for it.
     const warm = getProvider().warmup?.();
     if (warm) warm.catch(() => {});
+    // Start the background alert poller (no-op until enabled in Settings).
+    startAlertScheduler();
   });
 }

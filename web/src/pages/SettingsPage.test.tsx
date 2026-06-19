@@ -18,6 +18,10 @@ beforeEach(() => {
   } as never);
   vi.spyOn(client, 'settings').mockResolvedValue({} as never);
   vi.spyOn(client, 'alerts').mockResolvedValue({ alerts: [] } as never);
+  vi.spyOn(client, 'notifications').mockResolvedValue({
+    webhook: { configured: false, format: 'json' },
+    scheduler: { enabled: false, intervalSeconds: 60 },
+  } as never);
 });
 
 function renderPage() {
@@ -50,5 +54,13 @@ describe('SettingsPage', () => {
     renderPage();
     const editor = await screen.findByPlaceholderText('One rule per line');
     expect(editor).toHaveValue('Rule one\nRule two');
+  });
+
+  it('renders the server-side watching (background poller) section', async () => {
+    renderPage();
+    expect(await screen.findByText('Server-side watching')).toBeInTheDocument();
+    expect(screen.getByText('Enable the background alert poller')).toBeInTheDocument();
+    // No webhook configured in the mock → the test button is disabled.
+    expect(screen.getByRole('button', { name: 'Send test notification' })).toBeDisabled();
   });
 });
