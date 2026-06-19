@@ -32,4 +32,8 @@ ENV PUBLIC_DIR=/app/web/dist
 # the bundled sp500.json under server/data.
 ENV DATABASE_PATH=/app/data/stock_app.db
 EXPOSE 3001
+# Liveness probe via the app's own health endpoint (Node has global fetch; the
+# slim image has no curl).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://localhost:'+(process.env.PORT||3001)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "server/dist/index.js"]

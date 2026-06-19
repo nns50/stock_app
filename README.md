@@ -146,6 +146,11 @@ docker build -t stock-app .
 docker run -p 3001:3001 -e MARKET_DATA_PROVIDER=mock stock-app
 ```
 
+**Always-on alerts:** to have alerts fire with the app/browser closed, run this image
+on a small always-on VPS or container host and enable the server-side poller. See the
+**[Deployment guide](docs/DEPLOY.md)** — including the important note that the app has
+no authentication, so keep it private (Tailscale / SSH tunnel / authed reverse proxy).
+
 ## Environment variables
 
 Copy `.env.example` to `server/.env`. All keys are read **server-side only**.
