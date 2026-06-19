@@ -147,9 +147,11 @@ docker run -p 3001:3001 -e MARKET_DATA_PROVIDER=mock stock-app
 ```
 
 **Always-on alerts:** to have alerts fire with the app/browser closed, run this image
-on a small always-on VPS or container host and enable the server-side poller. See the
-**[Deployment guide](docs/DEPLOY.md)** — including the important note that the app has
-no authentication, so keep it private (Tailscale / SSH tunnel / authed reverse proxy).
+on a small always-on VPS or container host and enable the server-side poller. The repo
+includes a ready **`fly.toml`** (one `shared-cpu-1x` / 512 MB machine + a 1 GB volume).
+See the **[Deployment guide](docs/DEPLOY.md)** for the Fly.io and VPS runbooks —
+including the important note that the app has no authentication, so keep it private
+(Fly private networking / Tailscale / SSH tunnel / authed reverse proxy).
 
 ## Environment variables
 

@@ -107,12 +107,63 @@ heuristics you set — not buy signals.)
   ```
 - **Stop / restart:** `docker compose down` / `docker compose restart`.
 
-## Managed platforms (no VPS)
+## Deploy to Fly.io
 
-The same image runs on container hosts like Fly.io or Railway: point them at this
-`Dockerfile`, set the env vars above as secrets, attach a persistent volume at
-`/app/data`, and expose port 3001. The security note still applies — gate access (most
-platforms offer private networking or built-in auth).
+The repo ships a ready `fly.toml` (always-on machine, persistent volume, health
+check, builds from the Dockerfile). Minimum footprint: **one `shared-cpu-1x` / 512 MB
+machine + a 1 GB volume** — roughly a few dollars a month (check Fly's current pricing).
+
+```bash
+# 1. Install flyctl and sign in
+curl -L https://fly.io/install.sh | sh
+fly auth login
+
+# 2. From the repo root, edit fly.toml → set `app` and `primary_region`, then:
+fly apps create your-stock-app          # must match `app` in fly.toml
+
+# 3. Create the 1 GB volume in the SAME region as primary_region
+fly volumes create stock_data --size 1 --region <your-region>
+
+# 4. Set your secrets (NEVER put these in fly.toml)
+fly secrets set \
+  SLACK_WEBHOOK_URL=https://hooks.slack.com/services/... \
+  DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+#   optional: ALERT_WEBHOOK_URL=https://ntfy.sh/your-topic
+#   if MARKET_DATA_PROVIDER=tradier:  fly secrets set TRADIER_API_TOKEN=...
+
+# 5. Deploy
+fly deploy
+```
+
+**Keep it private — the app has no login.** `fly deploy` gives you a public
+`*.fly.dev` URL by default; that would expose your journal. Since alerts push
+**outbound** to your webhooks, the app doesn't need to be publicly reachable — make it
+private and proxy in when you want the UI:
+
+```bash
+fly ips list
+fly ips release <public-ipv4> <public-ipv6>     # drop the public IPs
+fly proxy 3001:3001 -a your-stock-app           # then open http://localhost:3001
+```
+
+Then in the UI: **Settings → Server-side watching → enable the poller**, pick an
+interval, and **Send test** — you should get a hit in Slack/Discord. From now on alerts
+fire 24/7 with nothing open.
+
+**Notes**
+- **One machine only** — SQLite is single-node, so don't `fly scale count` above 1. The
+  `fly.toml` pins `min_machines_running = 1` and disables auto-stop so the poller never
+  sleeps.
+- **Resize** if needed: `fly scale memory 512` (or `1024`), `fly scale vm shared-cpu-1x`.
+- **Logs / status:** `fly logs`, `fly status`. **Update:** `git pull && fly deploy`
+  (the volume, and your data, persist).
+- **Back up** from the UI (**Settings → Data → export**) — simplest for a single volume.
+
+### Other managed platforms
+
+The same image runs on Railway, Render, etc.: point them at this `Dockerfile`, attach a
+persistent volume at `/app/data`, set the env/secrets above, and keep it private (the
+no-auth caveat applies everywhere).
 
 ---
 

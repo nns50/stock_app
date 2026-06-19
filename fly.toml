@@ -1,0 +1,46 @@
+# Fly.io deployment — one always-on machine + a persistent volume for the SQLite
+# database. Builds from the repo Dockerfile (Express serves the built frontend
+# and the API on a single port). See docs/DEPLOY.md for the full runbook.
+#
+# Before launching, set `app` and `primary_region` to your own values.
+# Secrets (webhook URLs, any provider token) go via `fly secrets set` — NEVER here.
+
+app = "stock-app"        # change to your app name
+primary_region = "iad"   # change to a region near you: https://fly.io/docs/reference/regions/
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "3001"
+  # Free, keyless live data. Switch to "tradier" (+ a TRADIER_API_TOKEN secret)
+  # or "mock" (demo) if you prefer.
+  MARKET_DATA_PROVIDER = "yahoo"
+
+# Persist the SQLite db (DATABASE_PATH=/app/data/stock_app.db) across deploys and
+# restarts. Create the volume once with: fly volumes create stock_data --size 1
+[mounts]
+  source = "stock_data"
+  destination = "/app/data"
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  # Always-on: do NOT let Fly sleep the machine, or the alert poller stops and
+  # alerts won't fire. Keep exactly one machine running (SQLite is single-node).
+  auto_stop_machines = false
+  auto_start_machines = false
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "get"
+    path = "/api/health"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "20s"
+
+# Cheapest CPU, with RAM bumped from the 256mb default for headroom (the
+# screener can spike). Override later with: fly scale memory 512
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
