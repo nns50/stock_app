@@ -1,0 +1,114 @@
+# Deploying for always-on alerts
+
+The app's **server-side alert poller** (Settings → _Server-side watching_) only runs while
+the server process is up. To get alerts **even when your computer is off**, run the server
+on a small always-on box — any cheap VPS or container host works. The repo ships a
+production `Dockerfile` and `docker-compose.yml`, so this is a copy-paste exercise.
+
+> This is decision-support tooling that **never places trades**. It still holds your
+> journal, positions, and provider key — treat the deployment as private. **Read the
+> security section before exposing anything.**
+
+---
+
+## ⚠️ Security first — the app has no login
+
+There is **no authentication**. Anyone who can reach the port can read your trades,
+settings, and trigger provider calls. **Do not publish port 3001 to the open internet.**
+Pick one of these (easiest first):
+
+1. **Tailscale (recommended).** Install it on the VPS and on your phone/laptop; reach the
+   app at `http://<tailscale-ip>:3001` over your private tailnet. Nothing is exposed
+   publicly. The webhook still goes _out_ to Slack/Discord/ntfy, so phone alerts work
+   regardless.
+2. **SSH tunnel.** Leave the port closed and forward it when you need the UI:
+   `ssh -L 3001:localhost:3001 you@your-vps` → open `http://localhost:3001`.
+3. **Reverse proxy with auth + HTTPS.** Put Caddy or nginx in front with HTTP basic-auth
+   and a TLS cert, and firewall 3001 so only the proxy reaches it.
+
+At a minimum, run a firewall (e.g. `ufw allow OpenSSH` then `ufw enable`) so only SSH —
+and your chosen access method — is reachable. The compose file maps `3001:3001`; if you
+rely on Tailscale/SSH only, change it to `127.0.0.1:3001:3001` so Docker doesn't punch it
+through the host firewall.
+
+---
+
+## What you need
+
+- A VPS with **1 vCPU / 1 GB RAM** (plenty) — any provider works (~$5/mo). A Raspberry Pi
+  or any always-on machine is fine too.
+- **Docker + Docker Compose** installed (`curl -fsSL https://get.docker.com | sh`).
+- This repo on the box (`git clone …`).
+
+## Steps
+
+```bash
+# 1. On the VPS, get the code
+git clone https://github.com/nns50/stock_app.git
+cd stock_app
+
+# 2. Create the env file consumed by docker compose (root .env, NOT server/.env)
+cp .env.example .env
+nano .env
+```
+
+Set at least:
+
+```ini
+# Free live data, no key (Yahoo) — or use tradier with a token. mock = demo only.
+MARKET_DATA_PROVIDER=yahoo
+
+# Where always-on alerts get pushed (this is a secret — never commit it).
+#   Slack/Discord incoming webhook, or an ntfy topic for phone push.
+ALERT_WEBHOOK_URL=https://ntfy.sh/your-private-topic
+ALERT_WEBHOOK_FORMAT=json        # json | slack | discord
+```
+
+```bash
+# 3. Build and start (detached, restarts on crash/reboot)
+docker compose up -d --build
+
+# 4. Verify
+docker compose ps
+curl -s localhost:3001/api/health        # {"ok":true,...}
+docker compose logs -f app               # Ctrl-C to stop following
+```
+
+## Turn on the watcher
+
+Open the UI (via Tailscale/SSH per above) → **Settings → Server-side watching**:
+
+1. **Enable the background alert poller.**
+2. Pick an interval. **1m or 5m** is friendly to free providers; 30s can get you
+   rate-limited on Yahoo.
+3. Click **Send test notification** — you should get a hit on your webhook/phone.
+
+Then create your alerts as usual (stock or option, entry/exit). They'll now be evaluated
+on the server around the clock and pushed to your webhook when they fire — no browser
+needed. (Quotes are still delayed per your provider, and triggers remain rule-based
+heuristics you set — not buy signals.)
+
+## Persistence, backups, updates
+
+- **Data** lives in the named volume `stockdb` (mounted at `/app/data`), so it survives
+  restarts and image rebuilds.
+- **Back up** from the UI (**Settings → Data → export**), or snapshot the volume:
+  `docker run --rm -v stock_app_stockdb:/d -v "$PWD":/out alpine tar czf /out/backup.tgz -C /d .`
+- **Update** to the latest code:
+  ```bash
+  git pull
+  docker compose up -d --build      # volume (your data) is preserved
+  ```
+- **Stop / restart:** `docker compose down` / `docker compose restart`.
+
+## Managed platforms (no VPS)
+
+The same image runs on container hosts like Fly.io or Railway: point them at this
+`Dockerfile`, set the env vars above as secrets, attach a persistent volume at
+`/app/data`, and expose port 3001. The security note still applies — gate access (most
+platforms offer private networking or built-in auth).
+
+---
+
+See the [README](../README.md) for environment variables and the
+[User Guide](USER_GUIDE.md) for how alerts and the poller behave.
