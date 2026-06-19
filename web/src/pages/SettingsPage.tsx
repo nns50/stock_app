@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { client } from '../api/client';
-import { useLocalStorage } from '../lib/hooks';
+import { useAsync, useLocalStorage } from '../lib/hooks';
 import { cx } from '../lib/format';
 import { CHECKLIST_SETTING_KEY, DEFAULT_CHECKLIST_RULES, rulesFromSetting } from '../lib/checklist';
 import { Card, Field, NumberInput, PageHeader, Spinner } from '../components/ui';
@@ -219,6 +219,8 @@ export default function SettingsPage() {
         </label>
       </Section>
 
+      <ServerWatchSection />
+
       <Section title="Data" desc="Export your trades, take a full database backup, or restore from a previous export.">
         <DataTools onImported={() => toast('Import complete', { type: 'success' })} />
       </Section>
@@ -232,5 +234,110 @@ export default function SettingsPage() {
 
       <ProviderStatusModal open={providerOpen} onClose={() => setProviderOpen(false)} />
     </div>
+  );
+}
+
+const INTERVALS = [
+  { value: 30, label: 'Every 30s' },
+  { value: 60, label: 'Every 1m' },
+  { value: 300, label: 'Every 5m' },
+  { value: 900, label: 'Every 15m' },
+];
+
+/**
+ * The background poller: evaluates alerts on the server and pushes them to a
+ * webhook, so alerts fire even with the browser closed. The webhook URL is
+ * configured server-side (env); here you flip the poller on and pick a cadence.
+ */
+function ServerWatchSection() {
+  const { toast } = useToast();
+  const status = useAsync(() => client.notifications(), []);
+  const [enabled, setEnabled] = useState(false);
+  const [interval, setIntervalSec] = useState(60);
+  const [testing, setTesting] = useState(false);
+
+  useEffect(() => {
+    if (status.data) {
+      setEnabled(status.data.scheduler.enabled);
+      setIntervalSec(status.data.scheduler.intervalSeconds);
+    }
+  }, [status.data]);
+
+  const save = async (next: { enabled?: boolean; intervalSeconds?: number }) => {
+    const saved = await client.setAlertScheduler(next);
+    setEnabled(saved.enabled);
+    setIntervalSec(saved.intervalSeconds);
+  };
+
+  const sendTest = async () => {
+    setTesting(true);
+    try {
+      const r = await client.testNotification();
+      if (r.delivered) toast('Test sent — check your webhook.', { type: 'success' });
+      else toast(`Not delivered: ${r.error ?? 'no webhook configured'}`, { type: 'error' });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const webhook = status.data?.webhook;
+
+  return (
+    <Section
+      title="Server-side watching"
+      desc="Let the server evaluate your alerts on a schedule and push them to a webhook — so alerts fire even when the app/browser is closed. The server process must stay running."
+    >
+      {status.loading ? (
+        <Spinner />
+      ) : (
+        <div className="space-y-3">
+          <label className="flex items-start gap-2 text-sm text-slate-300 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5 accent-accent"
+              checked={enabled}
+              onChange={(e) => save({ enabled: e.target.checked })}
+            />
+            <span>
+              Enable the background alert poller
+              <span className="block text-[11px] text-slate-500">Runs on the server, independent of any open tab.</span>
+            </span>
+          </label>
+
+          <Field label="Poll interval">
+            <select
+              className="input max-w-[200px]"
+              value={interval}
+              disabled={!enabled}
+              onChange={(e) => save({ intervalSeconds: Number(e.target.value) })}
+            >
+              {INTERVALS.map((i) => (
+                <option key={i.value} value={i.value}>
+                  {i.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <div className="text-xs text-slate-400">
+            {webhook?.configured ? (
+              <>
+                Webhook <span className="text-bull">configured</span> (format:{' '}
+                <span className="tabular-nums">{webhook.format}</span>).
+              </>
+            ) : (
+              <>
+                No webhook configured — set <code className="text-slate-300">ALERT_WEBHOOK_URL</code> in{' '}
+                <code className="text-slate-300">server/.env</code> to receive pushes.
+              </>
+            )}
+          </div>
+
+          <button className="btn-ghost text-sm" onClick={sendTest} disabled={testing || !webhook?.configured}>
+            {testing ? 'Sending…' : 'Send test notification'}
+          </button>
+        </div>
+      )}
+    </Section>
   );
 }

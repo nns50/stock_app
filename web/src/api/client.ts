@@ -24,6 +24,8 @@ import type {
   RuinResult,
   Alert,
   AlertPlan,
+  AlertSchedulerConfig,
+  NotificationStatus,
   ScreenerConfig,
   ScreenerResult,
   EdgeReport,
@@ -248,4 +250,13 @@ export const client = {
       positionAlerts: PositionExitAlert[];
       checkedAt: number;
     }>('/alerts/evaluate', { method: 'POST' }),
+
+  // Background poller + webhook notifications (server-side watching).
+  notifications: () => api<NotificationStatus>('/alerts/notifications'),
+  setAlertScheduler: (body: { enabled?: boolean; intervalSeconds?: number }) =>
+    api<AlertSchedulerConfig>('/alerts/scheduler', { method: 'PUT', body: JSON.stringify(body) }),
+  testNotification: () =>
+    api<{ delivered: boolean; channel?: string; count?: number; error?: string }>('/alerts/notifications/test', {
+      method: 'POST',
+    }),
 };

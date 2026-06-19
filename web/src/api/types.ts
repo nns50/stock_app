@@ -578,6 +578,16 @@ export interface AlertPreset {
   entryPlan?: string;
 }
 
+export interface AlertSchedulerConfig {
+  enabled: boolean;
+  intervalSeconds: number;
+}
+
+export interface NotificationStatus {
+  webhook: { configured: boolean; format: 'json' | 'slack' | 'discord' };
+  scheduler: AlertSchedulerConfig;
+}
+
 export interface PositionExitAlert {
   positionId: number;
   symbol: string;

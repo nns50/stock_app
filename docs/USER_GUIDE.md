@@ -383,11 +383,27 @@ as toasts.
 ### Auto-checking
 
 Background polling is **off by default** (to respect provider rate limits). Turn it on
-(every 30s / 1m / 5m) from the bell or **Settings**.
+(every 30s / 1m / 5m) from the bell or **Settings**. This runs **in your browser**, so the
+tab has to stay open.
 
 **Desktop notifications (optional):** enable them in **Settings → Alerts** (the browser
 will ask permission). When an alert fires while this tab is in the **background**, you
 get a desktop notification — when the tab is focused the in-app toast already covers it.
+
+### Server-side watching (alerts with the app closed)
+
+The browser-based checks above stop when you close the tab. To keep watching **with no
+browser open**, turn on the **server-side poller** in **Settings → Server-side watching**:
+the server evaluates your alerts on a schedule (30s / 1m / 5m / 15m) and **POSTs anything
+that fires to a webhook** — so it can reach Slack, Discord, or your phone (e.g. via an
+[ntfy](https://ntfy.sh) topic).
+
+- Configure the webhook **server-side** (it's a secret): set `ALERT_WEBHOOK_URL` (and
+  `ALERT_WEBHOOK_FORMAT` = `json` / `slack` / `discord`) in `server/.env`. See the README.
+- The status line in Settings shows whether a webhook is wired up; **Send test
+  notification** verifies it end-to-end.
+- The **server process must stay running** for this to work (leave `npm run dev`/the
+  server up, or run it as a service / in Docker). It's independent of any open tab.
 
 ---
 
@@ -407,6 +423,8 @@ One home (⚙ or `⌘K → Settings`) for everything:
   server-side).
 - **Alerts** — the background auto-check interval, and an opt-in toggle for **desktop
   notifications** when an alert fires (while the tab is in the background).
+- **Server-side watching** — enable the **background poller** (server-side, runs with the
+  app closed) and its interval, see whether a **webhook** is configured, and send a test.
 - **Data** — export / backup / restore.
 
 ---

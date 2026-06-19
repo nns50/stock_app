@@ -37,6 +37,8 @@ trade journal.
   RSI / MA-spread / 52-week distance) **or a specific option contract** (underlying
   price, mark / bid / ask, |Δ|, IV) with an entry/exit **role** and a trade plan;
   an entry alert auto-attaches a suggested exit. One-shot, with acknowledge to re-arm.
+  An optional **server-side poller** keeps watching with the app closed and pushes
+  fired alerts to a **webhook** (Slack / Discord / phone via ntfy).
 - **Risk / position-size calculator** — account size + risk % + entry/stop →
   suggested quantity (stock or option), R-multiple target, and guard-rails.
 - **Providers** — swappable behind one interface: free **Yahoo Finance** (no key,
@@ -159,6 +161,8 @@ Copy `.env.example` to `server/.env`. All keys are read **server-side only**.
 | `CANDLE_CACHE_TTL_MS`   | `60000`                            | In-memory candle cache TTL.                                     |
 | `CORS_ORIGINS`          | `http://localhost:5173`            | Comma-separated allowed origins for the API.                    |
 | `RISK_FREE_RATE`        | `0.04`                             | Annual risk-free rate for Black–Scholes.                        |
+| `ALERT_WEBHOOK_URL`     | _(empty)_                          | Webhook the background alert poller POSTs fired alerts to (secret). Blank = disabled. |
+| `ALERT_WEBHOOK_FORMAT`  | `json`                             | Webhook body shape: `json`, `slack`, or `discord`.              |
 
 ### Getting a Tradier token
 
