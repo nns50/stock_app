@@ -58,6 +58,19 @@ export const config = {
     webhookUrl: process.env.ALERT_WEBHOOK_URL || '',
     webhookFormat: oneOf(process.env.ALERT_WEBHOOK_FORMAT, ['json', 'slack', 'discord'] as const, 'json'),
   },
+  /**
+   * Single-password app lock. Set APP_PASSWORD (a server secret) to require a
+   * login before any `/api/*` data is served — for exposing the app on a public
+   * URL. Empty = auth disabled (local dev / tests behave as before). The session
+   * cookie is marked Secure in production (HTTPS); override for plain-http access
+   * (e.g. behind `fly proxy`) with AUTH_SECURE_COOKIE=false.
+   */
+  auth: {
+    password: process.env.APP_PASSWORD || '',
+    secureCookie: process.env.AUTH_SECURE_COOKIE
+      ? process.env.AUTH_SECURE_COOKIE !== 'false'
+      : process.env.NODE_ENV === 'production',
+  },
 };
 
 export type AppConfig = typeof config;

@@ -6,6 +6,7 @@ import { AlertsProvider } from './components/AlertsContext';
 import { ToastProvider } from './components/ToastContext';
 import { ConfirmProvider } from './components/ConfirmContext';
 import { ThemeProvider } from './components/ThemeContext';
+import { AuthGate } from './components/AuthGate';
 import { Spinner } from './components/ui';
 
 // Lazy-load pages so each (and its heavier deps like Recharts) ships as its own
@@ -25,30 +26,32 @@ export default function App() {
   return (
     <ThemeProvider>
       <ToastProvider>
-        <ConfirmProvider>
-          <ProviderProvider>
-            <AlertsProvider>
-              <Layout>
-                <Suspense fallback={<Spinner label="Loading…" />}>
-                  <Routes>
-                    <Route path="/" element={<Navigate to="/today" replace />} />
-                    <Route path="/today" element={<DashboardPage />} />
-                    <Route path="/screener" element={<ScreenerPage />} />
-                    <Route path="/watchlist" element={<WatchlistPage />} />
-                    <Route path="/symbol/:symbol" element={<SymbolDetailPage />} />
-                    <Route path="/options" element={<OptionsPage />} />
-                    <Route path="/positions" element={<PositionsPage />} />
-                    <Route path="/journal" element={<JournalPage />} />
-                    <Route path="/alerts" element={<AlertsPage />} />
-                    <Route path="/settings" element={<SettingsPage />} />
-                    <Route path="/about" element={<AboutPage />} />
-                    <Route path="*" element={<Navigate to="/today" replace />} />
-                  </Routes>
-                </Suspense>
-              </Layout>
-            </AlertsProvider>
-          </ProviderProvider>
-        </ConfirmProvider>
+        <AuthGate>
+          <ConfirmProvider>
+            <ProviderProvider>
+              <AlertsProvider>
+                <Layout>
+                  <Suspense fallback={<Spinner label="Loading…" />}>
+                    <Routes>
+                      <Route path="/" element={<Navigate to="/today" replace />} />
+                      <Route path="/today" element={<DashboardPage />} />
+                      <Route path="/screener" element={<ScreenerPage />} />
+                      <Route path="/watchlist" element={<WatchlistPage />} />
+                      <Route path="/symbol/:symbol" element={<SymbolDetailPage />} />
+                      <Route path="/options" element={<OptionsPage />} />
+                      <Route path="/positions" element={<PositionsPage />} />
+                      <Route path="/journal" element={<JournalPage />} />
+                      <Route path="/alerts" element={<AlertsPage />} />
+                      <Route path="/settings" element={<SettingsPage />} />
+                      <Route path="/about" element={<AboutPage />} />
+                      <Route path="*" element={<Navigate to="/today" replace />} />
+                    </Routes>
+                  </Suspense>
+                </Layout>
+              </AlertsProvider>
+            </ProviderProvider>
+          </ConfirmProvider>
+        </AuthGate>
       </ToastProvider>
     </ThemeProvider>
   );

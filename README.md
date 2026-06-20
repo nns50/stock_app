@@ -172,6 +172,8 @@ Copy `.env.example` to `server/.env`. All keys are read **server-side only**.
 | `DISCORD_WEBHOOK_URL`   | _(empty)_                          | Discord channel webhook for fired alerts (secret). Blank = off.  |
 | `ALERT_WEBHOOK_URL`     | _(empty)_                          | Generic/ntfy webhook for fired alerts (secret). Fires alongside Slack/Discord. |
 | `ALERT_WEBHOOK_FORMAT`  | `json`                             | Body shape for `ALERT_WEBHOOK_URL`: `json`, `slack`, or `discord`. |
+| `APP_PASSWORD`          | _(empty)_                          | Set to require a login (one shared password) before any data is served. Blank = no auth. |
+| `AUTH_SECURE_COOKIE`    | `true` in prod                     | Session cookie `Secure` flag. Set `false` for plain-http access (e.g. `fly proxy`). |
 
 ### Getting a Tradier token
 
