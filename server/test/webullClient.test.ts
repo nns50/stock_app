@@ -29,6 +29,19 @@ describe('WebullClient', () => {
     expect(headers['x-version']).toBe('v1');
   });
 
+  it('honors host overrides and call() returns the URL + status (no throw)', async () => {
+    const f = mockFetch(404, { code: 'NOT_FOUND' });
+    const overridden = new WebullClient({
+      appKey: 'k',
+      appSecret: 's',
+      region: 'us',
+      apiHost: 'ustrade.example.com',
+    });
+    const r = await overridden.call('GET', '/openapi/account/list', { surface: 'trade' });
+    expect(r).toMatchObject({ ok: false, status: 404, url: 'https://ustrade.example.com/openapi/account/list' });
+    expect(String(f.mock.calls[0][0])).toContain('ustrade.example.com');
+  });
+
   it('POSTs to the trade host with a JSON body', async () => {
     const f = mockFetch(200, { ok: true });
     await client.post('/account/positions', { account_id: 'X1' });

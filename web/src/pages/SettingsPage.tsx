@@ -384,7 +384,13 @@ function WebullSection() {
   const [kind, setKind] = useState<'account-list' | 'snapshot'>('account-list');
   const [symbol, setSymbol] = useState('AAPL');
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; error?: string; status?: number; data?: unknown } | null>(null);
+  const [result, setResult] = useState<{
+    ok: boolean;
+    error?: string;
+    status?: number;
+    url?: string;
+    data?: unknown;
+  } | null>(null);
 
   const run = async () => {
     setBusy(true);
@@ -449,6 +455,11 @@ function WebullSection() {
                   ✕ {result.error ?? 'failed'}
                   {result.status ? ` (HTTP ${result.status})` : ''}
                 </span>
+              )}
+              {result.url && (
+                <div className="mt-1 text-[11px] text-slate-500 break-all">
+                  called <code className="text-slate-400">{result.url}</code>
+                </div>
               )}
               {result.data !== undefined && (
                 <pre className="mt-2 max-h-64 overflow-auto rounded border border-ink-600 bg-ink-900 p-2 text-[11px] text-slate-300">
