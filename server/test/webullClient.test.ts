@@ -29,6 +29,18 @@ describe('WebullClient', () => {
     expect(headers['x-version']).toBe('v2');
   });
 
+  it('sends x-access-token only when a token is configured', async () => {
+    const f1 = mockFetch(200, {});
+    await client.get('/openapi/market-data/stock/snapshot', { symbols: 'AAPL' });
+    expect((f1.mock.calls[0][1]?.headers as Record<string, string>)['x-access-token']).toBeUndefined();
+
+    vi.restoreAllMocks();
+    const f2 = mockFetch(200, {});
+    const withToken = new WebullClient({ appKey: 'k', appSecret: 's', region: 'us', accessToken: 'TKN123' });
+    await withToken.get('/openapi/account/list', {}, 'trade');
+    expect((f2.mock.calls[0][1]?.headers as Record<string, string>)['x-access-token']).toBe('TKN123');
+  });
+
   it('honors host overrides and call() returns the URL + status (no throw)', async () => {
     const f = mockFetch(404, { code: 'NOT_FOUND' });
     const overridden = new WebullClient({

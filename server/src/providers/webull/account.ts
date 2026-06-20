@@ -10,8 +10,12 @@ export function webullConfigured(): boolean {
   return !!(config.webull.appKey && config.webull.appSecret);
 }
 
-export function webullStatus(): { configured: boolean; region: string } {
-  return { configured: webullConfigured(), region: normalizeRegion(config.webull.region) };
+export function webullStatus(): { configured: boolean; region: string; hasAccessToken: boolean } {
+  return {
+    configured: webullConfigured(),
+    region: normalizeRegion(config.webull.region),
+    hasAccessToken: !!config.webull.accessToken,
+  };
 }
 
 function client(): WebullClient {
@@ -21,6 +25,7 @@ function client(): WebullClient {
     region: config.webull.region,
     apiHost: config.webull.apiHost,
     quotesHost: config.webull.quotesHost,
+    accessToken: config.webull.accessToken,
   });
 }
 

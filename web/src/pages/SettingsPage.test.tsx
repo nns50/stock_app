@@ -23,7 +23,11 @@ beforeEach(() => {
     configured: false,
     scheduler: { enabled: false, intervalSeconds: 60 },
   } as never);
-  vi.spyOn(client, 'webullStatus').mockResolvedValue({ configured: false, region: 'us' } as never);
+  vi.spyOn(client, 'webullStatus').mockResolvedValue({
+    configured: false,
+    region: 'us',
+    hasAccessToken: false,
+  } as never);
 });
 
 function renderPage() {
