@@ -73,6 +73,16 @@ export const config = {
     /** Recovery switch: bypass the TOTP second factor (login = password only). */
     mfaDisabled: ['1', 'true', 'yes'].includes((process.env.DISABLE_MFA || '').toLowerCase()),
   },
+  /**
+   * Webull OpenAPI credentials (App Key / Secret from developer.webull.com),
+   * server-side only. Used by the Webull provider/account integration when
+   * configured; region selects the api/quotes hosts (us | hk | jp).
+   */
+  webull: {
+    appKey: process.env.WEBULL_APP_KEY || '',
+    appSecret: process.env.WEBULL_APP_SECRET || '',
+    region: (process.env.WEBULL_REGION || 'us').toLowerCase(),
+  },
 };
 
 export type AppConfig = typeof config;
