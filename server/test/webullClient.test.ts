@@ -20,13 +20,13 @@ describe('WebullClient', () => {
     expect(out.data).toHaveLength(1);
 
     const [url, init] = f.mock.calls[0];
-    expect(String(url)).toBe('https://usquotes-api.webullfintech.com/market-data/snapshot?symbols=AAPL');
+    expect(String(url)).toBe('https://api.webull.com/market-data/snapshot?symbols=AAPL');
     expect(init?.method).toBe('GET');
     const headers = init?.headers as Record<string, string>;
     expect(headers['x-app-key']).toBe('APPKEY123');
     expect(headers['x-signature']).toBeTruthy();
     expect(headers['x-signature-algorithm']).toBe('HMAC-SHA1');
-    expect(headers['x-version']).toBe('v1');
+    expect(headers['x-version']).toBe('v2');
   });
 
   it('honors host overrides and call() returns the URL + status (no throw)', async () => {

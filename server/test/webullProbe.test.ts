@@ -30,7 +30,7 @@ describe('webull account probe', () => {
     expect(r.data).toEqual({ data: [{ symbol: 'AAPL' }] });
 
     const url = String(fetchSpy.mock.calls[0][0]);
-    expect(url).toContain('usquotes-api.webullfintech.com/market-data/snapshot');
+    expect(url).toContain('api.webull.com/openapi/market-data/stock/snapshot');
     expect(url).toContain('symbols=AAPL'); // upper-cased
   });
 
