@@ -1,8 +1,12 @@
 {
   "compilerOptions": {
     "target": "ES2021",
-    "module": "commonjs",
-    "moduleResolution": "node",
+    // node16 module + resolution (not the deprecated node10/"node") so the build
+    // works on every TS 6.x/7.x — a non-cached Docker/Fly build can pull a
+    // stricter tsc that hard-errors on node10. Server has no "type":"module", so
+    // this still emits CommonJS; `node dist/index.js` is unchanged.
+    "module": "node16",
+    "moduleResolution": "node16",
     "lib": ["ES2021"],
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
