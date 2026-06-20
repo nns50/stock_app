@@ -44,7 +44,7 @@ export async function webullProbe(kind: ProbeKind, symbol = 'AAPL'): Promise<Pro
   try {
     const r =
       kind === 'snapshot'
-        ? await client().call('GET', '/market-data/snapshot', {
+        ? await client().call('GET', '/openapi/market-data/stock/snapshot', {
             query: { symbols: symbol.toUpperCase(), category: 'US_STOCK' },
             surface: 'market',
           })

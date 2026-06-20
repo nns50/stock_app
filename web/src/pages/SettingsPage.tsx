@@ -407,7 +407,7 @@ function WebullSection() {
   return (
     <Section
       title="Webull (beta)"
-      desc="Connect Webull's OpenAPI for stock market data and your account. Credentials are server-side (WEBULL_APP_KEY / WEBULL_APP_SECRET). Options market data isn't offered by Webull — those stay on your current provider."
+      desc="Connect Webull's OpenAPI (v2) for stock & option market data and your account. Credentials are server-side (WEBULL_APP_KEY / WEBULL_APP_SECRET). Market data needs an active OpenAPI subscription on your Webull account."
     >
       {status.loading ? (
         <Spinner />

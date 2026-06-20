@@ -51,7 +51,7 @@ export class WebullClient {
   private readonly timeoutMs: number;
 
   constructor(private readonly cfg: WebullClientConfig) {
-    this.version = cfg.version ?? 'v1';
+    this.version = cfg.version ?? 'v2';
     this.timeoutMs = cfg.timeoutMs ?? 10000;
   }
 
@@ -74,7 +74,7 @@ export class WebullClient {
   private host(surface: Surface): string {
     if (surface === 'market' && this.cfg.quotesHost) return this.cfg.quotesHost;
     if (surface === 'trade' && this.cfg.apiHost) return this.cfg.apiHost;
-    return webullHost(this.cfg.region, surface);
+    return webullHost(this.cfg.region);
   }
 
   async get<T>(path: string, query: Record<string, string> = {}, surface: Surface = 'market'): Promise<T> {
