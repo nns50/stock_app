@@ -159,6 +159,28 @@ fire 24/7 with nothing open.
   (the volume, and your data, persist).
 - **Back up** from the UI (**Settings → Data → export**) — simplest for a single volume.
 
+### Auto-deploy from GitHub (CI/CD)
+
+The repo includes `.github/workflows/fly-deploy.yml`, which deploys to Fly **after CI
+passes on `main`** (so a red build never ships). This is the same thing Fly's "Deploy
+from GitHub" button sets up — you can use either; with the workflow already in the repo
+you only need to add the token. One-time setup:
+
+1. **Do the manual setup above first** (`fly apps create`, the volume, and `fly secrets
+   set`). The GitHub deploy builds and releases the image; it does **not** create the app,
+   volume, or Fly secrets. Set `app` in `fly.toml` to your real app name and do an initial
+   `fly deploy` from your machine to confirm it all works.
+2. **Create a deploy token:** `fly tokens create deploy` (copy the whole
+   `FlyV1 ...` string).
+3. **Add it to GitHub:** repo → **Settings → Secrets and variables → Actions → New
+   repository secret** → name `FLY_API_TOKEN`, value = the token.
+4. Push to `main` (or merge a PR). CI runs; on success the deploy workflow builds on Fly's
+   remote builders and releases. Until the secret exists, the deploy job runs and **skips
+   cleanly** (no red X).
+
+Your Fly secrets (webhook URLs, any provider token) live on Fly, not GitHub — set/rotate
+them with `fly secrets set`. The only GitHub secret is `FLY_API_TOKEN`.
+
 ### Other managed platforms
 
 The same image runs on Railway, Render, etc.: point them at this `Dockerfile`, attach a
