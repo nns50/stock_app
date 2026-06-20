@@ -428,6 +428,10 @@ One home (⚙ or `⌘K → Settings`) for everything:
   notifications** when an alert fires (while the tab is in the background).
 - **Server-side watching** — enable the **background poller** (server-side, runs with the
   app closed) and its interval, see whether a **webhook** is configured, and send a test.
+- **Webull (beta)** — shows whether Webull OpenAPI credentials are configured
+  (`WEBULL_APP_KEY` / `WEBULL_APP_SECRET`, server-side) and runs a read-only **connection
+  test** (account list / stock snapshot). Webull provides stock data + your account;
+  options market data isn't offered by Webull, so option chains stay on your current provider.
 - **Account** — only shown when the app is password-protected (`APP_PASSWORD` set
   server-side). Turn on **two-factor authentication** (an authenticator-app code at
   login — scan/enter the setup key, confirm a code), disable it (needs a current code),

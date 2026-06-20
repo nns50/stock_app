@@ -26,6 +26,8 @@ import type {
   AlertPlan,
   AuthStatus,
   MfaStatus,
+  WebullStatus,
+  WebullProbeResult,
   AlertSchedulerConfig,
   NotificationStatus,
   NotificationTestResult,
@@ -83,6 +85,11 @@ export const client = {
   mfaSetup: () => api<{ secret: string; otpauthUri: string }>('/auth/mfa/setup', { method: 'POST' }),
   mfaEnable: (code: string) => api<{ enabled: boolean }>('/auth/mfa/enable', post({ code })),
   mfaDisable: (code: string) => api<{ enabled: boolean }>('/auth/mfa/disable', post({ code })),
+
+  // --- webull (integration connectivity) ---
+  webullStatus: () => api<WebullStatus>('/webull/status'),
+  webullProbe: (kind: 'account-list' | 'snapshot', symbol?: string) =>
+    api<WebullProbeResult>('/webull/probe', post({ kind, symbol })),
 
   // --- meta ---
   provider: () => api<ProviderStatus>('/provider'),

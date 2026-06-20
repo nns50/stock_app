@@ -20,6 +20,7 @@ import { snapshotsRouter } from './routes/snapshots';
 import { alertsRouter } from './routes/alerts';
 import { exportRouter } from './routes/export';
 import { watchlistRouter } from './routes/watchlist';
+import { webullRouter } from './routes/webull';
 import { authRouter, requireAuth } from './routes/auth';
 import { startAlertScheduler } from './services/alertScheduler';
 
@@ -51,6 +52,7 @@ app.use('/api/snapshots', snapshotsRouter);
 app.use('/api/alerts', alertsRouter);
 app.use('/api/export', exportRouter);
 app.use('/api/watchlist', watchlistRouter);
+app.use('/api/webull', webullRouter);
 
 // Unknown API route
 app.use('/api', (_req, res) => {
