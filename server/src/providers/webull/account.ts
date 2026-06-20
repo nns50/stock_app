@@ -29,7 +29,7 @@ function client(): WebullClient {
   });
 }
 
-export type ProbeKind = 'account-list' | 'snapshot';
+export type ProbeKind = 'account-list' | 'snapshot' | 'positions' | 'balance';
 
 export interface ProbeResult {
   ok: boolean;
@@ -41,19 +41,39 @@ export interface ProbeResult {
   error?: string;
 }
 
+function probeCall(kind: ProbeKind, opts: { symbol?: string; accountId?: string }) {
+  const c = client();
+  switch (kind) {
+    case 'snapshot':
+      return c.call('GET', '/openapi/market-data/stock/snapshot', {
+        query: { symbols: (opts.symbol || 'AAPL').toUpperCase(), category: 'US_STOCK' },
+        surface: 'market',
+      });
+    case 'positions':
+      return c.call('GET', '/openapi/assets/positions', { query: { account_id: opts.accountId! }, surface: 'trade' });
+    case 'balance':
+      return c.call('GET', '/openapi/assets/balance', {
+        query: { account_id: opts.accountId!, total_asset_currency: 'USD' },
+        surface: 'trade',
+      });
+    default:
+      return c.call('GET', '/openapi/account/list', { surface: 'trade' });
+  }
+}
+
 /** Run one whitelisted read-only call and return the raw payload + URL (or a clean error). */
-export async function webullProbe(kind: ProbeKind, symbol = 'AAPL'): Promise<ProbeResult> {
+export async function webullProbe(
+  kind: ProbeKind,
+  opts: { symbol?: string; accountId?: string } = {},
+): Promise<ProbeResult> {
   if (!webullConfigured()) {
     return { ok: false, error: 'Webull is not configured — set WEBULL_APP_KEY and WEBULL_APP_SECRET.' };
   }
+  if ((kind === 'positions' || kind === 'balance') && !opts.accountId) {
+    return { ok: false, error: 'Pick an account — copy an account_id from the Account list result.' };
+  }
   try {
-    const r =
-      kind === 'snapshot'
-        ? await client().call('GET', '/openapi/market-data/stock/snapshot', {
-            query: { symbols: symbol.toUpperCase(), category: 'US_STOCK' },
-            surface: 'market',
-          })
-        : await client().call('GET', '/openapi/account/list', { surface: 'trade' });
+    const r = await probeCall(kind, opts);
     if (r.ok) return { ok: true, url: r.url, status: r.status, data: r.data };
     const j = r.data as { code?: string; msg?: string; message?: string } | null;
     return {

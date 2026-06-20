@@ -13,14 +13,15 @@ webullRouter.get('/status', (_req, res) => {
 });
 
 const probeBody = z.object({
-  kind: z.enum(['account-list', 'snapshot']),
+  kind: z.enum(['account-list', 'snapshot', 'positions', 'balance']),
   symbol: z.string().max(10).optional(),
+  accountId: z.string().max(64).optional(),
 });
 
 webullRouter.post(
   '/probe',
   asyncHandler(async (req, res) => {
-    const { kind, symbol } = parseBody(probeBody, req);
-    res.json(await webullProbe(kind as ProbeKind, symbol));
+    const { kind, symbol, accountId } = parseBody(probeBody, req);
+    res.json(await webullProbe(kind as ProbeKind, { symbol, accountId }));
   }),
 );

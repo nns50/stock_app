@@ -25,13 +25,27 @@ describe('webull account probe', () => {
       text: async () => JSON.stringify({ data: [{ symbol: 'AAPL' }] }),
     } as Response);
 
-    const r = await webullProbe('snapshot', 'aapl');
+    const r = await webullProbe('snapshot', { symbol: 'aapl' });
     expect(r.ok).toBe(true);
     expect(r.data).toEqual({ data: [{ symbol: 'AAPL' }] });
 
     const url = String(fetchSpy.mock.calls[0][0]);
     expect(url).toContain('api.webull.com/openapi/market-data/stock/snapshot');
     expect(url).toContain('symbols=AAPL'); // upper-cased
+  });
+
+  it('requires an account id for positions/balance, then queries assets', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    expect((await webullProbe('positions')).error).toMatch(/account/i); // guarded, no network
+
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200, text: async () => '[]' } as Response);
+    const r = await webullProbe('positions', { accountId: 'ACC1' });
+    expect(r.ok).toBe(true);
+    const url = String(fetchSpy.mock.calls[0][0]);
+    expect(url).toContain('api.webull.com/openapi/assets/positions');
+    expect(url).toContain('account_id=ACC1');
   });
 
   it('surfaces a Webull error cleanly (no throw)', async () => {
