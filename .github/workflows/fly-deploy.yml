@@ -1,0 +1,36 @@
+name: Deploy to Fly.io
+
+# Deploys on every push to main — but only after the CI workflow passes, so a red
+# build never ships. Until you add a FLY_API_TOKEN repo secret (Settings → Secrets
+# and variables → Actions), the job runs and cleanly skips, so it won't fail.
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+    branches: [main]
+
+# One deploy at a time; let an in-flight deploy finish rather than cancelling it.
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Only when CI succeeded (workflow_run already filters to main).
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - name: Skip when no Fly token is configured
+        if: env.FLY_API_TOKEN == ''
+        run: echo "FLY_API_TOKEN secret not set — skipping deploy. Add it in Settings → Secrets and variables → Actions to enable auto-deploy."
+      - uses: actions/checkout@v6
+        if: env.FLY_API_TOKEN != ''
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: env.FLY_API_TOKEN != ''
+      # Builds the image on Fly's remote builders (no Docker needed here) and
+      # releases it. Reads app/region/mounts/VM from fly.toml.
+      - name: Deploy
+        if: env.FLY_API_TOKEN != ''
+        run: flyctl deploy --remote-only
