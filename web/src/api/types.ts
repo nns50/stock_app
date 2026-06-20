@@ -593,6 +593,7 @@ export interface AuthStatus {
 export interface WebullStatus {
   configured: boolean;
   region: string;
+  hasAccessToken: boolean;
 }
 
 export interface WebullProbeResult {

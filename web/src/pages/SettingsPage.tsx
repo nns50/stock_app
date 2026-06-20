@@ -423,7 +423,13 @@ function WebullSection() {
               </span>
             )}
             <span className="text-slate-500"> · region {status.data?.region ?? '—'}</span>
+            <span className="text-slate-500"> · 2FA token {status.data?.hasAccessToken ? 'set' : 'not set'}</span>
           </div>
+          <p className="text-[11px] text-slate-500">
+            A token is only needed if 2FA is enabled on your Webull account. If you get{' '}
+            <code className="text-slate-400">INVALID_TOKEN</code>, either disable API 2FA on the Webull portal, or set a
+            verified <code className="text-slate-400">WEBULL_ACCESS_TOKEN</code>.
+          </p>
 
           <div className="flex flex-wrap items-end gap-2">
             <Field label="Test call">

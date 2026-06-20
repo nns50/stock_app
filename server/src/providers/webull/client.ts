@@ -2,15 +2,15 @@ import { signRequest } from './signing';
 import { normalizeRegion, webullHost, WebullRegion } from './hosts';
 
 // ---------------------------------------------------------------------------
-// Thin signed HTTP client for the Webull OpenAPI. Handles host resolution, the
-// HMAC signing headers, JSON encode/decode, and error surfacing. The low-level
-// `call()` returns the resolved URL + status + raw body (never throws) so the
-// connection probe can show exactly what was hit; `get()/post()` wrap it and
-// throw a WebullError on non-2xx. No dependencies (Node global fetch).
+// Thin signed HTTP client for the Webull v2 OpenAPI. Every request carries the
+// HMAC app signature (x-app-key/x-signature/…). An account access token
+// (x-access-token) is ONLY required when 2FA is enabled on the Webull account —
+// in that case a verified token is supplied via WEBULL_ACCESS_TOKEN and sent on
+// each request; with 2FA off, the signature alone authenticates.
 //
-// Hosts default to the SDK's endpoints.json, but `apiHost`/`quotesHost` can
-// override them — the bundled SDK is from 2022 and the US trade/account host
-// has since diverged, so overrides let us point at the right base per the docs.
+// `call()` returns the resolved URL + status + raw body (never throws) so the
+// connection probe can show exactly what was hit; `get()/post()` throw a
+// WebullError on non-2xx. No dependencies (Node global fetch).
 // ---------------------------------------------------------------------------
 
 export class WebullError extends Error {
@@ -29,10 +29,11 @@ export interface WebullClientConfig {
   appKey: string;
   appSecret: string;
   region: WebullRegion;
-  /** Optional host overrides (else the region defaults are used). */
   apiHost?: string;
   quotesHost?: string;
-  /** API version header (x-version); Webull endpoints are v1. */
+  /** Verified account access token — only needed when 2FA is enabled. */
+  accessToken?: string;
+  /** API version header (x-version); the v2 OpenAPI expects "v2". */
   version?: string;
   timeoutMs?: number;
 }
@@ -61,6 +62,7 @@ export class WebullClient {
     region?: string;
     apiHost?: string;
     quotesHost?: string;
+    accessToken?: string;
   }): WebullClient {
     return new WebullClient({
       appKey: env.appKey,
@@ -68,6 +70,7 @@ export class WebullClient {
       region: normalizeRegion(env.region),
       apiHost: env.apiHost || undefined,
       quotesHost: env.quotesHost || undefined,
+      accessToken: env.accessToken || undefined,
     });
   }
 
@@ -87,8 +90,13 @@ export class WebullClient {
 
   private unwrap<T>(r: CallResult): T {
     if (!r.ok) {
-      const j = r.data as { code?: string; msg?: string; message?: string } | null;
-      throw new WebullError(r.status, j?.msg || j?.message || `Webull request failed (${r.status})`, j?.code, r.url);
+      const j = r.data as { code?: string; error_code?: string; msg?: string; message?: string } | null;
+      throw new WebullError(
+        r.status,
+        j?.msg || j?.message || j?.error_code || `Webull request failed (${r.status})`,
+        j?.code || j?.error_code,
+        r.url,
+      );
     }
     return r.data as T;
   }
@@ -113,13 +121,19 @@ export class WebullClient {
       appKey: this.cfg.appKey,
       appSecret: this.cfg.appSecret,
     });
+    const headers: Record<string, string> = {
+      ...signed,
+      'x-version': this.version,
+      'content-type': 'application/json',
+    };
+    if (this.cfg.accessToken) headers['x-access-token'] = this.cfg.accessToken;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const res = await fetch(url, {
         method,
-        headers: { ...signed, 'x-version': this.version, 'content-type': 'application/json' },
+        headers,
         body: method === 'POST' ? JSON.stringify(opts.body ?? {}) : undefined,
         signal: controller.signal,
       });

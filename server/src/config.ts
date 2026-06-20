@@ -85,6 +85,8 @@ export const config = {
     /** Host overrides (the bundled SDK's defaults can be stale per region). */
     apiHost: process.env.WEBULL_API_HOST || '',
     quotesHost: process.env.WEBULL_QUOTES_HOST || '',
+    /** Verified access token — only needed when 2FA is enabled on the account. */
+    accessToken: process.env.WEBULL_ACCESS_TOKEN || '',
   },
 };
 

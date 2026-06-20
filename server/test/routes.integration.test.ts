@@ -202,7 +202,7 @@ describe('webull connectivity (integration)', () => {
   it('reports not-configured and probes safely without credentials', async () => {
     // No WEBULL_APP_KEY/SECRET in the test env.
     const status = (await getJson('/api/webull/status')) as { configured: boolean; region: string };
-    expect(status).toEqual({ configured: false, region: 'us' });
+    expect(status).toMatchObject({ configured: false, region: 'us', hasAccessToken: false });
 
     const res = await post('/api/webull/probe', { kind: 'snapshot', symbol: 'AAPL' });
     expect(res.status).toBe(200);
