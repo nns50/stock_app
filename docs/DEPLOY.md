@@ -30,6 +30,10 @@ built-in login:
    an HttpOnly cookie; sign out from **Settings → Account**. If you reach the app over
    plain http (e.g. `fly proxy`), also set `AUTH_SECURE_COOKIE=false`.
 
+   For a second factor, enable **two-factor (TOTP)** in **Settings → Account** — login then
+   also asks for an authenticator-app code. If you ever lose the authenticator, set
+   `fly secrets set DISABLE_MFA=true` to log in with the password only, then re-enroll.
+
 Or keep it off the public internet entirely (you can combine these with the login):
 
 1. **Tailscale.** Install it on the VPS and on your phone/laptop; reach the app at

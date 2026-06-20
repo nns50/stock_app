@@ -25,6 +25,7 @@ import type {
   Alert,
   AlertPlan,
   AuthStatus,
+  MfaStatus,
   AlertSchedulerConfig,
   NotificationStatus,
   NotificationTestResult,
@@ -76,8 +77,12 @@ const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.strin
 export const client = {
   // --- auth ---
   authStatus: () => api<AuthStatus>('/auth/status'),
-  login: (password: string) => api<{ ok: boolean }>('/auth/login', post({ password })),
+  login: (password: string, code?: string) => api<{ ok: boolean }>('/auth/login', post({ password, code })),
   logout: () => api<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
+  mfaStatus: () => api<MfaStatus>('/auth/mfa'),
+  mfaSetup: () => api<{ secret: string; otpauthUri: string }>('/auth/mfa/setup', { method: 'POST' }),
+  mfaEnable: (code: string) => api<{ enabled: boolean }>('/auth/mfa/enable', post({ code })),
+  mfaDisable: (code: string) => api<{ enabled: boolean }>('/auth/mfa/disable', post({ code })),
 
   // --- meta ---
   provider: () => api<ProviderStatus>('/provider'),

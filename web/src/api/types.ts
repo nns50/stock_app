@@ -590,6 +590,15 @@ export interface AuthStatus {
   authenticated: boolean;
 }
 
+export interface MfaStatus {
+  /** Can two-factor be used (a server password is set)? */
+  available: boolean;
+  /** Has the user enrolled a second factor? */
+  enabled: boolean;
+  /** Is it actually being enforced at login (not overridden by DISABLE_MFA)? */
+  enforced: boolean;
+}
+
 export interface NotificationStatus {
   /** Configured webhook destinations (Slack / Discord / generic), no URLs. */
   channels: { label: string; format: 'json' | 'slack' | 'discord' }[];

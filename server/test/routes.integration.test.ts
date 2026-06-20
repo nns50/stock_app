@@ -3,6 +3,8 @@ import type { AddressInfo } from 'node:net';
 import { app } from '../src/index';
 import { db } from '../src/db';
 import { config } from '../src/config';
+import { totp } from '../src/services/totp';
+import { setSetting } from '../src/db/settings';
 
 // End-to-end tests through the real Express app → routers → services → SQLite
 // (a throwaway DB; see vitest.config.ts). Catches route wiring, validation, and
@@ -224,5 +226,54 @@ describe('auth gate (integration)', () => {
     expect(cookie).toContain('sa_session=');
 
     expect((await fetch(`${base}/api/positions`, { headers: { cookie } })).status).toBe(200);
+  });
+});
+
+describe('two-factor (integration)', () => {
+  afterEach(() => {
+    config.auth.password = '';
+    db.exec("DELETE FROM settings WHERE key IN ('mfa', 'mfaPending')");
+  });
+
+  const loginCookie = async (body: object) => {
+    const r = await post('/api/auth/login', body);
+    return { status: r.status, cookie: (r.headers.get('set-cookie') ?? '').split(';')[0] };
+  };
+
+  it('enrolls TOTP, then requires the code at login', async () => {
+    config.auth.password = 'pw';
+    const { cookie } = await loginCookie({ password: 'pw' });
+
+    // Start enrollment and confirm with a freshly-computed code.
+    const setup = await fetch(`${base}/api/auth/mfa/setup`, { method: 'POST', headers: { cookie } });
+    const { secret } = (await setup.json()) as { secret: string };
+    expect(secret).toMatch(/^[A-Z2-7]+$/);
+
+    const enable = await fetch(`${base}/api/auth/mfa/enable`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ code: totp(secret) }),
+    });
+    expect(enable.status).toBe(200);
+
+    // Password alone is no longer enough.
+    expect((await loginCookie({ password: 'pw' })).status).toBe(401);
+    const missing = await post('/api/auth/login', { password: 'pw' });
+    expect((await missing.json()).code).toBe('mfa_required');
+    expect((await loginCookie({ password: 'pw', code: '000000' })).status).toBe(401);
+
+    // Password + a valid code logs in.
+    expect((await loginCookie({ password: 'pw', code: totp(secret) })).status).toBe(200);
+  });
+
+  it('does not enforce MFA when DISABLE_MFA recovery is set', async () => {
+    config.auth.password = 'pw';
+    setSetting('mfa', { enabled: true, secret: 'JBSWY3DPEHPK3PXP' });
+    config.auth.mfaDisabled = true;
+    try {
+      expect((await loginCookie({ password: 'pw' })).status).toBe(200); // code not required
+    } finally {
+      config.auth.mfaDisabled = false;
+    }
   });
 });

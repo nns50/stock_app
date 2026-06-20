@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { client } from '../api/client';
+import { ApiError, client } from '../api/client';
 import { useAsync, useLocalStorage } from '../lib/hooks';
 import { cx } from '../lib/format';
 import { CHECKLIST_SETTING_KEY, DEFAULT_CHECKLIST_RULES, rulesFromSetting } from '../lib/checklist';
@@ -228,10 +228,18 @@ export default function SettingsPage() {
       </Section>
 
       {authRequired && (
-        <Section title="Account" desc="This app is password-protected. Sign out to end this session on this browser.">
-          <button className="btn-ghost" onClick={logout}>
-            Sign out
-          </button>
+        <Section title="Account" desc="This app is password-protected.">
+          <div className="space-y-5">
+            <div>
+              <div className="label mb-1.5">Two-factor authentication</div>
+              <TwoFactorSettings />
+            </div>
+            <div className="pt-1 border-t border-ink-600/50">
+              <button className="btn-ghost mt-3" onClick={logout}>
+                Sign out
+              </button>
+            </div>
+          </div>
         </Section>
       )}
 
@@ -361,5 +369,149 @@ function ServerWatchSection() {
         </div>
       )}
     </Section>
+  );
+}
+
+/** Group a base32 secret into 4-char blocks for readable manual entry. */
+const groupSecret = (s: string) => s.replace(/(.{4})/g, '$1 ').trim();
+
+/**
+ * Enroll / remove a TOTP second factor. Enabling shows the otpauth link + setup
+ * key, then verifies a code; disabling requires a current code.
+ */
+function TwoFactorSettings() {
+  const { toast } = useToast();
+  const status = useAsync(() => client.mfaStatus(), []);
+  const [setup, setSetup] = useState<{ secret: string; otpauthUri: string } | null>(null);
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const codeError = (e: unknown, fallback: string) =>
+    e instanceof ApiError && e.code === 'invalid_code'
+      ? 'That code did not match — try again.'
+      : (e as Error).message || fallback;
+  const reset = () => {
+    setSetup(null);
+    setCode('');
+    setError(undefined);
+  };
+
+  const begin = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      setSetup(await client.mfaSetup());
+      setCode('');
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const confirm = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await client.mfaEnable(code);
+      reset();
+      status.reload();
+      toast('Two-factor enabled', { type: 'success' });
+    } catch (e) {
+      setError(codeError(e, 'Could not enable'));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const disable = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await client.mfaDisable(code);
+      reset();
+      status.reload();
+      toast('Two-factor disabled', { type: 'success' });
+    } catch (e) {
+      setError(codeError(e, 'Could not disable'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (status.loading) return <Spinner />;
+  const s = status.data;
+  if (!s?.available)
+    return <p className="text-sm text-slate-500">Set a server password (APP_PASSWORD) first to use two-factor.</p>;
+
+  const codeInput = (
+    <input
+      className="input max-w-[150px] tabular-nums"
+      inputMode="numeric"
+      autoComplete="one-time-code"
+      placeholder="123456"
+      value={code}
+      onChange={(e) => setCode(e.target.value)}
+    />
+  );
+
+  if (s.enabled) {
+    return (
+      <div className="space-y-2">
+        <div className="text-sm text-bull">
+          Two-factor is on.
+          {!s.enforced && <span className="text-amber-400"> (bypassed by DISABLE_MFA on the server)</span>}
+        </div>
+        <p className="text-xs text-slate-500">Enter a current authenticator code to turn it off.</p>
+        <div className="flex flex-wrap items-center gap-2">
+          {codeInput}
+          <button className="btn-ghost" onClick={disable} disabled={busy || code.length < 6}>
+            {busy ? 'Disabling…' : 'Disable'}
+          </button>
+        </div>
+        {error && <div className="text-bear text-sm">{error}</div>}
+      </div>
+    );
+  }
+
+  if (!setup) {
+    return (
+      <div className="space-y-2">
+        <p className="text-sm text-slate-400">
+          Add an authenticator app (Google Authenticator, Authy, 1Password…) for a one-time code at login.
+        </p>
+        <button className="btn-primary" onClick={begin} disabled={busy}>
+          {busy ? 'Starting…' : 'Enable two-factor'}
+        </button>
+        {error && <div className="text-bear text-sm">{error}</div>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-slate-400">
+        1. In your authenticator app, add an account — open this link, or enter the setup key by hand:
+      </p>
+      <a
+        href={setup.otpauthUri}
+        className="block text-xs text-accent break-all rounded border border-ink-600 bg-ink-900 p-2"
+      >
+        {setup.otpauthUri}
+      </a>
+      <div className="text-sm text-slate-300">
+        Setup key: <code className="tabular-nums text-slate-100">{groupSecret(setup.secret)}</code>
+      </div>
+      <p className="text-sm text-slate-400">2. Enter the 6-digit code it shows:</p>
+      <div className="flex flex-wrap items-center gap-2">
+        {codeInput}
+        <button className="btn-primary" onClick={confirm} disabled={busy || code.length < 6}>
+          {busy ? 'Verifying…' : 'Verify & enable'}
+        </button>
+        <button className="btn-ghost" onClick={reset} disabled={busy}>
+          Cancel
+        </button>
+      </div>
+      {error && <div className="text-bear text-sm">{error}</div>}
+    </div>
   );
 }

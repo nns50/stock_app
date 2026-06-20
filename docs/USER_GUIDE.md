@@ -429,12 +429,16 @@ One home (⚙ or `⌘K → Settings`) for everything:
 - **Server-side watching** — enable the **background poller** (server-side, runs with the
   app closed) and its interval, see whether a **webhook** is configured, and send a test.
 - **Account** — only shown when the app is password-protected (`APP_PASSWORD` set
-  server-side); **Sign out** to end your session on this browser.
+  server-side). Turn on **two-factor authentication** (an authenticator-app code at
+  login — scan/enter the setup key, confirm a code), disable it (needs a current code),
+  and **Sign out** to end your session on this browser.
 - **Data** — export / backup / restore.
 
 > **Password protection (optional).** If the server sets `APP_PASSWORD`, the app shows a
 > **login** before any data loads — use this when hosting on a public URL. It's one shared
-> password (no usernames). See the README and the [Deployment guide](DEPLOY.md).
+> password (no usernames). You can add **two-factor** (an authenticator-app code) from
+> **Settings → Account**; if you lose your authenticator, set `DISABLE_MFA=true` on the
+> server to recover. See the README and the [Deployment guide](DEPLOY.md).
 
 ---
 

@@ -70,6 +70,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
 function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
   const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
+  const [mfaRequired, setMfaRequired] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -79,10 +81,18 @@ function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
     setBusy(true);
     setError(undefined);
     try {
-      await client.login(password);
+      await client.login(password, mfaRequired ? code : undefined);
       onAuthed();
     } catch (err) {
-      setError(err instanceof ApiError && err.status === 401 ? 'Incorrect password' : (err as Error).message);
+      if (err instanceof ApiError && err.code === 'mfa_required') {
+        setMfaRequired(true); // password OK — now ask for the authenticator code
+      } else if (err instanceof ApiError && err.code === 'invalid_code') {
+        setError('Invalid authenticator code');
+      } else if (err instanceof ApiError && err.status === 401) {
+        setError('Incorrect password');
+      } else {
+        setError((err as Error).message);
+      }
     } finally {
       setBusy(false);
     }
@@ -110,8 +120,25 @@ function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
             onChange={(e) => setPassword(e.target.value)}
           />
         </div>
+        {mfaRequired && (
+          <div>
+            <label className="label" htmlFor="app-mfa-code">
+              Authenticator code
+            </label>
+            <input
+              id="app-mfa-code"
+              className="input tabular-nums"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              placeholder="123456"
+              autoFocus
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+            />
+          </div>
+        )}
         {error && <div className="text-bear text-sm">{error}</div>}
-        <button type="submit" className="btn-primary w-full" disabled={busy || !password}>
+        <button type="submit" className="btn-primary w-full" disabled={busy || !password || (mfaRequired && !code)}>
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
       </form>
