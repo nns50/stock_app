@@ -174,6 +174,7 @@ Copy `.env.example` to `server/.env`. All keys are read **server-side only**.
 | `ALERT_WEBHOOK_FORMAT`  | `json`                             | Body shape for `ALERT_WEBHOOK_URL`: `json`, `slack`, or `discord`. |
 | `APP_PASSWORD`          | _(empty)_                          | Set to require a login (one shared password) before any data is served. Blank = no auth. |
 | `AUTH_SECURE_COOKIE`    | `true` in prod                     | Session cookie `Secure` flag. Set `false` for plain-http access (e.g. `fly proxy`). |
+| `DISABLE_MFA`           | `false`                            | Recovery switch — bypass two-factor (login = password only) if you lose your authenticator. |
 
 ### Getting a Tradier token
 

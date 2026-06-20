@@ -70,6 +70,8 @@ export const config = {
     secureCookie: process.env.AUTH_SECURE_COOKIE
       ? process.env.AUTH_SECURE_COOKIE !== 'false'
       : process.env.NODE_ENV === 'production',
+    /** Recovery switch: bypass the TOTP second factor (login = password only). */
+    mfaDisabled: ['1', 'true', 'yes'].includes((process.env.DISABLE_MFA || '').toLowerCase()),
   },
 };
 
