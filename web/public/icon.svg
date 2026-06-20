@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Trading assistant">
+  <rect width="32" height="32" rx="7" fill="#0b0f17" />
+  <rect x="0.75" y="0.75" width="30.5" height="30.5" rx="6.25" fill="none" stroke="#38bdf8" stroke-opacity="0.3" />
+  <g fill="none" stroke="#38bdf8" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="6 21 13 14 17 18 26 9" />
+    <polyline points="20 9 26 9 26 15" />
+  </g>
+</svg>
