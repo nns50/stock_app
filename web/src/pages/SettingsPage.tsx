@@ -381,8 +381,9 @@ function ServerWatchSection() {
  */
 function WebullSection() {
   const status = useAsync(() => client.webullStatus(), []);
-  const [kind, setKind] = useState<'account-list' | 'snapshot'>('account-list');
+  const [kind, setKind] = useState<'account-list' | 'snapshot' | 'positions' | 'balance'>('account-list');
   const [symbol, setSymbol] = useState('AAPL');
+  const [accountId, setAccountId] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{
     ok: boolean;
@@ -396,7 +397,7 @@ function WebullSection() {
     setBusy(true);
     setResult(null);
     try {
-      setResult(await client.webullProbe(kind, kind === 'snapshot' ? symbol : undefined));
+      setResult(await client.webullProbe(kind, { symbol, accountId }));
     } catch (e) {
       setResult({ ok: false, error: (e as Error).message });
     } finally {
@@ -436,6 +437,8 @@ function WebullSection() {
               <select className="input max-w-[200px]" value={kind} onChange={(e) => setKind(e.target.value as never)}>
                 <option value="account-list">Account list</option>
                 <option value="snapshot">Stock snapshot</option>
+                <option value="positions">Positions</option>
+                <option value="balance">Balance</option>
               </select>
             </Field>
             {kind === 'snapshot' && (
@@ -444,6 +447,16 @@ function WebullSection() {
                   className="input max-w-[120px]"
                   value={symbol}
                   onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+                />
+              </Field>
+            )}
+            {(kind === 'positions' || kind === 'balance') && (
+              <Field label="Account ID" hint="Copy an account_id from Account list">
+                <input
+                  className="input max-w-[260px] font-mono text-xs"
+                  value={accountId}
+                  onChange={(e) => setAccountId(e.target.value.trim())}
+                  placeholder="account_id"
                 />
               </Field>
             )}
