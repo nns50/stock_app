@@ -2,11 +2,11 @@
 # database. Builds from the repo Dockerfile (Express serves the built frontend
 # and the API on a single port). See docs/DEPLOY.md for the full runbook.
 #
-# Before launching, set `app` and `primary_region` to your own values.
-# Secrets (webhook URLs, any provider token) go via `fly secrets set` — NEVER here.
+# `app` must match the Fly app you created (CI deploy reads it from here).
+# Secrets (webhook URLs, provider token, APP_PASSWORD) go via `fly secrets set` — NEVER here.
 
-app = "stock-app"        # change to your app name
-primary_region = "iad"   # change to a region near you: https://fly.io/docs/reference/regions/
+app = "nns-stock-app"
+primary_region = "iad" # a region near you: https://fly.io/docs/reference/regions/
 
 [build]
   dockerfile = "Dockerfile"
