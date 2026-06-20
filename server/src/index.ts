@@ -20,17 +20,23 @@ import { snapshotsRouter } from './routes/snapshots';
 import { alertsRouter } from './routes/alerts';
 import { exportRouter } from './routes/export';
 import { watchlistRouter } from './routes/watchlist';
+import { authRouter, requireAuth } from './routes/auth';
 import { startAlertScheduler } from './services/alertScheduler';
 
 initDb();
 
 export const app = express();
-app.use(cors({ origin: config.corsOrigins }));
+app.use(cors({ origin: config.corsOrigins, credentials: true }));
 app.use(express.json({ limit: '1mb' }));
 
+// Health stays open (used by container/Fly health checks) and so does the auth
+// router (login/status). Everything else under /api requires a session when
+// APP_PASSWORD is set; `requireAuth` is a no-op when auth is disabled.
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, time: Date.now(), provider: getProviderStatus() });
 });
+app.use('/api/auth', authRouter);
+app.use('/api', requireAuth);
 
 app.use('/api', marketRouter);
 app.use('/api/universe', universeRouter);

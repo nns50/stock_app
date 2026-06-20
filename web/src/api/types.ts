@@ -583,6 +583,13 @@ export interface AlertSchedulerConfig {
   intervalSeconds: number;
 }
 
+export interface AuthStatus {
+  /** Is a login required (APP_PASSWORD set server-side)? */
+  required: boolean;
+  /** Does this browser already have a valid session? */
+  authenticated: boolean;
+}
+
 export interface NotificationStatus {
   /** Configured webhook destinations (Slack / Discord / generic), no URLs. */
   channels: { label: string; format: 'json' | 'slack' | 'discord' }[];

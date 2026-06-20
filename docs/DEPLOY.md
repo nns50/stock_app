@@ -11,16 +11,30 @@ production `Dockerfile` and `docker-compose.yml`, so this is a copy-paste exerci
 
 ---
 
-## ⚠️ Security first — the app has no login
+## ⚠️ Security first — protect access
 
-There is **no authentication**. Anyone who can reach the port can read your trades,
-settings, and trigger provider calls. **Do not publish port 3001 to the open internet.**
-Pick one of these (easiest first):
+By default the app has **no accounts**. Anyone who can reach the port can read your
+trades, settings, and trigger provider calls. So either keep it private **or** turn on the
+built-in login:
 
-1. **Tailscale (recommended).** Install it on the VPS and on your phone/laptop; reach the
-   app at `http://<tailscale-ip>:3001` over your private tailnet. Nothing is exposed
-   publicly. The webhook still goes _out_ to Slack/Discord/ntfy, so phone alerts work
-   regardless.
+0. **App login (simplest for a public URL).** Set a password and the app gates every data
+   route behind it, so you can safely keep the public HTTPS URL:
+
+   ```bash
+   # local: in server/.env →  APP_PASSWORD=your-long-passphrase
+   # Fly:
+   fly secrets set APP_PASSWORD='your-long-passphrase' -a your-stock-app
+   ```
+
+   Use a long, unique passphrase. It's one shared password (no usernames). The session is
+   an HttpOnly cookie; sign out from **Settings → Account**. If you reach the app over
+   plain http (e.g. `fly proxy`), also set `AUTH_SECURE_COOKIE=false`.
+
+Or keep it off the public internet entirely (you can combine these with the login):
+
+1. **Tailscale.** Install it on the VPS and on your phone/laptop; reach the app at
+   `http://<tailscale-ip>:3001` over your private tailnet. Nothing is exposed publicly. The
+   webhook still goes _out_ to Slack/Discord/ntfy, so phone alerts work regardless.
 2. **SSH tunnel.** Leave the port closed and forward it when you need the UI:
    `ssh -L 3001:localhost:3001 you@your-vps` → open `http://localhost:3001`.
 3. **Reverse proxy with auth + HTTPS.** Put Caddy or nginx in front with HTTP basic-auth
@@ -135,15 +149,26 @@ fly secrets set \
 fly deploy
 ```
 
-**Keep it private — the app has no login.** `fly deploy` gives you a public
-`*.fly.dev` URL by default; that would expose your journal. Since alerts push
-**outbound** to your webhooks, the app doesn't need to be publicly reachable — make it
-private and proxy in when you want the UI:
+**Protect access.** `fly deploy` gives you a public `*.fly.dev` URL, which would expose
+your journal. Two ways to secure it — easiest first:
+
+**Keep the public URL, add a login** (recommended for convenience):
+
+```bash
+fly secrets set APP_PASSWORD='your-long-passphrase' -a your-stock-app
+```
+
+Now the URL prompts for a password before serving any data; sign out from **Settings →
+Account**. (Alerts keep firing — they push outbound regardless.)
+
+**Or take it off the public internet** — since alerts are outbound, the app doesn't need
+to be publicly reachable; release the IPs and proxy in when you want the UI:
 
 ```bash
 fly ips list
 fly ips release <public-ipv4> <public-ipv6>     # drop the public IPs
 fly proxy 3001:3001 -a your-stock-app           # then open http://localhost:3001
+# over plain http, also: fly secrets set AUTH_SECURE_COOKIE=false -a your-stock-app
 ```
 
 Then in the UI: **Settings → Server-side watching → enable the poller**, pick an

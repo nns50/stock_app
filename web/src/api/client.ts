@@ -24,6 +24,7 @@ import type {
   RuinResult,
   Alert,
   AlertPlan,
+  AuthStatus,
   AlertSchedulerConfig,
   NotificationStatus,
   NotificationTestResult,
@@ -48,14 +49,23 @@ export class ApiError extends Error {
   }
 }
 
+/** Fired when a protected request is rejected for lack of a session (expired or
+ *  never logged in) — the AuthGate listens and shows the login screen. */
+export const AUTH_REQUIRED_EVENT = 'auth-required';
+
 async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const res = await fetch(`/api${path}`, {
     headers: { 'content-type': 'application/json' },
+    credentials: 'include', // send/receive the session cookie
     ...opts,
   });
   const text = await res.text();
   const body = text ? JSON.parse(text) : {};
   if (!res.ok) {
+    // A gate rejection (not a wrong-password reply) flips the app to the login screen.
+    if (res.status === 401 && body.code === 'unauthenticated') {
+      window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+    }
     throw new ApiError(res.status, body.error || `Request failed (${res.status})`, body.code);
   }
   return body as T;
@@ -64,6 +74,11 @@ async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
 const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) });
 
 export const client = {
+  // --- auth ---
+  authStatus: () => api<AuthStatus>('/auth/status'),
+  login: (password: string) => api<{ ok: boolean }>('/auth/login', post({ password })),
+  logout: () => api<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
+
   // --- meta ---
   provider: () => api<ProviderStatus>('/provider'),
   testProvider: (symbol?: string) =>

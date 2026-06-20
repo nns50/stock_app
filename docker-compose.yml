@@ -20,6 +20,9 @@ services:
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
       ALERT_WEBHOOK_FORMAT: ${ALERT_WEBHOOK_FORMAT:-json}
+      # Set APP_PASSWORD to require a login before any data is served.
+      APP_PASSWORD: ${APP_PASSWORD:-}
+      AUTH_SECURE_COOKIE: ${AUTH_SECURE_COOKIE:-}
     volumes:
       - stockdb:/app/data
     restart: unless-stopped

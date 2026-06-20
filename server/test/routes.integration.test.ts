@@ -1,7 +1,8 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import { app } from '../src/index';
 import { db } from '../src/db';
+import { config } from '../src/config';
 
 // End-to-end tests through the real Express app → routers → services → SQLite
 // (a throwaway DB; see vitest.config.ts). Catches route wiring, validation, and
@@ -192,5 +193,36 @@ describe('alerts routes (integration)', () => {
     expect(res.status).toBe(200);
     const out = (await res.json()) as { delivered: boolean };
     expect(out.delivered).toBe(false); // no ALERT_WEBHOOK_URL in the test env
+  });
+});
+
+describe('auth gate (integration)', () => {
+  afterEach(() => {
+    config.auth.password = '';
+  });
+
+  it('allows all routes and reports not-required when no password is set', async () => {
+    config.auth.password = '';
+    expect((await fetch(`${base}/api/positions`)).status).toBe(200);
+    expect(await getJson('/api/auth/status')).toMatchObject({ required: false, authenticated: true });
+  });
+
+  it('gates data routes when a password is set — but not /health or /auth', async () => {
+    config.auth.password = 'letmein';
+    expect((await fetch(`${base}/api/positions`)).status).toBe(401);
+    expect((await fetch(`${base}/api/health`)).status).toBe(200); // health stays open for Fly checks
+    expect(await getJson('/api/auth/status')).toMatchObject({ required: true, authenticated: false });
+  });
+
+  it('rejects a wrong password and unlocks routes with the session cookie', async () => {
+    config.auth.password = 'letmein';
+    expect((await post('/api/auth/login', { password: 'nope' })).status).toBe(401);
+
+    const ok = await post('/api/auth/login', { password: 'letmein' });
+    expect(ok.status).toBe(200);
+    const cookie = (ok.headers.get('set-cookie') ?? '').split(';')[0];
+    expect(cookie).toContain('sa_session=');
+
+    expect((await fetch(`${base}/api/positions`, { headers: { cookie } })).status).toBe(200);
   });
 });

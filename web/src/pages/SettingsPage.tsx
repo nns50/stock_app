@@ -9,6 +9,7 @@ import { DataTools } from '../components/DataTools';
 import { ProviderStatusModal } from '../components/ProviderStatusModal';
 import { useProvider } from '../components/ProviderContext';
 import { useAlerts } from '../components/AlertsContext';
+import { useAuth } from '../components/AuthGate';
 import { useToast } from '../components/ToastContext';
 import { NOTIFY_KEY, requestNotificationPermission } from '../lib/notify';
 
@@ -31,6 +32,7 @@ function Section({ title, desc, children }: { title: string; desc?: string; chil
 export default function SettingsPage() {
   const { status } = useProvider();
   const { intervalMs, setIntervalMs } = useAlerts();
+  const { required: authRequired, logout } = useAuth();
   const { toast } = useToast();
   const [providerOpen, setProviderOpen] = useState(false);
 
@@ -224,6 +226,14 @@ export default function SettingsPage() {
       <Section title="Data" desc="Export your trades, take a full database backup, or restore from a previous export.">
         <DataTools onImported={() => toast('Import complete', { type: 'success' })} />
       </Section>
+
+      {authRequired && (
+        <Section title="Account" desc="This app is password-protected. Sign out to end this session on this browser.">
+          <button className="btn-ghost" onClick={logout}>
+            Sign out
+          </button>
+        </Section>
+      )}
 
       <p className="text-xs text-slate-500">
         Looking for how the scores and rules work?{' '}
