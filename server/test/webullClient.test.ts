@@ -1,0 +1,50 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { WebullClient, WebullError } from '../src/providers/webull/client';
+
+const client = new WebullClient({ appKey: 'APPKEY123', appSecret: 'SECRET456', region: 'us' });
+
+afterEach(() => vi.restoreAllMocks());
+
+function mockFetch(status: number, body: unknown) {
+  return vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => JSON.stringify(body),
+  } as Response);
+}
+
+describe('WebullClient', () => {
+  it('GETs market data from the quotes host with signed headers', async () => {
+    const f = mockFetch(200, { data: [{ symbol: 'AAPL' }] });
+    const out = await client.get<{ data: unknown[] }>('/market-data/snapshot', { symbols: 'AAPL' });
+    expect(out.data).toHaveLength(1);
+
+    const [url, init] = f.mock.calls[0];
+    expect(String(url)).toBe('https://usquotes-api.webullfintech.com/market-data/snapshot?symbols=AAPL');
+    expect(init?.method).toBe('GET');
+    const headers = init?.headers as Record<string, string>;
+    expect(headers['x-app-key']).toBe('APPKEY123');
+    expect(headers['x-signature']).toBeTruthy();
+    expect(headers['x-signature-algorithm']).toBe('HMAC-SHA1');
+    expect(headers['x-version']).toBe('v1');
+  });
+
+  it('POSTs to the trade host with a JSON body', async () => {
+    const f = mockFetch(200, { ok: true });
+    await client.post('/account/positions', { account_id: 'X1' });
+    const [url, init] = f.mock.calls[0];
+    expect(String(url)).toBe('https://api.webull.com/account/positions');
+    expect(init?.method).toBe('POST');
+    expect(init?.body).toBe(JSON.stringify({ account_id: 'X1' }));
+  });
+
+  it('throws a WebullError carrying the API code/message on non-2xx', async () => {
+    mockFetch(401, { code: 'AUTH_FAILED', msg: 'invalid signature' });
+    await expect(client.get('/market-data/snapshot', { symbols: 'AAPL' })).rejects.toMatchObject({
+      status: 401,
+      code: 'AUTH_FAILED',
+      message: 'invalid signature',
+    });
+    await expect(client.get('/x', {})).rejects.toBeInstanceOf(WebullError);
+  });
+});
