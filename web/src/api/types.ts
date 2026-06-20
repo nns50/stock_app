@@ -597,6 +597,7 @@ export interface WebullStatus {
 
 export interface WebullProbeResult {
   ok: boolean;
+  url?: string;
   status?: number;
   code?: string;
   data?: unknown;

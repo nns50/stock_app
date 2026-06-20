@@ -82,6 +82,9 @@ export const config = {
     appKey: process.env.WEBULL_APP_KEY || '',
     appSecret: process.env.WEBULL_APP_SECRET || '',
     region: (process.env.WEBULL_REGION || 'us').toLowerCase(),
+    /** Host overrides (the bundled SDK's defaults can be stale per region). */
+    apiHost: process.env.WEBULL_API_HOST || '',
+    quotesHost: process.env.WEBULL_QUOTES_HOST || '',
   },
 };
 

@@ -3,9 +3,14 @@ import { normalizeRegion, webullHost, WebullRegion } from './hosts';
 
 // ---------------------------------------------------------------------------
 // Thin signed HTTP client for the Webull OpenAPI. Handles host resolution, the
-// HMAC signing headers, JSON encode/decode, and error surfacing. Returns raw
-// parsed JSON — mapping to the app's domain types lives in the provider. No
-// dependencies (Node global fetch).
+// HMAC signing headers, JSON encode/decode, and error surfacing. The low-level
+// `call()` returns the resolved URL + status + raw body (never throws) so the
+// connection probe can show exactly what was hit; `get()/post()` wrap it and
+// throw a WebullError on non-2xx. No dependencies (Node global fetch).
+//
+// Hosts default to the SDK's endpoints.json, but `apiHost`/`quotesHost` can
+// override them — the bundled SDK is from 2022 and the US trade/account host
+// has since diverged, so overrides let us point at the right base per the docs.
 // ---------------------------------------------------------------------------
 
 export class WebullError extends Error {
@@ -13,6 +18,7 @@ export class WebullError extends Error {
     readonly status: number,
     message: string,
     readonly code?: string,
+    readonly url?: string,
   ) {
     super(message);
     this.name = 'WebullError';
@@ -23,12 +29,22 @@ export interface WebullClientConfig {
   appKey: string;
   appSecret: string;
   region: WebullRegion;
+  /** Optional host overrides (else the region defaults are used). */
+  apiHost?: string;
+  quotesHost?: string;
   /** API version header (x-version); Webull endpoints are v1. */
   version?: string;
   timeoutMs?: number;
 }
 
 type Surface = 'market' | 'trade';
+
+export interface CallResult {
+  url: string;
+  status: number;
+  ok: boolean;
+  data: unknown;
+}
 
 export class WebullClient {
   private readonly version: string;
@@ -39,62 +55,76 @@ export class WebullClient {
     this.timeoutMs = cfg.timeoutMs ?? 10000;
   }
 
-  static fromEnv(env: { appKey: string; appSecret: string; region?: string }): WebullClient {
+  static fromEnv(env: {
+    appKey: string;
+    appSecret: string;
+    region?: string;
+    apiHost?: string;
+    quotesHost?: string;
+  }): WebullClient {
     return new WebullClient({
       appKey: env.appKey,
       appSecret: env.appSecret,
       region: normalizeRegion(env.region),
+      apiHost: env.apiHost || undefined,
+      quotesHost: env.quotesHost || undefined,
     });
   }
 
-  get<T>(path: string, query: Record<string, string> = {}, surface: Surface = 'market'): Promise<T> {
-    return this.request<T>('GET', path, surface, query, undefined);
+  private host(surface: Surface): string {
+    if (surface === 'market' && this.cfg.quotesHost) return this.cfg.quotesHost;
+    if (surface === 'trade' && this.cfg.apiHost) return this.cfg.apiHost;
+    return webullHost(this.cfg.region, surface);
   }
 
-  post<T>(path: string, body: unknown, surface: Surface = 'trade'): Promise<T> {
-    return this.request<T>('POST', path, surface, {}, body);
+  async get<T>(path: string, query: Record<string, string> = {}, surface: Surface = 'market'): Promise<T> {
+    return this.unwrap<T>(await this.call('GET', path, { query, surface }));
   }
 
-  private async request<T>(
+  async post<T>(path: string, body: unknown, surface: Surface = 'trade'): Promise<T> {
+    return this.unwrap<T>(await this.call('POST', path, { body, surface }));
+  }
+
+  private unwrap<T>(r: CallResult): T {
+    if (!r.ok) {
+      const j = r.data as { code?: string; msg?: string; message?: string } | null;
+      throw new WebullError(r.status, j?.msg || j?.message || `Webull request failed (${r.status})`, j?.code, r.url);
+    }
+    return r.data as T;
+  }
+
+  /** Low-level request that never throws — returns the URL, status and parsed body. */
+  async call(
     method: 'GET' | 'POST',
     path: string,
-    surface: Surface,
-    query: Record<string, string>,
-    body: unknown,
-  ): Promise<T> {
-    const host = webullHost(this.cfg.region, surface);
+    opts: { query?: Record<string, string>; body?: unknown; surface?: Surface } = {},
+  ): Promise<CallResult> {
+    const surface = opts.surface ?? 'market';
+    const host = this.host(surface);
+    const query = opts.query ?? {};
+    const qs = new URLSearchParams(query).toString();
+    const url = `https://${host}${path}${method === 'GET' && qs ? `?${qs}` : ''}`;
+
     const signed = signRequest({
       host,
       path,
       query: method === 'GET' ? query : undefined,
-      body: method === 'POST' ? body : undefined,
+      body: method === 'POST' ? opts.body : undefined,
       appKey: this.cfg.appKey,
       appSecret: this.cfg.appSecret,
     });
-    const qs = new URLSearchParams(query).toString();
-    const url = `https://${host}${path}${qs ? `?${qs}` : ''}`;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const res = await fetch(url, {
         method,
-        headers: {
-          ...signed,
-          'x-version': this.version,
-          'content-type': 'application/json',
-        },
-        body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
+        headers: { ...signed, 'x-version': this.version, 'content-type': 'application/json' },
+        body: method === 'POST' ? JSON.stringify(opts.body ?? {}) : undefined,
         signal: controller.signal,
       });
       const text = await res.text();
-      const json = text ? safeParse(text) : {};
-      if (!res.ok) {
-        const code = (json as { code?: string })?.code;
-        const msg = (json as { msg?: string; message?: string })?.msg ?? (json as { message?: string })?.message;
-        throw new WebullError(res.status, msg || `Webull request failed (${res.status})`, code);
-      }
-      return json as T;
+      return { url, status: res.status, ok: res.ok, data: text ? safeParse(text) : {} };
     } finally {
       clearTimeout(timer);
     }
