@@ -223,6 +223,8 @@ export default function SettingsPage() {
 
       <ServerWatchSection />
 
+      <WebullSection />
+
       <Section title="Data" desc="Export your trades, take a full database backup, or restore from a previous export.">
         <DataTools onImported={() => toast('Import complete', { type: 'success' })} />
       </Section>
@@ -366,6 +368,95 @@ function ServerWatchSection() {
           <button className="btn-ghost text-sm" onClick={sendTest} disabled={testing || !configured}>
             {testing ? 'Sending…' : 'Send test notification'}
           </button>
+        </div>
+      )}
+    </Section>
+  );
+}
+
+/**
+ * Webull integration connectivity. Shows whether server-side credentials are
+ * configured and runs a read-only probe to validate the keys live and reveal the
+ * raw response shape (used while the data mappers are being built).
+ */
+function WebullSection() {
+  const status = useAsync(() => client.webullStatus(), []);
+  const [kind, setKind] = useState<'account-list' | 'snapshot'>('account-list');
+  const [symbol, setSymbol] = useState('AAPL');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; error?: string; status?: number; data?: unknown } | null>(null);
+
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      setResult(await client.webullProbe(kind, kind === 'snapshot' ? symbol : undefined));
+    } catch (e) {
+      setResult({ ok: false, error: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Section
+      title="Webull (beta)"
+      desc="Connect Webull's OpenAPI for stock market data and your account. Credentials are server-side (WEBULL_APP_KEY / WEBULL_APP_SECRET). Options market data isn't offered by Webull — those stay on your current provider."
+    >
+      {status.loading ? (
+        <Spinner />
+      ) : (
+        <div className="space-y-3">
+          <div className="text-sm">
+            {status.data?.configured ? (
+              <span className="text-bull">Credentials configured</span>
+            ) : (
+              <span className="text-slate-400">
+                Not configured — set <code className="text-slate-300">WEBULL_APP_KEY</code> /{' '}
+                <code className="text-slate-300">WEBULL_APP_SECRET</code> server-side.
+              </span>
+            )}
+            <span className="text-slate-500"> · region {status.data?.region ?? '—'}</span>
+          </div>
+
+          <div className="flex flex-wrap items-end gap-2">
+            <Field label="Test call">
+              <select className="input max-w-[200px]" value={kind} onChange={(e) => setKind(e.target.value as never)}>
+                <option value="account-list">Account list</option>
+                <option value="snapshot">Stock snapshot</option>
+              </select>
+            </Field>
+            {kind === 'snapshot' && (
+              <Field label="Symbol">
+                <input
+                  className="input max-w-[120px]"
+                  value={symbol}
+                  onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+                />
+              </Field>
+            )}
+            <button className="btn-primary" onClick={run} disabled={busy || !status.data?.configured}>
+              {busy ? 'Testing…' : 'Test connection'}
+            </button>
+          </div>
+
+          {result && (
+            <div className="text-sm">
+              {result.ok ? (
+                <span className="text-bull">✓ Connected — response below.</span>
+              ) : (
+                <span className="text-bear">
+                  ✕ {result.error ?? 'failed'}
+                  {result.status ? ` (HTTP ${result.status})` : ''}
+                </span>
+              )}
+              {result.data !== undefined && (
+                <pre className="mt-2 max-h-64 overflow-auto rounded border border-ink-600 bg-ink-900 p-2 text-[11px] text-slate-300">
+                  {JSON.stringify(result.data, null, 2)}
+                </pre>
+              )}
+            </div>
+          )}
         </div>
       )}
     </Section>

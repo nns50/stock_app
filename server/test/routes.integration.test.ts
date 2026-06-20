@@ -198,6 +198,24 @@ describe('alerts routes (integration)', () => {
   });
 });
 
+describe('webull connectivity (integration)', () => {
+  it('reports not-configured and probes safely without credentials', async () => {
+    // No WEBULL_APP_KEY/SECRET in the test env.
+    const status = (await getJson('/api/webull/status')) as { configured: boolean; region: string };
+    expect(status).toEqual({ configured: false, region: 'us' });
+
+    const res = await post('/api/webull/probe', { kind: 'snapshot', symbol: 'AAPL' });
+    expect(res.status).toBe(200);
+    const out = (await res.json()) as { ok: boolean; error?: string };
+    expect(out.ok).toBe(false); // guarded — never hits the network when unconfigured
+    expect(out.error).toMatch(/not configured/i);
+  });
+
+  it('rejects an unknown probe kind with 400', async () => {
+    expect((await post('/api/webull/probe', { kind: 'place-order' })).status).toBe(400);
+  });
+});
+
 describe('auth gate (integration)', () => {
   afterEach(() => {
     config.auth.password = '';

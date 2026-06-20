@@ -590,6 +590,19 @@ export interface AuthStatus {
   authenticated: boolean;
 }
 
+export interface WebullStatus {
+  configured: boolean;
+  region: string;
+}
+
+export interface WebullProbeResult {
+  ok: boolean;
+  status?: number;
+  code?: string;
+  data?: unknown;
+  error?: string;
+}
+
 export interface MfaStatus {
   /** Can two-factor be used (a server password is set)? */
   available: boolean;
