@@ -48,6 +48,17 @@ describe('webull account probe', () => {
     expect(url).toContain('account_id=ACC1');
   });
 
+  it('lists app quote subscriptions (no account id needed)', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200, text: async () => '[]' } as Response);
+    const r = await webullProbe('subscriptions');
+    expect(r.ok).toBe(true);
+    const url = String(fetchSpy.mock.calls[0][0]);
+    expect(url).toContain('api.webull.com/app/subscriptions/list');
+  });
+
   it('surfaces a Webull error cleanly (no throw)', async () => {
     Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue({
@@ -58,5 +69,21 @@ describe('webull account probe', () => {
     const r = await webullProbe('snapshot');
     expect(r).toMatchObject({ ok: false, status: 403, code: 'NO_PERMISSION' });
     expect(r.error).toMatch(/not subscribed/i);
+  });
+
+  it('surfaces the live snapshot 401 shape (error_code + message)', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () =>
+        JSON.stringify({
+          error_code: 'Unauthorized',
+          message: 'Insufficient permission, please subscribe to stock quotes.',
+        }),
+    } as Response);
+    const r = await webullProbe('snapshot');
+    expect(r).toMatchObject({ ok: false, status: 401, code: 'Unauthorized' });
+    expect(r.error).toMatch(/insufficient permission/i);
   });
 });

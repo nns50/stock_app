@@ -29,7 +29,7 @@ function client(): WebullClient {
   });
 }
 
-export type ProbeKind = 'account-list' | 'snapshot' | 'positions' | 'balance';
+export type ProbeKind = 'account-list' | 'snapshot' | 'positions' | 'balance' | 'subscriptions';
 
 export interface ProbeResult {
   ok: boolean;
@@ -56,6 +56,12 @@ function probeCall(kind: ProbeKind, opts: { symbol?: string; accountId?: string 
         query: { account_id: opts.accountId!, total_asset_currency: 'USD' },
         surface: 'trade',
       });
+    case 'subscriptions':
+      // What market-data/quote subscriptions does Webull's OpenAPI actually see
+      // for this app? The authoritative check for "I subscribed but still get a
+      // 401" — an OpenAPI quote entitlement won't show here if only the mobile
+      // app / desktop (QT) plan was purchased, or if it hasn't activated yet.
+      return c.call('GET', '/app/subscriptions/list', { surface: 'trade' });
     default:
       return c.call('GET', '/openapi/account/list', { surface: 'trade' });
   }
@@ -75,12 +81,12 @@ export async function webullProbe(
   try {
     const r = await probeCall(kind, opts);
     if (r.ok) return { ok: true, url: r.url, status: r.status, data: r.data };
-    const j = r.data as { code?: string; msg?: string; message?: string } | null;
+    const j = r.data as { code?: string; error_code?: string; msg?: string; message?: string } | null;
     return {
       ok: false,
       url: r.url,
       status: r.status,
-      code: j?.code,
+      code: j?.code || j?.error_code,
       error: j?.msg || j?.message || `Webull request failed (${r.status})`,
       data: r.data,
     };

@@ -381,7 +381,9 @@ function ServerWatchSection() {
  */
 function WebullSection() {
   const status = useAsync(() => client.webullStatus(), []);
-  const [kind, setKind] = useState<'account-list' | 'snapshot' | 'positions' | 'balance'>('account-list');
+  const [kind, setKind] = useState<'account-list' | 'snapshot' | 'positions' | 'balance' | 'subscriptions'>(
+    'account-list',
+  );
   const [symbol, setSymbol] = useState('AAPL');
   const [accountId, setAccountId] = useState('');
   const [busy, setBusy] = useState(false);
@@ -439,6 +441,7 @@ function WebullSection() {
                 <option value="snapshot">Stock snapshot</option>
                 <option value="positions">Positions</option>
                 <option value="balance">Balance</option>
+                <option value="subscriptions">Quote subscriptions</option>
               </select>
             </Field>
             {kind === 'snapshot' && (
@@ -464,6 +467,14 @@ function WebullSection() {
               {busy ? 'Testing…' : 'Test connection'}
             </button>
           </div>
+          {kind === 'subscriptions' && (
+            <p className="text-[11px] text-slate-500">
+              Lists the market-data subscriptions Webull's OpenAPI sees for this app. If a stock snapshot returns{' '}
+              <em>“Insufficient permission, please subscribe to stock quotes”</em> but this list is empty, the plan you
+              bought isn't an OpenAPI quote subscription (mobile-app / desktop QT plans don't count) or hasn't activated
+              yet.
+            </p>
+          )}
 
           {result && (
             <div className="text-sm">
