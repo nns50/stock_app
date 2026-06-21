@@ -8,15 +8,19 @@ afterEach(() => vi.restoreAllMocks());
 
 const client = () => WebullClient.fromEnv({ appKey: 'k', appSecret: 's', region: 'us' });
 
-// Minimal auxiliary provider (stands in for Yahoo) with spies on the delegated
-// option/fundamentals methods.
+// Minimal auxiliary provider (stands in for Yahoo). Quote/candle methods return
+// a marker value (last 9.99) so fallbacks are observable; option/fundamentals
+// are spies for the delegation tests.
 function fakeAux(): MarketDataProvider {
   return {
     name: 'aux',
     synthetic: false,
     capabilities: { quotes: true, candles: true, options: true, fundamentals: true },
-    getQuote: vi.fn(),
-    getCandles: vi.fn(),
+    getQuote: vi.fn(async (s: string) => ({ symbol: s.toUpperCase(), last: 9.99, timestamp: 1 })),
+    getQuotes: vi.fn(async (syms: string[]) =>
+      syms.map((s) => ({ symbol: s.toUpperCase(), last: 9.99, timestamp: 1 })),
+    ),
+    getCandles: vi.fn(async () => [{ time: 1, open: 9, high: 9, low: 9, close: 9, volume: 9 }]),
     getOptionsExpirations: vi.fn(async () => ['2026-07-17']),
     getOptionsChain: vi.fn(
       async () => ({ underlying: 'AAPL', expiration: '2026-07-17', calls: [], puts: [] }) as OptionsChain,
@@ -134,8 +138,40 @@ describe('WebullProvider', () => {
       { error_code: 'Unauthorized', message: 'Insufficient permission, please subscribe to stock quotes.' },
       401,
     );
-    const p = new WebullProvider(client(), fakeAux());
+    const aux = fakeAux();
+    const p = new WebullProvider(client(), aux);
     await expect(p.getQuote('AAPL')).rejects.toMatchObject({ status: 401 });
+    // An auth failure must NOT be masked by falling back to the aux provider.
+    expect(aux.getQuotes).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the aux provider for candles Webull rejects (BRK.B → 417)', async () => {
+    mockFetch({ error_code: 'INVALID_SYMBOL', message: 'The symbol does not exist in the category.' }, 417);
+    const aux = fakeAux();
+    const p = new WebullProvider(client(), aux);
+    const candles = await p.getCandles('BRK.B', 'daily');
+    expect(aux.getCandles).toHaveBeenCalledWith('BRK.B', 'daily', undefined);
+    expect(candles).toHaveLength(1); // served by aux
+  });
+
+  it('does NOT fall back to the aux provider for candles on an auth error', async () => {
+    mockFetch({ message: 'Insufficient permission, please subscribe to stock quotes.' }, 401);
+    const aux = fakeAux();
+    const p = new WebullProvider(client(), aux);
+    await expect(p.getCandles('AAPL', 'daily')).rejects.toMatchObject({ status: 401 });
+    expect(aux.getCandles).not.toHaveBeenCalled();
+  });
+
+  it('fills Webull-missing symbols from the aux provider (getQuotes)', async () => {
+    // Webull returns AAPL but omits BRK.B; the aux provider supplies it.
+    mockFetch([{ symbol: 'AAPL', price: '298.01' }]);
+    const aux = fakeAux();
+    const p = new WebullProvider(client(), aux);
+    const qs = await p.getQuotes(['AAPL', 'BRK.B']);
+    const bySym = Object.fromEntries(qs.map((q) => [q.symbol, q.last]));
+    expect(bySym['AAPL']).toBe(298.01); // from Webull
+    expect(bySym['BRK.B']).toBe(9.99); // from aux
+    expect(aux.getQuotes).toHaveBeenCalledWith(['BRK.B']);
   });
 
   it('delegates option chains and fundamentals to the auxiliary provider', async () => {

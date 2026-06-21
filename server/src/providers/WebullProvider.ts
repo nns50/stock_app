@@ -45,6 +45,20 @@ function asArray(resp: unknown): Record<string, unknown>[] {
   return [];
 }
 
+/** Auth/entitlement failure — must surface (don't silently mask with the aux
+ *  provider), since it usually means the OpenAPI quote subscription is inactive. */
+function isAuthError(err: unknown): boolean {
+  return err instanceof ProviderError && (err.status === 401 || err.status === 403);
+}
+
+/** A symbol Webull's feed doesn't carry (e.g. class shares like BRK.B → 417
+ *  INVALID_SYMBOL). Safe to fall back to the aux provider, which may have it. */
+function isSymbolError(err: unknown): boolean {
+  if (!(err instanceof ProviderError)) return false;
+  if (err.status === 404 || err.status === 417) return true;
+  return /does not exist|invalid.?symbol|not found/i.test(err.message);
+}
+
 /**
  * Parse a Webull time field to epoch ms. Webull mixes formats across endpoints:
  * bars return an ISO-8601 string ("2026-06-18T19:59:00.000+0000"), while other
@@ -90,8 +104,10 @@ export class WebullProvider implements MarketDataProvider {
     if (!r.ok) {
       const j = (r.data ?? {}) as { msg?: string; message?: string; error_code?: string };
       const msg = j.msg || j.message || `Webull ${path} failed (${r.status})`;
-      // 401 here almost always means the OpenAPI quote subscription isn't active.
-      throw new ProviderError(msg, r.status === 401 || r.status === 403 ? r.status : 502);
+      // Preserve the real 4xx status (e.g. 401 = no quote subscription, 417 =
+      // INVALID_SYMBOL) so callers can decide whether to fall back to the aux
+      // provider; collapse 5xx to a generic 502.
+      throw new ProviderError(msg, r.status >= 400 && r.status < 500 ? r.status : 502);
     }
     return r.data;
   }
@@ -124,20 +140,36 @@ export class WebullProvider implements MarketDataProvider {
 
   async getQuotes(symbols: string[]): Promise<Quote[]> {
     if (symbols.length === 0) return [];
-    const upper = symbols.map((s) => s.toUpperCase());
-    const out: Quote[] = [];
+    const upper = [...new Set(symbols.map((s) => s.toUpperCase()))];
+    const got = new Map<string, Quote>();
     // Webull snapshot accepts at most 100 symbols per call — chunk larger scans.
     for (let i = 0; i < upper.length; i += 100) {
-      const data = await this.marketGet('/openapi/market-data/stock/snapshot', {
-        symbols: upper.slice(i, i + 100).join(','),
-        category: 'US_STOCK',
-      });
-      for (const row of asArray(data)) {
-        const q = this.mapQuote(row);
-        if (q.symbol) out.push(q);
+      try {
+        const data = await this.marketGet('/openapi/market-data/stock/snapshot', {
+          symbols: upper.slice(i, i + 100).join(','),
+          category: 'US_STOCK',
+        });
+        for (const row of asArray(data)) {
+          const q = this.mapQuote(row);
+          if (q.symbol) got.set(q.symbol, q);
+        }
+      } catch (err) {
+        // A bad symbol can 417 the whole chunk; leave its symbols missing so
+        // they fall back to the aux provider below. Auth failures must surface.
+        if (isAuthError(err)) throw err;
       }
     }
-    return out;
+    // Symbols Webull doesn't carry (e.g. BRK.B) → resolve from the aux provider.
+    const missing = upper.filter((s) => !got.has(s));
+    if (missing.length) {
+      const auxQuotes = this.aux.getQuotes
+        ? await this.aux.getQuotes(missing)
+        : (await Promise.all(missing.map((s) => this.aux.getQuote(s).catch(() => null)))).filter(
+            (q): q is Quote => q !== null,
+          );
+      for (const q of auxQuotes) got.set(q.symbol.toUpperCase(), q);
+    }
+    return upper.map((s) => got.get(s)).filter((q): q is Quote => q !== undefined);
   }
 
   /** Pull the bar list out of Webull's response (array-of-instruments with a
@@ -153,12 +185,20 @@ export class WebullProvider implements MarketDataProvider {
 
   async getCandles(symbol: string, timeframe: Timeframe, query?: CandleQuery): Promise<Candle[]> {
     const limit = query?.limit ?? 120;
-    const resp = await this.marketGet('/openapi/market-data/stock/bars', {
-      symbol: symbol.toUpperCase(),
-      category: 'US_STOCK',
-      timespan: TIMESPAN[timeframe],
-      count: String(Math.min(Math.max(limit, 1), 1200)),
-    });
+    let resp: unknown;
+    try {
+      resp = await this.marketGet('/openapi/market-data/stock/bars', {
+        symbol: symbol.toUpperCase(),
+        category: 'US_STOCK',
+        timespan: TIMESPAN[timeframe],
+        count: String(Math.min(Math.max(limit, 1), 1200)),
+      });
+    } catch (err) {
+      // A symbol Webull doesn't carry (BRK.B → 417) falls back to the aux
+      // provider; auth/other errors propagate so they stay visible.
+      if (isSymbolError(err)) return this.aux.getCandles(symbol, timeframe, query);
+      throw err;
+    }
     const candles: Candle[] = this.extractBars(resp)
       .map((b) => ({
         time: parseTime(b.time ?? b.timestamp ?? b.trade_time) ?? 0,
