@@ -71,25 +71,52 @@ describe('WebullProvider', () => {
     expect(String(spy.mock.calls[0][0])).toContain('symbols=AAPL%2CMSFT');
   });
 
-  it('maps bars (nested array, epoch seconds) to sorted Candles', async () => {
+  it('maps bars from the live shape (flat array, ISO time string, newest-first)', async () => {
+    // Exact shape returned by /stock/bars: a bare array, ISO-8601 `time`, string OHLCV.
     mockFetch([
       {
+        tickerId: '913256135',
         symbol: 'AAPL',
-        bars: [
-          { timestamp: 1700000060, open: '2', high: '3', low: '1', close: '2.5', volume: '10' },
-          { timestamp: 1700000000, open: '1', high: '2', low: '0.5', close: '1.5', volume: '20' },
-        ],
+        time: '2026-06-18T19:59:00.000+0000',
+        open: '298.49',
+        high: '298.51',
+        low: '297.85',
+        close: '298.01',
+        volume: '24686259',
+        trading_session: 'RTH',
+      },
+      {
+        tickerId: '913256135',
+        symbol: 'AAPL',
+        time: '2026-06-18T19:58:00.000+0000',
+        open: '298.50',
+        high: '298.54',
+        low: '298.48',
+        close: '298.505',
+        volume: '358184',
+        trading_session: 'RTH',
       },
     ]);
     const p = new WebullProvider(client(), fakeAux());
-    const candles = await p.getCandles('AAPL', '1min');
+    const candles = await p.getCandles('AAPL', 'daily');
     expect(candles).toHaveLength(2);
-    expect(candles[0].time).toBe(1700000000000); // seconds -> ms, sorted ascending
-    expect(candles[0].close).toBe(1.5);
-    expect(candles[1].time).toBe(1700000060000);
+    // Sorted ascending despite the newest-first payload.
+    expect(candles[0].time).toBe(Date.parse('2026-06-18T19:58:00.000+0000'));
+    expect(candles[1].time).toBe(Date.parse('2026-06-18T19:59:00.000+0000'));
+    expect(candles[1].close).toBe(298.01);
     const url = String((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0]);
     expect(url).toContain('/openapi/market-data/stock/bars');
-    expect(url).toContain('timespan=M1');
+    expect(url).toContain('timespan=D');
+  });
+
+  it('also handles a nested bars array with epoch-seconds timestamps (defensive)', async () => {
+    mockFetch([
+      { symbol: 'AAPL', bars: [{ timestamp: 1700000000, open: '1', high: '2', low: '0.5', close: '1.5', volume: '20' }] },
+    ]);
+    const p = new WebullProvider(client(), fakeAux());
+    const candles = await p.getCandles('AAPL', '1min');
+    expect(candles).toHaveLength(1);
+    expect(candles[0].time).toBe(1700000000000); // seconds -> ms
   });
 
   it('surfaces a 401 quote-subscription error as a ProviderError', async () => {
