@@ -381,9 +381,9 @@ function ServerWatchSection() {
  */
 function WebullSection() {
   const status = useAsync(() => client.webullStatus(), []);
-  const [kind, setKind] = useState<'account-list' | 'snapshot' | 'bars' | 'positions' | 'balance' | 'subscriptions'>(
-    'account-list',
-  );
+  const [kind, setKind] = useState<
+    'account-list' | 'snapshot' | 'bars' | 'movers' | 'positions' | 'balance' | 'subscriptions'
+  >('account-list');
   const [symbol, setSymbol] = useState('AAPL');
   const [accountId, setAccountId] = useState('');
   const [busy, setBusy] = useState(false);
@@ -440,6 +440,7 @@ function WebullSection() {
                 <option value="account-list">Account list</option>
                 <option value="snapshot">Stock snapshot</option>
                 <option value="bars">Stock candles</option>
+                <option value="movers">Market movers</option>
                 <option value="positions">Positions</option>
                 <option value="balance">Balance</option>
                 <option value="subscriptions">Quote subscriptions</option>
