@@ -430,8 +430,8 @@ One home (⚙ or `⌘K → Settings`) for everything:
   app closed) and its interval, see whether a **webhook** is configured, and send a test.
 - **Webull (beta)** — shows whether Webull OpenAPI credentials are configured
   (`WEBULL_APP_KEY` / `WEBULL_APP_SECRET`, server-side) and runs a read-only **connection
-  test**: account list, stock snapshot, stock candles, positions, balance, or **quote
-  subscriptions**.
+  test**: account list, stock snapshot, stock candles, market movers, positions, balance,
+  or **quote subscriptions**.
   Webull's v2 OpenAPI provides stock **and option** market data plus your account (market
   data needs an active OpenAPI subscription). If a snapshot is refused with _“Insufficient
   permission, please subscribe to stock quotes”_, run the **quote subscriptions** check — it

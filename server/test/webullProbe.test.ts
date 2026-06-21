@@ -47,6 +47,18 @@ describe('webull account probe', () => {
     expect(url).toContain('timespan=M1');
   });
 
+  it('runs a movers probe against the gainers-losers screener', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200, text: async () => '[]' } as Response);
+    const r = await webullProbe('movers');
+    expect(r.ok).toBe(true);
+    const url = String(fetchSpy.mock.calls[0][0]);
+    expect(url).toContain('api.webull.com/openapi/market-data/screener/gainers-losers');
+    expect(url).toContain('direction=DESC');
+  });
+
   it('requires an account id for positions/balance, then queries assets', async () => {
     Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
     expect((await webullProbe('positions')).error).toMatch(/account/i); // guarded, no network

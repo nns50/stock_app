@@ -30,7 +30,7 @@ export function webullClient(): WebullClient {
   });
 }
 
-export type ProbeKind = 'account-list' | 'snapshot' | 'bars' | 'positions' | 'balance' | 'subscriptions';
+export type ProbeKind = 'account-list' | 'snapshot' | 'bars' | 'movers' | 'positions' | 'balance' | 'subscriptions';
 
 export interface ProbeResult {
   ok: boolean;
@@ -55,6 +55,19 @@ function probeCall(kind: ProbeKind, opts: { symbol?: string; accountId?: string 
       // (timestamps, OHLCV) before the candle mapper is written against it.
       return c.call('GET', '/openapi/market-data/stock/bars', {
         query: { symbol: (opts.symbol || 'AAPL').toUpperCase(), category: 'US_STOCK', timespan: 'M1', count: '5' },
+        surface: 'market',
+      });
+    case 'movers':
+      // Top daily gainers — confirms the screener/gainers-losers row shape
+      // before the Market Movers feature is built against it.
+      return c.call('GET', '/openapi/market-data/screener/gainers-losers', {
+        query: {
+          rank_type: 'DAY_1',
+          category: 'US_STOCK',
+          sort_by: 'CHANGE_RATIO',
+          direction: 'DESC',
+          page_size: '10',
+        },
         surface: 'market',
       });
     case 'positions':
