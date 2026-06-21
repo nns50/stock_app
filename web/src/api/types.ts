@@ -636,12 +636,16 @@ export interface WebullImportSummary {
   error?: string;
 }
 
+export type MoverList = 'gainers' | 'losers' | 'active' | 'unusual';
+export type MoverSession = 'regular' | 'premarket' | 'afterhours';
+
 export interface WebullMover {
   symbol: string;
   name?: string;
   price: number;
   change?: number;
   changePct?: number;
+  gapPct?: number;
   volume?: number;
   relativeVolume?: number;
   marketCap?: number;
@@ -649,7 +653,8 @@ export interface WebullMover {
 
 export interface WebullMoversResult {
   ok: boolean;
-  list: 'gainers' | 'losers' | 'active';
+  list: MoverList;
+  session: MoverSession;
   movers: WebullMover[];
   error?: string;
 }

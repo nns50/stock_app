@@ -52,14 +52,15 @@ webullRouter.post(
 // Market movers (gainers / losers / most-active) from Webull's server-side
 // screeners. Read-only; works whenever Webull keys are set.
 const moversQuery = z.object({
-  list: z.enum(['gainers', 'losers', 'active']).default('gainers'),
+  list: z.enum(['gainers', 'losers', 'active', 'unusual']).default('gainers'),
+  session: z.enum(['regular', 'premarket', 'afterhours']).default('regular'),
   limit: z.coerce.number().int().min(1).max(50).default(10),
 });
 
 webullRouter.get(
   '/movers',
   asyncHandler(async (req, res) => {
-    const { list, limit } = parseQuery(moversQuery, req);
-    res.json(await webullMovers(list, limit));
+    const { list, session, limit } = parseQuery(moversQuery, req);
+    res.json(await webullMovers(list, limit, session));
   }),
 );

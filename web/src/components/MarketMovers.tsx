@@ -4,32 +4,36 @@ import { TrendingUp } from 'lucide-react';
 import { client } from '../api/client';
 import { useAsync, useLocalStorage } from '../lib/hooks';
 import { cx, fmtCompact, fmtPct } from '../lib/format';
+import type { MoverList, MoverSession } from '../api/types';
 import { Card, Spinner } from './ui';
 
-type List = 'gainers' | 'losers' | 'active';
-const TABS: { key: List; label: string }[] = [
+const TABS: { key: MoverList; label: string }[] = [
   { key: 'gainers', label: 'Gainers' },
   { key: 'losers', label: 'Losers' },
   { key: 'active', label: 'Active' },
+  { key: 'unusual', label: 'Unusual vol' },
+];
+const SESSIONS: { key: MoverSession; label: string }[] = [
+  { key: 'regular', label: 'Reg' },
+  { key: 'premarket', label: 'Pre' },
+  { key: 'afterhours', label: 'AH' },
 ];
 
 const SHOW = 12; // rows shown after filtering
 
 /**
- * Dashboard panel of Webull's top market movers (gainers / losers / most-active)
- * — whole-market, distinct from the Screener's universe ranking. Renders nothing
- * when Webull isn't configured, since it's the only feature that needs it.
- *
- * Top %-gainers skew toward micro-cap/penny pumps, so optional min-price and
- * min-market-cap filters narrow to liquid names (nothing is excluded by
- * default). Filtering is client-side over a deeper fetch.
+ * Dashboard panel of Webull's top market movers — gainers / losers / most-active
+ * / unusual-volume, across the regular, pre-market, or after-hours session. The
+ * pre-market view is a gap scanner (change% = the gap). Whole-market, distinct
+ * from the Screener's universe ranking. Renders nothing when Webull isn't
+ * configured. Optional min-price / min-cap filters narrow to liquid names.
  */
 export function MarketMovers() {
-  const [list, setList] = useState<List>('gainers');
-  // Persisted, shared across tabs. 0 = off.
+  const [list, setList] = useState<MoverList>('gainers');
+  const [session, setSession] = useState<MoverSession>('regular');
   const [minPrice, setMinPrice] = useLocalStorage<number>('movers.minPrice', 0);
   const [minCapM, setMinCapM] = useLocalStorage<number>('movers.minCapM', 0); // millions
-  const movers = useAsync(() => client.webullMovers(list, 50), [list]);
+  const movers = useAsync(() => client.webullMovers(list, session, 50), [list, session]);
   const result = movers.data;
 
   if (result && !result.ok && /not configured/i.test(result.error ?? '')) return null;
@@ -39,7 +43,6 @@ export function MarketMovers() {
     .filter((m) => (minPrice <= 0 || m.price >= minPrice) && (minCap <= 0 || (m.marketCap ?? 0) >= minCap))
     .slice(0, SHOW);
   const filtersOn = minPrice > 0 || minCapM > 0;
-
   const numCls = 'input h-6 w-16 px-1.5 text-xs';
 
   return (
@@ -49,7 +52,7 @@ export function MarketMovers() {
           <TrendingUp className="h-4 w-4 text-slate-500" /> Market movers
           <span className="text-[10px] uppercase tracking-wide text-slate-500 font-normal">Webull</span>
         </h3>
-        <div className="flex gap-1">
+        <div className="flex flex-wrap items-center gap-1">
           {TABS.map((t) => (
             <button
               key={t.key}
@@ -60,6 +63,20 @@ export function MarketMovers() {
               )}
             >
               {t.label}
+            </button>
+          ))}
+          <span className="mx-1 h-4 w-px bg-ink-600" />
+          {SESSIONS.map((s) => (
+            <button
+              key={s.key}
+              onClick={() => setSession(s.key)}
+              title={`${s.label === 'Reg' ? 'Regular' : s.label === 'Pre' ? 'Pre-market' : 'After-hours'} session`}
+              className={cx(
+                'text-xs px-1.5 py-0.5 rounded transition-colors',
+                session === s.key ? 'bg-accent/20 text-accent' : 'text-slate-500 hover:text-slate-300',
+              )}
+            >
+              {s.label}
             </button>
           ))}
         </div>
@@ -121,6 +138,17 @@ export function MarketMovers() {
                 {m.name && <span className="ml-2 text-xs text-slate-500">{m.name}</span>}
               </Link>
               <div className="flex items-center gap-3 shrink-0 tabular-nums">
+                {m.relativeVolume != null && (
+                  <span
+                    className={cx(
+                      'text-[11px] w-12 text-right',
+                      m.relativeVolume >= 2 ? 'text-accent' : 'text-slate-500',
+                    )}
+                    title="10-day relative volume"
+                  >
+                    {m.relativeVolume.toFixed(1)}×
+                  </span>
+                )}
                 {m.marketCap != null && m.marketCap > 0 && (
                   <span className="text-[11px] text-slate-500 w-12 text-right">{fmtCompact(m.marketCap)}</span>
                 )}

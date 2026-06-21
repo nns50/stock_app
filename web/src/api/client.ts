@@ -31,6 +31,8 @@ import type {
   WebullPositionsPreview,
   WebullImportSummary,
   WebullMoversResult,
+  MoverList,
+  MoverSession,
   SymbolEvents,
   AlertSchedulerConfig,
   NotificationStatus,
@@ -100,8 +102,8 @@ export const client = {
     api<WebullPositionsPreview>('/webull/positions/preview', post({ accountId })),
   webullPositionsImport: (accountId: string) =>
     api<WebullImportSummary>('/webull/positions/import', post({ accountId })),
-  webullMovers: (list: 'gainers' | 'losers' | 'active' = 'gainers', limit = 10) =>
-    api<WebullMoversResult>(`/webull/movers?list=${list}&limit=${limit}`),
+  webullMovers: (list: MoverList = 'gainers', session: MoverSession = 'regular', limit = 10) =>
+    api<WebullMoversResult>(`/webull/movers?list=${list}&session=${session}&limit=${limit}`),
   events: (symbols: string[]) =>
     api<{ events: SymbolEvents[] }>(`/events?symbols=${encodeURIComponent(symbols.join(','))}`),
 
