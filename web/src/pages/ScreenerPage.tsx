@@ -89,6 +89,7 @@ export default function ScreenerPage() {
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [showFiltered, setShowFiltered] = useState(false);
+  const [showErrors, setShowErrors] = useState(false);
 
   const set = <K extends keyof ScreenerConfig>(k: K, v: ScreenerConfig[K]) =>
     setConfig((c) => ({ ...(c ?? (defaults.data as ScreenerConfig)), [k]: v }));
@@ -377,7 +378,14 @@ export default function ScreenerPage() {
                 {result.errors.length > 0 && (
                   <>
                     {' '}
-                    · <span className="text-bear">{result.errors.length} errors</span>
+                    ·{' '}
+                    <button
+                      className="text-bear underline decoration-dotted hover:opacity-80"
+                      onClick={() => setShowErrors((v) => !v)}
+                      title="Show which symbols failed and why"
+                    >
+                      {result.errors.length} errors
+                    </button>
                   </>
                 )}
               </>
@@ -403,6 +411,29 @@ export default function ScreenerPage() {
             </>
           }
         />
+
+        {result && showErrors && result.errors.length > 0 && (
+          <Card className="p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-sm font-medium text-bear">Skipped {result.errors.length} symbol(s)</h3>
+              <button className="text-xs text-slate-500 hover:text-slate-300" onClick={() => setShowErrors(false)}>
+                Hide
+              </button>
+            </div>
+            <p className="mb-2 text-[11px] text-slate-500">
+              These symbols couldn't be scored (no data, unsupported, or a provider error) and were left out of the
+              ranking. The rest scanned fine.
+            </p>
+            <ul className="space-y-1 text-xs">
+              {result.errors.map((e) => (
+                <li key={e.symbol} className="flex gap-2">
+                  <span className="font-mono font-medium text-slate-300">{e.symbol}</span>
+                  <span className="text-slate-500 break-all">{e.message}</span>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        )}
 
         {error && (
           <Card>
