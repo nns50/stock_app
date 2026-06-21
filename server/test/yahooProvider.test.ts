@@ -1,89 +1,102 @@
 import { describe, it, expect, vi } from 'vitest';
 
 // Mock the library so we test our mapping logic without any network.
-vi.mock('yahoo-finance2', () => ({
-  default: class FakeYahoo {
-    constructor(_opts?: unknown) {}
-    async quote(symbol: string | string[]) {
-      const one = (s: string) => ({
-        symbol: s,
-        regularMarketPrice: 100,
-        bid: 99.9,
-        ask: 100.1,
-        regularMarketOpen: 98,
-        regularMarketDayHigh: 101,
-        regularMarketDayLow: 97,
-        regularMarketPreviousClose: 99,
-        regularMarketChange: 1,
-        regularMarketChangePercent: 1.01,
-        regularMarketVolume: 1_000_000,
-        averageDailyVolume3Month: 900_000,
-        regularMarketTime: new Date('2026-06-11T16:00:00Z'),
-      });
-      return Array.isArray(symbol) ? symbol.map(one) : one(symbol);
-    }
-    async chart() {
-      return {
-        quotes: [
-          { date: new Date('2026-06-10T00:00:00Z'), open: 101, high: 103, low: 100, close: 102, volume: 1100 },
-          { date: new Date('2026-06-09T00:00:00Z'), open: 100, high: 102, low: 99, close: 101, volume: 1000 },
-          { date: new Date('2026-06-11T00:00:00Z'), open: null, close: null }, // filtered out
-        ],
-      };
-    }
-    async options(_symbol: string, opts?: { date?: Date }) {
-      if (!opts?.date) {
-        return { expirationDates: [new Date('2026-06-19T00:00:00Z'), new Date('2026-07-17T00:00:00Z')] };
+vi.mock('yahoo-finance2', () => {
+  // Simulate Yahoo: the dotted class-share form (BRK.B) returns no data; only
+  // the hyphen form (BRK-B) resolves. Lets us prove symbol normalization.
+  const reject = (s?: string) => {
+    if (s && /\.[A-Za-z]$/.test(s)) throw new Error('No data found, symbol may be delisted');
+  };
+  return {
+    default: class FakeYahoo {
+      constructor(_opts?: unknown) {}
+      async quote(symbol: string | string[]) {
+        const one = (s: string) => {
+          reject(s);
+          return {
+            symbol: s,
+            regularMarketPrice: 100,
+            bid: 99.9,
+            ask: 100.1,
+            regularMarketOpen: 98,
+            regularMarketDayHigh: 101,
+            regularMarketDayLow: 97,
+            regularMarketPreviousClose: 99,
+            regularMarketChange: 1,
+            regularMarketChangePercent: 1.01,
+            regularMarketVolume: 1_000_000,
+            averageDailyVolume3Month: 900_000,
+            regularMarketTime: new Date('2026-06-11T16:00:00Z'),
+          };
+        };
+        return Array.isArray(symbol) ? symbol.map(one) : one(symbol);
       }
-      return {
-        quote: { regularMarketPrice: 100 },
-        options: [
-          {
-            calls: [
-              {
-                contractSymbol: 'C1',
-                strike: 100,
-                bid: 4.9,
-                ask: 5.1,
-                lastPrice: 5.0,
-                volume: 500,
-                openInterest: 1000,
-                impliedVolatility: 0.3,
-              },
-            ],
-            puts: [
-              {
-                contractSymbol: 'P1',
-                strike: 100,
-                bid: 4.5,
-                ask: 4.7,
-                lastPrice: 4.6,
-                volume: 300,
-                openInterest: 800,
-                impliedVolatility: 0.32,
-              },
-            ],
+      async chart(symbol?: string) {
+        reject(symbol);
+        return {
+          quotes: [
+            { date: new Date('2026-06-10T00:00:00Z'), open: 101, high: 103, low: 100, close: 102, volume: 1100 },
+            { date: new Date('2026-06-09T00:00:00Z'), open: 100, high: 102, low: 99, close: 101, volume: 1000 },
+            { date: new Date('2026-06-11T00:00:00Z'), open: null, close: null }, // filtered out
+          ],
+        };
+      }
+      async options(symbol: string, opts?: { date?: Date }) {
+        reject(symbol);
+        if (!opts?.date) {
+          return { expirationDates: [new Date('2026-06-19T00:00:00Z'), new Date('2026-07-17T00:00:00Z')] };
+        }
+        return {
+          quote: { regularMarketPrice: 100 },
+          options: [
+            {
+              calls: [
+                {
+                  contractSymbol: 'C1',
+                  strike: 100,
+                  bid: 4.9,
+                  ask: 5.1,
+                  lastPrice: 5.0,
+                  volume: 500,
+                  openInterest: 1000,
+                  impliedVolatility: 0.3,
+                },
+              ],
+              puts: [
+                {
+                  contractSymbol: 'P1',
+                  strike: 100,
+                  bid: 4.5,
+                  ask: 4.7,
+                  lastPrice: 4.6,
+                  volume: 300,
+                  openInterest: 800,
+                  impliedVolatility: 0.32,
+                },
+              ],
+            },
+          ],
+        };
+      }
+      async quoteSummary(symbol?: string) {
+        reject(symbol);
+        return {
+          price: { longName: 'Test Co', shortName: 'TST', marketCap: 1e12 },
+          summaryDetail: {
+            trailingPE: 25,
+            dividendYield: 0.005,
+            beta: 1.1,
+            fiftyTwoWeekHigh: 120,
+            fiftyTwoWeekLow: 80,
+            averageVolume: 950_000,
           },
-        ],
-      };
-    }
-    async quoteSummary() {
-      return {
-        price: { longName: 'Test Co', shortName: 'TST', marketCap: 1e12 },
-        summaryDetail: {
-          trailingPE: 25,
-          dividendYield: 0.005,
-          beta: 1.1,
-          fiftyTwoWeekHigh: 120,
-          fiftyTwoWeekLow: 80,
-          averageVolume: 950_000,
-        },
-        defaultKeyStatistics: { trailingEps: 4 },
-        assetProfile: { sector: 'Tech', industry: 'Software' },
-      };
-    }
-  },
-}));
+          defaultKeyStatistics: { trailingEps: 4 },
+          assetProfile: { sector: 'Tech', industry: 'Software' },
+        };
+      }
+    },
+  };
+});
 
 import { YahooProvider } from '../src/providers/YahooProvider';
 
@@ -133,5 +146,22 @@ describe('YahooProvider mapping', () => {
     expect(f.peRatio).toBe(25);
     expect(f.sector).toBe('Tech');
     expect(f.high52).toBe(120);
+  });
+
+  it('normalizes class-share tickers to Yahoo hyphen form (BRK.B → BRK-B)', async () => {
+    // The mock rejects the dotted form, so these only resolve when normalized —
+    // and the canonical (dotted) symbol is preserved on the way out.
+    const q = await p.getQuote('BRK.B');
+    expect(q.symbol).toBe('BRK.B');
+    expect(q.last).toBe(100);
+
+    const c = await p.getCandles('BRK.B', 'daily', { limit: 5 });
+    expect(c.length).toBeGreaterThan(0);
+
+    const qs = await p.getQuotes(['BRK.B']);
+    expect(qs.map((x) => x.symbol)).toEqual(['BRK.B']);
+
+    expect(await p.getOptionsExpirations('BRK.B')).toHaveLength(2);
+    expect((await p.getFundamentals('BRK.B')).symbol).toBe('BRK.B');
   });
 });

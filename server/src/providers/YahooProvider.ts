@@ -40,6 +40,15 @@ function isoUTC(d: Date | number | string): string {
   return new Date(d).toISOString().slice(0, 10);
 }
 
+/**
+ * Yahoo uses a hyphen for US class shares (BRK.B → BRK-B); it returns "no data"
+ * for the dotted form. Convert only a trailing single-letter class suffix so we
+ * don't touch exchange suffixes like `.DE` or `.TO`.
+ */
+function toYahoo(symbol: string): string {
+  return symbol.replace(/\.([A-Za-z])$/, '-$1');
+}
+
 const INTERVAL: Record<Timeframe, string> = {
   '1min': '1m',
   '5min': '5m',
@@ -111,19 +120,25 @@ export class YahooProvider implements MarketDataProvider {
   }
 
   async getQuote(symbol: string): Promise<Quote> {
-    const q = await this.call('quote', () => this.yf.quote(symbol));
+    const q = await this.call('quote', () => this.yf.quote(toYahoo(symbol)));
     if (!q) throw new ProviderError(`No quote for ${symbol}`, 404);
-    return this.mapQuote(q);
+    // Return the symbol in the canonical form the caller asked for (e.g. BRK.B,
+    // not Yahoo's BRK-B) so quote caches keyed by symbol don't miss.
+    return { ...this.mapQuote(q), symbol: symbol.toUpperCase() };
   }
 
   async getQuotes(symbols: string[]): Promise<Quote[]> {
     if (symbols.length === 0) return [];
+    const reqByYahoo = new Map(symbols.map((s) => [toYahoo(s).toUpperCase(), s.toUpperCase()]));
     // Prefer the single batched call (one network round-trip), but never let a
     // batch issue break callers: fall back to resolving symbols individually.
     try {
-      const res = await this.yf.quote(symbols);
+      const res = await this.yf.quote(symbols.map(toYahoo));
       const arr = Array.isArray(res) ? res : [res];
-      const mapped = arr.filter(Boolean).map((q) => this.mapQuote(q));
+      const mapped = arr.filter(Boolean).map((q) => {
+        const m = this.mapQuote(q);
+        return { ...m, symbol: reqByYahoo.get(m.symbol.toUpperCase()) ?? m.symbol };
+      });
       if (mapped.length > 0) return mapped;
     } catch {
       // fall through to per-symbol resolution
@@ -148,7 +163,7 @@ export class YahooProvider implements MarketDataProvider {
     const start = query?.start ? new Date(`${query.start}T00:00:00Z`) : this.lookbackStart(timeframe, limit, end);
 
     const res = await this.call('chart', () =>
-      this.yf.chart(symbol, { period1: start, period2: end, interval: INTERVAL[timeframe] as any }),
+      this.yf.chart(toYahoo(symbol), { period1: start, period2: end, interval: INTERVAL[timeframe] as any }),
     );
     const quotes: any[] = (res as any)?.quotes ?? [];
     const candles: Candle[] = quotes
@@ -166,7 +181,7 @@ export class YahooProvider implements MarketDataProvider {
   }
 
   async getOptionsExpirations(symbol: string): Promise<string[]> {
-    const res = await this.call('options', () => this.yf.options(symbol));
+    const res = await this.call('options', () => this.yf.options(toYahoo(symbol)));
     const dates: any[] = (res as any)?.expirationDates ?? [];
     return dates.map((d) => isoUTC(d));
   }
@@ -218,7 +233,7 @@ export class YahooProvider implements MarketDataProvider {
 
   async getOptionsChain(symbol: string, expiration: string): Promise<OptionsChain> {
     const res = await this.call('options', () =>
-      this.yf.options(symbol, { date: new Date(`${expiration}T00:00:00Z`) }),
+      this.yf.options(toYahoo(symbol), { date: new Date(`${expiration}T00:00:00Z`) }),
     );
     const chain = (res as any)?.options?.[0] ?? { calls: [], puts: [] };
     const underlyingPrice = num((res as any)?.quote?.regularMarketPrice);
@@ -235,7 +250,9 @@ export class YahooProvider implements MarketDataProvider {
 
   async getFundamentals(symbol: string): Promise<Fundamentals> {
     const res = await this.call('quoteSummary', () =>
-      this.yf.quoteSummary(symbol, { modules: ['price', 'summaryDetail', 'defaultKeyStatistics', 'assetProfile'] }),
+      this.yf.quoteSummary(toYahoo(symbol), {
+        modules: ['price', 'summaryDetail', 'defaultKeyStatistics', 'assetProfile'],
+      }),
     );
     const price = (res as any)?.price ?? {};
     const sd = (res as any)?.summaryDetail ?? {};
