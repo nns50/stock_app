@@ -29,6 +29,8 @@ describe('webull movers', () => {
               name: 'Butterfly Network Inc',
               price: '8.90',
               close: '8.90',
+              open: '7.21',
+              pre_close: '5.71',
               change: '3.19',
               change_ratio: '0.5587',
               volume: '60480073',
@@ -47,16 +49,19 @@ describe('webull movers', () => {
       price: 8.9,
       change: 3.19,
       changePct: 55.87,
+      gapPct: 26.27, // (7.21/5.71 - 1) * 100
       relativeVolume: 4.6733,
       marketCap: 2328604063.4,
     });
+    expect(r.session).toBe('regular');
     const url = String(spy.mock.calls[0][0]);
     expect(url).toContain('/openapi/market-data/screener/gainers-losers');
     expect(url).toContain('direction=DESC');
+    expect(url).toContain('rank_type=DAY_1');
     expect(url).toContain('page_size=8');
   });
 
-  it('ranks losers ASC and uses the top-active endpoint for most-active', async () => {
+  it('ranks losers ASC, most-active by volume, unusual by relative volume', async () => {
     Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
     const spy = vi
       .spyOn(globalThis, 'fetch')
@@ -65,6 +70,20 @@ describe('webull movers', () => {
     expect(String(spy.mock.calls[0][0])).toContain('direction=ASC');
     await webullMovers('active');
     expect(String(spy.mock.calls[1][0])).toContain('/openapi/market-data/screener/top-active');
+    await webullMovers('unusual');
+    const u = String(spy.mock.calls[2][0]);
+    expect(u).toContain('/openapi/market-data/screener/top-active');
+    expect(u).toContain('sort_by=RELATIVE_VOLUME_10D');
+  });
+
+  it('maps the session to the Webull rank_type (pre-market gap scanner)', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200, text: async () => '{"data":[]}' } as Response);
+    const r = await webullMovers('gainers', 10, 'premarket');
+    expect(r.session).toBe('premarket');
+    expect(String(spy.mock.calls[0][0])).toContain('rank_type=PRE_MARKET');
   });
 
   it('surfaces a Webull error without throwing', async () => {

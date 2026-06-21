@@ -100,11 +100,13 @@ Your at-a-glance morning screen.
   score, gap %, relative volume, RSI, and a suggested ATR-based stop, links to the chart,
   and has a **+** to log a trade in that symbol (the form opens with it pre-filled). It's
   a transparent rule-based ranking — **not a buy signal**.
-- **Market movers** — top whole-market **gainers / losers / most-active** US stocks
-  (tabbed), each linking to its chart. Optional **min-price** and **min-market-cap**
-  filters narrow to liquid names (nothing's excluded by default — top %-gainers skew
-  toward penny stocks). Powered by Webull's server-side screeners, so it only appears
-  when Webull is configured (distinct from _Today's setups_, which ranks _your_ universe).
+- **Market movers** — top whole-market **gainers / losers / most-active / unusual-volume**
+  US stocks (tabbed), across the **Regular / Pre-market / After-hours** session — the
+  pre-market view is a **gap scanner** (the % column is the gap). Each row shows relative
+  volume (highlighted ≥ 2×), market cap, price, and % change, and links to its chart.
+  Optional **min-price** and **min-market-cap** filters narrow to liquid names (nothing's
+  excluded by default). Powered by Webull's server-side screeners, so it only appears when
+  Webull is configured (distinct from _Today's setups_, which ranks _your_ universe).
 - **Needs attention** panel — positions that hit their stop/target or option exit
   rules, plus any triggered symbol alerts, each linking to where you act.
 - **Watchlist** mini-view with last price and % change.
