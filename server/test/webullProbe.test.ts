@@ -34,6 +34,19 @@ describe('webull account probe', () => {
     expect(url).toContain('symbols=AAPL'); // upper-cased
   });
 
+  it('runs a bars probe (stock candles) for the given symbol', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200, text: async () => '[]' } as Response);
+    const r = await webullProbe('bars', { symbol: 'tsla' });
+    expect(r.ok).toBe(true);
+    const url = String(fetchSpy.mock.calls[0][0]);
+    expect(url).toContain('api.webull.com/openapi/market-data/stock/bars');
+    expect(url).toContain('symbol=TSLA'); // upper-cased
+    expect(url).toContain('timespan=M1');
+  });
+
   it('requires an account id for positions/balance, then queries assets', async () => {
     Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
     expect((await webullProbe('positions')).error).toMatch(/account/i); // guarded, no network

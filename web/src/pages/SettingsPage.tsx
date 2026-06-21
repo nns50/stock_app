@@ -381,7 +381,7 @@ function ServerWatchSection() {
  */
 function WebullSection() {
   const status = useAsync(() => client.webullStatus(), []);
-  const [kind, setKind] = useState<'account-list' | 'snapshot' | 'positions' | 'balance' | 'subscriptions'>(
+  const [kind, setKind] = useState<'account-list' | 'snapshot' | 'bars' | 'positions' | 'balance' | 'subscriptions'>(
     'account-list',
   );
   const [symbol, setSymbol] = useState('AAPL');
@@ -439,12 +439,13 @@ function WebullSection() {
               <select className="input max-w-[200px]" value={kind} onChange={(e) => setKind(e.target.value as never)}>
                 <option value="account-list">Account list</option>
                 <option value="snapshot">Stock snapshot</option>
+                <option value="bars">Stock candles</option>
                 <option value="positions">Positions</option>
                 <option value="balance">Balance</option>
                 <option value="subscriptions">Quote subscriptions</option>
               </select>
             </Field>
-            {kind === 'snapshot' && (
+            {(kind === 'snapshot' || kind === 'bars') && (
               <Field label="Symbol">
                 <input
                   className="input max-w-[120px]"

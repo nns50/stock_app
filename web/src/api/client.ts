@@ -89,7 +89,7 @@ export const client = {
   // --- webull (integration connectivity) ---
   webullStatus: () => api<WebullStatus>('/webull/status'),
   webullProbe: (
-    kind: 'account-list' | 'snapshot' | 'positions' | 'balance' | 'subscriptions',
+    kind: 'account-list' | 'snapshot' | 'bars' | 'positions' | 'balance' | 'subscriptions',
     opts?: { symbol?: string; accountId?: string },
   ) => api<WebullProbeResult>('/webull/probe', post({ kind, ...opts })),
 

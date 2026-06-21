@@ -29,7 +29,7 @@ function client(): WebullClient {
   });
 }
 
-export type ProbeKind = 'account-list' | 'snapshot' | 'positions' | 'balance' | 'subscriptions';
+export type ProbeKind = 'account-list' | 'snapshot' | 'bars' | 'positions' | 'balance' | 'subscriptions';
 
 export interface ProbeResult {
   ok: boolean;
@@ -47,6 +47,13 @@ function probeCall(kind: ProbeKind, opts: { symbol?: string; accountId?: string 
     case 'snapshot':
       return c.call('GET', '/openapi/market-data/stock/snapshot', {
         query: { symbols: (opts.symbol || 'AAPL').toUpperCase(), category: 'US_STOCK' },
+        surface: 'market',
+      });
+    case 'bars':
+      // A few 1-minute candles — just enough to confirm the bar field shape
+      // (timestamps, OHLCV) before the candle mapper is written against it.
+      return c.call('GET', '/openapi/market-data/stock/bars', {
+        query: { symbol: (opts.symbol || 'AAPL').toUpperCase(), category: 'US_STOCK', timespan: 'M1', count: '5' },
         surface: 'market',
       });
     case 'positions':
