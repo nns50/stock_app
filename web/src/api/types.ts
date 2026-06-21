@@ -654,6 +654,16 @@ export interface WebullMoversResult {
   error?: string;
 }
 
+export interface SymbolEvents {
+  symbol: string;
+  /** Next earnings date (YYYY-MM-DD), if known. */
+  earningsDate?: string;
+  /** True when only an estimated window is known. */
+  earningsEstimated?: boolean;
+  /** Ex-dividend date (YYYY-MM-DD), if known. */
+  exDividendDate?: string;
+}
+
 export interface MfaStatus {
   /** Can two-factor be used (a server password is set)? */
   available: boolean;

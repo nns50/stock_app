@@ -21,6 +21,8 @@ import { ExitModal, JournalEditModal } from '../components/PositionForms';
 import { OPEN_LOG_TRADE_EVENT, TRADE_LOGGED_EVENT } from '../components/GlobalLogTrade';
 import { RiskSizingModal } from '../components/RiskSizingModal';
 import { ExposurePanel } from '../components/ExposurePanel';
+import { EarningsBadge } from '../components/EarningsBadge';
+import type { SymbolEvents } from '../api/types';
 import { useToast } from '../components/ToastContext';
 import { useConfirm } from '../components/ConfirmContext';
 import type { Position, PositionWithPnl } from '../api/types';
@@ -64,6 +66,14 @@ export default function PositionsPage() {
     [statusFilter],
   );
   const { sorted: sortedPositions, sortKey, sortDir, onSort } = useSort(data.data?.positions ?? [], positionSortVal);
+
+  // Earnings/ex-div for the listed symbols, to flag positions with events approaching.
+  const symbolsKey = [...new Set((data.data?.positions ?? []).map((r) => r.position.symbol.toUpperCase()))].join(',');
+  const events = useAsync(
+    () => (symbolsKey ? client.events(symbolsKey.split(',')) : Promise.resolve({ events: [] })),
+    [symbolsKey],
+  );
+  const eventsBySym = new Map((events.data?.events ?? []).map((e) => [e.symbol.toUpperCase(), e]));
 
   const [sizerOpen, setSizerOpen] = useState(false);
   const [exitPos, setExitPos] = useState<Position | null>(null);
@@ -204,6 +214,7 @@ export default function PositionsPage() {
                 <PositionRow
                   key={row.position.id}
                   row={row}
+                  events={eventsBySym.get(row.position.symbol.toUpperCase())}
                   onExit={setExitPos}
                   onEdit={setEditPos}
                   onDelete={remove}
@@ -223,11 +234,13 @@ export default function PositionsPage() {
 
 function PositionRow({
   row,
+  events,
   onExit,
   onEdit,
   onDelete,
 }: {
   row: PositionWithPnl;
+  events?: SymbolEvents;
   onExit: (p: Position) => void;
   onEdit: (p: Position) => void;
   onDelete: (id: number) => void;
@@ -244,6 +257,11 @@ function PositionRow({
         {isOption && (
           <span className="ml-2 text-xs text-slate-500">
             {fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : 'P'} {p.expiration}
+          </span>
+        )}
+        {p.status === 'open' && events?.earningsDate && (
+          <span className="ml-2">
+            <EarningsBadge events={events} warnWithin={p.assetType === 'option' ? 10 : 7} />
           </span>
         )}
         {p.status === 'closed' && (
