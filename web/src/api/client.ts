@@ -28,6 +28,8 @@ import type {
   MfaStatus,
   WebullStatus,
   WebullProbeResult,
+  WebullPositionsPreview,
+  WebullImportSummary,
   AlertSchedulerConfig,
   NotificationStatus,
   NotificationTestResult,
@@ -92,6 +94,10 @@ export const client = {
     kind: 'account-list' | 'snapshot' | 'bars' | 'positions' | 'balance' | 'subscriptions',
     opts?: { symbol?: string; accountId?: string },
   ) => api<WebullProbeResult>('/webull/probe', post({ kind, ...opts })),
+  webullPositionsPreview: (accountId: string) =>
+    api<WebullPositionsPreview>('/webull/positions/preview', post({ accountId })),
+  webullPositionsImport: (accountId: string) =>
+    api<WebullImportSummary>('/webull/positions/import', post({ accountId })),
 
   // --- meta ---
   provider: () => api<ProviderStatus>('/provider'),

@@ -1,0 +1,170 @@
+import { MarketDataProvider, ProviderCapabilities, ProviderError } from './MarketDataProvider';
+import { Candle, CandleQuery, Fundamentals, OptionsChain, Quote, Timeframe } from './types';
+import { WebullClient } from './webull/client';
+
+// ---------------------------------------------------------------------------
+// Composite Webull provider.
+//
+// Webull's v2 OpenAPI is a licensed real-time feed for US *stocks* — it serves
+// quotes (snapshot) and candles (bars). It has NO option-chain enumeration
+// endpoint (only per-contract option data by OCC symbol) and no clean
+// fundamentals bundle, so those two capabilities delegate to an auxiliary
+// provider (`aux`, normally Yahoo). The result: real-time licensed stock data
+// from Webull, option chains + fundamentals from Yahoo — behind one provider.
+//
+// Response shapes (snapshot/bars) are mapped defensively: prices arrive as
+// strings, timestamps as epoch ms (occasionally seconds), and the payload may
+// be a bare array or wrapped in `{ data: [...] }`.
+// ---------------------------------------------------------------------------
+
+const TIMESPAN: Record<Timeframe, string> = {
+  '1min': 'M1',
+  '5min': 'M5',
+  '15min': 'M15',
+  daily: 'D',
+  weekly: 'W',
+};
+
+function num(v: unknown): number | undefined {
+  if (v === null || v === undefined || v === '') return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/** Webull responses are sometimes a bare array, sometimes `{ data: [...] }`. */
+function asArray(resp: unknown): Record<string, unknown>[] {
+  if (Array.isArray(resp)) return resp as Record<string, unknown>[];
+  if (resp && typeof resp === 'object') {
+    const data = (resp as { data?: unknown }).data;
+    if (Array.isArray(data)) return data as Record<string, unknown>[];
+  }
+  return [];
+}
+
+/** Normalize an epoch that may be in seconds or milliseconds to ms. */
+function toMs(t: number | undefined): number | undefined {
+  if (t === undefined) return undefined;
+  return t < 1e12 ? t * 1000 : t;
+}
+
+export class WebullProvider implements MarketDataProvider {
+  readonly name = 'webull';
+  readonly synthetic = false;
+  readonly capabilities: ProviderCapabilities;
+
+  constructor(
+    private readonly client: WebullClient,
+    /** Auxiliary provider (Yahoo) for option chains + fundamentals. */
+    private readonly aux: MarketDataProvider,
+  ) {
+    this.capabilities = {
+      quotes: true,
+      candles: true,
+      options: aux.capabilities.options,
+      fundamentals: aux.capabilities.fundamentals,
+    };
+  }
+
+  /** Prime the auxiliary provider (e.g. Yahoo's cookie/crumb) — Webull has no warmup cost. */
+  async warmup(): Promise<void> {
+    if (this.aux.warmup) await this.aux.warmup();
+  }
+
+  private async marketGet(path: string, query: Record<string, string>): Promise<unknown> {
+    const r = await this.client.call('GET', path, { query, surface: 'market' });
+    if (!r.ok) {
+      const j = (r.data ?? {}) as { msg?: string; message?: string; error_code?: string };
+      const msg = j.msg || j.message || `Webull ${path} failed (${r.status})`;
+      // 401 here almost always means the OpenAPI quote subscription isn't active.
+      throw new ProviderError(msg, r.status === 401 || r.status === 403 ? r.status : 502);
+    }
+    return r.data;
+  }
+
+  private mapQuote(row: Record<string, unknown>): Quote {
+    const changeRatio = num(row.change_ratio);
+    return {
+      symbol: String(row.symbol ?? '').toUpperCase(),
+      last: num(row.price) ?? num(row.close) ?? num(row.pre_close) ?? 0,
+      open: num(row.open),
+      high: num(row.high),
+      low: num(row.low),
+      prevClose: num(row.pre_close),
+      change: num(row.change),
+      // Webull's change_ratio is a fraction (0.0123 = 1.23%); the app wants percent.
+      changePct: changeRatio !== undefined ? round2(changeRatio * 100) : undefined,
+      volume: num(row.volume),
+      timestamp: toMs(num(row.last_trade_time) ?? num(row.trade_time)) ?? Date.now(),
+    };
+  }
+
+  async getQuote(symbol: string): Promise<Quote> {
+    const quotes = await this.getQuotes([symbol]);
+    const hit = quotes.find((q) => q.symbol === symbol.toUpperCase());
+    if (!hit) throw new ProviderError(`No Webull quote for ${symbol}`, 404);
+    return hit;
+  }
+
+  async getQuotes(symbols: string[]): Promise<Quote[]> {
+    if (symbols.length === 0) return [];
+    // Webull snapshot accepts up to 100 comma-separated symbols per call.
+    const data = await this.marketGet('/openapi/market-data/stock/snapshot', {
+      symbols: symbols.map((s) => s.toUpperCase()).join(','),
+      category: 'US_STOCK',
+    });
+    return asArray(data)
+      .map((row) => this.mapQuote(row))
+      .filter((q) => q.symbol);
+  }
+
+  /** Pull the bar list out of Webull's response (array-of-instruments with a
+   *  nested `bars` array, or a bare array of bars). */
+  private extractBars(resp: unknown): Record<string, unknown>[] {
+    const arr = asArray(resp);
+    if (arr.length === 0) return [];
+    if (Array.isArray((arr[0] as { bars?: unknown }).bars)) {
+      return arr.flatMap((x) => (x.bars as Record<string, unknown>[]) ?? []);
+    }
+    return arr;
+  }
+
+  async getCandles(symbol: string, timeframe: Timeframe, query?: CandleQuery): Promise<Candle[]> {
+    const limit = query?.limit ?? 120;
+    const resp = await this.marketGet('/openapi/market-data/stock/bars', {
+      symbol: symbol.toUpperCase(),
+      category: 'US_STOCK',
+      timespan: TIMESPAN[timeframe],
+      count: String(Math.min(Math.max(limit, 1), 1200)),
+    });
+    const candles: Candle[] = this.extractBars(resp)
+      .map((b) => ({
+        time: toMs(num(b.timestamp) ?? num(b.trade_time) ?? num(b.time)) ?? 0,
+        open: round2(num(b.open) ?? 0),
+        high: round2(num(b.high) ?? 0),
+        low: round2(num(b.low) ?? 0),
+        close: round2(num(b.close) ?? 0),
+        volume: num(b.volume) ?? 0,
+      }))
+      .filter((c) => c.time > 0);
+    candles.sort((a, b) => a.time - b.time);
+    return candles.slice(-limit);
+  }
+
+  // --- Delegated to the auxiliary provider (Webull can't enumerate chains) ---
+
+  getOptionsExpirations(symbol: string): Promise<string[]> {
+    return this.aux.getOptionsExpirations(symbol);
+  }
+
+  getOptionsChain(symbol: string, expiration: string): Promise<OptionsChain> {
+    return this.aux.getOptionsChain(symbol, expiration);
+  }
+
+  getFundamentals(symbol: string): Promise<Fundamentals> {
+    return this.aux.getFundamentals(symbol);
+  }
+}

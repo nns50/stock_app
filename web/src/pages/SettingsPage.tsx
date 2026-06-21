@@ -499,9 +499,136 @@ function WebullSection() {
               )}
             </div>
           )}
+
+          <WebullPositionsSync configured={!!status.data?.configured} />
         </div>
       )}
     </Section>
+  );
+}
+
+/** Preview-and-confirm sync of open Webull positions into the journal. */
+function WebullPositionsSync({ configured }: { configured: boolean }) {
+  const { toast } = useToast();
+  const [accountId, setAccountId] = useState('');
+  const [busy, setBusy] = useState<'preview' | 'import' | null>(null);
+  const [preview, setPreview] = useState<Awaited<ReturnType<typeof client.webullPositionsPreview>> | null>(null);
+  const [showRaw, setShowRaw] = useState(false);
+
+  const runPreview = async () => {
+    if (!accountId) return;
+    setBusy('preview');
+    setPreview(null);
+    try {
+      setPreview(await client.webullPositionsPreview(accountId));
+    } catch (e) {
+      setPreview({ ok: false, accountId, positions: [], unmapped: 0, error: (e as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runImport = async () => {
+    if (!accountId) return;
+    setBusy('import');
+    try {
+      const r = await client.webullPositionsImport(accountId);
+      if (r.ok) {
+        toast(`Imported ${r.imported} position${r.imported === 1 ? '' : 's'} · ${r.skipped} already in journal`, {
+          type: 'success',
+        });
+        setPreview(null);
+      } else {
+        toast(r.error || 'Import failed', { type: 'error' });
+      }
+    } catch (e) {
+      toast((e as Error).message || 'Import failed', { type: 'error' });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="border-t border-ink-700 pt-3 space-y-2">
+      <div className="text-sm font-medium">Sync positions → journal</div>
+      <p className="text-[11px] text-slate-500">
+        Preview your open Webull positions, then import the ones not already in the journal. Import only <em>adds</em>{' '}
+        open positions — it never edits or deletes existing entries. Imported positions are tagged{' '}
+        <code className="text-slate-400">webull</code>.
+      </p>
+      <div className="flex flex-wrap items-end gap-2">
+        <Field label="Account ID" hint="Copy an account_id from Account list">
+          <input
+            className="input max-w-[260px] font-mono text-xs"
+            value={accountId}
+            onChange={(e) => setAccountId(e.target.value.trim())}
+            placeholder="account_id"
+          />
+        </Field>
+        <button className="btn-ghost" onClick={runPreview} disabled={!configured || !accountId || busy !== null}>
+          {busy === 'preview' ? 'Loading…' : 'Preview'}
+        </button>
+        {preview?.ok && preview.positions.length > 0 && (
+          <button className="btn-primary" onClick={runImport} disabled={busy !== null}>
+            {busy === 'import' ? 'Importing…' : `Import ${preview.positions.length}`}
+          </button>
+        )}
+      </div>
+
+      {preview && !preview.ok && <div className="text-sm text-bear">✕ {preview.error ?? 'failed'}</div>}
+      {preview?.ok && (
+        <div className="text-sm space-y-2">
+          {preview.positions.length === 0 ? (
+            <span className="text-slate-400">
+              No open positions to import
+              {preview.unmapped ? ` (${preview.unmapped} row(s) couldn't be parsed)` : ''}.
+            </span>
+          ) : (
+            <>
+              <table className="w-full text-[11px]">
+                <thead className="text-slate-500">
+                  <tr className="text-left">
+                    <th className="pr-2">Symbol</th>
+                    <th className="pr-2">Type</th>
+                    <th className="pr-2">Side</th>
+                    <th className="pr-2">Qty</th>
+                    <th className="pr-2">Entry</th>
+                    <th>Contract</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.positions.map((p, i) => (
+                    <tr key={i} className="border-t border-ink-800">
+                      <td className="pr-2 font-medium">{p.symbol}</td>
+                      <td className="pr-2">{p.assetType}</td>
+                      <td className="pr-2">{p.side}</td>
+                      <td className="pr-2">{p.quantity}</td>
+                      <td className="pr-2">{p.entryPrice}</td>
+                      <td className="text-slate-400">
+                        {p.assetType === 'option' ? `${p.optionType} ${p.strike} ${p.expiration}` : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {preview.unmapped > 0 && (
+                <div className="text-[11px] text-amber-400">
+                  {preview.unmapped} row(s) couldn't be parsed — check the raw payload.
+                </div>
+              )}
+            </>
+          )}
+          <button className="text-[11px] text-slate-500 underline" onClick={() => setShowRaw((v) => !v)}>
+            {showRaw ? 'Hide' : 'Show'} raw payload
+          </button>
+          {showRaw && (
+            <pre className="max-h-64 overflow-auto rounded border border-ink-600 bg-ink-900 p-2 text-[11px] text-slate-300">
+              {JSON.stringify(preview.raw, null, 2)}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

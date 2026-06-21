@@ -18,7 +18,8 @@ export function webullStatus(): { configured: boolean; region: string; hasAccess
   };
 }
 
-function client(): WebullClient {
+/** Build a config-bound Webull client (shared by the probe and positions sync). */
+export function webullClient(): WebullClient {
   return WebullClient.fromEnv({
     appKey: config.webull.appKey,
     appSecret: config.webull.appSecret,
@@ -42,7 +43,7 @@ export interface ProbeResult {
 }
 
 function probeCall(kind: ProbeKind, opts: { symbol?: string; accountId?: string }) {
-  const c = client();
+  const c = webullClient();
   switch (kind) {
     case 'snapshot':
       return c.call('GET', '/openapi/market-data/stock/snapshot', {

@@ -122,8 +122,13 @@ For **free live data with no API key**, set `MARKET_DATA_PROVIDER=yahoo` (Yahoo
 Finance — covers stocks **and** options chains; Greeks computed locally). It's
 unofficial, so it's intended for personal use and may rate-limit or change. For
 Tradier, set `MARKET_DATA_PROVIDER=tradier` and `TRADIER_API_TOKEN` (note: Tradier
-requires a brokerage account / data subscription for real-time data). Restart
-after changing.
+requires a brokerage account / data subscription for real-time data). For
+**Webull**, set `MARKET_DATA_PROVIDER=webull` with `WEBULL_APP_KEY` /
+`WEBULL_APP_SECRET` — a **composite** provider that serves real-time US **stock**
+quotes + candles from Webull's licensed feed and delegates **option chains +
+fundamentals** to Yahoo (Webull's OpenAPI has no option-chain endpoint). Webull
+stock data needs an active **OpenAPI quote subscription** on your account.
+Restart after changing.
 
 Verify any provider with the **provider chip → "Run connection test"** in the UI,
 or the CLI: `npm run check:provider [SYMBOL]`.
@@ -159,9 +164,11 @@ Copy `.env.example` to `server/.env`. All keys are read **server-side only**.
 
 | Variable                | Default                            | Description                                                     |
 | ----------------------- | ---------------------------------- | --------------------------------------------------------------- |
-| `MARKET_DATA_PROVIDER`  | `mock`                             | `yahoo` (free, no key), `tradier`, or `mock`.                   |
+| `MARKET_DATA_PROVIDER`  | `mock`                             | `yahoo` (free, no key), `tradier`, `webull`, or `mock`.         |
 | `TRADIER_API_TOKEN`     | _(empty)_                          | Tradier access token (sandbox or brokerage).                    |
 | `TRADIER_BASE_URL`      | `https://sandbox.tradier.com/v1`   | Use `https://api.tradier.com/v1` for production data.           |
+| `WEBULL_APP_KEY`        | _(empty)_                          | Webull OpenAPI app key (server-side only). Required for `webull`. |
+| `WEBULL_APP_SECRET`     | _(empty)_                          | Webull OpenAPI app secret (server-side only).                   |
 | `PORT`                  | `3001`                             | API port.                                                       |
 | `DATABASE_PATH`         | `./data/stock_app.db`              | SQLite file (relative to `server/`).                            |
 | `QUOTE_CACHE_TTL_MS`    | `15000`                            | In-memory quote cache TTL.                                      |
@@ -189,8 +196,9 @@ Copy `.env.example` to `server/.env`. All keys are read **server-side only**.
 The options module is feature-gated on `capabilities.options`. The app reads
 `GET /api/provider` and, if the active provider can't serve options (or isn't
 configured), shows a clear **"data not configured"** state instead of fabricating
-data. Tradier, Yahoo, and the mock provider all support options (Yahoo's Greeks
-are computed locally from its implied vol); the mock's data is flagged
+data. Tradier, Yahoo, Webull, and the mock provider all support options (Webull
+delegates option chains to Yahoo; Yahoo's Greeks are computed locally from its
+implied vol); the mock's data is flagged
 `synthetic` everywhere so it's never mistaken for real quotes.
 
 ## Scripts

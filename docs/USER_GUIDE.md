@@ -481,6 +481,15 @@ One home (⚙ or `⌘K → Settings`) for everything:
 - **Your data stays with you.** Positions, journal, presets, and settings live in a
   **local SQLite database** on the machine running the server. API keys are
   **server-side only** and never reach the browser.
+- **Provider options.** Free **Yahoo** (stocks + option chains, no key), **Tradier**
+  (brokerage data), **Webull** (`MARKET_DATA_PROVIDER=webull`), or the keyless **mock**.
+  Webull is a **composite**: real-time US **stock** quotes + candles come from Webull's
+  licensed feed, while **option chains + fundamentals** come from Yahoo (Webull's
+  OpenAPI has no option-chain endpoint). Webull stock data needs an active OpenAPI quote
+  subscription on your account.
+- **Sync positions from Webull.** In **Settings → Webull**, preview your open Webull
+  positions and import the ones not already in your journal (preview-and-confirm; import
+  only *adds* — it never edits or deletes existing entries, and tags imports `webull`).
 - **Quotes may be delayed** (commonly ~15 min on free tiers). The provider chip shows
   live vs demo. Responses are cached briefly and auto-polling is off by default.
 - **Demo/synthetic data** is deterministic placeholder data for trying the app — it is
