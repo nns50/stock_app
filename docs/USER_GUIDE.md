@@ -430,8 +430,13 @@ One home (⚙ or `⌘K → Settings`) for everything:
   app closed) and its interval, see whether a **webhook** is configured, and send a test.
 - **Webull (beta)** — shows whether Webull OpenAPI credentials are configured
   (`WEBULL_APP_KEY` / `WEBULL_APP_SECRET`, server-side) and runs a read-only **connection
-  test** (account list / stock snapshot). Webull's v2 OpenAPI provides stock **and option**
-  market data plus your account (market data needs an active OpenAPI subscription).
+  test**: account list, stock snapshot, stock candles, positions, balance, or **quote
+  subscriptions**.
+  Webull's v2 OpenAPI provides stock **and option** market data plus your account (market
+  data needs an active OpenAPI subscription). If a snapshot is refused with _“Insufficient
+  permission, please subscribe to stock quotes”_, run the **quote subscriptions** check — it
+  lists what Webull's OpenAPI actually sees for your app, so you can tell an OpenAPI quote
+  plan apart from a mobile-app / desktop (QT) plan, which don't grant API access.
 - **Account** — only shown when the app is password-protected (`APP_PASSWORD` set
   server-side). Turn on **two-factor authentication** (an authenticator-app code at
   login — scan/enter the setup key, confirm a code), disable it (needs a current code),
@@ -476,6 +481,15 @@ One home (⚙ or `⌘K → Settings`) for everything:
 - **Your data stays with you.** Positions, journal, presets, and settings live in a
   **local SQLite database** on the machine running the server. API keys are
   **server-side only** and never reach the browser.
+- **Provider options.** Free **Yahoo** (stocks + option chains, no key), **Tradier**
+  (brokerage data), **Webull** (`MARKET_DATA_PROVIDER=webull`), or the keyless **mock**.
+  Webull is a **composite**: real-time US **stock** quotes + candles come from Webull's
+  licensed feed, while **option chains + fundamentals** come from Yahoo (Webull's
+  OpenAPI has no option-chain endpoint). Webull stock data needs an active OpenAPI quote
+  subscription on your account.
+- **Sync positions from Webull.** In **Settings → Webull**, preview your open Webull
+  positions and import the ones not already in your journal (preview-and-confirm; import
+  only *adds* — it never edits or deletes existing entries, and tags imports `webull`).
 - **Quotes may be delayed** (commonly ~15 min on free tiers). The provider chip shows
   live vs demo. Responses are cached briefly and auto-polling is off by default.
 - **Demo/synthetic data** is deterministic placeholder data for trying the app — it is

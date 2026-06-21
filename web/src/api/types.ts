@@ -605,6 +605,37 @@ export interface WebullProbeResult {
   error?: string;
 }
 
+/** One journal-ready position parsed from a Webull holdings payload. */
+export interface WebullImportablePosition {
+  assetType: 'stock' | 'option';
+  symbol: string;
+  side: 'long' | 'short';
+  quantity: number;
+  entryPrice: number;
+  entryDate: string;
+  optionType?: 'call' | 'put' | null;
+  strike?: number | null;
+  expiration?: string | null;
+}
+
+export interface WebullPositionsPreview {
+  ok: boolean;
+  accountId: string;
+  positions: WebullImportablePosition[];
+  raw?: unknown;
+  unmapped: number;
+  error?: string;
+}
+
+export interface WebullImportSummary {
+  ok: boolean;
+  accountId: string;
+  imported: number;
+  skipped: number;
+  unmapped: number;
+  error?: string;
+}
+
 export interface MfaStatus {
   /** Can two-factor be used (a server password is set)? */
   available: boolean;

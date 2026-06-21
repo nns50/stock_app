@@ -4,6 +4,8 @@ import { Candle, Fundamentals, OptionsChain, Quote } from './types';
 import { MockProvider } from './MockProvider';
 import { TradierProvider } from './TradierProvider';
 import { YahooProvider } from './YahooProvider';
+import { WebullProvider } from './WebullProvider';
+import { WebullClient } from './webull/client';
 import { CachingProvider } from './CachingProvider';
 
 export interface ProviderStatus {
@@ -73,6 +75,44 @@ function build(): { provider: MarketDataProvider; status: ProviderStatus } {
     return {
       provider,
       status: { name: 'tradier', synthetic: false, configured: true, capabilities: base.capabilities },
+    };
+  }
+
+  if (config.provider === 'webull') {
+    // Composite: Webull (real-time licensed US stocks) + Yahoo (option chains,
+    // fundamentals). Webull market data needs an active OpenAPI quote subscription.
+    if (!config.webull.appKey || !config.webull.appSecret) {
+      const message =
+        'Webull is selected but WEBULL_APP_KEY / WEBULL_APP_SECRET are not set. Add them to server/.env (or set MARKET_DATA_PROVIDER=yahoo) to use the app.';
+      const provider = new UnconfiguredProvider('webull', message);
+      return {
+        provider,
+        status: { name: 'webull', synthetic: false, configured: false, capabilities: provider.capabilities, message },
+      };
+    }
+    const client = WebullClient.fromEnv({
+      appKey: config.webull.appKey,
+      appSecret: config.webull.appSecret,
+      region: config.webull.region,
+      apiHost: config.webull.apiHost,
+      quotesHost: config.webull.quotesHost,
+      accessToken: config.webull.accessToken,
+    });
+    const base = new WebullProvider(client, new YahooProvider());
+    const provider = new CachingProvider(base, {
+      quoteTtlMs: config.quoteCacheTtlMs,
+      candleTtlMs: config.candleCacheTtlMs,
+    });
+    return {
+      provider,
+      status: {
+        name: 'webull',
+        synthetic: false,
+        configured: true,
+        capabilities: base.capabilities,
+        message:
+          'Webull (real-time US stocks) · Yahoo (option chains + fundamentals). Stock market data needs an active OpenAPI quote subscription on your Webull account.',
+      },
     };
   }
 
