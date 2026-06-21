@@ -636,6 +636,24 @@ export interface WebullImportSummary {
   error?: string;
 }
 
+export interface WebullMover {
+  symbol: string;
+  name?: string;
+  price: number;
+  change?: number;
+  changePct?: number;
+  volume?: number;
+  relativeVolume?: number;
+  marketCap?: number;
+}
+
+export interface WebullMoversResult {
+  ok: boolean;
+  list: 'gainers' | 'losers' | 'active';
+  movers: WebullMover[];
+  error?: string;
+}
+
 export interface MfaStatus {
   /** Can two-factor be used (a server password is set)? */
   available: boolean;

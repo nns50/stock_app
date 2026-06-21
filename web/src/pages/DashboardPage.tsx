@@ -9,6 +9,7 @@ import { Card, EmptyState, PageHeader, PnL, Spinner, StatTile } from '../compone
 import { GettingStarted } from '../components/GettingStarted';
 import { DayGuardCard } from '../components/DayGuardCard';
 import { TodaysSetups } from '../components/TodaysSetups';
+import { MarketMovers } from '../components/MarketMovers';
 
 function daysToExpiry(exp: string): number {
   return Math.ceil((Date.parse(exp) - Date.now()) / 86_400_000);
@@ -97,6 +98,8 @@ export default function DashboardPage() {
       </div>
 
       <TodaysSetups />
+
+      <MarketMovers />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
         <Panel
