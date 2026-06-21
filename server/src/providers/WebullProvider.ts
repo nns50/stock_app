@@ -101,6 +101,8 @@ export class WebullProvider implements MarketDataProvider {
     return {
       symbol: String(row.symbol ?? '').toUpperCase(),
       last: num(row.price) ?? num(row.close) ?? num(row.pre_close) ?? 0,
+      bid: num(row.bid),
+      ask: num(row.ask),
       open: num(row.open),
       high: num(row.high),
       low: num(row.low),

@@ -34,29 +34,36 @@ function mockFetch(body: unknown, status = 200) {
 }
 
 describe('WebullProvider', () => {
-  it('maps a snapshot row to a Quote (string prices, fractional change_ratio)', async () => {
+  it('maps a snapshot row to a Quote (live shape: string prices, fractional change_ratio, bid/ask)', async () => {
+    // Trimmed from a real /stock/snapshot response.
     mockFetch([
       {
         symbol: 'AAPL',
-        price: '190.12',
-        open: '188.00',
-        high: '191.00',
-        low: '187.50',
-        pre_close: '187.62',
-        change: '2.50',
-        change_ratio: '0.0133',
-        volume: '52000000',
-        last_trade_time: 1718900000000,
+        price: '298.0100',
+        open: '298.1100',
+        high: '300.5700',
+        low: '295.6200',
+        volume: '85962201',
+        change: '2.0600',
+        close: '298.0100',
+        instrument_id: '913256135',
+        pre_close: '295.95',
+        change_ratio: '0.006961',
+        last_trade_time: 1781812800994,
+        ask: '303.0000',
+        bid: '297.2000',
       },
     ]);
     const p = new WebullProvider(client(), fakeAux());
     const q = await p.getQuote('aapl');
     expect(q.symbol).toBe('AAPL');
-    expect(q.last).toBe(190.12);
-    expect(q.prevClose).toBe(187.62);
-    expect(q.changePct).toBe(1.33); // 0.0133 fraction -> percent
-    expect(q.volume).toBe(52000000);
-    expect(q.timestamp).toBe(1718900000000);
+    expect(q.last).toBe(298.01);
+    expect(q.prevClose).toBe(295.95);
+    expect(q.changePct).toBe(0.7); // 0.006961 fraction -> 0.70%
+    expect(q.bid).toBe(297.2);
+    expect(q.ask).toBe(303);
+    expect(q.volume).toBe(85962201);
+    expect(q.timestamp).toBe(1781812800994);
   });
 
   it('batches getQuotes through one snapshot call', async () => {
@@ -111,7 +118,10 @@ describe('WebullProvider', () => {
 
   it('also handles a nested bars array with epoch-seconds timestamps (defensive)', async () => {
     mockFetch([
-      { symbol: 'AAPL', bars: [{ timestamp: 1700000000, open: '1', high: '2', low: '0.5', close: '1.5', volume: '20' }] },
+      {
+        symbol: 'AAPL',
+        bars: [{ timestamp: 1700000000, open: '1', high: '2', low: '0.5', close: '1.5', volume: '20' }],
+      },
     ]);
     const p = new WebullProvider(client(), fakeAux());
     const candles = await p.getCandles('AAPL', '1min');
