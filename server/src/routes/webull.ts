@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { asyncHandler, parseBody } from './_helpers';
+import { asyncHandler, parseBody, parseQuery } from './_helpers';
 import { ProbeKind, webullProbe, webullStatus } from '../providers/webull/account';
 import { importWebullPositions, previewWebullPositions } from '../providers/webull/positions';
+import { webullMovers } from '../providers/webull/movers';
 
 // Webull connectivity: report whether credentials are configured, and run a
 // read-only probe to validate them live + reveal response shapes. Session-gated
@@ -45,5 +46,20 @@ webullRouter.post(
   asyncHandler(async (req, res) => {
     const { accountId } = parseBody(accountBody, req);
     res.json(await importWebullPositions(accountId));
+  }),
+);
+
+// Market movers (gainers / losers / most-active) from Webull's server-side
+// screeners. Read-only; works whenever Webull keys are set.
+const moversQuery = z.object({
+  list: z.enum(['gainers', 'losers', 'active']).default('gainers'),
+  limit: z.coerce.number().int().min(1).max(50).default(10),
+});
+
+webullRouter.get(
+  '/movers',
+  asyncHandler(async (req, res) => {
+    const { list, limit } = parseQuery(moversQuery, req);
+    res.json(await webullMovers(list, limit));
   }),
 );
