@@ -223,7 +223,36 @@ export class WebullProvider implements MarketDataProvider {
     return this.aux.getOptionsChain(symbol, expiration);
   }
 
-  getFundamentals(symbol: string): Promise<Fundamentals> {
-    return this.aux.getFundamentals(symbol);
+  /**
+   * Fundamentals: the descriptive fields (name, sector, industry, beta) come
+   * from the aux provider; Webull's snapshot carries licensed valuation metrics
+   * (market cap, P/E, EPS, dividend yield, 52-week range), so overlay those on
+   * top when available. A symbol Webull doesn't carry just keeps the aux data.
+   */
+  async getFundamentals(symbol: string): Promise<Fundamentals> {
+    const base = await this.aux.getFundamentals(symbol);
+    let row: Record<string, unknown> | undefined;
+    try {
+      const data = await this.marketGet('/openapi/market-data/stock/snapshot', {
+        symbols: symbol.toUpperCase(),
+        category: 'US_STOCK',
+      });
+      row = asArray(data)[0];
+    } catch (err) {
+      if (isAuthError(err)) throw err; // surface a missing quote subscription
+      return base; // symbol not covered etc. — keep the aux fundamentals
+    }
+    if (!row) return base;
+    const overlay: Partial<Fundamentals> = {};
+    const set = <K extends keyof Fundamentals>(k: K, v: Fundamentals[K] | undefined) => {
+      if (v !== undefined) overlay[k] = v;
+    };
+    set('marketCap', num(row.market_value));
+    set('peRatio', num(row.pe_ratio));
+    set('eps', num(row.eps_ttm) ?? num(row.eps));
+    set('dividendYield', num(row.yield));
+    set('high52', num(row.fifty_two_wk_high));
+    set('low52', num(row.fifty_two_wk_low));
+    return { ...base, ...overlay };
   }
 }

@@ -484,9 +484,10 @@ One home (⚙ or `⌘K → Settings`) for everything:
 - **Provider options.** Free **Yahoo** (stocks + option chains, no key), **Tradier**
   (brokerage data), **Webull** (`MARKET_DATA_PROVIDER=webull`), or the keyless **mock**.
   Webull is a **composite**: real-time US **stock** quotes + candles come from Webull's
-  licensed feed, while **option chains + fundamentals** come from Yahoo (Webull's
-  OpenAPI has no option-chain endpoint). Stocks Webull doesn't carry (e.g. class shares
-  like BRK.B) fall back to Yahoo automatically. Webull stock data needs an active OpenAPI
+  licensed feed, while **option chains** come from Yahoo (Webull's OpenAPI has no
+  option-chain endpoint). **Fundamentals** blend Webull's snapshot valuation metrics
+  (market cap, P/E, EPS, 52-week) with Yahoo's company profile. Stocks Webull doesn't
+  carry (e.g. class shares like BRK.B) fall back to Yahoo automatically. Webull stock data needs an active OpenAPI
   quote subscription on your account.
 - **Sync positions from Webull.** In **Settings → Webull**, preview your open Webull
   positions and import the ones not already in your journal (preview-and-confirm; import
