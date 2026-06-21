@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, Star } from 'lucide-react';
+import { ArrowLeft, CalendarClock, Star } from 'lucide-react';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtCompact, fmtNum, fmtPct, fmtUsd } from '../lib/format';
 import { Card, ErrorState, PnL, Segmented, Spinner, StatTile } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
 import { PriceChart } from '../components/PriceChart';
+import { daysUntil } from '../components/EarningsBadge';
 
 const TIMEFRAMES = ['daily', 'weekly', '15min', '5min', '1min'];
 
@@ -25,6 +26,11 @@ export default function SymbolDetailPage() {
   const ind = detail.data?.indicators;
   const quote = detail.data?.quote;
   const fundamentals = (detail.data?.fundamentals ?? {}) as Record<string, unknown>;
+
+  const events = useAsync(() => client.events([symbol]), [symbol]);
+  const ev = events.data?.events?.[0];
+  const erDte = daysUntil(ev?.earningsDate);
+  const erSoon = erDte != null && erDte >= 0 && erDte <= 7;
 
   const [watched, setWatched] = useState(false);
   useEffect(() => {
@@ -79,6 +85,21 @@ export default function SymbolDetailPage() {
         </div>
         <RefreshBar onRefresh={detail.reload} lastUpdated={quote?.timestamp ?? null} loading={detail.loading} />
       </div>
+
+      {(ev?.earningsDate || ev?.exDividendDate) && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400">
+          {ev?.earningsDate && (
+            <span className={cx('inline-flex items-center gap-1', erSoon && 'text-amber-400 font-medium')}>
+              <CalendarClock className="h-3.5 w-3.5" />
+              Earnings {ev.earningsDate}
+              {erDte != null && erDte >= 0 && ` · in ${erDte}d`}
+              {ev.earningsEstimated && ' · est.'}
+              {erSoon && ' — caution: IV crush risk'}
+            </span>
+          )}
+          {ev?.exDividendDate && <span>Ex-dividend {ev.exDividendDate}</span>}
+        </div>
+      )}
 
       <Card className="p-4">
         <div className="flex flex-wrap items-center gap-3 mb-3 text-sm">

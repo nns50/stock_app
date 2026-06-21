@@ -21,6 +21,7 @@ import { alertsRouter } from './routes/alerts';
 import { exportRouter } from './routes/export';
 import { watchlistRouter } from './routes/watchlist';
 import { webullRouter } from './routes/webull';
+import { eventsRouter } from './routes/events';
 import { authRouter, requireAuth } from './routes/auth';
 import { startAlertScheduler } from './services/alertScheduler';
 
@@ -53,6 +54,7 @@ app.use('/api/alerts', alertsRouter);
 app.use('/api/export', exportRouter);
 app.use('/api/watchlist', watchlistRouter);
 app.use('/api/webull', webullRouter);
+app.use('/api/events', eventsRouter);
 
 // Unknown API route
 app.use('/api', (_req, res) => {

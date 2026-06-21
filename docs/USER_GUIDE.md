@@ -229,6 +229,11 @@ naked long call) on risk-defined terms.
 
 Log trades, size them by risk, manage them, and track live P&L.
 
+> **Earnings awareness.** Open positions and the symbol page show an **earnings badge**
+> (e.g. `ER 4d`) when a company reports soon — amber inside a week — plus the ex-dividend
+> date. It's the classic guardrail against holding options into **IV crush** or getting
+> gap-surprised. Dates come from Yahoo (works regardless of your market-data provider).
+
 ### Logging a trade (`+ Log trade`)
 
 Open it with the header **+ Log** button or `n`. Stock or option, with: symbol, side,
