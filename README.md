@@ -126,9 +126,11 @@ requires a brokerage account / data subscription for real-time data). For
 **Webull**, set `MARKET_DATA_PROVIDER=webull` with `WEBULL_APP_KEY` /
 `WEBULL_APP_SECRET` — a **composite** provider that serves real-time US **stock**
 quotes + candles from Webull's licensed feed and delegates **option chains +
-fundamentals** to Yahoo (Webull's OpenAPI has no option-chain endpoint). Webull
-stock data needs an active **OpenAPI quote subscription** on your account.
-Restart after changing.
+fundamentals** to Yahoo (Webull's OpenAPI has no option-chain endpoint). Symbols
+Webull's feed doesn't carry (e.g. class shares like `BRK.B`) automatically fall
+back to Yahoo; an inactive quote subscription still surfaces as an error rather
+than silently falling back. Webull stock data needs an active **OpenAPI quote
+subscription** on your account. Restart after changing.
 
 Verify any provider with the **provider chip → "Run connection test"** in the UI,
 or the CLI: `npm run check:provider [SYMBOL]`.
