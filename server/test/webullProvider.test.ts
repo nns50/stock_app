@@ -34,29 +34,36 @@ function mockFetch(body: unknown, status = 200) {
 }
 
 describe('WebullProvider', () => {
-  it('maps a snapshot row to a Quote (string prices, fractional change_ratio)', async () => {
+  it('maps a snapshot row to a Quote (live shape: string prices, fractional change_ratio, bid/ask)', async () => {
+    // Trimmed from a real /stock/snapshot response.
     mockFetch([
       {
         symbol: 'AAPL',
-        price: '190.12',
-        open: '188.00',
-        high: '191.00',
-        low: '187.50',
-        pre_close: '187.62',
-        change: '2.50',
-        change_ratio: '0.0133',
-        volume: '52000000',
-        last_trade_time: 1718900000000,
+        price: '298.0100',
+        open: '298.1100',
+        high: '300.5700',
+        low: '295.6200',
+        volume: '85962201',
+        change: '2.0600',
+        close: '298.0100',
+        instrument_id: '913256135',
+        pre_close: '295.95',
+        change_ratio: '0.006961',
+        last_trade_time: 1781812800994,
+        ask: '303.0000',
+        bid: '297.2000',
       },
     ]);
     const p = new WebullProvider(client(), fakeAux());
     const q = await p.getQuote('aapl');
     expect(q.symbol).toBe('AAPL');
-    expect(q.last).toBe(190.12);
-    expect(q.prevClose).toBe(187.62);
-    expect(q.changePct).toBe(1.33); // 0.0133 fraction -> percent
-    expect(q.volume).toBe(52000000);
-    expect(q.timestamp).toBe(1718900000000);
+    expect(q.last).toBe(298.01);
+    expect(q.prevClose).toBe(295.95);
+    expect(q.changePct).toBe(0.7); // 0.006961 fraction -> 0.70%
+    expect(q.bid).toBe(297.2);
+    expect(q.ask).toBe(303);
+    expect(q.volume).toBe(85962201);
+    expect(q.timestamp).toBe(1781812800994);
   });
 
   it('batches getQuotes through one snapshot call', async () => {
@@ -71,25 +78,55 @@ describe('WebullProvider', () => {
     expect(String(spy.mock.calls[0][0])).toContain('symbols=AAPL%2CMSFT');
   });
 
-  it('maps bars (nested array, epoch seconds) to sorted Candles', async () => {
+  it('maps bars from the live shape (flat array, ISO time string, newest-first)', async () => {
+    // Exact shape returned by /stock/bars: a bare array, ISO-8601 `time`, string OHLCV.
+    mockFetch([
+      {
+        tickerId: '913256135',
+        symbol: 'AAPL',
+        time: '2026-06-18T19:59:00.000+0000',
+        open: '298.49',
+        high: '298.51',
+        low: '297.85',
+        close: '298.01',
+        volume: '24686259',
+        trading_session: 'RTH',
+      },
+      {
+        tickerId: '913256135',
+        symbol: 'AAPL',
+        time: '2026-06-18T19:58:00.000+0000',
+        open: '298.50',
+        high: '298.54',
+        low: '298.48',
+        close: '298.505',
+        volume: '358184',
+        trading_session: 'RTH',
+      },
+    ]);
+    const p = new WebullProvider(client(), fakeAux());
+    const candles = await p.getCandles('AAPL', 'daily');
+    expect(candles).toHaveLength(2);
+    // Sorted ascending despite the newest-first payload.
+    expect(candles[0].time).toBe(Date.parse('2026-06-18T19:58:00.000+0000'));
+    expect(candles[1].time).toBe(Date.parse('2026-06-18T19:59:00.000+0000'));
+    expect(candles[1].close).toBe(298.01);
+    const url = String((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0]);
+    expect(url).toContain('/openapi/market-data/stock/bars');
+    expect(url).toContain('timespan=D');
+  });
+
+  it('also handles a nested bars array with epoch-seconds timestamps (defensive)', async () => {
     mockFetch([
       {
         symbol: 'AAPL',
-        bars: [
-          { timestamp: 1700000060, open: '2', high: '3', low: '1', close: '2.5', volume: '10' },
-          { timestamp: 1700000000, open: '1', high: '2', low: '0.5', close: '1.5', volume: '20' },
-        ],
+        bars: [{ timestamp: 1700000000, open: '1', high: '2', low: '0.5', close: '1.5', volume: '20' }],
       },
     ]);
     const p = new WebullProvider(client(), fakeAux());
     const candles = await p.getCandles('AAPL', '1min');
-    expect(candles).toHaveLength(2);
-    expect(candles[0].time).toBe(1700000000000); // seconds -> ms, sorted ascending
-    expect(candles[0].close).toBe(1.5);
-    expect(candles[1].time).toBe(1700000060000);
-    const url = String((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0]);
-    expect(url).toContain('/openapi/market-data/stock/bars');
-    expect(url).toContain('timespan=M1');
+    expect(candles).toHaveLength(1);
+    expect(candles[0].time).toBe(1700000000000); // seconds -> ms
   });
 
   it('surfaces a 401 quote-subscription error as a ProviderError', async () => {

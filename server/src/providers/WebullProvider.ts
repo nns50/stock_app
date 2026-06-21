@@ -45,10 +45,21 @@ function asArray(resp: unknown): Record<string, unknown>[] {
   return [];
 }
 
-/** Normalize an epoch that may be in seconds or milliseconds to ms. */
-function toMs(t: number | undefined): number | undefined {
-  if (t === undefined) return undefined;
-  return t < 1e12 ? t * 1000 : t;
+/**
+ * Parse a Webull time field to epoch ms. Webull mixes formats across endpoints:
+ * bars return an ISO-8601 string ("2026-06-18T19:59:00.000+0000"), while other
+ * surfaces use an epoch number (seconds or ms) or its string form.
+ */
+function parseTime(v: unknown): number | undefined {
+  if (v === null || v === undefined || v === '') return undefined;
+  if (typeof v === 'number') return v < 1e12 ? v * 1000 : v;
+  const s = String(v);
+  if (/^\d+$/.test(s)) {
+    const n = Number(s);
+    return n < 1e12 ? n * 1000 : n;
+  }
+  const ms = Date.parse(s);
+  return Number.isNaN(ms) ? undefined : ms;
 }
 
 export class WebullProvider implements MarketDataProvider {
@@ -90,6 +101,8 @@ export class WebullProvider implements MarketDataProvider {
     return {
       symbol: String(row.symbol ?? '').toUpperCase(),
       last: num(row.price) ?? num(row.close) ?? num(row.pre_close) ?? 0,
+      bid: num(row.bid),
+      ask: num(row.ask),
       open: num(row.open),
       high: num(row.high),
       low: num(row.low),
@@ -98,7 +111,7 @@ export class WebullProvider implements MarketDataProvider {
       // Webull's change_ratio is a fraction (0.0123 = 1.23%); the app wants percent.
       changePct: changeRatio !== undefined ? round2(changeRatio * 100) : undefined,
       volume: num(row.volume),
-      timestamp: toMs(num(row.last_trade_time) ?? num(row.trade_time)) ?? Date.now(),
+      timestamp: parseTime(row.last_trade_time ?? row.trade_time ?? row.time) ?? Date.now(),
     };
   }
 
@@ -111,14 +124,20 @@ export class WebullProvider implements MarketDataProvider {
 
   async getQuotes(symbols: string[]): Promise<Quote[]> {
     if (symbols.length === 0) return [];
-    // Webull snapshot accepts up to 100 comma-separated symbols per call.
-    const data = await this.marketGet('/openapi/market-data/stock/snapshot', {
-      symbols: symbols.map((s) => s.toUpperCase()).join(','),
-      category: 'US_STOCK',
-    });
-    return asArray(data)
-      .map((row) => this.mapQuote(row))
-      .filter((q) => q.symbol);
+    const upper = symbols.map((s) => s.toUpperCase());
+    const out: Quote[] = [];
+    // Webull snapshot accepts at most 100 symbols per call — chunk larger scans.
+    for (let i = 0; i < upper.length; i += 100) {
+      const data = await this.marketGet('/openapi/market-data/stock/snapshot', {
+        symbols: upper.slice(i, i + 100).join(','),
+        category: 'US_STOCK',
+      });
+      for (const row of asArray(data)) {
+        const q = this.mapQuote(row);
+        if (q.symbol) out.push(q);
+      }
+    }
+    return out;
   }
 
   /** Pull the bar list out of Webull's response (array-of-instruments with a
@@ -142,7 +161,7 @@ export class WebullProvider implements MarketDataProvider {
     });
     const candles: Candle[] = this.extractBars(resp)
       .map((b) => ({
-        time: toMs(num(b.timestamp) ?? num(b.trade_time) ?? num(b.time)) ?? 0,
+        time: parseTime(b.time ?? b.timestamp ?? b.trade_time) ?? 0,
         open: round2(num(b.open) ?? 0),
         high: round2(num(b.high) ?? 0),
         low: round2(num(b.low) ?? 0),
