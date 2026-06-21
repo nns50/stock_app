@@ -174,14 +174,52 @@ describe('WebullProvider', () => {
     expect(aux.getQuotes).toHaveBeenCalledWith(['BRK.B']);
   });
 
-  it('delegates option chains and fundamentals to the auxiliary provider', async () => {
+  it('delegates option chains to the auxiliary provider', async () => {
     const aux = fakeAux();
     const p = new WebullProvider(client(), aux);
     expect(await p.getOptionsExpirations('AAPL')).toEqual(['2026-07-17']);
     await p.getOptionsChain('AAPL', '2026-07-17');
-    await p.getFundamentals('AAPL');
     expect(aux.getOptionsExpirations).toHaveBeenCalledWith('AAPL');
     expect(aux.getOptionsChain).toHaveBeenCalledWith('AAPL', '2026-07-17');
-    expect(aux.getFundamentals).toHaveBeenCalledWith('AAPL');
+  });
+
+  it('overlays Webull snapshot valuation metrics on the aux fundamentals', async () => {
+    // aux supplies name/sector; Webull's snapshot supplies the licensed numerics.
+    const aux = fakeAux();
+    aux.getFundamentals = vi.fn(async () => ({
+      symbol: 'AAPL',
+      name: 'Apple',
+      sector: 'Tech',
+      peRatio: 30, // stale aux value, should be overridden
+      marketCap: 1,
+    }));
+    mockFetch([
+      {
+        symbol: 'AAPL',
+        market_value: '4376978961560',
+        pe_ratio: '36.05',
+        eps_ttm: '8.27',
+        yield: '0.0036',
+        fifty_two_wk_high: '317.4',
+        fifty_two_wk_low: '194.3',
+      },
+    ]);
+    const p = new WebullProvider(client(), aux);
+    const f = await p.getFundamentals('AAPL');
+    expect(f.name).toBe('Apple'); // kept from aux
+    expect(f.sector).toBe('Tech'); // kept from aux
+    expect(f.peRatio).toBe(36.05); // overridden by Webull
+    expect(f.marketCap).toBe(4376978961560);
+    expect(f.eps).toBe(8.27);
+    expect(f.high52).toBe(317.4);
+  });
+
+  it('keeps the aux fundamentals when Webull does not carry the symbol', async () => {
+    const aux = fakeAux();
+    aux.getFundamentals = vi.fn(async () => ({ symbol: 'BRK.B', name: 'Berkshire', peRatio: 9 }));
+    mockFetch({ error_code: 'INVALID_SYMBOL', message: 'The symbol does not exist in the category.' }, 417);
+    const p = new WebullProvider(client(), aux);
+    const f = await p.getFundamentals('BRK.B');
+    expect(f).toMatchObject({ symbol: 'BRK.B', name: 'Berkshire', peRatio: 9 });
   });
 });

@@ -125,8 +125,10 @@ Tradier, set `MARKET_DATA_PROVIDER=tradier` and `TRADIER_API_TOKEN` (note: Tradi
 requires a brokerage account / data subscription for real-time data). For
 **Webull**, set `MARKET_DATA_PROVIDER=webull` with `WEBULL_APP_KEY` /
 `WEBULL_APP_SECRET` — a **composite** provider that serves real-time US **stock**
-quotes + candles from Webull's licensed feed and delegates **option chains +
-fundamentals** to Yahoo (Webull's OpenAPI has no option-chain endpoint). Symbols
+quotes + candles from Webull's licensed feed and delegates **option chains** to
+Yahoo (Webull's OpenAPI has no option-chain endpoint). **Fundamentals** blend
+Webull's snapshot valuation metrics (market cap, P/E, EPS, dividend yield,
+52-week range) with Yahoo's company profile (name, sector, beta). Symbols
 Webull's feed doesn't carry (e.g. class shares like `BRK.B`) automatically fall
 back to Yahoo; an inactive quote subscription still surfaces as an error rather
 than silently falling back. Webull stock data needs an active **OpenAPI quote
