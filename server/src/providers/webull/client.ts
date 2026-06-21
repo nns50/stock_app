@@ -1,5 +1,6 @@
 import { signRequest } from './signing';
 import { normalizeRegion, webullHost, WebullRegion } from './hosts';
+import { sleep } from '../../util/http';
 
 // ---------------------------------------------------------------------------
 // Thin signed HTTP client for the Webull v2 OpenAPI. Every request carries the
@@ -36,6 +37,8 @@ export interface WebullClientConfig {
   /** API version header (x-version); the v2 OpenAPI expects "v2". */
   version?: string;
   timeoutMs?: number;
+  /** Max retries on HTTP 429 (rate limited) with exponential backoff. */
+  maxRetries?: number;
 }
 
 type Surface = 'market' | 'trade';
@@ -50,10 +53,12 @@ export interface CallResult {
 export class WebullClient {
   private readonly version: string;
   private readonly timeoutMs: number;
+  private readonly maxRetries: number;
 
   constructor(private readonly cfg: WebullClientConfig) {
     this.version = cfg.version ?? 'v2';
     this.timeoutMs = cfg.timeoutMs ?? 10000;
+    this.maxRetries = cfg.maxRetries ?? 3;
   }
 
   static fromEnv(env: {
@@ -112,35 +117,44 @@ export class WebullClient {
     const query = opts.query ?? {};
     const qs = new URLSearchParams(query).toString();
     const url = `https://${host}${path}${method === 'GET' && qs ? `?${qs}` : ''}`;
+    const body = method === 'POST' ? JSON.stringify(opts.body ?? {}) : undefined;
 
-    const signed = signRequest({
-      host,
-      path,
-      query: method === 'GET' ? query : undefined,
-      body: method === 'POST' ? opts.body : undefined,
-      appKey: this.cfg.appKey,
-      appSecret: this.cfg.appSecret,
-    });
-    const headers: Record<string, string> = {
-      ...signed,
-      'x-version': this.version,
-      'content-type': 'application/json',
-    };
-    if (this.cfg.accessToken) headers['x-access-token'] = this.cfg.accessToken;
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    try {
-      const res = await fetch(url, {
-        method,
-        headers,
-        body: method === 'POST' ? JSON.stringify(opts.body ?? {}) : undefined,
-        signal: controller.signal,
+    for (let attempt = 0; ; attempt++) {
+      // Re-sign each attempt so the timestamp/nonce stay fresh across retries.
+      const signed = signRequest({
+        host,
+        path,
+        query: method === 'GET' ? query : undefined,
+        body: method === 'POST' ? opts.body : undefined,
+        appKey: this.cfg.appKey,
+        appSecret: this.cfg.appSecret,
       });
+      const headers: Record<string, string> = {
+        ...signed,
+        'x-version': this.version,
+        'content-type': 'application/json',
+      };
+      if (this.cfg.accessToken) headers['x-access-token'] = this.cfg.accessToken;
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+      let res: Response;
+      try {
+        res = await fetch(url, { method, headers, body, signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
       const text = await res.text();
+
+      // Back off on rate limiting (429); honor Retry-After when present.
+      if (res.status === 429 && attempt < this.maxRetries) {
+        const retryAfter = Number(res.headers.get('retry-after'));
+        const waitMs =
+          Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 250 * 2 ** attempt + Math.random() * 100;
+        await sleep(waitMs);
+        continue;
+      }
       return { url, status: res.status, ok: res.ok, data: text ? safeParse(text) : {} };
-    } finally {
-      clearTimeout(timer);
     }
   }
 }

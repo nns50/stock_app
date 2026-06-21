@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { WebullClient, WebullError } from '../src/providers/webull/client';
 
+// Make the rate-limit backoff sleep instant so retry tests don't actually wait.
+vi.mock('../src/util/http', async (orig) => {
+  const actual = await orig<typeof import('../src/util/http')>();
+  return { ...actual, sleep: async () => {} };
+});
+
 const client = new WebullClient({ appKey: 'APPKEY123', appSecret: 'SECRET456', region: 'us' });
 
 afterEach(() => vi.restoreAllMocks());
@@ -11,6 +17,11 @@ function mockFetch(status: number, body: unknown) {
     status,
     text: async () => JSON.stringify(body),
   } as Response);
+}
+
+/** A 429 response that carries a (header-less) Retry-After lookup. */
+function rateLimited(): Response {
+  return { ok: false, status: 429, headers: { get: () => null }, text: async () => '{}' } as unknown as Response;
 }
 
 describe('WebullClient', () => {
@@ -71,5 +82,23 @@ describe('WebullClient', () => {
       message: 'invalid signature',
     });
     await expect(client.get('/x', {})).rejects.toBeInstanceOf(WebullError);
+  });
+
+  it('retries on HTTP 429 (rate limited) then returns the success', async () => {
+    const f = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(rateLimited())
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) } as Response);
+    const r = await client.call('GET', '/openapi/market-data/stock/snapshot', { query: { symbols: 'AAPL' } });
+    expect(r).toMatchObject({ ok: true, status: 200 });
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up after maxRetries on a persistent 429', async () => {
+    const limited = new WebullClient({ appKey: 'k', appSecret: 's', region: 'us', maxRetries: 2 });
+    const f = vi.spyOn(globalThis, 'fetch').mockResolvedValue(rateLimited());
+    const r = await limited.call('GET', '/openapi/market-data/stock/snapshot', { query: { symbols: 'AAPL' } });
+    expect(r.status).toBe(429);
+    expect(f).toHaveBeenCalledTimes(3); // initial + 2 retries
   });
 });
