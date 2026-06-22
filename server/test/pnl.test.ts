@@ -239,6 +239,39 @@ describe('computeJournalStats', () => {
     expect(s.worstTrade).toBe(-40);
   });
 
+  it('buckets realized P&L by entry session, only for trades with a logged time', () => {
+    const t = computeJournalStats([
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        entryTime: '09:45', // Open
+        exits: [exit({ quantity: 10, exitPrice: 110 })],
+      }), // +100
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        entryTime: '15:30', // Power hr
+        exits: [exit({ quantity: 10, exitPrice: 95 })],
+      }), // -50
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        // no entryTime → excluded from the session breakdown
+        exits: [exit({ quantity: 10, exitPrice: 105 })],
+      }),
+    ]);
+    const by = Object.fromEntries(t.byTimeOfDay.map((g) => [g.key, g.totalPnl]));
+    expect(by['Open']).toBe(100);
+    expect(by['Power hr']).toBe(-50);
+    expect(t.byTimeOfDay.reduce((n, g) => n + g.trades, 0)).toBe(2); // the timeless trade is excluded
+  });
+
   it('reports an infinite profit factor (null) when there are no losses', () => {
     const winsOnly = computeJournalStats([trades[0], trades[2]]);
     expect(winsOnly.profitFactor).toBeNull();

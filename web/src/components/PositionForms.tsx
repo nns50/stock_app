@@ -26,6 +26,7 @@ export function LogTradeModal({
   const [quantity, setQuantity] = useState<number | undefined>(100);
   const [entryPrice, setEntryPrice] = useState<number | undefined>();
   const [entryDate, setEntryDate] = useState(todayISO());
+  const [entryTime, setEntryTime] = useState('');
   const [fees, setFees] = useState<number | undefined>(0);
   const [optionType, setOptionType] = useState<'call' | 'put'>('call');
   const [strike, setStrike] = useState<number | undefined>();
@@ -161,6 +162,7 @@ export function LogTradeModal({
         quantity,
         entryPrice,
         entryDate,
+        entryTime: entryTime || null,
         fees: fees ?? 0,
         ...(assetType === 'option' ? { optionType, strike, expiration } : {}),
         tags: tags
@@ -234,6 +236,9 @@ export function LogTradeModal({
           </Field>
           <Field label="Entry date">
             <input type="date" className="input" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} />
+          </Field>
+          <Field label="Entry time" hint="Optional — enables time-of-day stats">
+            <input type="time" className="input" value={entryTime} onChange={(e) => setEntryTime(e.target.value)} />
           </Field>
           <Field label="Fees">
             <NumberInput value={fees} onChange={setFees} step={0.01} />

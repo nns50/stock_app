@@ -244,9 +244,10 @@ Log trades, size them by risk, manage them, and track live P&L.
 ### Logging a trade (`+ Log trade`)
 
 Open it with the header **+ Log** button or `n`. Stock or option, with: symbol, side,
-quantity, entry price/premium, date, fees, (option) type/strike/expiration, **tags**
-(click a suggestion chip to reuse a tag you've used before), **grade (A–F)**, **notes**,
-an optional **stop** and **target**, and the **pre-trade checklist** (below).
+quantity, entry price/premium, date, an **optional entry time** (enables the time-of-day
+breakdown in the journal), fees, (option) type/strike/expiration, **tags** (click a
+suggestion chip to reuse a tag you've used before), **grade (A–F)**, **notes**, an
+optional **stop** and **target**, and the **pre-trade checklist** (below).
 
 ### Size by risk (the most important button)
 
@@ -303,7 +304,8 @@ trades.
 ### Breakdowns
 
 - **By tag**, **by grade**, **by discipline** (checklist adherence), and **by timing**
-  (which **weekday** you closed on, and how long you **held**) — each with
+  (which **weekday** you closed on, how long you **held**, and — for trades with a logged
+  entry time — the **entry session**: open / late-AM / midday / power hour) — each with
   its own count, total, win rate, and expectancy. This is how you discover *which
   setups and which behaviors* make you money.
 

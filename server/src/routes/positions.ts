@@ -27,6 +27,10 @@ const createBody = z
     quantity: z.number().positive(),
     entryPrice: z.number().nonnegative(),
     entryDate: z.string().min(8),
+    entryTime: z
+      .string()
+      .regex(/^\d{1,2}:\d{2}$/)
+      .nullish(),
     fees: z.number().nonnegative().optional(),
     optionType: z.enum(['call', 'put']).nullish(),
     strike: z.number().positive().nullish(),
@@ -51,6 +55,11 @@ const patchBody = z.object({
   quantity: z.number().positive().optional(),
   fees: z.number().nonnegative().optional(),
   entryDate: z.string().min(8).optional(),
+  entryTime: z
+    .string()
+    .regex(/^\d{1,2}:\d{2}$/)
+    .nullable()
+    .optional(),
   stopPrice: z.number().positive().nullable().optional(),
   targetPrice: z.number().positive().nullable().optional(),
 });
