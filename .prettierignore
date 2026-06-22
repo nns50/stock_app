@@ -4,3 +4,4 @@
 package-lock.json
 server/data/*.json
 *.md
+*.sh
