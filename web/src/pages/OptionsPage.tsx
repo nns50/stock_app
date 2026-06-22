@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { client } from '../api/client';
 import { useProvider } from '../components/ProviderContext';
-import { useAsync } from '../lib/hooks';
+import { useAsync, usePolling } from '../lib/hooks';
 import { cx, fmtNum, fmtPct, fmtUsd } from '../lib/format';
 import { daysUntil } from '../components/EarningsBadge';
 import {
@@ -202,6 +202,10 @@ function OptionsTimingBanner({ symbol, expiration }: { symbol: string; expiratio
 function ChainView({ symbol, expiration }: { symbol: string; expiration: string }) {
   const [side, setSide] = useState<'call' | 'put'>('call');
   const chain = useAsync<OptionsChain>(() => client.chain(symbol, expiration), [symbol, expiration]);
+  // Live option quotes overlay the (delayed) chain — only when Webull is wired up.
+  const wb = useAsync(() => client.webullStatus(), []);
+  const liveAvailable = !!wb.data?.configured;
+  const [live, setLive] = useState<string | null>(null);
 
   if (!expiration)
     return (
@@ -233,6 +237,7 @@ function ChainView({ symbol, expiration }: { symbol: string; expiration: string 
               · ATM IV <span className="text-slate-200">{(chain.data.atmIv * 100).toFixed(0)}%</span>
             </>
           )}
+          {liveAvailable && <span className="text-slate-600"> · click a contract for a live quote</span>}
         </div>
         <div className="flex rounded-md overflow-hidden border border-ink-600 text-sm">
           <button
@@ -269,22 +274,40 @@ function ChainView({ symbol, expiration }: { symbol: string; expiration: string 
           <tbody>
             {contracts.map((c) => {
               const itm = side === 'call' ? u !== null && c.strike < u : u !== null && c.strike > u;
+              const open = live === c.symbol;
               return (
-                <tr key={c.symbol} className={cx('border-b border-ink-700/50', itm && 'bg-ink-700/30')}>
-                  <td className="td text-right font-semibold">{fmtNum(c.strike)}</td>
-                  <td className="td text-right">{fmtNum(c.bid)}</td>
-                  <td className="td text-right">{fmtNum(c.ask)}</td>
-                  <td className="td text-right">{fmtNum(c.mark)}</td>
-                  <td className="td text-right text-slate-400">{c.volume ?? '—'}</td>
-                  <td className="td text-right text-slate-400">{c.openInterest ?? '—'}</td>
-                  <td className="td text-right">
-                    {c.greeks?.iv === undefined ? '—' : `${(c.greeks.iv * 100).toFixed(0)}%`}
-                  </td>
-                  <td className="td text-right">{fmtNum(c.greeks?.delta, 3)}</td>
-                  <td className="td text-right text-slate-400">{fmtNum(c.greeks?.theta, 3)}</td>
-                  <td className="td text-right text-slate-400">{fmtNum(c.greeks?.gamma, 4)}</td>
-                  <td className="td text-right text-slate-400">{fmtNum(c.greeks?.vega, 3)}</td>
-                </tr>
+                <Fragment key={c.symbol}>
+                  <tr
+                    className={cx(
+                      'border-b border-ink-700/50',
+                      itm && 'bg-ink-700/30',
+                      open && 'bg-accent/10',
+                      liveAvailable && 'cursor-pointer hover:bg-ink-700/40',
+                    )}
+                    onClick={liveAvailable ? () => setLive(open ? null : c.symbol) : undefined}
+                  >
+                    <td className="td text-right font-semibold">{fmtNum(c.strike)}</td>
+                    <td className="td text-right">{fmtNum(c.bid)}</td>
+                    <td className="td text-right">{fmtNum(c.ask)}</td>
+                    <td className="td text-right">{fmtNum(c.mark)}</td>
+                    <td className="td text-right text-slate-400">{c.volume ?? '—'}</td>
+                    <td className="td text-right text-slate-400">{c.openInterest ?? '—'}</td>
+                    <td className="td text-right">
+                      {c.greeks?.iv === undefined ? '—' : `${(c.greeks.iv * 100).toFixed(0)}%`}
+                    </td>
+                    <td className="td text-right">{fmtNum(c.greeks?.delta, 3)}</td>
+                    <td className="td text-right text-slate-400">{fmtNum(c.greeks?.theta, 3)}</td>
+                    <td className="td text-right text-slate-400">{fmtNum(c.greeks?.gamma, 4)}</td>
+                    <td className="td text-right text-slate-400">{fmtNum(c.greeks?.vega, 3)}</td>
+                  </tr>
+                  {open && (
+                    <tr className="bg-ink-900/40">
+                      <td colSpan={11} className="px-3 py-2">
+                        <LiveOptionQuote contract={c} />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               );
             })}
           </tbody>
@@ -296,6 +319,91 @@ function ChainView({ symbol, expiration }: { symbol: string; expiration: string 
         </div>
       )}
     </Card>
+  );
+}
+
+/**
+ * Live option quote (real bid/ask/size/volume/OI/greeks from OPRA via Webull),
+ * overlaid on the focused chain contract. Auto-refreshes while open; the chain's
+ * own (delayed, Yahoo-sourced) value is shown beneath each live stat so the
+ * delayed-vs-live gap is obvious at a glance.
+ */
+function LiveOptionQuote({ contract }: { contract: OptionContract }) {
+  const q = useAsync(() => client.webullOptionQuotes([contract.symbol]), [contract.symbol]);
+  usePolling(() => q.reload(), 5000); // markets move — keep it fresh while open
+
+  const quote = q.data?.quotes?.[0];
+  const failed = q.data && !q.data.ok;
+
+  const ivPct = (v?: number | null) => (v === undefined || v === null ? '—' : `${(v * 100).toFixed(0)}%`);
+  const size = (n?: number) => (n === undefined ? undefined : `×${n}`);
+  const spread = quote && quote.bid !== undefined && quote.ask !== undefined ? quote.ask - quote.bid : undefined;
+  const spreadPct = spread !== undefined && quote?.mark ? (spread / quote.mark) * 100 : undefined;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge color="green">live · OPRA</Badge>
+        <span className="font-mono text-xs text-slate-400">{contract.symbol}</span>
+        {quote?.changePct !== undefined && (
+          <span className={cx('text-xs font-semibold', quote.changePct >= 0 ? 'text-bull' : 'text-bear')}>
+            {fmtPct(quote.changePct)}
+          </span>
+        )}
+        {!!quote?.quoteTime && (
+          <span className="text-[11px] text-slate-500">as of {new Date(quote.quoteTime).toLocaleTimeString()}</span>
+        )}
+        <button
+          className="ml-auto text-xs text-accent disabled:text-slate-600"
+          onClick={() => q.reload()}
+          disabled={q.loading}
+        >
+          {q.loading ? 'Refreshing…' : '↻ Refresh'}
+        </button>
+      </div>
+
+      {q.loading && !quote && !failed ? (
+        <Spinner label="Loading live quote…" />
+      ) : failed ? (
+        <div className="text-xs text-amber-400">Live quote unavailable — {q.data?.error ?? 'no data returned'}.</div>
+      ) : !quote ? (
+        <div className="text-xs text-slate-500">No live quote for this contract right now.</div>
+      ) : (
+        <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4 lg:grid-cols-6">
+          <Stat label="Bid" value={fmtNum(quote.bid)} sub={size(quote.bidSize)} chain={fmtNum(contract.bid)} />
+          <Stat label="Ask" value={fmtNum(quote.ask)} sub={size(quote.askSize)} chain={fmtNum(contract.ask)} />
+          <Stat label="Mark" value={fmtNum(quote.mark)} chain={fmtNum(contract.mark)} />
+          <Stat label="Last" value={fmtNum(quote.last)} chain={fmtNum(contract.last)} />
+          <Stat
+            label="Spread"
+            value={fmtNum(spread)}
+            sub={spreadPct !== undefined ? `${spreadPct.toFixed(1)}%` : undefined}
+          />
+          <Stat label="Vol" value={fmtNum(quote.volume, 0)} chain={fmtNum(contract.volume, 0)} />
+          <Stat label="OI" value={fmtNum(quote.openInterest, 0)} chain={fmtNum(contract.openInterest, 0)} />
+          <Stat label="IV" value={ivPct(quote.iv)} chain={ivPct(contract.greeks?.iv)} />
+          <Stat label="Δ" value={fmtNum(quote.delta, 3)} chain={fmtNum(contract.greeks?.delta, 3)} />
+          <Stat label="Θ" value={fmtNum(quote.theta, 3)} chain={fmtNum(contract.greeks?.theta, 3)} />
+          <Stat label="Γ" value={fmtNum(quote.gamma, 4)} chain={fmtNum(contract.greeks?.gamma, 4)} />
+          <Stat label="ν" value={fmtNum(quote.vega, 3)} chain={fmtNum(contract.greeks?.vega, 3)} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// One live stat with the chain's (delayed) value beneath it. The chain line is
+// suppressed when the chain has no comparable value ('—').
+function Stat({ label, value, sub, chain }: { label: string; value: string; sub?: string; chain?: string }) {
+  return (
+    <div className="rounded-md bg-ink-800/60 px-2 py-1.5">
+      <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="text-sm font-semibold text-slate-100">
+        {value}
+        {sub && <span className="ml-1 text-[10px] font-normal text-slate-500">{sub}</span>}
+      </div>
+      {chain && chain !== '—' && <div className="text-[10px] text-slate-500">chain {chain}</div>}
+    </div>
   );
 }
 

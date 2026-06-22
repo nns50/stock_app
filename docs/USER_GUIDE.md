@@ -202,6 +202,14 @@ The full option chain for a symbol + expiration, with **Greeks** (delta, gamma, 
 vega), **IV**, and bid/ask. When a provider doesn't return Greeks, they're computed
 with **Black–Scholes** (estimates — European exercise, no dividends, constant vol).
 
+> **Live quote overlay (Webull/OPRA).** When Webull is configured, **click any contract
+> row** to overlay a **real-time** quote on it — bid/ask with sizes, last, mark, spread,
+> volume, open interest, IV and Greeks — from Webull's OPRA options feed. The chain
+> itself is Yahoo-sourced and usually **delayed ~15 min**, so each live stat shows the
+> chain's delayed value beneath it (`chain …`) for an at-a-glance comparison. The panel
+> auto-refreshes every few seconds while it's open. (Requires Webull keys + an options
+> market-data entitlement; otherwise rows aren't clickable.)
+
 ### Entry scan
 
 Give it a target profile and it **ranks candidate contracts** for you:

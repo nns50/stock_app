@@ -668,6 +668,32 @@ export interface WebullMoversResult {
   error?: string;
 }
 
+/** Live option quote (real bid/ask/size/volume/OI/greeks from OPRA via Webull). */
+export interface OptionLiveQuote {
+  symbol: string; // full OCC contract symbol
+  bid?: number;
+  ask?: number;
+  bidSize?: number;
+  askSize?: number;
+  last?: number;
+  mark?: number;
+  volume?: number;
+  openInterest?: number;
+  iv?: number; // fraction (0.147 = 14.7%)
+  delta?: number;
+  gamma?: number;
+  theta?: number;
+  vega?: number;
+  changePct?: number;
+  quoteTime?: number; // epoch ms
+}
+
+export interface OptionLiveQuotesResult {
+  ok: boolean;
+  quotes: OptionLiveQuote[];
+  error?: string;
+}
+
 export interface NewsItem {
   title: string;
   publisher?: string;
