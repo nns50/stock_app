@@ -178,9 +178,11 @@ A server-saved list of symbols you're tracking.
 - Each row shows last, % change, bid/ask, and volume.
 - You can also add symbols from a symbol's detail page (the ☆).
 
-> **Symbol page → News.** A symbol's detail page shows recent **headlines** (Yahoo) with
-> publisher and time, linking out — the catalyst context behind a move. Works on any
-> provider; headlines only (we don't summarize).
+> **Symbol page → News & analysts.** A symbol's detail page shows recent **headlines**
+> (Yahoo) with publisher and time, linking out — the catalyst context behind a move — plus
+> an **Analyst** block: consensus **price target** (with upside/downside vs the last price),
+> rating, and recent **upgrades/downgrades** (firm + grade change), which are themselves
+> intraday catalysts. Works on any provider; decision-support, not advice.
 
 ---
 
