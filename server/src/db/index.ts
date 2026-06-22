@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS positions (
   quantity    REAL NOT NULL,           -- opened qty (shares or contracts)
   entry_price REAL NOT NULL,           -- per share / per-share premium
   entry_date  TEXT NOT NULL,           -- ISO date (YYYY-MM-DD)
+  entry_time  TEXT,                    -- optional local entry time (HH:MM), for time-of-day stats
   fees        REAL NOT NULL DEFAULT 0,
   option_type TEXT CHECK(option_type IN ('call','put') OR option_type IS NULL),
   strike      REAL,
@@ -168,6 +169,7 @@ function migrate(): void {
   if (!has('checklist')) db.exec('ALTER TABLE positions ADD COLUMN checklist TEXT');
   if (!has('stop_price')) db.exec('ALTER TABLE positions ADD COLUMN stop_price REAL');
   if (!has('target_price')) db.exec('ALTER TABLE positions ADD COLUMN target_price REAL');
+  if (!has('entry_time')) db.exec('ALTER TABLE positions ADD COLUMN entry_time TEXT');
   rebuildAlertsTable(db);
 }
 

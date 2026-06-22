@@ -284,6 +284,7 @@ export interface Position {
   quantity: number;
   entryPrice: number;
   entryDate: string;
+  entryTime: string | null;
   fees: number;
   optionType: 'call' | 'put' | null;
   strike: number | null;
@@ -374,6 +375,7 @@ export interface JournalStats {
   byDiscipline: GroupStat[];
   byWeekday: GroupStat[];
   byHold: GroupStat[];
+  byTimeOfDay: GroupStat[];
   rTrades: number;
   avgR: number | null;
   bestR: number | null;

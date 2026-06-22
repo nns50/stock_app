@@ -17,6 +17,8 @@ export interface PositionInput {
   quantity: number;
   entryPrice: number;
   entryDate: string;
+  /** Optional local entry time (HH:MM) for time-of-day analytics. */
+  entryTime?: string | null;
   fees?: number;
   optionType?: OptionType | null;
   strike?: number | null;
@@ -49,6 +51,7 @@ export interface Position {
   quantity: number;
   entryPrice: number;
   entryDate: string;
+  entryTime: string | null;
   fees: number;
   optionType: OptionType | null;
   strike: number | null;
@@ -76,6 +79,7 @@ interface PositionRow {
   quantity: number;
   entry_price: number;
   entry_date: string;
+  entry_time: string | null;
   fees: number;
   option_type: OptionType | null;
   strike: number | null;
@@ -133,6 +137,7 @@ function mapPosition(row: PositionRow): Position {
     quantity: row.quantity,
     entryPrice: row.entry_price,
     entryDate: row.entry_date,
+    entryTime: row.entry_time,
     fees: row.fees,
     optionType: row.option_type,
     strike: row.strike,
@@ -188,10 +193,10 @@ export function createPosition(input: PositionInput): Position {
   const res = db
     .prepare(
       `INSERT INTO positions
-        (asset_type, symbol, side, quantity, entry_price, entry_date, fees,
+        (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
          option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
          stop_price, target_price, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?)`,
     )
     .run(
       input.assetType,
@@ -200,6 +205,7 @@ export function createPosition(input: PositionInput): Position {
       input.quantity,
       input.entryPrice,
       input.entryDate,
+      input.entryTime ?? null,
       input.fees ?? 0,
       input.optionType ?? null,
       input.strike ?? null,
@@ -225,6 +231,7 @@ export interface PositionPatch {
   quantity?: number;
   fees?: number;
   entryDate?: string;
+  entryTime?: string | null;
   stopPrice?: number | null;
   targetPrice?: number | null;
 }
@@ -245,6 +252,7 @@ export function updatePosition(id: number, patch: PositionPatch): Position | und
   if (patch.quantity !== undefined) set('quantity', patch.quantity);
   if (patch.fees !== undefined) set('fees', patch.fees);
   if (patch.entryDate !== undefined) set('entry_date', patch.entryDate);
+  if (patch.entryTime !== undefined) set('entry_time', patch.entryTime);
   if (patch.stopPrice !== undefined) set('stop_price', patch.stopPrice);
   if (patch.targetPrice !== undefined) set('target_price', patch.targetPrice);
   if (fields.length === 0) return existing;
@@ -304,6 +312,7 @@ export interface ImportablePosition {
   quantity: number;
   entryPrice: number;
   entryDate: string;
+  entryTime?: string | null;
   fees?: number;
   optionType?: OptionType | null;
   strike?: number | null;
@@ -334,10 +343,10 @@ export interface ImportResult {
 export function importPositions(positions: ImportablePosition[], mode: 'merge' | 'replace'): ImportResult {
   const insertPos = db.prepare(
     `INSERT INTO positions
-       (asset_type, symbol, side, quantity, entry_price, entry_date, fees,
+       (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
         option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
         stop_price, target_price, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   );
   const insertExit = db.prepare(
     `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, created_at)
@@ -356,6 +365,7 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
         p.quantity,
         p.entryPrice,
         p.entryDate,
+        p.entryTime ?? null,
         p.fees ?? 0,
         p.optionType ?? null,
         p.strike ?? null,

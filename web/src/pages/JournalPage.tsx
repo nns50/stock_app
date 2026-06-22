@@ -370,7 +370,7 @@ export default function JournalPage() {
         </div>
       )}
 
-      {s.totalClosed > 0 && (s.byWeekday.length > 0 || s.byHold.length > 0) && (
+      {s.totalClosed > 0 && (s.byWeekday.length > 0 || s.byHold.length > 0 || s.byTimeOfDay.length > 0) && (
         <div>
           <h2 className="text-sm font-semibold text-slate-300 mb-2">
             Performance by timing
@@ -379,6 +379,7 @@ export default function JournalPage() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
             <Breakdown title="By weekday (exit)" colLabel="Day" rows={s.byWeekday} />
             <Breakdown title="By hold time" colLabel="Held" rows={s.byHold} />
+            {s.byTimeOfDay.length > 0 && <Breakdown title="By entry session" colLabel="Session" rows={s.byTimeOfDay} />}
           </div>
         </div>
       )}

@@ -162,6 +162,8 @@ export interface JournalStats {
   /** Realized P&L by the weekday a trade was closed on, and by how long it was held. */
   byWeekday: GroupStat[];
   byHold: GroupStat[];
+  /** Realized P&L by entry session (open / midday / power hour) — only over trades with a logged entry time. */
+  byTimeOfDay: GroupStat[];
   /** Edge in R (multiples of initial risk) over closed trades that logged a stop. */
   rTrades: number;
   avgR: number | null;
@@ -330,6 +332,20 @@ function holdBucket(days: number): string {
   return (HOLD_BUCKETS.find((b) => days <= b.max) ?? HOLD_BUCKETS[HOLD_BUCKETS.length - 1]).label;
 }
 
+// Time-of-day sessions, by entry time (HH:MM, assumed US/Eastern). Only trades
+// with a logged entry time contribute — answers "when in the day do I trade best?"
+const SESSION_ORDER = ['Open', 'Late AM', 'Midday', 'Power hr', 'Extended'];
+function sessionOf(time: string): string | null {
+  const m = /^(\d{1,2}):(\d{2})/.exec(time);
+  if (!m) return null;
+  const mins = Number(m[1]) * 60 + Number(m[2]);
+  if (mins >= 570 && mins < 630) return 'Open'; // 9:30–10:30
+  if (mins >= 630 && mins < 720) return 'Late AM'; // 10:30–12:00
+  if (mins >= 720 && mins < 840) return 'Midday'; // 12:00–14:00
+  if (mins >= 840 && mins <= 960) return 'Power hr'; // 14:00–16:00
+  return 'Extended';
+}
+
 /** Stats over CLOSED positions (each closed position = one completed trade). */
 export function computeJournalStats(closed: Position[]): JournalStats {
   const trades = closed
@@ -373,6 +389,7 @@ export function computeJournalStats(closed: Position[]): JournalStats {
   const discMap = new Map<string, Acc>();
   const weekdayMap = new Map<string, Acc>();
   const holdMap = new Map<string, Acc>();
+  const sessionMap = new Map<string, Acc>();
   for (const p of closed) {
     const pnl = round2(realizedPnlOf(p));
     for (const tag of new Set(p.tags)) accumulate(tagMap, tag, pnl);
@@ -381,6 +398,10 @@ export function computeJournalStats(closed: Position[]): JournalStats {
     const exitDate = lastExitDate(p) ?? p.entryDate;
     accumulate(weekdayMap, WEEKDAYS[new Date(`${exitDate}T00:00:00Z`).getUTCDay()], pnl);
     accumulate(holdMap, holdBucket(holdDaysOf(p, exitDate)), pnl);
+    if (p.entryTime) {
+      const s = sessionOf(p.entryTime);
+      if (s) accumulate(sessionMap, s, pnl);
+    }
   }
   const byTotalDesc = (a: GroupStat, b: GroupStat) => b.totalPnl - a.totalPnl;
 
@@ -421,6 +442,7 @@ export function computeJournalStats(closed: Position[]): JournalStats {
     byGrade: toGroupStats(gradeMap).sort((a, b) => a.key.localeCompare(b.key)),
     byDiscipline: toGroupStats(discMap).sort(byTotalDesc),
     byWeekday: toGroupStats(weekdayMap).sort((a, b) => WEEKDAYS.indexOf(a.key) - WEEKDAYS.indexOf(b.key)),
+    byTimeOfDay: toGroupStats(sessionMap).sort((a, b) => SESSION_ORDER.indexOf(a.key) - SESSION_ORDER.indexOf(b.key)),
     byHold: toGroupStats(holdMap).sort((a, b) => HOLD_ORDER.indexOf(a.key) - HOLD_ORDER.indexOf(b.key)),
     rTrades: rs.length,
     avgR: rs.length ? round2(rs.reduce((a, b) => a + b, 0) / rs.length) : null,
