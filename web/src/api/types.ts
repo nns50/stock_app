@@ -668,6 +668,14 @@ export interface WebullMoversResult {
   error?: string;
 }
 
+export interface NewsItem {
+  title: string;
+  publisher?: string;
+  link: string;
+  publishedAt?: string;
+  relatedTickers?: string[];
+}
+
 export interface SymbolEvents {
   symbol: string;
   /** Next earnings date (YYYY-MM-DD), if known. */
