@@ -184,6 +184,13 @@ export interface OptionsChain {
   synthetic?: boolean;
 }
 
+export interface OptionsIv {
+  symbol: string;
+  expiration: string;
+  underlyingPrice: number | null;
+  ivContext: IvContext;
+}
+
 export interface IvContext {
   atmIv: number | null;
   ivRank: number | null;
