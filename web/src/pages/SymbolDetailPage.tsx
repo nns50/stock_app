@@ -9,6 +9,7 @@ import { RefreshBar } from '../components/RefreshBar';
 import { PriceChart } from '../components/PriceChart';
 import { daysUntil } from '../components/EarningsBadge';
 import { NewsPanel } from '../components/NewsPanel';
+import { AnalystPanel } from '../components/AnalystPanel';
 
 const TIMEFRAMES = ['daily', 'weekly', '15min', '5min', '1min'];
 
@@ -197,6 +198,8 @@ export default function SymbolDetailPage() {
           </div>
         </Card>
       )}
+
+      <AnalystPanel symbol={symbol.toUpperCase()} price={quote?.last} />
 
       <NewsPanel symbol={symbol.toUpperCase()} />
     </div>

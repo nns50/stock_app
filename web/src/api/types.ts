@@ -676,6 +676,24 @@ export interface NewsItem {
   relatedTickers?: string[];
 }
 
+export interface RatingAction {
+  date?: string;
+  firm: string;
+  action?: string;
+  fromGrade?: string;
+  toGrade?: string;
+}
+
+export interface AnalystInfo {
+  symbol: string;
+  targetMean?: number;
+  targetHigh?: number;
+  targetLow?: number;
+  recommendationKey?: string;
+  numberOfAnalysts?: number;
+  actions: RatingAction[];
+}
+
 export interface SymbolEvents {
   symbol: string;
   /** Next earnings date (YYYY-MM-DD), if known. */

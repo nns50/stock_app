@@ -36,6 +36,7 @@ import type {
   MoverSession,
   SymbolEvents,
   NewsItem,
+  AnalystInfo,
   AlertSchedulerConfig,
   NotificationStatus,
   NotificationTestResult,
@@ -109,6 +110,7 @@ export const client = {
   events: (symbols: string[]) =>
     api<{ events: SymbolEvents[] }>(`/events?symbols=${encodeURIComponent(symbols.join(','))}`),
   news: (symbol: string) => api<{ symbol: string; news: NewsItem[] }>(`/news?symbol=${encodeURIComponent(symbol)}`),
+  analyst: (symbol: string) => api<AnalystInfo>(`/analyst?symbol=${encodeURIComponent(symbol)}`),
 
   // --- meta ---
   provider: () => api<ProviderStatus>('/provider'),
