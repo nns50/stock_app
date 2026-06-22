@@ -214,6 +214,16 @@ describe('webull connectivity (integration)', () => {
   it('rejects an unknown probe kind with 400', async () => {
     expect((await post('/api/webull/probe', { kind: 'place-order' })).status).toBe(400);
   });
+
+  it('returns a guarded option-quotes result without credentials', async () => {
+    const out = (await getJson('/api/webull/option-quotes?symbols=AAPL260622C00300000')) as {
+      ok: boolean;
+      quotes: unknown[];
+      error?: string;
+    };
+    expect(out).toMatchObject({ ok: false, quotes: [] });
+    expect(out.error).toMatch(/not configured/i);
+  });
 });
 
 describe('auth gate (integration)', () => {

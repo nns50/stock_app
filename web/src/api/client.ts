@@ -32,6 +32,7 @@ import type {
   WebullPositionsPreview,
   WebullImportSummary,
   WebullMoversResult,
+  OptionLiveQuotesResult,
   MoverList,
   MoverSession,
   SymbolEvents,
@@ -116,6 +117,8 @@ export const client = {
     api<WebullImportSummary>('/webull/positions/import', post({ accountId })),
   webullMovers: (list: MoverList = 'gainers', session: MoverSession = 'regular', limit = 10) =>
     api<WebullMoversResult>(`/webull/movers?list=${list}&session=${session}&limit=${limit}`),
+  webullOptionQuotes: (symbols: string[]) =>
+    api<OptionLiveQuotesResult>(`/webull/option-quotes?symbols=${encodeURIComponent(symbols.join(','))}`),
   events: (symbols: string[]) =>
     api<{ events: SymbolEvents[] }>(`/events?symbols=${encodeURIComponent(symbols.join(','))}`),
   news: (symbol: string) => api<{ symbol: string; news: NewsItem[] }>(`/news?symbol=${encodeURIComponent(symbol)}`),

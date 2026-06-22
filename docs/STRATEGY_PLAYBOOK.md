@@ -194,6 +194,10 @@ premium), while respecting that **time and volatility work against long options.
 - Demand **liquidity**: tight **max spread %**, a **min open interest/volume**. The
   scanner ranks candidates by **spread tightness, liquidity, and delta fit** — let it
   surface the cleanest contract.
+- **Confirm the real spread before you commit.** The chain is delayed (~15 min); in
+  **Options → Chain**, click the contract to overlay Webull's **live OPRA** bid/ask
+  (with sizes) and re-check the true spread and top-of-book depth at the moment you'd
+  trade. A spread that looks fine on delayed data can be materially wider live.
 - Mind **IV rank.** Buying long premium when **IV rank is high** means you're paying up
   and exposed to an IV crush (e.g. after earnings). Prefer **low-to-moderate IV rank**
   for long options, or accept the risk knowingly.

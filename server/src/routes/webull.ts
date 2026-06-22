@@ -4,6 +4,7 @@ import { asyncHandler, parseBody, parseQuery } from './_helpers';
 import { ProbeKind, webullProbe, webullStatus } from '../providers/webull/account';
 import { importWebullPositions, previewWebullPositions } from '../providers/webull/positions';
 import { webullMovers } from '../providers/webull/movers';
+import { webullOptionQuotes } from '../providers/webull/optionQuotes';
 
 // Webull connectivity: report whether credentials are configured, and run a
 // read-only probe to validate them live + reveal response shapes. Session-gated
@@ -72,5 +73,20 @@ webullRouter.get(
   asyncHandler(async (req, res) => {
     const { list, session, limit } = parseQuery(moversQuery, req);
     res.json(await webullMovers(list, limit, session));
+  }),
+);
+
+// Live option quotes (real bid/ask/size/volume/OI/greeks from OPRA) for one or
+// more OCC contract symbols — overlays the delayed Yahoo chain. Read-only;
+// works whenever Webull keys are set and the app has an options entitlement.
+const optionQuotesQuery = z.object({
+  symbols: z.string().min(1).max(2048), // comma-separated OCC symbols
+});
+
+webullRouter.get(
+  '/option-quotes',
+  asyncHandler(async (req, res) => {
+    const { symbols } = parseQuery(optionQuotesQuery, req);
+    res.json(await webullOptionQuotes(symbols.split(',')));
   }),
 );
