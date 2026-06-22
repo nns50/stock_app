@@ -69,7 +69,7 @@ describe('webull account probe', () => {
     const url = String(fetchSpy.mock.calls[0][0]);
     expect(url).toContain('api.webull.com/openapi/market-data/stock/quotes');
     expect(url).toContain('symbol=AAPL');
-    expect(url).toContain('depth=10');
+    expect(url).toContain('depth=1');
   });
 
   it('runs an option-snapshot probe with the given OCC symbol', async () => {

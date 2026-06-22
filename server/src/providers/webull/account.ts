@@ -80,9 +80,10 @@ function probeCall(kind: ProbeKind, opts: { symbol?: string; accountId?: string 
         surface: 'market',
       });
     case 'depth':
-      // Level-2 bid/ask ladder — confirms the depth shape before the L2 panel.
+      // Bid/ask ladder — confirms the depth shape before the L2 panel. depth=1
+      // (top of book) is all an LV1 quote plan allows; LV2 supports up to 50.
       return c.call('GET', '/openapi/market-data/stock/quotes', {
-        query: { symbol: (opts.symbol || 'AAPL').toUpperCase(), category: 'US_STOCK', depth: '10' },
+        query: { symbol: (opts.symbol || 'AAPL').toUpperCase(), category: 'US_STOCK', depth: '1' },
         surface: 'market',
       });
     case 'option-snapshot':

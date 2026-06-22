@@ -26,7 +26,7 @@ const probeBody = z.object({
     'balance',
     'subscriptions',
   ]),
-  symbol: z.string().max(10).optional(),
+  symbol: z.string().max(24).optional(), // up to a full OCC option symbol
   accountId: z.string().max(64).optional(),
 });
 
