@@ -35,6 +35,7 @@ import type {
   MoverList,
   MoverSession,
   SymbolEvents,
+  NewsItem,
   AlertSchedulerConfig,
   NotificationStatus,
   NotificationTestResult,
@@ -107,6 +108,7 @@ export const client = {
     api<WebullMoversResult>(`/webull/movers?list=${list}&session=${session}&limit=${limit}`),
   events: (symbols: string[]) =>
     api<{ events: SymbolEvents[] }>(`/events?symbols=${encodeURIComponent(symbols.join(','))}`),
+  news: (symbol: string) => api<{ symbol: string; news: NewsItem[] }>(`/news?symbol=${encodeURIComponent(symbol)}`),
 
   // --- meta ---
   provider: () => api<ProviderStatus>('/provider'),

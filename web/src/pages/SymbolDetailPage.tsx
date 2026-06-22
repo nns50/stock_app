@@ -8,6 +8,7 @@ import { Card, ErrorState, PnL, Segmented, Spinner, StatTile } from '../componen
 import { RefreshBar } from '../components/RefreshBar';
 import { PriceChart } from '../components/PriceChart';
 import { daysUntil } from '../components/EarningsBadge';
+import { NewsPanel } from '../components/NewsPanel';
 
 const TIMEFRAMES = ['daily', 'weekly', '15min', '5min', '1min'];
 
@@ -196,6 +197,8 @@ export default function SymbolDetailPage() {
           </div>
         </Card>
       )}
+
+      <NewsPanel symbol={symbol.toUpperCase()} />
     </div>
   );
 }
