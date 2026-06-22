@@ -59,6 +59,32 @@ describe('webull account probe', () => {
     expect(url).toContain('direction=DESC');
   });
 
+  it('runs an L2 depth probe for a symbol', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200, text: async () => '{}' } as Response);
+    const r = await webullProbe('depth', { symbol: 'aapl' });
+    expect(r.ok).toBe(true);
+    const url = String(fetchSpy.mock.calls[0][0]);
+    expect(url).toContain('api.webull.com/openapi/market-data/stock/quotes');
+    expect(url).toContain('symbol=AAPL');
+    expect(url).toContain('depth=10');
+  });
+
+  it('runs an option-snapshot probe with the given OCC symbol', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200, text: async () => '[]' } as Response);
+    const r = await webullProbe('option-snapshot', { symbol: 'aapl260522c00300000' });
+    expect(r.ok).toBe(true);
+    const url = String(fetchSpy.mock.calls[0][0]);
+    expect(url).toContain('api.webull.com/openapi/market-data/option/snapshot');
+    expect(url).toContain('symbols=AAPL260522C00300000');
+    expect(url).toContain('category=US_OPTION');
+  });
+
   it('requires an account id for positions/balance, then queries assets', async () => {
     Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
     expect((await webullProbe('positions')).error).toMatch(/account/i); // guarded, no network

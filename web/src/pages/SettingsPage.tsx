@@ -382,7 +382,15 @@ function ServerWatchSection() {
 function WebullSection() {
   const status = useAsync(() => client.webullStatus(), []);
   const [kind, setKind] = useState<
-    'account-list' | 'snapshot' | 'bars' | 'movers' | 'positions' | 'balance' | 'subscriptions'
+    | 'account-list'
+    | 'snapshot'
+    | 'bars'
+    | 'movers'
+    | 'depth'
+    | 'option-snapshot'
+    | 'positions'
+    | 'balance'
+    | 'subscriptions'
   >('account-list');
   const [symbol, setSymbol] = useState('AAPL');
   const [accountId, setAccountId] = useState('');
@@ -441,15 +449,23 @@ function WebullSection() {
                 <option value="snapshot">Stock snapshot</option>
                 <option value="bars">Stock candles</option>
                 <option value="movers">Market movers</option>
+                <option value="depth">L2 depth</option>
+                <option value="option-snapshot">Option snapshot (OCC)</option>
                 <option value="positions">Positions</option>
                 <option value="balance">Balance</option>
                 <option value="subscriptions">Quote subscriptions</option>
               </select>
             </Field>
-            {(kind === 'snapshot' || kind === 'bars') && (
-              <Field label="Symbol">
+            {(kind === 'snapshot' || kind === 'bars' || kind === 'depth' || kind === 'option-snapshot') && (
+              <Field
+                label={kind === 'option-snapshot' ? 'OCC option symbol' : 'Symbol'}
+                hint={kind === 'option-snapshot' ? 'e.g. AAPL260522C00300000' : undefined}
+              >
                 <input
-                  className="input max-w-[120px]"
+                  className={cx(
+                    'input',
+                    kind === 'option-snapshot' ? 'max-w-[240px] font-mono text-xs' : 'max-w-[120px]',
+                  )}
                   value={symbol}
                   onChange={(e) => setSymbol(e.target.value.toUpperCase())}
                 />

@@ -15,7 +15,17 @@ webullRouter.get('/status', (_req, res) => {
 });
 
 const probeBody = z.object({
-  kind: z.enum(['account-list', 'snapshot', 'bars', 'movers', 'positions', 'balance', 'subscriptions']),
+  kind: z.enum([
+    'account-list',
+    'snapshot',
+    'bars',
+    'movers',
+    'depth',
+    'option-snapshot',
+    'positions',
+    'balance',
+    'subscriptions',
+  ]),
   symbol: z.string().max(10).optional(),
   accountId: z.string().max(64).optional(),
 });
