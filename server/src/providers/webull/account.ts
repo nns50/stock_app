@@ -30,7 +30,16 @@ export function webullClient(): WebullClient {
   });
 }
 
-export type ProbeKind = 'account-list' | 'snapshot' | 'bars' | 'movers' | 'positions' | 'balance' | 'subscriptions';
+export type ProbeKind =
+  | 'account-list'
+  | 'snapshot'
+  | 'bars'
+  | 'movers'
+  | 'depth'
+  | 'option-snapshot'
+  | 'positions'
+  | 'balance'
+  | 'subscriptions';
 
 export interface ProbeResult {
   ok: boolean;
@@ -68,6 +77,19 @@ function probeCall(kind: ProbeKind, opts: { symbol?: string; accountId?: string 
           direction: 'DESC',
           page_size: '10',
         },
+        surface: 'market',
+      });
+    case 'depth':
+      // Level-2 bid/ask ladder — confirms the depth shape before the L2 panel.
+      return c.call('GET', '/openapi/market-data/stock/quotes', {
+        query: { symbol: (opts.symbol || 'AAPL').toUpperCase(), category: 'US_STOCK', depth: '10' },
+        surface: 'market',
+      });
+    case 'option-snapshot':
+      // Real option quote (bid/ask/OI/volume) — needs a full OCC symbol in the
+      // Symbol field (e.g. AAPL260522C00300000). Confirms the overlay shape.
+      return c.call('GET', '/openapi/market-data/option/snapshot', {
+        query: { symbols: (opts.symbol || '').toUpperCase(), category: 'US_OPTION' },
         surface: 'market',
       });
     case 'positions':
