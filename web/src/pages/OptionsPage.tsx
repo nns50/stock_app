@@ -4,6 +4,7 @@ import { client } from '../api/client';
 import { useProvider } from '../components/ProviderContext';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtNum, fmtPct, fmtUsd } from '../lib/format';
+import { daysUntil } from '../components/EarningsBadge';
 import {
   Badge,
   Card,
@@ -115,6 +116,8 @@ export default function OptionsPage() {
         {status?.synthetic && <Badge color="amber">synthetic data</Badge>}
       </div>
 
+      {expiration && <OptionsTimingBanner symbol={activeSymbol} expiration={expiration} />}
+
       <div className="flex gap-1 border-b border-ink-600/60">
         {(['chain', 'entry', 'exit', 'strategy'] as Tab[]).map((t) => (
           <button
@@ -134,6 +137,61 @@ export default function OptionsPage() {
       {tab === 'entry' && <EntryScanView symbol={activeSymbol} expiration={expiration} />}
       {tab === 'exit' && <ExitRulesView />}
       {tab === 'strategy' && <StrategyBuilder />}
+    </div>
+  );
+}
+
+/**
+ * IV-rank + earnings timing context for the selected symbol/expiry. Combines the
+ * underlying's IV rank (rich vs cheap vs its own range) with whether earnings
+ * fall before expiry — the "sell premium when IV is rich / don't buy into
+ * earnings" read. Decision-support, not advice.
+ */
+function OptionsTimingBanner({ symbol, expiration }: { symbol: string; expiration: string }) {
+  const iv = useAsync(() => client.optionsIv(symbol, expiration), [symbol, expiration]);
+  const events = useAsync(() => client.events([symbol]), [symbol]);
+  if (iv.loading || !iv.data) return null;
+
+  const { ivRank, method } = iv.data.ivContext;
+  const earningsDate = events.data?.events?.[0]?.earningsDate;
+  const erDte = daysUntil(earningsDate);
+  const earningsBeforeExpiry = !!(earningsDate && erDte != null && erDte >= 0 && earningsDate <= expiration);
+
+  let kind: 'warn' | 'sell' | 'buy' | 'neutral';
+  let text: string;
+  if (earningsBeforeExpiry) {
+    kind = 'warn';
+    text = `Earnings ${earningsDate} fall before this expiry — expect an IV drop (crush) right after the report. Long premium is exposed to it; defined-risk or post-event structures tend to be favored.`;
+  } else if (ivRank == null) {
+    kind = 'neutral';
+    text = 'IV rank is still building history for this name.';
+  } else if (ivRank >= 50) {
+    kind = 'sell';
+    text = `IV rank ${ivRank.toFixed(0)} — options are richly priced vs this name's own range, and no earnings fall before expiry. Context tends to favor selling premium.`;
+  } else if (ivRank <= 25) {
+    kind = 'buy';
+    text = `IV rank ${ivRank.toFixed(0)} — options are cheap vs this name's own range. Context tends to favor buying premium (long optionality).`;
+  } else {
+    kind = 'neutral';
+    text = `IV rank ${ivRank.toFixed(0)} — middling vs this name's own range; no strong premium-side edge from IV alone.`;
+  }
+
+  const S = {
+    warn: { box: 'border-amber-500/40 bg-amber-500/10', label: 'text-amber-400', name: 'Event risk' },
+    sell: { box: 'border-bull/40 bg-bull/10', label: 'text-bull', name: 'Rich IV' },
+    buy: { box: 'border-accent/40 bg-accent/10', label: 'text-accent', name: 'Cheap IV' },
+    neutral: { box: 'border-ink-600 bg-ink-700/30', label: 'text-slate-400', name: 'IV context' },
+  }[kind];
+
+  return (
+    <div className={cx('flex items-start gap-2 rounded-lg border px-3 py-2 text-xs', S.box)}>
+      <span className={cx('shrink-0 font-semibold uppercase tracking-wide', S.label)}>{S.name}</span>
+      <span className="text-slate-300">
+        {text}
+        {method === 'hv-estimate' && (
+          <span className="text-amber-400"> · est. from realized vol until history builds</span>
+        )}
+      </span>
     </div>
   );
 }

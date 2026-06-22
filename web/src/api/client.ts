@@ -10,6 +10,7 @@ import type {
   ExitRulesConfig,
   Exposure,
   IvContext,
+  OptionsIv,
   JournalStats,
   OptionsChain,
   Position,
@@ -172,6 +173,8 @@ export const client = {
   expirations: (symbol: string) => api<{ expirations: string[] }>(`/options/${encodeURIComponent(symbol)}/expirations`),
   chain: (symbol: string, expiration: string) =>
     api<OptionsChain>(`/options/${encodeURIComponent(symbol)}/chain?expiration=${expiration}`),
+  optionsIv: (symbol: string, expiration: string) =>
+    api<OptionsIv>(`/options/${encodeURIComponent(symbol)}/iv?expiration=${encodeURIComponent(expiration)}`),
   entryDefault: () => api<EntryStrategyConfig>('/options/entry/default'),
   exitDefault: () => api<ExitRulesConfig>('/options/exit/default'),
   entryScan: (body: { symbol: string; expiration: string; config?: Partial<EntryStrategyConfig> }) =>

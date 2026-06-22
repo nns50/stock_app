@@ -33,6 +33,20 @@ optionsRouter.use((_req, res, next) => {
 optionsRouter.get('/entry/default', (_req, res) => res.json(defaultEntryConfig('call')));
 optionsRouter.get('/exit/default', (_req, res) => res.json(defaultExitConfig()));
 
+/** Fetch the chain, record today's ATM IV, and rank it vs history (HV fallback). */
+async function ivContextFor(symbol: string, expiration: string) {
+  const provider = getProvider();
+  const chain = await provider.getOptionsChain(symbol, expiration);
+  const atmIv = atmIvOfChain(chain);
+  if (atmIv !== undefined) recordAtmIv(chain.underlying, atmIv);
+  const history = getIvHistory(chain.underlying);
+  let candles: Candle[] = [];
+  if (history.length < 15 && atmIv !== undefined) {
+    candles = await provider.getCandles(symbol, 'daily', { limit: 260 }).catch(() => []);
+  }
+  return { chain, ivContext: computeIvContext(atmIv, history, candles) };
+}
+
 optionsRouter.get(
   '/:symbol/expirations',
   asyncHandler(async (req, res) => {
@@ -52,6 +66,22 @@ optionsRouter.get(
     const atmIv = atmIvOfChain(chain);
     if (atmIv !== undefined) recordAtmIv(chain.underlying, atmIv); // accrue IV history
     res.json({ ...chain, atmIv: atmIv ?? null, synthetic: getProviderStatus().synthetic });
+  }),
+);
+
+// Lightweight IV context (rank/percentile) for the timing banner — no full scan.
+optionsRouter.get(
+  '/:symbol/iv',
+  asyncHandler(async (req, res) => {
+    requireCapability('options');
+    const { expiration } = parseQuery(chainQuery, req);
+    const { chain, ivContext } = await ivContextFor(param(req, 'symbol'), expiration);
+    res.json({
+      symbol: param(req, 'symbol').toUpperCase(),
+      expiration,
+      underlyingPrice: chain.underlyingPrice ?? null,
+      ivContext,
+    });
   }),
 );
 
@@ -89,20 +119,9 @@ optionsRouter.post(
       side,
       weights: { ...defaultEntryConfig(side).weights!, ...(body.config?.weights ?? {}) },
     };
-    const provider = getProvider();
-    const chain = await provider.getOptionsChain(body.symbol, body.expiration);
-
     // IV context: record today's ATM IV, then rank it vs accumulated history
     // (or realized-vol as a labeled fallback until history builds).
-    const atmIv = atmIvOfChain(chain);
-    if (atmIv !== undefined) recordAtmIv(chain.underlying, atmIv);
-    const history = getIvHistory(chain.underlying);
-    let candles: Candle[] = [];
-    if (history.length < 15 && atmIv !== undefined) {
-      candles = await provider.getCandles(body.symbol, 'daily', { limit: 260 }).catch(() => []);
-    }
-    const ivContext = computeIvContext(atmIv, history, candles);
-
+    const { chain, ivContext } = await ivContextFor(body.symbol, body.expiration);
     const candidates = scanEntries(chain, cfg, new Date(), ivContext.ivRank);
     res.json({
       symbol: body.symbol.toUpperCase(),

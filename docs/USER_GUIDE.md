@@ -185,6 +185,11 @@ A server-saved list of symbols you're tracking.
 Four tabs: **Chain**, **Entry scan**, **Exit rules**, **Strategy**. (Requires a
 provider that exposes option chains — e.g. Tradier; demo mode also works.)
 
+> **Timing banner.** When you pick a symbol + expiry, a banner reads the **IV-rank +
+> earnings** context: _Rich IV_ (rank ≥ 50, no earnings before expiry → selling premium
+> tends to be favored), _Cheap IV_ (rank ≤ 25 → buying premium), or **Event risk** when
+> earnings fall before expiry (IV-crush caution). Decision-support, not advice.
+
 ### Chain
 
 The full option chain for a symbol + expiration, with **Greeks** (delta, gamma, theta,
