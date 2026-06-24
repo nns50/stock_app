@@ -21,6 +21,7 @@ const AboutPage = lazy(() => import('./pages/AboutPage'));
 const WatchlistPage = lazy(() => import('./pages/WatchlistPage'));
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const TradePage = lazy(() => import('./pages/TradePage'));
 
 export default function App() {
   return (
@@ -39,6 +40,7 @@ export default function App() {
                       <Route path="/watchlist" element={<WatchlistPage />} />
                       <Route path="/symbol/:symbol" element={<SymbolDetailPage />} />
                       <Route path="/options" element={<OptionsPage />} />
+                      <Route path="/trade" element={<TradePage />} />
                       <Route path="/positions" element={<PositionsPage />} />
                       <Route path="/journal" element={<JournalPage />} />
                       <Route path="/alerts" element={<AlertsPage />} />

@@ -226,6 +226,80 @@ describe('webull connectivity (integration)', () => {
   });
 });
 
+describe('trade (dry-run) routes (integration)', () => {
+  const put = (path: string, body: unknown) =>
+    fetch(`${base}${path}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  beforeEach(() => db.exec('DELETE FROM order_events; DELETE FROM order_intents; DELETE FROM trading_config;'));
+
+  const account = {
+    buyingPowerUsd: 100_000,
+    exposureUsd: 0,
+    realizedPnlTodayUsd: 0,
+    ordersToday: 0,
+    currentPositionQty: 0,
+  };
+  const intent = {
+    symbol: 'aapl',
+    assetKind: 'stock',
+    side: 'buy',
+    openClose: 'open',
+    quantity: 10,
+    orderType: 'limit',
+    limitPrice: 10,
+    referencePrice: 10,
+  };
+
+  it('returns the default config and persists updates + kill switch', async () => {
+    expect(await getJson('/api/trade/config')).toMatchObject({ enabled: false, killSwitch: false });
+
+    const updated = await (await put('/api/trade/config', { enabled: true, maxOrderUsd: 1000 })).json();
+    expect(updated).toMatchObject({ enabled: true, maxOrderUsd: 1000 });
+
+    const killed = await (await post('/api/trade/kill-switch', { on: true })).json();
+    expect(killed).toMatchObject({ killSwitch: true });
+  });
+
+  it('dry-runs a clean order to "would submit" without placing it', async () => {
+    await put('/api/trade/config', { enabled: true });
+    const r = (await (await post('/api/trade/dry-run', { intent, account })).json()) as {
+      wouldSubmit: boolean;
+      intent: { id: number; state: string; symbol: string };
+      notional: number;
+    };
+    expect(r.wouldSubmit).toBe(true);
+    expect(r.intent).toMatchObject({ state: 'validated', symbol: 'AAPL' });
+    expect(r.notional).toBe(100);
+
+    const list = (await getJson('/api/trade/intents')) as { intents: Array<{ id: number }> };
+    expect(list.intents).toHaveLength(1);
+    const events = (await getJson(`/api/trade/intents/${r.intent.id}/events`)) as {
+      events: Array<{ state: string }>;
+    };
+    expect(events.events.map((e) => e.state)).toEqual(['draft', 'validated']);
+  });
+
+  it('dry-run rejects when the kill switch is engaged', async () => {
+    await put('/api/trade/config', { enabled: true });
+    await post('/api/trade/kill-switch', { on: true });
+    const r = (await (await post('/api/trade/dry-run', { intent, account })).json()) as {
+      wouldSubmit: boolean;
+      intent: { state: string };
+    };
+    expect(r.wouldSubmit).toBe(false);
+    expect(r.intent.state).toBe('rejected');
+  });
+
+  it('rejects a malformed dry-run body with 400', async () => {
+    const res = await post('/api/trade/dry-run', { intent: { symbol: 'AAPL' }, account });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('auth gate (integration)', () => {
   afterEach(() => {
     config.auth.password = '';

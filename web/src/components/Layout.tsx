@@ -15,6 +15,7 @@ import {
   Settings,
   Star,
   Sun,
+  Zap,
 } from 'lucide-react';
 import { cx } from '../lib/format';
 import { useProvider } from './ProviderContext';
@@ -31,6 +32,7 @@ const TABS = [
   { to: '/screener', label: 'Screener', Icon: Search },
   { to: '/watchlist', label: 'Watch', Icon: Star },
   { to: '/options', label: 'Options', Icon: Layers },
+  { to: '/trade', label: 'Trade', Icon: Zap },
   { to: '/positions', label: 'Positions', Icon: Briefcase },
   { to: '/journal', label: 'Journal', Icon: BookOpen },
   { to: '/alerts', label: 'Alerts', Icon: BellRing },

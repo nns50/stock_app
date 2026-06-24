@@ -20,12 +20,13 @@ places trades.
 4. [Screener](#screener)
 5. [Watchlist](#watchlist)
 6. [Options](#options)
-7. [Positions & P&L](#positions--pl)
-8. [Journal & analytics](#journal--analytics)
-9. [Alerts](#alerts)
-10. [Settings](#settings)
-11. [A recommended daily workflow](#a-recommended-daily-workflow)
-12. [Data, privacy & providers](#data-privacy--providers)
+7. [Trade (dry-run)](#trade-dry-run)
+8. [Positions & P&L](#positions--pl)
+9. [Journal & analytics](#journal--analytics)
+10. [Alerts](#alerts)
+11. [Settings](#settings)
+12. [A recommended daily workflow](#a-recommended-daily-workflow)
+13. [Data, privacy & providers](#data-privacy--providers)
 
 ---
 
@@ -243,6 +244,41 @@ naked long call) on risk-defined terms.
   in-the-money. **POP** = probability of profit (a lognormal estimate). **IV rank** =
   0–100% position of current IV within its history. (Full glossary on the in-app
   **About** page.)
+
+---
+
+## Trade (dry-run)
+
+> **The app never places trades.** This page is a **sandbox** for the live-trading
+> guardrails described in `docs/LIVE_TRADING_DESIGN.md`. It validates an order against your
+> safety rules and records it to an audit trail, then **stops** — no order is ever sent to a
+> broker, and the live submit path isn't built.
+
+Use it to see exactly what the guardrails would do before any real-trading work exists:
+
+- **Compose an order** — symbol, stock/option, buy/sell, open/close, quantity, market/limit
+  (+ strike/expiry for options), plus a reference price used for notional and the fat-finger
+  check.
+- **Enter account state by hand** — buying power, exposure, today's P&L, orders today, and
+  your current position in the symbol. (Until the broker is wired, these are typed in so you
+  can probe each rule.)
+- **Dry-run** → a result banner reads **would submit** or **blocked**, with the order's
+  computed **notional**, the audited intent **state** (`validated` / `rejected`), and the
+  full **guardrail breakdown** — each rule shown ✓ pass / ✕ blocked / ⚠ warning (hover for
+  detail).
+
+### Guardrail config
+
+The side panel persists your safety settings (server-side):
+
+- **Kill switch** — a one-click sticky halt; while engaged, every dry-run is blocked.
+- **Trading enabled**, **allow naked short**, and the caps: **max order $**, **max symbol
+  qty**, **max exposure $**, **max orders/day**, **max daily loss $**, **fat-finger %**.
+
+Defaults are intentionally tiny and trading ships **off**. The rules: per-order notional,
+buying power (buys only), exposure ceiling (opening adds, closing doesn't), per-symbol size,
+daily-loss halt, max orders/day, fat-finger price sanity, naked-short block, and the
+enabled/kill-switch gates — anything that can't be verified **fails closed**.
 
 ---
 
