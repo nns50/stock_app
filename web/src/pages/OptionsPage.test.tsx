@@ -99,13 +99,14 @@ describe('OptionsPage', () => {
     const strike = await screen.findByText('300.00');
     fireEvent.click(strike);
 
-    expect(await screen.findByText('live · OPRA')).toBeInTheDocument();
     expect(quotes).toHaveBeenCalledWith(['AAPL260622C00300000']);
-    // Live values render (bid 0.98, volume 30,882), distinct from the chain's
-    // delayed values shown beneath each stat (`chain …`).
-    expect(screen.getByText('0.98')).toBeInTheDocument();
-    expect(screen.getByText('30,882')).toBeInTheDocument();
-    expect(screen.getByText('-24.26%')).toBeInTheDocument();
+    // The "live · OPRA" badge renders during the loading state, so wait on a
+    // value that only appears once the async quote resolves (the live bid),
+    // otherwise the synchronous getByText below races the fetch.
+    expect(await screen.findByText('0.98')).toBeInTheDocument(); // live bid
+    expect(screen.getByText('live · OPRA')).toBeInTheDocument();
+    expect(screen.getByText('30,882')).toBeInTheDocument(); // live volume
+    expect(screen.getByText('-24.26%')).toBeInTheDocument(); // live change
     expect(screen.getAllByText(/^chain/).length).toBeGreaterThan(0);
   });
 });
