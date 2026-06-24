@@ -126,6 +126,11 @@ function notionalUsd(intent: OrderIntent): number | undefined {
   return intent.quantity * mult * px;
 }
 
+/** Public wrapper: order notional in USD, or undefined when there's no usable price. */
+export function orderNotionalUsd(intent: OrderIntent): number | undefined {
+  return notionalUsd(intent);
+}
+
 /** Signed position change this order would apply (+buy / −sell). */
 function signedDelta(intent: OrderIntent): number {
   return intent.side === 'buy' ? intent.quantity : -intent.quantity;
