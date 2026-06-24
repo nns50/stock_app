@@ -102,6 +102,12 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS trading_config (
+  id          INTEGER PRIMARY KEY CHECK(id = 1),   -- singleton row
+  config      TEXT NOT NULL,           -- JSON TradingConfig (caps + kill switch)
+  updated_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS iv_history (
   symbol      TEXT NOT NULL,
   date        TEXT NOT NULL,           -- YYYY-MM-DD
