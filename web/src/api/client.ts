@@ -50,6 +50,11 @@ import type {
   StrategyLeg,
   SymbolDetail,
   UniverseSymbol,
+  TradingConfig,
+  DryRunResult,
+  OrderIntentInput,
+  AccountStateInput,
+  OrderIntentRecord,
 } from './types';
 
 export class ApiError extends Error {
@@ -319,4 +324,14 @@ export const client = {
   setAlertScheduler: (body: { enabled?: boolean; intervalSeconds?: number }) =>
     api<AlertSchedulerConfig>('/alerts/scheduler', { method: 'PUT', body: JSON.stringify(body) }),
   testNotification: () => api<NotificationTestResult>('/alerts/notifications/test', { method: 'POST' }),
+
+  // --- live trading (dry-run safety surface; never submits an order) ---
+  tradeConfig: () => api<TradingConfig>('/trade/config'),
+  setTradeConfig: (patch: Partial<TradingConfig>) =>
+    api<TradingConfig>('/trade/config', { method: 'PUT', body: JSON.stringify(patch) }),
+  setKillSwitch: (on: boolean) =>
+    api<TradingConfig>('/trade/kill-switch', { method: 'POST', body: JSON.stringify({ on }) }),
+  dryRunOrder: (intent: OrderIntentInput, account: AccountStateInput) =>
+    api<DryRunResult>('/trade/dry-run', { method: 'POST', body: JSON.stringify({ intent, account }) }),
+  tradeIntents: () => api<{ intents: OrderIntentRecord[] }>('/trade/intents'),
 };

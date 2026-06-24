@@ -780,3 +780,77 @@ export interface StrategyAnalysis {
   payoff: { price: number; pnl: number }[];
   probabilityOfProfit: number | null;
 }
+
+// --- live trading (dry-run safety surface) ---
+export interface TradingConfig {
+  enabled: boolean;
+  killSwitch: boolean;
+  maxOrderUsd: number;
+  maxSymbolPositionQty: number;
+  maxExposureUsd: number;
+  maxOrdersPerDay: number;
+  maxDailyLossUsd: number;
+  fatFingerPct: number;
+  allowNakedShort: boolean;
+}
+
+export interface GuardrailCheck {
+  rule: string;
+  passed: boolean;
+  severity: 'block' | 'warn';
+  detail: string;
+}
+
+export interface GuardrailReport {
+  ok: boolean;
+  checks: GuardrailCheck[];
+}
+
+export interface OrderIntentInput {
+  symbol: string;
+  assetKind: 'stock' | 'option';
+  side: 'buy' | 'sell';
+  openClose: 'open' | 'close';
+  quantity: number;
+  orderType: 'market' | 'limit';
+  limitPrice?: number;
+  referencePrice?: number;
+  optionType?: 'call' | 'put';
+  strike?: number;
+  expiration?: string;
+}
+
+export interface AccountStateInput {
+  buyingPowerUsd: number;
+  exposureUsd: number;
+  realizedPnlTodayUsd: number;
+  ordersToday: number;
+  currentPositionQty: number;
+}
+
+export interface OrderIntentRecord {
+  id: number;
+  idempotencyKey: string;
+  symbol: string;
+  assetKind: 'stock' | 'option';
+  side: 'buy' | 'sell';
+  openClose: 'open' | 'close';
+  quantity: number;
+  orderType: 'market' | 'limit';
+  limitPrice: number | null;
+  optionType: 'call' | 'put' | null;
+  strike: number | null;
+  expiration: string | null;
+  state: string;
+  brokerOrderId: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface DryRunResult {
+  intent: OrderIntentRecord;
+  guardrails: GuardrailReport;
+  wouldSubmit: boolean;
+  notional: number | null;
+  summary: string;
+}
