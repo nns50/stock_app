@@ -1,0 +1,86 @@
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { initDb, db } from '../src/db';
+import { createIntent, transitionIntent, getIntent, getEvents, listIntents } from '../src/db/orders';
+import { IllegalTransitionError } from '../src/services/trading/orderLifecycle';
+import type { OrderIntent } from '../src/services/trading/guardrails';
+
+beforeAll(() => initDb());
+beforeEach(() => db.exec('DELETE FROM order_events; DELETE FROM order_intents;'));
+
+const stockBuy: OrderIntent = {
+  symbol: 'aapl',
+  assetKind: 'stock',
+  side: 'buy',
+  openClose: 'open',
+  quantity: 10,
+  orderType: 'limit',
+  limitPrice: 100,
+};
+
+describe('order intents persistence', () => {
+  it('creates a draft intent and records a creation event', () => {
+    const intent = createIntent(stockBuy, 'key-1');
+    expect(intent).toMatchObject({ symbol: 'AAPL', state: 'draft', quantity: 10, orderType: 'limit', limitPrice: 100 });
+    const events = getEvents(intent.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ state: 'draft', detail: 'created' });
+  });
+
+  it('is idempotent on the client key', () => {
+    const a = createIntent(stockBuy, 'key-1');
+    const b = createIntent({ ...stockBuy, quantity: 999 }, 'key-1'); // same key, different body
+    expect(b.id).toBe(a.id);
+    expect(b.quantity).toBe(10); // original wins; no duplicate row
+    expect(listIntents()).toHaveLength(1);
+  });
+
+  it('walks a legal lifecycle and audits each step', () => {
+    const intent = createIntent(stockBuy, 'key-1');
+    transitionIntent(intent.id, 'validated');
+    transitionIntent(intent.id, 'confirmed');
+    const submitted = transitionIntent(intent.id, 'submitted', { brokerOrderId: 'WB123' });
+    expect(submitted.state).toBe('submitted');
+    expect(submitted.brokerOrderId).toBe('WB123');
+    transitionIntent(intent.id, 'acknowledged');
+    const filled = transitionIntent(intent.id, 'filled', { detail: 'fill @100' });
+    expect(filled.state).toBe('filled');
+
+    expect(getEvents(intent.id).map((e) => e.state)).toEqual([
+      'draft',
+      'validated',
+      'confirmed',
+      'submitted',
+      'acknowledged',
+      'filled',
+    ]);
+  });
+
+  it('rejects an illegal transition and leaves state + audit untouched', () => {
+    const intent = createIntent(stockBuy, 'key-1');
+    expect(() => transitionIntent(intent.id, 'filled')).toThrow(IllegalTransitionError);
+    expect(getIntent(intent.id)!.state).toBe('draft'); // unchanged
+    expect(getEvents(intent.id)).toHaveLength(1); // no event appended for the failed jump
+  });
+
+  it('preserves an existing broker id when a later transition omits it', () => {
+    const intent = createIntent(stockBuy, 'key-1');
+    transitionIntent(intent.id, 'validated');
+    transitionIntent(intent.id, 'confirmed');
+    transitionIntent(intent.id, 'submitted', { brokerOrderId: 'WB123' });
+    const acked = transitionIntent(intent.id, 'acknowledged'); // no brokerOrderId passed
+    expect(acked.brokerOrderId).toBe('WB123'); // COALESCE keeps the prior value
+  });
+
+  it('filters intents by state', () => {
+    const a = createIntent(stockBuy, 'k1');
+    createIntent({ ...stockBuy }, 'k2');
+    transitionIntent(a.id, 'validated');
+    expect(listIntents({ state: 'validated' }).map((i) => i.id)).toEqual([a.id]);
+    expect(listIntents({ state: 'draft' })).toHaveLength(1);
+    expect(listIntents()).toHaveLength(2);
+  });
+
+  it('throws on transitioning a missing intent', () => {
+    expect(() => transitionIntent(9999, 'validated')).toThrow(/No order intent/);
+  });
+});

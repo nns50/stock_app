@@ -108,6 +108,33 @@ CREATE TABLE IF NOT EXISTS trading_config (
   updated_at  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS order_intents (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  idempotency_key TEXT NOT NULL UNIQUE,   -- client key; guards double-submit
+  symbol          TEXT NOT NULL,
+  asset_kind      TEXT NOT NULL CHECK(asset_kind IN ('stock','option')),
+  side            TEXT NOT NULL CHECK(side IN ('buy','sell')),
+  open_close      TEXT NOT NULL CHECK(open_close IN ('open','close')),
+  quantity        REAL NOT NULL,
+  order_type      TEXT NOT NULL CHECK(order_type IN ('market','limit')),
+  limit_price     REAL,
+  option_type     TEXT CHECK(option_type IN ('call','put') OR option_type IS NULL),
+  strike          REAL,
+  expiration      TEXT,
+  state           TEXT NOT NULL,         -- OrderState (validated by the lifecycle machine)
+  broker_order_id TEXT,
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS order_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  intent_id   INTEGER NOT NULL REFERENCES order_intents(id) ON DELETE CASCADE,
+  state       TEXT NOT NULL,           -- the state entered at this event
+  detail      TEXT,                    -- human note or raw broker payload
+  created_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS iv_history (
   symbol      TEXT NOT NULL,
   date        TEXT NOT NULL,           -- YYYY-MM-DD
@@ -137,6 +164,7 @@ ${ALERTS_TABLE_SQL}
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_exits_position ON position_exits(position_id);
 CREATE INDEX IF NOT EXISTS idx_picks_snapshot ON screener_picks(snapshot_id);
+CREATE INDEX IF NOT EXISTS idx_order_events_intent ON order_events(intent_id);
 `;
 
 interface SeedRow {
