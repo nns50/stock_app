@@ -499,6 +499,10 @@ function ConfigPanel({ config, reload }: { config: TradingConfig; reload: () => 
         <span className="text-slate-300">Trading enabled</span>
         <input type="checkbox" checked={draft.enabled} onChange={(e) => set('enabled', e.target.checked)} />
       </label>
+      <p className="text-[11px] text-slate-500 -mt-2">
+        Arms the <code>trading_enabled</code> guardrail. Separate from the server <code>TRADING_ENABLED</code> env —
+        both must be on to place. Remember to <b>Save</b>.
+      </p>
       <label className="flex items-center justify-between text-sm">
         <span className="text-slate-300">Allow naked short</span>
         <input

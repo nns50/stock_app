@@ -277,8 +277,12 @@ naked long call) on risk-defined terms.
 The side panel persists your safety settings (server-side):
 
 - **Kill switch** — a one-click sticky halt; while engaged, every dry-run is blocked.
-- **Trading enabled**, **allow naked short**, and the caps: **max order $**, **max symbol
-  qty**, **max exposure $**, **max orders/day**, **max daily loss $**, **fat-finger %**.
+- **Trading enabled** — the in-app arming switch (the `trading_enabled` guardrail). This is
+  **separate from** the server env `TRADING_ENABLED`: the env var gates the whole deployment,
+  while this checkbox arms placement at runtime. **Both must be on** to place — setting the env
+  var alone still leaves `trading_enabled` ✕ in the preview until you check this and **Save**.
+- **Allow naked short**, and the caps: **max order $**, **max symbol qty**, **max exposure $**,
+  **max orders/day**, **max daily loss $**, **fat-finger %**.
 
 Defaults are intentionally tiny and trading ships **off**. The rules: per-order notional,
 buying power (buys only), exposure ceiling (opening adds, closing doesn't), per-symbol size,
