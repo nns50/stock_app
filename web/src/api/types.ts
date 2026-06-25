@@ -854,3 +854,12 @@ export interface DryRunResult {
   notional: number | null;
   summary: string;
 }
+
+export interface WebullAccountStateResult {
+  ok: boolean;
+  accountId: string;
+  state?: AccountStateInput;
+  optionBuyingPowerUsd?: number;
+  netLiquidationUsd?: number;
+  error?: string;
+}

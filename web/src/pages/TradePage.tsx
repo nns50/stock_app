@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { client } from '../api/client';
-import { useAsync } from '../lib/hooks';
+import { useAsync, useLocalStorage } from '../lib/hooks';
 import { cx, fmtUsd } from '../lib/format';
 import { Badge, Card, Field, NumberInput, PageHeader, Segmented, Spinner } from '../components/ui';
 import type { AccountStateInput, DryRunResult, GuardrailCheck, OrderIntentInput, TradingConfig } from '../api/types';
@@ -52,6 +52,9 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
   const [result, setResult] = useState<DryRunResult>();
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string>();
+  const [accountId, setAccountId] = useLocalStorage('trade.accountId', '');
+  const [pulling, setPulling] = useState(false);
+  const [pullMsg, setPullMsg] = useState<string>();
 
   const setO = <K extends keyof OrderIntentInput>(k: K, v: OrderIntentInput[K]) => setOrder((o) => ({ ...o, [k]: v }));
   const setA = <K extends keyof AccountStateInput>(k: K, v: AccountStateInput[K]) =>
@@ -66,6 +69,30 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
       setError((e as Error).message);
     } finally {
       setRunning(false);
+    }
+  };
+
+  // Read-only: pull live buying power / exposure / day P&L (+ this symbol's
+  // position) from the broker into the account-state form. Places nothing.
+  const pull = async () => {
+    if (!accountId.trim()) return setPullMsg('Enter your cash account_id first (Settings → Webull → Account list).');
+    setPulling(true);
+    setPullMsg(undefined);
+    try {
+      const r = await client.tradeAccountState(accountId.trim(), order.symbol);
+      if (r.ok && r.state) {
+        setAccount(r.state);
+        setPullMsg(
+          `Pulled — buying power $${r.state.buyingPowerUsd.toLocaleString('en-US')}` +
+            (r.netLiquidationUsd !== undefined ? ` · net liq $${r.netLiquidationUsd.toLocaleString('en-US')}` : ''),
+        );
+      } else {
+        setPullMsg(r.error ?? 'Could not pull account state.');
+      }
+    } catch (e) {
+      setPullMsg((e as Error).message);
+    } finally {
+      setPulling(false);
     }
   };
 
@@ -173,7 +200,23 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
         </Card>
 
         <Card className="p-4 space-y-3">
-          <h3 className="font-medium">Account state (manual)</h3>
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <h3 className="font-medium">Account state</h3>
+            <div className="flex items-end gap-2">
+              <Field label="Cash account_id" hint="Settings → Webull → Account list">
+                <input
+                  className="input max-w-[220px] font-mono text-xs"
+                  value={accountId}
+                  onChange={(e) => setAccountId(e.target.value.trim())}
+                  placeholder="account_id"
+                />
+              </Field>
+              <button className="btn-ghost" onClick={pull} disabled={pulling}>
+                {pulling ? 'Pulling…' : 'Pull from Webull'}
+              </button>
+            </div>
+          </div>
+          {pullMsg && <p className="text-xs text-slate-400">{pullMsg}</p>}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             <Field label="Buying power $">
               <NumberInput value={account.buyingPowerUsd} onChange={(v) => setA('buyingPowerUsd', v ?? 0)} min={0} />

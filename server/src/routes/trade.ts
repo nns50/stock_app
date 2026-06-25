@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
-import { asyncHandler, parseBody, param } from './_helpers';
+import { asyncHandler, parseBody, parseQuery, param } from './_helpers';
 import { getTradingConfig, setKillSwitch, setTradingConfig } from '../db/trading';
 import { getEvents, listIntents } from '../db/orders';
 import { dryRunOrder } from '../services/trading/dryRun';
+import { webullAccountState } from '../providers/webull/accountState';
 import type { AccountState, OrderIntent } from '../services/trading/guardrails';
 
 // Live-trading endpoints (design §6/§7). Session-gated (mounted after the auth
@@ -74,6 +75,21 @@ tradeRouter.post(
   asyncHandler(async (req, res) => {
     const { intent, account, idempotencyKey } = parseBody(dryRunBody, req);
     res.json(dryRunOrder(intent as OrderIntent, account as AccountState, idempotencyKey ?? randomUUID()));
+  }),
+);
+
+// Live account-state for the guardrails (read-only): real buying power /
+// exposure / day P&L from the cash account, and the signed position in `symbol`.
+// Places nothing.
+const accountStateQuery = z.object({
+  accountId: z.string().min(1).max(64),
+  symbol: z.string().max(24).optional(),
+});
+tradeRouter.get(
+  '/account-state',
+  asyncHandler(async (req, res) => {
+    const { accountId, symbol } = parseQuery(accountStateQuery, req);
+    res.json(await webullAccountState(accountId, symbol));
   }),
 );
 
