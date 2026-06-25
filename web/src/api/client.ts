@@ -56,6 +56,7 @@ import type {
   AccountStateInput,
   OrderIntentRecord,
   WebullAccountStateResult,
+  LivePreviewResult,
 } from './types';
 
 export class ApiError extends Error {
@@ -341,4 +342,6 @@ export const client = {
     api<WebullAccountStateResult>(
       `/trade/account-state?accountId=${encodeURIComponent(accountId)}${symbol ? `&symbol=${encodeURIComponent(symbol)}` : ''}`,
     ),
+  tradePreview: (intent: OrderIntentInput, accountId: string) =>
+    api<LivePreviewResult>('/trade/preview', { method: 'POST', body: JSON.stringify({ intent, accountId }) }),
 };

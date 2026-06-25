@@ -863,3 +863,21 @@ export interface WebullAccountStateResult {
   netLiquidationUsd?: number;
   error?: string;
 }
+
+export interface WebullPreview {
+  ok: boolean;
+  estimate?: { costUsd?: number; commissionUsd?: number; buyingPowerAfterUsd?: number };
+  raw?: unknown;
+  error?: string;
+}
+
+export interface LivePreviewResult {
+  ok: boolean;
+  accountId: string;
+  accountState?: AccountStateInput;
+  guardrails?: GuardrailReport;
+  notional?: number | null;
+  wouldSubmit?: boolean;
+  preview?: WebullPreview;
+  error?: string;
+}
