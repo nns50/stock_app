@@ -20,7 +20,7 @@ places trades.
 4. [Screener](#screener)
 5. [Watchlist](#watchlist)
 6. [Options](#options)
-7. [Trade (dry-run)](#trade-dry-run)
+7. [Trade (preview)](#trade-preview)
 8. [Positions & P&L](#positions--pl)
 9. [Journal & analytics](#journal--analytics)
 10. [Alerts](#alerts)
@@ -247,25 +247,26 @@ naked long call) on risk-defined terms.
 
 ---
 
-## Trade (dry-run)
+## Trade (preview)
 
-> **The app never places trades.** This page is a **sandbox** for the live-trading
-> guardrails described in `docs/LIVE_TRADING_DESIGN.md`. It validates an order against your
-> safety rules and records it to an audit trail, then **stops** — no order is ever sent to a
-> broker, and the live submit path isn't built.
-
-Use it to see exactly what the guardrails would do before any real-trading work exists:
+> **The app places no orders.** This page checks an order against the live-trading
+> guardrails in `docs/LIVE_TRADING_DESIGN.md`. **Dry-run** validates against numbers you type;
+> **Preview (live)** pulls your real account and asks the broker for a cost estimate
+> (`/openapi/trade/order/preview`) — and **still places nothing**. The order-submit step is a
+> separate, not-yet-built slice.
 
 - **Compose an order** — symbol, stock/option, buy/sell, open/close, quantity, market/limit
   (+ strike/expiry for options), plus a reference price used for notional and the fat-finger
   check.
-- **Enter account state by hand** — buying power, exposure, today's P&L, orders today, and
-  your current position in the symbol. (Until the broker is wired, these are typed in so you
-  can probe each rule.)
-- **Dry-run** → a result banner reads **would submit** or **blocked**, with the order's
-  computed **notional**, the audited intent **state** (`validated` / `rejected`), and the
-  full **guardrail breakdown** — each rule shown ✓ pass / ✕ blocked / ⚠ warning (hover for
-  detail).
+- **Dry-run (manual state)** — enter buying power, exposure, today's P&L, orders today, and
+  your current position by hand, then check the guardrails. A banner reads **would submit** or
+  **blocked**, with the **notional**, audited intent **state**, and the full **guardrail
+  breakdown** (✓ pass / ✕ blocked / ⚠ warn, hover for detail).
+- **Pull from Webull** — fill the account-state form with your real buying power / exposure /
+  position (read-only).
+- **Preview (live)** — paste your cash `account_id`, and this pulls your real account, runs the
+  guardrails against it, and — only if they pass — fetches the **broker's cost estimate**.
+  Stocks for now; options preview is coming. Nothing is ever placed.
 
 ### Guardrail config
 

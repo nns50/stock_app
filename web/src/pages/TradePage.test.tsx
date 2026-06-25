@@ -31,10 +31,11 @@ const renderPage = () =>
 describe('TradePage', () => {
   it('renders the dry-run workspace, sandbox banner, and config panel', async () => {
     renderPage();
-    expect(await screen.findByRole('heading', { name: 'Trade (dry-run)' })).toBeInTheDocument();
-    expect(screen.getByText(/Dry-run sandbox/)).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Trade (preview)' })).toBeInTheDocument();
+    expect(screen.getByText(/Nothing here places an order/i)).toBeInTheDocument();
     expect(await screen.findByText('Guardrail config')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Dry-run order/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Dry-run/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Preview \(live\)/ })).toBeInTheDocument();
   });
 
   it('runs a dry-run and shows the would-submit result with the guardrail breakdown', async () => {
@@ -50,7 +51,7 @@ describe('TradePage', () => {
     } as never);
 
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: /Dry-run order/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Dry-run \(manual state\)/ }));
 
     expect(await screen.findByText('would submit')).toBeInTheDocument();
     expect(dry).toHaveBeenCalled();

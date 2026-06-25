@@ -5,6 +5,7 @@ import { asyncHandler, parseBody, parseQuery, param } from './_helpers';
 import { getTradingConfig, setKillSwitch, setTradingConfig } from '../db/trading';
 import { getEvents, listIntents } from '../db/orders';
 import { dryRunOrder } from '../services/trading/dryRun';
+import { livePreview } from '../services/trading/livePreview';
 import { webullAccountState } from '../providers/webull/accountState';
 import type { AccountState, OrderIntent } from '../services/trading/guardrails';
 
@@ -75,6 +76,21 @@ tradeRouter.post(
   asyncHandler(async (req, res) => {
     const { intent, account, idempotencyKey } = parseBody(dryRunBody, req);
     res.json(dryRunOrder(intent as OrderIntent, account as AccountState, idempotencyKey ?? randomUUID()));
+  }),
+);
+
+// Live pre-submit check: real account-state → guardrails → broker cost estimate
+// (only if guardrails pass). PLACES NOTHING — /openapi/trade/order/preview is an
+// estimate. The Place step is a separate, env-gated slice.
+const previewBody = z.object({
+  intent: intentSchema,
+  accountId: z.string().min(1).max(64),
+});
+tradeRouter.post(
+  '/preview',
+  asyncHandler(async (req, res) => {
+    const { intent, accountId } = parseBody(previewBody, req);
+    res.json(await livePreview(intent as OrderIntent, accountId));
   }),
 );
 

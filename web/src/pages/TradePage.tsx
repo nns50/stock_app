@@ -3,7 +3,14 @@ import { client } from '../api/client';
 import { useAsync, useLocalStorage } from '../lib/hooks';
 import { cx, fmtUsd } from '../lib/format';
 import { Badge, Card, Field, NumberInput, PageHeader, Segmented, Spinner } from '../components/ui';
-import type { AccountStateInput, DryRunResult, GuardrailCheck, OrderIntentInput, TradingConfig } from '../api/types';
+import type {
+  AccountStateInput,
+  DryRunResult,
+  GuardrailCheck,
+  LivePreviewResult,
+  OrderIntentInput,
+  TradingConfig,
+} from '../api/types';
 
 const DEFAULT_ACCOUNT: AccountStateInput = {
   buyingPowerUsd: 25000,
@@ -29,13 +36,14 @@ export default function TradePage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Trade (dry-run)"
-        subtitle="Compose an order and see exactly what your guardrails would do. Nothing here is ever sent to a broker."
+        title="Trade (preview)"
+        subtitle="Check an order against your guardrails — with typed numbers (dry-run) or your real account + a broker estimate (live preview). No order is ever placed here."
       />
       <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-        <b>Dry-run sandbox.</b> Every order here is validated against your guardrails and written to the audit trail,
-        then it stops — no order is placed, and the live submit path isn't built yet. Account values below are entered
-        by hand to test the rules.
+        <b>Nothing here places an order.</b> <b>Dry-run</b> checks the guardrails against the account values you type
+        in. <b>Preview (live)</b> pulls your real account state and asks the broker for a cost estimate (
+        <code>/order/preview</code>) — it still <b>places nothing</b>. The order-submit step is a separate,
+        not-yet-built slice.
       </div>
       {cfg.loading ? (
         <Spinner label="Loading trading config…" />
@@ -55,6 +63,8 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
   const [accountId, setAccountId] = useLocalStorage('trade.accountId', '');
   const [pulling, setPulling] = useState(false);
   const [pullMsg, setPullMsg] = useState<string>();
+  const [livePrev, setLivePrev] = useState<LivePreviewResult>();
+  const [previewing, setPreviewing] = useState(false);
 
   const setO = <K extends keyof OrderIntentInput>(k: K, v: OrderIntentInput[K]) => setOrder((o) => ({ ...o, [k]: v }));
   const setA = <K extends keyof AccountStateInput>(k: K, v: AccountStateInput[K]) =>
@@ -69,6 +79,21 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
       setError((e as Error).message);
     } finally {
       setRunning(false);
+    }
+  };
+
+  // Live pre-submit check against the REAL account: pull account state → run
+  // guardrails → (if they pass) fetch the broker's cost estimate. Places nothing.
+  const preview = async () => {
+    if (!accountId.trim()) return setLivePrev({ ok: false, accountId: '', error: 'Enter your cash account_id first.' });
+    setPreviewing(true);
+    setLivePrev(undefined);
+    try {
+      setLivePrev(await client.tradePreview(order, accountId.trim()));
+    } catch (e) {
+      setLivePrev({ ok: false, accountId, error: (e as Error).message });
+    } finally {
+      setPreviewing(false);
     }
   };
 
@@ -193,9 +218,17 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
               </Field>
             </div>
           )}
-          <button className="btn-primary" onClick={run} disabled={running}>
-            {running ? 'Checking…' : 'Dry-run order'}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button className="btn-ghost" onClick={run} disabled={running}>
+              {running ? 'Checking…' : 'Dry-run (manual state)'}
+            </button>
+            <button className="btn-primary" onClick={preview} disabled={previewing}>
+              {previewing ? 'Previewing…' : 'Preview (live)'}
+            </button>
+            <span className="text-[11px] text-slate-500">
+              Preview pulls your real account + a broker estimate. Places nothing.
+            </span>
+          </div>
           {error && <p className="text-sm text-bear">{error}</p>}
         </Card>
 
@@ -236,6 +269,7 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
           </div>
         </Card>
 
+        {livePrev && <LivePreviewPanel result={livePrev} />}
         {result && <ResultPanel result={result} />}
       </div>
 
@@ -273,6 +307,71 @@ function ResultPanel({ result }: { result: DryRunResult }) {
           {warns.map((c) => (
             <RuleChip key={c.rule} check={c} />
           ))}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function LivePreviewPanel({ result }: { result: LivePreviewResult }) {
+  if (!result.ok) {
+    return (
+      <Card className="p-3">
+        <div className="flex items-center gap-2">
+          <Badge color="amber">live preview</Badge>
+          <span className="text-sm text-bear">{result.error}</span>
+        </div>
+      </Card>
+    );
+  }
+  const blocks = result.guardrails?.checks.filter((c) => c.severity === 'block') ?? [];
+  const warns = result.guardrails?.checks.filter((c) => c.severity === 'warn') ?? [];
+  const est = result.preview?.estimate;
+  return (
+    <Card className="overflow-hidden">
+      <div
+        className={cx(
+          'flex flex-wrap items-center justify-between gap-2 p-3 border-b border-ink-600/60',
+          result.wouldSubmit ? 'bg-bull/10' : 'bg-bear/10',
+        )}
+      >
+        <div className="flex items-center gap-2">
+          <Badge color="green">live preview</Badge>
+          <Badge color={result.wouldSubmit ? 'green' : 'red'}>{result.wouldSubmit ? 'would submit' : 'blocked'}</Badge>
+          <span className="text-xs text-slate-400">places nothing</span>
+        </div>
+        {result.accountState && (
+          <div className="text-xs text-slate-400">
+            buying power <span className="text-slate-200">{fmtUsd(result.accountState.buyingPowerUsd)}</span>
+            {result.notional != null && <> · notional {fmtUsd(result.notional)}</>}
+          </div>
+        )}
+      </div>
+      <div className="p-3 space-y-2">
+        {result.preview && (
+          <div className="text-sm">
+            {result.preview.ok ? (
+              <span className="text-slate-300">
+                Broker estimate:{' '}
+                {est?.costUsd != null ? (
+                  <b className="text-slate-100">{fmtUsd(est.costUsd)}</b>
+                ) : (
+                  <span className="text-slate-500">see raw</span>
+                )}
+                {est?.commissionUsd != null && <> · commission {fmtUsd(est.commissionUsd)}</>}
+              </span>
+            ) : (
+              <span className="text-bear">Broker preview error: {result.preview.error}</span>
+            )}
+          </div>
+        )}
+        <div>
+          <div className="text-xs uppercase tracking-wide text-slate-500 mb-1.5">Guardrails (vs live account)</div>
+          <div className="flex flex-wrap gap-1.5">
+            {[...blocks, ...warns].map((c) => (
+              <RuleChip key={c.rule} check={c} />
+            ))}
+          </div>
         </div>
       </div>
     </Card>
