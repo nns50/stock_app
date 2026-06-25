@@ -390,6 +390,8 @@ function WebullSection() {
     | 'option-snapshot'
     | 'positions'
     | 'balance'
+    | 'open-orders'
+    | 'order-history'
     | 'subscriptions'
   >('account-list');
   const [symbol, setSymbol] = useState('AAPL');
@@ -453,6 +455,8 @@ function WebullSection() {
                 <option value="option-snapshot">Option snapshot (OCC)</option>
                 <option value="positions">Positions</option>
                 <option value="balance">Balance</option>
+                <option value="open-orders">Open orders (read-only)</option>
+                <option value="order-history">Order history (read-only)</option>
                 <option value="subscriptions">Quote subscriptions</option>
               </select>
             </Field>
@@ -471,7 +475,7 @@ function WebullSection() {
                 />
               </Field>
             )}
-            {(kind === 'positions' || kind === 'balance') && (
+            {(kind === 'positions' || kind === 'balance' || kind === 'open-orders' || kind === 'order-history') && (
               <Field label="Account ID" hint="Copy an account_id from Account list">
                 <input
                   className="input max-w-[260px] font-mono text-xs"
@@ -491,6 +495,15 @@ function WebullSection() {
               <em>“Insufficient permission, please subscribe to stock quotes”</em> but this list is empty, the plan you
               bought isn't an OpenAPI quote subscription (mobile-app / desktop QT plans don't count) or hasn't activated
               yet.
+            </p>
+          )}
+          {(kind === 'open-orders' || kind === 'order-history') && (
+            <p className="text-[11px] text-slate-500">
+              <strong className="text-slate-400">Read-only</strong> — a GET that lists your existing orders and{' '}
+              <strong className="text-slate-400">places nothing</strong>. It confirms the live order-object shape (and
+              the real endpoint path) before any order-placing code is written. The path is a best guess under{' '}
+              <code className="text-slate-400">/trade/</code>; if it 404s, check the URL in the result and the Webull
+              API Reference — we'll adjust.
             </p>
           )}
 

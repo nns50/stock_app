@@ -99,6 +99,27 @@ describe('webull account probe', () => {
     expect(url).toContain('account_id=ACC1');
   });
 
+  it('runs read-only order-query probes under /trade/, requiring an account id', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    // Guarded — no network until an account id is supplied.
+    expect((await webullProbe('open-orders')).error).toMatch(/account/i);
+    expect((await webullProbe('order-history')).error).toMatch(/account/i);
+
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200, text: async () => '[]' } as Response);
+
+    await webullProbe('open-orders', { accountId: 'ACC1' });
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('api.webull.com/trade/open_orders');
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('account_id=ACC1');
+
+    await webullProbe('order-history', { accountId: 'ACC1' });
+    expect(String(fetchSpy.mock.calls[1][0])).toContain('api.webull.com/trade/order_history');
+
+    // GET only — these probes never POST (place nothing).
+    expect(fetchSpy.mock.calls.every((c) => (c[1] as RequestInit | undefined)?.method === 'GET')).toBe(true);
+  });
+
   it('lists app quote subscriptions (no account id needed)', async () => {
     Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
     const fetchSpy = vi
