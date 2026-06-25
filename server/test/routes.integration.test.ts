@@ -298,6 +298,15 @@ describe('trade (dry-run) routes (integration)', () => {
     const res = await post('/api/trade/dry-run', { intent: { symbol: 'AAPL' }, account });
     expect(res.status).toBe(400);
   });
+
+  it('account-state is read-only and guarded when Webull is unconfigured', async () => {
+    const out = (await getJson('/api/trade/account-state?accountId=ACC1&symbol=AAPL')) as {
+      ok: boolean;
+      error?: string;
+    };
+    expect(out.ok).toBe(false);
+    expect(out.error).toMatch(/not configured/i);
+  });
 });
 
 describe('auth gate (integration)', () => {
