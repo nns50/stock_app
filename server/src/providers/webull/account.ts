@@ -105,13 +105,15 @@ function probeCall(kind: ProbeKind, opts: { symbol?: string; accountId?: string 
     case 'open-orders':
       // READ-ONLY (GET). Confirms the live order-object shape from your real
       // open orders before any place/cancel path is built — places nothing.
-      // Orders live under /trade/ (the Signature doc shows /trade/place_order);
-      // this path is a best guess to confirm — a 404 just means it's elsewhere.
-      return c.call('GET', '/trade/open_orders', { query: { account_id: opts.accountId! }, surface: 'trade' });
+      // Path confirmed from the Trading API Reference (/openapi/trade/order/*).
+      return c.call('GET', '/openapi/trade/order/open', { query: { account_id: opts.accountId! }, surface: 'trade' });
     case 'order-history':
-      // READ-ONLY (GET). Same purpose as open-orders but over historical orders
-      // (useful if there are no open orders right now). Places nothing.
-      return c.call('GET', '/trade/order_history', { query: { account_id: opts.accountId! }, surface: 'trade' });
+      // READ-ONLY (GET). Same as open-orders but over historical orders (useful
+      // when there are no open orders right now). Places nothing.
+      return c.call('GET', '/openapi/trade/order/history', {
+        query: { account_id: opts.accountId! },
+        surface: 'trade',
+      });
     case 'subscriptions':
       // What market-data/quote subscriptions does Webull's OpenAPI actually see
       // for this app? The authoritative check for "I subscribed but still get a
