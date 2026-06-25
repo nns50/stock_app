@@ -161,7 +161,15 @@ export function evaluateGuardrails(
   block('limit_price', limitOk, limitOk ? 'ok' : 'limit orders need a positive limit price');
 
   // --- armed? ------------------------------------------------------------
-  block('trading_enabled', config.enabled, config.enabled ? 'enabled' : 'trading is disabled (TRADING_ENABLED=false)');
+  // NB: this is the in-app, DB-backed "Trading enabled" toggle (config.enabled,
+  // set from the Trade config panel) — NOT the server env var TRADING_ENABLED.
+  // Both must be on to place: TRADING_ENABLED gates the deploy (config.trading
+  // .placeEnabled, checked in placeOrder.ts); this gates the runtime guardrails.
+  block(
+    'trading_enabled',
+    config.enabled,
+    config.enabled ? 'enabled' : 'turn on "Trading enabled" in the Trade config panel to arm trading',
+  );
   block('kill_switch', !config.killSwitch, config.killSwitch ? 'kill switch is engaged — trading halted' : 'clear');
 
   // --- notional / buying power / exposure --------------------------------

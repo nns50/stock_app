@@ -55,6 +55,7 @@ describe('TradePage', () => {
 
     expect(await screen.findByText('would submit')).toBeInTheDocument();
     expect(dry).toHaveBeenCalled();
-    expect(screen.getByText(/trading_enabled/)).toBeInTheDocument();
+    // The guardrail breakdown chip (mark + rule), not the config-panel hint that also names the rule.
+    expect(screen.getByText('✓ trading_enabled')).toBeInTheDocument();
   });
 });
