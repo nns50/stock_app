@@ -113,6 +113,8 @@ export const client = {
       | 'option-snapshot'
       | 'positions'
       | 'balance'
+      | 'open-orders'
+      | 'order-history'
       | 'subscriptions',
     opts?: { symbol?: string; accountId?: string },
   ) => api<WebullProbeResult>('/webull/probe', post({ kind, ...opts })),

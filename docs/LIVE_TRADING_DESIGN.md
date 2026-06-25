@@ -178,3 +178,62 @@ No algorithmic/automated/scheduled trading. No signal-fired entries or exits. No
 copy-trading, no HFT, no order-flow gimmicks. The app remains decision-support that can,
 with deliberate human confirmation and hard limits, place a single reviewed order — and
 nothing more.
+
+---
+
+## 13. Decisions (§11 answered) — 2026-06-25
+
+| Question | Decision |
+|---|---|
+| Scope | **Stocks + single-leg options** first. |
+| Caps | Use conservative starting caps, tunable in the Trade UI. Recommended start: **max order $1,000**, **max daily loss $500**, **max orders/day 10**, **fat-finger 10%** (engine defaults are even smaller). |
+| Naked short | **Blocked.** (`allowNakedShort` stays false.) |
+| Account | **Cash account.** |
+| 2FA / access token | **Off** for now; signature-only auth. Keep an **option to enable** the `x-access-token` (2FA) path later — already supported by the client. |
+| Paper/sandbox | **None — go straight to the real account.** ⇒ extra caution: tiny caps, dry-run first, manual confirm on every order, kill switch in reach. |
+
+## 14. Confirmed Webull Trading API (from the official docs)
+
+Endpoint **paths are not in the user-facing docs** (the SDK abstracts them); they are
+confirmed/guessed below and must each be **probe-confirmed against the real account**
+before any mapper or submit path is built — same discipline as positions/quotes.
+
+**Hosts / prefixes.** Orders live under **`/trade/...`** on `api.webull.com` (the
+Signature doc shows `POST https://api.webull.com/trade/place_order`). Account reads use
+`/openapi/account/list` and `/openapi/assets/{balance,positions}` (already wired).
+
+**Account flow (read-only, paths confirmed):** `Account List` → pick the **cash**
+`account_id` (response carries `account_id` + `account_type`); `Account Balance`
+(buying power / cash); `Account Positions` (holdings). Rate limits: balance/positions
+2/2s, list 10/30s.
+
+**Order lifecycle:** Preview → Place → Replace → Cancel → Query (history / open / detail).
+- **Preview Order** ("estimate costs before placing", 150/10s) — **does not place**; the safe pre-submit cost check.
+- **Place Order** (`/trade/place_order`, 600/60s) — takes an **array** of order objects.
+- **`client_order_id`** — caller-generated, **unique per account, max 32 chars** (use a UUID); this is the broker-side idempotency key (maps to our intent's idempotency key).
+- Real-time fills/cancels come via a **gRPC Trade Event Subscription** (out of scope for v1; we'll poll Order Detail / Open Orders instead).
+- No extra OpenAPI fees; same schedule as the app.
+
+**Stock order body (confirmed):**
+`{ combo_type:"NORMAL", client_order_id, symbol, instrument_type:"EQUITY", market:"US",
+order_type:"LIMIT"|"MARKET"|"STOP_LOSS"|"STOP_LOSS_LIMIT", side:"BUY"|"SELL"|"SHORT",
+quantity, limit_price?, stop_price?, time_in_force:"DAY"|"GTC", entrust_type:"QTY"|"AMOUNT",
+support_trading_session:"CORE"|"ALL"|"NIGHT" }`. Fractional via `entrust_type:"AMOUNT"` +
+`total_cash_amount`.
+
+**Single-leg option order:** same unified endpoint with `instrument_type:"OPTION"`,
+`option_strategy:"SINGLE"`, and a **`legs`** array (strike / expiration / option type /
+side / quantity). Options support **LIMIT / STOP_LOSS / STOP_LOSS_LIMIT only** (no MARKET,
+no TRAILING, no SHORT); **sell-side is DAY-only** (GTC is buy-side only).
+
+**Mapping to our engine:** our `OrderIntent` (side/openClose/qty/orderType/limitPrice +
+option fields) covers the stock and single-leg-option bodies; `LIMIT`/`MARKET` map directly,
+`support_trading_session` comes from a regular/extended toggle, and our intent's idempotency
+key becomes `client_order_id`.
+
+## 15. Phase 1 status (read-only probes)
+
+Account reads are already probe-able (`Account List` / `Balance` / `Positions`). The next
+read-only step is to **confirm the live `Balance` shape** (to source the guardrails'
+`AccountState`) and the **order-query shape** (Open Orders / Order History — confirms the
+order object before any place path). No order is placed in Phase 1.

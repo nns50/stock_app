@@ -25,6 +25,8 @@ const probeBody = z.object({
     'option-snapshot',
     'positions',
     'balance',
+    'open-orders',
+    'order-history',
     'subscriptions',
   ]),
   symbol: z.string().max(24).optional(), // up to a full OCC option symbol

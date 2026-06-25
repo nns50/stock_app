@@ -39,6 +39,8 @@ export type ProbeKind =
   | 'option-snapshot'
   | 'positions'
   | 'balance'
+  | 'open-orders'
+  | 'order-history'
   | 'subscriptions';
 
 export interface ProbeResult {
@@ -100,6 +102,16 @@ function probeCall(kind: ProbeKind, opts: { symbol?: string; accountId?: string 
         query: { account_id: opts.accountId!, total_asset_currency: 'USD' },
         surface: 'trade',
       });
+    case 'open-orders':
+      // READ-ONLY (GET). Confirms the live order-object shape from your real
+      // open orders before any place/cancel path is built — places nothing.
+      // Orders live under /trade/ (the Signature doc shows /trade/place_order);
+      // this path is a best guess to confirm — a 404 just means it's elsewhere.
+      return c.call('GET', '/trade/open_orders', { query: { account_id: opts.accountId! }, surface: 'trade' });
+    case 'order-history':
+      // READ-ONLY (GET). Same purpose as open-orders but over historical orders
+      // (useful if there are no open orders right now). Places nothing.
+      return c.call('GET', '/trade/order_history', { query: { account_id: opts.accountId! }, surface: 'trade' });
     case 'subscriptions':
       // What market-data/quote subscriptions does Webull's OpenAPI actually see
       // for this app? The authoritative check for "I subscribed but still get a
@@ -119,7 +131,10 @@ export async function webullProbe(
   if (!webullConfigured()) {
     return { ok: false, error: 'Webull is not configured — set WEBULL_APP_KEY and WEBULL_APP_SECRET.' };
   }
-  if ((kind === 'positions' || kind === 'balance') && !opts.accountId) {
+  if (
+    (kind === 'positions' || kind === 'balance' || kind === 'open-orders' || kind === 'order-history') &&
+    !opts.accountId
+  ) {
     return { ok: false, error: 'Pick an account — copy an account_id from the Account list result.' };
   }
   try {
