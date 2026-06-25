@@ -198,9 +198,23 @@ Endpoint **paths are not in the user-facing docs** (the SDK abstracts them); the
 confirmed/guessed below and must each be **probe-confirmed against the real account**
 before any mapper or submit path is built — same discipline as positions/quotes.
 
-**Hosts / prefixes.** Orders live under **`/trade/...`** on `api.webull.com` (the
-Signature doc shows `POST https://api.webull.com/trade/place_order`). Account reads use
-`/openapi/account/list` and `/openapi/assets/{balance,positions}` (already wired).
+**Hosts / prefixes.** Account reads use `/openapi/account/list` and
+`/openapi/assets/{balance,positions}` (already wired). Orders live under
+**`/openapi/trade/order/*`** — confirmed paths + methods from the API Reference:
+
+| Endpoint | Method | Path | Side effect |
+|---|---|---|---|
+| Preview | POST | `/openapi/trade/order/preview` | none (cost estimate) |
+| Place | POST | `/openapi/trade/order/place` | **places an order** |
+| Replace | POST | `/openapi/trade/order/replace` | modifies an order |
+| Cancel | POST | `/openapi/trade/order/cancel` | cancels an order |
+| Open orders | GET | `/openapi/trade/order/open` | none (read) |
+| Order history | GET | `/openapi/trade/order/history` | none (read) |
+| Order detail | GET | `/openapi/trade/order/detail` | none (read) |
+| Stock instruments | GET | `/openapi/instrument/stock/list` | none (read) |
+
+(The Signature doc's `/trade/place_order` was an older example; the v2 path is
+`/openapi/trade/order/place`. `/trade/open_orders` 404'd as expected.)
 
 **Account flow (read-only, paths confirmed):** `Account List` → pick the **cash**
 `account_id` (response carries `account_id` + `account_type`); `Account Balance`
@@ -233,7 +247,11 @@ key becomes `client_order_id`.
 
 ## 15. Phase 1 status (read-only probes)
 
-Account reads are already probe-able (`Account List` / `Balance` / `Positions`). The next
-read-only step is to **confirm the live `Balance` shape** (to source the guardrails'
-`AccountState`) and the **order-query shape** (Open Orders / Order History — confirms the
-order object before any place path). No order is placed in Phase 1.
+Done: `Account List` (cash account_id `…INDIVIDUAL_CASH`), `Balance` (confirmed shape →
+`AccountState` mapper, "Pull from Webull"), and `Positions`. Order-query probes now point at
+the **confirmed** `/openapi/trade/order/{open,history}` paths (the earlier `/trade/*` guess
+404'd) — re-run them to confirm the order-object shape. **Next (Phase 3):** the
+preview→confirm→place pipeline using `/openapi/trade/order/preview` (estimate, no placement)
+→ explicit human confirm → `/openapi/trade/order/place`, every order gated by the guardrails +
+kill switch with tiny caps. No order is placed until that pipeline ships and a preview is
+explicitly approved.

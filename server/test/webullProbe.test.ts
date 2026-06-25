@@ -110,11 +110,11 @@ describe('webull account probe', () => {
       .mockResolvedValue({ ok: true, status: 200, text: async () => '[]' } as Response);
 
     await webullProbe('open-orders', { accountId: 'ACC1' });
-    expect(String(fetchSpy.mock.calls[0][0])).toContain('api.webull.com/trade/open_orders');
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('api.webull.com/openapi/trade/order/open');
     expect(String(fetchSpy.mock.calls[0][0])).toContain('account_id=ACC1');
 
     await webullProbe('order-history', { accountId: 'ACC1' });
-    expect(String(fetchSpy.mock.calls[1][0])).toContain('api.webull.com/trade/order_history');
+    expect(String(fetchSpy.mock.calls[1][0])).toContain('api.webull.com/openapi/trade/order/history');
 
     // GET only — these probes never POST (place nothing).
     expect(fetchSpy.mock.calls.every((c) => (c[1] as RequestInit | undefined)?.method === 'GET')).toBe(true);
