@@ -65,19 +65,48 @@ describe('live preview pipeline', () => {
     expect(String(fetchSpy.mock.calls[2][0])).toContain('/openapi/trade/order/preview');
   });
 
-  it('blocks (and skips the broker) when guardrails fail', async () => {
+  it('still fetches the broker estimate for a guardrail-blocked (but valid) order', async () => {
     Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
     setTradingConfig({ enabled: true });
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(okResp(BALANCE)) // balance: BP 10.81
-      .mockResolvedValueOnce(okResp([])); // positions
+      .mockResolvedValueOnce(okResp([])) // positions
+      .mockResolvedValueOnce(okResp({ estimated_cost: '100.00' })); // preview (informational)
 
-    // 20 × $5 = $100 notional > $10.81 buying power ⇒ buying_power blocks.
+    // 20 × $5 = $100 notional > $10.81 buying power ⇒ buying_power blocks, but
+    // the order is structurally valid so the broker estimate is still fetched.
     const r = await livePreview(intent({ quantity: 20 }), 'ACC1');
     expect(r.wouldSubmit).toBe(false);
-    expect(r.preview).toBeUndefined(); // no broker call when blocked
-    expect(fetchSpy).toHaveBeenCalledTimes(2); // balance + positions only
     expect(r.guardrails?.checks.find((c) => c.rule === 'buying_power')?.passed).toBe(false);
+    expect(r.preview?.ok).toBe(true); // estimate fetched despite the block
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('skips the broker when the kill switch is engaged', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    setTradingConfig({ enabled: true, killSwitch: true });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE))
+      .mockResolvedValueOnce(okResp([]));
+
+    const r = await livePreview(intent(), 'ACC1');
+    expect(r.wouldSubmit).toBe(false);
+    expect(r.preview).toBeUndefined(); // halted — no broker call
+    expect(fetchSpy).toHaveBeenCalledTimes(2); // balance + positions only
+  });
+
+  it('skips the broker for a malformed order (no limit price)', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    setTradingConfig({ enabled: true });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE))
+      .mockResolvedValueOnce(okResp([]));
+
+    const r = await livePreview(intent({ orderType: 'limit', limitPrice: undefined }), 'ACC1');
+    expect(r.preview).toBeUndefined(); // malformed — no broker call
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 });
