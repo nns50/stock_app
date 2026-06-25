@@ -20,7 +20,7 @@ places trades.
 4. [Screener](#screener)
 5. [Watchlist](#watchlist)
 6. [Options](#options)
-7. [Trade (preview)](#trade-preview)
+7. [Trade](#trade)
 8. [Positions & P&L](#positions--pl)
 9. [Journal & analytics](#journal--analytics)
 10. [Alerts](#alerts)
@@ -247,13 +247,13 @@ naked long call) on risk-defined terms.
 
 ---
 
-## Trade (preview)
+## Trade
 
-> **The app places no orders.** This page checks an order against the live-trading
-> guardrails in `docs/LIVE_TRADING_DESIGN.md`. **Dry-run** validates against numbers you type;
-> **Preview (live)** pulls your real account and asks the broker for a cost estimate
-> (`/openapi/trade/order/preview`) — and **still places nothing**. The order-submit step is a
-> separate, not-yet-built slice.
+> **Placing a real order takes four locks at once.** This page checks an order against the
+> live-trading guardrails in `docs/LIVE_TRADING_DESIGN.md`, then can place it. **Dry-run** and
+> **Preview (live)** place nothing; **Place order** submits a real order only when the server
+> env `TRADING_ENABLED` is set, every guardrail passes, the kill switch is off, and you
+> type-to-confirm. Off by default; stocks only for now.
 
 - **Compose an order** — symbol, stock/option, buy/sell, open/close, quantity, market/limit
   (+ strike/expiry for options), plus a reference price used for notional and the fat-finger
@@ -264,9 +264,13 @@ naked long call) on risk-defined terms.
   breakdown** (✓ pass / ✕ blocked / ⚠ warn, hover for detail).
 - **Pull from Webull** — fill the account-state form with your real buying power / exposure /
   position (read-only).
-- **Preview (live)** — paste your cash `account_id`, and this pulls your real account, runs the
-  guardrails against it, and — only if they pass — fetches the **broker's cost estimate**.
-  Stocks for now; options preview is coming. Nothing is ever placed.
+- **Preview (live)** — paste your cash `account_id`; this pulls your real account, runs the
+  guardrails against it, and (kill switch permitting) fetches the **broker's cost estimate**.
+  Places nothing. Stocks for now.
+- **Place order** — appears only when a live preview **would submit**. Type the shown phrase
+  (e.g. `BUY 1 NUVB`) to arm, then place. The **server** re-pulls your account, re-runs every
+  guardrail, checks the kill switch + `TRADING_ENABLED`, and writes the intent + broker
+  `order_id` to the audit trail. A single stock order at a time.
 
 ### Guardrail config
 

@@ -31,8 +31,8 @@ const renderPage = () =>
 describe('TradePage', () => {
   it('renders the dry-run workspace, sandbox banner, and config panel', async () => {
     renderPage();
-    expect(await screen.findByRole('heading', { name: 'Trade (preview)' })).toBeInTheDocument();
-    expect(screen.getByText(/Nothing here places an order/i)).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Trade' })).toBeInTheDocument();
+    expect(screen.getByText(/submits a/i)).toBeInTheDocument();
     expect(await screen.findByText('Guardrail config')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Dry-run/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Preview \(live\)/ })).toBeInTheDocument();

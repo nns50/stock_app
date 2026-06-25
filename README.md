@@ -173,6 +173,7 @@ Copy `.env.example` to `server/.env`. All keys are read **server-side only**.
 | `TRADIER_BASE_URL`      | `https://sandbox.tradier.com/v1`   | Use `https://api.tradier.com/v1` for production data.           |
 | `WEBULL_APP_KEY`        | _(empty)_                          | Webull OpenAPI app key (server-side only). Required for `webull`. |
 | `WEBULL_APP_SECRET`     | _(empty)_                          | Webull OpenAPI app secret (server-side only).                   |
+| `TRADING_ENABLED`       | `false`                            | **Master gate for placing REAL orders.** Off ⇒ the Trade page can dry-run/live-preview but **never** places. Even on, placing also needs the guardrails to pass + kill switch off + type-to-confirm. |
 | `PORT`                  | `3001`                             | API port.                                                       |
 | `DATABASE_PATH`         | `./data/stock_app.db`              | SQLite file (relative to `server/`).                            |
 | `QUOTE_CACHE_TTL_MS`    | `15000`                            | In-memory quote cache TTL.                                      |

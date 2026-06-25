@@ -245,13 +245,18 @@ option fields) covers the stock and single-leg-option bodies; `LIMIT`/`MARKET` m
 `support_trading_session` comes from a regular/extended toggle, and our intent's idempotency
 key becomes `client_order_id`.
 
-## 15. Phase 1 status (read-only probes)
+## 15. Status (shipped)
 
-Done: `Account List` (cash account_id `…INDIVIDUAL_CASH`), `Balance` (confirmed shape →
-`AccountState` mapper, "Pull from Webull"), and `Positions`. Order-query probes now point at
-the **confirmed** `/openapi/trade/order/{open,history}` paths (the earlier `/trade/*` guess
-404'd) — re-run them to confirm the order-object shape. **Next (Phase 3):** the
-preview→confirm→place pipeline using `/openapi/trade/order/preview` (estimate, no placement)
-→ explicit human confirm → `/openapi/trade/order/place`, every order gated by the guardrails +
-kill switch with tiny caps. No order is placed until that pipeline ships and a preview is
-explicitly approved.
+- **Phase 1 (read-only):** `Account List` (cash account_id `…INDIVIDUAL_CASH`), `Balance`
+  (→ `AccountState` mapper / "Pull from Webull"), `Positions`, and the
+  `/openapi/trade/order/{open,history}` probes.
+- **Phase 2 (no broker):** guardrails engine, config + kill-switch persistence, order-intent
+  model + lifecycle, dry-run pipeline, the Trade UI.
+- **Phase 3 (LIVE — shipped, stock only):** `livePreview` (real account-state → guardrails →
+  `/openapi/trade/order/preview` cost estimate; places nothing) and `placeStockOrder` →
+  `/openapi/trade/order/place`. Placing requires **all** of: `TRADING_ENABLED` env (deploy
+  gate) + a server-checked type-to-confirm phrase + every guardrail passing against fresh
+  account state + the kill switch off. Each attempt is walked through the lifecycle and
+  written to the audit trail (with the broker `order_id` on success).
+- **Next:** confirm the live preview/place response field names against the real account;
+  single-leg **option** placement (separate Webull endpoints); order **status/cancel**.
