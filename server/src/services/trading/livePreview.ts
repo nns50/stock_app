@@ -1,5 +1,6 @@
 import { AccountState, GuardrailReport, OrderIntent, evaluateGuardrails, orderNotionalUsd } from './guardrails';
 import { getTradingConfig } from '../../db/trading';
+import { countTodaysOrders } from '../../db/orders';
 import { webullAccountState } from '../../providers/webull/accountState';
 import { WebullPreview, webullPreviewStockOrder } from '../../providers/webull/orders';
 
@@ -35,9 +36,10 @@ export async function livePreview(intent: OrderIntent, accountId: string): Promi
   if (!acct.ok || !acct.state) {
     return { ok: false, accountId, error: acct.error ?? 'Could not load live account state.' };
   }
+  const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
 
   const config = getTradingConfig();
-  const guardrails = evaluateGuardrails(intent, acct.state, config);
+  const guardrails = evaluateGuardrails(intent, accountState, config);
 
   // The broker COST ESTIMATE is informational and PLACES NOTHING, so fetch it
   // for any structurally-valid order unless the kill switch is engaged. It does
@@ -50,7 +52,7 @@ export async function livePreview(intent: OrderIntent, accountId: string): Promi
   return {
     ok: true,
     accountId,
-    accountState: acct.state,
+    accountState,
     guardrails,
     notional: orderNotionalUsd(intent) ?? null,
     wouldSubmit: guardrails.ok,

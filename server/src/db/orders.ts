@@ -176,3 +176,17 @@ export function listIntents(opts: { state?: OrderState } = {}): OrderIntentRecor
     : (db.prepare('SELECT * FROM order_intents ORDER BY id DESC').all() as IntentRow[]);
   return rows.map(mapIntent);
 }
+
+/**
+ * How many orders were actually SUBMITTED to the broker today — counted from the
+ * audit trail (a `submitted` event), so guardrail- or pre-flight-rejected orders
+ * (which never reached the broker) don't count. Feeds the max-orders/day rule.
+ */
+export function countTodaysOrders(now = Date.now()): number {
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  const row = db
+    .prepare("SELECT COUNT(DISTINCT intent_id) AS n FROM order_events WHERE state = 'submitted' AND created_at >= ?")
+    .get(start.getTime()) as { n: number };
+  return row.n;
+}

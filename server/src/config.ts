@@ -88,6 +88,16 @@ export const config = {
     /** Verified access token — only needed when 2FA is enabled on the account. */
     accessToken: process.env.WEBULL_ACCESS_TOKEN || '',
   },
+  /**
+   * Live order placement master gate. The app can PREVIEW and dry-run without
+   * this, but it will NEVER place a real order unless TRADING_ENABLED is set on
+   * the server (deploy-level kill switch). Placing additionally requires the
+   * runtime guardrails to pass (config.enabled + caps + buying power) and the
+   * kill switch to be off — this env flag is the outermost of those gates.
+   */
+  trading: {
+    placeEnabled: ['1', 'true', 'yes'].includes((process.env.TRADING_ENABLED || '').toLowerCase()),
+  },
 };
 
 export type AppConfig = typeof config;

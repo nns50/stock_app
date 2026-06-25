@@ -9,6 +9,7 @@ import type {
   GuardrailCheck,
   LivePreviewResult,
   OrderIntentInput,
+  PlaceResult,
   TradingConfig,
 } from '../api/types';
 
@@ -36,14 +37,13 @@ export default function TradePage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Trade (preview)"
-        subtitle="Check an order against your guardrails — with typed numbers (dry-run) or your real account + a broker estimate (live preview). No order is ever placed here."
+        title="Trade"
+        subtitle="Check an order against your guardrails (dry-run or live preview), then place it — behind the full safety gate."
       />
       <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-        <b>Nothing here places an order.</b> <b>Dry-run</b> checks the guardrails against the account values you type
-        in. <b>Preview (live)</b> pulls your real account state and asks the broker for a cost estimate (
-        <code>/order/preview</code>) — it still <b>places nothing</b>. The order-submit step is a separate,
-        not-yet-built slice.
+        <b>Dry-run</b> and <b>Preview (live)</b> place nothing. <b>Place order</b> submits a <b>real</b> order to your
+        cash account — and only when you type-to-confirm, every guardrail passes, the kill switch is off, and{' '}
+        <code>TRADING_ENABLED</code> is set on the server. Caps stay tiny by default; the kill switch is one tap away.
       </div>
       {cfg.loading ? (
         <Spinner label="Loading trading config…" />
@@ -65,6 +65,11 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
   const [pullMsg, setPullMsg] = useState<string>();
   const [livePrev, setLivePrev] = useState<LivePreviewResult>();
   const [previewing, setPreviewing] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
+  const [placing, setPlacing] = useState(false);
+  const [placeResult, setPlaceResult] = useState<PlaceResult>();
+
+  const placePhrase = `${order.side.toUpperCase()} ${order.quantity} ${order.symbol.toUpperCase()}`;
 
   const setO = <K extends keyof OrderIntentInput>(k: K, v: OrderIntentInput[K]) => setOrder((o) => ({ ...o, [k]: v }));
   const setA = <K extends keyof AccountStateInput>(k: K, v: AccountStateInput[K]) =>
@@ -94,6 +99,20 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
       setLivePrev({ ok: false, accountId, error: (e as Error).message });
     } finally {
       setPreviewing(false);
+    }
+  };
+
+  // Submit a REAL order. The server re-runs every gate (env + confirm +
+  // guardrails + kill switch); this just carries the type-to-confirm phrase.
+  const place = async () => {
+    setPlacing(true);
+    setPlaceResult(undefined);
+    try {
+      setPlaceResult(await client.tradePlace(order, accountId.trim(), confirmText.trim()));
+    } catch (e) {
+      setPlaceResult({ ok: false, placed: false, reason: 'account_error', error: (e as Error).message });
+    } finally {
+      setPlacing(false);
     }
   };
 
@@ -270,6 +289,35 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
         </Card>
 
         {livePrev && <LivePreviewPanel result={livePrev} />}
+
+        {livePrev?.wouldSubmit && (
+          <Card className="p-4 space-y-2 border border-bear/50">
+            <h3 className="font-medium text-bear">⚠ Place live order — real money</h3>
+            <p className="text-xs text-slate-400">
+              This submits a <b>real</b> order to your cash account. Type{' '}
+              <code className="text-slate-200">{placePhrase}</code> to arm. The server re-checks every guardrail, the
+              kill switch, and <code>TRADING_ENABLED</code> before it fires.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                className="input max-w-[220px] font-mono"
+                value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value.toUpperCase())}
+                placeholder={placePhrase}
+                aria-label="type to confirm"
+              />
+              <button
+                className="btn-primary !bg-bear !border-bear disabled:opacity-40"
+                disabled={placing || confirmText.trim().toUpperCase() !== placePhrase}
+                onClick={place}
+              >
+                {placing ? 'Placing…' : 'Place order'}
+              </button>
+            </div>
+            {placeResult && <PlaceResultPanel result={placeResult} />}
+          </Card>
+        )}
+
         {result && <ResultPanel result={result} />}
       </div>
 
@@ -376,6 +424,24 @@ function LivePreviewPanel({ result }: { result: LivePreviewResult }) {
       </div>
     </Card>
   );
+}
+
+function PlaceResultPanel({ result }: { result: PlaceResult }) {
+  if (result.placed) {
+    return (
+      <div className="rounded-md bg-bull/15 text-bull text-sm p-2">
+        ✓ Order placed{result.broker?.orderId ? ` · broker order ${result.broker.orderId}` : ''}
+        {result.intent && (
+          <>
+            {' '}
+            · intent #{result.intent.id} ({result.intent.state})
+          </>
+        )}
+      </div>
+    );
+  }
+  const msg = result.error || result.broker?.error || `not placed (${result.reason})`;
+  return <div className="rounded-md bg-bear/15 text-bear text-sm p-2">✕ Not placed — {msg}</div>;
 }
 
 function RuleChip({ check }: { check: GuardrailCheck }) {

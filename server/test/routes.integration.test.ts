@@ -307,6 +307,13 @@ describe('trade (dry-run) routes (integration)', () => {
     expect(out.ok).toBe(false);
     expect(out.error).toMatch(/not configured/i);
   });
+
+  it('place refuses with no TRADING_ENABLED on the server (deploy gate)', async () => {
+    const out = (await (
+      await post('/api/trade/place', { intent, accountId: 'ACC1', confirmation: 'BUY 10 AAPL' })
+    ).json()) as { placed: boolean; reason: string };
+    expect(out).toMatchObject({ placed: false, reason: 'trading_disabled' });
+  });
 });
 
 describe('auth gate (integration)', () => {

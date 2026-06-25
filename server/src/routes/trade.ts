@@ -6,6 +6,7 @@ import { getTradingConfig, setKillSwitch, setTradingConfig } from '../db/trading
 import { getEvents, listIntents } from '../db/orders';
 import { dryRunOrder } from '../services/trading/dryRun';
 import { livePreview } from '../services/trading/livePreview';
+import { placeStockOrder } from '../services/trading/placeOrder';
 import { webullAccountState } from '../providers/webull/accountState';
 import type { AccountState, OrderIntent } from '../services/trading/guardrails';
 
@@ -91,6 +92,22 @@ tradeRouter.post(
   asyncHandler(async (req, res) => {
     const { intent, accountId } = parseBody(previewBody, req);
     res.json(await livePreview(intent as OrderIntent, accountId));
+  }),
+);
+
+// PLACE a live stock order — the only endpoint that can move real money.
+// Gated by TRADING_ENABLED (server env) + a type-to-confirm phrase + the
+// guardrails (re-run server-side against fresh account state) + kill switch.
+const placeBody = z.object({
+  intent: intentSchema,
+  accountId: z.string().min(1).max(64),
+  confirmation: z.string().min(1).max(64),
+});
+tradeRouter.post(
+  '/place',
+  asyncHandler(async (req, res) => {
+    const { intent, accountId, confirmation } = parseBody(placeBody, req);
+    res.json(await placeStockOrder(intent as OrderIntent, accountId, confirmation));
   }),
 );
 

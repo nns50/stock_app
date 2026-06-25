@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { config } from '../src/config';
-import { buildWebullStockOrder, webullPreviewStockOrder, newClientOrderId } from '../src/providers/webull/orders';
+import {
+  buildWebullStockOrder,
+  webullPreviewStockOrder,
+  webullPlaceStockOrder,
+  newClientOrderId,
+} from '../src/providers/webull/orders';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
 const orig = { ...config.webull };
@@ -84,5 +89,36 @@ describe('webull stock order + preview', () => {
     const r = await webullPreviewStockOrder('ACC1', intent());
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/insufficient buying power/i);
+  });
+
+  it('places to /openapi/trade/order/place with the given client_order_id, parsing order_id', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ order_id: 'WB-9' }),
+    } as Response);
+
+    const r = await webullPlaceStockOrder('ACC1', intent(), 'CID-ABC');
+    expect(r).toMatchObject({ ok: true, orderId: 'WB-9' });
+
+    const [url, opts] = fetchSpy.mock.calls[0];
+    expect(String(url)).toContain('api.webull.com/openapi/trade/order/place');
+    expect((opts as RequestInit).method).toBe('POST');
+    const body = JSON.parse((opts as RequestInit).body as string);
+    expect(body.new_orders[0].client_order_id).toBe('CID-ABC');
+  });
+
+  it('surfaces a place error cleanly (claims no order id)', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 403,
+      text: async () => JSON.stringify({ msg: 'trading not permitted' }),
+    } as Response);
+    const r = await webullPlaceStockOrder('ACC1', intent(), 'CID');
+    expect(r.ok).toBe(false);
+    expect(r.orderId).toBeUndefined();
+    expect(r.error).toMatch(/trading not permitted/i);
   });
 });
