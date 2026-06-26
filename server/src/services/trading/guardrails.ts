@@ -21,9 +21,9 @@ export type OptionType = 'call' | 'put';
 /** Which trading session(s) the order is eligible for. `core` = regular hours
  *  (default); `extended` = pre/post-market; `overnight` = the overnight market. */
 export type TradingSession = 'core' | 'extended' | 'overnight';
-/** Single-leg, a 2-leg vertical spread, or a covered call (long stock + short
- *  call). (IRON_CONDOR later.) */
-export type OptionStrategy = 'SINGLE' | 'VERTICAL' | 'COVERED';
+/** Single-leg, a 2-leg vertical spread, a covered call (long stock + short call),
+ *  or a 4-leg iron condor. */
+export type OptionStrategy = 'SINGLE' | 'VERTICAL' | 'COVERED' | 'IRON_CONDOR';
 
 /** One leg of a multi-leg option order. The per-spread quantity comes from the
  *  order's `quantity` (spreads), so a leg only describes its contract + side. */
@@ -196,7 +196,8 @@ export function evaluateGuardrails(
   // short leg is covered, and the combo doesn't map to one signed symbol qty —
   // so it skips the single-leg naked-short / position-size rules too.
   const isCovered = intent.optionStrategy === 'COVERED';
-  const isMultiLeg = isVertical || isCovered;
+  const isIronCondor = intent.optionStrategy === 'IRON_CONDOR';
+  const isMultiLeg = isVertical || isCovered || isIronCondor;
 
   // --- hard sanity -------------------------------------------------------
   const qtyValid = Number.isInteger(intent.quantity) && intent.quantity > 0;
@@ -250,20 +251,6 @@ export function evaluateGuardrails(
         ? 'vertical: 2 legs, same expiry, distinct strikes, one buy + one sell'
         : 'a vertical needs exactly 2 legs (same expiry, distinct strikes, one buy + one sell)',
     );
-
-    // Debit/credit spreads require a margin account — Webull rejects them on cash
-    // and IRA accounts. When we know the type and it isn't margin, block here so
-    // the Place card never arms; when it's unknown, leave the broker as the gate.
-    if (account.accountType !== undefined) {
-      const marginOk = /MARGIN/i.test(account.accountType);
-      block(
-        'spread_account_type',
-        marginOk,
-        marginOk
-          ? `${account.accountType} — margin approved`
-          : `${account.accountType} — spreads need an approved margin account (cash/IRA rejected)`,
-      );
-    }
   }
 
   // --- covered call shape (long stock + short call; defined-risk) ---------
@@ -276,6 +263,46 @@ export function evaluateGuardrails(
       ok
         ? 'covered call: long stock + one short call'
         : 'a covered call needs exactly one SELL CALL leg (the stock side is added automatically)',
+    );
+  }
+
+  // --- iron condor shape (a call spread + a put spread; defined-risk) ------
+  if (isIronCondor) {
+    const legs = intent.optionLegs ?? [];
+    const calls = legs.filter((l) => l.optionType === 'call');
+    const puts = legs.filter((l) => l.optionType === 'put');
+    const sameExpiry = legs.every((l) => l.expiration === legs[0]?.expiration && !!l.expiration);
+    const distinctStrikes = new Set(legs.map((l) => l.strike)).size === 4;
+    const oneEach = (g: OptionLeg[]) => new Set(g.map((l) => l.side)).size === 2;
+    const ok =
+      legs.length === 4 &&
+      calls.length === 2 &&
+      puts.length === 2 &&
+      sameExpiry &&
+      distinctStrikes &&
+      oneEach(calls) &&
+      oneEach(puts);
+    block(
+      'iron_condor_legs',
+      ok,
+      ok
+        ? 'iron condor: 4 legs (a call spread + a put spread), same expiry, distinct strikes'
+        : 'an iron condor needs 4 legs — 2 calls + 2 puts, each one buy + one sell, same expiry, distinct strikes',
+    );
+  }
+
+  // Vertical / iron-condor spreads require a margin account — Webull rejects them
+  // on cash/IRA. When the type is known and isn't margin, block here so the Place
+  // card never arms; unknown ⇒ leave the broker as the gate. (A covered call's
+  // short leg is covered by stock, so it's allowed on cash.)
+  if ((isVertical || isIronCondor) && account.accountType !== undefined) {
+    const marginOk = /MARGIN/i.test(account.accountType);
+    block(
+      'spread_account_type',
+      marginOk,
+      marginOk
+        ? `${account.accountType} — margin approved`
+        : `${account.accountType} — spreads need an approved margin account (cash/IRA rejected)`,
     );
   }
 

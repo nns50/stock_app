@@ -476,3 +476,52 @@ describe('covered_legs (covered call shape)', () => {
     expect(check(evaluateGuardrails(sellPut, acct(), cfg()), 'covered_legs').passed).toBe(false);
   });
 });
+
+describe('iron_condor_legs (4-leg condor shape + margin gate)', () => {
+  const condor = (over: Partial<OrderIntent> = {}): OrderIntent =>
+    order({
+      assetKind: 'option',
+      optionStrategy: 'IRON_CONDOR',
+      side: 'sell', // net credit
+      quantity: 1,
+      limitPrice: 0.8,
+      referencePrice: undefined,
+      optionLegs: [
+        { side: 'sell', optionType: 'put', strike: 95, expiration: '2026-07-17' },
+        { side: 'buy', optionType: 'put', strike: 90, expiration: '2026-07-17' },
+        { side: 'sell', optionType: 'call', strike: 110, expiration: '2026-07-17' },
+        { side: 'buy', optionType: 'call', strike: 115, expiration: '2026-07-17' },
+      ],
+      ...over,
+    });
+
+  it('accepts a valid 4-leg condor and treats it as defined-risk', () => {
+    const r = evaluateGuardrails(condor(), acct({ accountType: 'INDIVIDUAL_MARGIN' }), cfg());
+    expect(check(r, 'iron_condor_legs').passed).toBe(true);
+    expect(r.checks.find((c) => c.rule === 'position_size')).toBeUndefined();
+    expect(r.checks.find((c) => c.rule === 'naked_short')).toBeUndefined();
+  });
+
+  it('rejects a malformed condor (not 2 calls + 2 puts)', () => {
+    const bad = condor({
+      optionLegs: [
+        { side: 'sell', optionType: 'call', strike: 95, expiration: '2026-07-17' },
+        { side: 'buy', optionType: 'call', strike: 90, expiration: '2026-07-17' },
+        { side: 'sell', optionType: 'call', strike: 110, expiration: '2026-07-17' },
+        { side: 'buy', optionType: 'call', strike: 115, expiration: '2026-07-17' },
+      ],
+    });
+    expect(
+      check(evaluateGuardrails(bad, acct({ accountType: 'INDIVIDUAL_MARGIN' }), cfg()), 'iron_condor_legs').passed,
+    ).toBe(false);
+  });
+
+  it('requires a margin account (blocks on cash/IRA, like a vertical)', () => {
+    expect(failed(evaluateGuardrails(condor(), acct({ accountType: 'INDIVIDUAL_CASH' }), cfg()))).toContain(
+      'spread_account_type',
+    );
+    expect(failed(evaluateGuardrails(condor(), acct({ accountType: 'INDIVIDUAL_MARGIN' }), cfg()))).not.toContain(
+      'spread_account_type',
+    );
+  });
+});

@@ -255,6 +255,38 @@ describe('webull stock order + preview', () => {
     ]);
   });
 
+  it('builds an IRON_CONDOR body (4 option legs, order-level net credit)', () => {
+    const body = buildWebullOptionOrder(
+      intent({
+        assetKind: 'option',
+        symbol: 'spy',
+        side: 'sell', // net credit
+        quantity: 1,
+        limitPrice: 0.8,
+        optionStrategy: 'IRON_CONDOR',
+        optionLegs: [
+          { side: 'sell', optionType: 'put', strike: 480, expiration: '2026-07-17' },
+          { side: 'buy', optionType: 'put', strike: 475, expiration: '2026-07-17' },
+          { side: 'sell', optionType: 'call', strike: 520, expiration: '2026-07-17' },
+          { side: 'buy', optionType: 'call', strike: 525, expiration: '2026-07-17' },
+        ],
+      }),
+      'CID-IC',
+    );
+    expect(body).toMatchObject({
+      option_strategy: 'IRON_CONDOR',
+      side: 'SELL',
+      symbol: 'SPY',
+      order_type: 'LIMIT',
+      limit_price: '0.8',
+      quantity: '1',
+    });
+    expect(body.legs).toHaveLength(4);
+    expect(
+      (body.legs as Array<{ option_type: string; side: string }>).map((l) => `${l.side} ${l.option_type}`),
+    ).toEqual(['SELL PUT', 'BUY PUT', 'SELL CALL', 'BUY CALL']);
+  });
+
   it('client_order_id is ≤32 chars', () => {
     expect(newClientOrderId().length).toBeLessThanOrEqual(32);
   });
