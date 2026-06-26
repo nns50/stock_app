@@ -85,9 +85,11 @@ export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: strin
   // the COVERED_STOCK example) but option_strategy VERTICAL + N legs and a NET
   // limit. Order-level side = the net direction (debit BUY / credit SELL).
   if (intent.optionStrategy === 'VERTICAL' && intent.optionLegs && intent.optionLegs.length >= 2) {
+    // Every leg of a 1:1 vertical carries the spread count (intent.quantity), so
+    // the order-level and leg quantities always agree (a mismatch is rejected).
     const legs = intent.optionLegs.map((l) => ({
       side: l.side === 'buy' ? 'BUY' : 'SELL',
-      quantity: String(l.quantity),
+      quantity: String(intent.quantity),
       symbol,
       strike_price: String(l.strike),
       option_expire_date: l.expiration,

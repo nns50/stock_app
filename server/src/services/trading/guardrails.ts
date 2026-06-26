@@ -24,10 +24,10 @@ export type TradingSession = 'core' | 'extended' | 'overnight';
 /** Single-leg, or a 2-leg vertical spread. (COVERED_STOCK / IRON_CONDOR later.) */
 export type OptionStrategy = 'SINGLE' | 'VERTICAL';
 
-/** One leg of a multi-leg option order. */
+/** One leg of a multi-leg option order. The per-spread quantity comes from the
+ *  order's `quantity` (spreads), so a leg only describes its contract + side. */
 export interface OptionLeg {
   side: OrderSide;
-  quantity: number;
   optionType: OptionType;
   strike: number;
   expiration: string;
@@ -230,18 +230,16 @@ export function evaluateGuardrails(
   // --- vertical spread shape (defined-risk; the limit is the NET) ---------
   if (isVertical) {
     const legs = intent.optionLegs ?? [];
-    const sameExpiry = legs.every((l) => l.expiration === legs[0]?.expiration);
+    const sameExpiry = legs.every((l) => l.expiration === legs[0]?.expiration && !!l.expiration);
     const strikes = new Set(legs.map((l) => l.strike));
     const sides = new Set(legs.map((l) => l.side));
-    const sameQty = legs.every((l) => l.quantity === legs[0]?.quantity);
-    const ok =
-      legs.length === 2 && sameExpiry && strikes.size === 2 && sides.size === 2 && sameQty && legs[0].quantity > 0;
+    const ok = legs.length === 2 && sameExpiry && strikes.size === 2 && sides.size === 2;
     block(
       'spread_legs',
       ok,
       ok
         ? 'vertical: 2 legs, same expiry, distinct strikes, one buy + one sell'
-        : 'a vertical needs exactly 2 legs (same expiry, distinct strikes, one buy + one sell, equal qty)',
+        : 'a vertical needs exactly 2 legs (same expiry, distinct strikes, one buy + one sell)',
     );
   }
 

@@ -826,10 +826,10 @@ export interface OrderIntentInput {
   bracket?: { takeProfitPrice?: number; stopLossPrice?: number };
   /** Option strategy (SINGLE default; VERTICAL uses optionLegs). */
   optionStrategy?: 'SINGLE' | 'VERTICAL';
-  /** Legs of a multi-leg option order; limitPrice is the NET debit/credit. */
+  /** Legs of a multi-leg option order; quantity (spreads) + net limit come from
+   *  the order's `quantity`/`limitPrice`, so a leg only describes its contract. */
   optionLegs?: Array<{
     side: 'buy' | 'sell';
-    quantity: number;
     optionType: 'call' | 'put';
     strike: number;
     expiration: string;

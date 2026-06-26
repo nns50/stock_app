@@ -68,7 +68,6 @@ const intentSchema = z.object({
     .array(
       z.object({
         side: z.enum(['buy', 'sell']),
-        quantity: z.number(),
         optionType: z.enum(['call', 'put']),
         strike: z.number(),
         expiration: z.string(),
