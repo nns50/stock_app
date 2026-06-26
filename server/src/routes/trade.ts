@@ -6,7 +6,7 @@ import { getTradingConfig, setKillSwitch, setTradingConfig } from '../db/trading
 import { getEvents, listIntents } from '../db/orders';
 import { dryRunOrder } from '../services/trading/dryRun';
 import { livePreview } from '../services/trading/livePreview';
-import { placeStockOrder } from '../services/trading/placeOrder';
+import { placeOrder } from '../services/trading/placeOrder';
 import { reconcileIntent } from '../services/trading/reconcile';
 import { cancelIntent } from '../services/trading/cancelOrder';
 import { webullAccountState } from '../providers/webull/accountState';
@@ -98,9 +98,9 @@ tradeRouter.post(
   }),
 );
 
-// PLACE a live stock order — the only endpoint that can move real money.
-// Gated by TRADING_ENABLED (server env) + a type-to-confirm phrase + the
-// guardrails (re-run server-side against fresh account state) + kill switch.
+// PLACE a live order (stock or single-leg option) — the only endpoint that can
+// move real money. Gated by TRADING_ENABLED (server env) + a type-to-confirm
+// phrase + the guardrails (re-run server-side against fresh account state) + kill switch.
 const placeBody = z.object({
   intent: intentSchema,
   accountId: z.string().min(1).max(64),
@@ -110,7 +110,7 @@ tradeRouter.post(
   '/place',
   asyncHandler(async (req, res) => {
     const { intent, accountId, confirmation } = parseBody(placeBody, req);
-    res.json(await placeStockOrder(intent as OrderIntent, accountId, confirmation));
+    res.json(await placeOrder(intent as OrderIntent, accountId, confirmation));
   }),
 );
 

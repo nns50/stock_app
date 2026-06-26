@@ -33,10 +33,33 @@ const intent = (over: Partial<OrderIntent> = {}): OrderIntent => ({
 const okResp = (b: unknown) => ({ ok: true, status: 200, text: async () => JSON.stringify(b) }) as Response;
 
 describe('live preview pipeline', () => {
-  it('rejects options for now', async () => {
-    const r = await livePreview(intent({ assetKind: 'option' }), 'ACC1');
-    expect(r.ok).toBe(false);
-    expect(r.error).toMatch(/stocks/i);
+  it('previews a single-leg option (account state → guardrails → broker estimate, OPTION body)', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    setTradingConfig({ enabled: true });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE))
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp({ estimated_cost: '10.00' }));
+
+    const r = await livePreview(
+      intent({
+        symbol: 'NVDA',
+        assetKind: 'option',
+        optionType: 'call',
+        strike: 200,
+        expiration: '2026-12-19',
+        quantity: 1,
+        limitPrice: 0.1, // 1 × 100 × $0.10 = $10 ≤ $10.81 buying power
+        referencePrice: 0.1,
+      }),
+      'ACC1',
+    );
+    expect(r.ok).toBe(true);
+    expect(r.wouldSubmit).toBe(true);
+    expect(r.preview?.ok).toBe(true);
+    const body = JSON.parse((fetchSpy.mock.calls[2][1] as RequestInit).body as string);
+    expect(body.new_orders[0]).toMatchObject({ instrument_type: 'OPTION', option_strategy: 'SINGLE' });
   });
 
   it('errors when account state cannot load (not configured)', async () => {

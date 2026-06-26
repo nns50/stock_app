@@ -96,6 +96,27 @@ describe('trading guardrails', () => {
     expect(regular.checks.find((c) => c.rule === 'session_order_type')).toBeUndefined();
   });
 
+  it('blocks a market option (options are limit-only), and omits the rule for stocks', () => {
+    const market = evaluateGuardrails(
+      order({ assetKind: 'option', orderType: 'market', limitPrice: undefined, multiplier: 100 }),
+      acct(),
+      cfg(),
+    );
+    expect(market.ok).toBe(false);
+    expect(failed(market)).toContain('option_limit_only');
+
+    // A small limit option passes the rule; stocks never see it.
+    const limitOpt = evaluateGuardrails(
+      order({ assetKind: 'option', quantity: 1, limitPrice: 1, referencePrice: 1, multiplier: 100 }),
+      acct(),
+      cfg(),
+    );
+    expect(check(limitOpt, 'option_limit_only').passed).toBe(true);
+    expect(
+      evaluateGuardrails(order(), acct(), cfg()).checks.find((c) => c.rule === 'option_limit_only'),
+    ).toBeUndefined();
+  });
+
   it('blocks an order over the notional cap', () => {
     // 10 × $100 = $1,000 > $500 cap
     const r = evaluateGuardrails(order({ limitPrice: 100, referencePrice: 100 }), acct(), cfg());
