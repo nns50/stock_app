@@ -813,6 +813,8 @@ export interface OrderIntentInput {
   openClose: 'open' | 'close';
   quantity: number;
   orderType: 'market' | 'limit';
+  /** Trading session — `core` (regular hours, default), `extended`, or `overnight`. */
+  session?: 'core' | 'extended' | 'overnight';
   limitPrice?: number;
   referencePrice?: number;
   optionType?: 'call' | 'put';

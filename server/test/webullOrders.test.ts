@@ -50,6 +50,13 @@ describe('webull stock order + preview', () => {
     expect(o.limit_price).toBeUndefined();
   });
 
+  it('maps the trading session to support_trading_session (default CORE)', () => {
+    expect(buildWebullStockOrder(intent(), 'C').support_trading_session).toBe('CORE');
+    expect(buildWebullStockOrder(intent({ session: 'core' }), 'C').support_trading_session).toBe('CORE');
+    expect(buildWebullStockOrder(intent({ session: 'extended' }), 'C').support_trading_session).toBe('ALL');
+    expect(buildWebullStockOrder(intent({ session: 'overnight' }), 'C').support_trading_session).toBe('NIGHT');
+  });
+
   it('client_order_id is ≤32 chars', () => {
     expect(newClientOrderId().length).toBeLessThanOrEqual(32);
   });

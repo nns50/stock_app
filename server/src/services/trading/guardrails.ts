@@ -17,6 +17,9 @@ export type OrderSide = 'buy' | 'sell';
 export type OrderType = 'market' | 'limit';
 export type OpenClose = 'open' | 'close';
 export type OptionType = 'call' | 'put';
+/** Which trading session(s) the order is eligible for. `core` = regular hours
+ *  (default); `extended` = pre/post-market; `overnight` = the overnight market. */
+export type TradingSession = 'core' | 'extended' | 'overnight';
 
 export interface OrderIntent {
   /** Underlying ticker (e.g. AAPL). */
@@ -28,6 +31,8 @@ export interface OrderIntent {
   /** Shares (stock) or contracts (option); must be a positive integer. */
   quantity: number;
   orderType: OrderType;
+  /** Trading session this order targets. Defaults to `core` (regular hours). */
+  session?: TradingSession;
   /** Required for limit orders. */
   limitPrice?: number;
   /** Per-share / per-contract reference (last or mark) for notional + fat-finger. */
@@ -159,6 +164,19 @@ export function evaluateGuardrails(
 
   const limitOk = intent.orderType !== 'limit' || (intent.limitPrice !== undefined && intent.limitPrice > 0);
   block('limit_price', limitOk, limitOk ? 'ok' : 'limit orders need a positive limit price');
+
+  // Outside regular hours, the broker only accepts LIMIT orders — a market order
+  // in an extended/overnight session is rejected, so block it up front.
+  const session = intent.session ?? 'core';
+  if (session !== 'core') {
+    block(
+      'session_order_type',
+      intent.orderType === 'limit',
+      intent.orderType === 'limit'
+        ? `${session} session — limit order`
+        : `${session} session needs a limit order (market orders are regular-hours only)`,
+    );
+  }
 
   // --- armed? ------------------------------------------------------------
   // NB: this is the in-app, DB-backed "Trading enabled" toggle (config.enabled,
