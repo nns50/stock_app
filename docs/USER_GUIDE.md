@@ -248,6 +248,11 @@ whole risk picture before you commit: net **debit/credit**, a **payoff diagram**
 **probability-of-profit (POP)**. Use it to compare structures (e.g. a debit spread vs a
 naked long call) on risk-defined terms.
 
+Once you've built a single leg or a 2-leg vertical, **Trade this structure →** hands it to the
+**Trade** page — it prefills the order builder with the strategy and each leg's buy/sell, call/put,
+and strike. The analyzer carries no symbol or expiry, so you set those (the chain picker fills real
+strikes); other structures (straddles, iron condors) aren't live-placeable yet.
+
 ### Key option terms
 
 - **Delta** ≈ price move per $1 of underlying, and a rough probability of finishing

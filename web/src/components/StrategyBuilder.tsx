@@ -12,6 +12,8 @@ import {
 import { client } from '../api/client';
 import { fmtNum, fmtSignedUsd, fmtUsd, pnlClass } from '../lib/format';
 import { Card, ErrorState, Field, NumberInput, StatTile } from './ui';
+import { useNavigate } from 'react-router-dom';
+import { isPlaceableStructure, strategyToOrder } from '../lib/tradePrefill';
 import type { StrategyAnalysis, StrategyLeg } from '../api/types';
 
 type TemplateName =
@@ -83,6 +85,8 @@ export function StrategyBuilder() {
   const [result, setResult] = useState<StrategyAnalysis>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error>();
+
+  const navigate = useNavigate();
 
   const applyTemplate = (name: TemplateName) => setLegs(buildTemplate(name, underlyingPrice));
   const updateLeg = (i: number, patch: Partial<StrategyLeg>) =>
@@ -194,6 +198,18 @@ export function StrategyBuilder() {
 
         <button className="btn-primary w-full" onClick={analyze} disabled={loading || !legs.length}>
           {loading ? 'Analyzing…' : 'Analyze strategy'}
+        </button>
+        <button
+          className="btn-ghost w-full mt-2 disabled:opacity-40"
+          disabled={!isPlaceableStructure(legs)}
+          title={
+            isPlaceableStructure(legs)
+              ? 'Prefill the Trade builder with this structure (you set the symbol + expiry)'
+              : 'Live placement supports a single leg or a 2-leg vertical (more coming)'
+          }
+          onClick={() => navigate('/trade', { state: { prefill: strategyToOrder(legs) } })}
+        >
+          Trade this structure →
         </button>
       </Card>
 
