@@ -2,7 +2,7 @@ import { AccountState, GuardrailReport, OrderIntent, evaluateGuardrails, orderNo
 import { marketOpenContext } from './marketHours';
 import { getTradingConfig } from '../../db/trading';
 import { countTodaysOrders } from '../../db/orders';
-import { webullAccountState } from '../../providers/webull/accountState';
+import { webullAccountState, webullAccountType } from '../../providers/webull/accountState';
 import { WebullPreview, webullPreviewOrder } from '../../providers/webull/orders';
 
 // ---------------------------------------------------------------------------
@@ -34,7 +34,9 @@ export async function livePreview(intent: OrderIntent, accountId: string): Promi
   if (!acct.ok || !acct.state) {
     return { ok: false, accountId, error: acct.error ?? 'Could not load live account state.' };
   }
-  const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
+  // Account type gates spreads (margin only) — fetch it only for a spread.
+  const accountType = intent.optionStrategy === 'VERTICAL' ? await webullAccountType(accountId) : undefined;
+  const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders(), accountType };
 
   const config = getTradingConfig();
   const guardrails = evaluateGuardrails(intent, accountState, config, { marketOpen: marketOpenContext(intent) });

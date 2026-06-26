@@ -279,7 +279,9 @@ naked long call) on risk-defined terms.
   (debit = Buy). A `spread_legs` guardrail checks the shape; the spread is valued at its net
   (Spreads × 100 × Net limit) and treated as defined-risk. **Spreads require an approved margin
   account** — Webull rejects debit/credit spreads on **cash** or **IRA** accounts at placement
-  (you can still dry-run and preview); the builder shows this reminder when you pick **Vertical**.
+  (you can still dry-run and preview); the builder shows this reminder when you pick **Vertical**,
+  and **Preview (live)** blocks the spread up front (a `spread_account_type` guardrail) when it
+  detects a cash/IRA account, so you don't reach a broker rejection.
 - **Session** — **Regular** (core hours, the default), **Extended** (pre/post-market), or
   **Overnight**. Outside regular hours the broker only accepts **limit** orders, and the symbol
   must be eligible for that session on Webull — otherwise the order is rejected. (Maps to
@@ -328,7 +330,8 @@ The side panel persists your safety settings (server-side):
 
 Defaults are intentionally tiny and trading ships **off**. The rules: per-order notional,
 buying power (buys only), exposure ceiling (opening adds, closing doesn't), per-symbol size,
-daily-loss halt, max orders/day, fat-finger price sanity, naked-short block, limit/stop price
+daily-loss halt, max orders/day, fat-finger price sanity, naked-short block, a spreads-need-margin
+check (cash/IRA accounts can't trade spreads), limit/stop price
 presence, a session/order-type check (extended & overnight sessions are limit-only), an
 options-have-no-market-order check, and the enabled/kill-switch gates — anything that can't be
 verified **fails closed**.

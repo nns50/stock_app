@@ -397,3 +397,50 @@ describe('trading guardrails', () => {
     expect(r.ok).toBe(false);
   });
 });
+
+describe('spread_account_type (spreads require a margin account)', () => {
+  const vertical = (over: Partial<OrderIntent> = {}): OrderIntent =>
+    order({
+      assetKind: 'option',
+      optionStrategy: 'VERTICAL',
+      quantity: 1,
+      limitPrice: 0.5,
+      referencePrice: undefined,
+      optionLegs: [
+        { side: 'buy', optionType: 'call', strike: 6, expiration: '2026-07-17' },
+        { side: 'sell', optionType: 'call', strike: 7, expiration: '2026-07-17' },
+      ],
+      ...over,
+    });
+
+  it('blocks a spread on a cash account', () => {
+    const r = evaluateGuardrails(vertical(), acct({ accountType: 'INDIVIDUAL_CASH' }), cfg());
+    expect(check(r, 'spread_account_type').passed).toBe(false);
+    expect(failed(r)).toContain('spread_account_type');
+  });
+
+  it('allows a spread on a margin account', () => {
+    const r = evaluateGuardrails(vertical(), acct({ accountType: 'INDIVIDUAL_MARGIN' }), cfg());
+    expect(check(r, 'spread_account_type').passed).toBe(true);
+    expect(failed(r)).not.toContain('spread_account_type');
+  });
+
+  it('omits the check when the account type is unknown (broker stays the gate)', () => {
+    const r = evaluateGuardrails(vertical(), acct(), cfg());
+    expect(r.checks.find((c) => c.rule === 'spread_account_type')).toBeUndefined();
+  });
+
+  it('does not apply to single-leg option orders', () => {
+    const single = order({
+      assetKind: 'option',
+      optionStrategy: 'SINGLE',
+      optionType: 'call',
+      strike: 6,
+      expiration: '2026-07-17',
+      limitPrice: 0.5,
+      referencePrice: undefined,
+    });
+    const r = evaluateGuardrails(single, acct({ accountType: 'INDIVIDUAL_CASH' }), cfg());
+    expect(r.checks.find((c) => c.rule === 'spread_account_type')).toBeUndefined();
+  });
+});

@@ -79,6 +79,9 @@ export interface AccountState {
   ordersToday: number;
   /** Signed current position in THIS symbol/contract (+ long, − short), in shares/contracts. */
   currentPositionQty: number;
+  /** Broker account type (e.g. INDIVIDUAL_CASH / INDIVIDUAL_MARGIN) when known —
+   *  debit/credit spreads require a margin account. Only fetched for spreads. */
+  accountType?: string;
 }
 
 export interface TradingConfig {
@@ -241,6 +244,20 @@ export function evaluateGuardrails(
         ? 'vertical: 2 legs, same expiry, distinct strikes, one buy + one sell'
         : 'a vertical needs exactly 2 legs (same expiry, distinct strikes, one buy + one sell)',
     );
+
+    // Debit/credit spreads require a margin account — Webull rejects them on cash
+    // and IRA accounts. When we know the type and it isn't margin, block here so
+    // the Place card never arms; when it's unknown, leave the broker as the gate.
+    if (account.accountType !== undefined) {
+      const marginOk = /MARGIN/i.test(account.accountType);
+      block(
+        'spread_account_type',
+        marginOk,
+        marginOk
+          ? `${account.accountType} — margin approved`
+          : `${account.accountType} — spreads need an approved margin account (cash/IRA rejected)`,
+      );
+    }
   }
 
   // --- protective bracket (stocks) ---------------------------------------

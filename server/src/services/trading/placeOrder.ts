@@ -2,7 +2,7 @@ import { config } from '../../config';
 import { AccountState, GuardrailReport, OrderIntent, blockingFailures, evaluateGuardrails } from './guardrails';
 import { getTradingConfig } from '../../db/trading';
 import { OrderIntentRecord, countTodaysOrders, createIntent, transitionIntent } from '../../db/orders';
-import { webullAccountState } from '../../providers/webull/accountState';
+import { webullAccountState, webullAccountType } from '../../providers/webull/accountState';
 import { marketOpenContext } from './marketHours';
 import { WebullPlaceResult, newClientOrderId, webullPlaceOrder } from '../../providers/webull/orders';
 
@@ -68,7 +68,8 @@ export async function placeOrder(intent: OrderIntent, accountId: string, confirm
   if (!acct.ok || !acct.state) {
     return { ok: true, placed: false, reason: 'account_error', error: acct.error ?? 'Could not load account state.' };
   }
-  const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
+  const accountType = intent.optionStrategy === 'VERTICAL' ? await webullAccountType(accountId) : undefined;
+  const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders(), accountType };
 
   // 3) Re-run the guardrails server-side.
   const cfg = getTradingConfig();

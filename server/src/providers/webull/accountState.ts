@@ -93,3 +93,28 @@ export async function webullAccountState(accountId: string, symbol?: string): Pr
     raw: bal,
   };
 }
+
+/** Webull accounts from /openapi/account/list — defensive parse (the list may be
+ *  bare or wrapped). Each entry carries account_id + account_type. */
+function extractAccounts(data: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(data)) return data as Array<Record<string, unknown>>;
+  const o = (data ?? {}) as Record<string, unknown>;
+  for (const k of ['accounts', 'data', 'account_list', 'list']) {
+    if (Array.isArray(o[k])) return o[k] as Array<Record<string, unknown>>;
+  }
+  return [];
+}
+
+/**
+ * The Webull `account_type` (e.g. INDIVIDUAL_CASH / INDIVIDUAL_MARGIN) for an
+ * account_id, from /openapi/account/list — used to gate spreads (margin only).
+ * READ-ONLY. Returns undefined when it can't be determined (not configured, call
+ * failed, or no match), so callers leave the broker as the final gate.
+ */
+export async function webullAccountType(accountId: string): Promise<string | undefined> {
+  if (!webullConfigured()) return undefined;
+  const r = await webullClient().call('GET', '/openapi/account/list', { surface: 'trade' });
+  if (!r.ok) return undefined;
+  const match = extractAccounts(r.data).find((a) => String(a.account_id) === accountId);
+  return match && match.account_type != null ? String(match.account_type) : undefined;
+}
