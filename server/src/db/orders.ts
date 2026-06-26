@@ -204,15 +204,26 @@ export function listIntents(opts: { state?: OrderState } = {}): OrderIntentRecor
 }
 
 /**
- * How many orders were actually SUBMITTED to the broker today — counted from the
- * audit trail (a `submitted` event), so guardrail- or pre-flight-rejected orders
- * (which never reached the broker) don't count. Feeds the max-orders/day rule.
+ * How many orders count against the daily max-orders/day rule today. An order
+ * counts only if it actually reached the broker (a `submitted` event since local
+ * midnight) AND wasn't rejected:
+ *   - guardrail- / pre-flight-rejected orders never submit, so they're already out;
+ *   - a BROKER rejection is `submitted → rejected`, so it has a `submitted` event —
+ *     exclude it by its current state, since a rejected order never entered the
+ *     market and shouldn't burn a slot (e.g. a dozen rejected $0.01 limits in a row).
+ * Working/acknowledged/filled/cancelled/expired orders all still count — they hit
+ * the market.
  */
 export function countTodaysOrders(now = Date.now()): number {
   const start = new Date(now);
   start.setHours(0, 0, 0, 0);
   const row = db
-    .prepare("SELECT COUNT(DISTINCT intent_id) AS n FROM order_events WHERE state = 'submitted' AND created_at >= ?")
+    .prepare(
+      `SELECT COUNT(DISTINCT e.intent_id) AS n
+         FROM order_events e
+         JOIN order_intents i ON i.id = e.intent_id
+        WHERE e.state = 'submitted' AND e.created_at >= ? AND i.state != 'rejected'`,
+    )
     .get(start.getTime()) as { n: number };
   return row.n;
 }
