@@ -318,6 +318,11 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
                 </div>
               ) : (
                 <div className="space-y-2">
+                  <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-300">
+                    <b>Requires a margin account.</b> Webull only allows debit/credit spreads on an approved{' '}
+                    <b>margin</b> account — <b>cash</b> and <b>IRA</b> accounts are rejected at placement (you can still
+                    dry-run and preview).
+                  </div>
                   {[0, 1].map((i) => (
                     <div key={i} className="flex flex-wrap items-end gap-2">
                       <Field label={`Leg ${i + 1}`}>
