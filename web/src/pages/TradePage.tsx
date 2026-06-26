@@ -252,6 +252,10 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
                   onChange={(e) => setO('expiration', e.target.value)}
                 />
               </Field>
+              <p className="col-span-2 text-[11px] text-slate-500 sm:col-span-4">
+                Single-leg options only, <b>limit orders only</b>. Reference/limit price is the per-contract premium
+                (e.g. 0.45). <b>Preview (live)</b> validates the exact contract with the broker before you can place.
+              </p>
             </div>
           )}
           <div className="flex flex-wrap items-center gap-2">

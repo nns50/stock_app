@@ -2,8 +2,9 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { config } from '../src/config';
 import {
   buildWebullStockOrder,
-  webullPreviewStockOrder,
-  webullPlaceStockOrder,
+  buildWebullOptionOrder,
+  webullPreviewOrder,
+  webullPlaceOrder,
   webullOrderStatus,
   webullCancelOrder,
   newClientOrderId,
@@ -59,13 +60,61 @@ describe('webull stock order + preview', () => {
     expect(buildWebullStockOrder(intent({ session: 'overnight' }), 'C').support_trading_session).toBe('NIGHT');
   });
 
+  it('builds a single-leg OPTION order body (instrument_type OPTION + legs + position_intent)', () => {
+    const opt = intent({
+      assetKind: 'option',
+      symbol: 'nvda',
+      side: 'buy',
+      openClose: 'open',
+      quantity: 3,
+      optionType: 'call',
+      strike: 202.5,
+      expiration: '2026-06-24',
+      limitPrice: 0.45,
+    });
+    const body = buildWebullOptionOrder(opt, 'CID-OPT');
+    expect(body).toMatchObject({
+      combo_type: 'NORMAL',
+      client_order_id: 'CID-OPT',
+      instrument_type: 'OPTION',
+      option_strategy: 'SINGLE',
+      order_type: 'LIMIT',
+      time_in_force: 'DAY',
+      support_trading_session: 'CORE',
+      position_intent: 'BUY_TO_OPEN',
+      limit_price: '0.45',
+    });
+    expect(body.legs).toEqual([
+      {
+        symbol: 'NVDA',
+        side: 'BUY',
+        quantity: '3',
+        option_type: 'CALL',
+        strike_price: '202.5',
+        option_expire_date: '2026-06-24',
+      },
+    ]);
+  });
+
+  it('maps side + open/close to position_intent', () => {
+    const pi = (over: Partial<OrderIntent>) =>
+      buildWebullOptionOrder(
+        intent({ assetKind: 'option', optionType: 'put', strike: 15, expiration: '2026-06-26', ...over }),
+        'C',
+      ).position_intent;
+    expect(pi({ side: 'buy', openClose: 'open' })).toBe('BUY_TO_OPEN');
+    expect(pi({ side: 'sell', openClose: 'close' })).toBe('SELL_TO_CLOSE');
+    expect(pi({ side: 'sell', openClose: 'open' })).toBe('SELL_TO_OPEN');
+    expect(pi({ side: 'buy', openClose: 'close' })).toBe('BUY_TO_CLOSE');
+  });
+
   it('client_order_id is ≤32 chars', () => {
     expect(newClientOrderId().length).toBeLessThanOrEqual(32);
   });
 
   it('errors cleanly without keys (no network)', async () => {
     Object.assign(config.webull, { appKey: '', appSecret: '' });
-    expect((await webullPreviewStockOrder('ACC1', intent())).error).toMatch(/not configured/i);
+    expect((await webullPreviewOrder('ACC1', intent())).error).toMatch(/not configured/i);
   });
 
   it('POSTs the preview to /openapi/trade/order/preview with { account_id, new_orders } (places nothing)', async () => {
@@ -76,7 +125,7 @@ describe('webull stock order + preview', () => {
       text: async () => JSON.stringify({ estimated_cost: '5.00', estimated_commission: '0.00' }),
     } as Response);
 
-    const r = await webullPreviewStockOrder('ACC1', intent());
+    const r = await webullPreviewOrder('ACC1', intent());
     expect(r.ok).toBe(true);
     expect(r.estimate?.costUsd).toBe(5);
 
@@ -95,7 +144,7 @@ describe('webull stock order + preview', () => {
       status: 400,
       text: async () => JSON.stringify({ msg: 'insufficient buying power' }),
     } as Response);
-    const r = await webullPreviewStockOrder('ACC1', intent());
+    const r = await webullPreviewOrder('ACC1', intent());
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/insufficient buying power/i);
   });
@@ -108,7 +157,7 @@ describe('webull stock order + preview', () => {
       text: async () => JSON.stringify({ order_id: 'WB-9' }),
     } as Response);
 
-    const r = await webullPlaceStockOrder('ACC1', intent(), 'CID-ABC');
+    const r = await webullPlaceOrder('ACC1', intent(), 'CID-ABC');
     expect(r).toMatchObject({ ok: true, orderId: 'WB-9' });
 
     const [url, opts] = fetchSpy.mock.calls[0];
@@ -125,7 +174,7 @@ describe('webull stock order + preview', () => {
       status: 403,
       text: async () => JSON.stringify({ msg: 'trading not permitted' }),
     } as Response);
-    const r = await webullPlaceStockOrder('ACC1', intent(), 'CID');
+    const r = await webullPlaceOrder('ACC1', intent(), 'CID');
     expect(r.ok).toBe(false);
     expect(r.orderId).toBeUndefined();
     expect(r.error).toMatch(/trading not permitted/i);

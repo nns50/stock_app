@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { initDb, db } from '../src/db';
 import { config } from '../src/config';
-import { placeStockOrder, placeConfirmation } from '../src/services/trading/placeOrder';
+import { placeOrder, placeConfirmation } from '../src/services/trading/placeOrder';
 import { setTradingConfig } from '../src/db/trading';
 import { getEvents, listIntents } from '../src/db/orders';
 import type { OrderIntent } from '../src/services/trading/guardrails';
@@ -42,11 +42,11 @@ const intent = (over: Partial<OrderIntent> = {}): OrderIntent => ({
 const okResp = (b: unknown) => ({ ok: true, status: 200, text: async () => JSON.stringify(b) }) as Response;
 const ok = () => placeConfirmation(intent()); // "BUY 1 NUVB"
 
-describe('place stock order (live)', () => {
+describe('place order (live)', () => {
   it('refuses when TRADING_ENABLED is off — no intent, no broker call', async () => {
     config.trading.placeEnabled = false;
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
-    const r = await placeStockOrder(intent(), 'ACC1', ok());
+    const r = await placeOrder(intent(), 'ACC1', ok());
     expect(r).toMatchObject({ placed: false, reason: 'trading_disabled' });
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(listIntents()).toHaveLength(0);
@@ -54,15 +54,34 @@ describe('place stock order (live)', () => {
 
   it('refuses an unconfirmed order (no broker call)', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
-    const r = await placeStockOrder(intent(), 'ACC1', 'nope');
+    const r = await placeOrder(intent(), 'ACC1', 'nope');
     expect(r).toMatchObject({ placed: false, reason: 'not_confirmed' });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('refuses options', async () => {
-    const opt = intent({ assetKind: 'option' });
-    const r = await placeStockOrder(opt, 'ACC1', placeConfirmation(opt));
-    expect(r).toMatchObject({ placed: false, reason: 'unsupported' });
+  it('places a single-leg OPTION order when guardrails pass (OPTION body to /place)', async () => {
+    const opt = intent({
+      symbol: 'NVDA',
+      assetKind: 'option',
+      optionType: 'call',
+      strike: 200,
+      expiration: '2026-12-19',
+      quantity: 1,
+      orderType: 'limit',
+      limitPrice: 0.1, // notional 1 × 100 × $0.10 = $10 ≤ buying power $10.81
+      referencePrice: 0.1,
+    });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE))
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp({ order_id: 'WB-OPT-1' }));
+
+    const r = await placeOrder(opt, 'ACC1', placeConfirmation(opt));
+    expect(r).toMatchObject({ placed: true, reason: 'placed' });
+    expect(r.broker?.orderId).toBe('WB-OPT-1');
+    const placeBody = JSON.parse((fetchSpy.mock.calls[2][1] as RequestInit).body as string);
+    expect(placeBody.new_orders[0]).toMatchObject({ instrument_type: 'OPTION', option_strategy: 'SINGLE' });
   });
 
   it('blocks (and never calls the broker) when a guardrail fails — kill switch', async () => {
@@ -72,7 +91,7 @@ describe('place stock order (live)', () => {
       .mockResolvedValueOnce(okResp(BALANCE))
       .mockResolvedValueOnce(okResp([])); // balance + positions only
 
-    const r = await placeStockOrder(intent(), 'ACC1', ok());
+    const r = await placeOrder(intent(), 'ACC1', ok());
     expect(r).toMatchObject({ placed: false, reason: 'blocked' });
     expect(r.guardrails?.checks.find((c) => c.rule === 'kill_switch')?.passed).toBe(false);
     expect(fetchSpy).toHaveBeenCalledTimes(2); // no /place call
@@ -86,7 +105,7 @@ describe('place stock order (live)', () => {
       .mockResolvedValueOnce(okResp([])) // positions
       .mockResolvedValueOnce(okResp({ order_id: 'WB-ORDER-1' })); // place
 
-    const r = await placeStockOrder(intent(), 'ACC1', ok());
+    const r = await placeOrder(intent(), 'ACC1', ok());
     expect(r).toMatchObject({ placed: true, reason: 'placed' });
     expect(r.broker?.orderId).toBe('WB-ORDER-1');
     expect(r.intent).toMatchObject({ state: 'acknowledged', brokerOrderId: 'WB-ORDER-1' });
@@ -113,7 +132,7 @@ describe('place stock order (live)', () => {
         text: async () => JSON.stringify({ msg: 'market closed' }),
       } as Response);
 
-    const r = await placeStockOrder(intent(), 'ACC1', ok());
+    const r = await placeOrder(intent(), 'ACC1', ok());
     expect(r).toMatchObject({ placed: false, reason: 'broker_rejected' });
     expect(r.broker?.error).toMatch(/market closed/i);
     expect(r.intent?.state).toBe('rejected');

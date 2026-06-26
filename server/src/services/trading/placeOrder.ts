@@ -3,12 +3,12 @@ import { AccountState, GuardrailReport, OrderIntent, blockingFailures, evaluateG
 import { getTradingConfig } from '../../db/trading';
 import { OrderIntentRecord, countTodaysOrders, createIntent, transitionIntent } from '../../db/orders';
 import { webullAccountState } from '../../providers/webull/accountState';
-import { WebullPlaceResult, newClientOrderId, webullPlaceStockOrder } from '../../providers/webull/orders';
+import { WebullPlaceResult, newClientOrderId, webullPlaceOrder } from '../../providers/webull/orders';
 
 // ---------------------------------------------------------------------------
-// Place a single live STOCK order — the ONLY path that can move real money
-// (design §6, Phase 3). Server-authoritative: it re-pulls account state and
-// re-runs the guardrails HERE and never trusts anything the client computed.
+// Place a single live order (stock or single-leg option) — the ONLY path that
+// can move real money (design §6, Phase 3). Server-authoritative: it re-pulls
+// account state and re-runs the guardrails HERE, never trusting the client.
 //
 // An order fires ONLY when ALL of these hold:
 //   1) TRADING_ENABLED is set on the server (deploy-level master gate),
@@ -17,12 +17,11 @@ import { WebullPlaceResult, newClientOrderId, webullPlaceStockOrder } from '../.
 //      config.enabled, the kill switch being off, the caps, and buying power.
 //
 // Every attempt (blocked, broker-rejected, or placed) is written to the audit
-// trail via the order lifecycle. Stock only; options are a later slice.
+// trail via the order lifecycle.
 // ---------------------------------------------------------------------------
 
 export type PlaceReason =
   | 'trading_disabled'
-  | 'unsupported'
   | 'not_confirmed'
   | 'account_error'
   | 'blocked'
@@ -47,11 +46,7 @@ export function placeConfirmation(intent: OrderIntent): string {
   return `${intent.side.toUpperCase()} ${intent.quantity} ${intent.symbol.toUpperCase()}`;
 }
 
-export async function placeStockOrder(
-  intent: OrderIntent,
-  accountId: string,
-  confirmation: string,
-): Promise<PlaceResult> {
+export async function placeOrder(intent: OrderIntent, accountId: string, confirmation: string): Promise<PlaceResult> {
   // 1) Deploy-level master gate — dead unless TRADING_ENABLED is set on the box.
   if (!config.trading.placeEnabled) {
     return {
@@ -60,9 +55,6 @@ export async function placeStockOrder(
       reason: 'trading_disabled',
       error: 'Order placement is disabled on the server (TRADING_ENABLED is not set).',
     };
-  }
-  if (intent.assetKind !== 'stock') {
-    return { ok: true, placed: false, reason: 'unsupported', error: 'Live placement currently supports stocks only.' };
   }
   // 2) Type-to-confirm, re-checked server-side so a blind/automated POST can't place.
   if (confirmation.trim().toUpperCase() !== placeConfirmation(intent)) {
@@ -97,7 +89,7 @@ export async function placeStockOrder(
   transitionIntent(intentRec.id, 'confirmed', { detail: `confirmed: ${confirmation.trim()}` });
   transitionIntent(intentRec.id, 'submitted', { detail: `submitting (cid ${clientOrderId})` });
 
-  const broker = await webullPlaceStockOrder(accountId, intent, clientOrderId);
+  const broker = await webullPlaceOrder(accountId, intent, clientOrderId);
 
   if (broker.ok) {
     const acked = transitionIntent(intentRec.id, 'acknowledged', {

@@ -178,6 +178,15 @@ export function evaluateGuardrails(
     );
   }
 
+  // Webull has no market options — single-leg option orders are limit-only.
+  if (intent.assetKind === 'option') {
+    block(
+      'option_limit_only',
+      intent.orderType === 'limit',
+      intent.orderType === 'limit' ? 'limit' : 'options must be limit orders (no market options)',
+    );
+  }
+
   // --- armed? ------------------------------------------------------------
   // NB: this is the in-app, DB-backed "Trading enabled" toggle (config.enabled,
   // set from the Trade config panel) — NOT the server env var TRADING_ENABLED.

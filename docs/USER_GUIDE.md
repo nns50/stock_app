@@ -253,7 +253,7 @@ naked long call) on risk-defined terms.
 > live-trading guardrails in `docs/LIVE_TRADING_DESIGN.md`, then can place it. **Dry-run** and
 > **Preview (live)** place nothing; **Place order** submits a real order only when the server
 > env `TRADING_ENABLED` is set, every guardrail passes, the kill switch is off, and you
-> type-to-confirm. Off by default; stocks only for now.
+> type-to-confirm. Off by default. Stocks and **single-leg options** (one order at a time).
 
 - **Compose an order** — symbol, stock/option, buy/sell, open/close, quantity, market/limit,
   **session** (+ strike/expiry for options), plus a reference price used for notional and the
@@ -270,11 +270,13 @@ naked long call) on risk-defined terms.
   position (read-only).
 - **Preview (live)** — paste your cash `account_id`; this pulls your real account, runs the
   guardrails against it, and (kill switch permitting) fetches the **broker's cost estimate**.
-  Places nothing. Stocks for now.
+  Places nothing. For options it also **validates the exact contract** with the broker (a bad
+  strike/expiry is rejected here, before you can place).
 - **Place order** — appears only when a live preview **would submit**. Type the shown phrase
   (e.g. `BUY 1 NUVB`) to arm, then place. The **server** re-pulls your account, re-runs every
   guardrail, checks the kill switch + `TRADING_ENABLED`, and writes the intent + broker
-  `order_id` to the audit trail. A single stock order at a time.
+  `order_id` to the audit trail. One order at a time — stock, or a **single-leg option**
+  (call/put + strike + expiry; **limit only** — Webull has no market options).
 - **Orders** — recent intents (placed + dry-run), newest first, with their lifecycle state. For
   an order that reached the broker, **Refresh status** pulls the live broker status by your order
   id and advances the intent to **filled / partially filled / cancelled / expired** (writing the
@@ -297,8 +299,8 @@ The side panel persists your safety settings (server-side):
 Defaults are intentionally tiny and trading ships **off**. The rules: per-order notional,
 buying power (buys only), exposure ceiling (opening adds, closing doesn't), per-symbol size,
 daily-loss halt, max orders/day, fat-finger price sanity, naked-short block, a session/order-type
-check (extended & overnight sessions are limit-only), and the enabled/kill-switch gates —
-anything that can't be verified **fails closed**.
+check (extended & overnight sessions are limit-only), an options-are-limit-only check, and the
+enabled/kill-switch gates — anything that can't be verified **fails closed**.
 
 ---
 

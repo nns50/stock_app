@@ -3,24 +3,30 @@ import { webullClient, webullConfigured } from './account';
 import type { OrderIntent } from '../../services/trading/guardrails';
 
 // ---------------------------------------------------------------------------
-// Webull order bodies + the PREVIEW call (cost estimate — places NOTHING).
+// Webull order bodies + the signed preview / place / cancel / status calls.
 //
 // Confirmed from the Trading API Reference: orders POST to
-//   /openapi/trade/order/preview  and  /openapi/trade/order/place
-// with body { account_id, new_orders: [order] }. Stock order fields are from
-// the docs (Getting Started example). Options use SEPARATE endpoints
-// (Preview/Place Options) whose paths aren't in the scrape yet — handled in a
-// follow-up; this module is STOCK only.
-//
-// Nothing here places an order: only buildWebullStockOrder (pure) and
-// webullPreviewStockOrder (the estimate endpoint) live here. Place/cancel are a
-// later, separately-reviewed slice.
+//   /openapi/trade/order/{preview,place,cancel}  with body
+//   { account_id, new_orders: [order] }. The same unified endpoint handles both
+// EQUITY orders (flat fields) and single-leg OPTION orders (instrument_type
+// OPTION + option_strategy SINGLE + a `legs` array + position_intent) — shapes
+// confirmed against a real account's order history. `buildWebullOrder`
+// dispatches on assetKind.
 // ---------------------------------------------------------------------------
 
+/** Flat EQUITY order body. */
 export type WebullOrderBody = Record<string, string>;
+/** Any order payload (equity flat, or option with a nested `legs` array). */
+export type WebullOrderPayload = Record<string, unknown>;
 
 /** Our session → Webull's `support_trading_session` (confirmed: CORE|ALL|NIGHT). */
 const SESSION_TO_WEBULL = { core: 'CORE', extended: 'ALL', overnight: 'NIGHT' } as const;
+
+/** side + open/close → Webull's option `position_intent`. */
+function positionIntent(intent: OrderIntent): string {
+  if (intent.side === 'buy') return intent.openClose === 'open' ? 'BUY_TO_OPEN' : 'BUY_TO_CLOSE';
+  return intent.openClose === 'open' ? 'SELL_TO_OPEN' : 'SELL_TO_CLOSE';
+}
 
 /** A fresh broker idempotency key (client_order_id, ≤32 chars). */
 export function newClientOrderId(): string {
@@ -49,6 +55,45 @@ export function buildWebullStockOrder(intent: OrderIntent, clientOrderId: string
   return body;
 }
 
+/**
+ * Map our intent → a Webull single-leg OPTION order body. Options are LIMIT-only
+ * and trade the core session (enforced upstream by the guardrails). The leg
+ * shape (underlying symbol + strike/expiry/type/side/qty) mirrors the confirmed
+ * order-history envelope; it's validated by a live PREVIEW before any placement.
+ */
+export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: string): WebullOrderPayload {
+  const leg = {
+    symbol: intent.symbol.toUpperCase(),
+    side: intent.side === 'buy' ? 'BUY' : 'SELL',
+    quantity: String(intent.quantity),
+    option_type: (intent.optionType ?? 'call').toUpperCase(),
+    strike_price: intent.strike !== undefined ? String(intent.strike) : '',
+    option_expire_date: intent.expiration ?? '',
+  };
+  const body: WebullOrderPayload = {
+    combo_type: 'NORMAL',
+    client_order_id: clientOrderId,
+    instrument_type: 'OPTION',
+    option_strategy: 'SINGLE',
+    order_type: 'LIMIT',
+    entrust_type: 'QTY',
+    time_in_force: 'DAY',
+    support_trading_session: 'CORE',
+    position_intent: positionIntent(intent),
+    quantity: String(intent.quantity),
+    legs: [leg],
+  };
+  if (intent.limitPrice !== undefined) body.limit_price = String(intent.limitPrice);
+  return body;
+}
+
+/** Dispatch to the right body builder for this intent's asset kind. */
+export function buildWebullOrder(intent: OrderIntent, clientOrderId: string): WebullOrderPayload {
+  return intent.assetKind === 'option'
+    ? buildWebullOptionOrder(intent, clientOrderId)
+    : buildWebullStockOrder(intent, clientOrderId);
+}
+
 export interface WebullPreview {
   ok: boolean;
   /** Raw broker payload — always included so the real estimate fields can be read. */
@@ -65,12 +110,12 @@ function num(v: unknown): number | undefined {
 }
 
 /**
- * POST a stock order to /openapi/trade/order/preview for a COST ESTIMATE.
- * PLACES NOTHING — this is the estimate endpoint. Never throws.
+ * POST an order (stock or single-leg option) to /openapi/trade/order/preview for
+ * a COST ESTIMATE. PLACES NOTHING — this is the estimate endpoint. Never throws.
  */
-export async function webullPreviewStockOrder(accountId: string, intent: OrderIntent): Promise<WebullPreview> {
+export async function webullPreviewOrder(accountId: string, intent: OrderIntent): Promise<WebullPreview> {
   if (!webullConfigured()) return { ok: false, error: 'Webull is not configured.' };
-  const order = buildWebullStockOrder(intent, newClientOrderId());
+  const order = buildWebullOrder(intent, newClientOrderId());
   const r = await webullClient().call('POST', '/openapi/trade/order/preview', {
     body: { account_id: accountId, new_orders: [order] },
     surface: 'trade',
@@ -115,18 +160,18 @@ function pickOrderId(data: unknown): string | undefined {
 }
 
 /**
- * PLACE a real stock order via /openapi/trade/order/place. THIS SUBMITS A LIVE
- * ORDER. The caller (placeStockOrder) must have already enforced the env gate,
- * the guardrails, the kill switch, and the confirmation — this only does the
- * signed POST. Uses the caller-provided clientOrderId for broker idempotency.
+ * PLACE a real order (stock or single-leg option) via /openapi/trade/order/place.
+ * THIS SUBMITS A LIVE ORDER. The caller (placeOrder) must have already enforced
+ * the env gate, the guardrails, the kill switch, and the confirmation — this only
+ * does the signed POST. Uses the caller-provided clientOrderId for idempotency.
  */
-export async function webullPlaceStockOrder(
+export async function webullPlaceOrder(
   accountId: string,
   intent: OrderIntent,
   clientOrderId: string,
 ): Promise<WebullPlaceResult> {
   if (!webullConfigured()) return { ok: false, error: 'Webull is not configured.' };
-  const order = buildWebullStockOrder(intent, clientOrderId);
+  const order = buildWebullOrder(intent, clientOrderId);
   const r = await webullClient().call('POST', '/openapi/trade/order/place', {
     body: { account_id: accountId, new_orders: [order] },
     surface: 'trade',

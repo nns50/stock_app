@@ -252,8 +252,8 @@ key becomes `client_order_id`.
   `/openapi/trade/order/{open,history}` probes.
 - **Phase 2 (no broker):** guardrails engine, config + kill-switch persistence, order-intent
   model + lifecycle, dry-run pipeline, the Trade UI.
-- **Phase 3 (LIVE — shipped, stock only):** `livePreview` (real account-state → guardrails →
-  `/openapi/trade/order/preview` cost estimate; places nothing) and `placeStockOrder` →
+- **Phase 3 (LIVE — shipped):** `livePreview` (real account-state → guardrails →
+  `/openapi/trade/order/preview` cost estimate; places nothing) and `placeOrder` →
   `/openapi/trade/order/place`. Placing requires **all** of: `TRADING_ENABLED` env (deploy
   gate) + a server-checked type-to-confirm phrase + every guardrail passing against fresh
   account state + the kill switch off. Each attempt is walked through the lifecycle and
@@ -271,5 +271,12 @@ key becomes `client_order_id`.
   resulting terminal state. Risk-reducing, so it is **not** gated by `TRADING_ENABLED`. Surfaced as
   **Cancel** in the "Orders" panel. (Request body keyed on `client_order_id`; confirm against a
   live open order.)
-- **Next:** single-leg **option** placement (envelope confirmed: `instrument_type:"OPTION"`,
-  `option_strategy:"SINGLE"`, `legs[]`, `position_intent`).
+- **Single-leg options (shipped):** preview + place now handle `assetKind:'option'`.
+  `buildWebullOrder` dispatches to `buildWebullOptionOrder` →
+  `{ instrument_type:'OPTION', option_strategy:'SINGLE', position_intent, legs:[{ symbol,
+  side, quantity, option_type, strike_price, option_expire_date }] }`. `position_intent` =
+  side × open/close (BUY_TO_OPEN / SELL_TO_CLOSE / SELL_TO_OPEN / BUY_TO_CLOSE). An
+  `option_limit_only` guardrail blocks market options. The leg shape is inferred from the
+  confirmed order-history envelope and **validated by a live preview** before any placement.
+- **Next:** confirm the option request leg shape against a real preview/fill; bracket/stop legs
+  (`combo_type` STOP_LOSS / STOP_PROFIT, `stop_price`); order replace.
