@@ -77,6 +77,7 @@ describe('webull stock order + preview', () => {
       combo_type: 'NORMAL',
       client_order_id: 'CID-OPT',
       instrument_type: 'OPTION',
+      market: 'US',
       option_strategy: 'SINGLE',
       side: 'BUY', // order-level side (Webull validates it here too)
       order_type: 'LIMIT',

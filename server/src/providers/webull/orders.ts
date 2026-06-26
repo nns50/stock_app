@@ -74,6 +74,9 @@ export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: strin
     combo_type: 'NORMAL',
     client_order_id: clientOrderId,
     instrument_type: 'OPTION',
+    // Required like the equity body — a live preview returned "invalid market"
+    // without it (US options).
+    market: 'US',
     option_strategy: 'SINGLE',
     // Webull validates `side` at the ORDER level too (not only on the leg) — a
     // real preview returned "invalid side" without it. Mirrors the confirmed
