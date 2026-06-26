@@ -62,6 +62,41 @@ describe('live preview pipeline', () => {
     expect(body.new_orders[0]).toMatchObject({ instrument_type: 'OPTION', option_strategy: 'SINGLE' });
   });
 
+  it('previews a VERTICAL spread end-to-end (vertical-mode guardrails + VERTICAL body)', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    setTradingConfig({ enabled: true });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE))
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp({ estimated_cost: '1.00' }));
+
+    const r = await livePreview(
+      intent({
+        symbol: 'AMC',
+        assetKind: 'option',
+        quantity: 1,
+        limitPrice: 0.01, // net
+        referencePrice: undefined,
+        optionStrategy: 'VERTICAL',
+        optionLegs: [
+          { side: 'buy', optionType: 'call', strike: 6, expiration: '2026-07-17' },
+          { side: 'sell', optionType: 'call', strike: 7, expiration: '2026-07-17' },
+        ],
+      }),
+      'ACC1',
+    );
+    const rules = (r.guardrails?.checks ?? []).map((c) => c.rule);
+    // Vertical mode: spread_legs runs; the single-leg position/short rules are skipped.
+    expect(rules).toContain('spread_legs');
+    expect(rules).not.toContain('position_size');
+    expect(rules).not.toContain('naked_short');
+    // And the broker body is a VERTICAL with 2 legs.
+    const body = JSON.parse((fetchSpy.mock.calls[2][1] as RequestInit).body as string);
+    expect(body.new_orders[0]).toMatchObject({ option_strategy: 'VERTICAL' });
+    expect(body.new_orders[0].legs).toHaveLength(2);
+  });
+
   it('errors when account state cannot load (not configured)', async () => {
     Object.assign(config.webull, { appKey: '', appSecret: '' });
     const r = await livePreview(intent(), 'ACC1');

@@ -92,12 +92,24 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
   const isVertical = order.assetKind === 'option' && (order.optionStrategy ?? 'SINGLE') === 'VERTICAL';
 
   // Switching strategy: a vertical is one Spreads count + one Net limit (always a
-  // limit order), so reset the stale single-order quantity/price scaling.
+  // limit order), so reset the single-order scaling AND clear the single-leg
+  // contract fields — otherwise a leftover strike/expiry could be (mis)used if the
+  // order were ever treated as single-leg. Switching back to Single drops the legs.
   const setStrategy = (s: NonNullable<OrderIntentInput['optionStrategy']>) =>
     setOrder((o) =>
       s === 'VERTICAL'
-        ? { ...o, optionStrategy: s, orderType: 'limit', quantity: 1, limitPrice: undefined, referencePrice: undefined }
-        : { ...o, optionStrategy: s },
+        ? {
+            ...o,
+            optionStrategy: s,
+            orderType: 'limit',
+            quantity: 1,
+            limitPrice: undefined,
+            referencePrice: undefined,
+            strike: undefined,
+            optionType: undefined,
+            expiration: undefined,
+          }
+        : { ...o, optionStrategy: s, optionLegs: undefined },
     );
 
   const run = async () => {
