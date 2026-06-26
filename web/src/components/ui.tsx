@@ -252,8 +252,11 @@ export function NumberInput({
       value={text}
       placeholder={placeholder}
       onChange={(e) => {
-        const t = e.target.value;
+        let t = e.target.value;
         if (t !== '' && !/^-?\d*\.?\d*$/.test(t)) return; // ignore non-numeric keystrokes
+        // Drop a leading zero once a real digit follows it (so a default "0" + "4"
+        // becomes "4", not "04") — but keep "0", "0.x" and "-0.x" intact.
+        t = t.replace(/^(-?)0+(\d)/, '$1$2');
         setText(t);
         const n = t === '' || t === '-' || t === '.' || t === '-.' ? undefined : Number(t);
         onChange(n !== undefined && Number.isNaN(n) ? undefined : n);
