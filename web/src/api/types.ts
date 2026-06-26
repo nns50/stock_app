@@ -812,10 +812,12 @@ export interface OrderIntentInput {
   side: 'buy' | 'sell';
   openClose: 'open' | 'close';
   quantity: number;
-  orderType: 'market' | 'limit';
+  orderType: 'market' | 'limit' | 'stop_loss' | 'stop_loss_limit';
   /** Trading session — `core` (regular hours, default), `extended`, or `overnight`. */
   session?: 'core' | 'extended' | 'overnight';
   limitPrice?: number;
+  /** Trigger price for stop / stop-limit orders. */
+  stopPrice?: number;
   referencePrice?: number;
   optionType?: 'call' | 'put';
   strike?: number;

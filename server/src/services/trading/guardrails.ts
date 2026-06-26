@@ -14,7 +14,8 @@
 
 export type AssetKind = 'stock' | 'option';
 export type OrderSide = 'buy' | 'sell';
-export type OrderType = 'market' | 'limit';
+/** `stop_loss` = market-on-trigger; `stop_loss_limit` = limit-on-trigger (both need a stop price). */
+export type OrderType = 'market' | 'limit' | 'stop_loss' | 'stop_loss_limit';
 export type OpenClose = 'open' | 'close';
 export type OptionType = 'call' | 'put';
 /** Which trading session(s) the order is eligible for. `core` = regular hours
@@ -33,8 +34,10 @@ export interface OrderIntent {
   orderType: OrderType;
   /** Trading session this order targets. Defaults to `core` (regular hours). */
   session?: TradingSession;
-  /** Required for limit orders. */
+  /** Required for limit and stop-limit orders. */
   limitPrice?: number;
+  /** Trigger price; required for stop_loss and stop_loss_limit orders. */
+  stopPrice?: number;
   /** Per-share / per-contract reference (last or mark) for notional + fat-finger. */
   referencePrice?: number;
   // Option-only descriptors:
@@ -117,9 +120,13 @@ export function defaultTradingConfig(): TradingConfig {
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 const usd = (n: number): string => `$${round2(n).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
 
-/** Effective per-unit price: the limit for limit orders, else the reference. */
+/** Effective per-unit price for valuation: limit, else stop, else reference. */
 function unitPrice(intent: OrderIntent): number | undefined {
-  const p = intent.orderType === 'limit' ? (intent.limitPrice ?? intent.referencePrice) : intent.referencePrice;
+  let p: number | undefined;
+  if (intent.orderType === 'limit') p = intent.limitPrice ?? intent.referencePrice;
+  else if (intent.orderType === 'stop_loss_limit') p = intent.limitPrice ?? intent.stopPrice ?? intent.referencePrice;
+  else if (intent.orderType === 'stop_loss') p = intent.stopPrice ?? intent.referencePrice;
+  else p = intent.referencePrice; // market
   return p !== undefined && Number.isFinite(p) && p > 0 ? p : undefined;
 }
 
@@ -162,11 +169,20 @@ export function evaluateGuardrails(
   const qtyValid = Number.isInteger(intent.quantity) && intent.quantity > 0;
   block('quantity', qtyValid, qtyValid ? `${intent.quantity}` : 'quantity must be a positive whole number');
 
-  const limitOk = intent.orderType !== 'limit' || (intent.limitPrice !== undefined && intent.limitPrice > 0);
-  block('limit_price', limitOk, limitOk ? 'ok' : 'limit orders need a positive limit price');
+  // Limit and stop-limit orders need a positive limit price.
+  const needsLimit = intent.orderType === 'limit' || intent.orderType === 'stop_loss_limit';
+  const limitOk = !needsLimit || (intent.limitPrice !== undefined && intent.limitPrice > 0);
+  block('limit_price', limitOk, limitOk ? 'ok' : 'limit/stop-limit orders need a positive limit price');
 
-  // Outside regular hours, the broker only accepts LIMIT orders — a market order
-  // in an extended/overnight session is rejected, so block it up front.
+  // Stop and stop-limit orders need a positive trigger (stop) price.
+  const isStop = intent.orderType === 'stop_loss' || intent.orderType === 'stop_loss_limit';
+  if (isStop) {
+    const stopOk = intent.stopPrice !== undefined && intent.stopPrice > 0;
+    block('stop_price', stopOk, stopOk ? `stop ${usd(intent.stopPrice!)}` : 'stop orders need a positive stop price');
+  }
+
+  // Outside regular hours, the broker only accepts LIMIT orders — a market/stop
+  // order in an extended/overnight session is rejected, so block it up front.
   const session = intent.session ?? 'core';
   if (session !== 'core') {
     block(
@@ -174,16 +190,16 @@ export function evaluateGuardrails(
       intent.orderType === 'limit',
       intent.orderType === 'limit'
         ? `${session} session — limit order`
-        : `${session} session needs a limit order (market orders are regular-hours only)`,
+        : `${session} session needs a limit order (only limit orders trade outside regular hours)`,
     );
   }
 
-  // Webull has no market options — single-leg option orders are limit-only.
+  // Webull options support LIMIT / STOP_LOSS / STOP_LOSS_LIMIT only — no MARKET.
   if (intent.assetKind === 'option') {
     block(
-      'option_limit_only',
-      intent.orderType === 'limit',
-      intent.orderType === 'limit' ? 'limit' : 'options must be limit orders (no market options)',
+      'option_order_type',
+      intent.orderType !== 'market',
+      intent.orderType !== 'market' ? `${intent.orderType}` : 'options have no market order (use limit or a stop type)',
     );
   }
 

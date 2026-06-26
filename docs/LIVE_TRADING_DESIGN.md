@@ -279,8 +279,14 @@ key becomes `client_order_id`.
   instrument_type:'OPTION', market:'US', symbol, legs:[{ side, quantity, symbol, strike_price,
   option_expire_date, instrument_type:'OPTION', option_type, market:'US' }] }`. `side`, `market`
   and `symbol` are carried at the **order level AND repeated on the leg**; there is **no**
-  `position_intent` (the broker derives it) and no `support_trading_session`. An
-  `option_limit_only` guardrail blocks market options. (Live previews surfaced this one validated
-  field at a time: "invalid side" → order-level side; "invalid market" → the leg's `market`.)
+  `position_intent` (the broker derives it) and no `support_trading_session`. (Live previews
+  surfaced this one validated field at a time: "invalid side" → order-level side; "invalid
+  market" → the leg's `market`.)
+- **Order types (shipped):** `market` / `limit` / `stop_loss` (market-on-trigger) /
+  `stop_loss_limit` (limit-on-trigger). `order_type` maps to MARKET/LIMIT/STOP_LOSS/
+  STOP_LOSS_LIMIT; `stop_price` is sent for stop types, `limit_price` for limit + stop-limit.
+  Guardrails: `stop_price` (stops need a positive trigger), `limit_price` (limit + stop-limit
+  need a positive limit), and `option_order_type` (options support LIMIT/STOP_LOSS/
+  STOP_LOSS_LIMIT — **no MARKET**).
 - **Next:** confirm a real option fill end-to-end; bracket/stop legs (`combo_type`
   STOP_LOSS / STOP_PROFIT, `stop_price`); order replace.

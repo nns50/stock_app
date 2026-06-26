@@ -190,6 +190,8 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
                 options={[
                   { value: 'limit', label: 'Limit' },
                   { value: 'market', label: 'Market' },
+                  { value: 'stop_loss', label: 'Stop' },
+                  { value: 'stop_loss_limit', label: 'Stop-lim' },
                 ]}
               />
             </Field>
@@ -215,7 +217,12 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
             <Field label="Quantity">
               <NumberInput value={order.quantity} onChange={(v) => setO('quantity', v ?? 0)} min={0} />
             </Field>
-            {order.orderType === 'limit' && (
+            {(order.orderType === 'stop_loss' || order.orderType === 'stop_loss_limit') && (
+              <Field label="Stop (trigger) price">
+                <NumberInput value={order.stopPrice} onChange={(v) => setO('stopPrice', v)} min={0} step={0.01} />
+              </Field>
+            )}
+            {(order.orderType === 'limit' || order.orderType === 'stop_loss_limit') && (
               <Field label="Limit price">
                 <NumberInput value={order.limitPrice} onChange={(v) => setO('limitPrice', v)} min={0} step={0.01} />
               </Field>
@@ -253,8 +260,8 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
                 />
               </Field>
               <p className="col-span-2 text-[11px] text-slate-500 sm:col-span-4">
-                Single-leg options only, <b>limit orders only</b>. Reference/limit price is the per-contract premium
-                (e.g. 0.45). <b>Preview (live)</b> validates the exact contract with the broker before you can place.
+                Single-leg options — <b>limit or stop</b> (no market). Prices are the per-contract premium (e.g. 0.45).
+                <b> Preview (live)</b> validates the exact contract with the broker before you can place.
               </p>
             </div>
           )}
