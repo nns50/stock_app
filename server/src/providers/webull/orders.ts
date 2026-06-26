@@ -107,7 +107,10 @@ export interface WebullPlaceResult {
 
 function pickOrderId(data: unknown): string | undefined {
   const d = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
-  const v = d?.order_id ?? d?.orderId ?? d?.id ?? d?.client_order_id;
+  // Confirmed from a real place/history response: the broker order id is
+  // `combo_order_id` (mirrored as the order's `order_id`); client_order_id is
+  // our own key, used only as a last resort.
+  const v = d?.order_id ?? d?.combo_order_id ?? d?.orderId ?? d?.id ?? d?.client_order_id;
   return v === undefined || v === null ? undefined : String(v);
 }
 
@@ -137,4 +140,73 @@ export async function webullPlaceStockOrder(
     };
   }
   return { ok: true, orderId: pickOrderId(r.data), raw: r.data };
+}
+
+export interface WebullOrderStatus {
+  ok: boolean;
+  /** Whether an order matching our client_order_id was found at the broker. */
+  found: boolean;
+  /** Raw Webull status (uppercased), e.g. FILLED / CANCELLED / PARTIAL_FILLED. */
+  status?: string;
+  /** Broker order id (envelope `combo_order_id`, mirrored as the order's `order_id`). */
+  brokerOrderId?: string;
+  filledQty?: number;
+  totalQty?: number;
+  filledPrice?: number;
+  /** The matched order envelope — kept so new fields can be read without a code change. */
+  raw?: unknown;
+  error?: string;
+}
+
+/** Order-list envelope shape (confirmed against a real /order/{open,history}). */
+interface OrderEnvelope {
+  client_order_id?: string;
+  combo_order_id?: string;
+  orders?: Array<Record<string, unknown>>;
+}
+
+function matchEnvelope(list: unknown, clientOrderId: string): OrderEnvelope | undefined {
+  if (!Array.isArray(list)) return undefined;
+  return (list as OrderEnvelope[]).find(
+    (env) =>
+      env?.client_order_id === clientOrderId ||
+      (Array.isArray(env?.orders) &&
+        env.orders.some((o) => (o as { client_order_id?: string })?.client_order_id === clientOrderId)),
+  );
+}
+
+/**
+ * Look up the live status of one of OUR orders by its client_order_id, scanning
+ * open orders then history (which covers filled/cancelled). READ-ONLY — places
+ * nothing, cancels nothing. Never throws.
+ */
+export async function webullOrderStatus(accountId: string, clientOrderId: string): Promise<WebullOrderStatus> {
+  if (!webullConfigured()) return { ok: false, found: false, error: 'Webull is not configured.' };
+  for (const path of ['/openapi/trade/order/open', '/openapi/trade/order/history']) {
+    const r = await webullClient().call('GET', path, { query: { account_id: accountId }, surface: 'trade' });
+    if (!r.ok) {
+      const j = (r.data ?? {}) as { msg?: string; message?: string; error_msg?: string };
+      return {
+        ok: false,
+        found: false,
+        error: j.msg || j.message || j.error_msg || `Webull ${path} failed (${r.status})`,
+      };
+    }
+    const env = matchEnvelope(r.data, clientOrderId);
+    if (env) {
+      const o = (Array.isArray(env.orders) ? (env.orders[0] ?? {}) : {}) as Record<string, unknown>;
+      const brokerOrderId = env.combo_order_id ?? (o.order_id as string | undefined);
+      return {
+        ok: true,
+        found: true,
+        status: o.status ? String(o.status).toUpperCase() : undefined,
+        brokerOrderId: brokerOrderId ? String(brokerOrderId) : undefined,
+        filledQty: num(o.filled_quantity),
+        totalQty: num(o.total_quantity),
+        filledPrice: num(o.filled_price),
+        raw: env,
+      };
+    }
+  }
+  return { ok: true, found: false };
 }

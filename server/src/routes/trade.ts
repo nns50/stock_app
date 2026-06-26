@@ -7,6 +7,7 @@ import { getEvents, listIntents } from '../db/orders';
 import { dryRunOrder } from '../services/trading/dryRun';
 import { livePreview } from '../services/trading/livePreview';
 import { placeStockOrder } from '../services/trading/placeOrder';
+import { reconcileIntent } from '../services/trading/reconcile';
 import { webullAccountState } from '../providers/webull/accountState';
 import type { AccountState, OrderIntent } from '../services/trading/guardrails';
 
@@ -127,11 +128,23 @@ tradeRouter.get(
   }),
 );
 
-// Recent intents + an intent's audit trail (the dry-run history).
+// Recent intents + an intent's audit trail (the dry-run / order history).
 tradeRouter.get('/intents', (_req, res) => res.json({ intents: listIntents().slice(0, 50) }));
 tradeRouter.get(
   '/intents/:id/events',
   asyncHandler(async (req, res) => {
     res.json({ events: getEvents(Number(param(req, 'id'))) });
+  }),
+);
+
+// Reconcile a live intent's state with the broker (read-only pull by
+// client_order_id): advances acknowledged → filled / partially_filled /
+// cancelled / expired and audits the change. Places/cancels nothing.
+const reconcileBody = z.object({ accountId: z.string().min(1).max(64) });
+tradeRouter.post(
+  '/intents/:id/reconcile',
+  asyncHandler(async (req, res) => {
+    const { accountId } = parseBody(reconcileBody, req);
+    res.json(await reconcileIntent(Number(param(req, 'id')), accountId));
   }),
 );

@@ -336,10 +336,99 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
         )}
 
         {result && <ResultPanel result={result} />}
+
+        <OrdersPanel accountId={accountId} refreshKey={placeResult?.intent?.id ?? 0} />
       </div>
 
       <ConfigPanel config={config} reload={reloadConfig} />
     </div>
+  );
+}
+
+function stateTone(state: string): string {
+  if (state === 'filled') return 'text-bull';
+  if (state === 'partially_filled') return 'text-amber-400';
+  if (state === 'cancelled' || state === 'rejected' || state === 'expired') return 'text-bear';
+  return 'text-slate-300';
+}
+
+// Recent order intents (placed + dry-run). For orders that reached the broker,
+// "Refresh status" reconciles our lifecycle with the live broker status.
+function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey: number }) {
+  const intents = useAsync(() => client.tradeIntents(), [refreshKey]);
+  const [busyId, setBusyId] = useState<number>();
+  const [msg, setMsg] = useState<Record<number, string>>({});
+  const rows = intents.data?.intents ?? [];
+
+  const refresh = async (id: number) => {
+    if (!accountId.trim()) {
+      setMsg((m) => ({ ...m, [id]: 'Enter your cash account_id above first.' }));
+      return;
+    }
+    setBusyId(id);
+    try {
+      const r = await client.tradeReconcile(id, accountId.trim());
+      let line: string;
+      if (!r.ok) line = r.error ?? 'reconcile failed';
+      else if (!r.broker?.found) line = 'no matching order at the broker yet';
+      else {
+        const b = r.broker;
+        const fill = b.filledQty !== undefined ? ` · ${b.filledQty}/${b.totalQty ?? '?'}` : '';
+        const at = b.filledPrice !== undefined ? ` @ ${fmtUsd(b.filledPrice)}` : '';
+        line = `${(b.status ?? 'unknown').toLowerCase()}${fill}${at}${r.changed ? '' : ' · no change'}`;
+      }
+      setMsg((m) => ({ ...m, [id]: line }));
+      intents.reload();
+    } catch (e) {
+      setMsg((m) => ({ ...m, [id]: (e as Error).message }));
+    } finally {
+      setBusyId(undefined);
+    }
+  };
+
+  return (
+    <Card className="p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="font-medium">Orders</h3>
+        <button className="btn-ghost text-xs" onClick={intents.reload} disabled={intents.loading}>
+          {intents.loading ? 'Loading…' : 'Reload'}
+        </button>
+      </div>
+      {rows.length === 0 ? (
+        <p className="text-xs text-slate-500">No orders yet — placed and dry-run orders show here.</p>
+      ) : (
+        <ul className="space-y-2">
+          {rows.map((it) => (
+            <li key={it.id} className="rounded-md border border-ink-600 bg-ink-700/40 p-2 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[11px] text-slate-500">#{it.id}</span>
+                <span className="flex-1 truncate">
+                  {it.side.toUpperCase()} {it.quantity} {it.symbol}{' '}
+                  <span className="text-slate-500">
+                    {it.orderType}
+                    {it.limitPrice !== null ? ` @ ${fmtUsd(it.limitPrice)}` : ''}
+                  </span>
+                </span>
+                <span className={cx('text-xs font-medium', stateTone(it.state))}>{it.state}</span>
+                {it.brokerOrderId && (
+                  <button className="btn-ghost text-xs" onClick={() => refresh(it.id)} disabled={busyId === it.id}>
+                    {busyId === it.id ? '…' : 'Refresh status'}
+                  </button>
+                )}
+              </div>
+              {it.brokerOrderId && (
+                <div className="truncate font-mono text-[10px] text-slate-500">broker {it.brokerOrderId}</div>
+              )}
+              {msg[it.id] && <div className="text-[11px] text-slate-400">{msg[it.id]}</div>}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="text-[11px] text-slate-500">
+        Refresh status pulls the live broker status by your order id and advances filled / cancelled. Read-only — places
+        and cancels nothing.
+      </p>
+    </Card>
   );
 }
 
