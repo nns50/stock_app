@@ -32,6 +32,23 @@ describe('NumberInput', () => {
     expect(screen.getByTestId('val').textContent).toBe('0.5');
   });
 
+  it('drops a leading zero once a real digit follows it (default "0" + "4" → "4")', () => {
+    render(<Harness />);
+    const input = screen.getByRole('textbox') as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: '0' } }); // a prefilled default
+    expect(input.value).toBe('0');
+    fireEvent.change(input, { target: { value: '04' } }); // typed "4" after the 0
+    expect(input.value).toBe('4');
+    expect(screen.getByTestId('val').textContent).toBe('4');
+
+    // But genuine values keep their zeros.
+    fireEvent.change(input, { target: { value: '40' } });
+    expect(input.value).toBe('40');
+    fireEvent.change(input, { target: { value: '0.5' } });
+    expect(input.value).toBe('0.5');
+  });
+
   it('emits undefined when cleared and ignores non-numeric input', () => {
     render(<Harness />);
     const input = screen.getByRole('textbox') as HTMLInputElement;
