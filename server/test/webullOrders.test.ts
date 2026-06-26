@@ -60,7 +60,7 @@ describe('webull stock order + preview', () => {
     expect(buildWebullStockOrder(intent({ session: 'overnight' }), 'C').support_trading_session).toBe('NIGHT');
   });
 
-  it('builds a single-leg OPTION order body (instrument_type OPTION + legs + position_intent)', () => {
+  it('builds a single-leg OPTION order body matching the docs example (order + leg fields)', () => {
     const opt = intent({
       assetKind: 'option',
       symbol: 'nvda',
@@ -73,41 +73,52 @@ describe('webull stock order + preview', () => {
       limitPrice: 0.45,
     });
     const body = buildWebullOptionOrder(opt, 'CID-OPT');
+    // Order level: side / market / symbol all present (per the official example).
     expect(body).toMatchObject({
       combo_type: 'NORMAL',
       client_order_id: 'CID-OPT',
       instrument_type: 'OPTION',
       market: 'US',
+      symbol: 'NVDA',
       option_strategy: 'SINGLE',
-      side: 'BUY', // order-level side (Webull validates it here too)
+      side: 'BUY',
       order_type: 'LIMIT',
       time_in_force: 'DAY',
-      support_trading_session: 'CORE',
-      position_intent: 'BUY_TO_OPEN',
+      entrust_type: 'QTY',
       limit_price: '0.45',
     });
+    // No position_intent (the broker derives it) and no support_trading_session.
+    expect(body.position_intent).toBeUndefined();
+    expect(body.support_trading_session).toBeUndefined();
+    // Leg repeats side/symbol/market and carries instrument_type:'OPTION'.
     expect(body.legs).toEqual([
       {
-        symbol: 'NVDA',
         side: 'BUY',
         quantity: '3',
-        option_type: 'CALL',
+        symbol: 'NVDA',
         strike_price: '202.5',
         option_expire_date: '2026-06-24',
+        instrument_type: 'OPTION',
+        option_type: 'CALL',
+        market: 'US',
       },
     ]);
   });
 
-  it('maps side + open/close to position_intent', () => {
-    const pi = (over: Partial<OrderIntent>) =>
-      buildWebullOptionOrder(
-        intent({ assetKind: 'option', optionType: 'put', strike: 15, expiration: '2026-06-26', ...over }),
-        'C',
-      ).position_intent;
-    expect(pi({ side: 'buy', openClose: 'open' })).toBe('BUY_TO_OPEN');
-    expect(pi({ side: 'sell', openClose: 'close' })).toBe('SELL_TO_CLOSE');
-    expect(pi({ side: 'sell', openClose: 'open' })).toBe('SELL_TO_OPEN');
-    expect(pi({ side: 'buy', openClose: 'close' })).toBe('BUY_TO_CLOSE');
+  it('carries SELL through to the order and leg side', () => {
+    const body = buildWebullOptionOrder(
+      intent({
+        assetKind: 'option',
+        side: 'sell',
+        openClose: 'close',
+        optionType: 'put',
+        strike: 15,
+        expiration: '2026-06-26',
+      }),
+      'C',
+    );
+    expect(body.side).toBe('SELL');
+    expect((body.legs as Array<{ side: string }>)[0].side).toBe('SELL');
   });
 
   it('client_order_id is ≤32 chars', () => {
