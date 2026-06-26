@@ -282,6 +282,8 @@ strikes); other structures (straddles, iron condors) aren't live-placeable yet.
 - **Option strategy** — **Single** (one leg, the default), **Vertical** (a 2-leg spread), **Covered** (a buy-write), or **Condor** (a 4-leg iron condor).
   **Strikes and expiries are picked from the live option chain** — dropdowns populated for the
   entered symbol (they fall back to free text if no chain is available, so you're never blocked).
+  For a multi-leg order, a **Suggest from marks** link fills the **Net limit** and **Side** from the
+  live chain marks (sum of leg mids; debit → Buy, credit → Sell) — you can still override it.
   For a vertical you set each leg's buy/sell, call/put and strike, plus one **shared expiry** for
   the spread (distinct strikes, one buy + one sell); the single **Spreads** count and **Net limit**
   apply to the whole spread (so there's no separate per-leg quantity). Order **Side** is the net direction
