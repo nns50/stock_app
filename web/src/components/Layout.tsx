@@ -27,6 +27,15 @@ import { CommandPalette, OPEN_PALETTE_EVENT } from './CommandPalette';
 import { KeyboardShortcuts } from './KeyboardShortcuts';
 import { GlobalLogTrade, OPEN_LOG_TRADE_EVENT } from './GlobalLogTrade';
 
+// Build id stamped in at build time (vite.config.ts). ISO timestamps are shown
+// compactly ("2026-06-26 14:30 UTC"); a non-timestamp id (e.g. a SHA) is shown
+// as-is. `typeof` guards the rare path where the define isn't applied (e.g. some
+// test setups) so it degrades to "dev" instead of throwing.
+const BUILD_ID = typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : 'dev';
+const BUILD_LABEL = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(BUILD_ID)
+  ? `${BUILD_ID.slice(0, 10)} ${BUILD_ID.slice(11, 16)} UTC`
+  : BUILD_ID;
+
 const TABS = [
   { to: '/today', label: 'Today', Icon: LayoutDashboard },
   { to: '/screener', label: 'Screener', Icon: Search },
@@ -248,6 +257,9 @@ export function Layout({ children }: { children: ReactNode }) {
           <Link to="/about" className="text-slate-400 underline decoration-dotted underline-offset-2 hover:text-accent">
             How it works &amp; disclaimers
           </Link>
+          <span className="block mt-1 text-[11px] text-slate-600" title={`Running build ${BUILD_LABEL}`}>
+            build {BUILD_LABEL}
+          </span>
         </div>
       </footer>
     </div>

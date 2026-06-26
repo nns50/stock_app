@@ -162,6 +162,14 @@ See the **[Deployment guide](docs/DEPLOY.md)** for the Fly.io and VPS runbooks �
 including the important note that the app has no authentication, so keep it private
 (Fly private networking / Tailscale / SSH tunnel / authed reverse proxy).
 
+**Fresh builds after deploy:** the production server sends `index.html` with
+`Cache-Control: no-cache` (always revalidated) while hashed `/assets/*` are cached
+immutably for a year, so a new deploy can't leave a browser running an old bundle.
+If the browser is still holding a previous build and hits a now-missing chunk, the
+app reloads itself once to pull the current one. The footer shows the running build
+id (a build timestamp by default); set `VITE_BUILD_ID` at build time — e.g. a commit
+SHA — to override it.
+
 ## Environment variables
 
 Copy `.env.example` to `server/.env`. All keys are read **server-side only**.
