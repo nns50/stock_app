@@ -58,4 +58,16 @@ describe('TradePage', () => {
     // The guardrail breakdown chip (mark + rule), not the config-panel hint that also names the rule.
     expect(screen.getByText('✓ trading_enabled')).toBeInTheDocument();
   });
+
+  it('uses multi-leg labels (Spreads / Net limit, no Reference price) for an iron condor', async () => {
+    vi.spyOn(client, 'expirations').mockResolvedValue({ expirations: [] } as never);
+    vi.spyOn(client, 'chain').mockResolvedValue(null as never);
+    renderPage();
+    await screen.findByRole('heading', { name: 'Trade' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Option' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Condor' }));
+    expect(screen.getByText('Spreads')).toBeInTheDocument();
+    expect(screen.getByText('Net limit (debit/credit)')).toBeInTheDocument();
+    expect(screen.queryByText('Reference price')).not.toBeInTheDocument();
+  });
 });
