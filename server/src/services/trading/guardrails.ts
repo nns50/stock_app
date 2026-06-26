@@ -46,6 +46,11 @@ export interface OrderIntent {
   expiration?: string;
   /** Contract multiplier (default 100 for options). */
   multiplier?: number;
+  /**
+   * Optional protective bracket on the ENTRY order (stocks): a take-profit
+   * and/or stop-loss that fire as the order fills. At least one price arms it.
+   */
+  bracket?: { takeProfitPrice?: number; stopLossPrice?: number };
 }
 
 export interface AccountState {
@@ -201,6 +206,35 @@ export function evaluateGuardrails(
       intent.orderType !== 'market',
       intent.orderType !== 'market' ? `${intent.orderType}` : 'options have no market order (use limit or a stop type)',
     );
+  }
+
+  // --- protective bracket (stocks) ---------------------------------------
+  const bracket = intent.bracket;
+  if (bracket && (bracket.takeProfitPrice !== undefined || bracket.stopLossPrice !== undefined)) {
+    const entry = intent.limitPrice;
+    const long = intent.side === 'buy';
+    let ok = true;
+    let detail = 'bracket ok';
+    if (intent.assetKind !== 'stock') {
+      ok = false;
+      detail = 'brackets are stock-only for now';
+    } else if (intent.orderType !== 'limit' || entry === undefined || entry <= 0) {
+      ok = false;
+      detail = 'a bracket needs a limit entry price';
+    } else if (
+      bracket.takeProfitPrice !== undefined &&
+      (long ? bracket.takeProfitPrice <= entry : bracket.takeProfitPrice >= entry)
+    ) {
+      ok = false;
+      detail = `take-profit must be ${long ? 'above' : 'below'} the entry ${usd(entry)}`;
+    } else if (
+      bracket.stopLossPrice !== undefined &&
+      (long ? bracket.stopLossPrice >= entry : bracket.stopLossPrice <= entry)
+    ) {
+      ok = false;
+      detail = `stop-loss must be ${long ? 'below' : 'above'} the entry ${usd(entry)}`;
+    }
+    block('bracket_prices', ok, detail);
   }
 
   // --- armed? ------------------------------------------------------------

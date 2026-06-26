@@ -822,6 +822,8 @@ export interface OrderIntentInput {
   optionType?: 'call' | 'put';
   strike?: number;
   expiration?: string;
+  /** Optional protective bracket on a stock entry (take-profit / stop-loss). */
+  bracket?: { takeProfitPrice?: number; stopLossPrice?: number };
 }
 
 export interface AccountStateInput {

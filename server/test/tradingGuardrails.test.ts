@@ -154,6 +154,46 @@ describe('trading guardrails', () => {
     expect(check(stopLim, 'limit_price').passed).toBe(true);
   });
 
+  it('validates bracket prices (TP above / SL below entry for a long; stocks only)', () => {
+    const good = evaluateGuardrails(
+      order({ orderType: 'limit', limitPrice: 10, side: 'buy', bracket: { takeProfitPrice: 12, stopLossPrice: 9 } }),
+      acct(),
+      cfg(),
+    );
+    expect(check(good, 'bracket_prices').passed).toBe(true);
+
+    const badTp = evaluateGuardrails(
+      order({ orderType: 'limit', limitPrice: 10, side: 'buy', bracket: { takeProfitPrice: 8 } }),
+      acct(),
+      cfg(),
+    );
+    expect(failed(badTp)).toContain('bracket_prices'); // TP not above entry
+
+    const badSl = evaluateGuardrails(
+      order({ orderType: 'limit', limitPrice: 10, side: 'buy', bracket: { stopLossPrice: 11 } }),
+      acct(),
+      cfg(),
+    );
+    expect(failed(badSl)).toContain('bracket_prices'); // SL not below entry
+
+    const optBracket = evaluateGuardrails(
+      order({
+        assetKind: 'option',
+        quantity: 1,
+        orderType: 'limit',
+        limitPrice: 1,
+        referencePrice: 1,
+        multiplier: 100,
+        bracket: { stopLossPrice: 0.5 },
+      }),
+      acct(),
+      cfg(),
+    );
+    expect(failed(optBracket)).toContain('bracket_prices'); // stock-only
+
+    expect(evaluateGuardrails(order(), acct(), cfg()).checks.find((c) => c.rule === 'bracket_prices')).toBeUndefined();
+  });
+
   it('blocks an order over the notional cap', () => {
     // 10 × $100 = $1,000 > $500 cap
     const r = evaluateGuardrails(order({ limitPrice: 100, referencePrice: 100 }), acct(), cfg());

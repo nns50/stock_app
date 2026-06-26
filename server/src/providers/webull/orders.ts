@@ -115,6 +115,59 @@ export function buildWebullOrder(intent: OrderIntent, clientOrderId: string): We
     : buildWebullStockOrder(intent, clientOrderId);
 }
 
+/** One bracket exit leg (opposite side of the entry): a take-profit LIMIT or a
+ *  stop-loss STOP_LOSS, sharing the entry's symbol / qty / session. */
+function bracketExit(
+  intent: OrderIntent,
+  comboType: 'STOP_PROFIT' | 'STOP_LOSS',
+  orderType: 'LIMIT' | 'STOP_LOSS',
+  price: number,
+  clientOrderId: string,
+): WebullOrderBody {
+  const body: WebullOrderBody = {
+    combo_type: comboType,
+    client_order_id: clientOrderId,
+    symbol: intent.symbol.toUpperCase(),
+    instrument_type: 'EQUITY',
+    market: 'US',
+    order_type: orderType,
+    side: intent.side === 'buy' ? 'SELL' : 'BUY', // exits close the entry
+    quantity: String(intent.quantity),
+    entrust_type: 'QTY',
+    time_in_force: 'DAY',
+    support_trading_session: SESSION_TO_WEBULL[intent.session ?? 'core'],
+  };
+  if (orderType === 'LIMIT') body.limit_price = String(price);
+  else body.stop_price = String(price);
+  return body;
+}
+
+/** The full `/order/{preview,place}` request payload (sans account_id). For a
+ *  plain order it's one entry; for a stock bracket it's a MASTER entry plus
+ *  STOP_PROFIT / STOP_LOSS legs linked by a `client_combo_order_id`. */
+export interface WebullOrderRequest {
+  new_orders: WebullOrderPayload[];
+  client_combo_order_id?: string;
+}
+
+export function buildOrderRequest(intent: OrderIntent, clientOrderId: string): WebullOrderRequest {
+  const b = intent.bracket;
+  const braced = b && (b.takeProfitPrice !== undefined || b.stopLossPrice !== undefined);
+  if (intent.assetKind === 'stock' && braced) {
+    const master = buildWebullStockOrder(intent, clientOrderId);
+    master.combo_type = 'MASTER';
+    const new_orders: WebullOrderPayload[] = [master];
+    if (b!.takeProfitPrice !== undefined) {
+      new_orders.push(bracketExit(intent, 'STOP_PROFIT', 'LIMIT', b!.takeProfitPrice, newClientOrderId()));
+    }
+    if (b!.stopLossPrice !== undefined) {
+      new_orders.push(bracketExit(intent, 'STOP_LOSS', 'STOP_LOSS', b!.stopLossPrice, newClientOrderId()));
+    }
+    return { new_orders, client_combo_order_id: newClientOrderId() };
+  }
+  return { new_orders: [buildWebullOrder(intent, clientOrderId)] };
+}
+
 export interface WebullPreview {
   ok: boolean;
   /** Raw broker payload — always included so the real estimate fields can be read. */
@@ -136,9 +189,8 @@ function num(v: unknown): number | undefined {
  */
 export async function webullPreviewOrder(accountId: string, intent: OrderIntent): Promise<WebullPreview> {
   if (!webullConfigured()) return { ok: false, error: 'Webull is not configured.' };
-  const order = buildWebullOrder(intent, newClientOrderId());
   const r = await webullClient().call('POST', '/openapi/trade/order/preview', {
-    body: { account_id: accountId, new_orders: [order] },
+    body: { account_id: accountId, ...buildOrderRequest(intent, newClientOrderId()) },
     surface: 'trade',
   });
   if (!r.ok) {
@@ -192,9 +244,8 @@ export async function webullPlaceOrder(
   clientOrderId: string,
 ): Promise<WebullPlaceResult> {
   if (!webullConfigured()) return { ok: false, error: 'Webull is not configured.' };
-  const order = buildWebullOrder(intent, clientOrderId);
   const r = await webullClient().call('POST', '/openapi/trade/order/place', {
-    body: { account_id: accountId, new_orders: [order] },
+    body: { account_id: accountId, ...buildOrderRequest(intent, clientOrderId) },
     surface: 'trade',
   });
   if (!r.ok) {

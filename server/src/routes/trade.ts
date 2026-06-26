@@ -57,6 +57,7 @@ const intentSchema = z.object({
   session: z.enum(['core', 'extended', 'overnight']).optional(),
   limitPrice: z.number().optional(),
   stopPrice: z.number().optional(),
+  bracket: z.object({ takeProfitPrice: z.number().optional(), stopLossPrice: z.number().optional() }).optional(),
   referencePrice: z.number().optional(),
   optionType: z.enum(['call', 'put']).optional(),
   strike: z.number().optional(),
