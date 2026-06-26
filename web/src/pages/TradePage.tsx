@@ -3,6 +3,7 @@ import { client } from '../api/client';
 import { useAsync, useLocalStorage } from '../lib/hooks';
 import { cx, fmtUsd } from '../lib/format';
 import { Badge, Card, Field, NumberInput, PageHeader, Segmented, Spinner } from '../components/ui';
+import { ExpirySelect, StrikeSelect, chainStrikes } from '../components/OptionPicker';
 import type {
   AccountStateInput,
   DryRunResult,
@@ -111,6 +112,28 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
           }
         : { ...o, optionStrategy: s, optionLegs: undefined },
     );
+
+  // Option-chain pickers: pull expirations for the symbol, and the chain for the
+  // active expiry, so strikes/expiries are chosen from real, tradeable contracts
+  // (no more free-text "invalid market / strike" rejections). Options only.
+  const optSymbol = order.assetKind === 'option' ? order.symbol.trim().toUpperCase() : '';
+  const expirations = useAsync(
+    () => (optSymbol ? client.expirations(optSymbol) : Promise.resolve({ expirations: [] as string[] })),
+    [optSymbol],
+  );
+  const expiryOpts = expirations.data?.expirations ?? [];
+  const activeExpiry = isVertical ? (order.optionLegs?.[0]?.expiration ?? '') : (order.expiration ?? '');
+  const chain = useAsync(
+    () => (optSymbol && activeExpiry ? client.chain(optSymbol, activeExpiry) : Promise.resolve(null)),
+    [optSymbol, activeExpiry],
+  );
+
+  // A vertical's two legs share one expiry — set both at once.
+  const setLegsExpiry = (expiration: string) =>
+    setOrder((o) => {
+      const base = o.optionLegs && o.optionLegs.length >= 2 ? o.optionLegs : DEFAULT_LEGS;
+      return { ...o, optionLegs: base.map((leg) => ({ ...leg, expiration })) };
+    });
 
   const run = async () => {
     setRunning(true);
@@ -301,15 +324,20 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
                       ]}
                     />
                   </Field>
-                  <Field label="Strike">
-                    <NumberInput value={order.strike} onChange={(v) => setO('strike', v)} min={0} />
-                  </Field>
                   <Field label="Expiration">
-                    <input
-                      className="input"
-                      placeholder="YYYY-MM-DD"
+                    <ExpirySelect
                       value={order.expiration ?? ''}
-                      onChange={(e) => setO('expiration', e.target.value)}
+                      options={expiryOpts}
+                      loading={expirations.loading}
+                      onChange={(v) => setO('expiration', v)}
+                    />
+                  </Field>
+                  <Field label="Strike">
+                    <StrikeSelect
+                      value={order.strike}
+                      options={chainStrikes(chain.data, order.optionType ?? 'call')}
+                      loading={chain.loading}
+                      onChange={(v) => setO('strike', v)}
                     />
                   </Field>
                   <p className="col-span-2 text-[11px] text-slate-500 sm:col-span-4">
@@ -323,6 +351,14 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
                     <b>margin</b> account — <b>cash</b> and <b>IRA</b> accounts are rejected at placement (you can still
                     dry-run and preview).
                   </div>
+                  <Field label="Expiry (both legs)">
+                    <ExpirySelect
+                      value={order.optionLegs?.[0]?.expiration ?? ''}
+                      options={expiryOpts}
+                      loading={expirations.loading}
+                      onChange={setLegsExpiry}
+                    />
+                  </Field>
                   {[0, 1].map((i) => (
                     <div key={i} className="flex flex-wrap items-end gap-2">
                       <Field label={`Leg ${i + 1}`}>
@@ -346,26 +382,19 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
                         />
                       </Field>
                       <Field label="Strike">
-                        <NumberInput
+                        <StrikeSelect
                           value={order.optionLegs?.[i]?.strike}
+                          options={chainStrikes(chain.data, order.optionLegs?.[i]?.optionType ?? 'call')}
+                          loading={chain.loading}
                           onChange={(v) => setLeg(i, { strike: v ?? 0 })}
-                          min={0}
-                        />
-                      </Field>
-                      <Field label="Expiry">
-                        <input
-                          className="input !w-32"
-                          placeholder="YYYY-MM-DD"
-                          value={order.optionLegs?.[i]?.expiration ?? ''}
-                          onChange={(e) => setLeg(i, { expiration: e.target.value })}
                         />
                       </Field>
                     </div>
                   ))}
                   <p className="text-[11px] text-amber-400/90">
-                    Both legs share the expiry; use distinct strikes, one Buy + one Sell. <b>Spreads</b> (above) is the
-                    contract count, <b>Net limit</b> is the net debit/credit, and order <b>Side</b> is the net direction
-                    (debit = Buy). <b>Preview (live)</b> validates the spread with the broker first.
+                    Use distinct strikes, one Buy + one Sell. <b>Spreads</b> (above) is the contract count,{' '}
+                    <b>Net limit</b> is the net debit/credit, and order <b>Side</b> is the net direction (debit = Buy).{' '}
+                    <b>Preview (live)</b> validates the spread with the broker first.
                   </p>
                 </div>
               )}

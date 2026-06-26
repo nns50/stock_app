@@ -270,10 +270,12 @@ naked long call) on risk-defined terms.
   fire as the entry fills (Webull MASTER + STOP_PROFIT/STOP_LOSS, one cancels the other). For a
   buy, take-profit sits **above** the entry and stop-loss **below**; a `bracket_prices` guardrail
   blocks an inverted pair.
-- **Option strategy** — **Single** (one leg, the default) or **Vertical** (a 2-leg spread). For a
-  vertical you set the two legs' contracts (buy/sell, call/put, strike, expiry — same expiry,
-  distinct strikes, one buy + one sell); the single **Spreads** count and **Net limit** apply to
-  the whole spread (so there's no separate per-leg quantity). Order **Side** is the net direction
+- **Option strategy** — **Single** (one leg, the default) or **Vertical** (a 2-leg spread).
+  **Strikes and expiries are picked from the live option chain** — dropdowns populated for the
+  entered symbol (they fall back to free text if no chain is available, so you're never blocked).
+  For a vertical you set each leg's buy/sell, call/put and strike, plus one **shared expiry** for
+  the spread (distinct strikes, one buy + one sell); the single **Spreads** count and **Net limit**
+  apply to the whole spread (so there's no separate per-leg quantity). Order **Side** is the net direction
   (debit = Buy). A `spread_legs` guardrail checks the shape; the spread is valued at its net
   (Spreads × 100 × Net limit) and treated as defined-risk. **Spreads require an approved margin
   account** — Webull rejects debit/credit spreads on **cash** or **IRA** accounts at placement
