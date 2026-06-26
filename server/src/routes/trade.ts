@@ -63,6 +63,18 @@ const intentSchema = z.object({
   strike: z.number().optional(),
   expiration: z.string().optional(),
   multiplier: z.number().optional(),
+  optionStrategy: z.enum(['SINGLE', 'VERTICAL']).optional(),
+  optionLegs: z
+    .array(
+      z.object({
+        side: z.enum(['buy', 'sell']),
+        quantity: z.number(),
+        optionType: z.enum(['call', 'put']),
+        strike: z.number(),
+        expiration: z.string(),
+      }),
+    )
+    .optional(),
 });
 const accountSchema = z.object({
   buyingPowerUsd: z.number(),

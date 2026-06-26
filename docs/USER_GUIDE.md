@@ -264,6 +264,11 @@ naked long call) on risk-defined terms.
   fire as the entry fills (Webull MASTER + STOP_PROFIT/STOP_LOSS, one cancels the other). For a
   buy, take-profit sits **above** the entry and stop-loss **below**; a `bracket_prices` guardrail
   blocks an inverted pair.
+- **Option strategy** — **Single** (one leg, the default) or **Vertical** (a 2-leg spread). For a
+  vertical you set both legs (buy/sell, call/put, strike, expiry, qty — same expiry, distinct
+  strikes, one buy + one sell); the order **Side** is the net direction (debit = Buy), **Limit
+  price** is the **net** debit/credit, and **Quantity** is the number of spreads. A `spread_legs`
+  guardrail checks the shape; the spread is valued at its net and treated as defined-risk.
 - **Session** — **Regular** (core hours, the default), **Extended** (pre/post-market), or
   **Overnight**. Outside regular hours the broker only accepts **limit** orders, and the symbol
   must be eligible for that session on Webull — otherwise the order is rejected. (Maps to

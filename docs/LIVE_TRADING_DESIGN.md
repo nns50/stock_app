@@ -300,5 +300,13 @@ key becomes `client_order_id`.
   STOP_LOSS @ stop) ]`, the exits on the opposite side. A `bracket_prices` guardrail blocks an
   inverted take-profit/stop pair (and non-stock / non-limit brackets). Preview + place go through
   the same `buildOrderRequest`, so a bracket previews as a unit.
-- **Next:** confirm a real option fill end-to-end; multi-leg option strategies (`option_strategy`
-  VERTICAL / COVERED_STOCK / IRON_CONDOR with multiple `legs`); options brackets / OTOCO.
+- **Vertical spreads (shipped):** `optionStrategy:'VERTICAL'` + `optionLegs[2]`. `buildWebullOptionOrder`
+  emits `option_strategy:'VERTICAL'`, order-level net `side`/`limit_price`/`symbol`, and the 2-leg
+  array (same envelope as the confirmed COVERED_STOCK example). A `spread_legs` guardrail requires
+  exactly 2 legs (same expiry, distinct strikes, one buy + one sell, equal qty); the spread is
+  valued at the NET (`limitPrice × 100 × qty`) and the single-leg naked-short / position-size rules
+  are skipped (defined-risk). NB: the docs scrape only serialized the SINGLE + COVERED_STOCK
+  examples, so the VERTICAL order-level shape is **inferred from COVERED_STOCK and confirmed via a
+  live preview** before placing.
+- **Next:** confirm a real option fill + a real vertical preview; COVERED_STOCK (stock+option) and
+  IRON_CONDOR (4-leg) strategies; options brackets / OTOCO.

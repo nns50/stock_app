@@ -194,6 +194,47 @@ describe('trading guardrails', () => {
     expect(evaluateGuardrails(order(), acct(), cfg()).checks.find((c) => c.rule === 'bracket_prices')).toBeUndefined();
   });
 
+  it('validates a vertical spread and skips the single-leg short/position rules', () => {
+    const legs = [
+      { side: 'buy' as const, quantity: 1, optionType: 'call' as const, strike: 500, expiration: '2026-07-17' },
+      { side: 'sell' as const, quantity: 1, optionType: 'call' as const, strike: 505, expiration: '2026-07-17' },
+    ];
+    const good = evaluateGuardrails(
+      order({
+        assetKind: 'option',
+        optionStrategy: 'VERTICAL',
+        optionLegs: legs,
+        quantity: 1,
+        limitPrice: 1.2,
+        referencePrice: 1.2,
+        multiplier: 100,
+      }),
+      acct(),
+      cfg(),
+    );
+    expect(good.ok).toBe(true);
+    expect(check(good, 'spread_legs').passed).toBe(true);
+    // Defined-risk: the per-leg position/short rules don't apply.
+    expect(good.checks.find((c) => c.rule === 'naked_short')).toBeUndefined();
+    expect(good.checks.find((c) => c.rule === 'position_size')).toBeUndefined();
+
+    // Same strikes → not a valid vertical.
+    const bad = evaluateGuardrails(
+      order({
+        assetKind: 'option',
+        optionStrategy: 'VERTICAL',
+        quantity: 1,
+        limitPrice: 1,
+        referencePrice: 1,
+        multiplier: 100,
+        optionLegs: [legs[0], { ...legs[1], strike: 500 }],
+      }),
+      acct(),
+      cfg(),
+    );
+    expect(failed(bad)).toContain('spread_legs');
+  });
+
   it('blocks an order over the notional cap', () => {
     // 10 × $100 = $1,000 > $500 cap
     const r = evaluateGuardrails(order({ limitPrice: 100, referencePrice: 100 }), acct(), cfg());

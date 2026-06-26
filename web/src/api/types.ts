@@ -824,6 +824,16 @@ export interface OrderIntentInput {
   expiration?: string;
   /** Optional protective bracket on a stock entry (take-profit / stop-loss). */
   bracket?: { takeProfitPrice?: number; stopLossPrice?: number };
+  /** Option strategy (SINGLE default; VERTICAL uses optionLegs). */
+  optionStrategy?: 'SINGLE' | 'VERTICAL';
+  /** Legs of a multi-leg option order; limitPrice is the NET debit/credit. */
+  optionLegs?: Array<{
+    side: 'buy' | 'sell';
+    quantity: number;
+    optionType: 'call' | 'put';
+    strike: number;
+    expiration: string;
+  }>;
 }
 
 export interface AccountStateInput {

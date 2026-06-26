@@ -32,6 +32,12 @@ const DEFAULT_ORDER: OrderIntentInput = {
   referencePrice: 100,
 };
 
+type OptionLeg = NonNullable<OrderIntentInput['optionLegs']>[number];
+const DEFAULT_LEGS: OptionLeg[] = [
+  { side: 'buy', quantity: 1, optionType: 'call', strike: 0, expiration: '' },
+  { side: 'sell', quantity: 1, optionType: 'call', strike: 0, expiration: '' },
+];
+
 export default function TradePage() {
   const cfg = useAsync(() => client.tradeConfig(), []);
   return (
@@ -74,6 +80,14 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
   const setO = <K extends keyof OrderIntentInput>(k: K, v: OrderIntentInput[K]) => setOrder((o) => ({ ...o, [k]: v }));
   const setA = <K extends keyof AccountStateInput>(k: K, v: AccountStateInput[K]) =>
     setAccount((a) => ({ ...a, [k]: v }));
+
+  // Edit one leg of a vertical spread (seeds two default legs the first time).
+  const setLeg = (i: number, patch: Partial<OptionLeg>) =>
+    setOrder((o) => {
+      const base = o.optionLegs && o.optionLegs.length >= 2 ? o.optionLegs : DEFAULT_LEGS;
+      const optionLegs = base.map((leg, idx) => (idx === i ? { ...leg, ...patch } : leg));
+      return { ...o, optionLegs };
+    });
 
   const run = async () => {
     setRunning(true);
@@ -237,32 +251,99 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
             </Field>
           </div>
           {order.assetKind === 'option' && (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <Field label="Call / put">
+            <div className="space-y-3">
+              <Field label="Strategy">
                 <Segmented
-                  value={order.optionType ?? 'call'}
-                  onChange={(v) => setO('optionType', v)}
+                  value={order.optionStrategy ?? 'SINGLE'}
+                  onChange={(v) => setO('optionStrategy', v)}
                   options={[
-                    { value: 'call', label: 'Call' },
-                    { value: 'put', label: 'Put' },
+                    { value: 'SINGLE', label: 'Single' },
+                    { value: 'VERTICAL', label: 'Vertical' },
                   ]}
                 />
               </Field>
-              <Field label="Strike">
-                <NumberInput value={order.strike} onChange={(v) => setO('strike', v)} min={0} />
-              </Field>
-              <Field label="Expiration">
-                <input
-                  className="input"
-                  placeholder="YYYY-MM-DD"
-                  value={order.expiration ?? ''}
-                  onChange={(e) => setO('expiration', e.target.value)}
-                />
-              </Field>
-              <p className="col-span-2 text-[11px] text-slate-500 sm:col-span-4">
-                Single-leg options — <b>limit or stop</b> (no market). Prices are the per-contract premium (e.g. 0.45).
-                <b> Preview (live)</b> validates the exact contract with the broker before you can place.
-              </p>
+              {(order.optionStrategy ?? 'SINGLE') === 'SINGLE' ? (
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <Field label="Call / put">
+                    <Segmented
+                      value={order.optionType ?? 'call'}
+                      onChange={(v) => setO('optionType', v)}
+                      options={[
+                        { value: 'call', label: 'Call' },
+                        { value: 'put', label: 'Put' },
+                      ]}
+                    />
+                  </Field>
+                  <Field label="Strike">
+                    <NumberInput value={order.strike} onChange={(v) => setO('strike', v)} min={0} />
+                  </Field>
+                  <Field label="Expiration">
+                    <input
+                      className="input"
+                      placeholder="YYYY-MM-DD"
+                      value={order.expiration ?? ''}
+                      onChange={(e) => setO('expiration', e.target.value)}
+                    />
+                  </Field>
+                  <p className="col-span-2 text-[11px] text-slate-500 sm:col-span-4">
+                    Single-leg options — <b>limit or stop</b> (no market). Prices are the per-contract premium.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {[0, 1].map((i) => (
+                    <div key={i} className="flex flex-wrap items-end gap-2">
+                      <Field label={`Leg ${i + 1}`}>
+                        <Segmented
+                          value={order.optionLegs?.[i]?.side ?? (i === 0 ? 'buy' : 'sell')}
+                          onChange={(v) => setLeg(i, { side: v })}
+                          options={[
+                            { value: 'buy', label: 'Buy' },
+                            { value: 'sell', label: 'Sell' },
+                          ]}
+                        />
+                      </Field>
+                      <Field label="C / P">
+                        <Segmented
+                          value={order.optionLegs?.[i]?.optionType ?? 'call'}
+                          onChange={(v) => setLeg(i, { optionType: v })}
+                          options={[
+                            { value: 'call', label: 'Call' },
+                            { value: 'put', label: 'Put' },
+                          ]}
+                        />
+                      </Field>
+                      <Field label="Strike">
+                        <NumberInput
+                          value={order.optionLegs?.[i]?.strike}
+                          onChange={(v) => setLeg(i, { strike: v ?? 0 })}
+                          min={0}
+                        />
+                      </Field>
+                      <Field label="Expiry">
+                        <input
+                          className="input !w-32"
+                          placeholder="YYYY-MM-DD"
+                          value={order.optionLegs?.[i]?.expiration ?? ''}
+                          onChange={(e) => setLeg(i, { expiration: e.target.value })}
+                        />
+                      </Field>
+                      <Field label="Qty">
+                        <NumberInput
+                          value={order.optionLegs?.[i]?.quantity}
+                          onChange={(v) => setLeg(i, { quantity: v ?? 0 })}
+                          min={0}
+                        />
+                      </Field>
+                    </div>
+                  ))}
+                  <p className="text-[11px] text-amber-400/90">
+                    Vertical: 2 legs, same expiry, distinct strikes, one buy + one sell. The order <b>Side</b> = net
+                    direction (debit = Buy), <b>Limit price</b> = the <b>net</b> debit/credit, <b>Quantity</b> = number
+                    of spreads. <b>Preview (live)</b> validates the spread with the broker first.
+                  </p>
+                </div>
+              )}
             </div>
           )}
           {order.assetKind === 'stock' && order.orderType === 'limit' && (
