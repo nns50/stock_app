@@ -3,6 +3,7 @@ import { config } from '../src/config';
 import {
   buildWebullStockOrder,
   buildWebullOptionOrder,
+  buildOrderRequest,
   webullPreviewOrder,
   webullPlaceOrder,
   webullOrderStatus,
@@ -84,6 +85,28 @@ describe('webull stock order + preview', () => {
     expect(body.order_type).toBe('STOP_LOSS');
     expect(body.stop_price).toBe('0.3');
     expect((body.legs as Array<{ instrument_type: string }>)[0].instrument_type).toBe('OPTION');
+  });
+
+  it('buildOrderRequest: a plain order is one new_order; a stock bracket is MASTER + STOP_PROFIT + STOP_LOSS', () => {
+    const plain = buildOrderRequest(intent(), 'CID');
+    expect(plain.new_orders).toHaveLength(1);
+    expect(plain.client_combo_order_id).toBeUndefined();
+
+    const req = buildOrderRequest(
+      intent({ orderType: 'limit', limitPrice: 10, side: 'buy', bracket: { takeProfitPrice: 12, stopLossPrice: 9 } }),
+      'CID-MASTER',
+    );
+    expect(req.client_combo_order_id).toBeTruthy();
+    expect(req.new_orders).toHaveLength(3);
+    const [master, tp, sl] = req.new_orders as Array<Record<string, string>>;
+    expect(master).toMatchObject({
+      combo_type: 'MASTER',
+      client_order_id: 'CID-MASTER',
+      side: 'BUY',
+      limit_price: '10',
+    });
+    expect(tp).toMatchObject({ combo_type: 'STOP_PROFIT', side: 'SELL', order_type: 'LIMIT', limit_price: '12' });
+    expect(sl).toMatchObject({ combo_type: 'STOP_LOSS', side: 'SELL', order_type: 'STOP_LOSS', stop_price: '9' });
   });
 
   it('builds a single-leg OPTION order body matching the docs example (order + leg fields)', () => {

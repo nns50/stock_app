@@ -260,6 +260,10 @@ naked long call) on risk-defined terms.
   reference price used for notional and the fat-finger check. **Stop** triggers a market order at
   your **stop (trigger) price**; **Stop-limit** triggers a limit order (needs both a stop and a
   limit price). Options support every type **except market**.
+- **Bracket** (stock limit orders) — optionally attach a **take-profit** and/or **stop-loss** that
+  fire as the entry fills (Webull MASTER + STOP_PROFIT/STOP_LOSS, one cancels the other). For a
+  buy, take-profit sits **above** the entry and stop-loss **below**; a `bracket_prices` guardrail
+  blocks an inverted pair.
 - **Session** — **Regular** (core hours, the default), **Extended** (pre/post-market), or
   **Overnight**. Outside regular hours the broker only accepts **limit** orders, and the symbol
   must be eligible for that session on Webull — otherwise the order is rejected. (Maps to

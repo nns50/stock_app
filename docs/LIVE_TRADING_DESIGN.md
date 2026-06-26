@@ -294,7 +294,11 @@ key becomes `client_order_id`.
   Guardrails: `stop_price` (stops need a positive trigger), `limit_price` (limit + stop-limit
   need a positive limit), and `option_order_type` (options support LIMIT/STOP_LOSS/
   STOP_LOSS_LIMIT — **no MARKET**).
-- **Next:** confirm a real option fill end-to-end; bracket / OCO orders (`combo_type`
-  STOP_PROFIT / STOP_LOSS / OCO / OTOCO — a take-profit + stop-loss that cancel each other);
-  multi-leg option strategies (`option_strategy` VERTICAL / COVERED_STOCK / IRON_CONDOR with
-  multiple `legs`).
+- **Brackets (shipped, stocks):** a stock limit entry can carry an optional take-profit and/or
+  stop-loss. `buildOrderRequest` emits the docs' bracket shape — `client_combo_order_id` +
+  `new_orders:[ MASTER (entry LIMIT), STOP_PROFIT (exit LIMIT @ take-profit), STOP_LOSS (exit
+  STOP_LOSS @ stop) ]`, the exits on the opposite side. A `bracket_prices` guardrail blocks an
+  inverted take-profit/stop pair (and non-stock / non-limit brackets). Preview + place go through
+  the same `buildOrderRequest`, so a bracket previews as a unit.
+- **Next:** confirm a real option fill end-to-end; multi-leg option strategies (`option_strategy`
+  VERTICAL / COVERED_STOCK / IRON_CONDOR with multiple `legs`); options brackets / OTOCO.
