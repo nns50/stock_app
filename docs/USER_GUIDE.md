@@ -275,7 +275,9 @@ naked long call) on risk-defined terms.
   distinct strikes, one buy + one sell); the single **Spreads** count and **Net limit** apply to
   the whole spread (so there's no separate per-leg quantity). Order **Side** is the net direction
   (debit = Buy). A `spread_legs` guardrail checks the shape; the spread is valued at its net
-  (Spreads × 100 × Net limit) and treated as defined-risk.
+  (Spreads × 100 × Net limit) and treated as defined-risk. **Spreads require an approved margin
+  account** — Webull rejects debit/credit spreads on **cash** or **IRA** accounts at placement
+  (you can still dry-run and preview); the builder shows this reminder when you pick **Vertical**.
 - **Session** — **Regular** (core hours, the default), **Extended** (pre/post-market), or
   **Overnight**. Outside regular hours the broker only accepts **limit** orders, and the symbol
   must be eligible for that session on Webull — otherwise the order is rejected. (Maps to
