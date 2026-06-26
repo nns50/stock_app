@@ -55,8 +55,8 @@ describe('AlertsPage', () => {
     // Expiration is a date input; set it directly.
     const dateInput = document.querySelector('input[type="date"]') as HTMLInputElement;
     fireEvent.change(dateInput, { target: { value: '2026-07-17' } });
-    // Threshold (the only step=0.01 number input).
-    const threshold = document.querySelector('input[type="number"][step="0.01"]') as HTMLInputElement;
+    // Threshold — the input inside the "Threshold" field.
+    const threshold = screen.getByText('Threshold').closest('label')!.querySelector('input') as HTMLInputElement;
     fireEvent.change(threshold, { target: { value: '3' } });
 
     fireEvent.click(screen.getByRole('button', { name: 'Add alert' }));
