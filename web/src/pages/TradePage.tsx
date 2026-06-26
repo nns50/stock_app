@@ -193,7 +193,24 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
                 ]}
               />
             </Field>
+            <Field label="Session">
+              <Segmented
+                value={order.session ?? 'core'}
+                onChange={(v) => setO('session', v)}
+                options={[
+                  { value: 'core', label: 'Regular' },
+                  { value: 'extended', label: 'Extended' },
+                  { value: 'overnight', label: 'Overnight' },
+                ]}
+              />
+            </Field>
           </div>
+          {(order.session ?? 'core') !== 'core' && (
+            <p className="text-[11px] text-amber-400/90">
+              {order.session === 'overnight' ? 'Overnight' : 'Extended-hours'} orders must be <b>limit</b> orders, and
+              the symbol has to be eligible for that session on Webull — otherwise the broker rejects the order.
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Field label="Quantity">
               <NumberInput value={order.quantity} onChange={(v) => setO('quantity', v ?? 0)} min={0} />

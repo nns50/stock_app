@@ -255,9 +255,13 @@ naked long call) on risk-defined terms.
 > env `TRADING_ENABLED` is set, every guardrail passes, the kill switch is off, and you
 > type-to-confirm. Off by default; stocks only for now.
 
-- **Compose an order** — symbol, stock/option, buy/sell, open/close, quantity, market/limit
-  (+ strike/expiry for options), plus a reference price used for notional and the fat-finger
-  check.
+- **Compose an order** — symbol, stock/option, buy/sell, open/close, quantity, market/limit,
+  **session** (+ strike/expiry for options), plus a reference price used for notional and the
+  fat-finger check.
+- **Session** — **Regular** (core hours, the default), **Extended** (pre/post-market), or
+  **Overnight**. Outside regular hours the broker only accepts **limit** orders, and the symbol
+  must be eligible for that session on Webull — otherwise the order is rejected. (Maps to
+  Webull's `support_trading_session` = `CORE` / `ALL` / `NIGHT`.)
 - **Dry-run (manual state)** — enter buying power, exposure, today's P&L, orders today, and
   your current position by hand, then check the guardrails. A banner reads **would submit** or
   **blocked**, with the **notional**, audited intent **state**, and the full **guardrail
@@ -286,8 +290,9 @@ The side panel persists your safety settings (server-side):
 
 Defaults are intentionally tiny and trading ships **off**. The rules: per-order notional,
 buying power (buys only), exposure ceiling (opening adds, closing doesn't), per-symbol size,
-daily-loss halt, max orders/day, fat-finger price sanity, naked-short block, and the
-enabled/kill-switch gates — anything that can't be verified **fails closed**.
+daily-loss halt, max orders/day, fat-finger price sanity, naked-short block, a session/order-type
+check (extended & overnight sessions are limit-only), and the enabled/kill-switch gates —
+anything that can't be verified **fails closed**.
 
 ---
 

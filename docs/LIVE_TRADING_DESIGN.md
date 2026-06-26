@@ -258,5 +258,8 @@ key becomes `client_order_id`.
   gate) + a server-checked type-to-confirm phrase + every guardrail passing against fresh
   account state + the kill switch off. Each attempt is walked through the lifecycle and
   written to the audit trail (with the broker `order_id` on success).
+- **Sessions:** the order carries a `session` (`core`/`extended`/`overnight`) → Webull
+  `support_trading_session` (`CORE`/`ALL`/`NIGHT`). A `session_order_type` guardrail blocks
+  market orders outside regular hours (the broker only accepts limit orders there).
 - **Next:** confirm the live preview/place response field names against the real account;
   single-leg **option** placement (separate Webull endpoints); order **status/cancel**.

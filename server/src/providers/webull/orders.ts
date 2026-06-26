@@ -19,6 +19,9 @@ import type { OrderIntent } from '../../services/trading/guardrails';
 
 export type WebullOrderBody = Record<string, string>;
 
+/** Our session → Webull's `support_trading_session` (confirmed: CORE|ALL|NIGHT). */
+const SESSION_TO_WEBULL = { core: 'CORE', extended: 'ALL', overnight: 'NIGHT' } as const;
+
 /** A fresh broker idempotency key (client_order_id, ≤32 chars). */
 export function newClientOrderId(): string {
   return randomUUID().replace(/-/g, ''); // 32 hex chars
@@ -38,7 +41,7 @@ export function buildWebullStockOrder(intent: OrderIntent, clientOrderId: string
     quantity: String(intent.quantity),
     entrust_type: 'QTY',
     time_in_force: 'DAY',
-    support_trading_session: 'CORE',
+    support_trading_session: SESSION_TO_WEBULL[intent.session ?? 'core'],
   };
   if (intent.orderType === 'limit' && intent.limitPrice !== undefined) {
     body.limit_price = String(intent.limitPrice);

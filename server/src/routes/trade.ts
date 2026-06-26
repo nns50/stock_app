@@ -51,6 +51,7 @@ const intentSchema = z.object({
   openClose: z.enum(['open', 'close']),
   quantity: z.number(),
   orderType: z.enum(['market', 'limit']),
+  session: z.enum(['core', 'extended', 'overnight']).optional(),
   limitPrice: z.number().optional(),
   referencePrice: z.number().optional(),
   optionType: z.enum(['call', 'put']).optional(),

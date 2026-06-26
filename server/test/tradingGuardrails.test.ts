@@ -77,6 +77,25 @@ describe('trading guardrails', () => {
     expect(failed(r)).toContain('kill_switch');
   });
 
+  it('blocks a market order in an overnight/extended session (limit-only outside RTH)', () => {
+    const r = evaluateGuardrails(
+      order({ session: 'overnight', orderType: 'market', limitPrice: undefined }),
+      acct(),
+      cfg(),
+    );
+    expect(r.ok).toBe(false);
+    expect(failed(r)).toContain('session_order_type');
+  });
+
+  it('allows a limit order in an overnight session, and omits the rule for regular hours', () => {
+    const overnight = evaluateGuardrails(order({ session: 'overnight' }), acct(), cfg());
+    expect(overnight.ok).toBe(true);
+    expect(check(overnight, 'session_order_type').passed).toBe(true);
+    // The rule only appears outside regular hours.
+    const regular = evaluateGuardrails(order(), acct(), cfg());
+    expect(regular.checks.find((c) => c.rule === 'session_order_type')).toBeUndefined();
+  });
+
   it('blocks an order over the notional cap', () => {
     // 10 × $100 = $1,000 > $500 cap
     const r = evaluateGuardrails(order({ limitPrice: 100, referencePrice: 100 }), acct(), cfg());
