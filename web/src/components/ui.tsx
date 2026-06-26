@@ -1,4 +1,4 @@
-import { ReactNode, useEffect } from 'react';
+import { ReactNode, useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { cx, fmtSignedUsd, pnlClass } from '../lib/format';
 
@@ -224,28 +224,40 @@ export function Field({ label, children, hint }: { label: string; children: Reac
 export function NumberInput({
   value,
   onChange,
-  step,
-  min,
-  max,
   placeholder,
 }: {
   value: number | undefined;
   onChange: (v: number | undefined) => void;
+  // step/min/max kept for call-site compatibility; validation is done in `onChange`.
   step?: number;
   min?: number;
   max?: number;
   placeholder?: string;
 }) {
+  // A controlled text field (not type="number") so an in-progress decimal like
+  // "0." / "1." / ".5" isn't sanitized back to an integer on each keystroke (the
+  // browser rewrites a number input's own `.value`). We hold the raw text and
+  // re-sync only when the controlled `value` no longer matches it.
+  const [text, setText] = useState(value === undefined ? '' : String(value));
+  useEffect(() => {
+    const current = text === '' ? undefined : Number(text);
+    if (value !== current) setText(value === undefined ? '' : String(value));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
   return (
     <input
-      type="number"
+      type="text"
+      inputMode="decimal"
       className="input"
-      value={value ?? ''}
-      step={step}
-      min={min}
-      max={max}
+      value={text}
       placeholder={placeholder}
-      onChange={(e) => onChange(e.target.value === '' ? undefined : Number(e.target.value))}
+      onChange={(e) => {
+        const t = e.target.value;
+        if (t !== '' && !/^-?\d*\.?\d*$/.test(t)) return; // ignore non-numeric keystrokes
+        setText(t);
+        const n = t === '' || t === '-' || t === '.' || t === '-.' ? undefined : Number(t);
+        onChange(n !== undefined && Number.isNaN(n) ? undefined : n);
+      }}
     />
   );
 }
