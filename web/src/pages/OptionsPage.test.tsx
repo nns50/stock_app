@@ -95,7 +95,12 @@ describe('OptionsPage', () => {
 
     renderPage();
 
-    // Wait for the chain row, then click it to open the live overlay.
+    // Wait for BOTH the chain row AND live-quote availability before clicking.
+    // The row's click handler is only wired once `webullStatus` resolves
+    // (configured) — its hint renders then. The chain (client.chain) and the
+    // status (client.webullStatus) are independent fetches, so clicking on just
+    // the chain row races the status and intermittently no-ops (the flake).
+    await screen.findByText(/click a contract for a live quote/i);
     const strike = await screen.findByText('300.00');
     fireEvent.click(strike);
 
