@@ -58,6 +58,7 @@ import type {
   WebullAccountStateResult,
   LivePreviewResult,
   PlaceResult,
+  ReconcileResult,
 } from './types';
 
 export class ApiError extends Error {
@@ -339,6 +340,11 @@ export const client = {
   dryRunOrder: (intent: OrderIntentInput, account: AccountStateInput) =>
     api<DryRunResult>('/trade/dry-run', { method: 'POST', body: JSON.stringify({ intent, account }) }),
   tradeIntents: () => api<{ intents: OrderIntentRecord[] }>('/trade/intents'),
+  tradeReconcile: (id: number, accountId: string) =>
+    api<ReconcileResult>(`/trade/intents/${id}/reconcile`, {
+      method: 'POST',
+      body: JSON.stringify({ accountId }),
+    }),
   tradeAccountState: (accountId: string, symbol?: string) =>
     api<WebullAccountStateResult>(
       `/trade/account-state?accountId=${encodeURIComponent(accountId)}${symbol ? `&symbol=${encodeURIComponent(symbol)}` : ''}`,

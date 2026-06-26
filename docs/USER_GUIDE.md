@@ -275,6 +275,10 @@ naked long call) on risk-defined terms.
   (e.g. `BUY 1 NUVB`) to arm, then place. The **server** re-pulls your account, re-runs every
   guardrail, checks the kill switch + `TRADING_ENABLED`, and writes the intent + broker
   `order_id` to the audit trail. A single stock order at a time.
+- **Orders** — recent intents (placed + dry-run), newest first, with their lifecycle state. For
+  an order that reached the broker, **Refresh status** pulls the live broker status by your order
+  id and advances the intent to **filled / partially filled / cancelled / expired** (writing the
+  fill price into the audit trail). Read-only — it places and cancels nothing.
 
 ### Guardrail config
 

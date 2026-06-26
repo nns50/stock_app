@@ -261,5 +261,11 @@ key becomes `client_order_id`.
 - **Sessions:** the order carries a `session` (`core`/`extended`/`overnight`) → Webull
   `support_trading_session` (`CORE`/`ALL`/`NIGHT`). A `session_order_type` guardrail blocks
   market orders outside regular hours (the broker only accepts limit orders there).
-- **Next:** confirm the live preview/place response field names against the real account;
-  single-leg **option** placement (separate Webull endpoints); order **status/cancel**.
+- **Status reconcile (shipped):** confirmed the live order envelope from a real fill —
+  `{ client_order_id, combo_order_id, orders:[{ status, order_id, filled_quantity, filled_price … }] }`.
+  `reconcileIntent` pulls an order by its `client_order_id` (open orders → history) and advances
+  acknowledged → `filled`/`partially_filled`/`cancelled`/`expired`, audited. Surfaced as
+  **Refresh status** in the Trade "Orders" panel. Read-only toward the broker.
+- **Next:** order **cancel** (`/openapi/trade/order/cancel`, body shape to confirm on a live open
+  order); single-leg **option** placement (envelope confirmed: `instrument_type:"OPTION"`,
+  `option_strategy:"SINGLE"`, `legs[]`, `position_intent`).

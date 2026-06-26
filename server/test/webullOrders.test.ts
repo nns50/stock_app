@@ -4,6 +4,7 @@ import {
   buildWebullStockOrder,
   webullPreviewStockOrder,
   webullPlaceStockOrder,
+  webullOrderStatus,
   newClientOrderId,
 } from '../src/providers/webull/orders';
 import type { OrderIntent } from '../src/services/trading/guardrails';
@@ -127,5 +128,33 @@ describe('webull stock order + preview', () => {
     expect(r.ok).toBe(false);
     expect(r.orderId).toBeUndefined();
     expect(r.error).toMatch(/trading not permitted/i);
+  });
+
+  it('finds an order status in open orders by client_order_id (no history call needed)', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const env = {
+      client_order_id: 'CID-OPEN',
+      combo_order_id: 'WB-OPEN-1',
+      orders: [{ status: 'PENDING', order_id: 'WB-OPEN-1', total_quantity: '2', filled_quantity: '0' }],
+    };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify([env]),
+    } as Response);
+
+    const r = await webullOrderStatus('ACC1', 'CID-OPEN');
+    expect(r).toMatchObject({ ok: true, found: true, status: 'PENDING', brokerOrderId: 'WB-OPEN-1', totalQty: 2 });
+    expect(fetchSpy).toHaveBeenCalledTimes(1); // short-circuits before history
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/openapi/trade/order/open');
+  });
+
+  it('reports not-found when neither open nor history has the order', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '[]' } as Response)
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '[]' } as Response);
+    const r = await webullOrderStatus('ACC1', 'CID-MISSING');
+    expect(r).toMatchObject({ ok: true, found: false });
   });
 });

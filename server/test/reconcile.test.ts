@@ -1,0 +1,108 @@
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+import { initDb, db } from '../src/db';
+import { config } from '../src/config';
+import { createIntent, getIntent, transitionIntent } from '../src/db/orders';
+import { mapWebullStatus, reconcileIntent } from '../src/services/trading/reconcile';
+import type { OrderIntent } from '../src/services/trading/guardrails';
+
+const origWebull = { ...config.webull };
+const CID = 'cc404a3544f74577a20839cf42c5892e';
+
+beforeAll(() => initDb());
+beforeEach(() => {
+  db.exec('DELETE FROM order_events; DELETE FROM order_intents;');
+  Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+});
+afterEach(() => {
+  Object.assign(config.webull, origWebull);
+  vi.restoreAllMocks();
+});
+
+const intent = (over: Partial<OrderIntent> = {}): OrderIntent => ({
+  symbol: 'AMC',
+  assetKind: 'stock',
+  side: 'buy',
+  openClose: 'open',
+  quantity: 1,
+  orderType: 'limit',
+  limitPrice: 1.89,
+  referencePrice: 1.89,
+  ...over,
+});
+const okResp = (b: unknown) => ({ ok: true, status: 200, text: async () => JSON.stringify(b) }) as Response;
+
+// A live order that reached the broker (draft → … → acknowledged).
+function placedIntentId(): number {
+  const rec = createIntent(intent(), CID);
+  transitionIntent(rec.id, 'validated');
+  transitionIntent(rec.id, 'confirmed');
+  transitionIntent(rec.id, 'submitted');
+  transitionIntent(rec.id, 'acknowledged', { brokerOrderId: '8AIG1C8LCCE58QHNDSU5NHBP09' });
+  return rec.id;
+}
+
+// One history envelope as Webull really returns it (see the live /order/history probe).
+const filledEnvelope = {
+  client_order_id: CID,
+  combo_type: 'NORMAL',
+  combo_order_id: '8AIG1C8LCCE58QHNDSU5NHBP09',
+  orders: [
+    {
+      symbol: 'AMC',
+      side: 'BUY',
+      status: 'FILLED',
+      client_order_id: CID,
+      order_id: '8AIG1C8LCCE58QHNDSU5NHBP09',
+      total_quantity: '1',
+      filled_quantity: '1',
+      filled_price: '1.890',
+    },
+  ],
+};
+
+describe('mapWebullStatus', () => {
+  it('maps broker statuses to lifecycle states', () => {
+    expect(mapWebullStatus('FILLED')).toBe('filled');
+    expect(mapWebullStatus('partially_filled')).toBe('partially_filled');
+    expect(mapWebullStatus('CANCELLED')).toBe('cancelled');
+    expect(mapWebullStatus('EXPIRED')).toBe('expired');
+    expect(mapWebullStatus('PENDING')).toBe('acknowledged');
+    expect(mapWebullStatus('WAT')).toBeUndefined();
+  });
+});
+
+describe('reconcileIntent', () => {
+  it('advances an acknowledged order to filled from the broker history', async () => {
+    const id = placedIntentId();
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp([])) // open orders: none
+      .mockResolvedValueOnce(okResp([filledEnvelope])); // history: our fill
+
+    const r = await reconcileIntent(id, 'ACC1');
+    expect(r).toMatchObject({ ok: true, changed: true });
+    expect(r.intent?.state).toBe('filled');
+    expect(r.broker).toMatchObject({ found: true, status: 'FILLED', filledQty: 1, filledPrice: 1.89 });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    // The fill is in the audit trail.
+    expect(getIntent(id)?.state).toBe('filled');
+  });
+
+  it('is a no-op when the order is not (yet) at the broker', async () => {
+    const id = placedIntentId();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(okResp([])).mockResolvedValueOnce(okResp([]));
+    const r = await reconcileIntent(id, 'ACC1');
+    expect(r).toMatchObject({ ok: true, changed: false });
+    expect(r.broker?.found).toBe(false);
+    expect(r.intent?.state).toBe('acknowledged');
+  });
+
+  it('does not touch the broker once the intent is terminal', async () => {
+    const id = placedIntentId();
+    transitionIntent(id, 'filled', { detail: 'already filled' });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const r = await reconcileIntent(id, 'ACC1');
+    expect(r).toMatchObject({ ok: true, changed: false });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});

@@ -849,6 +849,26 @@ export interface OrderIntentRecord {
   updatedAt: number;
 }
 
+export interface WebullOrderStatus {
+  ok: boolean;
+  found: boolean;
+  status?: string;
+  brokerOrderId?: string;
+  filledQty?: number;
+  totalQty?: number;
+  filledPrice?: number;
+  raw?: unknown;
+  error?: string;
+}
+
+export interface ReconcileResult {
+  ok: boolean;
+  changed: boolean;
+  intent?: OrderIntentRecord;
+  broker?: WebullOrderStatus;
+  error?: string;
+}
+
 export interface DryRunResult {
   intent: OrderIntentRecord;
   guardrails: GuardrailReport;
