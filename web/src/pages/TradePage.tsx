@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { client } from '../api/client';
 import { useAsync, useLocalStorage } from '../lib/hooks';
 import { cx, fmtUsd } from '../lib/format';
@@ -41,6 +42,9 @@ const DEFAULT_LEGS: OptionLeg[] = [
 
 export default function TradePage() {
   const cfg = useAsync(() => client.tradeConfig(), []);
+  // "Trade it" handoff from the Options page passes an order via router state.
+  const location = useLocation();
+  const prefill = (location.state as { prefill?: OrderIntentInput } | null)?.prefill;
   return (
     <div className="space-y-4">
       <PageHeader
@@ -55,14 +59,22 @@ export default function TradePage() {
       {cfg.loading ? (
         <Spinner label="Loading trading config…" />
       ) : cfg.data ? (
-        <Workspace config={cfg.data} reloadConfig={cfg.reload} />
+        <Workspace config={cfg.data} reloadConfig={cfg.reload} prefill={prefill} />
       ) : null}
     </div>
   );
 }
 
-function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConfig: () => void }) {
-  const [order, setOrder] = useState<OrderIntentInput>(DEFAULT_ORDER);
+function Workspace({
+  config,
+  reloadConfig,
+  prefill,
+}: {
+  config: TradingConfig;
+  reloadConfig: () => void;
+  prefill?: OrderIntentInput;
+}) {
+  const [order, setOrder] = useState<OrderIntentInput>(prefill ?? DEFAULT_ORDER);
   const [account, setAccount] = useState<AccountStateInput>(DEFAULT_ACCOUNT);
   const [result, setResult] = useState<DryRunResult>();
   const [running, setRunning] = useState(false);

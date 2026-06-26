@@ -209,6 +209,10 @@ The full option chain for a symbol + expiration, with **Greeks** (delta, gamma, 
 vega), **IV**, and bid/ask. When a provider doesn't return Greeks, they're computed
 with **Black–Scholes** (estimates — European exercise, no dividends, constant vol).
 
+Each row's **Trade** link hands that contract to the **Trade** page — it prefills the order
+builder with the contract's symbol, expiry, strike, type, and mark (as the limit), as a
+single-leg **buy** you can adjust before previewing/placing.
+
 > **Live quote overlay (Webull/OPRA).** When Webull is configured, **click any contract
 > row** to overlay a **real-time** quote on it — bid/ask with sizes, last, mark, spread,
 > volume, open interest, IV and Greeks — from Webull's OPRA options feed. The chain

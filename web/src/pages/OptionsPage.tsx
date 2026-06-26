@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { client } from '../api/client';
+import { contractToOrder } from '../lib/tradePrefill';
 import { useProvider } from '../components/ProviderContext';
 import { useAsync, usePolling } from '../lib/hooks';
 import { cx, fmtNum, fmtPct, fmtUsd } from '../lib/format';
@@ -206,6 +207,7 @@ function ChainView({ symbol, expiration }: { symbol: string; expiration: string 
   const wb = useAsync(() => client.webullStatus(), []);
   const liveAvailable = !!wb.data?.configured;
   const [live, setLive] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   if (!expiration)
     return (
@@ -269,6 +271,7 @@ function ChainView({ symbol, expiration }: { symbol: string; expiration: string 
               <th className="th text-right">Θ</th>
               <th className="th text-right">Γ</th>
               <th className="th text-right">ν</th>
+              <th className="th text-right">Trade</th>
             </tr>
           </thead>
           <tbody>
@@ -299,10 +302,22 @@ function ChainView({ symbol, expiration }: { symbol: string; expiration: string 
                     <td className="td text-right text-slate-400">{fmtNum(c.greeks?.theta, 3)}</td>
                     <td className="td text-right text-slate-400">{fmtNum(c.greeks?.gamma, 4)}</td>
                     <td className="td text-right text-slate-400">{fmtNum(c.greeks?.vega, 3)}</td>
+                    <td className="td text-right">
+                      <button
+                        className="text-xs text-accent hover:underline"
+                        title="Prefill the Trade builder with this contract"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigate('/trade', { state: { prefill: contractToOrder(c) } });
+                        }}
+                      >
+                        Trade
+                      </button>
+                    </td>
                   </tr>
                   {open && (
                     <tr className="bg-ink-900/40">
-                      <td colSpan={11} className="px-3 py-2">
+                      <td colSpan={12} className="px-3 py-2">
                         <LiveOptionQuote contract={c} />
                       </td>
                     </tr>
