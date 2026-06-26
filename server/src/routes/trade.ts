@@ -8,6 +8,7 @@ import { dryRunOrder } from '../services/trading/dryRun';
 import { livePreview } from '../services/trading/livePreview';
 import { placeStockOrder } from '../services/trading/placeOrder';
 import { reconcileIntent } from '../services/trading/reconcile';
+import { cancelIntent } from '../services/trading/cancelOrder';
 import { webullAccountState } from '../providers/webull/accountState';
 import type { AccountState, OrderIntent } from '../services/trading/guardrails';
 
@@ -146,5 +147,16 @@ tradeRouter.post(
   asyncHandler(async (req, res) => {
     const { accountId } = parseBody(reconcileBody, req);
     res.json(await reconcileIntent(Number(param(req, 'id')), accountId));
+  }),
+);
+
+// Cancel a live order. Risk-reducing, so NOT gated by TRADING_ENABLED — it only
+// acts on orders that reached the broker and are still cancellable, then
+// reconciles to record the resulting terminal state.
+tradeRouter.post(
+  '/intents/:id/cancel',
+  asyncHandler(async (req, res) => {
+    const { accountId } = parseBody(reconcileBody, req);
+    res.json(await cancelIntent(Number(param(req, 'id')), accountId));
   }),
 );

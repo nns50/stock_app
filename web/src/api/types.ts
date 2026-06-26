@@ -869,6 +869,16 @@ export interface ReconcileResult {
   error?: string;
 }
 
+export interface CancelResult {
+  ok: boolean;
+  requested: boolean;
+  reason: 'not_found' | 'not_open' | 'broker_rejected' | 'requested';
+  intent?: OrderIntentRecord;
+  broker?: { ok: boolean; raw?: unknown; error?: string };
+  reconciled?: ReconcileResult;
+  error?: string;
+}
+
 export interface DryRunResult {
   intent: OrderIntentRecord;
   guardrails: GuardrailReport;

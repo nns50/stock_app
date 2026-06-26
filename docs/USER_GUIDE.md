@@ -278,7 +278,9 @@ naked long call) on risk-defined terms.
 - **Orders** — recent intents (placed + dry-run), newest first, with their lifecycle state. For
   an order that reached the broker, **Refresh status** pulls the live broker status by your order
   id and advances the intent to **filled / partially filled / cancelled / expired** (writing the
-  fill price into the audit trail). Read-only — it places and cancels nothing.
+  fill price into the audit trail). **Cancel** appears on an order that's still working
+  (acknowledged / partially filled): it requests a broker cancel, then reconciles to show the
+  result. Cancel is risk-reducing, so it works even when `TRADING_ENABLED` is off.
 
 ### Guardrail config
 
