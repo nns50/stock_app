@@ -86,6 +86,12 @@ one-click **Undo**. If a page ever hits an unexpected error it shows a small
 "something went wrong" card (with **Try again**) instead of a blank screen — the
 nav and other tabs keep working.
 
+**Always the latest version:** the footer shows the running build (e.g.
+`build 2026-06-26 14:30 UTC`). After a new version ships, the app revalidates
+`index.html` on every load and reloads itself once if it's still holding an outdated
+bundle, so you don't get stuck on stale code — a manual hard-refresh is rarely needed.
+If the app ever looks out of date, check that the footer build matches the latest deploy.
+
 ---
 
 ## Today (dashboard)

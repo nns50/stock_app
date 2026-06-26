@@ -69,12 +69,28 @@ app.use('/api', (_req, res) => {
 
 // In production, serve the built frontend and fall back to index.html for SPA
 // client-side routes. Enabled by setting PUBLIC_DIR (e.g. in Docker).
+//
+// Cache policy avoids stale-bundle bugs after a deploy: Vite's hashed assets
+// (/assets/*.[hash].js) are immutable so cache them for a year, but index.html
+// MUST always be revalidated — otherwise a browser keeps an old index that
+// references the previous build's chunks, and the app runs stale code.
 if (config.publicDir && fs.existsSync(config.publicDir)) {
-  app.use(express.static(config.publicDir));
+  app.use(
+    express.static(config.publicDir, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('index.html')) {
+          res.setHeader('Cache-Control', 'no-cache');
+        } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+      },
+    }),
+  );
   // SPA fallback. Express 5 (path-to-regexp 8) rejects a bare '*' route, so use a
   // pathless middleware and serve index.html for non-API GETs.
   app.use((req, res, next) => {
     if (req.method !== 'GET' || req.path.startsWith('/api')) return next();
+    res.setHeader('Cache-Control', 'no-cache');
     res.sendFile(path.join(config.publicDir, 'index.html'));
   });
 }
