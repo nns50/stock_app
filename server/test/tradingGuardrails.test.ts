@@ -444,3 +444,35 @@ describe('spread_account_type (spreads require a margin account)', () => {
     expect(r.checks.find((c) => c.rule === 'spread_account_type')).toBeUndefined();
   });
 });
+
+describe('covered_legs (covered call shape)', () => {
+  const covered = (over: Partial<OrderIntent> = {}): OrderIntent =>
+    order({
+      assetKind: 'option',
+      optionStrategy: 'COVERED',
+      quantity: 1,
+      limitPrice: 1.5,
+      referencePrice: undefined,
+      optionLegs: [{ side: 'sell', optionType: 'call', strike: 105, expiration: '2026-07-17' }],
+      ...over,
+    });
+
+  it('accepts a single short-call leg and treats the combo as defined-risk', () => {
+    const r = evaluateGuardrails(covered(), acct(), cfg());
+    expect(check(r, 'covered_legs').passed).toBe(true);
+    // Defined-risk: the single-leg position/short rules are skipped.
+    expect(r.checks.find((c) => c.rule === 'position_size')).toBeUndefined();
+    expect(r.checks.find((c) => c.rule === 'naked_short')).toBeUndefined();
+  });
+
+  it('rejects anything but one SELL CALL leg', () => {
+    const buyCall = covered({
+      optionLegs: [{ side: 'buy', optionType: 'call', strike: 105, expiration: '2026-07-17' }],
+    });
+    const sellPut = covered({
+      optionLegs: [{ side: 'sell', optionType: 'put', strike: 105, expiration: '2026-07-17' }],
+    });
+    expect(check(evaluateGuardrails(buyCall, acct(), cfg()), 'covered_legs').passed).toBe(false);
+    expect(check(evaluateGuardrails(sellPut, acct(), cfg()), 'covered_legs').passed).toBe(false);
+  });
+});

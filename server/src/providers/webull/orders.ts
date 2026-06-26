@@ -115,6 +115,44 @@ export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: strin
     return body;
   }
 
+  // Covered call / buy-write: long stock + short call as a COVERED_STOCK combo.
+  // Same envelope as the vertical (itself confirmed against the COVERED_STOCK
+  // example): order-level side = net direction (BUY = debit), limit_price = net
+  // debit, plus an EQUITY leg (100 shares/contract) and the option leg. INFERRED —
+  // confirm via a live preview before placing, exactly as the vertical was.
+  if (intent.optionStrategy === 'COVERED' && intent.optionLegs && intent.optionLegs.length >= 1) {
+    const call = intent.optionLegs[0];
+    const legs = [
+      { side: 'BUY', quantity: String(intent.quantity * 100), symbol, instrument_type: 'EQUITY', market: 'US' },
+      {
+        side: call.side === 'buy' ? 'BUY' : 'SELL',
+        quantity: String(intent.quantity),
+        symbol,
+        strike_price: String(call.strike),
+        option_expire_date: call.expiration,
+        instrument_type: 'OPTION',
+        option_type: call.optionType.toUpperCase(),
+        market: 'US',
+      },
+    ];
+    const body: WebullOrderPayload = {
+      client_order_id: clientOrderId,
+      combo_type: 'NORMAL',
+      order_type: 'LIMIT',
+      quantity: String(intent.quantity),
+      option_strategy: 'COVERED_STOCK',
+      side,
+      time_in_force: 'DAY',
+      entrust_type: 'QTY',
+      instrument_type: 'OPTION',
+      market: 'US',
+      symbol,
+      legs,
+    };
+    if (intent.limitPrice !== undefined) body.limit_price = String(intent.limitPrice); // NET debit
+    return body;
+  }
+
   const leg: Record<string, string> = {
     side,
     quantity: String(intent.quantity),

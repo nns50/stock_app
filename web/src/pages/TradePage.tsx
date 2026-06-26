@@ -102,28 +102,38 @@ function Workspace({
       return { ...o, optionLegs };
     });
 
-  const isVertical = order.assetKind === 'option' && (order.optionStrategy ?? 'SINGLE') === 'VERTICAL';
+  const strat = order.assetKind === 'option' ? (order.optionStrategy ?? 'SINGLE') : 'SINGLE';
+  const isVertical = strat === 'VERTICAL';
+  const isCovered = strat === 'COVERED';
+  const isMultiLeg = isVertical || isCovered;
 
-  // Switching strategy: a vertical is one Spreads count + one Net limit (always a
-  // limit order), so reset the single-order scaling AND clear the single-leg
-  // contract fields — otherwise a leftover strike/expiry could be (mis)used if the
-  // order were ever treated as single-leg. Switching back to Single drops the legs.
+  // Switching strategy: vertical/covered are one quantity + one Net limit (always
+  // a limit order), so reset the single-order scaling AND clear the single-leg
+  // contract fields — otherwise a leftover strike/expiry could be (mis)used.
+  // Single drops the legs; covered seeds its one short-call leg.
   const setStrategy = (s: NonNullable<OrderIntentInput['optionStrategy']>) =>
-    setOrder((o) =>
-      s === 'VERTICAL'
-        ? {
-            ...o,
-            optionStrategy: s,
-            orderType: 'limit',
-            quantity: 1,
-            limitPrice: undefined,
-            referencePrice: undefined,
-            strike: undefined,
-            optionType: undefined,
-            expiration: undefined,
-          }
-        : { ...o, optionStrategy: s, optionLegs: undefined },
-    );
+    setOrder((o) => {
+      if (s === 'SINGLE') return { ...o, optionStrategy: s, optionLegs: undefined };
+      const cleared: OrderIntentInput = {
+        ...o,
+        optionStrategy: s,
+        orderType: 'limit',
+        quantity: 1,
+        limitPrice: undefined,
+        referencePrice: undefined,
+        strike: undefined,
+        optionType: undefined,
+        expiration: undefined,
+      };
+      if (s === 'COVERED') {
+        return {
+          ...cleared,
+          side: 'buy',
+          optionLegs: [{ side: 'sell', optionType: 'call', strike: 0, expiration: '' }],
+        };
+      }
+      return cleared; // VERTICAL — its 2 legs are seeded on first edit
+    });
 
   // Option-chain pickers: pull expirations for the symbol, and the chain for the
   // active expiry, so strikes/expiries are chosen from real, tradeable contracts
@@ -134,7 +144,7 @@ function Workspace({
     [optSymbol],
   );
   const expiryOpts = expirations.data?.expirations ?? [];
-  const activeExpiry = isVertical ? (order.optionLegs?.[0]?.expiration ?? '') : (order.expiration ?? '');
+  const activeExpiry = isMultiLeg ? (order.optionLegs?.[0]?.expiration ?? '') : (order.expiration ?? '');
   const chain = useAsync(
     () => (optSymbol && activeExpiry ? client.chain(optSymbol, activeExpiry) : Promise.resolve(null)),
     [optSymbol, activeExpiry],
@@ -145,6 +155,13 @@ function Workspace({
     setOrder((o) => {
       const base = o.optionLegs && o.optionLegs.length >= 2 ? o.optionLegs : DEFAULT_LEGS;
       return { ...o, optionLegs: base.map((leg) => ({ ...leg, expiration })) };
+    });
+
+  // A covered call has a single (short call) leg.
+  const setCoveredLeg = (patch: Partial<OptionLeg>) =>
+    setOrder((o) => {
+      const base = o.optionLegs?.[0] ?? { side: 'sell', optionType: 'call', strike: 0, expiration: '' };
+      return { ...o, optionLegs: [{ ...base, ...patch }] };
     });
 
   const run = async () => {
@@ -288,20 +305,20 @@ function Workspace({
             </p>
           )}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Field label={isVertical ? 'Spreads' : 'Quantity'}>
+            <Field label={isVertical ? 'Spreads' : isCovered ? 'Contracts' : 'Quantity'}>
               <NumberInput value={order.quantity} onChange={(v) => setO('quantity', v ?? 0)} min={0} />
             </Field>
-            {(order.orderType === 'stop_loss' || order.orderType === 'stop_loss_limit') && !isVertical && (
+            {(order.orderType === 'stop_loss' || order.orderType === 'stop_loss_limit') && !isMultiLeg && (
               <Field label="Stop (trigger) price">
                 <NumberInput value={order.stopPrice} onChange={(v) => setO('stopPrice', v)} min={0} step={0.01} />
               </Field>
             )}
-            {(order.orderType === 'limit' || order.orderType === 'stop_loss_limit' || isVertical) && (
-              <Field label={isVertical ? 'Net limit (debit/credit)' : 'Limit price'}>
+            {(order.orderType === 'limit' || order.orderType === 'stop_loss_limit' || isMultiLeg) && (
+              <Field label={isMultiLeg ? 'Net limit (debit/credit)' : 'Limit price'}>
                 <NumberInput value={order.limitPrice} onChange={(v) => setO('limitPrice', v)} min={0} step={0.01} />
               </Field>
             )}
-            {!isVertical && (
+            {!isMultiLeg && (
               <Field label="Reference price" hint="last/mark — used for notional + fat-finger">
                 <NumberInput
                   value={order.referencePrice}
@@ -321,6 +338,7 @@ function Workspace({
                   options={[
                     { value: 'SINGLE', label: 'Single' },
                     { value: 'VERTICAL', label: 'Vertical' },
+                    { value: 'COVERED', label: 'Covered' },
                   ]}
                 />
               </Field>
@@ -356,7 +374,7 @@ function Workspace({
                     Single-leg options — <b>limit or stop</b> (no market). Prices are the per-contract premium.
                   </p>
                 </div>
-              ) : (
+              ) : isVertical ? (
                 <div className="space-y-2">
                   <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-300">
                     <b>Requires a margin account.</b> Webull only allows debit/credit spreads on an approved{' '}
@@ -408,6 +426,33 @@ function Workspace({
                     <b>Net limit</b> is the net debit/credit, and order <b>Side</b> is the net direction (debit = Buy).{' '}
                     <b>Preview (live)</b> validates the spread with the broker first.
                   </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="rounded-md border border-ink-600 bg-ink-800/40 px-3 py-2 text-[11px] text-slate-300">
+                    <b>Buy-write.</b> Buys <b>100 × Contracts</b> shares and sells the call against them as one{' '}
+                    <code className="text-slate-200">COVERED_STOCK</code> order. <b>Net limit</b> is the net debit
+                    (stock − premium) per share; order <b>Side</b> stays <b>Buy</b>. <b>Preview (live)</b> validates it
+                    with the broker first.
+                  </div>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <Field label="Short call — expiry">
+                      <ExpirySelect
+                        value={order.optionLegs?.[0]?.expiration ?? ''}
+                        options={expiryOpts}
+                        loading={expirations.loading}
+                        onChange={(v) => setCoveredLeg({ expiration: v })}
+                      />
+                    </Field>
+                    <Field label="Short call — strike">
+                      <StrikeSelect
+                        value={order.optionLegs?.[0]?.strike}
+                        options={chainStrikes(chain.data, 'call')}
+                        loading={chain.loading}
+                        onChange={(v) => setCoveredLeg({ strike: v ?? 0 })}
+                      />
+                    </Field>
+                  </div>
                 </div>
               )}
             </div>

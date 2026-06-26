@@ -279,7 +279,7 @@ strikes); other structures (straddles, iron condors) aren't live-placeable yet.
   fire as the entry fills (Webull MASTER + STOP_PROFIT/STOP_LOSS, one cancels the other). For a
   buy, take-profit sits **above** the entry and stop-loss **below**; a `bracket_prices` guardrail
   blocks an inverted pair.
-- **Option strategy** — **Single** (one leg, the default) or **Vertical** (a 2-leg spread).
+- **Option strategy** — **Single** (one leg, the default), **Vertical** (a 2-leg spread), or **Covered** (a buy-write).
   **Strikes and expiries are picked from the live option chain** — dropdowns populated for the
   entered symbol (they fall back to free text if no chain is available, so you're never blocked).
   For a vertical you set each leg's buy/sell, call/put and strike, plus one **shared expiry** for
@@ -291,6 +291,11 @@ strikes); other structures (straddles, iron condors) aren't live-placeable yet.
   (you can still dry-run and preview); the builder shows this reminder when you pick **Vertical**,
   and **Preview (live)** blocks the spread up front (a `spread_account_type` guardrail) when it
   detects a cash/IRA account, so you don't reach a broker rejection.
+  **Covered** is a buy-write: it buys **100 × Contracts** shares and sells one call against them as a
+  single Webull `COVERED_STOCK` order. **Net limit** is the net debit (stock − premium) per share and
+  **Side** stays **Buy**; a `covered_legs` guardrail checks the single short-call leg, and it's treated
+  as defined-risk like a vertical. The order body is **inferred from the vertical/COVERED_STOCK
+  envelope and confirmed via Preview (live)** before placing.
 - **Session** — **Regular** (core hours, the default), **Extended** (pre/post-market), or
   **Overnight**. Outside regular hours the broker only accepts **limit** orders, and the symbol
   must be eligible for that session on Webull — otherwise the order is rejected. (Maps to
