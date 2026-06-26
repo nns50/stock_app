@@ -288,7 +288,10 @@ naked long call) on risk-defined terms.
   id and advances the intent to **filled / partially filled / cancelled / expired** (writing the
   fill price into the audit trail). **Cancel** appears on an order that's still working
   (acknowledged / partially filled): it requests a broker cancel, then reconciles to show the
-  result. Cancel is risk-reducing, so it works even when `TRADING_ENABLED` is off.
+  result. Cancel is risk-reducing, so it works even when `TRADING_ENABLED` is off. **Modify**
+  changes a working order's **quantity / limit price** in place (Webull "replace"); because a
+  modify can _increase_ exposure it's gated like placing — `TRADING_ENABLED` plus the guardrails
+  re-run against the new values — then reconciled.
 
 ### Guardrail config
 

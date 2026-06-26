@@ -417,7 +417,38 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
     }
   };
 
-  // Only orders still live at the broker can be cancelled.
+  const [editId, setEditId] = useState<number>();
+  const [editQty, setEditQty] = useState<number>();
+  const [editLimit, setEditLimit] = useState<number>();
+
+  const openEdit = (it: { id: number; quantity: number; limitPrice: number | null }) => {
+    setEditId(it.id);
+    setEditQty(it.quantity);
+    setEditLimit(it.limitPrice ?? undefined);
+  };
+
+  const replace = async (id: number) => {
+    if (!accountId.trim()) {
+      setMsg((m) => ({ ...m, [id]: 'Enter your cash account_id above first.' }));
+      return;
+    }
+    setBusyId(id);
+    try {
+      const r = await client.tradeReplace(id, accountId.trim(), { quantity: editQty, limitPrice: editLimit });
+      let line: string;
+      if (!r.ok || !r.replaced) line = r.error ?? `not modified (${r.reason})`;
+      else line = `modified → ${r.intent?.state ?? 'pending'}`;
+      setMsg((m) => ({ ...m, [id]: line }));
+      setEditId(undefined);
+      intents.reload();
+    } catch (e) {
+      setMsg((m) => ({ ...m, [id]: (e as Error).message }));
+    } finally {
+      setBusyId(undefined);
+    }
+  };
+
+  // Only orders still live at the broker can be cancelled or modified.
   const cancellable = (state: string) => state === 'acknowledged' || state === 'partially_filled';
 
   return (
@@ -450,15 +481,36 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
                   </button>
                 )}
                 {it.brokerOrderId && cancellable(it.state) && (
-                  <button
-                    className="btn-ghost text-xs !text-bear"
-                    onClick={() => cancel(it.id)}
-                    disabled={busyId === it.id}
-                  >
-                    Cancel
-                  </button>
+                  <>
+                    <button className="btn-ghost text-xs" onClick={() => openEdit(it)} disabled={busyId === it.id}>
+                      Modify
+                    </button>
+                    <button
+                      className="btn-ghost text-xs !text-bear"
+                      onClick={() => cancel(it.id)}
+                      disabled={busyId === it.id}
+                    >
+                      Cancel
+                    </button>
+                  </>
                 )}
               </div>
+              {editId === it.id && (
+                <div className="mt-1.5 flex flex-wrap items-end gap-2 border-t border-ink-600/60 pt-1.5">
+                  <Field label="New qty">
+                    <NumberInput value={editQty} onChange={setEditQty} min={1} />
+                  </Field>
+                  <Field label="New limit">
+                    <NumberInput value={editLimit} onChange={setEditLimit} min={0} step={0.01} />
+                  </Field>
+                  <button className="btn-primary text-xs" onClick={() => replace(it.id)} disabled={busyId === it.id}>
+                    {busyId === it.id ? '…' : 'Replace'}
+                  </button>
+                  <button className="btn-ghost text-xs" onClick={() => setEditId(undefined)}>
+                    Cancel edit
+                  </button>
+                </div>
+              )}
               {it.brokerOrderId && (
                 <div className="truncate font-mono text-[10px] text-slate-500">broker {it.brokerOrderId}</div>
               )}
@@ -468,8 +520,8 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
         </ul>
       )}
       <p className="text-[11px] text-slate-500">
-        Refresh status pulls the live broker status by your order id and advances filled / cancelled. Read-only — places
-        and cancels nothing.
+        <b>Refresh status</b> pulls the live broker status (read-only). <b>Modify</b> changes a working order's
+        qty/limit (re-checked against the guardrails); <b>Cancel</b> pulls it.
       </p>
     </Card>
   );

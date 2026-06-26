@@ -881,6 +881,31 @@ export interface CancelResult {
   error?: string;
 }
 
+export interface ReplacePatch {
+  quantity?: number;
+  limitPrice?: number;
+  stopPrice?: number;
+}
+
+export interface ReplaceResult {
+  ok: boolean;
+  replaced: boolean;
+  reason:
+    | 'trading_disabled'
+    | 'not_found'
+    | 'not_open'
+    | 'no_change'
+    | 'account_error'
+    | 'blocked'
+    | 'broker_rejected'
+    | 'replaced';
+  guardrails?: GuardrailReport;
+  intent?: OrderIntentRecord;
+  broker?: { ok: boolean; raw?: unknown; error?: string };
+  reconciled?: ReconcileResult;
+  error?: string;
+}
+
 export interface DryRunResult {
   intent: OrderIntentRecord;
   guardrails: GuardrailReport;

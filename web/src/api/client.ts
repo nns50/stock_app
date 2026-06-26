@@ -60,6 +60,8 @@ import type {
   PlaceResult,
   ReconcileResult,
   CancelResult,
+  ReplacePatch,
+  ReplaceResult,
 } from './types';
 
 export class ApiError extends Error {
@@ -350,6 +352,11 @@ export const client = {
     api<CancelResult>(`/trade/intents/${id}/cancel`, {
       method: 'POST',
       body: JSON.stringify({ accountId }),
+    }),
+  tradeReplace: (id: number, accountId: string, patch: ReplacePatch) =>
+    api<ReplaceResult>(`/trade/intents/${id}/replace`, {
+      method: 'POST',
+      body: JSON.stringify({ accountId, patch }),
     }),
   tradeAccountState: (accountId: string, symbol?: string) =>
     api<WebullAccountStateResult>(

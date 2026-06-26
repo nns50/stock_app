@@ -271,6 +271,12 @@ key becomes `client_order_id`.
   resulting terminal state. Risk-reducing, so it is **not** gated by `TRADING_ENABLED`. Surfaced as
   **Cancel** in the "Orders" panel. (Request body keyed on `client_order_id`; confirm against a
   live open order.)
+- **Replace (shipped):** `replaceIntent` POSTs `/openapi/trade/order/replace` (body
+  `{ account_id, modify_orders:[{ client_order_id, quantity?, limit_price?, stop_price? }] }`, per
+  the docs' `modify_orders` example) to change a working order's qty/limit/stop. A replace can
+  _increase_ exposure, so it IS gated like placing: `TRADING_ENABLED` + the guardrails re-run on
+  the modified order. On accept it persists the new qty/limit (`recordReplace`) + an audit event,
+  then reconciles. Surfaced as **Modify** in the "Orders" panel. (Confirm against a live open order.)
 - **Single-leg options (shipped):** preview + place handle `assetKind:'option'` via the SAME
   unified endpoint as stocks (`instrument_type:'OPTION'`). `buildWebullOptionOrder` matches the
   official "Buy Call (Limit)" example from the Options Trading API docs:
@@ -288,5 +294,7 @@ key becomes `client_order_id`.
   Guardrails: `stop_price` (stops need a positive trigger), `limit_price` (limit + stop-limit
   need a positive limit), and `option_order_type` (options support LIMIT/STOP_LOSS/
   STOP_LOSS_LIMIT — **no MARKET**).
-- **Next:** confirm a real option fill end-to-end; bracket/stop legs (`combo_type`
-  STOP_LOSS / STOP_PROFIT, `stop_price`); order replace.
+- **Next:** confirm a real option fill end-to-end; bracket / OCO orders (`combo_type`
+  STOP_PROFIT / STOP_LOSS / OCO / OTOCO — a take-profit + stop-loss that cancel each other);
+  multi-leg option strategies (`option_strategy` VERTICAL / COVERED_STOCK / IRON_CONDOR with
+  multiple `legs`).

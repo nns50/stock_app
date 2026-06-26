@@ -156,6 +156,32 @@ export function transitionIntent(
   return getIntent(id)!;
 }
 
+/**
+ * Record a broker-accepted REPLACE: update the stored quantity / limit price to
+ * the new values and append an audit event at the current state (a replace is
+ * not a lifecycle transition). Stop price isn't a stored column, so it's only in
+ * the event detail. Returns the refreshed record.
+ */
+export function recordReplace(
+  id: number,
+  patch: { quantity?: number; limitPrice?: number },
+  detail: string,
+): OrderIntentRecord {
+  const current = getIntent(id);
+  if (!current) throw new Error(`No order intent ${id}`);
+  const now = Date.now();
+  db.prepare(
+    'UPDATE order_intents SET quantity = COALESCE(?, quantity), limit_price = COALESCE(?, limit_price), updated_at = ? WHERE id = ?',
+  ).run(patch.quantity ?? null, patch.limitPrice ?? null, now, id);
+  db.prepare('INSERT INTO order_events (intent_id, state, detail, created_at) VALUES (?,?,?,?)').run(
+    id,
+    current.state,
+    detail,
+    now,
+  );
+  return getIntent(id)!;
+}
+
 /** The audit trail for an intent, oldest first. */
 export function getEvents(intentId: number): OrderEventRecord[] {
   return (

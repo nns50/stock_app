@@ -9,6 +9,7 @@ import { livePreview } from '../services/trading/livePreview';
 import { placeOrder } from '../services/trading/placeOrder';
 import { reconcileIntent } from '../services/trading/reconcile';
 import { cancelIntent } from '../services/trading/cancelOrder';
+import { replaceIntent } from '../services/trading/replaceOrder';
 import { webullAccountState } from '../providers/webull/accountState';
 import type { AccountState, OrderIntent } from '../services/trading/guardrails';
 
@@ -159,5 +160,28 @@ tradeRouter.post(
   asyncHandler(async (req, res) => {
     const { accountId } = parseBody(reconcileBody, req);
     res.json(await cancelIntent(Number(param(req, 'id')), accountId));
+  }),
+);
+
+// Replace (modify) a still-open order's quantity / limit / stop price. Gated like
+// placing (TRADING_ENABLED + guardrails on the modified order), since it can
+// increase exposure.
+const replaceBody = z.object({
+  accountId: z.string().min(1).max(64),
+  patch: z
+    .object({
+      quantity: z.number().optional(),
+      limitPrice: z.number().optional(),
+      stopPrice: z.number().optional(),
+    })
+    .refine((p) => p.quantity !== undefined || p.limitPrice !== undefined || p.stopPrice !== undefined, {
+      message: 'patch must change at least one of quantity / limitPrice / stopPrice',
+    }),
+});
+tradeRouter.post(
+  '/intents/:id/replace',
+  asyncHandler(async (req, res) => {
+    const { accountId, patch } = parseBody(replaceBody, req);
+    res.json(await replaceIntent(Number(param(req, 'id')), accountId, patch));
   }),
 );

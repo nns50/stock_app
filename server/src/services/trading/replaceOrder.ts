@@ -1,0 +1,145 @@
+import { config } from '../../config';
+import { GuardrailReport, OrderIntent, blockingFailures, evaluateGuardrails } from './guardrails';
+import { getTradingConfig } from '../../db/trading';
+import { OrderIntentRecord, countTodaysOrders, getIntent, recordReplace } from '../../db/orders';
+import { canTransition, isTerminal } from './orderLifecycle';
+import { webullAccountState } from '../../providers/webull/accountState';
+import { marketOpenContext } from './marketHours';
+import { ReplacePatch, WebullReplaceResult, webullReplaceOrder } from '../../providers/webull/orders';
+import { ReconcileResult, reconcileIntent } from './reconcile';
+
+// ---------------------------------------------------------------------------
+// Replace (modify) a still-open order's quantity / limit / stop price. A replace
+// can INCREASE exposure, so it is gated exactly like placing: TRADING_ENABLED +
+// the guardrails re-run against the MODIFIED order (caps, buying power, kill
+// switch, enabled). On broker accept we record the new values + an audit event,
+// then reconcile. Keyed by client_order_id (the docs' `modify_orders` shape).
+// ---------------------------------------------------------------------------
+
+export type ReplaceReason =
+  | 'trading_disabled'
+  | 'not_found'
+  | 'not_open'
+  | 'no_change'
+  | 'account_error'
+  | 'blocked'
+  | 'broker_rejected'
+  | 'replaced';
+
+export interface ReplaceResult {
+  ok: boolean;
+  replaced: boolean;
+  reason: ReplaceReason;
+  guardrails?: GuardrailReport;
+  intent?: OrderIntentRecord;
+  broker?: WebullReplaceResult;
+  reconciled?: ReconcileResult;
+  error?: string;
+}
+
+/** Rebuild an OrderIntent from the stored record + requested changes so the
+ *  guardrails can re-evaluate the MODIFIED order. `referencePrice` is set to the
+ *  effective price (the record doesn't persist a separate reference). */
+function modifiedIntent(rec: OrderIntentRecord, patch: ReplacePatch): OrderIntent {
+  const limitPrice = patch.limitPrice ?? rec.limitPrice ?? undefined;
+  const effectivePrice = patch.limitPrice ?? patch.stopPrice ?? rec.limitPrice ?? undefined;
+  return {
+    symbol: rec.symbol,
+    assetKind: rec.assetKind,
+    side: rec.side,
+    openClose: rec.openClose,
+    quantity: patch.quantity ?? rec.quantity,
+    orderType: rec.orderType,
+    limitPrice,
+    stopPrice: patch.stopPrice,
+    referencePrice: effectivePrice,
+    optionType: rec.optionType ?? undefined,
+    strike: rec.strike ?? undefined,
+    expiration: rec.expiration ?? undefined,
+    multiplier: rec.assetKind === 'option' ? 100 : undefined,
+  };
+}
+
+export async function replaceIntent(id: number, accountId: string, patch: ReplacePatch): Promise<ReplaceResult> {
+  if (!config.trading.placeEnabled) {
+    return {
+      ok: true,
+      replaced: false,
+      reason: 'trading_disabled',
+      error: 'Order placement is disabled on the server (TRADING_ENABLED is not set).',
+    };
+  }
+  const rec = getIntent(id);
+  if (!rec) return { ok: false, replaced: false, reason: 'not_found', error: `No order intent ${id}.` };
+  // Only an order still live at the broker can be modified.
+  if (isTerminal(rec.state) || !rec.brokerOrderId || !canTransition(rec.state, 'cancelled')) {
+    return {
+      ok: true,
+      replaced: false,
+      reason: 'not_open',
+      intent: rec,
+      error: `order is not modifiable (${rec.state})`,
+    };
+  }
+  if (patch.quantity === undefined && patch.limitPrice === undefined && patch.stopPrice === undefined) {
+    return { ok: true, replaced: false, reason: 'no_change', intent: rec, error: 'no changes requested' };
+  }
+
+  const acct = await webullAccountState(accountId, rec.symbol);
+  if (!acct.ok || !acct.state) {
+    return {
+      ok: true,
+      replaced: false,
+      reason: 'account_error',
+      intent: rec,
+      error: acct.error ?? 'Could not load account state.',
+    };
+  }
+  const modified = modifiedIntent(rec, patch);
+  const guardrails = evaluateGuardrails(
+    modified,
+    { ...acct.state, ordersToday: countTodaysOrders() },
+    getTradingConfig(),
+    { marketOpen: marketOpenContext(modified) },
+  );
+  if (!guardrails.ok) {
+    const reasons = blockingFailures(guardrails)
+      .map((c) => `${c.rule}: ${c.detail}`)
+      .join('; ');
+    return { ok: true, replaced: false, reason: 'blocked', guardrails, intent: rec, error: `blocked: ${reasons}` };
+  }
+
+  const broker = await webullReplaceOrder(accountId, rec.idempotencyKey, patch);
+  if (!broker.ok) {
+    return {
+      ok: true,
+      replaced: false,
+      reason: 'broker_rejected',
+      guardrails,
+      intent: rec,
+      broker,
+      error: broker.error,
+    };
+  }
+
+  const detail =
+    'replaced: ' +
+    [
+      patch.quantity !== undefined ? `qty ${patch.quantity}` : '',
+      patch.limitPrice !== undefined ? `limit ${patch.limitPrice}` : '',
+      patch.stopPrice !== undefined ? `stop ${patch.stopPrice}` : '',
+    ]
+      .filter(Boolean)
+      .join(', ');
+  const updated = recordReplace(id, { quantity: patch.quantity, limitPrice: patch.limitPrice }, detail);
+  const reconciled = await reconcileIntent(id, accountId);
+  return {
+    ok: true,
+    replaced: true,
+    reason: 'replaced',
+    guardrails,
+    intent: reconciled.intent ?? updated,
+    broker,
+    reconciled,
+  };
+}
