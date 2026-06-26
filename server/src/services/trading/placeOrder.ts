@@ -68,7 +68,10 @@ export async function placeOrder(intent: OrderIntent, accountId: string, confirm
   if (!acct.ok || !acct.state) {
     return { ok: true, placed: false, reason: 'account_error', error: acct.error ?? 'Could not load account state.' };
   }
-  const accountType = intent.optionStrategy === 'VERTICAL' ? await webullAccountType(accountId) : undefined;
+  const accountType =
+    intent.optionStrategy === 'VERTICAL' || intent.optionStrategy === 'IRON_CONDOR'
+      ? await webullAccountType(accountId)
+      : undefined;
   const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders(), accountType };
 
   // 3) Re-run the guardrails server-side.

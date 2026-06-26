@@ -153,6 +153,38 @@ export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: strin
     return body;
   }
 
+  // Iron condor: 4 option legs (a call spread + a put spread) as one IRON_CONDOR
+  // order — same envelope as the (broker-confirmed) vertical, order-level net
+  // side/limit. Net credit ⇒ Side = Sell. INFERRED — confirm via a live preview.
+  if (intent.optionStrategy === 'IRON_CONDOR' && intent.optionLegs && intent.optionLegs.length >= 4) {
+    const legs = intent.optionLegs.map((l) => ({
+      side: l.side === 'buy' ? 'BUY' : 'SELL',
+      quantity: String(intent.quantity),
+      symbol,
+      strike_price: String(l.strike),
+      option_expire_date: l.expiration,
+      instrument_type: 'OPTION',
+      option_type: l.optionType.toUpperCase(),
+      market: 'US',
+    }));
+    const body: WebullOrderPayload = {
+      client_order_id: clientOrderId,
+      combo_type: 'NORMAL',
+      order_type: 'LIMIT',
+      quantity: String(intent.quantity),
+      option_strategy: 'IRON_CONDOR',
+      side,
+      time_in_force: 'DAY',
+      entrust_type: 'QTY',
+      instrument_type: 'OPTION',
+      market: 'US',
+      symbol,
+      legs,
+    };
+    if (intent.limitPrice !== undefined) body.limit_price = String(intent.limitPrice); // NET credit/debit
+    return body;
+  }
+
   const leg: Record<string, string> = {
     side,
     quantity: String(intent.quantity),

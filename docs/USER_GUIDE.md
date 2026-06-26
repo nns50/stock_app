@@ -279,7 +279,7 @@ strikes); other structures (straddles, iron condors) aren't live-placeable yet.
   fire as the entry fills (Webull MASTER + STOP_PROFIT/STOP_LOSS, one cancels the other). For a
   buy, take-profit sits **above** the entry and stop-loss **below**; a `bracket_prices` guardrail
   blocks an inverted pair.
-- **Option strategy** — **Single** (one leg, the default), **Vertical** (a 2-leg spread), or **Covered** (a buy-write).
+- **Option strategy** — **Single** (one leg, the default), **Vertical** (a 2-leg spread), **Covered** (a buy-write), or **Condor** (a 4-leg iron condor).
   **Strikes and expiries are picked from the live option chain** — dropdowns populated for the
   entered symbol (they fall back to free text if no chain is available, so you're never blocked).
   For a vertical you set each leg's buy/sell, call/put and strike, plus one **shared expiry** for
@@ -296,6 +296,11 @@ strikes); other structures (straddles, iron condors) aren't live-placeable yet.
   **Side** stays **Buy**; a `covered_legs` guardrail checks the single short-call leg, and it's treated
   as defined-risk like a vertical. The order body is **inferred from the vertical/COVERED_STOCK
   envelope and confirmed via Preview (live)** before placing.
+  **Condor** is a 4-leg **iron condor** — a put credit spread + a call credit spread (sell + buy puts
+  below, sell + buy calls above), same expiry, distinct strikes. **Net limit** is the net credit and
+  **Side** is the net direction (credit = Sell); an `iron_condor_legs` guardrail checks the shape, it's
+  defined-risk, and (like a vertical) it needs a **margin account**. The body is inferred from the same
+  broker-confirmed envelope and validated via **Preview (live)**.
 - **Session** — **Regular** (core hours, the default), **Extended** (pre/post-market), or
   **Overnight**. Outside regular hours the broker only accepts **limit** orders, and the symbol
   must be eligible for that session on Webull — otherwise the order is rejected. (Maps to

@@ -39,6 +39,14 @@ const DEFAULT_LEGS: OptionLeg[] = [
   { side: 'buy', optionType: 'call', strike: 0, expiration: '' },
   { side: 'sell', optionType: 'call', strike: 0, expiration: '' },
 ];
+// Iron condor: a put credit spread (sell + buy puts below) and a call credit
+// spread (sell + buy calls above).
+const DEFAULT_CONDOR_LEGS: OptionLeg[] = [
+  { side: 'sell', optionType: 'put', strike: 0, expiration: '' },
+  { side: 'buy', optionType: 'put', strike: 0, expiration: '' },
+  { side: 'sell', optionType: 'call', strike: 0, expiration: '' },
+  { side: 'buy', optionType: 'call', strike: 0, expiration: '' },
+];
 
 export default function TradePage() {
   const cfg = useAsync(() => client.tradeConfig(), []);
@@ -132,6 +140,7 @@ function Workspace({
           optionLegs: [{ side: 'sell', optionType: 'call', strike: 0, expiration: '' }],
         };
       }
+      if (s === 'IRON_CONDOR') return { ...cleared, side: 'sell', optionLegs: DEFAULT_CONDOR_LEGS };
       return cleared; // VERTICAL — its 2 legs are seeded on first edit
     });
 
@@ -339,6 +348,7 @@ function Workspace({
                     { value: 'SINGLE', label: 'Single' },
                     { value: 'VERTICAL', label: 'Vertical' },
                     { value: 'COVERED', label: 'Covered' },
+                    { value: 'IRON_CONDOR', label: 'Condor' },
                   ]}
                 />
               </Field>
@@ -427,7 +437,7 @@ function Workspace({
                     <b>Preview (live)</b> validates the spread with the broker first.
                   </p>
                 </div>
-              ) : (
+              ) : isCovered ? (
                 <div className="space-y-2">
                   <div className="rounded-md border border-ink-600 bg-ink-800/40 px-3 py-2 text-[11px] text-slate-300">
                     <b>Buy-write.</b> Buys <b>100 × Contracts</b> shares and sells the call against them as one{' '}
@@ -453,6 +463,61 @@ function Workspace({
                       />
                     </Field>
                   </div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-300">
+                    <b>Requires a margin account.</b> An iron condor sells a put spread + a call spread; Webull rejects
+                    spreads on <b>cash</b>/<b>IRA</b> accounts at placement (you can still dry-run and preview).
+                  </div>
+                  <Field label="Expiry (all legs)">
+                    <ExpirySelect
+                      value={order.optionLegs?.[0]?.expiration ?? ''}
+                      options={expiryOpts}
+                      loading={expirations.loading}
+                      onChange={setLegsExpiry}
+                    />
+                  </Field>
+                  {[0, 1, 2, 3].map((i) => (
+                    <div key={i} className="flex flex-wrap items-end gap-2">
+                      <Field label={`Leg ${i + 1}`}>
+                        <Segmented
+                          value={order.optionLegs?.[i]?.side ?? (i % 2 === 0 ? 'sell' : 'buy')}
+                          onChange={(v) => setLeg(i, { side: v })}
+                          options={[
+                            { value: 'buy', label: 'Buy' },
+                            { value: 'sell', label: 'Sell' },
+                          ]}
+                        />
+                      </Field>
+                      <Field label="C / P">
+                        <Segmented
+                          value={order.optionLegs?.[i]?.optionType ?? (i < 2 ? 'put' : 'call')}
+                          onChange={(v) => setLeg(i, { optionType: v })}
+                          options={[
+                            { value: 'call', label: 'Call' },
+                            { value: 'put', label: 'Put' },
+                          ]}
+                        />
+                      </Field>
+                      <Field label="Strike">
+                        <StrikeSelect
+                          value={order.optionLegs?.[i]?.strike}
+                          options={chainStrikes(
+                            chain.data,
+                            order.optionLegs?.[i]?.optionType ?? (i < 2 ? 'put' : 'call'),
+                          )}
+                          loading={chain.loading}
+                          onChange={(v) => setLeg(i, { strike: v ?? 0 })}
+                        />
+                      </Field>
+                    </div>
+                  ))}
+                  <p className="text-[11px] text-amber-400/90">
+                    4 legs: a <b>put spread</b> (sell + buy puts below) and a <b>call spread</b> (sell + buy calls
+                    above), same expiry, distinct strikes. <b>Net limit</b> is the net credit and order <b>Side</b> is
+                    the net direction (credit = Sell). <b>Preview (live)</b> validates it with the broker first.
+                  </p>
                 </div>
               )}
             </div>

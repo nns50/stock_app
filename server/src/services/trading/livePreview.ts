@@ -35,7 +35,10 @@ export async function livePreview(intent: OrderIntent, accountId: string): Promi
     return { ok: false, accountId, error: acct.error ?? 'Could not load live account state.' };
   }
   // Account type gates spreads (margin only) — fetch it only for a spread.
-  const accountType = intent.optionStrategy === 'VERTICAL' ? await webullAccountType(accountId) : undefined;
+  const accountType =
+    intent.optionStrategy === 'VERTICAL' || intent.optionStrategy === 'IRON_CONDOR'
+      ? await webullAccountType(accountId)
+      : undefined;
   const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders(), accountType };
 
   const config = getTradingConfig();
