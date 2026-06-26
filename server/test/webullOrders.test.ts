@@ -5,6 +5,7 @@ import {
   webullPreviewStockOrder,
   webullPlaceStockOrder,
   webullOrderStatus,
+  webullCancelOrder,
   newClientOrderId,
 } from '../src/providers/webull/orders';
 import type { OrderIntent } from '../src/services/trading/guardrails';
@@ -156,5 +157,32 @@ describe('webull stock order + preview', () => {
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '[]' } as Response);
     const r = await webullOrderStatus('ACC1', 'CID-MISSING');
     expect(r).toMatchObject({ ok: true, found: false });
+  });
+
+  it('POSTs a cancel to /openapi/trade/order/cancel keyed by client_order_id', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) } as Response);
+
+    const r = await webullCancelOrder('ACC1', 'CID-CANCEL');
+    expect(r.ok).toBe(true);
+    const [url, opts] = fetchSpy.mock.calls[0];
+    expect(String(url)).toContain('/openapi/trade/order/cancel');
+    expect((opts as RequestInit).method).toBe('POST');
+    const body = JSON.parse((opts as RequestInit).body as string);
+    expect(body).toMatchObject({ account_id: 'ACC1', client_order_id: 'CID-CANCEL' });
+  });
+
+  it('surfaces a cancel error cleanly', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: async () => JSON.stringify({ msg: 'order already filled' }),
+    } as Response);
+    const r = await webullCancelOrder('ACC1', 'CID');
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/already filled/i);
   });
 });

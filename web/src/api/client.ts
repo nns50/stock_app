@@ -59,6 +59,7 @@ import type {
   LivePreviewResult,
   PlaceResult,
   ReconcileResult,
+  CancelResult,
 } from './types';
 
 export class ApiError extends Error {
@@ -342,6 +343,11 @@ export const client = {
   tradeIntents: () => api<{ intents: OrderIntentRecord[] }>('/trade/intents'),
   tradeReconcile: (id: number, accountId: string) =>
     api<ReconcileResult>(`/trade/intents/${id}/reconcile`, {
+      method: 'POST',
+      body: JSON.stringify({ accountId }),
+    }),
+  tradeCancel: (id: number, accountId: string) =>
+    api<CancelResult>(`/trade/intents/${id}/cancel`, {
       method: 'POST',
       body: JSON.stringify({ accountId }),
     }),

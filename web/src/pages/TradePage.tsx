@@ -386,6 +386,29 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
     }
   };
 
+  const cancel = async (id: number) => {
+    if (!accountId.trim()) {
+      setMsg((m) => ({ ...m, [id]: 'Enter your cash account_id above first.' }));
+      return;
+    }
+    setBusyId(id);
+    try {
+      const r = await client.tradeCancel(id, accountId.trim());
+      let line: string;
+      if (!r.ok || !r.requested) line = r.error ?? `not cancellable (${r.reason})`;
+      else line = `cancel requested → ${r.intent?.state ?? 'pending'}`;
+      setMsg((m) => ({ ...m, [id]: line }));
+      intents.reload();
+    } catch (e) {
+      setMsg((m) => ({ ...m, [id]: (e as Error).message }));
+    } finally {
+      setBusyId(undefined);
+    }
+  };
+
+  // Only orders still live at the broker can be cancelled.
+  const cancellable = (state: string) => state === 'acknowledged' || state === 'partially_filled';
+
   return (
     <Card className="p-4 space-y-3">
       <div className="flex items-center justify-between">
@@ -413,6 +436,15 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
                 {it.brokerOrderId && (
                   <button className="btn-ghost text-xs" onClick={() => refresh(it.id)} disabled={busyId === it.id}>
                     {busyId === it.id ? '…' : 'Refresh status'}
+                  </button>
+                )}
+                {it.brokerOrderId && cancellable(it.state) && (
+                  <button
+                    className="btn-ghost text-xs !text-bear"
+                    onClick={() => cancel(it.id)}
+                    disabled={busyId === it.id}
+                  >
+                    Cancel
                   </button>
                 )}
               </div>

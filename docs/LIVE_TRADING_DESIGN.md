@@ -266,6 +266,10 @@ key becomes `client_order_id`.
   `reconcileIntent` pulls an order by its `client_order_id` (open orders → history) and advances
   acknowledged → `filled`/`partially_filled`/`cancelled`/`expired`, audited. Surfaced as
   **Refresh status** in the Trade "Orders" panel. Read-only toward the broker.
-- **Next:** order **cancel** (`/openapi/trade/order/cancel`, body shape to confirm on a live open
-  order); single-leg **option** placement (envelope confirmed: `instrument_type:"OPTION"`,
+- **Cancel (shipped):** `cancelIntent` POSTs `/openapi/trade/order/cancel` (body
+  `{ account_id, client_order_id }`) for an order still live at the broker, then reconciles to the
+  resulting terminal state. Risk-reducing, so it is **not** gated by `TRADING_ENABLED`. Surfaced as
+  **Cancel** in the "Orders" panel. (Request body keyed on `client_order_id`; confirm against a
+  live open order.)
+- **Next:** single-leg **option** placement (envelope confirmed: `instrument_type:"OPTION"`,
   `option_strategy:"SINGLE"`, `legs[]`, `position_intent`).

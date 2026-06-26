@@ -210,3 +210,28 @@ export async function webullOrderStatus(accountId: string, clientOrderId: string
   }
   return { ok: true, found: false };
 }
+
+export interface WebullCancelResult {
+  ok: boolean;
+  raw?: unknown;
+  error?: string;
+}
+
+/**
+ * Request cancellation of one of OUR orders via /openapi/trade/order/cancel,
+ * keyed by its client_order_id (the broker idempotency key). A successful POST
+ * is an ACCEPTED cancel REQUEST — the caller should reconcile to learn the true
+ * terminal state (cancelled, or filled if it raced). Never throws.
+ */
+export async function webullCancelOrder(accountId: string, clientOrderId: string): Promise<WebullCancelResult> {
+  if (!webullConfigured()) return { ok: false, error: 'Webull is not configured.' };
+  const r = await webullClient().call('POST', '/openapi/trade/order/cancel', {
+    body: { account_id: accountId, client_order_id: clientOrderId },
+    surface: 'trade',
+  });
+  if (!r.ok) {
+    const j = (r.data ?? {}) as { msg?: string; message?: string; error_msg?: string };
+    return { ok: false, raw: r.data, error: j.msg || j.message || j.error_msg || `Webull cancel failed (${r.status})` };
+  }
+  return { ok: true, raw: r.data };
+}
