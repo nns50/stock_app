@@ -80,6 +80,39 @@ export function buildWebullStockOrder(intent: OrderIntent, clientOrderId: string
 export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: string): WebullOrderPayload {
   const symbol = intent.symbol.toUpperCase();
   const side = intent.side === 'buy' ? 'BUY' : 'SELL';
+
+  // Multi-leg VERTICAL spread: same envelope as a single leg (confirmed against
+  // the COVERED_STOCK example) but option_strategy VERTICAL + N legs and a NET
+  // limit. Order-level side = the net direction (debit BUY / credit SELL).
+  if (intent.optionStrategy === 'VERTICAL' && intent.optionLegs && intent.optionLegs.length >= 2) {
+    const legs = intent.optionLegs.map((l) => ({
+      side: l.side === 'buy' ? 'BUY' : 'SELL',
+      quantity: String(l.quantity),
+      symbol,
+      strike_price: String(l.strike),
+      option_expire_date: l.expiration,
+      instrument_type: 'OPTION',
+      option_type: l.optionType.toUpperCase(),
+      market: 'US',
+    }));
+    const body: WebullOrderPayload = {
+      client_order_id: clientOrderId,
+      combo_type: 'NORMAL',
+      order_type: 'LIMIT',
+      quantity: String(intent.quantity),
+      option_strategy: 'VERTICAL',
+      side,
+      time_in_force: 'DAY',
+      entrust_type: 'QTY',
+      instrument_type: 'OPTION',
+      market: 'US',
+      symbol,
+      legs,
+    };
+    if (intent.limitPrice !== undefined) body.limit_price = String(intent.limitPrice); // NET debit/credit
+    return body;
+  }
+
   const leg: Record<string, string> = {
     side,
     quantity: String(intent.quantity),

@@ -21,6 +21,17 @@ export type OptionType = 'call' | 'put';
 /** Which trading session(s) the order is eligible for. `core` = regular hours
  *  (default); `extended` = pre/post-market; `overnight` = the overnight market. */
 export type TradingSession = 'core' | 'extended' | 'overnight';
+/** Single-leg, or a 2-leg vertical spread. (COVERED_STOCK / IRON_CONDOR later.) */
+export type OptionStrategy = 'SINGLE' | 'VERTICAL';
+
+/** One leg of a multi-leg option order. */
+export interface OptionLeg {
+  side: OrderSide;
+  quantity: number;
+  optionType: OptionType;
+  strike: number;
+  expiration: string;
+}
 
 export interface OrderIntent {
   /** Underlying ticker (e.g. AAPL). */
@@ -51,6 +62,10 @@ export interface OrderIntent {
    * and/or stop-loss that fire as the order fills. At least one price arms it.
    */
   bracket?: { takeProfitPrice?: number; stopLossPrice?: number };
+  /** Option strategy. Defaults to SINGLE; VERTICAL uses `optionLegs` (2 legs). */
+  optionStrategy?: OptionStrategy;
+  /** The legs of a multi-leg option order. `limitPrice` is the NET debit/credit. */
+  optionLegs?: OptionLeg[];
 }
 
 export interface AccountState {
@@ -170,6 +185,10 @@ export function evaluateGuardrails(
   const warn = (rule: string, passed: boolean, detail: string) =>
     checks.push({ rule, passed, severity: 'warn', detail });
 
+  // A vertical is a single defined-risk spread: its `limitPrice` is the NET
+  // debit/credit and the single-leg position/naked-short rules don't apply.
+  const isVertical = intent.optionStrategy === 'VERTICAL';
+
   // --- hard sanity -------------------------------------------------------
   const qtyValid = Number.isInteger(intent.quantity) && intent.quantity > 0;
   block('quantity', qtyValid, qtyValid ? `${intent.quantity}` : 'quantity must be a positive whole number');
@@ -205,6 +224,24 @@ export function evaluateGuardrails(
       'option_order_type',
       intent.orderType !== 'market',
       intent.orderType !== 'market' ? `${intent.orderType}` : 'options have no market order (use limit or a stop type)',
+    );
+  }
+
+  // --- vertical spread shape (defined-risk; the limit is the NET) ---------
+  if (isVertical) {
+    const legs = intent.optionLegs ?? [];
+    const sameExpiry = legs.every((l) => l.expiration === legs[0]?.expiration);
+    const strikes = new Set(legs.map((l) => l.strike));
+    const sides = new Set(legs.map((l) => l.side));
+    const sameQty = legs.every((l) => l.quantity === legs[0]?.quantity);
+    const ok =
+      legs.length === 2 && sameExpiry && strikes.size === 2 && sides.size === 2 && sameQty && legs[0].quantity > 0;
+    block(
+      'spread_legs',
+      ok,
+      ok
+        ? 'vertical: 2 legs, same expiry, distinct strikes, one buy + one sell'
+        : 'a vertical needs exactly 2 legs (same expiry, distinct strikes, one buy + one sell, equal qty)',
     );
   }
 
@@ -280,12 +317,16 @@ export function evaluateGuardrails(
   }
 
   // --- position size -----------------------------------------------------
+  // A vertical's per-leg position doesn't map to one signed symbol qty, and the
+  // spread is defined-risk, so skip the single-symbol size rule for it.
   const resultingQty = account.currentPositionQty + signedDelta(intent);
-  block(
-    'position_size',
-    Math.abs(resultingQty) <= config.maxSymbolPositionQty,
-    `resulting ${resultingQty} vs cap ±${config.maxSymbolPositionQty}`,
-  );
+  if (!isVertical) {
+    block(
+      'position_size',
+      Math.abs(resultingQty) <= config.maxSymbolPositionQty,
+      `resulting ${resultingQty} vs cap ±${config.maxSymbolPositionQty}`,
+    );
+  }
 
   // --- daily risk --------------------------------------------------------
   const dailyLoss = Math.max(0, -account.realizedPnlTodayUsd);
@@ -317,12 +358,16 @@ export function evaluateGuardrails(
   }
 
   // --- naked short -------------------------------------------------------
-  const wouldBeShort = resultingQty < 0;
-  block(
-    'naked_short',
-    !wouldBeShort || config.allowNakedShort,
-    wouldBeShort && !config.allowNakedShort ? 'order would open/extend a net-short position (blocked)' : 'ok',
-  );
+  // A vertical is defined-risk (its short leg is covered by the long leg), so
+  // the single-leg naked-short rule doesn't apply.
+  if (!isVertical) {
+    const wouldBeShort = resultingQty < 0;
+    block(
+      'naked_short',
+      !wouldBeShort || config.allowNakedShort,
+      wouldBeShort && !config.allowNakedShort ? 'order would open/extend a net-short position (blocked)' : 'ok',
+    );
+  }
 
   // --- session (advisory) ------------------------------------------------
   if (context.marketOpen === false) {

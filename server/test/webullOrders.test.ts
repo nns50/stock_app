@@ -170,6 +170,55 @@ describe('webull stock order + preview', () => {
     expect((body.legs as Array<{ side: string }>)[0].side).toBe('SELL');
   });
 
+  it('builds a VERTICAL spread body (option_strategy VERTICAL + 2 legs + net limit)', () => {
+    const body = buildWebullOptionOrder(
+      intent({
+        assetKind: 'option',
+        symbol: 'spy',
+        side: 'buy', // net debit
+        quantity: 1,
+        limitPrice: 1.2, // NET debit
+        optionStrategy: 'VERTICAL',
+        optionLegs: [
+          { side: 'buy', quantity: 1, optionType: 'call', strike: 500, expiration: '2026-07-17' },
+          { side: 'sell', quantity: 1, optionType: 'call', strike: 505, expiration: '2026-07-17' },
+        ],
+      }),
+      'CID-V',
+    );
+    expect(body).toMatchObject({
+      option_strategy: 'VERTICAL',
+      side: 'BUY',
+      symbol: 'SPY',
+      order_type: 'LIMIT',
+      limit_price: '1.2',
+      instrument_type: 'OPTION',
+      market: 'US',
+    });
+    expect(body.legs).toEqual([
+      {
+        side: 'BUY',
+        quantity: '1',
+        symbol: 'SPY',
+        strike_price: '500',
+        option_expire_date: '2026-07-17',
+        instrument_type: 'OPTION',
+        option_type: 'CALL',
+        market: 'US',
+      },
+      {
+        side: 'SELL',
+        quantity: '1',
+        symbol: 'SPY',
+        strike_price: '505',
+        option_expire_date: '2026-07-17',
+        instrument_type: 'OPTION',
+        option_type: 'CALL',
+        market: 'US',
+      },
+    ]);
+  });
+
   it('client_order_id is ≤32 chars', () => {
     expect(newClientOrderId().length).toBeLessThanOrEqual(32);
   });
