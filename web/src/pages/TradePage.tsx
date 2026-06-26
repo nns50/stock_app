@@ -39,11 +39,11 @@ const DEFAULT_LEGS: OptionLeg[] = [
   { side: 'buy', optionType: 'call', strike: 0, expiration: '' },
   { side: 'sell', optionType: 'call', strike: 0, expiration: '' },
 ];
-// Iron condor: a put credit spread (sell + buy puts below) and a call credit
-// spread (sell + buy calls above).
+// Iron condor, strikes low→high: a long put wing, a short put, a short call, and
+// a long call wing — so filling ascending strikes makes a proper net-credit condor.
 const DEFAULT_CONDOR_LEGS: OptionLeg[] = [
-  { side: 'sell', optionType: 'put', strike: 0, expiration: '' },
   { side: 'buy', optionType: 'put', strike: 0, expiration: '' },
+  { side: 'sell', optionType: 'put', strike: 0, expiration: '' },
   { side: 'sell', optionType: 'call', strike: 0, expiration: '' },
   { side: 'buy', optionType: 'call', strike: 0, expiration: '' },
 ];
@@ -113,7 +113,8 @@ function Workspace({
   const strat = order.assetKind === 'option' ? (order.optionStrategy ?? 'SINGLE') : 'SINGLE';
   const isVertical = strat === 'VERTICAL';
   const isCovered = strat === 'COVERED';
-  const isMultiLeg = isVertical || isCovered;
+  const isIronCondor = strat === 'IRON_CONDOR';
+  const isMultiLeg = isVertical || isCovered || isIronCondor;
 
   // Switching strategy: vertical/covered are one quantity + one Net limit (always
   // a limit order), so reset the single-order scaling AND clear the single-leg
@@ -314,7 +315,7 @@ function Workspace({
             </p>
           )}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Field label={isVertical ? 'Spreads' : isCovered ? 'Contracts' : 'Quantity'}>
+            <Field label={isVertical || isIronCondor ? 'Spreads' : isCovered ? 'Contracts' : 'Quantity'}>
               <NumberInput value={order.quantity} onChange={(v) => setO('quantity', v ?? 0)} min={0} />
             </Field>
             {(order.orderType === 'stop_loss' || order.orderType === 'stop_loss_limit') && !isMultiLeg && (
@@ -482,7 +483,7 @@ function Workspace({
                     <div key={i} className="flex flex-wrap items-end gap-2">
                       <Field label={`Leg ${i + 1}`}>
                         <Segmented
-                          value={order.optionLegs?.[i]?.side ?? (i % 2 === 0 ? 'sell' : 'buy')}
+                          value={order.optionLegs?.[i]?.side ?? (i === 0 || i === 3 ? 'buy' : 'sell')}
                           onChange={(v) => setLeg(i, { side: v })}
                           options={[
                             { value: 'buy', label: 'Buy' },
@@ -514,9 +515,10 @@ function Workspace({
                     </div>
                   ))}
                   <p className="text-[11px] text-amber-400/90">
-                    4 legs: a <b>put spread</b> (sell + buy puts below) and a <b>call spread</b> (sell + buy calls
-                    above), same expiry, distinct strikes. <b>Net limit</b> is the net credit and order <b>Side</b> is
-                    the net direction (credit = Sell). <b>Preview (live)</b> validates it with the broker first.
+                    4 legs, strikes low→high: <b>buy put</b> (lower wing) · <b>sell put</b> · <b>sell call</b> ·{' '}
+                    <b>buy call</b> (upper wing) — a put credit spread + a call credit spread, same expiry.{' '}
+                    <b>Net limit</b> is the net credit and order <b>Side</b> is the net direction (credit = Sell).{' '}
+                    <b>Preview (live)</b> validates it with the broker first.
                   </p>
                 </div>
               )}
