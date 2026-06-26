@@ -271,13 +271,16 @@ key becomes `client_order_id`.
   resulting terminal state. Risk-reducing, so it is **not** gated by `TRADING_ENABLED`. Surfaced as
   **Cancel** in the "Orders" panel. (Request body keyed on `client_order_id`; confirm against a
   live open order.)
-- **Single-leg options (shipped):** preview + place now handle `assetKind:'option'`.
-  `buildWebullOrder` dispatches to `buildWebullOptionOrder` →
-  `{ instrument_type:'OPTION', market:'US', option_strategy:'SINGLE', side, position_intent,
-  legs:[{ symbol, side, quantity, option_type, strike_price, option_expire_date }] }`.
-  `position_intent` = side × open/close (BUY_TO_OPEN / SELL_TO_CLOSE / SELL_TO_OPEN /
-  BUY_TO_CLOSE). An `option_limit_only` guardrail blocks market options. Live previews tightened
-  the body against the broker: `side` is required at the **order level too** (not only the leg;
-  else "invalid side"), and `market:'US'` is required (else "invalid market").
+- **Single-leg options (shipped):** preview + place handle `assetKind:'option'` via the SAME
+  unified endpoint as stocks (`instrument_type:'OPTION'`). `buildWebullOptionOrder` matches the
+  official "Buy Call (Limit)" example from the Options Trading API docs:
+  `{ client_order_id, combo_type:'NORMAL', order_type:'LIMIT', limit_price, quantity,
+  option_strategy:'SINGLE', side, time_in_force:'DAY', entrust_type:'QTY',
+  instrument_type:'OPTION', market:'US', symbol, legs:[{ side, quantity, symbol, strike_price,
+  option_expire_date, instrument_type:'OPTION', option_type, market:'US' }] }`. `side`, `market`
+  and `symbol` are carried at the **order level AND repeated on the leg**; there is **no**
+  `position_intent` (the broker derives it) and no `support_trading_session`. An
+  `option_limit_only` guardrail blocks market options. (Live previews surfaced this one validated
+  field at a time: "invalid side" → order-level side; "invalid market" → the leg's `market`.)
 - **Next:** confirm a real option fill end-to-end; bracket/stop legs (`combo_type`
   STOP_LOSS / STOP_PROFIT, `stop_price`); order replace.

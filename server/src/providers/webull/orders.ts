@@ -9,8 +9,8 @@ import type { OrderIntent } from '../../services/trading/guardrails';
 //   /openapi/trade/order/{preview,place,cancel}  with body
 //   { account_id, new_orders: [order] }. The same unified endpoint handles both
 // EQUITY orders (flat fields) and single-leg OPTION orders (instrument_type
-// OPTION + option_strategy SINGLE + a `legs` array + position_intent) — shapes
-// confirmed against a real account's order history. `buildWebullOrder`
+// OPTION + option_strategy SINGLE + a `legs` array) — the option body matches
+// the official Options Trading API request example. `buildWebullOrder`
 // dispatches on assetKind.
 // ---------------------------------------------------------------------------
 
@@ -21,12 +21,6 @@ export type WebullOrderPayload = Record<string, unknown>;
 
 /** Our session → Webull's `support_trading_session` (confirmed: CORE|ALL|NIGHT). */
 const SESSION_TO_WEBULL = { core: 'CORE', extended: 'ALL', overnight: 'NIGHT' } as const;
-
-/** side + open/close → Webull's option `position_intent`. */
-function positionIntent(intent: OrderIntent): string {
-  if (intent.side === 'buy') return intent.openClose === 'open' ? 'BUY_TO_OPEN' : 'BUY_TO_CLOSE';
-  return intent.openClose === 'open' ? 'SELL_TO_OPEN' : 'SELL_TO_CLOSE';
-}
 
 /** A fresh broker idempotency key (client_order_id, ≤32 chars). */
 export function newClientOrderId(): string {
@@ -56,38 +50,38 @@ export function buildWebullStockOrder(intent: OrderIntent, clientOrderId: string
 }
 
 /**
- * Map our intent → a Webull single-leg OPTION order body. Options are LIMIT-only
- * and trade the core session (enforced upstream by the guardrails). The leg
- * shape (underlying symbol + strike/expiry/type/side/qty) mirrors the confirmed
- * order-history envelope; it's validated by a live PREVIEW before any placement.
+ * Map our intent → a Webull single-leg OPTION order body, matching the official
+ * "Buy Call (Limit)" request example in the Options Trading API docs. Options are
+ * LIMIT-only (enforced upstream by the guardrails). Key points the docs make
+ * explicit (and that live previews confirmed): `side`, `market` and `symbol` are
+ * carried at the ORDER level, AND the leg repeats `side`, `symbol`, `market` and
+ * `instrument_type:'OPTION'`. No `position_intent` — the broker derives it.
  */
 export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: string): WebullOrderPayload {
-  const leg = {
-    symbol: intent.symbol.toUpperCase(),
-    side: intent.side === 'buy' ? 'BUY' : 'SELL',
+  const symbol = intent.symbol.toUpperCase();
+  const side = intent.side === 'buy' ? 'BUY' : 'SELL';
+  const leg: Record<string, string> = {
+    side,
     quantity: String(intent.quantity),
-    option_type: (intent.optionType ?? 'call').toUpperCase(),
+    symbol,
     strike_price: intent.strike !== undefined ? String(intent.strike) : '',
     option_expire_date: intent.expiration ?? '',
+    instrument_type: 'OPTION',
+    option_type: (intent.optionType ?? 'call').toUpperCase(),
+    market: 'US',
   };
   const body: WebullOrderPayload = {
-    combo_type: 'NORMAL',
     client_order_id: clientOrderId,
-    instrument_type: 'OPTION',
-    // Required like the equity body — a live preview returned "invalid market"
-    // without it (US options).
-    market: 'US',
-    option_strategy: 'SINGLE',
-    // Webull validates `side` at the ORDER level too (not only on the leg) — a
-    // real preview returned "invalid side" without it. Mirrors the confirmed
-    // order-history envelope, which carries `side` at both levels.
-    side: leg.side,
+    combo_type: 'NORMAL',
     order_type: 'LIMIT',
-    entrust_type: 'QTY',
-    time_in_force: 'DAY',
-    support_trading_session: 'CORE',
-    position_intent: positionIntent(intent),
     quantity: String(intent.quantity),
+    option_strategy: 'SINGLE',
+    side,
+    time_in_force: 'DAY',
+    entrust_type: 'QTY',
+    instrument_type: 'OPTION',
+    market: 'US',
+    symbol,
     legs: [leg],
   };
   if (intent.limitPrice !== undefined) body.limit_price = String(intent.limitPrice);
