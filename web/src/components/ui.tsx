@@ -213,7 +213,23 @@ export function StatTile({
 
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
   return (
-    <label className="block">
+    // A <label> forwards a click anywhere inside it to its first form control.
+    // That's nice for a text input (click the caption → focus the field), but
+    // harmful when the field wraps a button group (our Segmented): clicking the
+    // caption or the label's padding would activate the FIRST button — e.g. flip
+    // the Strategy toggle from Vertical back to Single, tearing down the spread
+    // and wiping the net limit. So when a click misses the real control and the
+    // field's first control is a <button>, cancel the label's forwarding.
+    <label
+      className="block"
+      onClick={(e) => {
+        const el = e.target as HTMLElement;
+        if (el.closest('input, textarea, select, button')) return; // clicked the control itself
+        if (e.currentTarget.querySelector('input, textarea, select, button') instanceof HTMLButtonElement) {
+          e.preventDefault();
+        }
+      }}
+    >
       <span className="label">{label}</span>
       {children}
       {hint && <span className="block text-[11px] text-slate-500 mt-0.5">{hint}</span>}
