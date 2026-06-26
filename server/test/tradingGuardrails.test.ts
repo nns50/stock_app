@@ -96,25 +96,62 @@ describe('trading guardrails', () => {
     expect(regular.checks.find((c) => c.rule === 'session_order_type')).toBeUndefined();
   });
 
-  it('blocks a market option (options are limit-only), and omits the rule for stocks', () => {
+  it('blocks a market option (no market options) but allows limit/stop types; omits the rule for stocks', () => {
     const market = evaluateGuardrails(
       order({ assetKind: 'option', orderType: 'market', limitPrice: undefined, multiplier: 100 }),
       acct(),
       cfg(),
     );
     expect(market.ok).toBe(false);
-    expect(failed(market)).toContain('option_limit_only');
+    expect(failed(market)).toContain('option_order_type');
 
-    // A small limit option passes the rule; stocks never see it.
+    // A small limit option passes the rule; a stop option does too; stocks never see it.
     const limitOpt = evaluateGuardrails(
       order({ assetKind: 'option', quantity: 1, limitPrice: 1, referencePrice: 1, multiplier: 100 }),
       acct(),
       cfg(),
     );
-    expect(check(limitOpt, 'option_limit_only').passed).toBe(true);
+    expect(check(limitOpt, 'option_order_type').passed).toBe(true);
+    const stopOpt = evaluateGuardrails(
+      order({
+        assetKind: 'option',
+        quantity: 1,
+        orderType: 'stop_loss',
+        stopPrice: 1,
+        referencePrice: 1,
+        multiplier: 100,
+      }),
+      acct(),
+      cfg(),
+    );
+    expect(check(stopOpt, 'option_order_type').passed).toBe(true);
     expect(
-      evaluateGuardrails(order(), acct(), cfg()).checks.find((c) => c.rule === 'option_limit_only'),
+      evaluateGuardrails(order(), acct(), cfg()).checks.find((c) => c.rule === 'option_order_type'),
     ).toBeUndefined();
+  });
+
+  it('requires a stop price for stop orders, and a limit price for stop-limit', () => {
+    const noStop = evaluateGuardrails(order({ orderType: 'stop_loss', stopPrice: undefined }), acct(), cfg());
+    expect(failed(noStop)).toContain('stop_price');
+
+    const stop = evaluateGuardrails(order({ orderType: 'stop_loss', stopPrice: 9 }), acct(), cfg());
+    expect(check(stop, 'stop_price').passed).toBe(true);
+    expect(stop.checks.find((c) => c.rule === 'limit_price')?.passed).toBe(true); // stop_loss needs no limit
+
+    const stopLimNoLimit = evaluateGuardrails(
+      order({ orderType: 'stop_loss_limit', stopPrice: 9, limitPrice: undefined }),
+      acct(),
+      cfg(),
+    );
+    expect(failed(stopLimNoLimit)).toContain('limit_price');
+
+    const stopLim = evaluateGuardrails(
+      order({ orderType: 'stop_loss_limit', stopPrice: 9, limitPrice: 9 }),
+      acct(),
+      cfg(),
+    );
+    expect(check(stopLim, 'stop_price').passed).toBe(true);
+    expect(check(stopLim, 'limit_price').passed).toBe(true);
   });
 
   it('blocks an order over the notional cap', () => {

@@ -60,6 +60,31 @@ describe('webull stock order + preview', () => {
     expect(buildWebullStockOrder(intent({ session: 'overnight' }), 'C').support_trading_session).toBe('NIGHT');
   });
 
+  it('builds STOP_LOSS (market-on-trigger) and STOP_LOSS_LIMIT bodies with stop_price', () => {
+    const stop = buildWebullStockOrder(intent({ orderType: 'stop_loss', stopPrice: 4.5, limitPrice: undefined }), 'C');
+    expect(stop.order_type).toBe('STOP_LOSS');
+    expect(stop.stop_price).toBe('4.5');
+    expect(stop.limit_price).toBeUndefined();
+
+    const stopLim = buildWebullStockOrder(
+      intent({ orderType: 'stop_loss_limit', stopPrice: 4.5, limitPrice: 4.4 }),
+      'C',
+    );
+    expect(stopLim.order_type).toBe('STOP_LOSS_LIMIT');
+    expect(stopLim.stop_price).toBe('4.5');
+    expect(stopLim.limit_price).toBe('4.4');
+  });
+
+  it('builds an option STOP_LOSS body (stop_price, order-level + leg fields)', () => {
+    const body = buildWebullOptionOrder(
+      intent({ assetKind: 'option', orderType: 'stop_loss', stopPrice: 0.3, strike: 6, expiration: '2026-07-17' }),
+      'C',
+    );
+    expect(body.order_type).toBe('STOP_LOSS');
+    expect(body.stop_price).toBe('0.3');
+    expect((body.legs as Array<{ instrument_type: string }>)[0].instrument_type).toBe('OPTION');
+  });
+
   it('builds a single-leg OPTION order body matching the docs example (order + leg fields)', () => {
     const opt = intent({
       assetKind: 'option',

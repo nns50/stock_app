@@ -255,9 +255,11 @@ naked long call) on risk-defined terms.
 > env `TRADING_ENABLED` is set, every guardrail passes, the kill switch is off, and you
 > type-to-confirm. Off by default. Stocks and **single-leg options** (one order at a time).
 
-- **Compose an order** — symbol, stock/option, buy/sell, open/close, quantity, market/limit,
-  **session** (+ strike/expiry for options), plus a reference price used for notional and the
-  fat-finger check.
+- **Compose an order** — symbol, stock/option, buy/sell, open/close, quantity, order **type**
+  (**Limit / Market / Stop / Stop-limit**), **session** (+ strike/expiry for options), plus a
+  reference price used for notional and the fat-finger check. **Stop** triggers a market order at
+  your **stop (trigger) price**; **Stop-limit** triggers a limit order (needs both a stop and a
+  limit price). Options support every type **except market**.
 - **Session** — **Regular** (core hours, the default), **Extended** (pre/post-market), or
   **Overnight**. Outside regular hours the broker only accepts **limit** orders, and the symbol
   must be eligible for that session on Webull — otherwise the order is rejected. (Maps to
@@ -280,7 +282,7 @@ naked long call) on risk-defined terms.
   (e.g. `BUY 1 NUVB`) to arm, then place. The **server** re-pulls your account, re-runs every
   guardrail, checks the kill switch + `TRADING_ENABLED`, and writes the intent + broker
   `order_id` to the audit trail. One order at a time — stock, or a **single-leg option**
-  (call/put + strike + expiry; **limit only** — Webull has no market options).
+  (call/put + strike + expiry; limit or stop types — Webull has no market options).
 - **Orders** — recent intents (placed + dry-run), newest first, with their lifecycle state. For
   an order that reached the broker, **Refresh status** pulls the live broker status by your order
   id and advances the intent to **filled / partially filled / cancelled / expired** (writing the
@@ -302,9 +304,10 @@ The side panel persists your safety settings (server-side):
 
 Defaults are intentionally tiny and trading ships **off**. The rules: per-order notional,
 buying power (buys only), exposure ceiling (opening adds, closing doesn't), per-symbol size,
-daily-loss halt, max orders/day, fat-finger price sanity, naked-short block, a session/order-type
-check (extended & overnight sessions are limit-only), an options-are-limit-only check, and the
-enabled/kill-switch gates — anything that can't be verified **fails closed**.
+daily-loss halt, max orders/day, fat-finger price sanity, naked-short block, limit/stop price
+presence, a session/order-type check (extended & overnight sessions are limit-only), an
+options-have-no-market-order check, and the enabled/kill-switch gates — anything that can't be
+verified **fails closed**.
 
 ---
 

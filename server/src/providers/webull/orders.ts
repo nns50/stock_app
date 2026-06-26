@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { webullClient, webullConfigured } from './account';
-import type { OrderIntent } from '../../services/trading/guardrails';
+import type { OrderIntent, OrderType } from '../../services/trading/guardrails';
 
 // ---------------------------------------------------------------------------
 // Webull order bodies + the signed preview / place / cancel / status calls.
@@ -22,6 +22,27 @@ export type WebullOrderPayload = Record<string, unknown>;
 /** Our session → Webull's `support_trading_session` (confirmed: CORE|ALL|NIGHT). */
 const SESSION_TO_WEBULL = { core: 'CORE', extended: 'ALL', overnight: 'NIGHT' } as const;
 
+/** Our order type → Webull's `order_type`. */
+const ORDER_TYPE_TO_WEBULL: Record<OrderType, string> = {
+  market: 'MARKET',
+  limit: 'LIMIT',
+  stop_loss: 'STOP_LOSS',
+  stop_loss_limit: 'STOP_LOSS_LIMIT',
+};
+
+/** The price fields a Webull body carries for this order type: limit_price for
+ *  limit + stop-limit, stop_price for either stop type. */
+function priceFields(intent: OrderIntent): Record<string, string> {
+  const f: Record<string, string> = {};
+  if ((intent.orderType === 'limit' || intent.orderType === 'stop_loss_limit') && intent.limitPrice !== undefined) {
+    f.limit_price = String(intent.limitPrice);
+  }
+  if ((intent.orderType === 'stop_loss' || intent.orderType === 'stop_loss_limit') && intent.stopPrice !== undefined) {
+    f.stop_price = String(intent.stopPrice);
+  }
+  return f;
+}
+
 /** A fresh broker idempotency key (client_order_id, ≤32 chars). */
 export function newClientOrderId(): string {
   return randomUUID().replace(/-/g, ''); // 32 hex chars
@@ -36,26 +57,25 @@ export function buildWebullStockOrder(intent: OrderIntent, clientOrderId: string
     symbol: intent.symbol.toUpperCase(),
     instrument_type: 'EQUITY',
     market: 'US',
-    order_type: intent.orderType === 'limit' ? 'LIMIT' : 'MARKET',
+    order_type: ORDER_TYPE_TO_WEBULL[intent.orderType],
     side: intent.side === 'buy' ? 'BUY' : 'SELL',
     quantity: String(intent.quantity),
     entrust_type: 'QTY',
     time_in_force: 'DAY',
     support_trading_session: SESSION_TO_WEBULL[intent.session ?? 'core'],
   };
-  if (intent.orderType === 'limit' && intent.limitPrice !== undefined) {
-    body.limit_price = String(intent.limitPrice);
-  }
+  Object.assign(body, priceFields(intent));
   return body;
 }
 
 /**
  * Map our intent → a Webull single-leg OPTION order body, matching the official
- * "Buy Call (Limit)" request example in the Options Trading API docs. Options are
- * LIMIT-only (enforced upstream by the guardrails). Key points the docs make
- * explicit (and that live previews confirmed): `side`, `market` and `symbol` are
- * carried at the ORDER level, AND the leg repeats `side`, `symbol`, `market` and
- * `instrument_type:'OPTION'`. No `position_intent` — the broker derives it.
+ * "Buy Call (Limit)" request example in the Options Trading API docs. Options
+ * support LIMIT / STOP_LOSS / STOP_LOSS_LIMIT (no MARKET — enforced upstream by
+ * the guardrails). Key points the docs make explicit (and that live previews
+ * confirmed): `side`, `market` and `symbol` are carried at the ORDER level, AND
+ * the leg repeats `side`, `symbol`, `market` and `instrument_type:'OPTION'`. No
+ * `position_intent` — the broker derives it.
  */
 export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: string): WebullOrderPayload {
   const symbol = intent.symbol.toUpperCase();
@@ -73,7 +93,7 @@ export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: strin
   const body: WebullOrderPayload = {
     client_order_id: clientOrderId,
     combo_type: 'NORMAL',
-    order_type: 'LIMIT',
+    order_type: ORDER_TYPE_TO_WEBULL[intent.orderType],
     quantity: String(intent.quantity),
     option_strategy: 'SINGLE',
     side,
@@ -84,7 +104,7 @@ export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: strin
     symbol,
     legs: [leg],
   };
-  if (intent.limitPrice !== undefined) body.limit_price = String(intent.limitPrice);
+  Object.assign(body, priceFields(intent));
   return body;
 }
 
