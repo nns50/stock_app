@@ -301,3 +301,46 @@ export async function webullCancelOrder(accountId: string, clientOrderId: string
   }
   return { ok: true, raw: r.data };
 }
+
+/** The fields a replace can change on a still-open order. */
+export interface ReplacePatch {
+  quantity?: number;
+  limitPrice?: number;
+  stopPrice?: number;
+}
+
+export interface WebullReplaceResult {
+  ok: boolean;
+  raw?: unknown;
+  error?: string;
+}
+
+/**
+ * Modify one of OUR still-open orders via /openapi/trade/order/replace. Keyed by
+ * client_order_id; carries only the changed quantity / limit_price / stop_price
+ * (per the docs' `modify_orders` example). Never throws.
+ */
+export async function webullReplaceOrder(
+  accountId: string,
+  clientOrderId: string,
+  patch: ReplacePatch,
+): Promise<WebullReplaceResult> {
+  if (!webullConfigured()) return { ok: false, error: 'Webull is not configured.' };
+  const modify: Record<string, string> = { client_order_id: clientOrderId };
+  if (patch.quantity !== undefined) modify.quantity = String(patch.quantity);
+  if (patch.limitPrice !== undefined) modify.limit_price = String(patch.limitPrice);
+  if (patch.stopPrice !== undefined) modify.stop_price = String(patch.stopPrice);
+  const r = await webullClient().call('POST', '/openapi/trade/order/replace', {
+    body: { account_id: accountId, modify_orders: [modify] },
+    surface: 'trade',
+  });
+  if (!r.ok) {
+    const j = (r.data ?? {}) as { msg?: string; message?: string; error_msg?: string };
+    return {
+      ok: false,
+      raw: r.data,
+      error: j.msg || j.message || j.error_msg || `Webull replace failed (${r.status})`,
+    };
+  }
+  return { ok: true, raw: r.data };
+}
