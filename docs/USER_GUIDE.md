@@ -319,7 +319,8 @@ The side panel persists your safety settings (server-side):
   while this checkbox arms placement at runtime. **Both must be on** to place — setting the env
   var alone still leaves `trading_enabled` ✕ in the preview until you check this and **Save**.
 - **Allow naked short**, and the caps: **max order $**, **max symbol qty**, **max exposure $**,
-  **max orders/day**, **max daily loss $**, **fat-finger %**.
+  **max orders/day** (counts only orders that reached the market — broker-rejected orders don't
+  burn a slot), **max daily loss $**, **fat-finger %**.
 
 Defaults are intentionally tiny and trading ships **off**. The rules: per-order notional,
 buying power (buys only), exposure ceiling (opening adds, closing doesn't), per-symbol size,

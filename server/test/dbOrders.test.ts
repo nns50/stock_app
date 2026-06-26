@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { initDb, db } from '../src/db';
-import { createIntent, transitionIntent, getIntent, getEvents, listIntents } from '../src/db/orders';
-import { IllegalTransitionError } from '../src/services/trading/orderLifecycle';
+import { createIntent, transitionIntent, getIntent, getEvents, listIntents, countTodaysOrders } from '../src/db/orders';
+import { IllegalTransitionError, OrderState } from '../src/services/trading/orderLifecycle';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
 beforeAll(() => initDb());
@@ -82,5 +82,38 @@ describe('order intents persistence', () => {
 
   it('throws on transitioning a missing intent', () => {
     expect(() => transitionIntent(9999, 'validated')).toThrow(/No order intent/);
+  });
+});
+
+describe('countTodaysOrders (the max-orders/day basis)', () => {
+  // Create an intent and walk it through the given states (in order).
+  const walk = (key: string, ...states: OrderState[]) => {
+    const i = createIntent(stockBuy, key);
+    for (const s of states) transitionIntent(i.id, s);
+    return i.id;
+  };
+
+  it('counts orders that reached the broker today and were not rejected', () => {
+    walk('filled', 'validated', 'confirmed', 'submitted', 'acknowledged', 'filled');
+    walk('working', 'validated', 'confirmed', 'submitted'); // live, awaiting ack — still counts
+    expect(countTodaysOrders()).toBe(2);
+  });
+
+  it('does NOT count broker-rejected orders (submitted → rejected)', () => {
+    walk('ok', 'validated', 'confirmed', 'submitted', 'acknowledged', 'filled');
+    walk('rej1', 'validated', 'confirmed', 'submitted', 'rejected');
+    walk('rej2', 'validated', 'confirmed', 'submitted', 'rejected');
+    expect(countTodaysOrders()).toBe(1); // only the filled order
+  });
+
+  it('does NOT count pre-submit rejections (never reached the broker)', () => {
+    walk('preflight', 'validated', 'rejected');
+    expect(countTodaysOrders()).toBe(0);
+  });
+
+  it("mirrors the user's day: one fill among a dozen rejections counts as one", () => {
+    walk('fill', 'validated', 'confirmed', 'submitted', 'acknowledged', 'filled');
+    for (let n = 0; n < 12; n++) walk(`r${n}`, 'validated', 'confirmed', 'submitted', 'rejected');
+    expect(countTodaysOrders()).toBe(1);
   });
 });
