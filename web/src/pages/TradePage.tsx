@@ -555,6 +555,12 @@ function LivePreviewPanel({ result }: { result: LivePreviewResult }) {
             )}
           </div>
         )}
+        {warns.some((c) => c.rule === 'market_hours') && (
+          <div className="rounded-md bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-300">
+            ⚠ US regular hours are <b>9:30 a.m.–4:00 p.m. ET</b>. Options only trade then; a regular-session stock order
+            placed now likely won't fill until the open.
+          </div>
+        )}
         <div>
           <div className="text-xs uppercase tracking-wide text-slate-500 mb-1.5">Guardrails (vs live account)</div>
           <div className="flex flex-wrap gap-1.5">

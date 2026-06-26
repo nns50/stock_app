@@ -1,4 +1,5 @@
 import { AccountState, GuardrailReport, OrderIntent, evaluateGuardrails, orderNotionalUsd } from './guardrails';
+import { marketOpenContext } from './marketHours';
 import { getTradingConfig } from '../../db/trading';
 import { countTodaysOrders } from '../../db/orders';
 import { webullAccountState } from '../../providers/webull/accountState';
@@ -36,7 +37,7 @@ export async function livePreview(intent: OrderIntent, accountId: string): Promi
   const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
 
   const config = getTradingConfig();
-  const guardrails = evaluateGuardrails(intent, accountState, config);
+  const guardrails = evaluateGuardrails(intent, accountState, config, { marketOpen: marketOpenContext(intent) });
 
   // The broker COST ESTIMATE is informational and PLACES NOTHING, so fetch it
   // for any structurally-valid order unless the kill switch is engaged. It does

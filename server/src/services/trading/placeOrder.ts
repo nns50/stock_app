@@ -3,6 +3,7 @@ import { AccountState, GuardrailReport, OrderIntent, blockingFailures, evaluateG
 import { getTradingConfig } from '../../db/trading';
 import { OrderIntentRecord, countTodaysOrders, createIntent, transitionIntent } from '../../db/orders';
 import { webullAccountState } from '../../providers/webull/accountState';
+import { marketOpenContext } from './marketHours';
 import { WebullPlaceResult, newClientOrderId, webullPlaceOrder } from '../../providers/webull/orders';
 
 // ---------------------------------------------------------------------------
@@ -71,7 +72,7 @@ export async function placeOrder(intent: OrderIntent, accountId: string, confirm
 
   // 3) Re-run the guardrails server-side.
   const cfg = getTradingConfig();
-  const guardrails = evaluateGuardrails(intent, accountState, cfg);
+  const guardrails = evaluateGuardrails(intent, accountState, cfg, { marketOpen: marketOpenContext(intent) });
 
   const clientOrderId = newClientOrderId();
   const intentRec = createIntent(intent, clientOrderId); // draft (audited)
