@@ -180,8 +180,8 @@ describe('webull stock order + preview', () => {
         limitPrice: 1.2, // NET debit
         optionStrategy: 'VERTICAL',
         optionLegs: [
-          { side: 'buy', quantity: 1, optionType: 'call', strike: 500, expiration: '2026-07-17' },
-          { side: 'sell', quantity: 1, optionType: 'call', strike: 505, expiration: '2026-07-17' },
+          { side: 'buy', optionType: 'call', strike: 500, expiration: '2026-07-17' },
+          { side: 'sell', optionType: 'call', strike: 505, expiration: '2026-07-17' },
         ],
       }),
       'CID-V',

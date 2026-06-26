@@ -34,8 +34,8 @@ const DEFAULT_ORDER: OrderIntentInput = {
 
 type OptionLeg = NonNullable<OrderIntentInput['optionLegs']>[number];
 const DEFAULT_LEGS: OptionLeg[] = [
-  { side: 'buy', quantity: 1, optionType: 'call', strike: 0, expiration: '' },
-  { side: 'sell', quantity: 1, optionType: 'call', strike: 0, expiration: '' },
+  { side: 'buy', optionType: 'call', strike: 0, expiration: '' },
+  { side: 'sell', optionType: 'call', strike: 0, expiration: '' },
 ];
 
 export default function TradePage() {
@@ -88,6 +88,17 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
       const optionLegs = base.map((leg, idx) => (idx === i ? { ...leg, ...patch } : leg));
       return { ...o, optionLegs };
     });
+
+  const isVertical = order.assetKind === 'option' && (order.optionStrategy ?? 'SINGLE') === 'VERTICAL';
+
+  // Switching strategy: a vertical is one Spreads count + one Net limit (always a
+  // limit order), so reset the stale single-order quantity/price scaling.
+  const setStrategy = (s: NonNullable<OrderIntentInput['optionStrategy']>) =>
+    setOrder((o) =>
+      s === 'VERTICAL'
+        ? { ...o, optionStrategy: s, orderType: 'limit', quantity: 1, limitPrice: undefined, referencePrice: undefined }
+        : { ...o, optionStrategy: s },
+    );
 
   const run = async () => {
     setRunning(true);
@@ -197,18 +208,20 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
                 ]}
               />
             </Field>
-            <Field label="Type">
-              <Segmented
-                value={order.orderType}
-                onChange={(v) => setO('orderType', v)}
-                options={[
-                  { value: 'limit', label: 'Limit' },
-                  { value: 'market', label: 'Market' },
-                  { value: 'stop_loss', label: 'Stop' },
-                  { value: 'stop_loss_limit', label: 'Stop-lim' },
-                ]}
-              />
-            </Field>
+            {!isVertical && (
+              <Field label="Type">
+                <Segmented
+                  value={order.orderType}
+                  onChange={(v) => setO('orderType', v)}
+                  options={[
+                    { value: 'limit', label: 'Limit' },
+                    { value: 'market', label: 'Market' },
+                    { value: 'stop_loss', label: 'Stop' },
+                    { value: 'stop_loss_limit', label: 'Stop-lim' },
+                  ]}
+                />
+              </Field>
+            )}
             <Field label="Session">
               <Segmented
                 value={order.session ?? 'core'}
@@ -228,34 +241,36 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
             </p>
           )}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Field label="Quantity">
+            <Field label={isVertical ? 'Spreads' : 'Quantity'}>
               <NumberInput value={order.quantity} onChange={(v) => setO('quantity', v ?? 0)} min={0} />
             </Field>
-            {(order.orderType === 'stop_loss' || order.orderType === 'stop_loss_limit') && (
+            {(order.orderType === 'stop_loss' || order.orderType === 'stop_loss_limit') && !isVertical && (
               <Field label="Stop (trigger) price">
                 <NumberInput value={order.stopPrice} onChange={(v) => setO('stopPrice', v)} min={0} step={0.01} />
               </Field>
             )}
-            {(order.orderType === 'limit' || order.orderType === 'stop_loss_limit') && (
-              <Field label="Limit price">
+            {(order.orderType === 'limit' || order.orderType === 'stop_loss_limit' || isVertical) && (
+              <Field label={isVertical ? 'Net limit (debit/credit)' : 'Limit price'}>
                 <NumberInput value={order.limitPrice} onChange={(v) => setO('limitPrice', v)} min={0} step={0.01} />
               </Field>
             )}
-            <Field label="Reference price" hint="last/mark — used for notional + fat-finger">
-              <NumberInput
-                value={order.referencePrice}
-                onChange={(v) => setO('referencePrice', v)}
-                min={0}
-                step={0.01}
-              />
-            </Field>
+            {!isVertical && (
+              <Field label="Reference price" hint="last/mark — used for notional + fat-finger">
+                <NumberInput
+                  value={order.referencePrice}
+                  onChange={(v) => setO('referencePrice', v)}
+                  min={0}
+                  step={0.01}
+                />
+              </Field>
+            )}
           </div>
           {order.assetKind === 'option' && (
             <div className="space-y-3">
               <Field label="Strategy">
                 <Segmented
                   value={order.optionStrategy ?? 'SINGLE'}
-                  onChange={(v) => setO('optionStrategy', v)}
+                  onChange={setStrategy}
                   options={[
                     { value: 'SINGLE', label: 'Single' },
                     { value: 'VERTICAL', label: 'Vertical' },
@@ -328,19 +343,12 @@ function Workspace({ config, reloadConfig }: { config: TradingConfig; reloadConf
                           onChange={(e) => setLeg(i, { expiration: e.target.value })}
                         />
                       </Field>
-                      <Field label="Qty">
-                        <NumberInput
-                          value={order.optionLegs?.[i]?.quantity}
-                          onChange={(v) => setLeg(i, { quantity: v ?? 0 })}
-                          min={0}
-                        />
-                      </Field>
                     </div>
                   ))}
                   <p className="text-[11px] text-amber-400/90">
-                    Vertical: 2 legs, same expiry, distinct strikes, one buy + one sell. The order <b>Side</b> = net
-                    direction (debit = Buy), <b>Limit price</b> = the <b>net</b> debit/credit, <b>Quantity</b> = number
-                    of spreads. <b>Preview (live)</b> validates the spread with the broker first.
+                    Both legs share the expiry; use distinct strikes, one Buy + one Sell. <b>Spreads</b> (above) is the
+                    contract count, <b>Net limit</b> is the net debit/credit, and order <b>Side</b> is the net direction
+                    (debit = Buy). <b>Preview (live)</b> validates the spread with the broker first.
                   </p>
                 </div>
               )}

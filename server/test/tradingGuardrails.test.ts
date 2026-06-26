@@ -196,8 +196,8 @@ describe('trading guardrails', () => {
 
   it('validates a vertical spread and skips the single-leg short/position rules', () => {
     const legs = [
-      { side: 'buy' as const, quantity: 1, optionType: 'call' as const, strike: 500, expiration: '2026-07-17' },
-      { side: 'sell' as const, quantity: 1, optionType: 'call' as const, strike: 505, expiration: '2026-07-17' },
+      { side: 'buy' as const, optionType: 'call' as const, strike: 500, expiration: '2026-07-17' },
+      { side: 'sell' as const, optionType: 'call' as const, strike: 505, expiration: '2026-07-17' },
     ];
     const good = evaluateGuardrails(
       order({
