@@ -21,8 +21,9 @@ export type OptionType = 'call' | 'put';
 /** Which trading session(s) the order is eligible for. `core` = regular hours
  *  (default); `extended` = pre/post-market; `overnight` = the overnight market. */
 export type TradingSession = 'core' | 'extended' | 'overnight';
-/** Single-leg, or a 2-leg vertical spread. (COVERED_STOCK / IRON_CONDOR later.) */
-export type OptionStrategy = 'SINGLE' | 'VERTICAL';
+/** Single-leg, a 2-leg vertical spread, or a covered call (long stock + short
+ *  call). (IRON_CONDOR later.) */
+export type OptionStrategy = 'SINGLE' | 'VERTICAL' | 'COVERED';
 
 /** One leg of a multi-leg option order. The per-spread quantity comes from the
  *  order's `quantity` (spreads), so a leg only describes its contract + side. */
@@ -191,6 +192,11 @@ export function evaluateGuardrails(
   // A vertical is a single defined-risk spread: its `limitPrice` is the NET
   // debit/credit and the single-leg position/naked-short rules don't apply.
   const isVertical = intent.optionStrategy === 'VERTICAL';
+  // A covered call (long stock + short call) is defined-risk like a vertical: its
+  // short leg is covered, and the combo doesn't map to one signed symbol qty —
+  // so it skips the single-leg naked-short / position-size rules too.
+  const isCovered = intent.optionStrategy === 'COVERED';
+  const isMultiLeg = isVertical || isCovered;
 
   // --- hard sanity -------------------------------------------------------
   const qtyValid = Number.isInteger(intent.quantity) && intent.quantity > 0;
@@ -258,6 +264,19 @@ export function evaluateGuardrails(
           : `${account.accountType} — spreads need an approved margin account (cash/IRA rejected)`,
       );
     }
+  }
+
+  // --- covered call shape (long stock + short call; defined-risk) ---------
+  if (isCovered) {
+    const legs = intent.optionLegs ?? [];
+    const ok = legs.length === 1 && legs[0]?.side === 'sell' && legs[0]?.optionType === 'call' && !!legs[0]?.expiration;
+    block(
+      'covered_legs',
+      ok,
+      ok
+        ? 'covered call: long stock + one short call'
+        : 'a covered call needs exactly one SELL CALL leg (the stock side is added automatically)',
+    );
   }
 
   // --- protective bracket (stocks) ---------------------------------------
@@ -335,7 +354,7 @@ export function evaluateGuardrails(
   // A vertical's per-leg position doesn't map to one signed symbol qty, and the
   // spread is defined-risk, so skip the single-symbol size rule for it.
   const resultingQty = account.currentPositionQty + signedDelta(intent);
-  if (!isVertical) {
+  if (!isMultiLeg) {
     block(
       'position_size',
       Math.abs(resultingQty) <= config.maxSymbolPositionQty,
@@ -375,7 +394,7 @@ export function evaluateGuardrails(
   // --- naked short -------------------------------------------------------
   // A vertical is defined-risk (its short leg is covered by the long leg), so
   // the single-leg naked-short rule doesn't apply.
-  if (!isVertical) {
+  if (!isMultiLeg) {
     const wouldBeShort = resultingQty < 0;
     block(
       'naked_short',

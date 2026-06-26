@@ -219,6 +219,42 @@ describe('webull stock order + preview', () => {
     ]);
   });
 
+  it('builds a COVERED_STOCK body (EQUITY leg of 100×qty shares + short call, net debit)', () => {
+    const body = buildWebullOptionOrder(
+      intent({
+        assetKind: 'option',
+        symbol: 'aapl',
+        side: 'buy', // net debit
+        quantity: 2,
+        limitPrice: 1.5, // net debit per share
+        optionStrategy: 'COVERED',
+        optionLegs: [{ side: 'sell', optionType: 'call', strike: 310, expiration: '2026-07-17' }],
+      }),
+      'CID-C',
+    );
+    expect(body).toMatchObject({
+      option_strategy: 'COVERED_STOCK',
+      side: 'BUY',
+      symbol: 'AAPL',
+      order_type: 'LIMIT',
+      limit_price: '1.5',
+      quantity: '2',
+    });
+    expect(body.legs).toEqual([
+      { side: 'BUY', quantity: '200', symbol: 'AAPL', instrument_type: 'EQUITY', market: 'US' },
+      {
+        side: 'SELL',
+        quantity: '2',
+        symbol: 'AAPL',
+        strike_price: '310',
+        option_expire_date: '2026-07-17',
+        instrument_type: 'OPTION',
+        option_type: 'CALL',
+        market: 'US',
+      },
+    ]);
+  });
+
   it('client_order_id is ≤32 chars', () => {
     expect(newClientOrderId().length).toBeLessThanOrEqual(32);
   });

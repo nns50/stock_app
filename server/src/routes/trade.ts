@@ -63,7 +63,7 @@ const intentSchema = z.object({
   strike: z.number().optional(),
   expiration: z.string().optional(),
   multiplier: z.number().optional(),
-  optionStrategy: z.enum(['SINGLE', 'VERTICAL']).optional(),
+  optionStrategy: z.enum(['SINGLE', 'VERTICAL', 'COVERED']).optional(),
   optionLegs: z
     .array(
       z.object({

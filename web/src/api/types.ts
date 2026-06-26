@@ -824,8 +824,8 @@ export interface OrderIntentInput {
   expiration?: string;
   /** Optional protective bracket on a stock entry (take-profit / stop-loss). */
   bracket?: { takeProfitPrice?: number; stopLossPrice?: number };
-  /** Option strategy (SINGLE default; VERTICAL uses optionLegs). */
-  optionStrategy?: 'SINGLE' | 'VERTICAL';
+  /** Option strategy (SINGLE default; VERTICAL / COVERED use optionLegs). */
+  optionStrategy?: 'SINGLE' | 'VERTICAL' | 'COVERED';
   /** Legs of a multi-leg option order; quantity (spreads) + net limit come from
    *  the order's `quantity`/`limitPrice`, so a leg only describes its contract. */
   optionLegs?: Array<{
