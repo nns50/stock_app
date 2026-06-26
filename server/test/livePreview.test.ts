@@ -69,6 +69,7 @@ describe('live preview pipeline', () => {
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(okResp(BALANCE))
       .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp([{ account_id: 'ACC1', account_type: 'INDIVIDUAL_MARGIN' }])) // account-list
       .mockResolvedValueOnce(okResp({ estimated_cost: '1.00' }));
 
     const r = await livePreview(
@@ -91,8 +92,8 @@ describe('live preview pipeline', () => {
     expect(rules).toContain('spread_legs');
     expect(rules).not.toContain('position_size');
     expect(rules).not.toContain('naked_short');
-    // And the broker body is a VERTICAL with 2 legs.
-    const body = JSON.parse((fetchSpy.mock.calls[2][1] as RequestInit).body as string);
+    // And the broker body is a VERTICAL with 2 legs (calls[2] is now account-list).
+    const body = JSON.parse((fetchSpy.mock.calls[3][1] as RequestInit).body as string);
     expect(body.new_orders[0]).toMatchObject({ option_strategy: 'VERTICAL' });
     expect(body.new_orders[0].legs).toHaveLength(2);
   });
