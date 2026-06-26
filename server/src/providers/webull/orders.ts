@@ -75,6 +75,10 @@ export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: strin
     client_order_id: clientOrderId,
     instrument_type: 'OPTION',
     option_strategy: 'SINGLE',
+    // Webull validates `side` at the ORDER level too (not only on the leg) — a
+    // real preview returned "invalid side" without it. Mirrors the confirmed
+    // order-history envelope, which carries `side` at both levels.
+    side: leg.side,
     order_type: 'LIMIT',
     entrust_type: 'QTY',
     time_in_force: 'DAY',

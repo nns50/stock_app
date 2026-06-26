@@ -273,10 +273,11 @@ key becomes `client_order_id`.
   live open order.)
 - **Single-leg options (shipped):** preview + place now handle `assetKind:'option'`.
   `buildWebullOrder` dispatches to `buildWebullOptionOrder` →
-  `{ instrument_type:'OPTION', option_strategy:'SINGLE', position_intent, legs:[{ symbol,
+  `{ instrument_type:'OPTION', option_strategy:'SINGLE', side, position_intent, legs:[{ symbol,
   side, quantity, option_type, strike_price, option_expire_date }] }`. `position_intent` =
   side × open/close (BUY_TO_OPEN / SELL_TO_CLOSE / SELL_TO_OPEN / BUY_TO_CLOSE). An
-  `option_limit_only` guardrail blocks market options. The leg shape is inferred from the
-  confirmed order-history envelope and **validated by a live preview** before any placement.
-- **Next:** confirm the option request leg shape against a real preview/fill; bracket/stop legs
-  (`combo_type` STOP_LOSS / STOP_PROFIT, `stop_price`); order replace.
+  `option_limit_only` guardrail blocks market options. A live preview confirmed Webull validates
+  `side` at the **order level too** (not only on the leg) — without it, preview returns
+  "Parameter error, invalid side".
+- **Next:** confirm a real option fill end-to-end; bracket/stop legs (`combo_type`
+  STOP_LOSS / STOP_PROFIT, `stop_price`); order replace.
