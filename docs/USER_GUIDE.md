@@ -271,7 +271,11 @@ naked long call) on risk-defined terms.
 - **Preview (live)** — paste your cash `account_id`; this pulls your real account, runs the
   guardrails against it, and (kill switch permitting) fetches the **broker's cost estimate**.
   Places nothing. For options it also **validates the exact contract** with the broker (a bad
-  strike/expiry is rejected here, before you can place).
+  strike/expiry is rejected here, before you can place). A **⚠ market_hours** warning (and a
+  banner) appears when US regular hours (**9:30 a.m.–4:00 p.m. ET**) are closed — options can't
+  fill outside them, and a regular-session stock order will wait for the open. It's a warning,
+  not a block (the broker is the final authority); off-hours stock orders you've set to
+  Extended/Overnight don't trigger it.
 - **Place order** — appears only when a live preview **would submit**. Type the shown phrase
   (e.g. `BUY 1 NUVB`) to arm, then place. The **server** re-pulls your account, re-runs every
   guardrail, checks the kill switch + `TRADING_ENABLED`, and writes the intent + broker
