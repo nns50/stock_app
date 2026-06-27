@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { Field, Segmented } from './ui';
 
 describe('Field', () => {
-  it('cancels a label click that would forward to a wrapped button group (Segmented)', () => {
+  it('renders a Segmented as a labelled role="group" (not a label): no click-forwarding, clean names', () => {
     const onChange = vi.fn();
     const { container } = render(
       <Field label="Strategy">
@@ -17,33 +17,35 @@ describe('Field', () => {
         />
       </Field>,
     );
-    const label = container.querySelector('label') as HTMLLabelElement;
 
-    // Clicking the label's padding (not a button) must NOT flip the toggle, and
-    // the label's default forwarding is cancelled — fireEvent returns false when
-    // a handler calls preventDefault(). This is the reported bug: clicking the
-    // empty part of the Strategy tile flipped Vertical→Single and wiped the form.
-    expect(fireEvent.click(label)).toBe(false);
+    // It's a labelled group, NOT a <label> wrapping the buttons.
+    expect(container.querySelector('label')).toBeNull();
+    expect(screen.getByRole('group', { name: 'Strategy' })).toBeInTheDocument();
+
+    // Clicking the caption or the group padding does NOT flip the toggle (no
+    // forwarding — this was the Strategy-tile reset bug).
+    fireEvent.click(screen.getByText('Strategy'));
+    fireEvent.click(screen.getByRole('group', { name: 'Strategy' }));
     expect(onChange).not.toHaveBeenCalled();
 
-    // The caption text is also a non-control click → forwarding still cancelled.
-    expect(fireEvent.click(screen.getByText('Strategy'))).toBe(false);
-    expect(onChange).not.toHaveBeenCalled();
+    // The tab's accessible name is clean ("Single", not "Strategy Single").
+    expect(screen.getByRole('tab', { name: 'Single' })).toBeInTheDocument();
 
-    // Sanity: a direct click on a button still selects it.
+    // A direct click on a button still selects it.
     fireEvent.click(screen.getByText('Single'));
     expect(onChange).toHaveBeenCalledWith('SINGLE');
   });
 
-  it('keeps label click-to-focus for a wrapped text input (forwarding not cancelled)', () => {
+  it('keeps a <label> with click-to-focus for a wrapped input', () => {
     const { container } = render(
       <Field label="Strike">
         <input className="input" />
       </Field>,
     );
     const label = container.querySelector('label') as HTMLLabelElement;
-    // The first control is an <input>, not a <button>, so the label still
-    // forwards the click (fireEvent returns true: nothing called preventDefault).
+    expect(label).not.toBeNull();
+    // First control is an <input>, not a <button>, so the label still forwards
+    // the click (fireEvent returns true: nothing called preventDefault).
     expect(fireEvent.click(label)).toBe(true);
   });
 });
