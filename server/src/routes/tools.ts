@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, parseBody } from './_helpers';
-import { computeRiskSizing } from '../services/riskSizing';
+import { computeRiskSizing, computeSpreadSizing } from '../services/riskSizing';
 import { analyzeStrategy } from '../options/optionStrategy';
 import { normalizeRuinParams, simulateRiskOfRuin } from '../services/riskOfRuin';
 
@@ -40,6 +40,23 @@ toolsRouter.post(
   asyncHandler(async (req, res) => {
     const body = parseBody(sizeBody, req);
     res.json(computeRiskSizing(body));
+  }),
+);
+
+// Size a defined-risk vertical spread by its capped max loss (no price stop).
+const spreadSizeBody = z.object({
+  accountSize: z.number().positive(),
+  riskPct: z.number().positive().max(100),
+  width: z.number().positive(),
+  netPremium: z.number().nonnegative(),
+  direction: z.enum(['debit', 'credit']),
+  multiplier: z.number().int().positive().optional(),
+});
+
+toolsRouter.post(
+  '/spread-size',
+  asyncHandler(async (req, res) => {
+    res.json(computeSpreadSizing(parseBody(spreadSizeBody, req)));
   }),
 );
 

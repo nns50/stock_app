@@ -398,6 +398,19 @@ Inside the log form, expand **+ Size by risk** (or use **Calc size**). Give it y
 
 Click **Apply** to drop the suggested size into the form.
 
+The standalone **Position-size calculator** (the **Calc size** button on Positions) adds a
+**Vertical spread** mode for defined-risk spreads, which have no price stop. Pick **Debit**
+or **Credit**, enter the **width** (strike gap) and the **net premium**, and it sizes by the
+spread's _capped max loss_:
+
+- **Debit** spread → max loss = `net debit`, max profit = `width − net debit`.
+- **Credit** spread → max loss = `width − net credit`, max profit = `net credit`.
+
+**Suggested spreads** = `floor( (accountSize × risk%) ÷ (maxLossPerSpread × 100) )`, and it
+shows the position's total **max loss / max profit**, the **reward : risk** ratio, and max
+loss as a **% of account** — with warnings for impossible inputs (e.g. a net credit larger
+than the width). Decision-support only; it never places the spread.
+
 ### The pre-trade checklist
 
 A short, editable list of discipline rules you tick before logging an entry ("Trade

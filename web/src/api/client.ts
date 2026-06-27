@@ -21,6 +21,7 @@ import type {
   ProviderTestResult,
   Quote,
   RiskSizingResult,
+  SpreadSizingResult,
   RuinParams,
   RuinResult,
   Alert,
@@ -154,6 +155,14 @@ export const client = {
     side?: 'long' | 'short';
     targetRMultiple?: number;
   }) => api<RiskSizingResult>('/tools/position-size', post(body)),
+  spreadSize: (body: {
+    accountSize: number;
+    riskPct: number;
+    width: number;
+    netPremium: number;
+    direction: 'debit' | 'credit';
+    multiplier?: number;
+  }) => api<SpreadSizingResult>('/tools/spread-size', post(body)),
   analyzeStrategy: (body: {
     underlyingPrice: number;
     dte: number;
