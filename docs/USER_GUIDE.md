@@ -332,9 +332,12 @@ strikes); other structures (straddles, iron condors) aren't live-placeable yet.
   multi-leg or bracketed order carries a small **strategy tag** (`vertical` / `covered` / `condor` /
   `bracket`) so the row explains itself. For an order that reached the broker, **Refresh status**
   pulls the live broker status by your order id and advances the intent to **filled / partially
-  filled / cancelled / expired** (writing the fill price into the audit trail). When an **open** single-leg/stock order fills, it's also
-  **auto-recorded as a Position** (so it appears on Positions & Journal), mirroring a logged trade —
-  spreads and closing orders aren't auto-tracked yet. **Cancel** appears on an order that's still working
+  filled / cancelled / expired** (writing the fill price into the audit trail). Single-leg/stock fills
+  also flow into the **Positions ledger**: an **open** fill is **auto-recorded as a Position**, and a
+  **close** fill **records an exit** against the matching open position(s) — oldest lot first (FIFO),
+  a sell-to-close reducing a long and a buy-to-close a short — so the Journal's realized P&L tracks
+  live trades automatically. (Spreads aren't auto-tracked — their single-leg fields are null.)
+  **Cancel** appears on an order that's still working
   (acknowledged / partially filled): it requests a broker cancel, then reconciles to show the
   result. Cancel is risk-reducing, so it works even when `TRADING_ENABLED` is off. **Modify**
   changes a working order's **quantity / limit price** in place (Webull "replace"); because a
