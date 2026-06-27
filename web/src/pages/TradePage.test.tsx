@@ -163,6 +163,8 @@ describe('TradePage orders panel — modify is single-leg only', () => {
 
     // Exactly one Modify button (the single-leg); the spread + bracket show the hint.
     expect(await screen.findAllByRole('button', { name: 'Modify' })).toHaveLength(1);
+    // All three are still working, so a one-tap "Refresh all (3)" is offered.
+    expect(screen.getByRole('button', { name: 'Refresh all (3)' })).toBeInTheDocument();
     expect(screen.getAllByText(/cancel & re-place to change/i)).toHaveLength(2);
 
     // Each combo row is tagged (a chip) so it explains itself; the single-leg has none.

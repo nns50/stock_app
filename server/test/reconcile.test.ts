@@ -3,7 +3,7 @@ import { initDb, db } from '../src/db';
 import { config } from '../src/config';
 import { createIntent, getIntent, transitionIntent } from '../src/db/orders';
 import { listPositions } from '../src/db/positions';
-import { mapWebullStatus, reconcileIntent } from '../src/services/trading/reconcile';
+import { mapWebullStatus, reconcileAllWorking, reconcileIntent } from '../src/services/trading/reconcile';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
 const origWebull = { ...config.webull };
@@ -137,5 +137,50 @@ describe('reconcileIntent', () => {
 
     await reconcileIntent(rec.id, 'ACC1');
     expect(listPositions()).toHaveLength(0);
+  });
+});
+
+describe('reconcileAllWorking', () => {
+  // A live order that reached the broker, under a distinct client id.
+  const working = (cid: string): number => {
+    const rec = createIntent(intent(), cid);
+    transitionIntent(rec.id, 'validated');
+    transitionIntent(rec.id, 'confirmed');
+    transitionIntent(rec.id, 'submitted');
+    transitionIntent(rec.id, 'acknowledged', { brokerOrderId: `WB-${cid}` });
+    return rec.id;
+  };
+
+  it('reconciles every working order and skips terminal / never-placed ones', async () => {
+    const a = working('cid-a');
+    const b = working('cid-b');
+    const term = working('cid-c');
+    transitionIntent(term, 'filled', { detail: 'already done' }); // terminal → skipped
+    createIntent(intent(), 'cid-draft'); // never reached the broker → skipped
+
+    // Broker finds nothing for either working order → both no-op (2 pulls each).
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp([]));
+
+    const r = await reconcileAllWorking('ACC1');
+    expect(r).toMatchObject({ ok: true, reconciled: 2, changed: 0 });
+    expect(r.results.map((x) => x.id).sort((x, y) => x - y)).toEqual([a, b].sort((x, y) => x - y));
+    expect(fetchSpy).toHaveBeenCalledTimes(4); // open + history, per working order
+    expect(getIntent(term)?.state).toBe('filled'); // untouched
+  });
+
+  it('counts the orders it advanced (one fills, one stays working)', async () => {
+    const filledId = working(CID); // created first → lower id
+    working('cid-still-open'); // created second → higher id → reconciled first (newest-first)
+    // Each reconcile pulls open-orders then history. The still-open one finds
+    // nothing; our CID order's history returns the fill.
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp([])) // still-open: open
+      .mockResolvedValueOnce(okResp([])) // still-open: history
+      .mockResolvedValueOnce(okResp([])) // CID: open
+      .mockResolvedValueOnce(okResp([filledEnvelope])); // CID: history → fill
+
+    const r = await reconcileAllWorking('ACC1');
+    expect(r).toMatchObject({ ok: true, reconciled: 2, changed: 1 });
+    expect(getIntent(filledId)?.state).toBe('filled');
   });
 });

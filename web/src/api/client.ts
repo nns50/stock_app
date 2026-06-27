@@ -60,6 +60,7 @@ import type {
   LivePreviewResult,
   PlaceResult,
   ReconcileResult,
+  ReconcileAllResult,
   CancelResult,
   ReplacePatch,
   ReplaceResult,
@@ -354,6 +355,11 @@ export const client = {
   tradeIntents: () => api<{ intents: OrderIntentRecord[] }>('/trade/intents'),
   tradeReconcile: (id: number, accountId: string) =>
     api<ReconcileResult>(`/trade/intents/${id}/reconcile`, {
+      method: 'POST',
+      body: JSON.stringify({ accountId }),
+    }),
+  tradeReconcileAll: (accountId: string) =>
+    api<ReconcileAllResult>('/trade/intents/reconcile-all', {
       method: 'POST',
       body: JSON.stringify({ accountId }),
     }),

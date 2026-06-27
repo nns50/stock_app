@@ -1,4 +1,4 @@
-import { OrderIntentRecord, getIntent, transitionIntent } from '../../db/orders';
+import { OrderIntentRecord, getIntent, listIntents, transitionIntent } from '../../db/orders';
 import { createPosition } from '../../db/positions';
 import { OrderState, canTransition, isTerminal } from './orderLifecycle';
 import { WebullOrderStatus, webullOrderStatus } from '../../providers/webull/orders';
@@ -113,4 +113,38 @@ function recordFillAsPosition(intent: OrderIntentRecord, broker: WebullOrderStat
   } catch {
     // Swallow — the order reconcile already succeeded; position logging is a bonus.
   }
+}
+
+export interface ReconcileAllResult {
+  ok: boolean;
+  /** How many still-working orders were checked against the broker. */
+  reconciled: number;
+  /** How many of those advanced to a new state. */
+  changed: number;
+  results: Array<{ id: number; changed: boolean; state?: OrderState; status?: string; error?: string }>;
+}
+
+/**
+ * Reconcile every still-working order in one pass — the "Refresh all" action, so
+ * the live-order panel can be brought up to date without tapping each order. A
+ * "working" order is non-terminal AND known to the broker (has a broker order id;
+ * drafts / guardrail-rejected intents never reached the broker). Sequential on
+ * purpose — one broker status pull at a time, never a burst.
+ */
+export async function reconcileAllWorking(accountId: string): Promise<ReconcileAllResult> {
+  const working = listIntents().filter((i) => !isTerminal(i.state) && i.brokerOrderId);
+  const results: ReconcileAllResult['results'] = [];
+  let changed = 0;
+  for (const intent of working) {
+    const r = await reconcileIntent(intent.id, accountId);
+    if (r.changed) changed++;
+    results.push({
+      id: intent.id,
+      changed: r.changed,
+      state: r.intent?.state,
+      status: r.broker?.status,
+      error: r.error,
+    });
+  }
+  return { ok: true, reconciled: working.length, changed, results };
 }

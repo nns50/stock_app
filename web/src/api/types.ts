@@ -900,6 +900,15 @@ export interface ReconcileResult {
   error?: string;
 }
 
+export interface ReconcileAllResult {
+  ok: boolean;
+  /** How many still-working orders were checked against the broker. */
+  reconciled: number;
+  /** How many of those advanced to a new state. */
+  changed: number;
+  results: Array<{ id: number; changed: boolean; state?: string; status?: string; error?: string }>;
+}
+
 export interface CancelResult {
   ok: boolean;
   requested: boolean;
