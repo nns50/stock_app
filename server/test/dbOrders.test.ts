@@ -65,6 +65,13 @@ describe('order intents persistence', () => {
     expect(isComboOrder(rec)).toBe(false);
   });
 
+  it('persists every order type, including stop / stop-limit (no stale order_type CHECK)', () => {
+    // A stale CHECK(order_type IN ('market','limit')) used to throw here for stops.
+    expect(createIntent({ ...stockBuy, orderType: 'stop_loss' }, 'k-stop').orderType).toBe('stop_loss');
+    expect(createIntent({ ...stockBuy, orderType: 'stop_loss_limit' }, 'k-stoplim').orderType).toBe('stop_loss_limit');
+    expect(createIntent({ ...stockBuy, orderType: 'market' }, 'k-mkt').orderType).toBe('market');
+  });
+
   it('is idempotent on the client key', () => {
     const a = createIntent(stockBuy, 'key-1');
     const b = createIntent({ ...stockBuy, quantity: 999 }, 'key-1'); // same key, different body
