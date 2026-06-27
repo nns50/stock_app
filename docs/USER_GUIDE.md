@@ -331,7 +331,9 @@ strikes); other structures (straddles, iron condors) aren't live-placeable yet.
 - **Orders** — recent intents (placed + dry-run), newest first, with their lifecycle state. For
   an order that reached the broker, **Refresh status** pulls the live broker status by your order
   id and advances the intent to **filled / partially filled / cancelled / expired** (writing the
-  fill price into the audit trail). **Cancel** appears on an order that's still working
+  fill price into the audit trail). When an **open** single-leg/stock order fills, it's also
+  **auto-recorded as a Position** (so it appears on Positions & Journal), mirroring a logged trade —
+  spreads and closing orders aren't auto-tracked yet. **Cancel** appears on an order that's still working
   (acknowledged / partially filled): it requests a broker cancel, then reconciles to show the
   result. Cancel is risk-reducing, so it works even when `TRADING_ENABLED` is off. **Modify**
   changes a working order's **quantity / limit price** in place (Webull "replace"); because a
