@@ -121,6 +121,8 @@ CREATE TABLE IF NOT EXISTS order_intents (
   option_type     TEXT CHECK(option_type IN ('call','put') OR option_type IS NULL),
   strike          REAL,
   expiration      TEXT,
+  option_strategy TEXT,                  -- SINGLE|VERTICAL|COVERED|IRON_CONDOR (NULL = stock)
+  is_bracket      INTEGER NOT NULL DEFAULT 0,  -- 1 = placed as a bracket (MASTER + exit legs)
   state           TEXT NOT NULL,         -- OrderState (validated by the lifecycle machine)
   broker_order_id TEXT,
   created_at      INTEGER NOT NULL,
@@ -204,6 +206,14 @@ function migrate(): void {
   if (!has('stop_price')) db.exec('ALTER TABLE positions ADD COLUMN stop_price REAL');
   if (!has('target_price')) db.exec('ALTER TABLE positions ADD COLUMN target_price REAL');
   if (!has('entry_time')) db.exec('ALTER TABLE positions ADD COLUMN entry_time TEXT');
+
+  // order_intents gained a combo marker so a stored order knows whether it's a
+  // multi-leg spread / bracket (which the single-key replace can't safely modify).
+  const oiCols = db.prepare('PRAGMA table_info(order_intents)').all() as { name: string }[];
+  const hasOi = (c: string) => oiCols.some((col) => col.name === c);
+  if (!hasOi('option_strategy')) db.exec('ALTER TABLE order_intents ADD COLUMN option_strategy TEXT');
+  if (!hasOi('is_bracket')) db.exec('ALTER TABLE order_intents ADD COLUMN is_bracket INTEGER NOT NULL DEFAULT 0');
+
   rebuildAlertsTable(db);
 }
 

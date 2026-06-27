@@ -1,7 +1,7 @@
 import { config } from '../../config';
 import { GuardrailReport, OrderIntent, blockingFailures, evaluateGuardrails } from './guardrails';
 import { getTradingConfig } from '../../db/trading';
-import { OrderIntentRecord, countTodaysOrders, getIntent, recordReplace } from '../../db/orders';
+import { OrderIntentRecord, countTodaysOrders, getIntent, isComboOrder, recordReplace } from '../../db/orders';
 import { canTransition, isTerminal } from './orderLifecycle';
 import { webullAccountState } from '../../providers/webull/accountState';
 import { marketOpenContext } from './marketHours';
@@ -20,6 +20,7 @@ export type ReplaceReason =
   | 'trading_disabled'
   | 'not_found'
   | 'not_open'
+  | 'not_modifiable'
   | 'no_change'
   | 'account_error'
   | 'blocked'
@@ -79,6 +80,20 @@ export async function replaceIntent(id: number, accountId: string, patch: Replac
       reason: 'not_open',
       intent: rec,
       error: `order is not modifiable (${rec.state})`,
+    };
+  }
+  // A multi-leg spread / bracket is a combo of broker orders keyed by a combo id;
+  // the single-key `modify_orders` shape would change one leg and leave the rest
+  // stale. Refuse it (no broker call) and tell the user to cancel + re-place.
+  if (isComboOrder(rec)) {
+    return {
+      ok: true,
+      replaced: false,
+      reason: 'not_modifiable',
+      intent: rec,
+      error: rec.isBracket
+        ? 'A bracketed order has linked exit legs — cancel and re-place to change it.'
+        : 'A multi-leg spread is a single combo order — cancel and re-place to change it.',
     };
   }
   if (patch.quantity === undefined && patch.limitPrice === undefined && patch.stopPrice === undefined) {

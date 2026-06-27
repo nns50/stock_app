@@ -42,8 +42,8 @@ const intent = (over: Partial<OrderIntent> = {}): OrderIntent => ({
 });
 const okResp = (b: unknown) => ({ ok: true, status: 200, text: async () => JSON.stringify(b) }) as Response;
 
-function workingIntentId(): number {
-  const rec = createIntent(intent(), CID);
+function workingIntentId(over: Partial<OrderIntent> = {}, key = CID): number {
+  const rec = createIntent(intent(over), key);
   transitionIntent(rec.id, 'validated');
   transitionIntent(rec.id, 'confirmed');
   transitionIntent(rec.id, 'submitted');
@@ -63,6 +63,40 @@ describe('replaceIntent', () => {
     transitionIntent(id, 'filled', { detail: 'filled' });
     const r = await replaceIntent(id, 'ACC1', { limitPrice: 1.6 });
     expect(r).toMatchObject({ ok: true, replaced: false, reason: 'not_open' });
+  });
+
+  it('refuses to modify a multi-leg spread in place (no account or broker call)', async () => {
+    const id = workingIntentId({ assetKind: 'option', optionStrategy: 'VERTICAL' }, 'vert-cid');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const r = await replaceIntent(id, 'ACC1', { limitPrice: 1.6 });
+    expect(r).toMatchObject({ ok: true, replaced: false, reason: 'not_modifiable' });
+    expect(r.error).toMatch(/spread/i);
+    expect(fetchSpy).not.toHaveBeenCalled(); // gated before account state / broker
+  });
+
+  it('refuses to modify a bracketed order in place (cancel & re-place instead)', async () => {
+    const id = workingIntentId({ bracket: { takeProfitPrice: 2.0, stopLossPrice: 1.0 } }, 'brk-cid');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const r = await replaceIntent(id, 'ACC1', { quantity: 3 });
+    expect(r).toMatchObject({ ok: true, replaced: false, reason: 'not_modifiable' });
+    expect(r.error).toMatch(/bracket/i);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('still modifies a single-leg option in place (SINGLE is not a combo)', async () => {
+    const id = workingIntentId(
+      { assetKind: 'option', optionType: 'call', strike: 2, expiration: '2030-01-18', optionStrategy: 'SINGLE' },
+      'single-opt-cid',
+    );
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE)) // account state: balance
+      .mockResolvedValueOnce(okResp([])) // account state: positions
+      .mockResolvedValueOnce(okResp({ ok: true })) // /replace
+      .mockResolvedValueOnce(okResp([])) // reconcile: open
+      .mockResolvedValueOnce(okResp([])); // reconcile: history
+    // 1 contract × $0.05 × 100 = $5, within the mocked option buying power ($10.81).
+    const r = await replaceIntent(id, 'ACC1', { limitPrice: 0.05 });
+    expect(r).toMatchObject({ ok: true, replaced: true, reason: 'replaced' });
   });
 
   it('blocks when the modified order fails a guardrail (no broker call)', async () => {

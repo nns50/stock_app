@@ -857,6 +857,10 @@ export interface OrderIntentRecord {
   optionType: 'call' | 'put' | null;
   strike: number | null;
   expiration: string | null;
+  /** Strategy this order was placed as ('SINGLE' for a single-leg option; null for stock). */
+  optionStrategy: 'SINGLE' | 'VERTICAL' | 'COVERED' | 'IRON_CONDOR' | null;
+  /** True when placed as a bracket (entry + linked exits). */
+  isBracket: boolean;
   state: string;
   brokerOrderId: string | null;
   createdAt: number;
@@ -906,6 +910,7 @@ export interface ReplaceResult {
     | 'trading_disabled'
     | 'not_found'
     | 'not_open'
+    | 'not_modifiable'
     | 'no_change'
     | 'account_error'
     | 'blocked'
