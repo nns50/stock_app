@@ -4,7 +4,7 @@ import { client } from '../api/client';
 import { useAsync, useLocalStorage } from '../lib/hooks';
 import { cx, fmtUsd } from '../lib/format';
 import { Badge, Card, Field, NumberInput, PageHeader, Segmented, Spinner } from '../components/ui';
-import { ExpirySelect, StrikeSelect, chainStrikes } from '../components/OptionPicker';
+import { ExpirySelect, StrikeSelect, chainStrikes, suggestedNet } from '../components/OptionPicker';
 import type {
   AccountStateInput,
   DryRunResult,
@@ -159,6 +159,12 @@ function Workspace({
     () => (optSymbol && activeExpiry ? client.chain(optSymbol, activeExpiry) : Promise.resolve(null)),
     [optSymbol, activeExpiry],
   );
+
+  // Suggested Net limit (+ side) for a spread, computed from live chain marks.
+  const netSuggestion =
+    isMultiLeg && order.optionLegs && order.optionLegs.length > 0
+      ? suggestedNet(chain.data, order.optionLegs, strat as 'VERTICAL' | 'COVERED' | 'IRON_CONDOR')
+      : undefined;
 
   // A vertical's two legs share one expiry — set both at once.
   const setLegsExpiry = (expiration: string) =>
@@ -326,6 +332,19 @@ function Workspace({
             {(order.orderType === 'limit' || order.orderType === 'stop_loss_limit' || isMultiLeg) && (
               <Field label={isMultiLeg ? 'Net limit (debit/credit)' : 'Limit price'}>
                 <NumberInput value={order.limitPrice} onChange={(v) => setO('limitPrice', v)} min={0} step={0.01} />
+                {netSuggestion && (
+                  <button
+                    type="button"
+                    className="mt-1 text-[11px] text-accent hover:underline"
+                    title="Fill the Net limit and Side from the live chain marks"
+                    onClick={() =>
+                      setOrder((o) => ({ ...o, limitPrice: netSuggestion.limit, side: netSuggestion.side }))
+                    }
+                  >
+                    Suggest from marks: {netSuggestion.side === 'buy' ? 'debit' : 'credit'}{' '}
+                    {fmtUsd(netSuggestion.limit)}
+                  </button>
+                )}
               </Field>
             )}
             {!isMultiLeg && (
