@@ -7,7 +7,7 @@ import { getEvents, listIntents } from '../db/orders';
 import { dryRunOrder } from '../services/trading/dryRun';
 import { livePreview } from '../services/trading/livePreview';
 import { placeOrder } from '../services/trading/placeOrder';
-import { reconcileIntent } from '../services/trading/reconcile';
+import { reconcileAllWorking, reconcileIntent } from '../services/trading/reconcile';
 import { cancelIntent } from '../services/trading/cancelOrder';
 import { replaceIntent } from '../services/trading/replaceOrder';
 import { webullAccountState } from '../providers/webull/accountState';
@@ -161,6 +161,15 @@ tradeRouter.post(
   asyncHandler(async (req, res) => {
     const { accountId } = parseBody(reconcileBody, req);
     res.json(await reconcileIntent(Number(param(req, 'id')), accountId));
+  }),
+);
+
+// Reconcile every still-working order in one pass (the "Refresh all" action).
+tradeRouter.post(
+  '/intents/reconcile-all',
+  asyncHandler(async (req, res) => {
+    const { accountId } = parseBody(reconcileBody, req);
+    res.json(await reconcileAllWorking(accountId));
   }),
 );
 

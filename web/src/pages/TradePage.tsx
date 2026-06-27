@@ -673,6 +673,8 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
   const intents = useAsync(() => client.tradeIntents(), [refreshKey]);
   const [busyId, setBusyId] = useState<number>();
   const [msg, setMsg] = useState<Record<number, string>>({});
+  const [busyAll, setBusyAll] = useState(false);
+  const [allMsg, setAllMsg] = useState<string>();
   const rows = intents.data?.intents ?? [];
 
   const refresh = async (id: number) => {
@@ -698,6 +700,29 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
       setMsg((m) => ({ ...m, [id]: (e as Error).message }));
     } finally {
       setBusyId(undefined);
+    }
+  };
+
+  // Reconcile every still-working order in one tap (handy on a phone).
+  const refreshAll = async () => {
+    if (!accountId.trim()) {
+      setAllMsg('Enter your cash account_id above first.');
+      return;
+    }
+    setBusyAll(true);
+    setAllMsg(undefined);
+    try {
+      const r = await client.tradeReconcileAll(accountId.trim());
+      setAllMsg(
+        r.reconciled === 0
+          ? 'No working orders to refresh.'
+          : `Reconciled ${r.reconciled} working order${r.reconciled === 1 ? '' : 's'} — ${r.changed} updated.`,
+      );
+      intents.reload();
+    } catch (e) {
+      setAllMsg((e as Error).message);
+    } finally {
+      setBusyAll(false);
     }
   };
 
@@ -774,14 +799,24 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
     }
   };
 
+  const workingCount = rows.filter((r) => r.brokerOrderId && cancellable(r.state)).length;
+
   return (
     <Card className="p-4 space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <h3 className="font-medium">Orders</h3>
-        <button className="btn-ghost text-xs" onClick={intents.reload} disabled={intents.loading}>
-          {intents.loading ? 'Loading…' : 'Reload'}
-        </button>
+        <div className="flex items-center gap-2">
+          {workingCount > 0 && (
+            <button className="btn-ghost text-xs" onClick={refreshAll} disabled={busyAll}>
+              {busyAll ? 'Refreshing…' : `Refresh all (${workingCount})`}
+            </button>
+          )}
+          <button className="btn-ghost text-xs" onClick={intents.reload} disabled={intents.loading}>
+            {intents.loading ? 'Loading…' : 'Reload'}
+          </button>
+        </div>
       </div>
+      {allMsg && <p className="text-[11px] text-slate-400">{allMsg}</p>}
       {rows.length === 0 ? (
         <p className="text-xs text-slate-500">No orders yet — placed and dry-run orders show here.</p>
       ) : (
