@@ -71,3 +71,56 @@ describe('TradePage', () => {
     expect(screen.queryByText('Reference price')).not.toBeInTheDocument();
   });
 });
+
+// The strategy builder is where most of the trade-form bugs lived (the label-click
+// reset, the decimal swallow, the isMultiLeg label/expiry mix-ups). Pin each mode.
+describe('TradePage strategy builder', () => {
+  beforeEach(() => {
+    vi.spyOn(client, 'expirations').mockResolvedValue({ expirations: [] } as never);
+    vi.spyOn(client, 'chain').mockResolvedValue(null as never);
+  });
+
+  const openOption = async () => {
+    renderPage();
+    await screen.findByRole('heading', { name: 'Trade' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Option' }));
+  };
+
+  it('single-leg uses single-leg fields (Call/put, Quantity, Limit price, Reference price)', async () => {
+    await openOption();
+    expect(screen.getByText('Call / put')).toBeInTheDocument();
+    expect(screen.getByText('Quantity')).toBeInTheDocument();
+    expect(screen.getByText('Limit price')).toBeInTheDocument();
+    expect(screen.getByText('Reference price')).toBeInTheDocument();
+  });
+
+  it('vertical shows two legs, the margin warning, and Spreads / Net limit', async () => {
+    await openOption();
+    fireEvent.click(screen.getByRole('tab', { name: 'Vertical' }));
+    expect(screen.getByText('Leg 1')).toBeInTheDocument();
+    expect(screen.getByText('Leg 2')).toBeInTheDocument();
+    expect(screen.getByText(/Requires a margin account/)).toBeInTheDocument();
+    expect(screen.getAllByText('Spreads').length).toBeGreaterThan(0); // Field label + the hint's bold
+    expect(screen.getByText('Net limit (debit/credit)')).toBeInTheDocument();
+    expect(screen.queryByText('Reference price')).not.toBeInTheDocument();
+  });
+
+  it('covered shows the buy-write note, one short-call leg, and Contracts', async () => {
+    await openOption();
+    fireEvent.click(screen.getByRole('tab', { name: 'Covered' }));
+    expect(screen.getByText(/Buy-write/)).toBeInTheDocument();
+    expect(screen.getByText('Short call — strike')).toBeInTheDocument();
+    expect(screen.getByText('Contracts')).toBeInTheDocument();
+    expect(screen.getByText('Net limit (debit/credit)')).toBeInTheDocument();
+  });
+
+  it('condor shows 4 legs; switching back to Single restores single-leg fields', async () => {
+    await openOption();
+    fireEvent.click(screen.getByRole('tab', { name: 'Condor' }));
+    expect(screen.getByText('Leg 4')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Single')); // first strategy tab's a11y name is "Strategy Single"
+    expect(screen.queryByText('Leg 4')).not.toBeInTheDocument();
+    expect(screen.getByText('Call / put')).toBeInTheDocument();
+    expect(screen.getByText('Quantity')).toBeInTheDocument();
+  });
+});
