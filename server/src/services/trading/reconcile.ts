@@ -1,4 +1,5 @@
 import { OrderIntentRecord, getIntent, transitionIntent } from '../../db/orders';
+import { createPosition } from '../../db/positions';
 import { OrderState, canTransition, isTerminal } from './orderLifecycle';
 import { WebullOrderStatus, webullOrderStatus } from '../../providers/webull/orders';
 
@@ -74,5 +75,42 @@ export async function reconcileIntent(id: number, accountId: string): Promise<Re
     detail: `broker ${broker.status.toLowerCase()}${fill}${at}`,
     brokerOrderId: broker.brokerOrderId,
   });
+
+  // A live OPEN fill becomes a tracked Position (so it shows on Positions /
+  // Journal), mirroring a manually-logged trade. Single-leg/stock only: a
+  // spread/combo doesn't map to one position (its single-leg fields are null),
+  // and a CLOSE reduces an existing position (not auto-matched yet). `filled` is
+  // terminal, so this transition — and the record — happens at most once.
+  if (
+    target === 'filled' &&
+    intent.openClose === 'open' &&
+    (intent.assetKind === 'stock' || intent.optionType !== null)
+  ) {
+    recordFillAsPosition(updated, broker);
+  }
+
   return { ok: true, changed: true, intent: updated, broker };
+}
+
+/** Record a filled OPEN order as a tracked Position. Best-effort: a logging
+ *  failure must not break order reconciliation. */
+function recordFillAsPosition(intent: OrderIntentRecord, broker: WebullOrderStatus): void {
+  try {
+    createPosition({
+      assetType: intent.assetKind,
+      symbol: intent.symbol,
+      side: intent.side === 'buy' ? 'long' : 'short',
+      quantity: broker.filledQty ?? intent.quantity,
+      entryPrice: broker.filledPrice ?? intent.limitPrice ?? 0,
+      entryDate: new Date().toISOString().slice(0, 10),
+      optionType: intent.optionType,
+      strike: intent.strike,
+      expiration: intent.expiration,
+      multiplier: intent.assetKind === 'option' ? 100 : undefined,
+      notes: `Auto-recorded from live order #${intent.id}${broker.brokerOrderId ? ` (broker ${broker.brokerOrderId})` : ''}`,
+      tags: ['live'],
+    });
+  } catch {
+    // Swallow — the order reconcile already succeeded; position logging is a bonus.
+  }
 }

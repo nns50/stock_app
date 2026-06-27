@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vite
 import { initDb, db } from '../src/db';
 import { config } from '../src/config';
 import { createIntent, getIntent, transitionIntent } from '../src/db/orders';
+import { listPositions } from '../src/db/positions';
 import { mapWebullStatus, reconcileIntent } from '../src/services/trading/reconcile';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
@@ -10,7 +11,7 @@ const CID = 'cc404a3544f74577a20839cf42c5892e';
 
 beforeAll(() => initDb());
 beforeEach(() => {
-  db.exec('DELETE FROM order_events; DELETE FROM order_intents;');
+  db.exec('DELETE FROM order_events; DELETE FROM order_intents; DELETE FROM positions;');
   Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
 });
 afterEach(() => {
@@ -104,5 +105,37 @@ describe('reconcileIntent', () => {
     const r = await reconcileIntent(id, 'ACC1');
     expect(r).toMatchObject({ ok: true, changed: false });
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('records a filled OPEN order as a tracked Position (buy → long, at the fill price)', async () => {
+    const id = placedIntentId(); // stock BUY, open
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp([filledEnvelope]));
+
+    await reconcileIntent(id, 'ACC1');
+    const positions = listPositions();
+    expect(positions).toHaveLength(1);
+    expect(positions[0]).toMatchObject({
+      assetType: 'stock',
+      symbol: 'AMC',
+      side: 'long',
+      quantity: 1,
+      entryPrice: 1.89,
+    });
+  });
+
+  it('does not record a position for a CLOSE fill (closes reduce, not open)', async () => {
+    const rec = createIntent(intent({ openClose: 'close' }), CID);
+    transitionIntent(rec.id, 'validated');
+    transitionIntent(rec.id, 'confirmed');
+    transitionIntent(rec.id, 'submitted');
+    transitionIntent(rec.id, 'acknowledged');
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp([filledEnvelope]));
+
+    await reconcileIntent(rec.id, 'ACC1');
+    expect(listPositions()).toHaveLength(0);
   });
 });
