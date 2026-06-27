@@ -25,7 +25,7 @@ jobs:
       - name: Skip when no Fly token is configured
         if: env.FLY_API_TOKEN == ''
         run: echo "FLY_API_TOKEN secret not set — skipping deploy. Add it in Settings → Secrets and variables → Actions to enable auto-deploy."
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: env.FLY_API_TOKEN != ''
       - uses: superfly/flyctl-actions/setup-flyctl@master
         if: env.FLY_API_TOKEN != ''
