@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vite
 import { initDb, db } from '../src/db';
 import { config } from '../src/config';
 import { createIntent, getIntent, transitionIntent } from '../src/db/orders';
-import { listPositions } from '../src/db/positions';
+import { createPosition, listPositions } from '../src/db/positions';
 import { mapWebullStatus, reconcileAllWorking, reconcileIntent } from '../src/services/trading/reconcile';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
@@ -137,6 +137,90 @@ describe('reconcileIntent', () => {
 
     await reconcileIntent(rec.id, 'ACC1');
     expect(listPositions()).toHaveLength(0);
+  });
+
+  // Helper: a CLOSE order (sell-to-close) walked to acknowledged.
+  function closeOrder(over: Partial<OrderIntent>, cid: string): number {
+    const rec = createIntent(intent({ side: 'sell', openClose: 'close', ...over }), cid);
+    transitionIntent(rec.id, 'validated');
+    transitionIntent(rec.id, 'confirmed');
+    transitionIntent(rec.id, 'submitted');
+    transitionIntent(rec.id, 'acknowledged', { brokerOrderId: '8AIG1C8LCCE58QHNDSU5NHBP09' });
+    return rec.id;
+  }
+
+  it('records a filled CLOSE as an exit against the matching open position, closing it', async () => {
+    createPosition({
+      assetType: 'stock',
+      symbol: 'AMC',
+      side: 'long',
+      quantity: 1,
+      entryPrice: 1.5,
+      entryDate: '2026-06-01',
+    });
+    const id = closeOrder({}, CID);
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp([filledEnvelope]));
+
+    await reconcileIntent(id, 'ACC1');
+    const pos = listPositions({ symbol: 'AMC' })[0];
+    expect(pos.exits).toHaveLength(1);
+    expect(pos.exits[0]).toMatchObject({ quantity: 1, exitPrice: 1.89 });
+    expect(pos.status).toBe('closed'); // fully exited
+    expect(pos.remainingQuantity).toBe(0);
+  });
+
+  it('splits a CLOSE across open lots oldest-first (FIFO)', async () => {
+    const older = createPosition({
+      assetType: 'stock',
+      symbol: 'AMC',
+      side: 'long',
+      quantity: 1,
+      entryPrice: 1.5,
+      entryDate: '2026-06-01',
+    });
+    const newer = createPosition({
+      assetType: 'stock',
+      symbol: 'AMC',
+      side: 'long',
+      quantity: 2,
+      entryPrice: 1.7,
+      entryDate: '2026-06-10',
+    });
+    const filled2 = {
+      ...filledEnvelope,
+      orders: [{ ...filledEnvelope.orders[0], total_quantity: '2', filled_quantity: '2' }],
+    };
+    const id = closeOrder({ quantity: 2 }, CID);
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp([filled2]));
+
+    await reconcileIntent(id, 'ACC1');
+    const byId = (pid: number) => listPositions({ symbol: 'AMC' }).find((p) => p.id === pid)!;
+    expect(byId(older.id).status).toBe('closed'); // oldest fully closed first
+    expect(byId(newer.id).remainingQuantity).toBe(1); // newer partially closed
+    expect(byId(newer.id).exits).toHaveLength(1);
+  });
+
+  it('does not record an exit when the close does not match an open position (wrong side)', async () => {
+    // A short position can't be closed by a sell-to-close (that needs a buy).
+    const short = createPosition({
+      assetType: 'stock',
+      symbol: 'AMC',
+      side: 'short',
+      quantity: 1,
+      entryPrice: 1.5,
+      entryDate: '2026-06-01',
+    });
+    const id = closeOrder({}, CID);
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp([filledEnvelope]));
+
+    await reconcileIntent(id, 'ACC1');
+    expect(listPositions({ symbol: 'AMC' }).find((p) => p.id === short.id)!.exits).toHaveLength(0);
   });
 });
 

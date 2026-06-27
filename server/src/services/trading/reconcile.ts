@@ -1,5 +1,5 @@
 import { OrderIntentRecord, getIntent, listIntents, transitionIntent } from '../../db/orders';
-import { createPosition } from '../../db/positions';
+import { Position, addExit, createPosition, listPositions } from '../../db/positions';
 import { OrderState, canTransition, isTerminal } from './orderLifecycle';
 import { WebullOrderStatus, webullOrderStatus } from '../../providers/webull/orders';
 
@@ -76,17 +76,17 @@ export async function reconcileIntent(id: number, accountId: string): Promise<Re
     brokerOrderId: broker.brokerOrderId,
   });
 
-  // A live OPEN fill becomes a tracked Position (so it shows on Positions /
-  // Journal), mirroring a manually-logged trade. Single-leg/stock only: a
-  // spread/combo doesn't map to one position (its single-leg fields are null),
-  // and a CLOSE reduces an existing position (not auto-matched yet). `filled` is
-  // terminal, so this transition — and the record — happens at most once.
-  if (
-    target === 'filled' &&
-    intent.openClose === 'open' &&
-    (intent.assetKind === 'stock' || intent.optionType !== null)
-  ) {
+  // A live single-leg/stock fill is mirrored into the Positions ledger so live
+  // trades show on Positions / Journal like a manually-logged trade: an OPEN fill
+  // creates a Position, a CLOSE fill records an exit against the matching open
+  // position(s). A spread/combo doesn't map to one position (its single-leg
+  // fields are null), so it's skipped. `filled` is terminal, so each runs at most
+  // once. Both are best-effort — the order reconcile has already succeeded.
+  const singleNameFill = target === 'filled' && (intent.assetKind === 'stock' || intent.optionType !== null);
+  if (singleNameFill && intent.openClose === 'open') {
     recordFillAsPosition(updated, broker);
+  } else if (singleNameFill && intent.openClose === 'close') {
+    recordCloseAsExit(updated, broker);
   }
 
   return { ok: true, changed: true, intent: updated, broker };
@@ -112,6 +112,46 @@ function recordFillAsPosition(intent: OrderIntentRecord, broker: WebullOrderStat
     });
   } catch {
     // Swallow — the order reconcile already succeeded; position logging is a bonus.
+  }
+}
+
+/** Does this open position match the contract the closing order references? */
+function sameContract(p: Position, intent: OrderIntentRecord): boolean {
+  if (p.symbol !== intent.symbol || p.assetType !== intent.assetKind) return false;
+  if (intent.assetKind === 'stock') return true;
+  return p.optionType === intent.optionType && p.strike === intent.strike && p.expiration === intent.expiration;
+}
+
+/** Record a filled CLOSE order as an exit against the matching open position(s),
+ *  oldest first (FIFO), so the Journal's realized P&L reflects the live trade.
+ *  A sell-to-close reduces a long; a buy-to-close reduces a short. Best-effort:
+ *  a logging failure must not break order reconciliation, and an unmatched close
+ *  (e.g. the open leg was a spread, or never logged here) is simply a no-op. */
+function recordCloseAsExit(intent: OrderIntentRecord, broker: WebullOrderStatus): void {
+  try {
+    let remaining = broker.filledQty ?? intent.quantity;
+    if (remaining <= 0) return;
+    const exitPrice = broker.filledPrice ?? intent.limitPrice ?? 0;
+    const exitDate = new Date().toISOString().slice(0, 10);
+    // The position being closed is the OPPOSITE side of the closing order.
+    const closingSide = intent.side === 'sell' ? 'long' : 'short';
+    const open = listPositions({ status: 'open', symbol: intent.symbol, assetType: intent.assetKind })
+      .filter((p) => p.side === closingSide && p.remainingQuantity > 0 && sameContract(p, intent))
+      .sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.id - b.id); // FIFO: oldest entry first
+
+    for (const p of open) {
+      if (remaining <= 1e-9) break;
+      const take = Math.min(remaining, p.remainingQuantity);
+      addExit(p.id, {
+        quantity: take,
+        exitPrice,
+        exitDate,
+        notes: `Auto-recorded from live close order #${intent.id}${broker.brokerOrderId ? ` (broker ${broker.brokerOrderId})` : ''}`,
+      });
+      remaining -= take;
+    }
+  } catch {
+    // Swallow — the order reconcile already succeeded; exit logging is a bonus.
   }
 }
 
