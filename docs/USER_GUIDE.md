@@ -328,10 +328,11 @@ strikes); other structures (straddles, iron condors) aren't live-placeable yet.
   guardrail, checks the kill switch + `TRADING_ENABLED`, and writes the intent + broker
   `order_id` to the audit trail. One order at a time — stock, or a **single-leg option**
   (call/put + strike + expiry; limit or stop types — Webull has no market options).
-- **Orders** — recent intents (placed + dry-run), newest first, with their lifecycle state. For
-  an order that reached the broker, **Refresh status** pulls the live broker status by your order
-  id and advances the intent to **filled / partially filled / cancelled / expired** (writing the
-  fill price into the audit trail). When an **open** single-leg/stock order fills, it's also
+- **Orders** — recent intents (placed + dry-run), newest first, with their lifecycle state. A
+  multi-leg or bracketed order carries a small **strategy tag** (`vertical` / `covered` / `condor` /
+  `bracket`) so the row explains itself. For an order that reached the broker, **Refresh status**
+  pulls the live broker status by your order id and advances the intent to **filled / partially
+  filled / cancelled / expired** (writing the fill price into the audit trail). When an **open** single-leg/stock order fills, it's also
   **auto-recorded as a Position** (so it appears on Positions & Journal), mirroring a logged trade —
   spreads and closing orders aren't auto-tracked yet. **Cancel** appears on an order that's still working
   (acknowledged / partially filled): it requests a broker cancel, then reconciles to show the

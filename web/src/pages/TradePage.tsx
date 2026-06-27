@@ -759,6 +759,20 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
   // in place. For a combo, the safe path is Cancel and re-place.
   const inPlaceModifiable = (it: { optionStrategy: string | null; isBracket: boolean }) =>
     !it.isBracket && (it.optionStrategy === null || it.optionStrategy === 'SINGLE');
+  // A short tag for a multi-order combo, so the row explains itself (and why it
+  // has no in-place Modify). A single-leg / stock order gets no tag.
+  const comboLabel = (it: { optionStrategy: string | null; isBracket: boolean }): string | null => {
+    switch (it.optionStrategy) {
+      case 'VERTICAL':
+        return 'vertical';
+      case 'COVERED':
+        return 'covered';
+      case 'IRON_CONDOR':
+        return 'condor';
+      default:
+        return it.isBracket ? 'bracket' : null;
+    }
+  };
 
   return (
     <Card className="p-4 space-y-3">
@@ -783,6 +797,7 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
                     {it.limitPrice !== null ? ` @ ${fmtUsd(it.limitPrice)}` : ''}
                   </span>
                 </span>
+                {comboLabel(it) && <Badge color="blue">{comboLabel(it)}</Badge>}
                 <span className={cx('text-xs font-medium', stateTone(it.state))}>{it.state}</span>
                 {it.brokerOrderId && (
                   <button className="btn-ghost text-xs" onClick={() => refresh(it.id)} disabled={busyId === it.id}>
