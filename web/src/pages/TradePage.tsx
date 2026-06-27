@@ -543,30 +543,32 @@ function Workspace({
               )}
             </div>
           )}
-          {order.assetKind === 'stock' && order.orderType === 'limit' && (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <Field label="Take-profit" hint="optional bracket leg">
-                <NumberInput
-                  value={order.bracket?.takeProfitPrice}
-                  onChange={(v) => setO('bracket', { ...order.bracket, takeProfitPrice: v })}
-                  min={0}
-                  step={0.01}
-                />
-              </Field>
-              <Field label="Stop-loss" hint="optional bracket leg">
-                <NumberInput
-                  value={order.bracket?.stopLossPrice}
-                  onChange={(v) => setO('bracket', { ...order.bracket, stopLossPrice: v })}
-                  min={0}
-                  step={0.01}
-                />
-              </Field>
-              <p className="col-span-2 text-[11px] text-slate-500 sm:col-span-4">
-                Optional <b>bracket</b> — attaches a take-profit and/or stop-loss that fire as the entry fills (Webull
-                MASTER + STOP_PROFIT/STOP_LOSS). Take-profit above / stop-loss below the entry for a buy. Stocks only.
-              </p>
-            </div>
-          )}
+          {(order.assetKind === 'stock' || (order.assetKind === 'option' && strat === 'SINGLE')) &&
+            order.orderType === 'limit' && (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <Field label="Take-profit" hint="optional bracket leg">
+                  <NumberInput
+                    value={order.bracket?.takeProfitPrice}
+                    onChange={(v) => setO('bracket', { ...order.bracket, takeProfitPrice: v })}
+                    min={0}
+                    step={0.01}
+                  />
+                </Field>
+                <Field label="Stop-loss" hint="optional bracket leg">
+                  <NumberInput
+                    value={order.bracket?.stopLossPrice}
+                    onChange={(v) => setO('bracket', { ...order.bracket, stopLossPrice: v })}
+                    min={0}
+                    step={0.01}
+                  />
+                </Field>
+                <p className="col-span-2 text-[11px] text-slate-500 sm:col-span-4">
+                  Optional <b>bracket</b> — attaches a take-profit and/or stop-loss that fire as the entry fills (Webull
+                  MASTER + STOP_PROFIT/STOP_LOSS). Take-profit above / stop-loss below the entry for a buy. Works for
+                  stocks and single-leg options (the option bracket body is inferred — Preview validates it).
+                </p>
+              </div>
+            )}
           <div className="flex flex-wrap items-center gap-2">
             <button className="btn-ghost" onClick={run} disabled={running}>
               {running ? 'Checking…' : 'Dry-run (manual state)'}

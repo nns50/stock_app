@@ -154,7 +154,7 @@ describe('trading guardrails', () => {
     expect(check(stopLim, 'limit_price').passed).toBe(true);
   });
 
-  it('validates bracket prices (TP above / SL below entry for a long; stocks only)', () => {
+  it('validates bracket prices (TP above / SL below entry for a long; stocks + single-leg options)', () => {
     const good = evaluateGuardrails(
       order({ orderType: 'limit', limitPrice: 10, side: 'buy', bracket: { takeProfitPrice: 12, stopLossPrice: 9 } }),
       acct(),
@@ -176,20 +176,40 @@ describe('trading guardrails', () => {
     );
     expect(failed(badSl)).toContain('bracket_prices'); // SL not below entry
 
+    // A single-leg option bracket is now allowed (SL below the entry premium)…
     const optBracket = evaluateGuardrails(
       order({
         assetKind: 'option',
+        optionStrategy: 'SINGLE',
         quantity: 1,
         orderType: 'limit',
         limitPrice: 1,
         referencePrice: 1,
         multiplier: 100,
+        optionType: 'call',
+        strike: 100,
+        expiration: '2026-07-17',
         bracket: { stopLossPrice: 0.5 },
       }),
       acct(),
       cfg(),
     );
-    expect(failed(optBracket)).toContain('bracket_prices'); // stock-only
+    expect(check(optBracket, 'bracket_prices').passed).toBe(true);
+
+    // …but a spread bracket is not.
+    const spreadBracket = evaluateGuardrails(
+      order({
+        assetKind: 'option',
+        optionStrategy: 'VERTICAL',
+        quantity: 1,
+        orderType: 'limit',
+        limitPrice: 1,
+        bracket: { stopLossPrice: 0.5 },
+      }),
+      acct(),
+      cfg(),
+    );
+    expect(failed(spreadBracket)).toContain('bracket_prices');
 
     expect(evaluateGuardrails(order(), acct(), cfg()).checks.find((c) => c.rule === 'bracket_prices')).toBeUndefined();
   });

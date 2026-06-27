@@ -313,9 +313,13 @@ export function evaluateGuardrails(
     const long = intent.side === 'buy';
     let ok = true;
     let detail = 'bracket ok';
-    if (intent.assetKind !== 'stock') {
+    // Brackets attach to a single-name entry: a stock, or a single-leg option.
+    const bracketable =
+      intent.assetKind === 'stock' ||
+      (intent.assetKind === 'option' && (intent.optionStrategy ?? 'SINGLE') === 'SINGLE');
+    if (!bracketable) {
       ok = false;
-      detail = 'brackets are stock-only for now';
+      detail = 'brackets are for stocks or single-leg options (not spreads)';
     } else if (intent.orderType !== 'limit' || entry === undefined || entry <= 0) {
       ok = false;
       detail = 'a bracket needs a limit entry price';

@@ -275,10 +275,12 @@ strikes); other structures (straddles, iron condors) aren't live-placeable yet.
   reference price used for notional and the fat-finger check. **Stop** triggers a market order at
   your **stop (trigger) price**; **Stop-limit** triggers a limit order (needs both a stop and a
   limit price). Options support every type **except market**.
-- **Bracket** (stock limit orders) — optionally attach a **take-profit** and/or **stop-loss** that
-  fire as the entry fills (Webull MASTER + STOP_PROFIT/STOP_LOSS, one cancels the other). For a
-  buy, take-profit sits **above** the entry and stop-loss **below**; a `bracket_prices` guardrail
-  blocks an inverted pair.
+- **Bracket** (stock **and single-leg option** limit orders) — optionally attach a **take-profit**
+  and/or **stop-loss** that fire as the entry fills (Webull MASTER + STOP_PROFIT/STOP_LOSS, one
+  cancels the other). For a buy, take-profit sits **above** the entry and stop-loss **below** (for an
+  option, relative to the per-contract premium); a `bracket_prices` guardrail blocks an inverted pair
+  and brackets on spreads. The option bracket body is inferred — **Preview (live)** validates it
+  before placing.
 - **Option strategy** — **Single** (one leg, the default), **Vertical** (a 2-leg spread), **Covered** (a buy-write), or **Condor** (a 4-leg iron condor).
   **Strikes and expiries are picked from the live option chain** — dropdowns populated for the
   entered symbol (they fall back to free text if no chain is available, so you're never blocked).
