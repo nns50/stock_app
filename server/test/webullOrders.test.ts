@@ -109,6 +109,48 @@ describe('webull stock order + preview', () => {
     expect(sl).toMatchObject({ combo_type: 'STOP_LOSS', side: 'SELL', order_type: 'STOP_LOSS', stop_price: '9' });
   });
 
+  it('buildOrderRequest: a single-leg option bracket is MASTER (option) + STOP_PROFIT + STOP_LOSS option exits', () => {
+    const req = buildOrderRequest(
+      intent({
+        assetKind: 'option',
+        optionStrategy: 'SINGLE',
+        side: 'buy',
+        quantity: 1,
+        orderType: 'limit',
+        limitPrice: 0.5,
+        optionType: 'call',
+        strike: 100,
+        expiration: '2026-07-17',
+        bracket: { takeProfitPrice: 0.9, stopLossPrice: 0.3 },
+      }),
+      'CID-OB',
+    );
+    expect(req.client_combo_order_id).toBeTruthy();
+    expect(req.new_orders).toHaveLength(3);
+    const [master, tp, sl] = req.new_orders as Array<Record<string, unknown>>;
+    expect(master).toMatchObject({ combo_type: 'MASTER', option_strategy: 'SINGLE', side: 'BUY', limit_price: '0.5' });
+    expect(tp).toMatchObject({
+      combo_type: 'STOP_PROFIT',
+      order_type: 'LIMIT',
+      side: 'SELL',
+      limit_price: '0.9',
+      instrument_type: 'OPTION',
+    });
+    expect(sl).toMatchObject({
+      combo_type: 'STOP_LOSS',
+      order_type: 'STOP_LOSS',
+      side: 'SELL',
+      stop_price: '0.3',
+      instrument_type: 'OPTION',
+    });
+    // Exit legs are OPTION legs on the same contract, opposite (SELL) side.
+    expect((tp.legs as Array<Record<string, string>>)[0]).toMatchObject({
+      side: 'SELL',
+      option_type: 'CALL',
+      strike_price: '100',
+    });
+  });
+
   it('builds a single-leg OPTION order body matching the docs example (order + leg fields)', () => {
     const opt = intent({
       assetKind: 'option',

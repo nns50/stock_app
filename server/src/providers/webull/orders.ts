@@ -247,6 +247,47 @@ function bracketExit(
   return body;
 }
 
+/** One OPTION bracket exit leg (opposite side, to close the entry): a take-profit
+ *  LIMIT or a stop-loss STOP_LOSS on the same contract. INFERRED from the stock
+ *  bracket + single-leg option bodies — confirm via Preview before placing. */
+function optionBracketExit(
+  intent: OrderIntent,
+  comboType: 'STOP_PROFIT' | 'STOP_LOSS',
+  orderType: 'LIMIT' | 'STOP_LOSS',
+  price: number,
+  clientOrderId: string,
+): WebullOrderPayload {
+  const symbol = intent.symbol.toUpperCase();
+  const exitSide = intent.side === 'buy' ? 'SELL' : 'BUY'; // exits close the entry
+  const leg: Record<string, string> = {
+    side: exitSide,
+    quantity: String(intent.quantity),
+    symbol,
+    strike_price: intent.strike !== undefined ? String(intent.strike) : '',
+    option_expire_date: intent.expiration ?? '',
+    instrument_type: 'OPTION',
+    option_type: (intent.optionType ?? 'call').toUpperCase(),
+    market: 'US',
+  };
+  const body: WebullOrderPayload = {
+    combo_type: comboType,
+    client_order_id: clientOrderId,
+    order_type: orderType,
+    quantity: String(intent.quantity),
+    option_strategy: 'SINGLE',
+    side: exitSide,
+    time_in_force: 'DAY',
+    entrust_type: 'QTY',
+    instrument_type: 'OPTION',
+    market: 'US',
+    symbol,
+    legs: [leg],
+  };
+  if (orderType === 'LIMIT') body.limit_price = String(price);
+  else body.stop_price = String(price);
+  return body;
+}
+
 /** The full `/order/{preview,place}` request payload (sans account_id). For a
  *  plain order it's one entry; for a stock bracket it's a MASTER entry plus
  *  STOP_PROFIT / STOP_LOSS legs linked by a `client_combo_order_id`. */
@@ -258,16 +299,22 @@ export interface WebullOrderRequest {
 export function buildOrderRequest(intent: OrderIntent, clientOrderId: string): WebullOrderRequest {
   const b = intent.bracket;
   const braced = b && (b.takeProfitPrice !== undefined || b.stopLossPrice !== undefined);
-  if (intent.assetKind === 'stock' && braced) {
-    const master = buildWebullStockOrder(intent, clientOrderId);
+  // Brackets attach to a single-name entry: a stock, or a single-leg option.
+  const isSingleOption = intent.assetKind === 'option' && (intent.optionStrategy ?? 'SINGLE') === 'SINGLE';
+  if ((intent.assetKind === 'stock' || isSingleOption) && braced) {
+    const master = buildWebullOrder(intent, clientOrderId); // stock or single-leg option entry
     master.combo_type = 'MASTER';
+    const exit = (
+      comboType: 'STOP_PROFIT' | 'STOP_LOSS',
+      orderType: 'LIMIT' | 'STOP_LOSS',
+      price: number,
+    ): WebullOrderPayload =>
+      intent.assetKind === 'stock'
+        ? bracketExit(intent, comboType, orderType, price, newClientOrderId())
+        : optionBracketExit(intent, comboType, orderType, price, newClientOrderId());
     const new_orders: WebullOrderPayload[] = [master];
-    if (b!.takeProfitPrice !== undefined) {
-      new_orders.push(bracketExit(intent, 'STOP_PROFIT', 'LIMIT', b!.takeProfitPrice, newClientOrderId()));
-    }
-    if (b!.stopLossPrice !== undefined) {
-      new_orders.push(bracketExit(intent, 'STOP_LOSS', 'STOP_LOSS', b!.stopLossPrice, newClientOrderId()));
-    }
+    if (b!.takeProfitPrice !== undefined) new_orders.push(exit('STOP_PROFIT', 'LIMIT', b!.takeProfitPrice));
+    if (b!.stopLossPrice !== undefined) new_orders.push(exit('STOP_LOSS', 'STOP_LOSS', b!.stopLossPrice));
     return { new_orders, client_combo_order_id: newClientOrderId() };
   }
   return { new_orders: [buildWebullOrder(intent, clientOrderId)] };
