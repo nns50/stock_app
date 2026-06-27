@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useState } from 'react';
+import { isValidElement, ReactNode, useEffect, useId, useState } from 'react';
 import { X } from 'lucide-react';
 import { cx, fmtSignedUsd, pnlClass } from '../lib/format';
 
@@ -212,14 +212,30 @@ export function StatTile({
 }
 
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
+  const captionId = useId();
+  const captionHint = hint && <span className="block text-[11px] text-slate-500 mt-0.5">{hint}</span>;
+
+  // A button group (our Segmented) must NOT sit inside a <label>: a <label>
+  // forwards padding/caption clicks to its first button (the Strategy-tile reset
+  // bug) and prefixes that button's accessible name with the caption (so the
+  // "Single" tab reads "Strategy Single"). Render those as a labelled
+  // role="group" instead — no forwarding, clean names.
+  if (isValidElement(children) && children.type === Segmented) {
+    return (
+      <div className="block" role="group" aria-labelledby={captionId}>
+        <span className="label" id={captionId}>
+          {label}
+        </span>
+        {children}
+        {captionHint}
+      </div>
+    );
+  }
+
+  // A single input keeps a real <label>: clicking the caption focuses the field
+  // and the caption is its accessible name. The onClick guard is a belt-and-
+  // suspenders against any other (non-Segmented) button group slipping in.
   return (
-    // A <label> forwards a click anywhere inside it to its first form control.
-    // That's nice for a text input (click the caption → focus the field), but
-    // harmful when the field wraps a button group (our Segmented): clicking the
-    // caption or the label's padding would activate the FIRST button — e.g. flip
-    // the Strategy toggle from Vertical back to Single, tearing down the spread
-    // and wiping the net limit. So when a click misses the real control and the
-    // field's first control is a <button>, cancel the label's forwarding.
     <label
       className="block"
       onClick={(e) => {
@@ -232,7 +248,7 @@ export function Field({ label, children, hint }: { label: string; children: Reac
     >
       <span className="label">{label}</span>
       {children}
-      {hint && <span className="block text-[11px] text-slate-500 mt-0.5">{hint}</span>}
+      {captionHint}
     </label>
   );
 }
