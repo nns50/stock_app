@@ -36,6 +36,41 @@ CREATE TABLE IF NOT EXISTS alerts (
   updated_at        INTEGER NOT NULL
 );`;
 
+// order_intents DDL, factored out so the fresh-create (SCHEMA) and the migration
+// that rebuilds older tables share one definition. `order_type` has NO CHECK:
+// stop orders (stop_loss / stop_loss_limit) joined the original market/limit set,
+// and a stale CHECK silently rejected them at INSERT (the same trap the
+// alerts.kind column hit). It's validated by the route's Zod enum + the
+// OrderType union instead. Parameterised by table name so the rebuild can create
+// `order_intents_new` before swapping it in.
+const orderIntentsTableSql = (name: string): string => `
+CREATE TABLE IF NOT EXISTS ${name} (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  idempotency_key TEXT NOT NULL UNIQUE,   -- client key; guards double-submit
+  symbol          TEXT NOT NULL,
+  asset_kind      TEXT NOT NULL CHECK(asset_kind IN ('stock','option')),
+  side            TEXT NOT NULL CHECK(side IN ('buy','sell')),
+  open_close      TEXT NOT NULL CHECK(open_close IN ('open','close')),
+  quantity        REAL NOT NULL,
+  order_type      TEXT NOT NULL,         -- market|limit|stop_loss|stop_loss_limit (validated at the route)
+  limit_price     REAL,
+  option_type     TEXT CHECK(option_type IN ('call','put') OR option_type IS NULL),
+  strike          REAL,
+  expiration      TEXT,
+  option_strategy TEXT,                  -- SINGLE|VERTICAL|COVERED|IRON_CONDOR (NULL = stock)
+  is_bracket      INTEGER NOT NULL DEFAULT 0,  -- 1 = placed as a bracket (MASTER + exit legs)
+  state           TEXT NOT NULL,         -- OrderState (validated by the lifecycle machine)
+  broker_order_id TEXT,
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL
+);`;
+
+/** The order_intents columns, in DDL order — used for the explicit-column copy in
+ *  the rebuild (so it's robust to ALTER-appended columns in an older table). */
+const ORDER_INTENTS_COLS =
+  'id, idempotency_key, symbol, asset_kind, side, open_close, quantity, order_type, limit_price, ' +
+  'option_type, strike, expiration, option_strategy, is_bracket, state, broker_order_id, created_at, updated_at';
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS universe (
   symbol     TEXT PRIMARY KEY,
@@ -108,26 +143,7 @@ CREATE TABLE IF NOT EXISTS trading_config (
   updated_at  INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS order_intents (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  idempotency_key TEXT NOT NULL UNIQUE,   -- client key; guards double-submit
-  symbol          TEXT NOT NULL,
-  asset_kind      TEXT NOT NULL CHECK(asset_kind IN ('stock','option')),
-  side            TEXT NOT NULL CHECK(side IN ('buy','sell')),
-  open_close      TEXT NOT NULL CHECK(open_close IN ('open','close')),
-  quantity        REAL NOT NULL,
-  order_type      TEXT NOT NULL CHECK(order_type IN ('market','limit')),
-  limit_price     REAL,
-  option_type     TEXT CHECK(option_type IN ('call','put') OR option_type IS NULL),
-  strike          REAL,
-  expiration      TEXT,
-  option_strategy TEXT,                  -- SINGLE|VERTICAL|COVERED|IRON_CONDOR (NULL = stock)
-  is_bracket      INTEGER NOT NULL DEFAULT 0,  -- 1 = placed as a bracket (MASTER + exit legs)
-  state           TEXT NOT NULL,         -- OrderState (validated by the lifecycle machine)
-  broker_order_id TEXT,
-  created_at      INTEGER NOT NULL,
-  updated_at      INTEGER NOT NULL
-);
+${orderIntentsTableSql('order_intents')}
 
 CREATE TABLE IF NOT EXISTS order_events (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,8 +229,43 @@ function migrate(): void {
   const hasOi = (c: string) => oiCols.some((col) => col.name === c);
   if (!hasOi('option_strategy')) db.exec('ALTER TABLE order_intents ADD COLUMN option_strategy TEXT');
   if (!hasOi('is_bracket')) db.exec('ALTER TABLE order_intents ADD COLUMN is_bracket INTEGER NOT NULL DEFAULT 0');
+  // Must run AFTER the ADD COLUMNs above so the explicit-column copy finds them.
+  rebuildOrderIntentsTable(db);
 
   rebuildAlertsTable(db);
+}
+
+/**
+ * Drop the obsolete `order_type` CHECK on `order_intents`. The original schema
+ * pinned it to ('market','limit'); stop orders (stop_loss / stop_loss_limit)
+ * later joined the set, so on an older DB any stop order threw a CHECK violation
+ * at INSERT (dry-run or place). SQLite can't drop a CHECK in place, so rebuild the
+ * table. `order_intents` has a child (`order_events` FK with ON DELETE CASCADE),
+ * so the rebuild runs with foreign keys OFF and uses the create-copy-drop-rename
+ * dance, preserving rows and the child FK. Guarded on the CHECK still being
+ * present, so it runs once. Exported + db-injectable for the migration test.
+ */
+export function rebuildOrderIntentsTable(database: Database.Database): void {
+  const row = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='order_intents'").get() as
+    | { sql: string | null }
+    | undefined;
+  // Fresh DBs create it without the CHECK; a rebuilt DB has none either → bail.
+  if (!row?.sql || !/CHECK\s*\(\s*order_type/i.test(row.sql)) return;
+
+  const hadForeignKeys = database.pragma('foreign_keys', { simple: true }) === 1;
+  database.pragma('foreign_keys = OFF'); // so dropping the old table doesn't cascade order_events
+  try {
+    database.transaction(() => {
+      database.exec(orderIntentsTableSql('order_intents_new'));
+      database.exec(
+        `INSERT INTO order_intents_new (${ORDER_INTENTS_COLS}) SELECT ${ORDER_INTENTS_COLS} FROM order_intents;`,
+      );
+      database.exec('DROP TABLE order_intents;');
+      database.exec('ALTER TABLE order_intents_new RENAME TO order_intents;');
+    })();
+  } finally {
+    if (hadForeignKeys) database.pragma('foreign_keys = ON');
+  }
 }
 
 /**
