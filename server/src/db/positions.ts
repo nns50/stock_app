@@ -1,4 +1,5 @@
 import { db } from './index';
+import { safeJsonParse } from '../util/json';
 
 export type AssetType = 'stock' | 'option';
 export type Side = 'long' | 'short';
@@ -144,10 +145,10 @@ function mapPosition(row: PositionRow): Position {
     expiration: row.expiration,
     multiplier: row.multiplier,
     status: row.status,
-    tags: row.tags ? (JSON.parse(row.tags) as string[]) : [],
+    tags: safeJsonParse<string[]>(row.tags, []),
     grade: row.grade,
     notes: row.notes,
-    checklist: row.checklist ? (JSON.parse(row.checklist) as ChecklistItem[]) : [],
+    checklist: safeJsonParse<ChecklistItem[]>(row.checklist, []),
     stopPrice: row.stop_price,
     targetPrice: row.target_price,
     createdAt: row.created_at,
