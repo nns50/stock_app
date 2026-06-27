@@ -1,6 +1,14 @@
 import { db } from './index';
 import { assertTransition, INITIAL_STATE, OrderState } from '../services/trading/orderLifecycle';
-import { AssetKind, OpenClose, OptionType, OrderIntent, OrderSide, OrderType } from '../services/trading/guardrails';
+import {
+  AssetKind,
+  OpenClose,
+  OptionStrategy,
+  OptionType,
+  OrderIntent,
+  OrderSide,
+  OrderType,
+} from '../services/trading/guardrails';
 
 // ---------------------------------------------------------------------------
 // Persistence + immutable audit trail for order intents (design §6/§7). Every
@@ -25,6 +33,11 @@ export interface OrderIntentRecord {
   optionType: OptionType | null;
   strike: number | null;
   expiration: string | null;
+  /** Option strategy this order was placed as ('SINGLE' for a single-leg option;
+   *  null for a stock). A multi-leg value marks a combo that can't be modified in place. */
+  optionStrategy: OptionStrategy | null;
+  /** True when placed as a bracket (a MASTER entry plus linked exit legs). */
+  isBracket: boolean;
   state: OrderState;
   brokerOrderId: string | null;
   createdAt: number;
@@ -52,6 +65,8 @@ interface IntentRow {
   option_type: OptionType | null;
   strike: number | null;
   expiration: string | null;
+  option_strategy: OptionStrategy | null;
+  is_bracket: number;
   state: OrderState;
   broker_order_id: string | null;
   created_at: number;
@@ -72,6 +87,8 @@ function mapIntent(r: IntentRow): OrderIntentRecord {
     optionType: r.option_type,
     strike: r.strike,
     expiration: r.expiration,
+    optionStrategy: r.option_strategy,
+    isBracket: r.is_bracket === 1,
     state: r.state,
     brokerOrderId: r.broker_order_id,
     createdAt: r.created_at,
@@ -85,6 +102,17 @@ export function getIntent(id: number): OrderIntentRecord | undefined {
 }
 
 /**
+ * True when an order was placed as a multi-order combo — a multi-leg option
+ * strategy (vertical / covered / iron condor) OR a bracket (a MASTER entry plus
+ * linked exit legs). Such orders span several broker orders, so the single-key
+ * `modify_orders` replace can't safely change them (it would touch one leg and
+ * leave the rest stale); the safe path is cancel + re-place.
+ */
+export function isComboOrder(rec: Pick<OrderIntentRecord, 'optionStrategy' | 'isBracket'>): boolean {
+  return rec.isBracket || (rec.optionStrategy !== null && rec.optionStrategy !== 'SINGLE');
+}
+
+/**
  * Create a `draft` intent for an order. Idempotent: the same key returns the
  * existing intent rather than inserting a duplicate. Records a creation event.
  */
@@ -94,13 +122,21 @@ export function createIntent(input: OrderIntent, idempotencyKey: string): OrderI
     | undefined;
   if (existing) return mapIntent(existing);
 
+  // Persist enough to know later whether this was a multi-order combo: the
+  // strategy (SINGLE for a single-leg option, NULL for a stock) and whether a
+  // bracket was attached. The replace path uses these to refuse an unsafe
+  // single-key modify of a spread / bracket.
+  const optionStrategy = input.assetKind === 'option' ? (input.optionStrategy ?? 'SINGLE') : null;
+  const isBracket =
+    input.bracket && (input.bracket.takeProfitPrice !== undefined || input.bracket.stopLossPrice !== undefined) ? 1 : 0;
+
   const now = Date.now();
   const info = db
     .prepare(
       `INSERT INTO order_intents
         (idempotency_key, symbol, asset_kind, side, open_close, quantity, order_type, limit_price,
-         option_type, strike, expiration, state, broker_order_id, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         option_type, strike, expiration, option_strategy, is_bracket, state, broker_order_id, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       idempotencyKey,
@@ -114,6 +150,8 @@ export function createIntent(input: OrderIntent, idempotencyKey: string): OrderI
       input.optionType ?? null,
       input.strike ?? null,
       input.expiration ?? null,
+      optionStrategy,
+      isBracket,
       INITIAL_STATE,
       null,
       now,

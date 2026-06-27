@@ -338,7 +338,10 @@ strikes); other structures (straddles, iron condors) aren't live-placeable yet.
   result. Cancel is risk-reducing, so it works even when `TRADING_ENABLED` is off. **Modify**
   changes a working order's **quantity / limit price** in place (Webull "replace"); because a
   modify can _increase_ exposure it's gated like placing — `TRADING_ENABLED` plus the guardrails
-  re-run against the new values — then reconciled.
+  re-run against the new values — then reconciled. Modify is offered only for a **single-leg**
+  order (stock or single option): a spread or a bracket is one _combo_ of broker orders, so the
+  in-place replace can't safely retune it — change it by **Cancel**-and-re-place instead (the
+  server refuses a spread/bracket modify for the same reason).
 
 ### Guardrail config
 

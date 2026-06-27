@@ -754,6 +754,11 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
 
   // Only orders still live at the broker can be cancelled or modified.
   const cancellable = (state: string) => state === 'acknowledged' || state === 'partially_filled';
+  // A spread (multi-leg) or bracket is a combo of broker orders, so the single-key
+  // modify can't safely change it — only a lone stock / single-leg option is editable
+  // in place. For a combo, the safe path is Cancel and re-place.
+  const inPlaceModifiable = (it: { optionStrategy: string | null; isBracket: boolean }) =>
+    !it.isBracket && (it.optionStrategy === null || it.optionStrategy === 'SINGLE');
 
   return (
     <Card className="p-4 space-y-3">
@@ -786,9 +791,18 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
                 )}
                 {it.brokerOrderId && cancellable(it.state) && (
                   <>
-                    <button className="btn-ghost text-xs" onClick={() => openEdit(it)} disabled={busyId === it.id}>
-                      Modify
-                    </button>
+                    {inPlaceModifiable(it) ? (
+                      <button className="btn-ghost text-xs" onClick={() => openEdit(it)} disabled={busyId === it.id}>
+                        Modify
+                      </button>
+                    ) : (
+                      <span
+                        className="text-[11px] text-slate-500"
+                        title="A spread or bracket is one combo of broker orders — cancel and re-place to change it."
+                      >
+                        cancel &amp; re-place to change
+                      </span>
+                    )}
                     <button
                       className="btn-ghost text-xs !text-bear"
                       onClick={() => cancel(it.id)}
@@ -824,8 +838,9 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
         </ul>
       )}
       <p className="text-[11px] text-slate-500">
-        <b>Refresh status</b> pulls the live broker status (read-only). <b>Modify</b> changes a working order's
-        qty/limit (re-checked against the guardrails); <b>Cancel</b> pulls it.
+        <b>Refresh status</b> pulls the live broker status (read-only). <b>Modify</b> changes a working single-leg
+        order's qty/limit (re-checked against the guardrails); a spread or bracket is one combo, so change it by{' '}
+        <b>Cancel</b>-and-re-place. <b>Cancel</b> pulls a working order.
       </p>
     </Card>
   );

@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { initDb, db } from '../src/db';
-import { createIntent, transitionIntent, getIntent, getEvents, listIntents, countTodaysOrders } from '../src/db/orders';
+import {
+  createIntent,
+  transitionIntent,
+  getIntent,
+  getEvents,
+  listIntents,
+  countTodaysOrders,
+  isComboOrder,
+} from '../src/db/orders';
 import { IllegalTransitionError, OrderState } from '../src/services/trading/orderLifecycle';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
@@ -24,6 +32,37 @@ describe('order intents persistence', () => {
     const events = getEvents(intent.id);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ state: 'draft', detail: 'created' });
+  });
+
+  it('persists the combo marker (strategy + bracket) so a replace can refuse spreads/brackets', () => {
+    // Stock: no strategy, not a combo.
+    const stock = createIntent(stockBuy, 'stk');
+    expect(stock).toMatchObject({ optionStrategy: null, isBracket: false });
+    expect(isComboOrder(stock)).toBe(false);
+
+    // Bracketed stock: a combo (MASTER + exits).
+    const braced = createIntent({ ...stockBuy, bracket: { takeProfitPrice: 110, stopLossPrice: 95 } }, 'brk');
+    expect(braced).toMatchObject({ optionStrategy: null, isBracket: true });
+    expect(isComboOrder(braced)).toBe(true);
+
+    // Single-leg option: strategy defaults to SINGLE, modifiable in place.
+    const single = createIntent(
+      { ...stockBuy, assetKind: 'option', optionType: 'call', strike: 100, expiration: '2030-01-18' },
+      'sgl',
+    );
+    expect(single).toMatchObject({ optionStrategy: 'SINGLE', isBracket: false });
+    expect(isComboOrder(single)).toBe(false);
+
+    // Vertical: a multi-leg combo.
+    const vert = createIntent({ ...stockBuy, assetKind: 'option', optionStrategy: 'VERTICAL' }, 'vrt');
+    expect(vert).toMatchObject({ optionStrategy: 'VERTICAL', isBracket: false });
+    expect(isComboOrder(vert)).toBe(true);
+  });
+
+  it('treats an empty bracket object as not-a-bracket', () => {
+    const rec = createIntent({ ...stockBuy, bracket: {} }, 'empty-bracket');
+    expect(rec.isBracket).toBe(false);
+    expect(isComboOrder(rec)).toBe(false);
   });
 
   it('is idempotent on the client key', () => {

@@ -124,3 +124,45 @@ describe('TradePage strategy builder', () => {
     expect(screen.getByText('Quantity')).toBeInTheDocument();
   });
 });
+
+// A working spread / bracket is one combo of broker orders, so the single-key
+// modify can't safely change it. The Orders panel must offer Modify only for a
+// lone stock / single-leg option, and steer combos to Cancel-and-re-place.
+describe('TradePage orders panel — modify is single-leg only', () => {
+  const row = (over: Record<string, unknown>) => ({
+    id: 1,
+    idempotencyKey: 'k',
+    symbol: 'TSLA',
+    assetKind: 'stock',
+    side: 'buy',
+    openClose: 'open',
+    quantity: 1,
+    orderType: 'limit',
+    limitPrice: 1.5,
+    optionType: null,
+    strike: null,
+    expiration: null,
+    optionStrategy: null,
+    isBracket: false,
+    state: 'acknowledged',
+    brokerOrderId: 'WB1',
+    createdAt: 0,
+    updatedAt: 0,
+    ...over,
+  });
+
+  it('shows Modify for a single-leg order but not for a spread or bracket', async () => {
+    vi.spyOn(client, 'tradeIntents').mockResolvedValue({
+      intents: [
+        row({ id: 1, symbol: 'TSLA' }), // stock single-leg → modifiable in place
+        row({ id: 2, symbol: 'NVDA', assetKind: 'option', optionStrategy: 'VERTICAL' }), // spread → not
+        row({ id: 3, symbol: 'AMD', isBracket: true }), // bracket → not
+      ],
+    } as never);
+    renderPage();
+
+    // Exactly one Modify button (the single-leg); the spread + bracket show the hint.
+    expect(await screen.findAllByRole('button', { name: 'Modify' })).toHaveLength(1);
+    expect(screen.getAllByText(/cancel & re-place to change/i)).toHaveLength(2);
+  });
+});
