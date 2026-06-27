@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel superseded runs on the SAME PR when you push again (rapid force-pushes
+# pile up otherwise). Never cancel a push to main: the Fly deploy triggers on
+# this workflow's success there, so a cancelled main run would skip the deploy.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
