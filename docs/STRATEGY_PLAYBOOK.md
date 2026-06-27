@@ -113,6 +113,28 @@ suggestedQty   = floor(250 ÷ 350)    = 0 contracts → the app warns you
 The warning is the point: this contract risks more than 1R for a single unit. Choose a
 cheaper contract, a tighter exit, or accept it's too big — but do it *knowingly*.
 
+**Defined-risk spreads** (verticals) have no price stop — their loss is _capped by the
+structure_, so the calculator's **Vertical spread** mode sizes by **max loss per spread**
+instead of a stop distance:
+
+```
+maxLossPerSpread = (direction = debit ? netDebit : width − netCredit) × 100
+suggestedSpreads = floor( maxRiskDollars ÷ maxLossPerSpread )
+```
+
+**Spread example** — same $250 risk, a $5-wide call debit spread bought for a **$2.00**
+net debit:
+
+```
+maxLossPerSpread = 2.00 × 100      = $200 per spread   (also the cash you pay)
+suggestedSpreads = floor(250 ÷ 200) = 1 spread
+```
+
+Max profit is `(width − netDebit) × 100 = $300`, a **1.5 : 1** reward:risk. A credit
+spread flips the math — you keep the credit as max profit and risk `width − credit`. The
+**capital tied up equals the max loss** either way (the debit you pay, or the collateral a
+credit holds), so 1R discipline still applies — the spread just defines the "stop" for you.
+
 **Sizing from your own edge.** Once you have ~20+ decisive closed trades, the Journal's
 **Kelly suggestion** proposes a risk % from your realized win rate and payoff ratio.
 The app deliberately returns a **quarter-Kelly, capped at 3%** — full Kelly is wildly

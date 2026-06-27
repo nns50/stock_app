@@ -38,6 +38,92 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+// ---------------------------------------------------------------------------
+// Defined-risk vertical spread sizing (pure). A spread has no price stop — its
+// loss is structural and capped, so we size by MAX LOSS per spread instead of a
+// stop distance:
+//   debit  spread → max loss = net debit            ; max profit = width − net debit
+//   credit spread → max loss = width − net credit   ; max profit = net credit
+// (each × the 100× multiplier × contracts). The capital tied up equals the max
+// loss in both cases (the debit you pay, or the collateral a credit holds).
+// Decision-support only — not advice.
+// ---------------------------------------------------------------------------
+
+export interface SpreadSizingInput {
+  accountSize: number;
+  /** Percent of the account to risk on this trade, e.g. 1 = 1%. */
+  riskPct: number;
+  /** Spread width = |strike difference| between the two legs (per share). */
+  width: number;
+  /** Net premium per spread, per share: the debit you PAY or the credit you RECEIVE. */
+  netPremium: number;
+  /** 'debit' (you pay net, e.g. a long vertical) or 'credit' (you receive net). */
+  direction: 'debit' | 'credit';
+  /** Contract multiplier; defaults to 100. */
+  multiplier?: number;
+}
+
+export interface SpreadSizingResult {
+  maxRiskDollars: number; // risk budget ($)
+  maxLossPerSpread: number; // $ per 1 spread (incl. multiplier) — also the capital tied up
+  maxProfitPerSpread: number; // $ per 1 spread
+  suggestedContracts: number; // floored to whole spreads
+  totalMaxLoss: number; // sized position's max loss ($) ≤ budget
+  totalMaxProfit: number; // sized position's max profit ($)
+  positionPctOfAccount: number; // totalMaxLoss as % of account
+  rewardRiskRatio: number | null; // max profit / max loss
+  warnings: string[];
+}
+
+export function computeSpreadSizing(input: SpreadSizingInput): SpreadSizingResult {
+  const multiplier = input.multiplier ?? 100;
+  const warnings: string[] = [];
+  const maxRiskDollars = (input.accountSize * input.riskPct) / 100;
+
+  if (input.width <= 0) warnings.push('Spread width must be greater than zero.');
+  // Net is a magnitude; the direction toggle says whether it's paid or received.
+  const net = Math.abs(input.netPremium);
+  if (input.netPremium < 0) {
+    warnings.push('Enter net premium as a positive number; use the debit/credit toggle for its sign.');
+  }
+  if (input.width > 0 && net >= input.width) {
+    warnings.push(
+      input.direction === 'credit'
+        ? "A credit spread's net credit can't exceed its width — check your inputs."
+        : 'A net debit ≥ the width leaves no profit — check your inputs.',
+    );
+  }
+
+  const lossPerShare = input.direction === 'debit' ? net : input.width - net;
+  const profitPerShare = input.direction === 'debit' ? input.width - net : net;
+  const maxLossPerSpread = Math.max(0, lossPerShare) * multiplier;
+  const maxProfitPerSpread = Math.max(0, profitPerShare) * multiplier;
+
+  let suggestedContracts = 0;
+  if (maxLossPerSpread > 0 && maxRiskDollars > 0) {
+    suggestedContracts = Math.floor(maxRiskDollars / maxLossPerSpread);
+  }
+  if (maxLossPerSpread <= 0) warnings.push('Max loss per spread is zero or negative — nothing to size.');
+  else if (suggestedContracts === 0) warnings.push('Risk budget is too small for even one spread.');
+
+  const totalMaxLoss = maxLossPerSpread * suggestedContracts;
+  const totalMaxProfit = maxProfitPerSpread * suggestedContracts;
+  const positionPctOfAccount = input.accountSize ? (totalMaxLoss / input.accountSize) * 100 : 0;
+  const rewardRiskRatio = maxLossPerSpread > 0 ? maxProfitPerSpread / maxLossPerSpread : null;
+
+  return {
+    maxRiskDollars: round2(maxRiskDollars),
+    maxLossPerSpread: round2(maxLossPerSpread),
+    maxProfitPerSpread: round2(maxProfitPerSpread),
+    suggestedContracts,
+    totalMaxLoss: round2(totalMaxLoss),
+    totalMaxProfit: round2(totalMaxProfit),
+    positionPctOfAccount: round2(positionPctOfAccount),
+    rewardRiskRatio: rewardRiskRatio === null ? null : round2(rewardRiskRatio),
+    warnings,
+  };
+}
+
 export function computeRiskSizing(input: RiskSizingInput): RiskSizingResult {
   const side = input.side ?? 'long';
   const multiplier = input.multiplier ?? (input.assetType === 'option' ? 100 : 1);

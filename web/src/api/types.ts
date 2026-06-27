@@ -31,6 +31,19 @@ export interface RiskSizingResult {
   warnings: string[];
 }
 
+/** Defined-risk vertical spread sizing (sized by capped max loss, not a stop). */
+export interface SpreadSizingResult {
+  maxRiskDollars: number;
+  maxLossPerSpread: number;
+  maxProfitPerSpread: number;
+  suggestedContracts: number;
+  totalMaxLoss: number;
+  totalMaxProfit: number;
+  positionPctOfAccount: number;
+  rewardRiskRatio: number | null;
+  warnings: string[];
+}
+
 export interface Quote {
   symbol: string;
   last: number;
