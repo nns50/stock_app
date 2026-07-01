@@ -213,7 +213,7 @@ export function LogTradeModal({
           value={assetType}
           onChange={setAssetType}
         />
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid sm:grid-cols-2 gap-3">
           <Field label="Symbol">
             <input
               className="input"
@@ -245,7 +245,7 @@ export function LogTradeModal({
           </Field>
         </div>
         {assetType === 'option' && (
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid sm:grid-cols-3 gap-3">
             <Field label="Type">
               <select
                 className="input"
@@ -265,7 +265,7 @@ export function LogTradeModal({
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid sm:grid-cols-2 gap-3">
           <Field label="Stop (optional)" hint="Watched by exit alerts">
             <NumberInput value={stopPrice} onChange={setStopPrice} step={0.01} />
           </Field>
@@ -285,7 +285,7 @@ export function LogTradeModal({
           </button>
           {showSizer && (
             <div className="mt-2 space-y-2 rounded-md bg-ink-700/40 p-2.5">
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid sm:grid-cols-2 gap-2">
                 <Field label="Account $">
                   <NumberInput value={accountSize} onChange={(v) => setAccountSize(v ?? 0)} />
                 </Field>
@@ -343,7 +343,7 @@ export function LogTradeModal({
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid sm:grid-cols-2 gap-3">
           <Field label="Tags (comma-sep)">
             <input
               className="input"
@@ -513,7 +513,7 @@ export function ExitModal({
             Remaining open: <span className="text-slate-200">{position.remainingQuantity}</span>{' '}
             {position.assetType === 'option' ? 'contracts' : 'shares'}
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid sm:grid-cols-2 gap-3">
             <Field label="Quantity">
               <NumberInput value={quantity} onChange={setQuantity} min={0} max={position.remainingQuantity} />
             </Field>

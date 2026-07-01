@@ -111,7 +111,7 @@ export function StrategyBuilder() {
   return (
     <div className="flex flex-col lg:flex-row gap-4">
       <Card className="p-4 lg:w-[420px] shrink-0 space-y-3">
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid sm:grid-cols-3 gap-2">
           <Field label="Underlying $">
             <NumberInput value={underlyingPrice} onChange={(v) => setUnderlyingPrice(v ?? 0)} step={0.5} />
           </Field>
@@ -306,7 +306,7 @@ export function StrategyBuilder() {
 
             <Card className="p-3">
               <div className="text-xs text-slate-400 mb-1">Combined Greeks (per the position)</div>
-              <div className="grid grid-cols-4 gap-2 text-sm tabular-nums">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm tabular-nums">
                 <div>
                   <span className="text-slate-500">Δ </span>
                   <span className={pnlClass(result.greeks.delta)}>{fmtNum(result.greeks.delta, 3)}</span>

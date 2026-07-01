@@ -1088,7 +1088,7 @@ function ConfigPanel({ config, reload }: { config: TradingConfig; reload: () => 
         />
       </label>
 
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid sm:grid-cols-2 gap-2">
         <Field label="Max order $">
           <NumberInput value={draft.maxOrderUsd} onChange={(v) => set('maxOrderUsd', v ?? 0)} min={0} />
         </Field>
