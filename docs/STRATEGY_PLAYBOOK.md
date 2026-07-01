@@ -260,7 +260,8 @@ single highest-leverage thing the app enables.
 
 ## Tuning stops & targets with MAE/MFE
 
-Open **Journal → Excursions** (closed stock trades). For each trade it shows:
+Open **Journal → Analytics → Excursions** (closed stock trades). For each trade it
+shows:
 
 - **MAE** (Maximum Adverse Excursion) — the worst drawdown the trade reached before you
   exited, in **%** and **R**.
@@ -285,7 +286,7 @@ setup.
 Every live trade has two prices: the one you **intended** (your order's limit) and the
 one you **got** (the broker's fill). The gap between them is slippage, and it's a
 silent, recurring cost that never shows up in a strategy backtest. Open **Journal →
-Execution quality** to see it for every live-traded fill:
+Analytics → Execution quality** to see it for every live-traded fill:
 
 - **Total slippage $** across all fills, and the **average %** per fill — positive
   always means it cost you money, whichever side you were on.
@@ -318,7 +319,7 @@ tracks your booked loss and trade count and turns red when you hit a limit — y
 close the laptop. Tilt and revenge-trading happen *after* a bad morning; a pre-committed
 daily stop is the cheapest protection against turning a small red day into a disaster.
 
-**"Can this kill my account?" → Risk of ruin (Journal).**
+**"Can this kill my account?" → Risk of ruin (Journal → Analytics).**
 Set your per-trade risk and a "ruin" drawdown threshold (say 30–50%); the Monte Carlo
 sim runs thousands of trade sequences drawn from your edge and reports the **% that hit
 ruin.** If that number is anything but tiny, **cut your risk % until it is.** Survival

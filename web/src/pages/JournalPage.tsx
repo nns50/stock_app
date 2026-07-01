@@ -19,9 +19,7 @@ import { disciplineCount } from '../lib/checklist';
 import { Badge, Card, EmptyState, InfoTip, PageHeader, PnL, SortTh, Spinner, StatTile } from '../components/ui';
 import { JournalEditModal } from '../components/PositionForms';
 import { DataTools } from '../components/DataTools';
-import { RiskOfRuinModal } from '../components/RiskOfRuinModal';
-import { ExcursionsModal } from '../components/ExcursionsModal';
-import { SlippageModal } from '../components/SlippageModal';
+import { JournalAnalyticsModal } from '../components/JournalAnalyticsModal';
 import { BenchmarkCard } from '../components/BenchmarkCard';
 import type { GroupStat, Position, PositionWithPnl } from '../api/types';
 
@@ -94,9 +92,7 @@ export default function JournalPage() {
   const closed = useAsync(() => client.positionsWithPnl({ status: 'closed' }), []);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [editPos, setEditPos] = useState<Position | null>(null);
-  const [ruinOpen, setRuinOpen] = useState(false);
-  const [excOpen, setExcOpen] = useState(false);
-  const [slipOpen, setSlipOpen] = useState(false);
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
 
   const reload = () => {
     stats.reload();
@@ -125,14 +121,8 @@ export default function JournalPage() {
         subtitle="Stats, edge, and risk analytics from your closed trades."
         actions={
           <>
-            <button className="btn-ghost" onClick={() => setExcOpen(true)}>
-              Excursions
-            </button>
-            <button className="btn-ghost" onClick={() => setSlipOpen(true)}>
-              Execution quality
-            </button>
-            <button className="btn-ghost" onClick={() => setRuinOpen(true)}>
-              Risk of ruin
+            <button className="btn-ghost" onClick={() => setAnalyticsOpen(true)}>
+              Analytics
             </button>
             <DataTools onImported={reload} />
           </>
@@ -529,9 +519,7 @@ export default function JournalPage() {
       )}
 
       <JournalEditModal position={editPos} onClose={() => setEditPos(null)} onSaved={reload} />
-      <RiskOfRuinModal open={ruinOpen} onClose={() => setRuinOpen(false)} />
-      <ExcursionsModal open={excOpen} onClose={() => setExcOpen(false)} />
-      <SlippageModal open={slipOpen} onClose={() => setSlipOpen(false)} />
+      <JournalAnalyticsModal open={analyticsOpen} onClose={() => setAnalyticsOpen(false)} />
     </div>
   );
 }
