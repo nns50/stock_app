@@ -2,9 +2,11 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, parseQuery } from './_helpers';
 import { listPositions, Position } from '../db/positions';
+import { getIntent } from '../db/orders';
 import { computeJournalStats, realizedPnlOf } from '../services/pnl';
 import { computeDayStats } from '../services/dayGuard';
 import { aggregateExcursions, computeExcursion, TradeExcursion } from '../services/excursion';
+import { aggregateSlippage, computeSlippage, SlippageRow } from '../services/slippage';
 import { computeBenchmark } from '../services/benchmark';
 import { getProvider } from '../providers';
 
@@ -144,5 +146,55 @@ journalRouter.get(
     const tags = new Set<string>();
     for (const p of all) for (const t of p.tags) tags.add(t);
     res.json({ tags: Array.from(tags).sort() });
+  }),
+);
+
+// Execution quality: for live-traded fills (entries + exits linked back to an
+// order with a limit price), how the actual fill compared to the price you
+// committed to. Manually logged/imported positions and stop-market fills have
+// no comparable reference and are simply not counted.
+journalRouter.get(
+  '/slippage',
+  asyncHandler(async (_req, res) => {
+    const rows: SlippageRow[] = [];
+    for (const p of listPositions()) {
+      if (p.sourceIntentId != null) {
+        const intent = getIntent(p.sourceIntentId);
+        if (intent?.limitPrice != null) {
+          rows.push(
+            computeSlippage({
+              positionId: p.id,
+              symbol: p.symbol,
+              kind: 'entry',
+              side: intent.side,
+              date: p.entryDate,
+              limitPrice: intent.limitPrice,
+              fillPrice: p.entryPrice,
+              quantity: p.quantity,
+              multiplier: p.multiplier,
+            }),
+          );
+        }
+      }
+      for (const e of p.exits) {
+        if (e.sourceIntentId == null) continue;
+        const intent = getIntent(e.sourceIntentId);
+        if (intent?.limitPrice == null) continue;
+        rows.push(
+          computeSlippage({
+            positionId: p.id,
+            symbol: p.symbol,
+            kind: 'exit',
+            side: intent.side,
+            date: e.exitDate,
+            limitPrice: intent.limitPrice,
+            fillPrice: e.exitPrice,
+            quantity: e.quantity,
+            multiplier: p.multiplier,
+          }),
+        );
+      }
+    }
+    res.json(aggregateSlippage(rows));
   }),
 );

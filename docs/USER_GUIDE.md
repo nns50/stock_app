@@ -476,6 +476,14 @@ trades.
   holding period to show **Maximum Adverse Excursion** (how far underwater it went) and
   **Maximum Favorable Excursion** (how far in profit), in **%** and **R**. Use it to
   tighten stops and set realistic targets.
+- **Execution quality (slippage)** — for each **live-traded** entry/exit that came from an
+  order with a limit price, compares the actual **broker fill** to the **limit you set**.
+  Positive $ always means it cost you money, whichever side you were on (a buy filled
+  above your limit, or a sell filled below it); sorted worst-first. Only live fills placed
+  through the app's Trade builder count — a pure stop-market fill has no limit to compare
+  against, and a manually logged or imported trade was never a live order at all, so
+  neither is included. A consistent positive bias points at marketable limits or wide
+  spreads at entry/exit.
 
 ### Benchmark
 

@@ -60,6 +60,7 @@ const importedExit = z.object({
   exitDate: z.string(),
   fees: z.number().optional(),
   notes: z.string().nullable().optional(),
+  sourceIntentId: z.number().nullable().optional(),
   createdAt: z.number().optional(),
 });
 
@@ -82,6 +83,7 @@ const importedPosition = z.object({
   checklist: z.array(z.object({ rule: z.string(), checked: z.boolean() })).optional(),
   stopPrice: z.number().nullable().optional(),
   targetPrice: z.number().nullable().optional(),
+  sourceIntentId: z.number().nullable().optional(),
   createdAt: z.number().optional(),
   updatedAt: z.number().optional(),
   exits: z.array(importedExit).optional(),

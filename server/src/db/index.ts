@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS positions (
   checklist   TEXT,                    -- JSON array of {rule, checked} (pre-trade discipline)
   stop_price  REAL,                    -- planned stop (price level)
   target_price REAL,                   -- planned target (price level)
+  source_intent_id INTEGER,            -- order_intents.id that produced this fill (live-traded only; no FK — a manually logged/imported position has none, and order_intents isn't guaranteed to persist forever)
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
@@ -122,6 +123,7 @@ CREATE TABLE IF NOT EXISTS position_exits (
   exit_date   TEXT NOT NULL,
   fees        REAL NOT NULL DEFAULT 0,
   notes       TEXT,
+  source_intent_id INTEGER,            -- order_intents.id that produced this exit fill (live-traded only; see positions.source_intent_id)
   created_at  INTEGER NOT NULL
 );
 
@@ -222,6 +224,13 @@ function migrate(): void {
   if (!has('stop_price')) db.exec('ALTER TABLE positions ADD COLUMN stop_price REAL');
   if (!has('target_price')) db.exec('ALTER TABLE positions ADD COLUMN target_price REAL');
   if (!has('entry_time')) db.exec('ALTER TABLE positions ADD COLUMN entry_time TEXT');
+  if (!has('source_intent_id')) db.exec('ALTER TABLE positions ADD COLUMN source_intent_id INTEGER');
+
+  // position_exits gained the same provenance link, for exit-side slippage.
+  const exitCols = db.prepare('PRAGMA table_info(position_exits)').all() as { name: string }[];
+  if (!exitCols.some((c) => c.name === 'source_intent_id')) {
+    db.exec('ALTER TABLE position_exits ADD COLUMN source_intent_id INTEGER');
+  }
 
   // order_intents gained a combo marker so a stored order knows whether it's a
   // multi-leg spread / bracket (which the single-key replace can't safely modify).

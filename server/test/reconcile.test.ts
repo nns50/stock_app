@@ -122,6 +122,7 @@ describe('reconcileIntent', () => {
       side: 'long',
       quantity: 1,
       entryPrice: 1.89,
+      sourceIntentId: id, // provenance for execution-quality (slippage) tracking
     });
   });
 
@@ -166,7 +167,7 @@ describe('reconcileIntent', () => {
     await reconcileIntent(id, 'ACC1');
     const pos = listPositions({ symbol: 'AMC' })[0];
     expect(pos.exits).toHaveLength(1);
-    expect(pos.exits[0]).toMatchObject({ quantity: 1, exitPrice: 1.89 });
+    expect(pos.exits[0]).toMatchObject({ quantity: 1, exitPrice: 1.89, sourceIntentId: id });
     expect(pos.status).toBe('closed'); // fully exited
     expect(pos.remainingQuantity).toBe(0);
   });

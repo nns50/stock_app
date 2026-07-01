@@ -454,6 +454,31 @@ export interface ExcursionReport {
   rows: TradeExcursion[];
 }
 
+/** One live-traded fill's execution quality vs. the order's limit price. */
+export interface SlippageRow {
+  positionId: number;
+  symbol: string;
+  kind: 'entry' | 'exit';
+  side: 'buy' | 'sell';
+  date: string;
+  limitPrice: number;
+  fillPrice: number;
+  quantity: number;
+  multiplier: number;
+  /** Signed $ per share/contract; positive = cost you money. */
+  perUnit: number;
+  totalUsd: number;
+  pct: number;
+}
+
+export interface SlippageReport {
+  trades: number;
+  totalUsd: number;
+  avgPct: number | null;
+  /** Most costly fills first (by totalUsd, descending). */
+  rows: SlippageRow[];
+}
+
 export interface RuinParams {
   winRate: number;
   payoffRatio: number;
