@@ -89,7 +89,7 @@ export function RiskSizingModal({ open, onClose }: { open: boolean; onClose: () 
     >
       <div className="grid md:grid-cols-2 gap-5">
         <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid sm:grid-cols-2 gap-3">
             <Field label="Account size $">
               <NumberInput value={accountSize} onChange={(v) => setAccountSize(v ?? 0)} />
             </Field>
@@ -97,7 +97,7 @@ export function RiskSizingModal({ open, onClose }: { open: boolean; onClose: () 
               <NumberInput value={riskPct} onChange={(v) => setRiskPct(v ?? 0)} step={0.1} />
             </Field>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid sm:grid-cols-2 gap-3">
             <Field label="Asset">
               <select className="input" value={assetType} onChange={(e) => setAssetType(e.target.value as AssetMode)}>
                 <option value="stock">Stock</option>
@@ -126,7 +126,7 @@ export function RiskSizingModal({ open, onClose }: { open: boolean; onClose: () 
             )}
           </div>
           {isSpread ? (
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid sm:grid-cols-2 gap-3">
               <Field label="Width (strike gap)">
                 <NumberInput value={width} onChange={setWidth} step={0.5} min={0} />
               </Field>
@@ -135,7 +135,7 @@ export function RiskSizingModal({ open, onClose }: { open: boolean; onClose: () 
               </Field>
             </div>
           ) : (
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid sm:grid-cols-3 gap-3">
               <Field label={assetType === 'option' ? 'Entry (premium)' : 'Entry'}>
                 <NumberInput value={entryPrice} onChange={setEntryPrice} step={0.01} />
               </Field>

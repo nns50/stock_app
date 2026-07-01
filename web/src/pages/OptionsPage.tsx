@@ -493,7 +493,7 @@ function EntryScanView({ symbol, expiration }: { symbol: string; expiration: str
             <option value="put">Long put</option>
           </select>
         </Field>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid sm:grid-cols-2 gap-2">
           <Field label="Delta min">
             <NumberInput value={config.deltaMin} onChange={(v) => set('deltaMin', v ?? 0)} step={0.05} />
           </Field>
@@ -708,7 +708,7 @@ function ExitRulesView() {
         <Field label="Exit N days before expiry">
           <NumberInput value={config.timeExitDaysBeforeExpiry} onChange={(v) => set('timeExitDaysBeforeExpiry', v)} />
         </Field>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid sm:grid-cols-2 gap-2">
           <Field label="|Δ| min">
             <NumberInput value={config.deltaMin} onChange={(v) => set('deltaMin', v)} step={0.05} />
           </Field>

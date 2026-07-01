@@ -21,7 +21,7 @@ export function BenchmarkCard() {
           {d.startDate} → {d.endDate}
         </span>
       </div>
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         <StatTile
           label="Your return"
           value={<PnL value={d.userReturnPct} format={fmtPct} />}

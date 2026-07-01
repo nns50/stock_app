@@ -32,7 +32,7 @@ export function SlippageModal({ open, onClose }: { open: boolean; onClose: () =>
             For each live fill, the actual broker price vs. the limit you set — positive always means it cost you money,
             whichever side you were on.
           </p>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
             <StatTile
               label="Total slippage"
               value={fmtSignedUsd(data.data.totalUsd)}

@@ -227,7 +227,7 @@ export default function ScreenerPage() {
 
           <div>
             <div className="label">Indicator weights</div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid sm:grid-cols-2 gap-2">
               {WEIGHT_KEYS.map((w) => (
                 <label key={w.key} className="text-xs text-slate-400">
                   {w.label}
@@ -237,7 +237,7 @@ export default function ScreenerPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid sm:grid-cols-4 gap-2">
             <Field label="MA-s">
               <NumberInput value={cfg.maShort} onChange={(v) => set('maShort', v ?? 20)} min={2} />
             </Field>
@@ -254,7 +254,7 @@ export default function ScreenerPage() {
 
           <div>
             <div className="label">Filters (hard gates)</div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid sm:grid-cols-2 gap-2">
               <label className="text-xs text-slate-400">
                 Min price
                 <NumberInput value={cfg.filters.minPrice} onChange={(v) => setFilter('minPrice', v)} />
@@ -298,7 +298,7 @@ export default function ScreenerPage() {
             {advanced ? '▾ Hide' : '▸ Show'} score tuning
           </button>
           {advanced && (
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid sm:grid-cols-2 gap-2">
               <label className="text-xs text-slate-400">
                 Momentum scale %
                 <NumberInput value={cfg.momentumScale} onChange={(v) => set('momentumScale', v ?? 5)} step={0.5} />
