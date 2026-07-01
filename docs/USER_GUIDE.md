@@ -462,6 +462,10 @@ trades.
 
 ### Curves & risk
 
+Equity curve, edge over time, and drawdown & streaks are shown directly on the page.
+**Risk of ruin**, **Excursions**, and **Execution quality** are three tabs of one
+**Analytics** button (top right) — pick a tab, the report loads on demand.
+
 - **Equity curve** of cumulative realized P&L.
 - **Edge over time** — a rolling 20-trade expectancy ($/trade). Rising means your edge
   is strengthening; drifting toward or below zero means it's decaying (shows once you
