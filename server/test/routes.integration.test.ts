@@ -5,6 +5,8 @@ import { db } from '../src/db';
 import { config } from '../src/config';
 import { totp } from '../src/services/totp';
 import { setSetting } from '../src/db/settings';
+import { createIntent } from '../src/db/orders';
+import { addExit, createPosition } from '../src/db/positions';
 
 // End-to-end tests through the real Express app → routers → services → SQLite
 // (a throwaway DB; see vitest.config.ts). Catches route wiring, validation, and
@@ -101,6 +103,66 @@ describe('positions + journal routes (integration)', () => {
     const stats = (await getJson('/api/journal/stats')) as { totalClosed: number; totalRealized: number };
     expect(stats.totalClosed).toBe(1);
     expect(stats.totalRealized).toBe(520); // (131 − 118) × 40
+  });
+
+  it('slippage compares live fills to their order limit price (entry + exit)', async () => {
+    const entryIntent = createIntent(
+      {
+        symbol: 'AMC',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 5,
+        orderType: 'limit',
+        limitPrice: 2,
+      },
+      'slippage-entry',
+    );
+    const pos = createPosition({
+      assetType: 'stock',
+      symbol: 'AMC',
+      side: 'long',
+      quantity: 5,
+      entryPrice: 2.1, // filled 0.10 worse than the 2.00 limit
+      entryDate: '2026-06-01',
+      sourceIntentId: entryIntent.id,
+    });
+    const exitIntent = createIntent(
+      {
+        symbol: 'AMC',
+        assetKind: 'stock',
+        side: 'sell',
+        openClose: 'close',
+        quantity: 5,
+        orderType: 'limit',
+        limitPrice: 3,
+      },
+      'slippage-exit',
+    );
+    addExit(pos.id, { quantity: 5, exitPrice: 2.9, exitDate: '2026-06-05', sourceIntentId: exitIntent.id }); // 0.10 worse than the 3.00 limit
+
+    const report = (await getJson('/api/journal/slippage')) as {
+      trades: number;
+      totalUsd: number;
+      rows: { kind: string; perUnit: number; totalUsd: number }[];
+    };
+    expect(report.trades).toBe(2);
+    expect(report.totalUsd).toBeCloseTo(1, 5); // 0.5 (entry) + 0.5 (exit), both adverse
+    expect(report.rows.find((r) => r.kind === 'entry')).toMatchObject({ perUnit: 0.1, totalUsd: 0.5 });
+    expect(report.rows.find((r) => r.kind === 'exit')).toMatchObject({ perUnit: 0.1, totalUsd: 0.5 });
+  });
+
+  it('excludes a manually logged position from slippage (no source order)', async () => {
+    await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'MSFT',
+      side: 'long',
+      quantity: 1,
+      entryPrice: 400,
+      entryDate: '2026-06-01',
+    });
+    const report = (await getJson('/api/journal/slippage')) as { trades: number };
+    expect(report.trades).toBe(0);
   });
 });
 

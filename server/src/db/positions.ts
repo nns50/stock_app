@@ -31,6 +31,9 @@ export interface PositionInput {
   checklist?: ChecklistItem[] | null;
   stopPrice?: number | null;
   targetPrice?: number | null;
+  /** The order_intents.id whose live fill produced this position (entry-side
+   *  execution-quality provenance). Omit for a manually logged/imported trade. */
+  sourceIntentId?: number | null;
 }
 
 export interface PositionExit {
@@ -41,6 +44,8 @@ export interface PositionExit {
   exitDate: string;
   fees: number;
   notes: string | null;
+  /** The order_intents.id whose live fill produced this exit. */
+  sourceIntentId: number | null;
   createdAt: number;
 }
 
@@ -65,6 +70,7 @@ export interface Position {
   checklist: ChecklistItem[];
   stopPrice: number | null;
   targetPrice: number | null;
+  sourceIntentId: number | null;
   createdAt: number;
   updatedAt: number;
   exits: PositionExit[];
@@ -93,6 +99,7 @@ interface PositionRow {
   checklist: string | null;
   stop_price: number | null;
   target_price: number | null;
+  source_intent_id: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -105,6 +112,7 @@ interface ExitRow {
   exit_date: string;
   fees: number;
   notes: string | null;
+  source_intent_id: number | null;
   created_at: number;
 }
 
@@ -117,6 +125,7 @@ function mapExit(r: ExitRow): PositionExit {
     exitDate: r.exit_date,
     fees: r.fees,
     notes: r.notes,
+    sourceIntentId: r.source_intent_id,
     createdAt: r.created_at,
   };
 }
@@ -151,6 +160,7 @@ function mapPosition(row: PositionRow): Position {
     checklist: safeJsonParse<ChecklistItem[]>(row.checklist, []),
     stopPrice: row.stop_price,
     targetPrice: row.target_price,
+    sourceIntentId: row.source_intent_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     exits,
@@ -196,8 +206,8 @@ export function createPosition(input: PositionInput): Position {
       `INSERT INTO positions
         (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
          option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
-         stop_price, target_price, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?)`,
+         stop_price, target_price, source_intent_id, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       input.assetType,
@@ -218,6 +228,7 @@ export function createPosition(input: PositionInput): Position {
       input.checklist && input.checklist.length ? JSON.stringify(input.checklist) : null,
       input.stopPrice ?? null,
       input.targetPrice ?? null,
+      input.sourceIntentId ?? null,
       now,
       now,
     );
@@ -274,6 +285,8 @@ export interface ExitInput {
   exitDate: string;
   fees?: number;
   notes?: string | null;
+  /** The order_intents.id whose live fill produced this exit. */
+  sourceIntentId?: number | null;
 }
 
 export function addExit(positionId: number, input: ExitInput): Position | undefined {
@@ -281,9 +294,18 @@ export function addExit(positionId: number, input: ExitInput): Position | undefi
   if (!pos) return undefined;
   const now = Date.now();
   db.prepare(
-    `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, created_at)
-     VALUES (?,?,?,?,?,?,?)`,
-  ).run(positionId, input.quantity, input.exitPrice, input.exitDate, input.fees ?? 0, input.notes ?? null, now);
+    `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, source_intent_id, created_at)
+     VALUES (?,?,?,?,?,?,?,?)`,
+  ).run(
+    positionId,
+    input.quantity,
+    input.exitPrice,
+    input.exitDate,
+    input.fees ?? 0,
+    input.notes ?? null,
+    input.sourceIntentId ?? null,
+    now,
+  );
   recomputeStatus(positionId);
   return getPosition(positionId);
 }
@@ -303,6 +325,7 @@ export interface ImportableExit {
   exitDate: string;
   fees?: number;
   notes?: string | null;
+  sourceIntentId?: number | null;
   createdAt?: number;
 }
 
@@ -326,6 +349,7 @@ export interface ImportablePosition {
   checklist?: ChecklistItem[] | null;
   stopPrice?: number | null;
   targetPrice?: number | null;
+  sourceIntentId?: number | null;
   createdAt?: number;
   updatedAt?: number;
   exits?: ImportableExit[];
@@ -346,12 +370,12 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
     `INSERT INTO positions
        (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
         option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
-        stop_price, target_price, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        stop_price, target_price, source_intent_id, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   );
   const insertExit = db.prepare(
-    `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, created_at)
-     VALUES (?,?,?,?,?,?,?)`,
+    `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, source_intent_id, created_at)
+     VALUES (?,?,?,?,?,?,?,?)`,
   );
   const tx = db.transaction((items: ImportablePosition[]) => {
     if (mode === 'replace') db.prepare('DELETE FROM positions').run();
@@ -379,12 +403,22 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
         p.checklist && p.checklist.length ? JSON.stringify(p.checklist) : null,
         p.stopPrice ?? null,
         p.targetPrice ?? null,
+        p.sourceIntentId ?? null,
         p.createdAt ?? now,
         p.updatedAt ?? now,
       );
       const pid = Number(res.lastInsertRowid);
       for (const e of p.exits ?? []) {
-        insertExit.run(pid, e.quantity, e.exitPrice, e.exitDate, e.fees ?? 0, e.notes ?? null, e.createdAt ?? now);
+        insertExit.run(
+          pid,
+          e.quantity,
+          e.exitPrice,
+          e.exitDate,
+          e.fees ?? 0,
+          e.notes ?? null,
+          e.sourceIntentId ?? null,
+          e.createdAt ?? now,
+        );
       }
       recomputeStatus(pid);
       imported++;

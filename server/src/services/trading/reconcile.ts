@@ -109,6 +109,7 @@ function recordFillAsPosition(intent: OrderIntentRecord, broker: WebullOrderStat
       multiplier: intent.assetKind === 'option' ? 100 : undefined,
       notes: `Auto-recorded from live order #${intent.id}${broker.brokerOrderId ? ` (broker ${broker.brokerOrderId})` : ''}`,
       tags: ['live'],
+      sourceIntentId: intent.id,
     });
   } catch {
     // Swallow — the order reconcile already succeeded; position logging is a bonus.
@@ -147,6 +148,7 @@ function recordCloseAsExit(intent: OrderIntentRecord, broker: WebullOrderStatus)
         exitPrice,
         exitDate,
         notes: `Auto-recorded from live close order #${intent.id}${broker.brokerOrderId ? ` (broker ${broker.brokerOrderId})` : ''}`,
+        sourceIntentId: intent.id,
       });
       remaining -= take;
     }

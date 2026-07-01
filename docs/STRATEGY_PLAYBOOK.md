@@ -23,9 +23,10 @@ app's tools, not a "buy signal."
 5. [Playbook C — Directional options (long calls/puts)](#playbook-c--directional-options-long-callsputs)
 6. [Validating an edge with the Edge Report](#validating-an-edge-with-the-edge-report)
 7. [Tuning stops & targets with MAE/MFE](#tuning-stops--targets-with-maemfe)
-8. [Guardrails: risk of ruin & the benchmark](#guardrails-risk-of-ruin--the-benchmark)
-9. [The weekly review checklist](#the-weekly-review-checklist)
-10. [Anti-patterns to avoid](#anti-patterns-to-avoid)
+8. [Reducing slippage with execution quality](#reducing-slippage-with-execution-quality)
+9. [Guardrails: risk of ruin & the benchmark](#guardrails-risk-of-ruin--the-benchmark)
+10. [The weekly review checklist](#the-weekly-review-checklist)
+11. [Anti-patterns to avoid](#anti-patterns-to-avoid)
 
 ---
 
@@ -276,6 +277,34 @@ How to use it:
 
 Small, evidence-based adjustments here often improve expectancy more than any new
 setup.
+
+---
+
+## Reducing slippage with execution quality
+
+Every live trade has two prices: the one you **intended** (your order's limit) and the
+one you **got** (the broker's fill). The gap between them is slippage, and it's a
+silent, recurring cost that never shows up in a strategy backtest. Open **Journal →
+Execution quality** to see it for every live-traded fill:
+
+- **Total slippage $** across all fills, and the **average %** per fill — positive
+  always means it cost you money, whichever side you were on.
+- Each fill, **worst-first**, comparing its limit price to the actual fill.
+
+How to use it:
+
+- **A consistent positive bias on entries** usually means your limit is set too
+  aggressively (at or through the ask) to guarantee a fill, effectively turning it into a
+  market order. Give it a little room, or accept you're paying for certainty of fill.
+- **Bad slippage concentrated in a few symbols/strikes** points at **thin liquidity** —
+  check the spread and open interest before you commit size there again.
+- **Near-zero slippage** across the board means your limit discipline is working — the
+  numbers you sized and risk-assessed the trade with are the numbers you actually got.
+
+Scope: this only covers orders **placed live through this app** with a limit price. A
+stop-market fill has no reference price to compare against, and a manually logged or
+imported trade was never a live order — neither shows up here, by design (there's
+nothing honest to compare them to).
 
 ---
 

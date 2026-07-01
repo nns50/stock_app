@@ -21,6 +21,7 @@ import { JournalEditModal } from '../components/PositionForms';
 import { DataTools } from '../components/DataTools';
 import { RiskOfRuinModal } from '../components/RiskOfRuinModal';
 import { ExcursionsModal } from '../components/ExcursionsModal';
+import { SlippageModal } from '../components/SlippageModal';
 import { BenchmarkCard } from '../components/BenchmarkCard';
 import type { GroupStat, Position, PositionWithPnl } from '../api/types';
 
@@ -95,6 +96,7 @@ export default function JournalPage() {
   const [editPos, setEditPos] = useState<Position | null>(null);
   const [ruinOpen, setRuinOpen] = useState(false);
   const [excOpen, setExcOpen] = useState(false);
+  const [slipOpen, setSlipOpen] = useState(false);
 
   const reload = () => {
     stats.reload();
@@ -125,6 +127,9 @@ export default function JournalPage() {
           <>
             <button className="btn-ghost" onClick={() => setExcOpen(true)}>
               Excursions
+            </button>
+            <button className="btn-ghost" onClick={() => setSlipOpen(true)}>
+              Execution quality
             </button>
             <button className="btn-ghost" onClick={() => setRuinOpen(true)}>
               Risk of ruin
@@ -526,6 +531,7 @@ export default function JournalPage() {
       <JournalEditModal position={editPos} onClose={() => setEditPos(null)} onSaved={reload} />
       <RiskOfRuinModal open={ruinOpen} onClose={() => setRuinOpen(false)} />
       <ExcursionsModal open={excOpen} onClose={() => setExcOpen(false)} />
+      <SlippageModal open={slipOpen} onClose={() => setSlipOpen(false)} />
     </div>
   );
 }
