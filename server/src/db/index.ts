@@ -240,6 +240,34 @@ CREATE TABLE IF NOT EXISTS backtest_fetch_log (
   fetched_at  INTEGER NOT NULL
 );
 
+-- The Phase 6 paper execution loop's own journal of simulated trades —
+-- deliberately separate from positions/position_exits (the human's real
+-- trading journal): mixing autonomous synthetic fills into that would
+-- corrupt the one thing it exists to be honest about. One row per round
+-- trip (open, and — once closed — exit fields on the SAME row), not a
+-- split positions/exits table: the auto-trading engine (decide.ts,
+-- riskCheck.ts, backtest.ts's SimulatedTrade) never models partial fills or
+-- partial exits, so there's nothing a second table would need to hold.
+CREATE TABLE IF NOT EXISTS autotrade_paper_positions (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol        TEXT NOT NULL,
+  side          TEXT NOT NULL CHECK(side IN ('buy','sell')),
+  quantity      REAL NOT NULL,
+  entry_price   REAL NOT NULL,
+  entry_at      INTEGER NOT NULL,       -- ms epoch (real time, not a backtest date)
+  stop_price    REAL NOT NULL,
+  target_price  REAL NOT NULL,
+  risk_amount   REAL NOT NULL,          -- $ risked at entry, for R-multiple stats
+  risk_profile  TEXT NOT NULL,
+  rationale     TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+  exit_price    REAL,
+  exit_at       INTEGER,
+  exit_reason   TEXT CHECK(exit_reason IN ('stop','target','manual') OR exit_reason IS NULL),
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_exits_position ON position_exits(position_id);
 CREATE INDEX IF NOT EXISTS idx_picks_snapshot ON screener_picks(snapshot_id);
@@ -248,6 +276,7 @@ CREATE INDEX IF NOT EXISTS idx_autotrade_events_symbol ON autotrade_events(symbo
 CREATE INDEX IF NOT EXISTS idx_autotrade_events_stage ON autotrade_events(stage);
 CREATE INDEX IF NOT EXISTS idx_autotrade_events_created ON autotrade_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_backtest_fetch_log_lookup ON backtest_fetch_log(symbol, timeframe);
+CREATE INDEX IF NOT EXISTS idx_autotrade_paper_positions_status ON autotrade_paper_positions(symbol, status);
 `;
 
 interface SeedRow {

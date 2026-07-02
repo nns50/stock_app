@@ -121,6 +121,28 @@ this list as decisions change — don't let it drift from what's actually built.
   15-min delay would matter there (unlike for backtesting) and a higher tier would be
   needed — that's a separate decision, not part of this one.
 
+- **What "paper" execution actually means (Phase 6)**: confirmed via
+  `docs/LIVE_TRADING_DESIGN.md` §13 — the Webull OpenAPI plan this app is integrated
+  against has **no paper/sandbox account** ("None — go straight to the real account").
+  So Phase 6's paper mode is a **fully local simulation**: it never calls
+  `webullPlaceOrder()` or anything in the live order pipeline
+  (`services/trading/placeOrder.ts`) — it records a synthetic fill (from a live quote)
+  into a new, separate `autotrade_paper_positions` table and journals it, exactly
+  mirroring the real `positions`/`position_exits` shape but kept fully apart from it.
+  This is deliberate, not a shortcut: it means Phase 6 is **structurally incapable** of
+  placing a real order, regardless of any bug in its risk/decision logic, since the
+  code path that could do that is never invoked. It also sidesteps the live pipeline's
+  `placeOrder()` requiring an exact human-typed confirmation phrase
+  (`placeConfirmation(intent)`, `services/trading/placeOrder.ts`) and a manually-chosen
+  `accountId` sourced from browser `localStorage` today — neither has any meaning for
+  an unattended loop, and forging a bypass for either would be exactly the kind of
+  "quietly weaken a safety check" move this repo's operating principles rule out.
+  Paper positions never touch `positions`/`orders` (the human's real trading journal)
+  — mixing autonomous synthetic trades into the user's real P&L/win-rate stats would
+  corrupt the one thing that journal exists to be honest about. A real Webull
+  `accountId`/confirm-phrase path is Phase 8's problem, once a human is reviewing
+  Phase 5/6 results before flipping the live flag — not before.
+
 ## Phased roadmap
 
 Sequenced so that execution-capable (order-placing) code is built **last**, after the
@@ -283,11 +305,15 @@ starts.
    trade-by-trade table per window. Nothing downstream of this phase — paper or live
    execution — is wired up yet; this phase only produces the report a human reviews
    before either of those is allowed to run.
-6. **Paper execution loop** — wire Research → Decision → Risk Check → Execution →
-   Journal into a recurring scheduled loop (reusing the alerts-poller's in-process
-   interval pattern), placing **paper** orders only through the existing Webull order
-   pipeline. Idempotent placement, explicit partial-fill/rejection/rate-limit
-   handling, no entries in the first/last N minutes of the session, volatility filter.
+6. **Paper execution loop — in progress.** Wire Research → Decision → Risk Check →
+   Execution → Journal into a recurring scheduled loop (reusing the alerts-poller's
+   in-process interval pattern). Per the resolved decision above, "paper" is a fully
+   local simulation — no real Webull order is ever placed; a synthetic fill (from a
+   live quote) is recorded into a new `autotrade_paper_positions` table, kept separate
+   from the human's real trading journal. Idempotent placement (never double up on an
+   already-open/pending symbol), explicit handling for a quote fetch failing (skip,
+   don't guess), no entries in the first/last N minutes of the session, volatility
+   filter (ticker ATR + a broad-market proxy).
 7. **Monitoring dashboard & kill switch** — real-time panel (active risk profile, open
    positions, aggregate open risk used vs. limit, day P&L, drawdown vs. halt, trade
    count vs. max, consecutive loss streak) and the kill switch behavior resolved above.
