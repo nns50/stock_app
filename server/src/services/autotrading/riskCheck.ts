@@ -112,7 +112,12 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
  *  too little history) is excluded from the sum, not assumed correlated —
  *  the CRITICAL aggregate-risk check independently covers the "many positions
  *  at once" gap risk this cap is layered on top of. */
-async function correlatedNotional(
+/** Exported for reuse by the Phase 6 paper execution loop (execute.ts), which
+ *  needs the same live-fetching correlation check against its own running
+ *  paper-portfolio state — not a from-scratch reimplementation (see
+ *  backtest.ts's separate offline `backtestCorrelatedNotional`, which exists
+ *  only because a backtest has no live network access during simulation). */
+export async function correlatedNotional(
   symbol: string,
   positions: { symbol: string; notional: number }[],
 ): Promise<{ amount: number; correlations: { symbol: string; r: number | null }[] }> {

@@ -219,16 +219,18 @@ starts.
    (verified live: with 5 candidates and MODERATE's 2-position cap, the top-2-scored
    candidates were approved and every candidate after that was correctly blocked on
    `max_concurrent_positions` once the running count hit the cap).
-   **Known interim scope, to revisit in Phase 6:** concurrent-position count and
-   aggregate open risk are account-wide regardless of source (mirrors how the
-   live-trading guardrails already treat "the account" as one unified thing — the
-   safer reading, since it can't understate real exposure). Daily P&L, the
-   consecutive-loss streak, and account equity are **not** yet auto-trading-specific —
-   there's no "Phase 6 executed this" position marker to filter on yet, since nothing
-   has executed an auto-trade. Equity is a manually-set number
-   (`autotrade_config.accountEquityUsd`), not live broker data — Webull's account-state
-   call needs an `accountId` with no natural source for an unattended loop yet; revisit
-   once Phase 6 has one. Pure evaluator (`evaluateRiskCheck`) is heavily unit-tested,
+   **Known interim scope at the time this phase shipped, resolved in Phase 6:**
+   concurrent-position count and aggregate open risk were account-wide regardless of
+   source, since nothing had executed an auto-trade yet and `positions` (the human's
+   real journal) was the only position data that existed anywhere. Once Phase 6 gave
+   auto-trading its own position marker (`autotrade_paper_positions`), this was
+   revisited — see Phase 6's writeup below for the resolved answer (autotrade's own
+   caps are scoped to its own paper positions, not combined with the human's real
+   ones; the original "combine for safety" framing turned out not to apply once the
+   positions in question carry zero real financial exposure). Equity is a manually-set
+   number (`autotrade_config.accountEquityUsd`), not live broker data — Webull's
+   account-state call needs an `accountId` with no natural source for an unattended
+   loop, and paper mode never calls it at all (see Phase 6). Pure evaluator (`evaluateRiskCheck`) is heavily unit-tested,
    per the spec's call for the heaviest coverage on this phase; the orchestration
    wrapper (`runAutotradeRiskCheck`) assembles real portfolio state and is exercised
    against the real `positions` journal in tests, plus verified live in a browser.
