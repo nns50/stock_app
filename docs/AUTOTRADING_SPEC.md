@@ -247,60 +247,90 @@ this list as decisions change — don't let it drift from what's actually built.
   undefined-risk strategies, both require an explicit, separate opt-in rather than shipping
   bundled by default. Rolling could be added later the same way, if wanted. **Not yet
   confirmed with the user.**
-- **Options backtest data source: Options Starter, $29/mo — confirmed and final.** The
-  earlier attempt to verify this from Polygon's/Massive's own
-  pricing pages was blocked by HTTP 403s on both `polygon.io/options` and
-  `massive.com/pricing`; the user then checked the Massive options pricing page directly
-  (screenshot reviewed 2026-07-02), which resolves it. Options data is a separate
-  product line from the stocks plans already confirmed above, four tiers: **Options
-  Basic** ($0/mo — 5 calls/min, 2yr history, end-of-day only, no Greeks/IV/open interest,
-  no Flat Files), **Options Starter** ($29/mo — unlimited calls, 2yr history, 15-min
-  delayed, **Greeks/IV/open interest included**, minute aggregates, Flat Files, no
-  historical quotes), **Options Developer** ($79/mo — same as Starter plus 4yr history and
-  historical trade prints, still no historical quotes), **Options Advanced** ($199/mo —
-  5+ years history, real-time data, and the only tier with historical bid-ask quotes).
+- **Options backtest data source: Options Starter, $29/mo — confirmed and final,**
+  **including the exact endpoint-level shape of the data (not just the marketing pricing
+  page).** The earlier attempt to verify this from Polygon's/Massive's own pricing pages
+  was blocked by HTTP 403s on both `polygon.io/options` and `massive.com/pricing`; the
+  user then checked the Massive options pricing page directly (screenshot reviewed
+  2026-07-02) for tier/pricing, and separately pulled the actual Options API endpoint
+  reference (reviewed 2026-07-02) — which corrects an assumption the pricing page alone
+  couldn't settle (see below). Options data is a separate product line from the stocks
+  plans already confirmed above, four tiers: **Options Basic** ($0/mo — 5 calls/min, 2yr
+  history, end-of-day only, no Greeks/IV/open interest, no Flat Files), **Options
+  Starter** ($29/mo — unlimited calls, 2yr history, 15-min delayed, Greeks/IV/open
+  interest included, minute aggregates, Flat Files, no historical quotes or trades),
+  **Options Developer** ($79/mo — same as Starter plus 4yr history and historical trade
+  prints, still no historical quotes), **Options Advanced** ($199/mo — 5+ years history,
+  real-time data, and the only tier with historical bid-ask quotes).
 
-  This resolves the earlier conflicting-secondary-source question directly: Greeks, IV,
-  and open interest are genuinely included starting at the **$29 Starter** tier (not
-  gated behind a pricier plan, and not limited to a live/current-only snapshot as one
-  secondary source had suggested), at the same 2-year depth as that tier's historical
-  bars. Combined with minute aggregates (which carry volume), Starter alone is enough to
-  backtest the open-interest filter, the volume filter, and the IV-rank filter
-  faithfully.
+  **Correction to the earlier reading of the pricing page: Greeks/IV/open interest are
+  snapshot-only at every tier, including Advanced — there is no historical Greeks/IV/OI
+  time-series endpoint at any price.** The endpoint reference lists exactly two places
+  Greeks/IV/OI appear — "Option Contract Snapshot" (`/v3/snapshot/options/{underlying}/
+  {contract}`) and "Option Chain Snapshot" (`/v3/snapshot/options/{underlying}`) — both
+  explicitly described as a snapshot of *current* state ("the latest quote and trade
+  information," "the underlying asset's current price"), with no date/range parameter,
+  unlike every genuinely historical endpoint (Aggregate Bars, Quotes, Trades all take a
+  `{from}/{to}` range). The "Greeks, IV, & Open Interest ✓" checkmark on the pricing page
+  means the current-state snapshot includes those fields — not that they're stored
+  historically at that tier's depth, as the earlier reading of that page assumed. This
+  also resolves the original conflicting-secondary-source tension for good: the source
+  claiming "historical IV back to 2021" was describing the historical *price* aggregates
+  (genuinely deep), and the source claiming the Snapshot API doesn't support historical
+  IV was correct and describing the *same* snapshot-only limitation confirmed here.
 
-  **One real gap below Advanced: no historical bid-ask quotes.** The liquidity spread
-  filter (max acceptable bid-ask spread, as % of midpoint) can't be backtested against a
-  real historical quote below the $199/mo Advanced tier — both Starter and Developer add
-  historical *trade* prices, never the quoted bid/ask at the time. This has zero effect
-  on live/paper trading either way: the spread filter there always reads the live chain
-  from whichever `MARKET_DATA_PROVIDER` is configured, never Polygon/Massive (the same
-  live-vs-backtest data split every other decision in this doc already makes) — it only
-  limits how faithfully the *backtest* can simulate that one specific filter.
+  **Consequence for Phase 11: IV/Greeks must be computed, not ingested.** The backtest
+  will derive historical IV and Greeks itself from historical option price bars
+  (`options_ticker`'s Aggregate Bars, genuinely historical at every tier) plus the
+  underlying's own historical price (already available via the existing stocks plan) —
+  reusing this app's existing `options/blackScholes.ts` (`bsGreeks`/`impliedVol`, already
+  the live-Greeks fallback for Yahoo on the human Options page) rather than a packaged
+  feed that doesn't exist at any tier. This isn't a compromise specific to the cheap
+  tier — Advanced's $199/mo doesn't buy a historical Greeks/IV feed either, so this is
+  simply how the backtest has to work regardless of tier chosen.
 
-  **Confirmed with the user: Options Starter ($29/mo).** Mirrors the stocks-plan
-  decision's own reasoning almost exactly — unlimited calls, Flat Files for bulk
-  ingestion, doesn't need the real-time data a backtest can't use anyway — and accepts
-  the spread-backtest gap as an explicitly-documented approximation (OI/volume/IV-rank
-  still backtest faithfully; the spread filter either isn't simulated during backtesting
-  at all, or is approximated from Greeks rather than an observed quote), in the same
-  spirit as Phase 5's own documented daily-bar approximations (stop-wins-ties,
-  next-day-open fills). Options Developer and Advanced were both considered and passed
-  over: Developer ($79/mo) doesn't close the quotes gap either — its only additions over
-  Starter (4yr history, historical trade prints) do nothing for spread backtesting;
-  Advanced ($199/mo, ~6.9x Starter) does close it, but the rest of what it adds (5+
-  years of history, real-time data) doesn't matter for backtesting, so nearly the entire
-  incremental cost would have been for one filter's backtest fidelity alone.
+  **A second, separate gap this same finding surfaces: open interest can't be
+  backtested at all, at any tier.** Same root cause — OI only ever appears in the two
+  snapshot endpoints above, both current-state-only, and unlike price there's no
+  Black-Scholes-style way to derive a historical OI number from other historical data
+  (it isn't computable from price/volume). Proposed handling, mirroring how this
+  codebase already treats a check that can't run (real-estate `'unknown'`, the IV-rank
+  bootstrap gap): **the open-interest filter is skipped during backtesting specifically**
+  (documented as an explicit, permanent simplification, not a bug) **and remains fully
+  enforced at live/paper execution**, where OI comes from the live chain via whichever
+  `MARKET_DATA_PROVIDER` is configured, never Polygon — the same live-vs-backtest split
+  every other decision in this doc already makes. **Not yet confirmed with the user** —
+  flagging it here since it's a real, permanent backtest limitation, not a bug to later
+  fix.
+
+  **The pre-existing bid-ask-spread gap stands, and is now better understood as part of
+  the same pattern**: the spread filter can't be backtested against a real historical
+  quote below the $199/mo Advanced tier (Starter/Developer add historical *trade*
+  prices, never quoted bid/ask) — zero effect on live/paper trading, which reads the
+  live chain directly, never Polygon.
+
+  **Confirmed with the user: Options Starter ($29/mo) — and this finding makes it an
+  even clearer choice than originally scoped, not a closer call.** Paying for Advanced
+  no longer looks like "backtest everything vs. backtest almost everything" — it's
+  "close the spread gap, while the Greeks/IV/OI gap remains no matter what's paid for."
+  Since two of the three things a pricier tier might have bought (historical Greeks/IV,
+  historical OI) turn out to be unavailable at *any* tier, Advanced's real incremental
+  value over Starter is narrower than it first appeared — only the spread filter and
+  deeper/real-time history, the latter unneeded for backtesting. Starter remains the
+  right pick for the same reasons already recorded (unlimited calls, Flat Files, no
+  paid-for real-time data a backtest can't use), now with the added confidence that its
+  main limitations (spread, OI) aren't things a bigger spend would have solved anyway.
 
   **Action item — the user's, not from here:** actually subscribing to the Options
   Starter add-on (billing, same as the stocks plan) still needs to happen before any
   options history can be ingested. Confirmed by the user: it uses the same
   Massive/Polygon account and existing `POLYGON_API_KEY` already configured for
   stocks — options is an add-on tier on the same account, not a separate vendor or a
-  second server-side secret to provision.
+  second server-side secret to provision. **Subscription confirmed active by the user
+  (2026-07-02).**
   **This resolves the data-source question, but does not by itself green-light writing
   phases 9-13** — per the user's own explicit sequencing choice earlier (data before
-  implementation), the next step is confirming the subscription is active and history is
-  actually fetchable, then getting an explicit go-ahead on the phase 9-13 roadmap the
+  implementation), the next step is an explicit go-ahead on the phase 9-13 roadmap the
   same way phases 1-8 got one (task-tracked separately), before any options code is
   written.
 
@@ -761,16 +791,21 @@ gate) can ship on its own timeline regardless of when or whether this options wo
     × 100, sized to the active profile's `riskPerTradePct` exactly like equities are sized
     to it via stop distance — matching the original ask's "1% risk on MODERATE means max
     1% of account equity spent on premium for that trade."
-11. **Options backtesting — proposed, blocked on the open data-source decision above.**
-    Once a data source is chosen: extend or add a sibling to `polygonClient.ts` for
-    options aggregates/chains, extend the `backtest_bars`-style cache for options-shaped
-    data (strike/expiration/right), and extend `simulateBacktest()` to replay phases 9-10's
-    entry/exit/sizing logic exactly as shipped — mirroring how equities' phase 5 reused
-    phases 2-4's real functions rather than a parallel implementation, so the backtest
-    can't silently drift from what the live loop actually does. Must clear the same
+11. **Options backtesting — proposed, blocked on getting an explicit go-ahead (data
+    source is now resolved and subscribed).** Extend or add a sibling to
+    `polygonClient.ts` for options price aggregates/chains, extend the
+    `backtest_bars`-style cache for options-shaped data (strike/expiration/right), and
+    extend `simulateBacktest()` to replay phases 9-10's entry/exit/sizing logic exactly
+    as shipped — mirroring how equities' phase 5 reused phases 2-4's real functions
+    rather than a parallel implementation, so the backtest can't silently drift from what
+    the live loop actually does. Per the confirmed data-source finding above: IV/Greeks
+    are computed from historical option + underlying price bars via the existing
+    `blackScholes.ts`, not ingested from a packaged feed (none exists at any tier); the
+    open-interest filter is skipped during backtesting (documented gap, still enforced
+    live) since historical OI isn't available at any tier either. Must clear the same
     walk-forward in-sample/out-of-sample gate as equities before phase 12 is allowed to
-    run — no shortcut for options just because more of the underlying math (Black-Scholes
-    Greeks/IV) already exists in this codebase.
+    run — no shortcut for options just because more of the underlying math already
+    exists in this codebase.
 12. **Options paper execution & expiration management — proposed, blocked on phase 11
     clearing the validation gate.** Extends the paper loop the same structurally-
     incapable-of-a-real-order way phase 6 built for equities — a new options-shaped paper
