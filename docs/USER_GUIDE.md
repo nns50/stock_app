@@ -599,9 +599,9 @@ that fires to your webhooks**.
 initiative described in **[docs/AUTOTRADING_SPEC.md](../docs/AUTOTRADING_SPEC.md)** — a
 fully autonomous screen → decide → risk-check → execute → journal loop, distinct from
 the human-confirmed live trading on the **Trade** page (which always requires you to
-type a confirmation phrase before an order goes out). Auto-Trade's execution loop, risk
-engine, and live-trading gate don't exist yet — what's live today is the foundation and
-the first stage:
+type a confirmation phrase before an order goes out). Auto-Trade's risk engine,
+execution loop, and live-trading gate don't exist yet — what's live today is the
+foundation plus the first two stages:
 
 - **Configuration** — a master **enabled** switch for the eventual execution loop
   (currently a no-op — nothing acts on it until the loop is built), and the active
@@ -615,17 +615,22 @@ the first stage:
   classifies every candidate by sector/industry, so REITs and real-estate operating
   companies that aren't on the list (e.g. cell-tower or data-center REITs) still get
   caught.
-- **Research & Screen** — **Run screen** scans your universe (plus Webull's pre-market
-  "unusual volume" and gainers movers, when Webull is configured) for volatility/
-  volume-breakout candidates, reusing the same scoring engine as the **Screener** page.
-  Real-estate exclusion runs *before* scoring, so an excluded symbol never shows up as a
-  candidate. Results split into **Candidates** (passed screening), **Excluded** (real
-  estate), **Skipped** (sector/industry couldn't be verified this run — reconsidered
-  next run, never silently allowed through), and **Errors**. This is read-only: running
-  a screen never places an order.
-- **Recent activity** — a journal of what the screen did and why (candidate found,
-  excluded, a setting changed), the foundation the later risk-check and execution stages
-  will log into as well.
+- **Research, Screen & Decide** — **Run screen** scans your universe (plus Webull's
+  pre-market "unusual volume" and gainers movers, when Webull is configured) for
+  volatility/volume-breakout candidates, reusing the same scoring engine as the
+  **Screener** page. Real-estate exclusion runs *before* scoring, so an excluded symbol
+  never shows up as a candidate. Results split into **Candidates** (passed screening,
+  now with an **Entry / Stop / Target / R** trade plan for each — the stop is set at
+  1.5× the symbol's own ATR so it adapts to its actual volatility, and the target is a
+  fixed 2:1 reward:risk multiple of that stop distance, not a number tuned to hit any
+  particular return), **Excluded** (real estate), **Skipped** (sector/industry couldn't
+  be verified this run — reconsidered next run, never silently allowed through), and
+  **Errors**. A candidate with no usable volatility history (ATR) gets no trade plan —
+  shown separately as "no signal," not guessed at. This is read-only: running a screen
+  never places an order.
+- **Recent activity** — a journal of what the screen and decision stages did and why
+  (candidate found, excluded, signal generated, a setting changed), the foundation the
+  later risk-check and execution stages will log into as well.
 
 This page will keep growing as later phases (signal generation, the risk engine, a
 paper-trading execution loop, a monitoring dashboard, and finally a live-trading gate)

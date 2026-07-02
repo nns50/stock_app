@@ -5,6 +5,7 @@ import { getAutotradeConfig, setAutotradeConfig } from '../db/autotradeConfig';
 import { addExclusion, listExclusions, removeExclusion } from '../db/autotradeExclusions';
 import { AutotradeStage, listAutotradeEvents, logAutotradeEvent } from '../db/autotradeEvents';
 import { runAutotradeScreen } from '../services/autotrading/screen';
+import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/decide';
 import { ScreenerConfig } from '../indicators/screener';
 
 export const autotradeRouter = Router();
@@ -97,6 +98,32 @@ autotradeRouter.post(
       symbols: body.symbols,
     });
     res.json(result);
+  }),
+);
+
+// ---- Decision ---------------------------------------------------------------
+
+const decideBody = z.object({
+  config: z.record(z.string(), z.unknown()).optional(),
+  symbols: z.array(z.string().min(1)).optional(),
+  decision: z
+    .object({
+      direction: z.enum(['long', 'short']).optional(),
+      stopAtrMultiple: z.number().positive().optional(),
+      targetRMultiple: z.number().positive().optional(),
+    })
+    .optional(),
+});
+autotradeRouter.post(
+  '/decide',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(decideBody, req);
+    const screen = await runAutotradeScreen({
+      config: body.config as Partial<ScreenerConfig> | undefined,
+      symbols: body.symbols,
+    });
+    const decision = runAutotradeDecision(screen.candidates, body.decision as Partial<DecisionConfig> | undefined);
+    res.json({ screen, decision });
   }),
 );
 

@@ -69,6 +69,7 @@ import type {
   AutotradeRiskProfile,
   AutotradeExclusion,
   AutotradeScreenResult,
+  AutotradeDecideResponse,
   AutotradeEvent,
   AutotradeStage,
 } from './types';
@@ -401,6 +402,8 @@ export const client = {
     api<{ removed: string }>(`/autotrade/exclusions/${encodeURIComponent(symbol)}`, { method: 'DELETE' }),
   runAutotradeScreen: (body: { symbols?: string[] } = {}) =>
     api<AutotradeScreenResult>('/autotrade/screen', post(body)),
+  runAutotradeDecision: (body: { symbols?: string[] } = {}) =>
+    api<AutotradeDecideResponse>('/autotrade/decide', post(body)),
   autotradeEvents: (params: { stage?: AutotradeStage; symbol?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams(params as Record<string, string>).toString();
     return api<{ events: AutotradeEvent[] }>(`/autotrade/events${qs ? `?${qs}` : ''}`);

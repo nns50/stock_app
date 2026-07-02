@@ -5,12 +5,12 @@ import { useToast } from '../components/ToastContext';
 import { useConfirm } from '../components/ConfirmContext';
 import { ago, fmtNum, fmtPct, fmtUsd } from '../lib/format';
 import { Badge, Card, EmptyState, ErrorState, Field, PageHeader, Spinner } from '../components/ui';
-import type { AutotradeRiskProfile, AutotradeScreenResult } from '../api/types';
+import type { AutotradeDecideResponse, AutotradeRiskProfile } from '../api/types';
 
-// Foundations + Research & Screen (Phases 1-2 of docs/AUTOTRADING_SPEC.md).
-// Read-only end to end: this page configures and observes the auto-trading
-// initiative, it never places an order — Decision, Risk Check, and Execution
-// are later phases.
+// Foundations + Research & Screen + Decision (Phases 1-3 of
+// docs/AUTOTRADING_SPEC.md). Read-only end to end: this page configures and
+// observes the auto-trading initiative, it never places an order — Risk Check
+// and Execution are later phases.
 
 function detailText(detail: string | null): string {
   if (!detail) return '—';
@@ -106,13 +106,13 @@ export default function AutoTradePage() {
   };
 
   const [screenBusy, setScreenBusy] = useState(false);
-  const [screenResult, setScreenResult] = useState<AutotradeScreenResult>();
+  const [result, setResult] = useState<AutotradeDecideResponse>();
   const [screenErr, setScreenErr] = useState<string>();
   const runScreen = async () => {
     setScreenBusy(true);
     setScreenErr(undefined);
     try {
-      setScreenResult(await client.runAutotradeScreen());
+      setResult(await client.runAutotradeDecision());
       events.reload();
     } catch (e) {
       setScreenErr((e as Error).message || 'Screen failed');
@@ -123,13 +123,16 @@ export default function AutoTradePage() {
 
   const exclusionRows = exclusions.data?.exclusions ?? [];
   const eventRows = events.data?.events ?? [];
+  const screenResult = result?.screen;
+  const signalBySymbol = new Map((result?.decision.signals ?? []).map((s) => [s.symbol, s]));
 
   return (
     <div className="space-y-4">
       <PageHeader
         title="Auto-Trade"
-        subtitle="Foundations for the automated-trading initiative (docs/AUTOTRADING_SPEC.md). Screening + real-estate
-          exclusion are wired up; decision, risk checks, and execution are later phases. Nothing here places an order."
+        subtitle="Foundations for the automated-trading initiative (docs/AUTOTRADING_SPEC.md). Screening,
+          real-estate exclusion, and signal generation are wired up; risk checks and execution are later phases.
+          Nothing here places an order."
       />
 
       <Card className="p-4">
@@ -240,7 +243,7 @@ export default function AutoTradePage() {
 
       <Card className="p-4">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="font-medium text-sm">Research &amp; Screen</h3>
+          <h3 className="font-medium text-sm">Research, Screen &amp; Decide</h3>
           <button className="btn-primary" onClick={runScreen} disabled={screenBusy}>
             {screenBusy ? 'Scanning…' : 'Run screen'}
           </button>
@@ -266,29 +269,57 @@ export default function AutoTradePage() {
                       <th className="th text-right">Gap</th>
                       <th className="th text-right">Rel Vol</th>
                       <th className="th">Source</th>
+                      <th className="th text-right">Entry</th>
+                      <th className="th text-right">Stop</th>
+                      <th className="th text-right">Target</th>
+                      <th className="th text-right">R</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {screenResult.candidates.map((c) => (
-                      <tr key={c.symbol} className="border-b border-ink-700/50">
-                        <td className="td font-semibold">{c.symbol}</td>
-                        <td className="td text-right tabular-nums">{fmtUsd(c.price)}</td>
-                        <td className="td text-right tabular-nums">{fmtNum(c.total, 1)}</td>
-                        <td className="td text-right tabular-nums">
-                          {c.indicators.gapPct === null ? '—' : fmtPct(c.indicators.gapPct)}
-                        </td>
-                        <td className="td text-right tabular-nums">
-                          {c.indicators.relVolume === null ? '—' : `${fmtNum(c.indicators.relVolume)}×`}
-                        </td>
-                        <td className="td">
-                          <Badge color={c.discoverySource === 'movers' ? 'green' : 'slate'}>{c.discoverySource}</Badge>
-                        </td>
-                      </tr>
-                    ))}
+                    {screenResult.candidates.map((c) => {
+                      const signal = signalBySymbol.get(c.symbol);
+                      return (
+                        <tr key={c.symbol} className="border-b border-ink-700/50">
+                          <td className="td font-semibold">{c.symbol}</td>
+                          <td className="td text-right tabular-nums">{fmtUsd(c.price)}</td>
+                          <td className="td text-right tabular-nums">{fmtNum(c.total, 1)}</td>
+                          <td className="td text-right tabular-nums">
+                            {c.indicators.gapPct === null ? '—' : fmtPct(c.indicators.gapPct)}
+                          </td>
+                          <td className="td text-right tabular-nums">
+                            {c.indicators.relVolume === null ? '—' : `${fmtNum(c.indicators.relVolume)}×`}
+                          </td>
+                          <td className="td">
+                            <Badge color={c.discoverySource === 'movers' ? 'green' : 'slate'}>
+                              {c.discoverySource}
+                            </Badge>
+                          </td>
+                          <td className="td text-right tabular-nums" title={signal?.rationale}>
+                            {signal ? fmtUsd(signal.entry) : '—'}
+                          </td>
+                          <td className="td text-right tabular-nums text-bear">{signal ? fmtUsd(signal.stop) : '—'}</td>
+                          <td className="td text-right tabular-nums text-bull">
+                            {signal ? fmtUsd(signal.target) : '—'}
+                          </td>
+                          <td className="td text-right tabular-nums">{signal ? `${signal.rMultiple}R` : '—'}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
             </ScreenSection>
+            {result && result.decision.skipped.length > 0 && (
+              <ScreenSection title={`No signal — insufficient volatility history (${result.decision.skipped.length})`}>
+                <ul className="text-xs text-slate-500 space-y-0.5">
+                  {result.decision.skipped.map((s) => (
+                    <li key={s.symbol}>
+                      <span className="font-semibold text-slate-300">{s.symbol}</span> — {s.reason}
+                    </li>
+                  ))}
+                </ul>
+              </ScreenSection>
+            )}
             {screenResult.excluded.length > 0 && (
               <ScreenSection title={`Excluded — real estate (${screenResult.excluded.length})`}>
                 <ul className="text-xs text-slate-400 space-y-0.5">
@@ -327,7 +358,8 @@ export default function AutoTradePage() {
           !screenErr && (
             <p className="text-xs text-slate-500">
               Scans the universe (plus Webull&apos;s pre-market movers, if configured) for volume-breakout candidates,
-              screening out real estate first. Read-only — nothing here places an order.
+              screening out real estate first, then computes an ATR-based stop and reward:risk target for each one that
+              clears. Read-only — nothing here places an order.
             </p>
           )
         )}

@@ -144,10 +144,21 @@ starts.
    (`/auto-trade`) covers config, the exclusion list, a "Run screen" button with
    candidates/excluded/skipped/errors, and the recent-activity journal — the AGGRESSIVE
    switch is gated by a `useConfirm()` modal, not just a raw `<select>`.
-3. **Strategy / Decision module** — generate buy/sell signals (entry, stop, target)
-   from the screened candidates. Still fully read-only/logged-only — no risk engine,
-   no orders yet. This isolates "does the signal logic make sense" from "is it sized
-   and risk-checked correctly."
+3. **Strategy / Decision module — shipped.** Turns each screened candidate into a
+   concrete trade plan (`services/autotrading/decide.ts`): entry = current price, a
+   **hard stop** at `stopAtrMultiple`× the symbol's own ATR (default 1.5×, so the stop
+   adapts to each symbol's actual volatility rather than a fixed dollar/percent), and a
+   target at a fixed reward:risk multiple of that stop distance (default 2R). The
+   reward:risk multiple is a fixed, generic ratio, not tuned to any target return — per
+   the spec, what the strategy actually returns is for backtesting (a later phase) to
+   measure, not an input to this logic. A candidate with no usable ATR (insufficient
+   history) gets no signal, logged and skipped rather than guessed at. Pure function,
+   no I/O — `generateSignal()`/`runAutotradeDecision()` take already-screened
+   candidates and only journal (stage `decision`, `signal_generated` / `no_signal`).
+   Still fully read-only — no risk engine, no orders yet; this isolates "does the
+   signal logic make sense" from "is it sized and risk-checked correctly." Routed at
+   `POST /api/autotrade/decide` (runs screen + decision together); the Auto-Trade page's
+   candidates table now shows Entry/Stop/Target/R per candidate.
 4. **Risk engine** — `riskProfile` config (Moderate default / Aggressive, with the
    required explicit UI confirmation to switch), per-trade sizing, daily-drawdown
    halt, step-down sizing after consecutive losses, concurrent-position cap, the

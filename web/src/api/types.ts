@@ -1065,3 +1065,26 @@ export interface AutotradeEvent {
   riskProfile: string | null;
   createdAt: number;
 }
+
+export type AutotradeSignalSide = 'buy' | 'sell';
+
+export interface AutotradeSignal {
+  symbol: string;
+  side: AutotradeSignalSide;
+  entry: number;
+  stop: number;
+  target: number;
+  rMultiple: number;
+  rationale: string;
+  score: number;
+}
+
+export interface AutotradeDecisionResult {
+  signals: AutotradeSignal[];
+  skipped: { symbol: string; reason: string }[];
+}
+
+export interface AutotradeDecideResponse {
+  screen: AutotradeScreenResult;
+  decision: AutotradeDecisionResult;
+}
