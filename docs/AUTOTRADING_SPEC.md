@@ -236,6 +236,14 @@ starts.
    against the real `positions` journal in tests, plus verified live in a browser.
    Routed at `POST /api/autotrade/risk-check`; the Auto-Trade page's candidates table
    shows a Qty + pass/fail Risk-check column per candidate.
+   **Known gap, flagged during Phase 6's review, deferred to Phase 8:**
+   `getPortfolioSnapshot()`'s "today" bucketing (`new Date().toISOString().slice(0, 10)`)
+   is still UTC-based — the same bug class Phase 6's `execute.ts` was fixed for. Left
+   alone here because this function is only reachable from the manual, human-triggered
+   `POST /api/autotrade/risk-check` preview — never the 24/7 paper loop, which has its
+   own, already-ET-correct bucketing — so it's a live concern only once Phase 8 puts a
+   real order-placing path behind this same function on a schedule that isn't
+   "whenever a human happens to click a button."
 5. **Backtesting & walk-forward harness — the validation gate — shipped.** Ingests
    Polygon/Massive daily bars into a local cache (`backtest_bars`, keyed by
    symbol/timeframe/time) and tracks which `[from, to]` ranges have already been
@@ -384,6 +392,17 @@ starts.
    finite and positive before use, and never lets one candidate's persistence failure
    abort the rest of the batch. The "Paper trading" card no longer leaves a stale
    successful summary on screen next to a newer failed run's error.
+
+   A follow-up focused review of that fix commit found the same "stale success next to
+   a fresh error" pattern still unfixed in the sibling "Research, Screen & Decide" card
+   (now fixed identically) and a regression test that didn't actually exercise the new
+   `openPaperPosition()` try/catch it was named for (it hit an earlier validation check
+   instead — replaced with one that spies on `openPaperPosition` directly to force a
+   genuine persistence-layer throw). `stopAutotradeLoop()` now also resets the
+   reentrancy flag, defensively, so a failed test assertion elsewhere can never wedge it
+   `true` across unrelated tests. Verified live in a browser end to end (Screen →
+   Backtest → Paper trading, including a rapid-double-click reentrancy test against the
+   real server) with a full recorded activity trail and no console errors.
 7. **Monitoring dashboard & kill switch** — real-time panel (active risk profile, open
    positions, aggregate open risk used vs. limit, day P&L, drawdown vs. halt, trade
    count vs. max, consecutive loss streak) and the kill switch behavior resolved above.

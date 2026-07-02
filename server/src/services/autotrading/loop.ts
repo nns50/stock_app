@@ -151,4 +151,10 @@ export function stopAutotradeLoop(): void {
   if (timer) clearTimeout(timer);
   timer = null;
   started = false;
+  // Defensive: a tick genuinely in flight keeps running regardless (clearing
+  // the timer doesn't cancel an in-progress await chain) — but resetting
+  // this here means a test/shutdown path can never leave a stuck `true`
+  // (e.g. from a failed assertion skipping a test's own cleanup) wedged
+  // across whatever runs next.
+  tickInFlight = false;
 }

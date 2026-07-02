@@ -216,6 +216,57 @@ describe('AutoTradePage', () => {
     expect(screen.getByText('222')).toBeInTheDocument(); // sized quantity
   });
 
+  it('clears stale candidates when a later screen run fails, so the error is not shown next to old results', async () => {
+    const okResult: AutotradeDecideResponse = {
+      screen: {
+        generatedAt: Date.now(),
+        candidates: [
+          {
+            symbol: 'AAPL',
+            price: 210.5,
+            total: 82.4,
+            passedFilters: true,
+            filterReasons: [],
+            components: [],
+            indicators: {
+              price: 210.5,
+              changePct: 3.2,
+              maShort: 200,
+              maLong: 190,
+              distShortPct: 5,
+              distLongPct: 10,
+              rsi: 65,
+              atr: 3,
+              atrPct: 1.4,
+              relVolume: 2.1,
+              avgVolume: 1_000_000,
+              volume: 2_100_000,
+              gapPct: 4.5,
+            },
+            discoverySource: 'movers',
+          },
+        ],
+        excluded: [],
+        skipped: [],
+        errors: [],
+        discovery: { universeCount: 124, moversCount: 5, scannedCount: 129 },
+      },
+      decision: { signals: [], skipped: [] },
+    };
+    const decide = vi.spyOn(client, 'runAutotradeDecision').mockResolvedValueOnce(okResult);
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run screen' }));
+    expect(await screen.findByText('Candidates (1)')).toBeInTheDocument();
+
+    decide.mockRejectedValueOnce(new Error('provider down'));
+    fireEvent.click(screen.getByRole('button', { name: 'Run screen' }));
+
+    expect(await screen.findByText('provider down')).toBeInTheDocument();
+    expect(screen.queryByText('Candidates (1)')).toBeNull();
+  });
+
   it('shows a blocked risk-check reason when a signal fails a cap', async () => {
     const decideResult: AutotradeDecideResponse = {
       screen: {

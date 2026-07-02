@@ -413,6 +413,8 @@ export default function AutoTradePage() {
   const runScreen = async () => {
     setScreenBusy(true);
     setScreenErr(undefined);
+    setResult(undefined); // clear the last run's candidates so a failure can't look like it also ran
+    setRiskResults([]);
     try {
       const decided = await client.runAutotradeDecision();
       setResult(decided);

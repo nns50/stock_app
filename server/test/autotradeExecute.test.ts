@@ -7,6 +7,7 @@ import { initDb, db } from '../src/db';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { hasOpenPaperPosition, listPaperPositions, openPaperPosition } from '../src/db/autotradePaperPositions';
+import * as paperPositionsDb from '../src/db/autotradePaperPositions';
 import { attemptPaperEntry, checkPaperExits, runPaperExecution } from '../src/services/autotrading/execute';
 import { evaluateRiskCheck, RiskCheckResult } from '../src/services/autotrading/riskCheck';
 import { RISK_PROFILES } from '../src/services/autotrading/riskProfiles';
@@ -213,7 +214,7 @@ describe('runPaperExecution', () => {
     }
   });
 
-  it("isolates one candidate's persistence failure — the rest of the batch still runs", async () => {
+  it('rejects a candidate with a non-finite/invalid quote price, without opening a position', async () => {
     mockGetProvider.mockReturnValue(quoteReturning({ BAD1: NaN, OK1: 100 }) as never);
     const outcomes = await runPaperExecution([
       { signal: signal({ symbol: 'BAD1' }) },
@@ -224,6 +225,31 @@ describe('runPaperExecution', () => {
     expect(outcomes[1].ok).toBe(true); // OK1 is unaffected by BAD1's bad quote
     expect(hasOpenPaperPosition('OK1')).toBe(true);
     expect(hasOpenPaperPosition('BAD1')).toBe(false);
+  });
+
+  it("isolates one candidate's genuine persistence failure (openPaperPosition itself throwing) — the rest of the batch still runs", async () => {
+    // Distinct from the finite/positive quote check above: this exercises the
+    // try/catch AROUND openPaperPosition() itself, for a failure that check
+    // can't catch (e.g. a DB-layer error on an otherwise-valid quote).
+    mockGetProvider.mockReturnValue(quoteReturning({ BAD1: 100, OK1: 100 }) as never);
+    const openSpy = vi.spyOn(paperPositionsDb, 'openPaperPosition').mockImplementationOnce(() => {
+      throw new Error('disk I/O error');
+    });
+    try {
+      const outcomes = await runPaperExecution([
+        { signal: signal({ symbol: 'BAD1' }) },
+        { signal: signal({ symbol: 'OK1' }) },
+      ]);
+      expect(outcomes[0].ok).toBe(false);
+      expect(outcomes[0].reason).toMatch(/failed to record paper position/i);
+      expect(outcomes[1].ok).toBe(true); // OK1 still opens despite BAD1's persistence failure
+      expect(hasOpenPaperPosition('OK1')).toBe(true);
+      expect(hasOpenPaperPosition('BAD1')).toBe(false);
+      const failedEvent = listAutotradeEvents({ stage: 'execution', symbol: 'BAD1' })[0];
+      expect(failedEvent.action).toBe('paper_entry_failed');
+    } finally {
+      openSpy.mockRestore();
+    }
   });
 });
 
