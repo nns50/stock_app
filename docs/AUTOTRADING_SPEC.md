@@ -247,30 +247,54 @@ this list as decisions change — don't let it drift from what's actually built.
   undefined-risk strategies, both require an explicit, separate opt-in rather than shipping
   bundled by default. Rolling could be added later the same way, if wanted. **Not yet
   confirmed with the user.**
-- **Options backtest data source: OPEN, blocking Phase 11.** Unlike every other data-source
-  decision in this doc, this one is not resolved yet. The existing Polygon/Massive Stocks
-  Starter plan ($29/mo, confirmed above) has no options data at all — options aggregates,
-  chains, and Greeks are a separate Polygon/Massive product line, priced separately from the
-  stocks plans already confirmed. Direct attempts to verify current tier names/pricing/data
-  depth from Polygon's and Massive's own pricing pages (`polygon.io/options`,
-  `massive.com/pricing`) both returned HTTP 403 (bot-blocked), so nothing below is
-  vendor-confirmed the way the stocks-plan numbers above are — treat it as directional only.
-  Search results describe options data starting somewhere in the neighborhood of
-  $99-$399/mo depending on depth/tier, with one conflicting point worth resolving before
-  paying for anything: whether a **historical IV/Greeks time series** is actually included
-  at any tier, or only current/snapshot IV (one result claimed multi-year history "back to
-  2021," another said the Snapshot Options API "does not currently support" historical IV).
-  If historical IV/Greeks aren't actually sold as a packaged feed, that may not block this
-  anyway — this app already computes Greeks/IV itself from raw prices for the live Options
-  page (`options/blackScholes.ts`'s `bsGreeks`/`impliedVol`, the existing Yahoo live-Greeks
-  fallback), so a tier with historical options **price** bars alone (no packaged IV/Greeks
-  feed) could be sufficient — the same Black-Scholes math would just run over historical
-  bars instead of live ones. **Blocked on the user confirming what a tier actually
-  includes** (asked directly, reply pending) before recommending one or writing any
-  options-backtest ingestion code. Per the user's own explicit choice, this blocks not just
-  backtesting but all options implementation work below (phases 9-13) — options should get
-  the same backtest-before-built rigor equities got, not a weaker validation path just
-  because more of the underlying math already exists in this codebase.
+- **Options backtest data source: Massive/Polygon options pricing now confirmed —
+  tier choice pending.** The earlier attempt to verify this from Polygon's/Massive's own
+  pricing pages was blocked by HTTP 403s on both `polygon.io/options` and
+  `massive.com/pricing`; the user then checked the Massive options pricing page directly
+  (screenshot reviewed 2026-07-02), which resolves it. Options data is a separate
+  product line from the stocks plans already confirmed above, four tiers: **Options
+  Basic** ($0/mo — 5 calls/min, 2yr history, end-of-day only, no Greeks/IV/open interest,
+  no Flat Files), **Options Starter** ($29/mo — unlimited calls, 2yr history, 15-min
+  delayed, **Greeks/IV/open interest included**, minute aggregates, Flat Files, no
+  historical quotes), **Options Developer** ($79/mo — same as Starter plus 4yr history and
+  historical trade prints, still no historical quotes), **Options Advanced** ($199/mo —
+  5+ years history, real-time data, and the only tier with historical bid-ask quotes).
+
+  This resolves the earlier conflicting-secondary-source question directly: Greeks, IV,
+  and open interest are genuinely included starting at the **$29 Starter** tier (not
+  gated behind a pricier plan, and not limited to a live/current-only snapshot as one
+  secondary source had suggested), at the same 2-year depth as that tier's historical
+  bars. Combined with minute aggregates (which carry volume), Starter alone is enough to
+  backtest the open-interest filter, the volume filter, and the IV-rank filter
+  faithfully.
+
+  **One real gap below Advanced: no historical bid-ask quotes.** The liquidity spread
+  filter (max acceptable bid-ask spread, as % of midpoint) can't be backtested against a
+  real historical quote below the $199/mo Advanced tier — both Starter and Developer add
+  historical *trade* prices, never the quoted bid/ask at the time. This has zero effect
+  on live/paper trading either way: the spread filter there always reads the live chain
+  from whichever `MARKET_DATA_PROVIDER` is configured, never Polygon/Massive (the same
+  live-vs-backtest data split every other decision in this doc already makes) — it only
+  limits how faithfully the *backtest* can simulate that one specific filter.
+
+  **Recommendation, not yet confirmed with the user: Options Starter ($29/mo).** Mirrors
+  the stocks-plan decision's own reasoning almost exactly — unlimited calls, Flat Files
+  for bulk ingestion, doesn't need the real-time data a backtest can't use anyway — and
+  treats the spread-backtest gap as an accepted, explicitly-documented approximation
+  (OI/volume/IV-rank still backtest faithfully; the spread filter either isn't simulated
+  during backtesting at all, or is approximated from Greeks rather than an observed
+  quote), in the same spirit as Phase 5's own documented daily-bar approximations
+  (stop-wins-ties, next-day-open fills). Options Developer ($79/mo) doesn't close this
+  gap either — its only additions over Starter (4yr history, historical trade prints) do
+  nothing for spread backtesting, so it's only worth it for reasons unrelated to this
+  decision. Paying ~6.9x more for Advanced buys real historical quotes plus 5+ years of
+  history and real-time data — the latter two don't matter for backtesting, so the
+  entire incremental cost is really only about one filter's backtest fidelity. **Final
+  tier choice pending the user's answer** before writing any options-backtest ingestion
+  code. Per the user's own explicit choice, this still blocks not just backtesting but
+  all options implementation work below (phases 9-13) — options should get the same
+  backtest-before-built rigor equities got, not a weaker validation path just because
+  more of the underlying math already exists in this codebase.
 
 ## Phased roadmap
 
