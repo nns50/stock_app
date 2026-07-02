@@ -122,6 +122,25 @@ this list as decisions change — don't let it drift from what's actually built.
   15-min delay would matter there (unlike for backtesting) and a higher tier would be
   needed — that's a separate decision, not part of this one.
 
+  **Considered and deferred (Phase 7, after live rate-limiting from Yahoo — see below):**
+  whether to move the live Screen/scoring stage off Yahoo onto Polygon/Massive too.
+  Confirmed Polygon's Starter tier (already paid for) keeps its 15-minute delay for live
+  data — a dealbreaker for a strategy built around real-time pre-market gaps and volume
+  breakouts — so this would require an upgrade: **Developer (~$79/mo)** for a real-time
+  IEX-only feed (not the full consolidated tape) plus ticker fundamentals (sector via SIC
+  code, which could also retire the Yahoo dependency in
+  `services/autotrading/realEstateClassifier.ts`), or **Advanced (~$199/mo)** for the
+  full real-time SIP feed across all exchanges. **Decision: stay on Yahoo for now** — the
+  sector-classification caching fix (below) already removes the dominant source of
+  observed rate-limiting; revisit only if scoring-stage rate-limiting keeps recurring in
+  practice. If revisited, scope it narrowly to the auto-trading loop's own live
+  quotes/candles (mirroring how the backtest corpus is already its own separate
+  `config.polygon` namespace, decoupled from `MARKET_DATA_PROVIDER`) rather than
+  replacing the app's global provider — `MARKET_DATA_PROVIDER` is read by every other
+  page (Options, Screener, Positions), and the existing Polygon client
+  (`polygonClient.ts`) has no options-chain support at all, so a global swap would be a
+  much bigger build than this specific problem calls for.
+
 - **What "paper" execution actually means (Phase 6)**: confirmed via
   `docs/LIVE_TRADING_DESIGN.md` §13 — the Webull OpenAPI plan this app is integrated
   against has **no paper/sandbox account** ("None — go straight to the real account").
