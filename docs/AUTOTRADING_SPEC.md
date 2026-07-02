@@ -49,6 +49,89 @@ repo, worth resolving before implementation:
   every cycle — is the natural fit for the research → decide → risk-check → execute →
   journal cycle below, given the app's single always-on Node process on Fly.io.
 
+## Resolved decisions
+
+Answers to the open questions worked through before implementation started. Update
+this list as decisions change — don't let it drift from what's actually built.
+
+- **Broker: Webull**, via the existing v2 OpenAPI order pipeline (guardrails, order
+  lifecycle state machine, brackets, reconcile). No new broker integration — the
+  execution stage places orders through the same pipeline the human-confirmed
+  live-trading feature already uses, just without the per-trade confirmation prompt.
+- **Real-estate exclusion**: checked at the Research & Screen stage against *both* a
+  configurable symbol list (VNQ, IYR, XLRE, etc.) *and* sector/industry classification
+  pulled from the market-data provider (fundamentals lookup), so REITs and real-estate
+  operating companies outside the seeded S&P 500 `universe.sector` data still get
+  caught. Either match excludes the candidate before it reaches Decision.
+- **Correlated-ticker exposure cap**: defined by **statistical price correlation**
+  (pairwise correlation of returns across open + candidate positions), not sector
+  membership. The specific lookback window and correlation threshold (e.g. rolling
+  N-day return correlation, block above some |r|) still need to be pinned down during
+  the risk-engine phase — flagged there, not decided yet.
+- **Kill switch**: cancels all new and working orders and disables the auto-trading
+  loop immediately. It does **not** force-close existing positions — their existing
+  hard stop-losses remain in place as the exit mechanism. This is a deliberate,
+  narrower blast radius than "flatten everything."
+- **Backtest data source**: [FirstRate Data](https://firstratedata.com)'s free tier —
+  a one-time bulk CSV download of ~1 year of 1-minute bars for popular/liquid symbols,
+  not a rate-limited API — as the historical corpus for the backtest + walk-forward
+  harness. Alternatives ruled out: Alpha Vantage's free tier has real depth (~2 years)
+  but only 25 requests/day, which can't realistically pull multi-ticker 1-minute
+  history; Polygon.io's free tier is oriented around daily bars; Yahoo (already
+  integrated) is hard-capped at 7 days of 1-min / 59 days of 5-15min history, fine for
+  live scanning but not a walk-forward split. Backtest data and live-scan data are
+  intentionally decoupled — Yahoo's shallow depth is a non-issue for live screening,
+  which only needs a recent window, not years of history. Caveat: FirstRate's exact
+  current ticker coverage and file format under the free tier should be manually
+  verified (in a browser) before the backtesting phase starts — an automated fetch of
+  their download page was blocked by bot protection during research.
+
+## Phased roadmap
+
+Sequenced so that execution-capable (order-placing) code is built **last**, after the
+strategy and risk logic have been validated by backtesting — matching the spec's own
+gate below. Each phase should be independently mergeable and testable before the next
+starts.
+
+1. **Foundations** — DB schema for risk-profile config, the RE exclusion list, and a
+   shared journal-writing table/service that every later phase logs into (candidate
+   found, excluded, signal generated, risk-check pass/block, order placed, fill). No
+   screening or trading logic yet — just the scaffolding everything else writes to.
+2. **Screening & real-estate exclusion** (Research & Screen stage) — scan for
+   pre-market gappers / momentum / unusual-volume candidates; apply the RE exclusion
+   list + sector/industry check before anything else sees a candidate. Read-only:
+   surface results somewhere visible (e.g. a candidates list in the UI), place no
+   orders. Excluded candidates get logged same as a risk-check block.
+3. **Strategy / Decision module** — generate buy/sell signals (entry, stop, target)
+   from the screened candidates. Still fully read-only/logged-only — no risk engine,
+   no orders yet. This isolates "does the signal logic make sense" from "is it sized
+   and risk-checked correctly."
+4. **Risk engine** — `riskProfile` config (Moderate default / Aggressive, with the
+   required explicit UI confirmation to switch), per-trade sizing, daily-drawdown
+   halt, step-down sizing after consecutive losses, concurrent-position cap, the
+   pre-trade **max aggregate open risk** check, the statistical-correlation exposure
+   cap (window/threshold decided here), and the daily trade cap. Pure computation over
+   inputs from phases 2-3 plus current open positions — no market or broker
+   connection needed, so this is the most heavily unit-tested phase given it's the
+   safety-critical core.
+5. **Backtesting & walk-forward harness — the validation gate.** Ingest FirstRate
+   Data's historical bars and run phases 2-4 against them; produce an out-of-sample
+   walk-forward report (a strategy that only works on its tuning window must fail
+   this). Nothing downstream of this phase is allowed to place even a paper order
+   until it produces a credible result on a given strategy configuration.
+6. **Paper execution loop** — wire Research → Decision → Risk Check → Execution →
+   Journal into a recurring scheduled loop (reusing the alerts-poller's in-process
+   interval pattern), placing **paper** orders only through the existing Webull order
+   pipeline. Idempotent placement, explicit partial-fill/rejection/rate-limit
+   handling, no entries in the first/last N minutes of the session, volatility filter.
+7. **Monitoring dashboard & kill switch** — real-time panel (active risk profile, open
+   positions, aggregate open risk used vs. limit, day P&L, drawdown vs. halt, trade
+   count vs. max, consecutive loss streak) and the kill switch behavior resolved above.
+8. **Live-trading gate** — the manual flag flip that lets the loop place real orders,
+   after reviewing phase 5's backtest/walk-forward results and a period of phase 6
+   paper-trading track record. Deliberately the last and smallest phase: it mostly
+   unlocks what phases 1-7 already built, rather than adding new logic.
+
 ---
 
 ## Original spec
