@@ -293,10 +293,10 @@ this list as decisions change — don't let it drift from what's actually built.
 
   **Action item — the user's, not from here:** actually subscribing to the Options
   Starter add-on (billing, same as the stocks plan) still needs to happen before any
-  options history can be ingested — presumably against the same Massive/Polygon
-  account and `POLYGON_API_KEY` already configured for stocks, since options is an
-  add-on tier on the same platform rather than a separate vendor, but that should be
-  confirmed once actually subscribed (options endpoints may need their own key/scope).
+  options history can be ingested. Confirmed by the user: it uses the same
+  Massive/Polygon account and existing `POLYGON_API_KEY` already configured for
+  stocks — options is an add-on tier on the same account, not a separate vendor or a
+  second server-side secret to provision.
   **This resolves the data-source question, but does not by itself green-light writing
   phases 9-13** — per the user's own explicit sequencing choice earlier (data before
   implementation), the next step is confirming the subscription is active and history is
