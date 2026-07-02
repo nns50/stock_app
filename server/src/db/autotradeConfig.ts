@@ -21,6 +21,11 @@ export interface AutotradeConfig {
   /** Active risk profile. Defaults to MODERATE; switching to AGGRESSIVE is
    *  gated by an explicit confirmation at the route (see routes/autotrade.ts). */
   riskProfile: RiskProfileName;
+  /** Account equity (USD) the risk engine sizes trades and computes its %
+   *  caps against. No live broker balance is wired in yet (see
+   *  services/autotrading/riskCheck.ts) — set this manually. Null until set;
+   *  the risk engine fails closed (blocks everything) while it's unset. */
+  accountEquityUsd: number | null;
 }
 
 interface ConfigRow {
@@ -28,16 +33,23 @@ interface ConfigRow {
 }
 
 export function defaultAutotradeConfig(): AutotradeConfig {
-  return { enabled: false, riskProfile: 'MODERATE' };
+  return { enabled: false, riskProfile: 'MODERATE', accountEquityUsd: null };
 }
 
 /** Coerce a stored/patched config into a safe, complete AutotradeConfig. */
 function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
   const d = defaultAutotradeConfig();
+  const equity =
+    input.accountEquityUsd === null
+      ? null
+      : typeof input.accountEquityUsd === 'number' && input.accountEquityUsd > 0
+        ? input.accountEquityUsd
+        : d.accountEquityUsd;
   return {
     enabled: typeof input.enabled === 'boolean' ? input.enabled : d.enabled,
     riskProfile:
       input.riskProfile === 'AGGRESSIVE' || input.riskProfile === 'MODERATE' ? input.riskProfile : d.riskProfile,
+    accountEquityUsd: equity,
   };
 }
 

@@ -5,7 +5,7 @@ import AutoTradePage from './AutoTradePage';
 import { ToastProvider } from '../components/ToastContext';
 import { ConfirmProvider } from '../components/ConfirmContext';
 import { client } from '../api/client';
-import type { AutotradeDecideResponse } from '../api/types';
+import type { AutotradeDecideResponse, AutotradeRiskCheckResult } from '../api/types';
 
 function renderPage() {
   return render(
@@ -21,7 +21,11 @@ function renderPage() {
 
 beforeEach(() => {
   vi.restoreAllMocks();
-  vi.spyOn(client, 'autotradeConfig').mockResolvedValue({ enabled: false, riskProfile: 'MODERATE' });
+  vi.spyOn(client, 'autotradeConfig').mockResolvedValue({
+    enabled: false,
+    riskProfile: 'MODERATE',
+    accountEquityUsd: 100_000,
+  });
   vi.spyOn(client, 'autotradeExclusions').mockResolvedValue({
     exclusions: [{ symbol: 'VNQ', reason: 'Real estate ETF', source: 'default', createdAt: Date.now() }],
   });
@@ -36,12 +40,40 @@ describe('AutoTradePage', () => {
     const checkbox = screen.getByLabelText('Auto-trading enabled') as HTMLInputElement;
     expect(checkbox.checked).toBe(false);
     expect(screen.getByRole('combobox')).toHaveValue('MODERATE');
+    expect(screen.queryByText(/equity isn.t set/i)).toBeNull();
+  });
+
+  it('warns when account equity is not set', async () => {
+    vi.spyOn(client, 'autotradeConfig').mockResolvedValue({
+      enabled: false,
+      riskProfile: 'MODERATE',
+      accountEquityUsd: null,
+    });
+    renderPage();
+    expect(await screen.findByText(/equity isn.t set/i)).toBeInTheDocument();
+  });
+
+  it('saves a new account equity value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, riskProfile: 'MODERATE', accountEquityUsd: 50_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const equityInput = screen.getByPlaceholderText('e.g. 25000');
+    fireEvent.change(equityInput, { target: { value: '50000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ accountEquityUsd: 50_000, confirmAggressive: undefined }),
+    );
   });
 
   it('requires confirmation before switching to AGGRESSIVE, and does not save on cancel', async () => {
     const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue({
       enabled: false,
       riskProfile: 'AGGRESSIVE',
+      accountEquityUsd: 100_000,
     });
     renderPage();
     await screen.findByText('VNQ');
@@ -58,6 +90,7 @@ describe('AutoTradePage', () => {
     const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue({
       enabled: false,
       riskProfile: 'AGGRESSIVE',
+      accountEquityUsd: 100_000,
     });
     renderPage();
     await screen.findByText('VNQ');
@@ -71,7 +104,7 @@ describe('AutoTradePage', () => {
   it('toggling enabled does not prompt for confirmation', async () => {
     const setConfig = vi
       .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: true, riskProfile: 'MODERATE' });
+      .mockResolvedValue({ enabled: true, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
     renderPage();
     await screen.findByText('VNQ');
 
@@ -133,6 +166,31 @@ describe('AutoTradePage', () => {
       },
     };
     vi.spyOn(client, 'runAutotradeDecision').mockResolvedValue(result);
+    const riskCheck = vi.spyOn(client, 'runAutotradeRiskCheck').mockResolvedValue({
+      results: [
+        {
+          symbol: 'AAPL',
+          ok: true,
+          checks: [{ rule: 'equity_configured', passed: true, detail: '$100,000.00' }],
+          sizing: {
+            maxRiskDollars: 1000,
+            stopDistance: 4.5,
+            riskPerUnit: 4.5,
+            suggestedQuantity: 222,
+            positionCost: 46_761,
+            positionPctOfAccount: 46.76,
+            riskOfPosition: 999,
+            targetPrice: null,
+            targetProfit: null,
+            rewardRiskRatio: null,
+            warnings: [],
+          },
+          stepDownActive: false,
+          approvedRiskAmount: 999,
+          approvedNotional: 46_761,
+        },
+      ],
+    });
     renderPage();
     await screen.findByText('VNQ');
 
@@ -145,6 +203,95 @@ describe('AutoTradePage', () => {
     expect(screen.getByText('$206.00')).toBeInTheDocument(); // stop
     expect(screen.getByText('$219.50')).toBeInTheDocument(); // target
     expect(screen.getByText('2R')).toBeInTheDocument();
+    await waitFor(() => expect(riskCheck).toHaveBeenCalledWith(result.decision.signals));
+    expect(await screen.findByText('approved')).toBeInTheDocument();
+    expect(screen.getByText('222')).toBeInTheDocument(); // sized quantity
+  });
+
+  it('shows a blocked risk-check reason when a signal fails a cap', async () => {
+    const decideResult: AutotradeDecideResponse = {
+      screen: {
+        generatedAt: Date.now(),
+        candidates: [
+          {
+            symbol: 'MSFT',
+            price: 400,
+            total: 70,
+            passedFilters: true,
+            filterReasons: [],
+            components: [],
+            indicators: {
+              price: 400,
+              changePct: 2,
+              maShort: 390,
+              maLong: 380,
+              distShortPct: 2,
+              distLongPct: 5,
+              rsi: 60,
+              atr: 8,
+              atrPct: 2,
+              relVolume: 1.8,
+              avgVolume: 2_000_000,
+              volume: 3_600_000,
+              gapPct: 2,
+            },
+            discoverySource: 'universe',
+          },
+        ],
+        excluded: [],
+        skipped: [],
+        errors: [],
+        discovery: { universeCount: 124, moversCount: 0, scannedCount: 124 },
+      },
+      decision: {
+        signals: [
+          {
+            symbol: 'MSFT',
+            side: 'buy',
+            entry: 400,
+            stop: 388,
+            target: 424,
+            rMultiple: 2,
+            rationale: 'fixture',
+            score: 70,
+          },
+        ],
+        skipped: [],
+      },
+    };
+    vi.spyOn(client, 'runAutotradeDecision').mockResolvedValue(decideResult);
+    const blocked: AutotradeRiskCheckResult = {
+      symbol: 'MSFT',
+      ok: false,
+      checks: [
+        { rule: 'equity_configured', passed: true, detail: '$100,000.00' },
+        { rule: 'max_concurrent_positions', passed: false, detail: '2 open vs cap 2' },
+      ],
+      sizing: {
+        maxRiskDollars: 1000,
+        stopDistance: 12,
+        riskPerUnit: 12,
+        suggestedQuantity: 83,
+        positionCost: 33_200,
+        positionPctOfAccount: 33.2,
+        riskOfPosition: 996,
+        targetPrice: null,
+        targetProfit: null,
+        rewardRiskRatio: null,
+        warnings: [],
+      },
+      stepDownActive: false,
+      approvedRiskAmount: 0,
+      approvedNotional: 0,
+    };
+    vi.spyOn(client, 'runAutotradeRiskCheck').mockResolvedValue({ results: [blocked] });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run screen' }));
+
+    expect(await screen.findByText('blocked')).toBeInTheDocument();
+    expect(screen.getByText('max_concurrent_positions')).toBeInTheDocument();
   });
 
   it('shows a "no signal" section for decision-skipped candidates', async () => {
@@ -191,5 +338,30 @@ describe('AutoTradePage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Run screen' }));
 
     expect(await screen.findByText(/No signal — insufficient volatility history \(1\)/)).toBeInTheDocument();
+  });
+
+  it('summarizes a risk-check event\'s nested checks array instead of rendering "[object Object]"', async () => {
+    vi.spyOn(client, 'autotradeEvents').mockResolvedValue({
+      events: [
+        {
+          id: 1,
+          symbol: 'AAPL',
+          stage: 'risk_check',
+          action: 'blocked',
+          riskProfile: 'MODERATE',
+          createdAt: Date.now(),
+          detail: JSON.stringify({
+            checks: [
+              { rule: 'equity_configured', passed: true, detail: '$100,000.00' },
+              { rule: 'max_concurrent_positions', passed: false, detail: '2 open vs cap 2' },
+            ],
+            quantity: 0,
+          }),
+        },
+      ],
+    });
+    renderPage();
+    expect(await screen.findByText(/1\/2 failed: max_concurrent_positions/)).toBeInTheDocument();
+    expect(screen.queryByText(/object Object/)).toBeNull();
   });
 });

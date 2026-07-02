@@ -70,6 +70,8 @@ import type {
   AutotradeExclusion,
   AutotradeScreenResult,
   AutotradeDecideResponse,
+  AutotradeSignal,
+  AutotradeRiskCheckResult,
   AutotradeEvent,
   AutotradeStage,
 } from './types';
@@ -393,8 +395,12 @@ export const client = {
 
   // --- auto-trading (docs/AUTOTRADING_SPEC.md) ---
   autotradeConfig: () => api<AutotradeConfig>('/autotrade/config'),
-  setAutotradeConfig: (body: { enabled?: boolean; riskProfile?: AutotradeRiskProfile; confirmAggressive?: boolean }) =>
-    api<AutotradeConfig>('/autotrade/config', { method: 'PUT', body: JSON.stringify(body) }),
+  setAutotradeConfig: (body: {
+    enabled?: boolean;
+    riskProfile?: AutotradeRiskProfile;
+    confirmAggressive?: boolean;
+    accountEquityUsd?: number | null;
+  }) => api<AutotradeConfig>('/autotrade/config', { method: 'PUT', body: JSON.stringify(body) }),
   autotradeExclusions: () => api<{ exclusions: AutotradeExclusion[] }>('/autotrade/exclusions'),
   addAutotradeExclusion: (body: { symbol: string; reason?: string }) =>
     api<AutotradeExclusion>('/autotrade/exclusions', post(body)),
@@ -404,6 +410,8 @@ export const client = {
     api<AutotradeScreenResult>('/autotrade/screen', post(body)),
   runAutotradeDecision: (body: { symbols?: string[] } = {}) =>
     api<AutotradeDecideResponse>('/autotrade/decide', post(body)),
+  runAutotradeRiskCheck: (signals: AutotradeSignal[]) =>
+    api<{ results: AutotradeRiskCheckResult[] }>('/autotrade/risk-check', post({ signals })),
   autotradeEvents: (params: { stage?: AutotradeStage; symbol?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams(params as Record<string, string>).toString();
     return api<{ events: AutotradeEvent[] }>(`/autotrade/events${qs ? `?${qs}` : ''}`);

@@ -4,13 +4,35 @@ import { useAsync } from '../lib/hooks';
 import { useToast } from '../components/ToastContext';
 import { useConfirm } from '../components/ConfirmContext';
 import { ago, fmtNum, fmtPct, fmtUsd } from '../lib/format';
-import { Badge, Card, EmptyState, ErrorState, Field, PageHeader, Spinner } from '../components/ui';
-import type { AutotradeDecideResponse, AutotradeRiskProfile } from '../api/types';
+import { Badge, Card, EmptyState, ErrorState, Field, NumberInput, PageHeader, Spinner } from '../components/ui';
+import type { AutotradeDecideResponse, AutotradeRiskCheckResult, AutotradeRiskProfile } from '../api/types';
 
-// Foundations + Research & Screen + Decision (Phases 1-3 of
+// Foundations + Research & Screen + Decision + Risk Check (Phases 1-4 of
 // docs/AUTOTRADING_SPEC.md). Read-only end to end: this page configures and
-// observes the auto-trading initiative, it never places an order — Risk Check
-// and Execution are later phases.
+// observes the auto-trading initiative, it never places an order — Execution
+// is the only stage left before the live-trading gate.
+
+// A plain value renders directly; an array/object would otherwise coerce to
+// "[object Object]" in a template literal (e.g. a risk-check event's `checks`
+// array) — summarize those instead so the journal never shows that.
+function summarizeDetailValue(v: unknown): string {
+  if (v === null || v === undefined) return String(v);
+  if (Array.isArray(v)) {
+    if (v.every((item) => typeof item !== 'object' || item === null)) return v.join(', ');
+    // A risk-check `checks` array ({rule, passed, detail}) — the common case —
+    // summarizes as pass/fail counts and which rule(s) failed.
+    if (v.every((item) => item && typeof item === 'object' && 'rule' in item && 'passed' in item)) {
+      const checks = v as { rule: string; passed: boolean }[];
+      const failed = checks.filter((c) => !c.passed);
+      return failed.length === 0
+        ? `${checks.length} checks, all passed`
+        : `${failed.length}/${checks.length} failed: ${failed.map((c) => c.rule).join(', ')}`;
+    }
+    return `${v.length} item${v.length === 1 ? '' : 's'}`;
+  }
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+}
 
 function detailText(detail: string | null): string {
   if (!detail) return '—';
@@ -18,7 +40,7 @@ function detailText(detail: string | null): string {
     const parsed = JSON.parse(detail) as unknown;
     if (parsed && typeof parsed === 'object') {
       return Object.entries(parsed as Record<string, unknown>)
-        .map(([k, v]) => `${k}: ${v}`)
+        .map(([k, v]) => `${k}: ${summarizeDetailValue(v)}`)
         .join(', ');
     }
     return String(parsed);
@@ -45,13 +67,19 @@ export default function AutoTradePage() {
 
   const [enabled, setEnabled] = useState(false);
   const [riskProfile, setRiskProfile] = useState<AutotradeRiskProfile>('MODERATE');
+  const [equityDraft, setEquityDraft] = useState<number | undefined>();
   useEffect(() => {
     if (!config.data) return;
     setEnabled(config.data.enabled);
     setRiskProfile(config.data.riskProfile);
+    setEquityDraft(config.data.accountEquityUsd ?? undefined);
   }, [config.data]);
 
-  const saveConfig = async (patch: { enabled?: boolean; riskProfile?: AutotradeRiskProfile }) => {
+  const saveConfig = async (patch: {
+    enabled?: boolean;
+    riskProfile?: AutotradeRiskProfile;
+    accountEquityUsd?: number | null;
+  }) => {
     if (patch.riskProfile === 'AGGRESSIVE' && riskProfile !== 'AGGRESSIVE') {
       const ok = await confirm({
         title: 'Switch to AGGRESSIVE?',
@@ -68,6 +96,7 @@ export default function AutoTradePage() {
       });
       setEnabled(saved.enabled);
       setRiskProfile(saved.riskProfile);
+      config.reload(); // keeps config.data — the equity-not-set warning's source of truth — fresh
       toast('Auto-trading settings saved', { type: 'success' });
     } catch (e) {
       toast((e as Error).message || 'Could not save settings', { type: 'error' });
@@ -107,12 +136,17 @@ export default function AutoTradePage() {
 
   const [screenBusy, setScreenBusy] = useState(false);
   const [result, setResult] = useState<AutotradeDecideResponse>();
+  const [riskResults, setRiskResults] = useState<AutotradeRiskCheckResult[]>([]);
   const [screenErr, setScreenErr] = useState<string>();
   const runScreen = async () => {
     setScreenBusy(true);
     setScreenErr(undefined);
     try {
-      setResult(await client.runAutotradeDecision());
+      const decided = await client.runAutotradeDecision();
+      setResult(decided);
+      setRiskResults(
+        decided.decision.signals.length ? (await client.runAutotradeRiskCheck(decided.decision.signals)).results : [],
+      );
       events.reload();
     } catch (e) {
       setScreenErr((e as Error).message || 'Screen failed');
@@ -125,6 +159,7 @@ export default function AutoTradePage() {
   const eventRows = events.data?.events ?? [];
   const screenResult = result?.screen;
   const signalBySymbol = new Map((result?.decision.signals ?? []).map((s) => [s.symbol, s]));
+  const riskBySymbol = new Map(riskResults.map((r) => [r.symbol, r]));
 
   return (
     <div className="space-y-4">
@@ -164,7 +199,28 @@ export default function AutoTradePage() {
                 <option value="AGGRESSIVE">Aggressive</option>
               </select>
             </Field>
+            <Field
+              label="Account equity ($)"
+              hint="The risk engine sizes trades and computes its % caps against this. No live broker balance is wired in yet — set it manually."
+            >
+              <div className="flex gap-2">
+                <NumberInput value={equityDraft} onChange={setEquityDraft} placeholder="e.g. 25000" />
+                <button
+                  className="btn-ghost shrink-0"
+                  onClick={() => saveConfig({ accountEquityUsd: equityDraft ?? null })}
+                  disabled={equityDraft === (config.data?.accountEquityUsd ?? undefined)}
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
           </div>
+        )}
+        {config.data && config.data.accountEquityUsd === null && (
+          <p className="text-[11px] text-bear mt-3">
+            Account equity isn&apos;t set — the risk engine blocks every trade until it is (fails closed rather than
+            guessing).
+          </p>
         )}
         {enabled && (
           <p className="text-[11px] text-amber-400 mt-3">
@@ -260,53 +316,76 @@ export default function AutoTradePage() {
               {screenResult.candidates.length === 0 ? (
                 <p className="text-xs text-slate-500">No candidates passed screening this run.</p>
               ) : (
-                <table className="w-full">
-                  <thead className="border-b border-ink-600/60">
-                    <tr>
-                      <th className="th">Symbol</th>
-                      <th className="th text-right">Price</th>
-                      <th className="th text-right">Score</th>
-                      <th className="th text-right">Gap</th>
-                      <th className="th text-right">Rel Vol</th>
-                      <th className="th">Source</th>
-                      <th className="th text-right">Entry</th>
-                      <th className="th text-right">Stop</th>
-                      <th className="th text-right">Target</th>
-                      <th className="th text-right">R</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {screenResult.candidates.map((c) => {
-                      const signal = signalBySymbol.get(c.symbol);
-                      return (
-                        <tr key={c.symbol} className="border-b border-ink-700/50">
-                          <td className="td font-semibold">{c.symbol}</td>
-                          <td className="td text-right tabular-nums">{fmtUsd(c.price)}</td>
-                          <td className="td text-right tabular-nums">{fmtNum(c.total, 1)}</td>
-                          <td className="td text-right tabular-nums">
-                            {c.indicators.gapPct === null ? '—' : fmtPct(c.indicators.gapPct)}
-                          </td>
-                          <td className="td text-right tabular-nums">
-                            {c.indicators.relVolume === null ? '—' : `${fmtNum(c.indicators.relVolume)}×`}
-                          </td>
-                          <td className="td">
-                            <Badge color={c.discoverySource === 'movers' ? 'green' : 'slate'}>
-                              {c.discoverySource}
-                            </Badge>
-                          </td>
-                          <td className="td text-right tabular-nums" title={signal?.rationale}>
-                            {signal ? fmtUsd(signal.entry) : '—'}
-                          </td>
-                          <td className="td text-right tabular-nums text-bear">{signal ? fmtUsd(signal.stop) : '—'}</td>
-                          <td className="td text-right tabular-nums text-bull">
-                            {signal ? fmtUsd(signal.target) : '—'}
-                          </td>
-                          <td className="td text-right tabular-nums">{signal ? `${signal.rMultiple}R` : '—'}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="border-b border-ink-600/60">
+                      <tr>
+                        <th className="th">Symbol</th>
+                        <th className="th text-right">Price</th>
+                        <th className="th text-right">Score</th>
+                        <th className="th text-right">Gap</th>
+                        <th className="th text-right">Rel Vol</th>
+                        <th className="th">Source</th>
+                        <th className="th text-right">Entry</th>
+                        <th className="th text-right">Stop</th>
+                        <th className="th text-right">Target</th>
+                        <th className="th text-right">R</th>
+                        <th className="th text-right">Qty</th>
+                        <th className="th">Risk check</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {screenResult.candidates.map((c) => {
+                        const signal = signalBySymbol.get(c.symbol);
+                        const risk = riskBySymbol.get(c.symbol);
+                        const failing = risk?.checks.filter((chk) => !chk.passed) ?? [];
+                        return (
+                          <tr key={c.symbol} className="border-b border-ink-700/50">
+                            <td className="td font-semibold">{c.symbol}</td>
+                            <td className="td text-right tabular-nums">{fmtUsd(c.price)}</td>
+                            <td className="td text-right tabular-nums">{fmtNum(c.total, 1)}</td>
+                            <td className="td text-right tabular-nums">
+                              {c.indicators.gapPct === null ? '—' : fmtPct(c.indicators.gapPct)}
+                            </td>
+                            <td className="td text-right tabular-nums">
+                              {c.indicators.relVolume === null ? '—' : `${fmtNum(c.indicators.relVolume)}×`}
+                            </td>
+                            <td className="td">
+                              <Badge color={c.discoverySource === 'movers' ? 'green' : 'slate'}>
+                                {c.discoverySource}
+                              </Badge>
+                            </td>
+                            <td className="td text-right tabular-nums" title={signal?.rationale}>
+                              {signal ? fmtUsd(signal.entry) : '—'}
+                            </td>
+                            <td className="td text-right tabular-nums text-bear">
+                              {signal ? fmtUsd(signal.stop) : '—'}
+                            </td>
+                            <td className="td text-right tabular-nums text-bull">
+                              {signal ? fmtUsd(signal.target) : '—'}
+                            </td>
+                            <td className="td text-right tabular-nums">{signal ? `${signal.rMultiple}R` : '—'}</td>
+                            <td className="td text-right tabular-nums">
+                              {risk && risk.ok ? risk.sizing.suggestedQuantity : '—'}
+                            </td>
+                            <td className="td">
+                              {!risk ? (
+                                '—'
+                              ) : risk.ok ? (
+                                <Badge color="green">approved</Badge>
+                              ) : (
+                                <span title={failing.map((chk) => `${chk.rule}: ${chk.detail}`).join('\n')}>
+                                  <Badge color="red">blocked</Badge>{' '}
+                                  <span className="text-[11px] text-slate-500">{failing[0]?.rule}</span>
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </ScreenSection>
             {result && result.decision.skipped.length > 0 && (
@@ -359,7 +438,9 @@ export default function AutoTradePage() {
             <p className="text-xs text-slate-500">
               Scans the universe (plus Webull&apos;s pre-market movers, if configured) for volume-breakout candidates,
               screening out real estate first, then computes an ATR-based stop and reward:risk target for each one that
-              clears. Read-only — nothing here places an order.
+              clears, then sizes and risk-checks it against the active profile&apos;s caps (daily drawdown, concurrent
+              positions, max aggregate open risk, correlated-ticker exposure, daily trade cap). Read-only — nothing here
+              places an order.
             </p>
           )
         )}
@@ -407,9 +488,8 @@ export default function AutoTradePage() {
       </Card>
 
       <p className="text-[11px] text-slate-500">
-        Decision-support and tracking only — this scans and journals but never places an order. See
-        docs/AUTOTRADING_SPEC.md for the full plan; the risk engine, execution loop, and live-trading gate are still
-        upcoming phases.
+        Decision-support and tracking only — this scans, sizes, and journals but never places an order. See
+        docs/AUTOTRADING_SPEC.md for the full plan; the execution loop and live-trading gate are still upcoming phases.
       </p>
     </div>
   );

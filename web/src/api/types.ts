@@ -1030,6 +1030,7 @@ export type AutotradeRiskProfile = 'MODERATE' | 'AGGRESSIVE';
 export interface AutotradeConfig {
   enabled: boolean;
   riskProfile: AutotradeRiskProfile;
+  accountEquityUsd: number | null;
 }
 
 export type AutotradeExclusionSource = 'default' | 'user';
@@ -1087,4 +1088,20 @@ export interface AutotradeDecisionResult {
 export interface AutotradeDecideResponse {
   screen: AutotradeScreenResult;
   decision: AutotradeDecisionResult;
+}
+
+export interface AutotradeRiskCheckRule {
+  rule: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface AutotradeRiskCheckResult {
+  symbol: string;
+  ok: boolean;
+  checks: AutotradeRiskCheckRule[];
+  sizing: RiskSizingResult;
+  stepDownActive: boolean;
+  approvedRiskAmount: number;
+  approvedNotional: number;
 }

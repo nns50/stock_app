@@ -6,6 +6,7 @@ import { addExclusion, listExclusions, removeExclusion } from '../db/autotradeEx
 import { AutotradeStage, listAutotradeEvents, logAutotradeEvent } from '../db/autotradeEvents';
 import { runAutotradeScreen } from '../services/autotrading/screen';
 import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/decide';
+import { runAutotradeRiskCheck } from '../services/autotrading/riskCheck';
 import { ScreenerConfig } from '../indicators/screener';
 
 export const autotradeRouter = Router();
@@ -22,6 +23,9 @@ const configBody = z.object({
   /** Required (and must be true) when riskProfile is 'AGGRESSIVE' — the spec's
    *  "explicit manual confirmation in the UI, not just a config edit" gate. */
   confirmAggressive: z.boolean().optional(),
+  /** Account equity the risk engine sizes against; null clears it (fails
+   *  closed until set again). */
+  accountEquityUsd: z.number().positive().nullable().optional(),
 });
 autotradeRouter.put(
   '/config',
@@ -31,7 +35,11 @@ autotradeRouter.put(
       throw new HttpError(400, 'Switching to AGGRESSIVE requires explicit confirmation (confirmAggressive: true)');
     }
     const before = getAutotradeConfig();
-    const next = setAutotradeConfig({ enabled: body.enabled, riskProfile: body.riskProfile });
+    const next = setAutotradeConfig({
+      enabled: body.enabled,
+      riskProfile: body.riskProfile,
+      accountEquityUsd: body.accountEquityUsd,
+    });
     if (next.riskProfile !== before.riskProfile) {
       logAutotradeEvent({
         stage: 'config',
@@ -44,6 +52,14 @@ autotradeRouter.put(
       logAutotradeEvent({
         stage: 'config',
         action: next.enabled ? 'enabled' : 'disabled',
+        riskProfile: next.riskProfile,
+      });
+    }
+    if (next.accountEquityUsd !== before.accountEquityUsd) {
+      logAutotradeEvent({
+        stage: 'config',
+        action: 'equity_changed',
+        detail: { from: before.accountEquityUsd, to: next.accountEquityUsd },
         riskProfile: next.riskProfile,
       });
     }
@@ -124,6 +140,28 @@ autotradeRouter.post(
     });
     const decision = runAutotradeDecision(screen.candidates, body.decision as Partial<DecisionConfig> | undefined);
     res.json({ screen, decision });
+  }),
+);
+
+// ---- Risk Check --------------------------------------------------------------
+
+const signalBody = z.object({
+  symbol: z.string().min(1),
+  side: z.enum(['buy', 'sell']),
+  entry: z.number().positive(),
+  stop: z.number().positive(),
+  target: z.number().positive(),
+  rMultiple: z.number().positive(),
+  rationale: z.string(),
+  score: z.number(),
+});
+const riskCheckBody = z.object({ signals: z.array(signalBody).min(1) });
+autotradeRouter.post(
+  '/risk-check',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(riskCheckBody, req);
+    const results = await runAutotradeRiskCheck(body.signals);
+    res.json({ results });
   }),
 );
 

@@ -36,4 +36,27 @@ describe('autotrade config persistence', () => {
     db.prepare('INSERT INTO autotrade_config (id, config, updated_at) VALUES (1, ?, ?)').run('not json', Date.now());
     expect(getAutotradeConfig()).toEqual(defaultAutotradeConfig());
   });
+
+  it('accountEquityUsd defaults to null', () => {
+    expect(getAutotradeConfig().accountEquityUsd).toBeNull();
+  });
+
+  it('persists a positive accountEquityUsd', () => {
+    const cfg = setAutotradeConfig({ accountEquityUsd: 100_000 });
+    expect(cfg.accountEquityUsd).toBe(100_000);
+    expect(getAutotradeConfig().accountEquityUsd).toBe(100_000);
+  });
+
+  it('can be explicitly cleared back to null', () => {
+    setAutotradeConfig({ accountEquityUsd: 50_000 });
+    const cfg = setAutotradeConfig({ accountEquityUsd: null });
+    expect(cfg.accountEquityUsd).toBeNull();
+  });
+
+  it('rejects a non-positive equity, failing closed to null', () => {
+    setAutotradeConfig({ accountEquityUsd: 50_000 });
+    // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+    const cfg = setAutotradeConfig({ accountEquityUsd: -10 });
+    expect(cfg.accountEquityUsd).toBeNull();
+  });
 });

@@ -159,14 +159,44 @@ starts.
    signal logic make sense" from "is it sized and risk-checked correctly." Routed at
    `POST /api/autotrade/decide` (runs screen + decision together); the Auto-Trade page's
    candidates table now shows Entry/Stop/Target/R per candidate.
-4. **Risk engine** — `riskProfile` config (Moderate default / Aggressive, with the
-   required explicit UI confirmation to switch), per-trade sizing, daily-drawdown
-   halt, step-down sizing after consecutive losses, concurrent-position cap, the
-   pre-trade **max aggregate open risk** check, the statistical-correlation exposure
-   cap (window/threshold decided here), and the daily trade cap. Pure computation over
-   inputs from phases 2-3 plus current open positions — no market or broker
-   connection needed, so this is the most heavily unit-tested phase given it's the
-   safety-critical core.
+4. **Risk engine — shipped.** `services/autotrading/riskCheck.ts` sizes each signal by
+   the active profile's `riskPerTradePct` (reusing `services/riskSizing.ts`'s
+   `computeRiskSizing()` unchanged — same math the manual "Size by risk" tool uses),
+   applying step-down (50% cut) once the losing streak reaches `stepDownAfterLosses`,
+   then gates it through every profile cap: `equity_configured` (fails closed — blocks
+   everything — until equity is set), `quantity`, `daily_drawdown_halt`,
+   `max_trades_per_day`, `max_concurrent_positions`, the CRITICAL
+   `max_aggregate_open_risk`, and `max_correlated_exposure`. Correlation window/
+   threshold (the spec's deferred decision): **30 trading days, |r| ≥ 0.7** — a
+   standard "strong correlation" convention, applied to daily-return Pearson
+   correlation (`indicators.ts`'s new `pearsonCorrelation`/`dailyReturns`) between each
+   open position and the candidate. The correlated-exposure check does **not** count
+   the candidate's own notional — a symbol is trivially "correlated" with itself, so
+   including it would block even a lone, uncorrelated first trade purely against
+   itself (caught by hand-checking the numbers before writing tests, not by a test
+   failure — worth having caught before it shipped).
+   Signals are risk-checked **sequentially as a batch**, not independently against a
+   static snapshot — an approved signal's risk/notional/position-count is added to a
+   running total before the next signal in the batch is checked, so a batch of
+   individually-fine signals can't jointly bust a cap none of them would trip alone
+   (verified live: with 5 candidates and MODERATE's 2-position cap, the top-2-scored
+   candidates were approved and every candidate after that was correctly blocked on
+   `max_concurrent_positions` once the running count hit the cap).
+   **Known interim scope, to revisit in Phase 6:** concurrent-position count and
+   aggregate open risk are account-wide regardless of source (mirrors how the
+   live-trading guardrails already treat "the account" as one unified thing — the
+   safer reading, since it can't understate real exposure). Daily P&L, the
+   consecutive-loss streak, and account equity are **not** yet auto-trading-specific —
+   there's no "Phase 6 executed this" position marker to filter on yet, since nothing
+   has executed an auto-trade. Equity is a manually-set number
+   (`autotrade_config.accountEquityUsd`), not live broker data — Webull's account-state
+   call needs an `accountId` with no natural source for an unattended loop yet; revisit
+   once Phase 6 has one. Pure evaluator (`evaluateRiskCheck`) is heavily unit-tested,
+   per the spec's call for the heaviest coverage on this phase; the orchestration
+   wrapper (`runAutotradeRiskCheck`) assembles real portfolio state and is exercised
+   against the real `positions` journal in tests, plus verified live in a browser.
+   Routed at `POST /api/autotrade/risk-check`; the Auto-Trade page's candidates table
+   shows a Qty + pass/fail Risk-check column per candidate.
 5. **Backtesting & walk-forward harness — the validation gate.** Ingest FirstRate
    Data's historical bars and run phases 2-4 against them; produce an out-of-sample
    walk-forward report (a strategy that only works on its tuning window must fail
