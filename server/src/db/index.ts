@@ -208,6 +208,38 @@ CREATE TABLE IF NOT EXISTS autotrade_events (
   created_at   INTEGER NOT NULL
 );
 
+-- Local cache of Polygon/Massive historical bars for the backtest harness
+-- (docs/AUTOTRADING_SPEC.md, Phase 5) — a walk-forward run re-queries the same
+-- symbol/period repeatedly, and Polygon Starter's depth is finite, so this
+-- avoids re-fetching from the network every run.
+CREATE TABLE IF NOT EXISTS backtest_bars (
+  symbol      TEXT NOT NULL,
+  timeframe   TEXT NOT NULL,
+  time        INTEGER NOT NULL,        -- ms epoch, bar start
+  open        REAL NOT NULL,
+  high        REAL NOT NULL,
+  low         REAL NOT NULL,
+  close       REAL NOT NULL,
+  volume      REAL NOT NULL,
+  PRIMARY KEY (symbol, timeframe, time)
+);
+
+-- Tracks which [from,to] ranges have actually been FETCHED from Polygon, per
+-- symbol/timeframe — deliberately separate from backtest_bars' own min/max,
+-- since trading data has gaps (weekends/holidays) that never align exactly
+-- with a requested calendar boundary. Inferring "is this range cached" from
+-- the data's own earliest/latest bar was tried and is wrong (see the fix in
+-- historicalData.ts) — this explicit log is the correct source of truth for
+-- "did we already ask for this."
+CREATE TABLE IF NOT EXISTS backtest_fetch_log (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol      TEXT NOT NULL,
+  timeframe   TEXT NOT NULL,
+  from_date   TEXT NOT NULL,          -- YYYY-MM-DD, as requested
+  to_date     TEXT NOT NULL,
+  fetched_at  INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_exits_position ON position_exits(position_id);
 CREATE INDEX IF NOT EXISTS idx_picks_snapshot ON screener_picks(snapshot_id);
@@ -215,6 +247,7 @@ CREATE INDEX IF NOT EXISTS idx_order_events_intent ON order_events(intent_id);
 CREATE INDEX IF NOT EXISTS idx_autotrade_events_symbol ON autotrade_events(symbol);
 CREATE INDEX IF NOT EXISTS idx_autotrade_events_stage ON autotrade_events(stage);
 CREATE INDEX IF NOT EXISTS idx_autotrade_events_created ON autotrade_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_backtest_fetch_log_lookup ON backtest_fetch_log(symbol, timeframe);
 `;
 
 interface SeedRow {
