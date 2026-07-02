@@ -401,10 +401,18 @@ export default function AutoTradePage() {
   const { toast } = useToast();
   const confirm = useConfirm();
 
-  const [dashLastUpdated, setDashLastUpdated] = useState<number | null>(null);
-  const reloadDashboard = () => {
-    setDashLastUpdated(Date.now());
+  // Monitoring, Paper trading, and Recent activity all reflect state the
+  // background loop can change on its own, every 60s, with nothing the user
+  // clicked — unlike Configuration/exclusions/backtest, which only change in
+  // response to a direct action. One shared refresh (manual + opt-in polling,
+  // matching this app's "polling is opt-in" convention) covers all three
+  // instead of three separate controls a user could easily leave out of sync.
+  const [liveDataLastUpdated, setLiveDataLastUpdated] = useState<number | null>(null);
+  const refreshLiveData = () => {
+    setLiveDataLastUpdated(Date.now());
     dashboard.reload();
+    paperPositions.reload();
+    events.reload();
   };
 
   const [enabled, setEnabled] = useState(false);
@@ -441,7 +449,7 @@ export default function AutoTradePage() {
       setEnabled(saved.enabled);
       setRiskProfile(saved.riskProfile);
       config.reload(); // keeps config.data — the equity-not-set warning's source of truth — fresh
-      reloadDashboard(); // risk profile / equity changes shift the dashboard's caps
+      refreshLiveData(); // risk profile / equity changes shift the dashboard's caps, and get journaled
       toast('Auto-trading settings saved', { type: 'success' });
     } catch (e) {
       toast((e as Error).message || 'Could not save settings', { type: 'error' });
@@ -455,8 +463,7 @@ export default function AutoTradePage() {
       const next = await client.setAutotradeKillSwitch(!killSwitch);
       setKillSwitch(next.killSwitch);
       config.reload();
-      reloadDashboard();
-      events.reload();
+      refreshLiveData();
       toast(next.killSwitch ? 'Kill switch engaged — new entries halted' : 'Kill switch released', {
         type: next.killSwitch ? 'info' : 'success',
       });
@@ -587,9 +594,7 @@ export default function AutoTradePage() {
     setLoopSummary(undefined); // clear the last run's numbers so a failure can't look like it also ran
     try {
       setLoopSummary(await client.runAutotradeLoopOnce());
-      paperPositions.reload();
-      events.reload();
-      reloadDashboard();
+      refreshLiveData();
     } catch (e) {
       setLoopErr((e as Error).message || 'Loop cycle failed');
     } finally {
@@ -605,6 +610,13 @@ export default function AutoTradePage() {
           checks, backtesting, a paper execution loop, and a monitoring dashboard + kill switch are all wired up.
           Paper trading (below) never places a real order — it's a local simulation. The live-trading gate is the
           one remaining phase."
+        actions={
+          <RefreshBar
+            onRefresh={refreshLiveData}
+            lastUpdated={liveDataLastUpdated}
+            loading={dashboard.loading || paperPositions.loading || events.loading}
+          />
+        }
       />
 
       <Card className="p-4">
@@ -693,14 +705,11 @@ export default function AutoTradePage() {
       </Card>
 
       <Card className="p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-medium text-sm">Monitoring</h3>
-          <RefreshBar onRefresh={reloadDashboard} lastUpdated={dashLastUpdated} loading={dashboard.loading} />
-        </div>
+        <h3 className="font-medium text-sm mb-3">Monitoring</h3>
         {dashboard.loading && !dashboard.data ? (
           <Spinner />
         ) : dashboard.error ? (
-          <ErrorState error={dashboard.error} onRetry={reloadDashboard} />
+          <ErrorState error={dashboard.error} onRetry={dashboard.reload} />
         ) : dashboard.data ? (
           <MonitoringDashboard dash={dashboard.data} />
         ) : null}
