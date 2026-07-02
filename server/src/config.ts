@@ -98,6 +98,16 @@ export const config = {
   trading: {
     placeEnabled: ['1', 'true', 'yes'].includes((process.env.TRADING_ENABLED || '').toLowerCase()),
   },
+  /**
+   * Polygon.io (rebranded Massive.com, same account/API) — historical bars for
+   * the auto-trading backtest + walk-forward harness ONLY (docs/AUTOTRADING_SPEC.md
+   * — Phase 5). Deliberately separate from `provider`/MARKET_DATA_PROVIDER above:
+   * this key never feeds live screening or quotes, just the backtest corpus.
+   * Server-side only, never committed.
+   */
+  polygon: {
+    apiKey: process.env.POLYGON_API_KEY || '',
+  },
 };
 
 export type AppConfig = typeof config;

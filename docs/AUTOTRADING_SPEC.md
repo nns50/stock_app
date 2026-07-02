@@ -72,32 +72,47 @@ this list as decisions change — don't let it drift from what's actually built.
   loop immediately. It does **not** force-close existing positions — their existing
   hard stop-losses remain in place as the exit mechanism. This is a deliberate,
   narrower blast radius than "flatten everything."
-- **Backtest data source: Polygon.io Stocks "Starter" plan (paid, ~$29/mo)**. Polygon
-  rebranded to [Massive](https://massive.com) on 2025-10-30 — same accounts/APIs, old
-  `polygon.io` endpoints still work, no forced migration. Starter's headline
-  restriction is 15-minute-delayed data, which is irrelevant for backtesting (a
-  walk-forward harness only ever queries *past* bars — "delayed" doesn't apply to
-  history that's already months or years old). Reasonably confirmed: unlimited
-  requests/minute on paid plans (no free-tier-style throttling), multi-year historical
-  aggregates. Not independently confirmed — verify at signup before relying on it:
-  whether the ~10-year depth quoted for Starter applies to **minute**-granularity
-  aggregates specifically, versus daily bars (direct fetches of Polygon/Massive's own
-  pricing docs were blocked by bot protection during research, so this is based on
-  secondary sources, not the primary doc). Action item: this requires the user to
-  create a Massive/Polygon account and pay for the plan directly — not something that
-  can be done from here; the resulting API key goes server-side only in
-  `server/.env`, same as every other provider key.
+- **Backtest data source: Polygon.io Stocks "Starter" plan, $29/mo — confirmed and
+  final.** Polygon rebranded to [Massive](https://massive.com) on 2025-10-30 — same
+  account/API, old `polygon.io` endpoints still work, no forced migration. Confirmed
+  directly from Massive's current pricing page (not secondary sources): all US stock
+  tickers, **unlimited API calls**, **5 years of historical data**, **100% market
+  coverage**, minute aggregates, Flat Files (bulk download — no pagination needed to
+  ingest years of history), reference data, and corporate actions. The 15-minute-delay
+  restriction is irrelevant for backtesting (a walk-forward harness only ever queries
+  *past* bars). The $79/mo Developer tier (10yr + trade-level tick data) isn't worth it
+  for this app — the strategy only needs aggregated bars, and 5 years is comfortably
+  enough depth for a real walk-forward split (e.g. train on 3 years, test out-of-sample
+  on the remaining 2).
+
+  **Alpaca's free tier was seriously considered as an alternative** (free; 200
+  req/min; SIP — full market — historical data once a query is >15min old; supports
+  split/dividend-adjusted bars; no KYC for a paper/data-only account) and stays worth
+  knowing about, but Polygon/Massive was kept: Alpaca's ~7-year depth claim is
+  community-sourced, not vendor-confirmed like Polygon's numbers above, there have been
+  community reports of its split-adjustment parameter misbehaving on some tickers, and
+  it has no bulk-download equivalent to Flat Files — ingesting years of 1-minute bars
+  would mean writing pagination/backoff logic instead of just downloading files. Given
+  the user was already willing to pay for reliability/support, and Polygon's numbers
+  are now confirmed rather than partially-verified, sticking with the paid plan won
+  out.
+
+  **Action items — done by the user, not from here:** Massive/Polygon account created
+  and paid for directly; the resulting `POLYGON_API_KEY` goes server-side only
+  (`server/.env` locally, `fly secrets set POLYGON_API_KEY=...` in production — see
+  `docs/DEPLOY.md`). Deliberately a separate config namespace from
+  `MARKET_DATA_PROVIDER` (`config.polygon.apiKey`, not one of the `mock`/`tradier`/
+  `yahoo`/`webull` live-provider choices) — this key only ever feeds the backtest
+  corpus, never live screening or quotes.
 
   Superseded candidates, kept for the record: **FirstRate Data**'s free tier (~1yr of
   1-min bars via bulk CSV download, no account needed) was the original free-tier
-  recommendation before the user opted to pay for Polygon/Massive instead — still a
-  reasonable fallback if the Polygon minute-bar depth doesn't pan out. **Tiingo** was
-  considered and ruled out regardless of price sensitivity: its IEX intraday endpoint
-  caps at the most recent ~2000 bars at any frequency (~5 trading days at 1-min),
-  *shallower* than Yahoo's already-free 7-day cap already in this repo, so it's a
-  downgrade even as a paid option wouldn't fix. **Alpha Vantage** (25 req/day free) and
-  **Polygon's own free tier** (daily-bar-oriented) were ruled out for the reasons
-  already noted when they were free-tier candidates.
+  recommendation before the user opted to pay for Polygon/Massive instead. **Tiingo**
+  was ruled out regardless of price sensitivity: its IEX intraday endpoint caps at the
+  most recent ~2000 bars at any frequency (~5 trading days at 1-min), *shallower* than
+  Yahoo's already-free 7-day cap already in this repo. **Alpha Vantage** (25 req/day
+  free) and **Polygon's own free tier** (daily-bar-oriented) were ruled out for the
+  reasons already noted when they were free-tier candidates.
 
   This is decoupled from the live Research & Screen stage's data source (still
   whatever `MARKET_DATA_PROVIDER` is configured, e.g. Yahoo) — Polygon/Massive is
@@ -197,11 +212,12 @@ starts.
    against the real `positions` journal in tests, plus verified live in a browser.
    Routed at `POST /api/autotrade/risk-check`; the Auto-Trade page's candidates table
    shows a Qty + pass/fail Risk-check column per candidate.
-5. **Backtesting & walk-forward harness — the validation gate.** Ingest FirstRate
-   Data's historical bars and run phases 2-4 against them; produce an out-of-sample
-   walk-forward report (a strategy that only works on its tuning window must fail
-   this). Nothing downstream of this phase is allowed to place even a paper order
-   until it produces a credible result on a given strategy configuration.
+5. **Backtesting & walk-forward harness — the validation gate — in progress.** Ingest
+   Polygon/Massive's historical bars (`config.polygon.apiKey`, plumbing already
+   in place) and run phases 2-4 against them; produce an out-of-sample walk-forward
+   report (a strategy that only works on its tuning window must fail this). Nothing
+   downstream of this phase is allowed to place even a paper order until it produces a
+   credible result on a given strategy configuration.
 6. **Paper execution loop** — wire Research → Decision → Risk Check → Execution →
    Journal into a recurring scheduled loop (reusing the alerts-poller's in-process
    interval pattern), placing **paper** orders only through the existing Webull order
