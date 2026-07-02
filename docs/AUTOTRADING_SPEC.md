@@ -86,6 +86,19 @@ this list as decisions change — don't let it drift from what's actually built.
   verified (in a browser) before the backtesting phase starts — an automated fetch of
   their download page was blocked by bot protection during research.
 
+  **Tiingo — considered and ruled out for this role.** Its IEX intraday endpoint
+  returns only the most recent ~2000 bars at whatever frequency is requested — at
+  1-minute bars that's roughly 5 trading days, at 5-minute bars roughly 26 days. That's
+  *shallower* than Yahoo's already-free, already-integrated 7-day (1-min) / 59-day
+  (5-15min) caps, so it would be a downgrade, not an upgrade, for the walk-forward
+  corpus. Tiingo's daily (EOD) history is genuinely deep (30+ years) but too coarse for
+  an intraday breakout strategy. Its fundamentals endpoint does return `sector`/
+  `industry` fields (relevant to the RE-exclusion classification need), but that
+  endpoint is a paid add-on — free access is limited to the Dow 30 with 3 years of
+  history, too narrow to cover the small/mid-cap gappers the exclusion check most needs
+  to catch. Worth revisiting if a small paid add-on is ever on the table, but not a fit
+  for the free-tier backtest corpus.
+
 ## Phased roadmap
 
 Sequenced so that execution-capable (order-placing) code is built **last**, after the
