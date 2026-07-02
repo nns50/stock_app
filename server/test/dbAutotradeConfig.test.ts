@@ -77,4 +77,77 @@ describe('autotrade config persistence', () => {
     // Releasing it doesn't touch `enabled` — a loop already armed resumes on its own.
     expect(getAutotradeConfig()).toMatchObject({ killSwitch: false, enabled: true, riskProfile: 'AGGRESSIVE' });
   });
+
+  describe('Phase 8: live-trading fields', () => {
+    it('default to off/unset, with conservative starting caps', () => {
+      const d = defaultAutotradeConfig();
+      expect(d.liveTradingEnabled).toBe(false);
+      expect(d.liveEnabledAt).toBeNull();
+      expect(d.liveAccountId).toBeNull();
+      expect(d.liveMaxOrderUsd).toBeGreaterThan(0);
+      expect(d.liveMaxDailyLossUsd).toBeGreaterThan(0);
+      expect(d.liveMaxOrdersPerDay).toBeGreaterThan(0);
+      expect(d.liveAllowNakedShort).toBe(false);
+      expect(d.liveProbationTrades).toBeGreaterThan(0);
+      expect(d.liveProbationSizeMultiplier).toBeGreaterThan(0);
+      expect(d.liveProbationSizeMultiplier).toBeLessThanOrEqual(1);
+    });
+
+    it('persists liveAccountId and the live cap fields, independent of other fields', () => {
+      const cfg = setAutotradeConfig({
+        liveAccountId: 'ABC123_INDIVIDUAL_CASH',
+        liveMaxOrderUsd: 2_000,
+        liveMaxDailyLossUsd: 800,
+        liveMaxOrdersPerDay: 4,
+        liveFatFingerPct: 8,
+        liveProbationTrades: 15,
+        liveProbationSizeMultiplier: 0.4,
+      });
+      expect(cfg).toMatchObject({
+        liveAccountId: 'ABC123_INDIVIDUAL_CASH',
+        liveMaxOrderUsd: 2_000,
+        liveMaxDailyLossUsd: 800,
+        liveMaxOrdersPerDay: 4,
+        liveFatFingerPct: 8,
+        liveProbationTrades: 15,
+        liveProbationSizeMultiplier: 0.4,
+      });
+      expect(getAutotradeConfig()).toEqual(cfg);
+    });
+
+    it('can explicitly clear liveAccountId back to null', () => {
+      setAutotradeConfig({ liveAccountId: 'SOME_ACCOUNT' });
+      const cleared = setAutotradeConfig({ liveAccountId: null });
+      expect(cleared.liveAccountId).toBeNull();
+    });
+
+    it('rejects a blank liveAccountId, failing closed to null rather than storing whitespace', () => {
+      setAutotradeConfig({ liveAccountId: 'REAL_ACCOUNT' });
+      // Matches accountEquityUsd's own established convention (see "rejects a
+      // non-positive equity, failing closed to null" above): invalid input
+      // resets to the safe default rather than silently preserving whatever
+      // was there before, which the caller may be actively trying to change.
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+      const cfg = setAutotradeConfig({ liveAccountId: '   ' });
+      expect(cfg.liveAccountId).toBeNull();
+    });
+
+    it('rejects a probation multiplier outside (0, 1], failing closed to the default', () => {
+      // @ts-expect-error deliberately invalid input
+      const tooHigh = setAutotradeConfig({ liveProbationSizeMultiplier: 1.5 });
+      expect(tooHigh.liveProbationSizeMultiplier).toBe(defaultAutotradeConfig().liveProbationSizeMultiplier);
+      // @ts-expect-error deliberately invalid input
+      const zero = setAutotradeConfig({ liveProbationSizeMultiplier: 0 });
+      expect(zero.liveProbationSizeMultiplier).toBe(defaultAutotradeConfig().liveProbationSizeMultiplier);
+    });
+
+    it('liveTradingEnabled and liveEnabledAt round-trip independently of unrelated patches', () => {
+      const enabledAt = Date.now();
+      setAutotradeConfig({ liveTradingEnabled: true, liveEnabledAt: enabledAt });
+      const cfg = setAutotradeConfig({ liveMaxOrderUsd: 1_234 });
+      expect(cfg.liveTradingEnabled).toBe(true);
+      expect(cfg.liveEnabledAt).toBe(enabledAt);
+      expect(cfg.liveMaxOrderUsd).toBe(1_234);
+    });
+  });
 });

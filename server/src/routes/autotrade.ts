@@ -1,7 +1,13 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, HttpError, param, parseBody, parseQuery } from './_helpers';
-import { AutotradeConfig, getAutotradeConfig, setAutotradeConfig, setAutotradeKillSwitch } from '../db/autotradeConfig';
+import {
+  AutotradeConfig,
+  getAutotradeConfig,
+  setAutotradeConfig,
+  setAutotradeKillSwitch,
+  LIVE_TRADING_CONFIRMATION_PHRASE,
+} from '../db/autotradeConfig';
 import { addExclusion, listExclusions, removeExclusion } from '../db/autotradeExclusions';
 import { AutotradeStage, listAutotradeEvents, logAutotradeEvent } from '../db/autotradeEvents';
 import { runAutotradeScreen } from '../services/autotrading/screen';
@@ -32,6 +38,22 @@ const configBody = z.object({
   /** Account equity the risk engine sizes against; null clears it (fails
    *  closed until set again). */
   accountEquityUsd: z.number().positive().nullable().optional(),
+  // --- Phase 8: live trading -------------------------------------------------
+  liveTradingEnabled: z.boolean().optional(),
+  /** Required (and must exactly match LIVE_TRADING_CONFIRMATION_PHRASE) only
+   *  when this request flips liveTradingEnabled false -> true — a one-time,
+   *  deliberate gesture per enable (confirmed decision), not per-order
+   *  friction. Trim/case-insensitive, same normalization style as
+   *  services/trading/placeOrder.ts's placeConfirmation. */
+  confirmLiveTrading: z.string().optional(),
+  liveAccountId: z.string().min(1).nullable().optional(),
+  liveMaxOrderUsd: z.number().nonnegative().optional(),
+  liveMaxDailyLossUsd: z.number().nonnegative().optional(),
+  liveMaxOrdersPerDay: z.number().int().nonnegative().optional(),
+  liveFatFingerPct: z.number().min(0).max(100).optional(),
+  liveAllowNakedShort: z.boolean().optional(),
+  liveProbationTrades: z.number().int().nonnegative().optional(),
+  liveProbationSizeMultiplier: z.number().positive().max(1).optional(),
 });
 autotradeRouter.put(
   '/config',
@@ -41,18 +63,53 @@ autotradeRouter.put(
       throw new HttpError(400, 'Switching to AGGRESSIVE requires explicit confirmation (confirmAggressive: true)');
     }
     const before = getAutotradeConfig();
-    // Only pass along fields the client actually sent — `confirmAggressive` is
-    // deliberately excluded (a one-time confirmation, not a stored setting),
-    // but building { enabled: body.enabled, ... } unconditionally would put an
+
+    // Only pass along fields the client actually sent — building
+    // { enabled: body.enabled, ... } unconditionally would put an
     // `enabled: undefined` OWN PROPERTY on the patch for any request that
     // omits it, which setAutotradeConfig's spread treats as "explicitly clear
     // it" (falling back to the default), not "leave it alone" — silently
-    // resetting enabled/riskProfile to their defaults on every save that
-    // doesn't happen to also re-send them.
+    // resetting a field to its default on every save that doesn't happen to
+    // also re-send it. (This is the exact bug class found and fixed live —
+    // see docs/AUTOTRADING_SPEC.md's Phase 7 writeup.)
     const patch: Partial<AutotradeConfig> = {};
     if (body.enabled !== undefined) patch.enabled = body.enabled;
     if (body.riskProfile !== undefined) patch.riskProfile = body.riskProfile;
     if (body.accountEquityUsd !== undefined) patch.accountEquityUsd = body.accountEquityUsd;
+    if (body.liveAccountId !== undefined) patch.liveAccountId = body.liveAccountId;
+    if (body.liveMaxOrderUsd !== undefined) patch.liveMaxOrderUsd = body.liveMaxOrderUsd;
+    if (body.liveMaxDailyLossUsd !== undefined) patch.liveMaxDailyLossUsd = body.liveMaxDailyLossUsd;
+    if (body.liveMaxOrdersPerDay !== undefined) patch.liveMaxOrdersPerDay = body.liveMaxOrdersPerDay;
+    if (body.liveFatFingerPct !== undefined) patch.liveFatFingerPct = body.liveFatFingerPct;
+    if (body.liveAllowNakedShort !== undefined) patch.liveAllowNakedShort = body.liveAllowNakedShort;
+    if (body.liveProbationTrades !== undefined) patch.liveProbationTrades = body.liveProbationTrades;
+    if (body.liveProbationSizeMultiplier !== undefined) {
+      patch.liveProbationSizeMultiplier = body.liveProbationSizeMultiplier;
+    }
+
+    // liveTradingEnabled gets its own gate, separate from the generic patch
+    // above: going false -> true requires the typed confirmation phrase AND
+    // a live account already on file (either already stored, or set in this
+    // same request) — fails closed, same posture as accountEquityUsd. Going
+    // true -> false (or an unrelated save while already true/false) needs
+    // neither and always passes through.
+    if (body.liveTradingEnabled === true && !before.liveTradingEnabled) {
+      if ((body.confirmLiveTrading ?? '').trim().toUpperCase() !== LIVE_TRADING_CONFIRMATION_PHRASE) {
+        throw new HttpError(
+          400,
+          `Enabling live trading requires explicit confirmation (confirmLiveTrading: "${LIVE_TRADING_CONFIRMATION_PHRASE}")`,
+        );
+      }
+      const accountId = body.liveAccountId ?? before.liveAccountId;
+      if (!accountId) {
+        throw new HttpError(400, 'Enabling live trading requires a liveAccountId to be set first');
+      }
+      patch.liveTradingEnabled = true;
+      patch.liveEnabledAt = Date.now();
+    } else if (body.liveTradingEnabled !== undefined) {
+      patch.liveTradingEnabled = body.liveTradingEnabled;
+    }
+
     const next = setAutotradeConfig(patch);
     if (next.riskProfile !== before.riskProfile) {
       logAutotradeEvent({
@@ -74,6 +131,13 @@ autotradeRouter.put(
         stage: 'config',
         action: 'equity_changed',
         detail: { from: before.accountEquityUsd, to: next.accountEquityUsd },
+        riskProfile: next.riskProfile,
+      });
+    }
+    if (next.liveTradingEnabled !== before.liveTradingEnabled) {
+      logAutotradeEvent({
+        stage: 'config',
+        action: next.liveTradingEnabled ? 'live_trading_enabled' : 'live_trading_disabled',
         riskProfile: next.riskProfile,
       });
     }

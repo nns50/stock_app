@@ -34,14 +34,84 @@ export interface AutotradeConfig {
    *  services/autotrading/riskCheck.ts) — set this manually. Null until set;
    *  the risk engine fails closed (blocks everything) while it's unset. */
   accountEquityUsd: number | null;
+
+  // --- Phase 8: live-trading gate (docs/AUTOTRADING_SPEC.md) -----------------
+
+  /** Master on/off for the loop placing REAL orders through Webull. False by
+   *  default. Paper execution (execute.ts, autotrade_paper_positions) is
+   *  completely independent of this flag and keeps running either way — this
+   *  only gates the separate live path (Phase 8 Step B). Setting this false
+   *  -> true requires the exact confirmLiveTrading phrase at the route
+   *  (routes/autotrade.ts) — confirmed decision: a one-time, deliberate
+   *  gesture per enable, not per-order friction. */
+  liveTradingEnabled: boolean;
+  /** Epoch ms of the most recent false -> true transition of
+   *  liveTradingEnabled, or null if never enabled. Anchors the probation
+   *  window (liveProbationTrades): how many trades count as "still in
+   *  probation" is DERIVED from real order_intents created at/after this
+   *  timestamp (Step B), never a separately-incremented counter that could
+   *  drift from what was actually placed. */
+  liveEnabledAt: number | null;
+  /** The Webull cash account_id the live loop places orders against —
+   *  server-side only. The human Trade page sources its accountId from
+   *  browser localStorage, which has no meaning for an unattended process;
+   *  this is set once here instead. Live trading can't be enabled while this
+   *  is unset (fails closed, same posture as accountEquityUsd). */
+  liveAccountId: string | null;
+  /** Guardrail caps for autotrade's OWN live orders (services/trading/
+   *  guardrails.ts's evaluateGuardrails(), called with this config instead of
+   *  db/trading.ts's human-tuned TradingConfig) — deliberately a separate cap
+   *  set, since autotrade sizes risk-based (% equity × stop distance), which
+   *  can imply a different notional than the human page's flat caps were
+   *  tuned around. See suggestLiveCaps() for the equity/profile-derived
+   *  starting formula; freely editable afterward. */
+  liveMaxOrderUsd: number;
+  liveMaxDailyLossUsd: number;
+  liveMaxOrdersPerDay: number;
+  liveFatFingerPct: number;
+  /** Defaults false, matching guardrails.ts's own default and this project's
+   *  defined-risk-by-default posture. */
+  liveAllowNakedShort: boolean;
+  /** How many live trades (counted from liveEnabledAt) get an extra
+   *  liveProbationSizeMultiplier size cut on top of the risk profile's normal
+   *  sizing and any loss-streak step-down already active (Phase 8 Step B). */
+  liveProbationTrades: number;
+  liveProbationSizeMultiplier: number;
 }
 
 interface ConfigRow {
   config: string;
 }
 
+/** The exact phrase required to flip liveTradingEnabled false -> true (see
+ *  routes/autotrade.ts) — a deliberate, one-time gesture per enable, not a
+ *  per-order check. Case/whitespace-insensitive at the route, same
+ *  normalization style as services/trading/placeOrder.ts's placeConfirmation. */
+export const LIVE_TRADING_CONFIRMATION_PHRASE = 'ENABLE LIVE TRADING';
+
+/** MODERATE's own maxTradesPerDay (services/autotrading/riskProfiles.ts) — kept
+ *  as a literal here rather than imported, since riskProfiles.ts already
+ *  imports RiskProfileName from this file and importing the value back would
+ *  create a circular module dependency. */
+const DEFAULT_LIVE_MAX_ORDERS_PER_DAY = 6;
+
 export function defaultAutotradeConfig(): AutotradeConfig {
-  return { enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: null };
+  return {
+    enabled: false,
+    killSwitch: false,
+    riskProfile: 'MODERATE',
+    accountEquityUsd: null,
+    liveTradingEnabled: false,
+    liveEnabledAt: null,
+    liveAccountId: null,
+    liveMaxOrderUsd: 500,
+    liveMaxDailyLossUsd: 250,
+    liveMaxOrdersPerDay: DEFAULT_LIVE_MAX_ORDERS_PER_DAY,
+    liveFatFingerPct: 10,
+    liveAllowNakedShort: false,
+    liveProbationTrades: 20,
+    liveProbationSizeMultiplier: 0.5,
+  };
 }
 
 /** Coerce a stored/patched config into a safe, complete AutotradeConfig. */
@@ -53,12 +123,46 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       : typeof input.accountEquityUsd === 'number' && input.accountEquityUsd > 0
         ? input.accountEquityUsd
         : d.accountEquityUsd;
+  const nonNeg = (v: unknown, fallback: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? n : fallback;
+  };
+  const pct = (v: unknown, fallback: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : fallback;
+  };
+  const posInt = (v: unknown, fallback: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+  };
+  const accountId =
+    input.liveAccountId === null
+      ? null
+      : typeof input.liveAccountId === 'string' && input.liveAccountId.trim() !== ''
+        ? input.liveAccountId.trim()
+        : d.liveAccountId;
+  const enabledAt =
+    typeof input.liveEnabledAt === 'number' && Number.isFinite(input.liveEnabledAt) ? input.liveEnabledAt : null;
   return {
     enabled: typeof input.enabled === 'boolean' ? input.enabled : d.enabled,
     killSwitch: typeof input.killSwitch === 'boolean' ? input.killSwitch : d.killSwitch,
     riskProfile:
       input.riskProfile === 'AGGRESSIVE' || input.riskProfile === 'MODERATE' ? input.riskProfile : d.riskProfile,
     accountEquityUsd: equity,
+    liveTradingEnabled: typeof input.liveTradingEnabled === 'boolean' ? input.liveTradingEnabled : d.liveTradingEnabled,
+    liveEnabledAt: enabledAt,
+    liveAccountId: accountId,
+    liveMaxOrderUsd: nonNeg(input.liveMaxOrderUsd, d.liveMaxOrderUsd),
+    liveMaxDailyLossUsd: nonNeg(input.liveMaxDailyLossUsd, d.liveMaxDailyLossUsd),
+    liveMaxOrdersPerDay: posInt(input.liveMaxOrdersPerDay, d.liveMaxOrdersPerDay),
+    liveFatFingerPct: pct(input.liveFatFingerPct, d.liveFatFingerPct),
+    liveAllowNakedShort:
+      typeof input.liveAllowNakedShort === 'boolean' ? input.liveAllowNakedShort : d.liveAllowNakedShort,
+    liveProbationTrades: posInt(input.liveProbationTrades, d.liveProbationTrades),
+    liveProbationSizeMultiplier: (() => {
+      const n = Number(input.liveProbationSizeMultiplier);
+      return Number.isFinite(n) && n > 0 && n <= 1 ? n : d.liveProbationSizeMultiplier;
+    })(),
   };
 }
 
