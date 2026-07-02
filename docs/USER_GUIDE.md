@@ -693,11 +693,15 @@ results) is the one remaining phase.
   places a real order. No new entries in the first/last 15 minutes of the session, and a
   volatility filter (the candidate's own ATR%, plus a broad-market proxy) can skip a
   cycle's entries entirely; open positions are still checked for a stop/target hit
-  either way. Shows open/closed counts, realized P&L, and the full paper trade history
-  (side, entry/exit, reason, P&L, R). Concurrent-position and aggregate-open-risk caps
-  here are scoped to the loop's own paper positions, not your real ones on the
-  **Positions**/**Journal** pages — paper trades carry no real financial exposure, so
-  they're evaluated independently, the same way a real paper-trading account would be.
+  either way. Shows open/closed counts, realized P&L, unrealized P&L, and the full paper
+  trade history (side, entry, a live **Current $** for open positions, exit, reason,
+  P&L, R). An open position's P&L and R come from a live quote fetched fresh on every
+  load/refresh — the same resolution the human Positions page uses, including its
+  last-known-price fallback (flagged with an amber "stale" chip) if a live quote can't
+  be fetched right now. Concurrent-position and aggregate-open-risk caps here are scoped
+  to the loop's own paper positions, not your real ones on the **Positions**/**Journal**
+  pages — paper trades carry no real financial exposure, so they're evaluated
+  independently, the same way a real paper-trading account would be.
 - **Recent activity** — a journal of what the screen, decision, and risk-check stages
   did and why (candidate found, excluded, signal generated, passed/blocked, a paper
   order placed or closed, a setting changed) — the same feed the execution loop above

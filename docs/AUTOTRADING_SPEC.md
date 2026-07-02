@@ -501,7 +501,7 @@ starts.
    call it, and neither races an in-flight tick, so this is safe as used; a future
    caller (e.g. a "pause" route) would need real cancellation, not just this reset.
 
-   **Two bugs found live, immediately after the first production deploy, both fixed the
+   **Three bugs found live, immediately after the first production deploy, all fixed the
    same day**: `PUT /api/autotrade/config` rebuilt its patch as
    `{ enabled: body.enabled, riskProfile: body.riskProfile, accountEquityUsd:
    body.accountEquityUsd }` unconditionally — when a request omits a field, zod leaves
@@ -520,8 +520,21 @@ starts.
    activity had none at all, so a user watching the page with nothing to click had no
    way to see the loop's own activity without reloading the browser tab. Replaced the
    Monitoring-only `RefreshBar` with one shared control in the page header (manual
-   refresh + the same opt-in polling) that refreshes all three together. Both fixes have
-   regression tests verified by reverting and confirming they fail against the old code.
+   refresh + the same opt-in polling) that refreshes all three together. Third: an open
+   paper position showed no P&L or price movement at all — `paperPnl()` only ever
+   computed *realized* P&L from `exitPrice`, which is null by definition until a
+   position closes, so every open row rendered "—". Fixed by mirroring the human
+   Positions page's own live-pricing pattern (`services/quotes.ts`'s
+   `resolveStockPrices()` — batched, gracefully degrading to a last-known cached price
+   per symbol, never failing the whole request): `GET /api/autotrade/paper-positions`
+   now enriches each open position with a live quote and an unrealized P&L
+   (`services/pnl.ts`'s new `computePaperUnrealizedPnl()`, the same core formula as
+   `computePositionPnl()` without the human journal's multiplier/fees/partial-exit
+   complexity paper positions don't have). The table gained a **Current $** column
+   (with the same amber "stale" chip the human Positions page uses for a cached
+   fallback price) and an **Unrealized P&L** stat tile alongside Realized P&L. All three
+   fixes have regression tests verified by reverting and confirming they fail against
+   the old code.
 8. **Live-trading gate** — the manual flag flip that lets the loop place real orders,
    after reviewing phase 5's backtest/walk-forward results and a period of phase 6
    paper-trading track record. Deliberately the last and smallest phase: it mostly
