@@ -10,6 +10,7 @@ import { isExcluded } from '../../db/autotradeExclusions';
 import { classifySector } from './realEstateClassifier';
 import { getHistoricalBars } from './historicalData';
 import { computeStreaksAndDrawdown } from '../pnl';
+import { mapPool } from '../../util/async';
 
 // ---------------------------------------------------------------------------
 // The backtest simulation engine (docs/AUTOTRADING_SPEC.md — Phase 5, the
@@ -334,6 +335,66 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
   return { trades, equityCurve, startingEquity: cfg.startingEquity, finalEquity: equity, excludedSymbols: [] };
 }
 
+export interface BacktestStats {
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number; // %
+  avgWin: number;
+  avgLoss: number;
+  expectancy: number; // mean pnl per trade
+  profitFactor: number | null;
+  totalPnl: number;
+  returnPct: number; // (finalEquity − startingEquity) / startingEquity × 100
+  avgR: number | null;
+  bestR: number | null;
+  worstR: number | null;
+  maxDrawdown: number;
+  longestWinStreak: number;
+  longestLossStreak: number;
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/** Summary stats over a completed backtest — win rate, expectancy, profit
+ *  factor, R-multiple edge, drawdown/streaks. Reuses computeStreaksAndDrawdown
+ *  (services/pnl.ts, the same function the live Journal's stats use) rather
+ *  than reimplementing drawdown/streak math for a second trade-record shape;
+ *  the rest mirrors services/pnl.ts's computeJournalStats conventions
+ *  (e.g. profitFactor is null — not Infinity — when there are wins and no
+ *  losses yet) so the two "how did this perform" surfaces read the same way. */
+export function computeBacktestStats(report: BacktestReport): BacktestStats {
+  const { trades, startingEquity, finalEquity } = report;
+  const wins = trades.filter((t) => t.pnl > 0);
+  const losses = trades.filter((t) => t.pnl < 0);
+  const grossProfit = wins.reduce((s, t) => s + t.pnl, 0);
+  const grossLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+  const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
+  const rs = trades.map((t) => t.rMultiple);
+  const { maxDrawdown, longestWinStreak, longestLossStreak } = computeStreaksAndDrawdown(trades.map((t) => t.pnl));
+
+  return {
+    totalTrades: trades.length,
+    wins: wins.length,
+    losses: losses.length,
+    winRate: trades.length ? round2((wins.length / trades.length) * 100) : 0,
+    avgWin: wins.length ? round2(grossProfit / wins.length) : 0,
+    avgLoss: losses.length ? round2(-grossLoss / losses.length) : 0,
+    expectancy: trades.length ? round2(totalPnl / trades.length) : 0,
+    profitFactor: grossLoss > 0 ? round2(grossProfit / grossLoss) : grossProfit > 0 ? null : 0,
+    totalPnl: round2(totalPnl),
+    returnPct: startingEquity ? round2(((finalEquity - startingEquity) / startingEquity) * 100) : 0,
+    avgR: rs.length ? round2(rs.reduce((a, b) => a + b, 0) / rs.length) : null,
+    bestR: rs.length ? round2(Math.max(...rs)) : null,
+    worstR: rs.length ? round2(Math.min(...rs)) : null,
+    maxDrawdown,
+    longestWinStreak,
+    longestLossStreak,
+  };
+}
+
 /** Real-estate pre-filter — checked ONCE upfront (not per simulated day), the
  *  same list+classifier checks Screen uses live. */
 async function filterEligibleSymbols(
@@ -359,21 +420,68 @@ async function filterEligibleSymbols(
   return { eligible, excluded };
 }
 
+/** Shared I/O prelude for both a plain backtest and a walk-forward run:
+ *  pre-filter real estate, then fetch (or reuse cached) historical bars for
+ *  every eligible symbol, padded with WARMUP_PADDING_DAYS of lookback so
+ *  indicators have a full warmup window on the first simulated day. Fetches
+ *  run with bounded concurrency (mirrors screen.ts's mapPool(symbols, 6, …))
+ *  so a multi-symbol backtest doesn't serialize one HTTP round-trip per
+ *  symbol. */
+async function loadBacktestHistory(
+  symbols: string[],
+  from: string,
+  to: string,
+): Promise<{ historyBySymbol: Map<string, Candle[]>; excludedSymbols: { symbol: string; reason: string }[] }> {
+  const { eligible, excluded } = await filterEligibleSymbols(symbols);
+  const paddedFrom = addDays(from, -WARMUP_PADDING_DAYS);
+
+  const historyBySymbol = new Map<string, Candle[]>();
+  await mapPool(eligible, 6, async (symbol) => {
+    const bars = await getHistoricalBars(symbol, TIMEFRAME, paddedFrom, to);
+    if (bars.length) historyBySymbol.set(symbol.toUpperCase(), bars);
+  });
+
+  return { historyBySymbol, excludedSymbols: excluded };
+}
+
 /**
  * Full backtest: pre-filter real estate, fetch (or reuse cached) historical
  * bars for every eligible symbol, then simulate. Async orchestration around
  * the pure simulateBacktest() core.
  */
 export async function runBacktest(cfg: BacktestConfig): Promise<BacktestReport> {
-  const { eligible, excluded } = await filterEligibleSymbols(cfg.symbols);
-  const paddedFrom = addDays(cfg.from, -WARMUP_PADDING_DAYS);
-
-  const historyBySymbol = new Map<string, Candle[]>();
-  for (const symbol of eligible) {
-    const bars = await getHistoricalBars(symbol, TIMEFRAME, paddedFrom, cfg.to);
-    if (bars.length) historyBySymbol.set(symbol.toUpperCase(), bars);
-  }
-
+  const { historyBySymbol, excludedSymbols } = await loadBacktestHistory(cfg.symbols, cfg.from, cfg.to);
   const report = simulateBacktest(historyBySymbol, cfg);
-  return { ...report, excludedSymbols: excluded };
+  return { ...report, excludedSymbols };
+}
+
+export interface WalkForwardConfig extends BacktestConfig {
+  /** YYYY-MM-DD. Splits the run into in-sample [from, splitDate] (the
+   *  "tuning" window) and out-of-sample (splitDate, to] (unseen data) —
+   *  must fall between from and to, leaving both windows non-empty. */
+  splitDate: string;
+}
+
+export interface WalkForwardReport {
+  inSample: BacktestReport;
+  outOfSample: BacktestReport;
+  excludedSymbols: { symbol: string; reason: string }[];
+}
+
+/**
+ * The validation gate (docs/AUTOTRADING_SPEC.md — VALIDATION GATE): the same
+ * strategy configuration replayed over the same fetched history — once on
+ * [from, splitDate] (in-sample), once on (splitDate, to] (out-of-sample). A
+ * strategy that only performs on the window it was tuned on is exactly what
+ * this is meant to surface. Both windows start from the same startingEquity
+ * (independent runs, not the out-of-sample window compounding on the
+ * in-sample result) so their stats are directly comparable rather than
+ * confounded by a different effective account size.
+ */
+export async function runWalkForwardBacktest(cfg: WalkForwardConfig): Promise<WalkForwardReport> {
+  const { historyBySymbol, excludedSymbols } = await loadBacktestHistory(cfg.symbols, cfg.from, cfg.to);
+  const outOfSampleFrom = addDays(cfg.splitDate, 1);
+  const inSample = simulateBacktest(historyBySymbol, { ...cfg, from: cfg.from, to: cfg.splitDate });
+  const outOfSample = simulateBacktest(historyBySymbol, { ...cfg, from: outOfSampleFrom, to: cfg.to });
+  return { inSample, outOfSample, excludedSymbols };
 }
