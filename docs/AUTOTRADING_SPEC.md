@@ -126,11 +126,23 @@ starts.
    no web UI yet, since nothing (no screener, no loop) consumes these settings until
    Phase 2+ — a settings panel lands once there's something real for it to control,
    likely alongside Phase 2 or the Phase 7 dashboard rather than as inert controls now.
-2. **Screening & real-estate exclusion** (Research & Screen stage) — scan for
-   pre-market gappers / momentum / unusual-volume candidates; apply the RE exclusion
-   list + sector/industry check before anything else sees a candidate. Read-only:
-   surface results somewhere visible (e.g. a candidates list in the UI), place no
-   orders. Excluded candidates get logged same as a risk-check block.
+2. **Screening & real-estate exclusion — shipped (backend).** Discovers candidates
+   from `universe` plus (when Webull is configured) its pre-market "unusual volume"
+   and gainers movers — the only source in this app that finds gappers outside the
+   ~124-symbol seeded universe; falls back to universe-only otherwise. Each candidate
+   is checked against the exclusion list, then (`services/autotrading/realEstateClassifier.ts`)
+   `universe.sector`, then — for the common case of a symbol outside that seed — a
+   live Yahoo fundamentals fetch (independent of `MARKET_DATA_PROVIDER`, since Tradier
+   returns no sector/industry at all), matching sector/industry against
+   `/real estate|reit/i`. A fetch failure classifies as **unknown**, not clear — that
+   candidate is skipped for this cycle and re-tried next cycle, never silently waved
+   through. Only symbols that clear both checks are scored, reusing the existing
+   `indicators/screener.ts` engine unmodified (`services/autotrading/screen.ts`) —
+   this stage adds discovery + the exclusion gate on top of it, not a parallel scoring
+   engine. Real-estate exclusions and confirmed candidates are journaled
+   (`autotrade_events`, stage `screen`); routine non-matches aren't, to avoid flooding
+   the journal every cycle. Routed at `POST /api/autotrade/screen`. Read-only — no
+   orders. UI still pending: bundling with a small Auto-Trade settings page next.
 3. **Strategy / Decision module** — generate buy/sell signals (entry, stop, target)
    from the screened candidates. Still fully read-only/logged-only — no risk engine,
    no orders yet. This isolates "does the signal logic make sense" from "is it sized

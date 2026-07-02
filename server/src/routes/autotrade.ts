@@ -4,6 +4,8 @@ import { asyncHandler, HttpError, param, parseBody, parseQuery } from './_helper
 import { getAutotradeConfig, setAutotradeConfig } from '../db/autotradeConfig';
 import { addExclusion, listExclusions, removeExclusion } from '../db/autotradeExclusions';
 import { AutotradeStage, listAutotradeEvents, logAutotradeEvent } from '../db/autotradeEvents';
+import { runAutotradeScreen } from '../services/autotrading/screen';
+import { ScreenerConfig } from '../indicators/screener';
 
 export const autotradeRouter = Router();
 
@@ -77,6 +79,24 @@ autotradeRouter.delete(
     if (!removeExclusion(symbol)) throw new HttpError(404, `${symbol} is not on the exclusion list`);
     logAutotradeEvent({ symbol, stage: 'config', action: 'exclusion_removed' });
     res.json({ removed: symbol.toUpperCase() });
+  }),
+);
+
+// ---- Research & Screen ------------------------------------------------------
+
+const screenBody = z.object({
+  config: z.record(z.string(), z.unknown()).optional(),
+  symbols: z.array(z.string().min(1)).optional(),
+});
+autotradeRouter.post(
+  '/screen',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(screenBody, req);
+    const result = await runAutotradeScreen({
+      config: body.config as Partial<ScreenerConfig> | undefined,
+      symbols: body.symbols,
+    });
+    res.json(result);
   }),
 );
 
