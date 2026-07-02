@@ -457,3 +457,63 @@ describe('two-factor (integration)', () => {
     }
   });
 });
+
+describe('autotrade backtest routes (integration)', () => {
+  // VNQ is on the default real-estate exclusion list (server/data/reExclusions.json),
+  // so it's excluded before runBacktest ever fetches history or hits the network —
+  // safe to exercise the real route end to end without mocking Polygon/Yahoo.
+  const baseBody = {
+    symbols: ['VNQ'],
+    from: '2024-01-01',
+    to: '2024-03-01',
+    riskProfile: 'MODERATE',
+    startingEquity: 100_000,
+  };
+
+  it('runs a plain backtest and reports the real-estate exclusion, with no trades', async () => {
+    const res = await post('/api/autotrade/backtest', baseBody);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      report: { trades: unknown[]; excludedSymbols: { symbol: string }[] };
+      stats: { totalTrades: number };
+    };
+    expect(body.report.excludedSymbols).toEqual([{ symbol: 'VNQ', reason: 'On the real-estate exclusion list' }]);
+    expect(body.report.trades).toEqual([]);
+    expect(body.stats.totalTrades).toBe(0);
+  });
+
+  it('rejects a backtest request where to is before from', async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, from: '2024-03-01', to: '2024-01-01' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a backtest request with an empty symbols list', async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, symbols: [] });
+    expect(res.status).toBe(400);
+  });
+
+  it('runs a walk-forward split and reports both windows with the exclusion applied to each', async () => {
+    const res = await post('/api/autotrade/backtest/walk-forward', { ...baseBody, splitDate: '2024-02-01' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      inSample: { report: { excludedSymbols: { symbol: string }[] }; stats: { totalTrades: number } };
+      outOfSample: { report: { excludedSymbols: { symbol: string }[] }; stats: { totalTrades: number } };
+      excludedSymbols: { symbol: string }[];
+    };
+    expect(body.excludedSymbols).toEqual([{ symbol: 'VNQ', reason: 'On the real-estate exclusion list' }]);
+    expect(body.inSample.stats.totalTrades).toBe(0);
+    expect(body.outOfSample.stats.totalTrades).toBe(0);
+  });
+
+  it('rejects a walk-forward request when splitDate is not between from and to', async () => {
+    const beforeFrom = await post('/api/autotrade/backtest/walk-forward', { ...baseBody, splitDate: '2023-12-01' });
+    expect(beforeFrom.status).toBe(400);
+    const atOrAfterTo = await post('/api/autotrade/backtest/walk-forward', { ...baseBody, splitDate: '2024-03-01' });
+    expect(atOrAfterTo.status).toBe(400);
+  });
+
+  it('rejects a walk-forward request missing splitDate', async () => {
+    const res = await post('/api/autotrade/backtest/walk-forward', baseBody);
+    expect(res.status).toBe(400);
+  });
+});

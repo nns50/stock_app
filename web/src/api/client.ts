@@ -74,6 +74,10 @@ import type {
   AutotradeRiskCheckResult,
   AutotradeEvent,
   AutotradeStage,
+  BacktestRequest,
+  BacktestRunResponse,
+  WalkForwardRequest,
+  WalkForwardResponse,
 } from './types';
 
 export class ApiError extends Error {
@@ -416,4 +420,7 @@ export const client = {
     const qs = new URLSearchParams(params as Record<string, string>).toString();
     return api<{ events: AutotradeEvent[] }>(`/autotrade/events${qs ? `?${qs}` : ''}`);
   },
+  runAutotradeBacktest: (body: BacktestRequest) => api<BacktestRunResponse>('/autotrade/backtest', post(body)),
+  runAutotradeWalkForward: (body: WalkForwardRequest) =>
+    api<WalkForwardResponse>('/autotrade/backtest/walk-forward', post(body)),
 };

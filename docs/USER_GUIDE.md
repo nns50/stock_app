@@ -641,6 +641,20 @@ screen/decide/risk-check stages:
   a batch of signals that would each pass alone can still correctly exhaust a shared cap
   (e.g. the position-count cap) partway through. This is read-only: running a screen
   never places an order.
+- **Backtest & walk-forward** — the validation gate every strategy configuration has to
+  clear before it's allowed anywhere near a paper or live order. Give it a symbol list,
+  a date range, a starting equity, and (independently of the Configuration card above)
+  a risk profile, and it replays Screen → Decision → Risk Check day by day over
+  historical daily bars — the exact same logic the live loop above uses, so a backtest
+  can't tell you something the live system wouldn't actually do. Leave **Out-of-sample
+  split** blank for a single-window run, or set it to split the range into an
+  **in-sample** window (what the configuration was "tuned" on) and an **out-of-sample**
+  window (unseen data) — a strategy that only performs in-sample is exactly what this
+  split is meant to expose. Each run shows a stat grid (trades, win rate, expectancy,
+  profit factor, average R, return, max drawdown, win/loss streaks), an equity curve,
+  and the full trade-by-trade list. This tool doesn't render a pass/fail verdict —
+  reviewing in-sample vs. out-of-sample and deciding whether a configuration held up is
+  yours to make, same as the eventual live-trading flag.
 - **Recent activity** — a journal of what the screen, decision, and risk-check stages
   did and why (candidate found, excluded, signal generated, passed/blocked and which
   rule, a setting changed), the foundation the execution stage will log into as well.

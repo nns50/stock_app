@@ -8,6 +8,7 @@ import { runAutotradeScreen } from '../services/autotrading/screen';
 import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/decide';
 import { runAutotradeRiskCheck } from '../services/autotrading/riskCheck';
 import { ScreenerConfig } from '../indicators/screener';
+import { computeBacktestStats, runBacktest, runWalkForwardBacktest } from '../services/autotrading/backtest';
 
 export const autotradeRouter = Router();
 
@@ -162,6 +163,68 @@ autotradeRouter.post(
     const body = parseBody(riskCheckBody, req);
     const results = await runAutotradeRiskCheck(body.signals);
     res.json({ results });
+  }),
+);
+
+// ---- Backtesting & walk-forward (the validation gate) -----------------------
+
+const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
+const backtestBodyBase = z.object({
+  symbols: z.array(z.string().min(1)).min(1),
+  from: dateStr,
+  to: dateStr,
+  riskProfile: z.enum(['MODERATE', 'AGGRESSIVE']),
+  startingEquity: z.number().positive(),
+  screenerConfig: z.record(z.string(), z.unknown()).optional(),
+  decisionConfig: z.record(z.string(), z.unknown()).optional(),
+});
+const backtestBody = backtestBodyBase.refine((b) => b.from <= b.to, {
+  message: 'from must be on or before to',
+  path: ['from'],
+});
+const walkForwardBody = backtestBodyBase
+  .extend({ splitDate: dateStr })
+  .refine((b) => b.from <= b.splitDate && b.splitDate < b.to, {
+    message: 'splitDate must fall between from and to, leaving a non-empty out-of-sample window',
+    path: ['splitDate'],
+  });
+
+autotradeRouter.post(
+  '/backtest',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(backtestBody, req);
+    const report = await runBacktest({
+      symbols: body.symbols,
+      from: body.from,
+      to: body.to,
+      riskProfile: body.riskProfile,
+      startingEquity: body.startingEquity,
+      screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
+      decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
+    });
+    res.json({ report, stats: computeBacktestStats(report) });
+  }),
+);
+
+autotradeRouter.post(
+  '/backtest/walk-forward',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(walkForwardBody, req);
+    const wf = await runWalkForwardBacktest({
+      symbols: body.symbols,
+      from: body.from,
+      to: body.to,
+      splitDate: body.splitDate,
+      riskProfile: body.riskProfile,
+      startingEquity: body.startingEquity,
+      screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
+      decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
+    });
+    res.json({
+      inSample: { report: wf.inSample, stats: computeBacktestStats(wf.inSample) },
+      outOfSample: { report: wf.outOfSample, stats: computeBacktestStats(wf.outOfSample) },
+      excludedSymbols: wf.excludedSymbols,
+    });
   }),
 );
 

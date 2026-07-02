@@ -212,12 +212,57 @@ starts.
    against the real `positions` journal in tests, plus verified live in a browser.
    Routed at `POST /api/autotrade/risk-check`; the Auto-Trade page's candidates table
    shows a Qty + pass/fail Risk-check column per candidate.
-5. **Backtesting & walk-forward harness — the validation gate — in progress.** Ingest
-   Polygon/Massive's historical bars (`config.polygon.apiKey`, plumbing already
-   in place) and run phases 2-4 against them; produce an out-of-sample walk-forward
-   report (a strategy that only works on its tuning window must fail this). Nothing
-   downstream of this phase is allowed to place even a paper order until it produces a
-   credible result on a given strategy configuration.
+5. **Backtesting & walk-forward harness — the validation gate — shipped.** Ingests
+   Polygon/Massive daily bars into a local cache (`backtest_bars`, keyed by
+   symbol/timeframe/time) and tracks which `[from, to]` ranges have already been
+   fetched in a separate `backtest_fetch_log` ledger — the cached data's own min/max
+   bar time can't answer "is this range covered," since weekend/holiday gaps mean a
+   requested calendar boundary is rarely an actual trading day (`db/backtestBars.ts`,
+   `services/autotrading/polygonClient.ts`, `services/autotrading/historicalData.ts`).
+   Decoupled from live scanning, per the resolved decision above —
+   `config.polygon.apiKey` only ever feeds this corpus.
+
+   The simulation core (`services/autotrading/backtest.ts`'s `simulateBacktest()`) is a
+   pure, I/O-free function that replays Screen → Decision → Risk Check day by day over
+   pre-loaded candle arrays, reusing the exact same functions phases 2-4 already
+   shipped (`scoreSymbol`, `generateSignal`, `evaluateRiskCheck`) so the backtest can't
+   silently drift from what the live loop actually does. A daily-bar backtest can only
+   approximate an intraday loop, so the approximations are explicit and documented in
+   code: a signal is generated from data through day N's close; if approved, it fills at
+   day (N+1)'s open — never the signal day's own price; each day after entry, a stop/
+   target hit is checked against that day's high/low, and if a single day's range could
+   have hit both, the **stop** is assumed to win the tie (the conservative read, since a
+   daily bar can't reveal the actual intraday order of events); anything still open at
+   the end of the window force-closes at the last available close
+   (`exitReason: 'end_of_period'`). Correlated-exposure sizing reuses the same
+   Pearson-correlation math as the live risk engine, computed entirely from
+   already-loaded history (no network calls inside the simulation loop). The real-estate
+   exclusion runs once upfront, before any history is fetched, exactly as it does at
+   live Screen time.
+
+   `runWalkForwardBacktest()` is the validation gate itself: it fetches each symbol's
+   history **once**, then replays it independently over an in-sample `[from, splitDate]`
+   window and an out-of-sample `(splitDate, to]` window — both starting from the same
+   configured equity (not the out-of-sample window compounding on the in-sample
+   result), so their stats are directly comparable rather than confounded by a
+   different effective account size. `computeBacktestStats()` summarizes either window
+   (win rate, avg win/loss, expectancy, profit factor, R-multiple edge, max drawdown,
+   win/loss streaks), reusing `computeStreaksAndDrawdown()` from `services/pnl.ts` — the
+   same function the live Journal's own stats use — rather than a second drawdown
+   implementation. The harness itself renders no pass/fail verdict: per the spec below
+   ("going live requires me to manually flip a flag after reviewing backtest +
+   walk-forward results"), it's the person reviewing in-sample vs. out-of-sample who
+   judges whether a strategy configuration held up, not an automated gate.
+
+   Routed at `POST /api/autotrade/backtest` (a single window) and
+   `POST /api/autotrade/backtest/walk-forward` (the in-sample/out-of-sample split,
+   `splitDate` required and validated to fall strictly between `from` and `to`). The
+   Auto-Trade page's "Backtest & walk-forward" card takes a symbol list, date range, an
+   optional split date, a risk profile independent of the live Configuration card's
+   profile, and starting equity; it renders a stat grid, an equity-curve chart, and a
+   trade-by-trade table per window. Nothing downstream of this phase — paper or live
+   execution — is wired up yet; this phase only produces the report a human reviews
+   before either of those is allowed to run.
 6. **Paper execution loop** — wire Research → Decision → Risk Check → Execution →
    Journal into a recurring scheduled loop (reusing the alerts-poller's in-process
    interval pattern), placing **paper** orders only through the existing Webull order

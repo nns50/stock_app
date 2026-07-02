@@ -5,7 +5,12 @@ import AutoTradePage from './AutoTradePage';
 import { ToastProvider } from '../components/ToastContext';
 import { ConfirmProvider } from '../components/ConfirmContext';
 import { client } from '../api/client';
-import type { AutotradeDecideResponse, AutotradeRiskCheckResult } from '../api/types';
+import type {
+  AutotradeDecideResponse,
+  AutotradeRiskCheckResult,
+  BacktestRunResponse,
+  WalkForwardResponse,
+} from '../api/types';
 
 function renderPage() {
   return render(
@@ -39,7 +44,7 @@ describe('AutoTradePage', () => {
     expect(screen.getByText('Real estate ETF')).toBeInTheDocument();
     const checkbox = screen.getByLabelText('Auto-trading enabled') as HTMLInputElement;
     expect(checkbox.checked).toBe(false);
-    expect(screen.getByRole('combobox')).toHaveValue('MODERATE');
+    expect(screen.getByRole('combobox', { name: /^Risk profile\b/ })).toHaveValue('MODERATE');
     expect(screen.queryByText(/equity isn.t set/i)).toBeNull();
   });
 
@@ -78,7 +83,7 @@ describe('AutoTradePage', () => {
     renderPage();
     await screen.findByText('VNQ');
 
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'AGGRESSIVE' } });
+    fireEvent.change(screen.getByRole('combobox', { name: /^Risk profile\b/ }), { target: { value: 'AGGRESSIVE' } });
     expect(await screen.findByText('Switch to AGGRESSIVE?')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Cancel'));
@@ -95,7 +100,7 @@ describe('AutoTradePage', () => {
     renderPage();
     await screen.findByText('VNQ');
 
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'AGGRESSIVE' } });
+    fireEvent.change(screen.getByRole('combobox', { name: /^Risk profile\b/ }), { target: { value: 'AGGRESSIVE' } });
     fireEvent.click(await screen.findByText('Switch to Aggressive'));
 
     await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ riskProfile: 'AGGRESSIVE', confirmAggressive: true }));
@@ -363,5 +368,117 @@ describe('AutoTradePage', () => {
     renderPage();
     expect(await screen.findByText(/1\/2 failed: max_concurrent_positions/)).toBeInTheDocument();
     expect(screen.queryByText(/object Object/)).toBeNull();
+  });
+
+  const btRun = (overrides: Partial<BacktestRunResponse['stats']> = {}): BacktestRunResponse => ({
+    report: {
+      trades: [
+        {
+          symbol: 'AAPL',
+          side: 'buy',
+          signalDate: '2024-01-01',
+          entryDate: '2024-01-02',
+          entryPrice: 100,
+          exitDate: '2024-01-05',
+          exitPrice: 106,
+          exitReason: 'target',
+          quantity: 50,
+          pnl: 300,
+          rMultiple: 2,
+        },
+      ],
+      equityCurve: [
+        { date: '2024-01-02', equity: 100_000 },
+        { date: '2024-01-05', equity: 100_300 },
+      ],
+      startingEquity: 100_000,
+      finalEquity: 100_300,
+      excludedSymbols: [],
+    },
+    stats: {
+      totalTrades: 1,
+      wins: 1,
+      losses: 0,
+      winRate: 100,
+      avgWin: 300,
+      avgLoss: 0,
+      expectancy: 300,
+      profitFactor: null,
+      totalPnl: 300,
+      returnPct: 0.3,
+      avgR: 2,
+      bestR: 2,
+      worstR: 2,
+      maxDrawdown: 0,
+      longestWinStreak: 1,
+      longestLossStreak: 0,
+      ...overrides,
+    },
+  });
+
+  it('runs a plain backtest and renders stats + the trade', async () => {
+    const run = vi.spyOn(client, 'runAutotradeBacktest').mockResolvedValue(btRun());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Run backtest' }));
+
+    await waitFor(() =>
+      expect(run).toHaveBeenCalledWith(
+        expect.objectContaining({ symbols: ['AAPL'], riskProfile: 'MODERATE', startingEquity: 100_000 }),
+      ),
+    );
+    expect(await screen.findByText('target')).toBeInTheDocument();
+    expect(screen.getAllByText('AAPL').length).toBeGreaterThan(0);
+    expect(screen.getByText('$106.00')).toBeInTheDocument(); // trade exit price
+    expect(screen.getAllByText('+$300.00').length).toBeGreaterThan(0); // expectancy stat + trade pnl
+    expect(screen.queryByRole('heading', { name: /In-sample/ })).toBeNull();
+  });
+
+  it('runs a walk-forward split once a split date is set, showing both windows', async () => {
+    const wfResult: WalkForwardResponse = {
+      inSample: btRun({ totalPnl: 300, returnPct: 0.3 }),
+      outOfSample: btRun({ totalPnl: -50, returnPct: -0.05, wins: 0, losses: 1, winRate: 0 }),
+      excludedSymbols: [],
+    };
+    const run = vi.spyOn(client, 'runAutotradeWalkForward').mockResolvedValue(wfResult);
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'AAPL' } });
+    const dateInputs = document.querySelectorAll('input[type="date"]');
+    expect(dateInputs).toHaveLength(3); // from, to, split
+    fireEvent.change(dateInputs[2], { target: { value: '2024-06-01' } });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Run walk-forward' }));
+
+    await waitFor(() =>
+      expect(run).toHaveBeenCalledWith(expect.objectContaining({ symbols: ['AAPL'], splitDate: '2024-06-01' })),
+    );
+    expect(await screen.findByRole('heading', { name: /^In-sample/ })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /^Out-of-sample/ })).toBeInTheDocument();
+  });
+
+  it('shows an inline error and does not call the API when no symbols are entered', async () => {
+    const run = vi.spyOn(client, 'runAutotradeBacktest');
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run backtest' }));
+
+    expect(await screen.findByText('Enter at least one symbol')).toBeInTheDocument();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a backtest API error', async () => {
+    vi.spyOn(client, 'runAutotradeBacktest').mockRejectedValue(new Error('from must be on or before to'));
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'AAPL' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Run backtest' }));
+
+    expect(await screen.findByText('from must be on or before to')).toBeInTheDocument();
   });
 });

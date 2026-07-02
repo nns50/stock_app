@@ -1105,3 +1105,74 @@ export interface AutotradeRiskCheckResult {
   approvedRiskAmount: number;
   approvedNotional: number;
 }
+
+// --- backtesting & walk-forward (Phase 5 — the validation gate) ---
+
+export interface SimulatedTrade {
+  symbol: string;
+  side: AutotradeSignalSide;
+  signalDate: string;
+  entryDate: string;
+  entryPrice: number;
+  exitDate: string;
+  exitPrice: number;
+  exitReason: 'stop' | 'target' | 'end_of_period';
+  quantity: number;
+  pnl: number;
+  rMultiple: number;
+}
+
+export interface BacktestEquityPoint {
+  date: string;
+  equity: number;
+}
+
+export interface BacktestReport {
+  trades: SimulatedTrade[];
+  equityCurve: BacktestEquityPoint[];
+  startingEquity: number;
+  finalEquity: number;
+  excludedSymbols: { symbol: string; reason: string }[];
+}
+
+export interface BacktestStats {
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  avgWin: number;
+  avgLoss: number;
+  expectancy: number;
+  profitFactor: number | null;
+  totalPnl: number;
+  returnPct: number;
+  avgR: number | null;
+  bestR: number | null;
+  worstR: number | null;
+  maxDrawdown: number;
+  longestWinStreak: number;
+  longestLossStreak: number;
+}
+
+export interface BacktestRunResponse {
+  report: BacktestReport;
+  stats: BacktestStats;
+}
+
+export interface WalkForwardResponse {
+  inSample: BacktestRunResponse;
+  outOfSample: BacktestRunResponse;
+  excludedSymbols: { symbol: string; reason: string }[];
+}
+
+export interface BacktestRequest {
+  symbols: string[];
+  from: string;
+  to: string;
+  riskProfile: AutotradeRiskProfile;
+  startingEquity: number;
+}
+
+export interface WalkForwardRequest extends BacktestRequest {
+  splitDate: string;
+}
