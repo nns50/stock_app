@@ -96,6 +96,24 @@ export function computePositionPnl(p: Position, currentPrice: number | null): Po
   };
 }
 
+/**
+ * Unrealized P&L for an OPEN autotrade paper position, from a live quote.
+ * Mirrors computePositionPnl's core formula, without the human journal's
+ * multiplier/fees/partial-exit complexity — paper positions are always a
+ * single entry -> single exit on one stock leg (see
+ * db/autotradePaperPositions.ts). Null for an already-closed position (its
+ * own exitPrice-based realized P&L covers that) or when no current price
+ * could be resolved.
+ */
+export function computePaperUnrealizedPnl(
+  p: { status: 'open' | 'closed'; side: 'buy' | 'sell'; entryPrice: number; quantity: number },
+  currentPrice: number | null,
+): number | null {
+  if (p.status !== 'open' || currentPrice === null) return null;
+  const sign = p.side === 'buy' ? 1 : -1;
+  return round2((currentPrice - p.entryPrice) * p.quantity * sign);
+}
+
 export interface AggregatePnl {
   realized: number;
   unrealized: number;

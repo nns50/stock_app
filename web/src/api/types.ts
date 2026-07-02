@@ -1204,6 +1204,17 @@ export interface PaperPosition {
   exitReason: PaperExitReason | null;
   createdAt: number;
   updatedAt: number;
+  /** A live quote as of the request — null for a closed position (its own
+   *  exitPrice is the number that matters there) or if the quote fetch
+   *  failed with nothing cached either. */
+  currentPrice: number | null;
+  /** True when currentPrice came from the last-known cache, not a live
+   *  quote (provider rate-limited or down). */
+  stale: boolean;
+  /** (currentPrice - entryPrice) * quantity, sign-adjusted for side — null
+   *  for a closed position (its realized P&L is computed from exitPrice
+   *  instead) or when currentPrice itself is unavailable. */
+  unrealizedPnl: number | null;
 }
 
 export interface LoopTickSummary {

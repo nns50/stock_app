@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import AutoTradePage from './AutoTradePage';
 import { ToastProvider } from '../components/ToastContext';
@@ -599,6 +599,9 @@ describe('AutoTradePage', () => {
       exitReason: null,
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      currentPrice: null,
+      stale: false,
+      unrealizedPnl: null,
       ...overrides,
     };
   }
@@ -631,6 +634,50 @@ describe('AutoTradePage', () => {
     // (110-100)*10 realized pnl — appears twice: the stat tile total and the trade's own row.
     expect(screen.getAllByText('+$100.00').length).toBeGreaterThan(0);
     expect(screen.getByText('2.00R')).toBeInTheDocument(); // 100 pnl / 50 risk, fmtNum's default 2 decimals
+  });
+
+  it('shows the live current price and unrealized P&L for an OPEN position, not a blank dash', async () => {
+    vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({
+      positions: [
+        paperPosition({
+          id: 1,
+          symbol: 'AAPL',
+          status: 'open',
+          entryPrice: 100,
+          quantity: 10,
+          riskAmount: 50,
+          currentPrice: 108,
+          unrealizedPnl: 80, // (108-100)*10
+        }),
+      ],
+    });
+    renderPage();
+    expect(await screen.findByText('AAPL')).toBeInTheDocument();
+    expect(screen.getByText('$108.00')).toBeInTheDocument(); // Current $ column
+    // 80 unrealized pnl — appears twice: the stat tile total and the trade's own row.
+    expect(screen.getAllByText('+$80.00').length).toBeGreaterThan(0);
+    expect(screen.getByText('1.60R')).toBeInTheDocument(); // 80 / 50 risk
+  });
+
+  it('shows a stale-price chip when the current price came from the cache, not a live quote', async () => {
+    vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({
+      positions: [paperPosition({ status: 'open', currentPrice: 95, stale: true, unrealizedPnl: -50 })],
+    });
+    renderPage();
+    expect(await screen.findByText('stale')).toBeInTheDocument();
+  });
+
+  it('shows a dash, not $0.00, for unrealized P&L when the live quote could not be resolved at all', async () => {
+    // Distinguishes "no P&L" from "P&L is unknown" — a naive sum over
+    // `unrealizedPnl ?? 0` would render "+$0.00" here, implying the position
+    // is flat when really its price just couldn't be resolved.
+    vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({
+      positions: [paperPosition({ status: 'open', currentPrice: null, unrealizedPnl: null })],
+    });
+    renderPage();
+    await screen.findByText('AAPL');
+    const tile = screen.getByText('Unrealized P&L').parentElement!;
+    expect(within(tile).getByText('—')).toBeInTheDocument();
   });
 
   it('runs one loop cycle, shows the summary, and reloads positions', async () => {

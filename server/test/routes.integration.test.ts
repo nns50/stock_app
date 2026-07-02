@@ -8,6 +8,8 @@ import { setSetting } from '../src/db/settings';
 import { createIntent } from '../src/db/orders';
 import { addExit, createPosition } from '../src/db/positions';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
+import { openPaperPosition } from '../src/db/autotradePaperPositions';
+import { getProvider } from '../src/providers';
 
 // End-to-end tests through the real Express app → routers → services → SQLite
 // (a throwaway DB; see vitest.config.ts). Catches route wiring, validation, and
@@ -626,6 +628,47 @@ describe('autotrade paper execution routes (integration)', () => {
   it('lists paper positions (empty when none exist)', async () => {
     const body = (await getJson('/api/autotrade/paper-positions')) as { positions: unknown[] };
     expect(body.positions).toEqual([]);
+  });
+
+  it('enriches an OPEN position with a live quote and unrealized P&L, leaving a closed one alone', async () => {
+    const open = openPaperPosition({
+      symbol: 'AAPL',
+      side: 'buy',
+      quantity: 10,
+      entryPrice: 1, // far below any real/mock quote, so unrealizedPnl is unambiguously positive
+      stopPrice: 0.5,
+      targetPrice: 100_000, // effectively unreachable — stays open for this test
+      riskAmount: 5,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    const closed = openPaperPosition({
+      symbol: 'MSFT',
+      side: 'buy',
+      quantity: 5,
+      entryPrice: 50,
+      stopPrice: 45,
+      targetPrice: 60,
+      riskAmount: 25,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    db.prepare(
+      "UPDATE autotrade_paper_positions SET status='closed', exit_price=55, exit_at=?, exit_reason='target' WHERE id=?",
+    ).run(Date.now(), closed.id);
+
+    const liveQuote = await getProvider().getQuote('AAPL');
+    const body = (await getJson('/api/autotrade/paper-positions')) as {
+      positions: { id: number; symbol: string; currentPrice: number | null; unrealizedPnl: number | null }[];
+    };
+
+    const openRow = body.positions.find((p) => p.id === open.id)!;
+    expect(openRow.currentPrice).toBe(liveQuote.last);
+    expect(openRow.unrealizedPnl).toBeCloseTo((liveQuote.last - 1) * 10, 2);
+
+    const closedRow = body.positions.find((p) => p.id === closed.id)!;
+    expect(closedRow.currentPrice).toBeNull();
+    expect(closedRow.unrealizedPnl).toBeNull();
   });
 
   it('rejects an invalid status filter', async () => {

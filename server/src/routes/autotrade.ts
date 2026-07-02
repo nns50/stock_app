@@ -9,9 +9,11 @@ import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/de
 import { runAutotradeRiskCheck } from '../services/autotrading/riskCheck';
 import { ScreenerConfig } from '../indicators/screener';
 import { computeBacktestStats, runBacktest, runWalkForwardBacktest } from '../services/autotrading/backtest';
-import { listPaperPositions } from '../db/autotradePaperPositions';
+import { listPaperPositions, PaperPosition } from '../db/autotradePaperPositions';
 import { runAutotradeLoopTick } from '../services/autotrading/loop';
 import { getAutotradeDashboard } from '../services/autotrading/dashboard';
+import { resolveStockPrices } from '../services/quotes';
+import { computePaperUnrealizedPnl } from '../services/pnl';
 
 export const autotradeRouter = Router();
 
@@ -273,6 +275,45 @@ autotradeRouter.post(
   }),
 );
 
+export interface PaperPositionLive extends PaperPosition {
+  /** A live quote as of this request — null for a closed position (its own
+   *  exitPrice is the number that matters there) or if the quote fetch
+   *  failed with nothing cached either. */
+  currentPrice: number | null;
+  /** True when currentPrice came from the last-known cache, not a live
+   *  quote (provider rate-limited or down) — mirrors the human Positions
+   *  page's own "stale" flag (services/quotes.ts). */
+  stale: boolean;
+  /** (currentPrice - entryPrice) * quantity, sign-adjusted for side — null
+   *  for a closed position (use exitPrice-based realized P&L instead) or
+   *  when currentPrice itself is unavailable. */
+  unrealizedPnl: number | null;
+}
+
+/** Enrich open positions with a live quote + unrealized P&L, same live-price
+ *  resolution the human Positions page uses (services/quotes.ts) — batched
+ *  and gracefully degrading per-symbol, never failing the whole request.
+ *  Closed positions pass through with currentPrice/unrealizedPnl null (their
+ *  own exitPrice/realized P&L already covers them; the client computes that
+ *  side unchanged). The list here is always small (bounded by the active
+ *  risk profile's concurrent-position cap), so this is cheap on every call —
+ *  the same per-cycle cost checkPaperExits() already pays for these same
+ *  symbols, just from a different trigger. */
+async function withLivePrices(positions: PaperPosition[]): Promise<PaperPositionLive[]> {
+  const openSymbols = positions.filter((p) => p.status === 'open').map((p) => p.symbol);
+  const prices = openSymbols.length ? await resolveStockPrices(openSymbols) : new Map();
+  return positions.map((p) => {
+    const resolved = p.status === 'open' ? prices.get(p.symbol.toUpperCase()) : undefined;
+    const currentPrice = resolved?.price ?? null;
+    return {
+      ...p,
+      currentPrice,
+      stale: resolved?.stale ?? false,
+      unrealizedPnl: computePaperUnrealizedPnl(p, currentPrice),
+    };
+  });
+}
+
 const paperPositionsQuery = z.object({
   status: z.enum(['open', 'closed']).optional(),
   symbol: z.string().optional(),
@@ -282,7 +323,8 @@ autotradeRouter.get(
   '/paper-positions',
   asyncHandler(async (req, res) => {
     const q = parseQuery(paperPositionsQuery, req);
-    res.json({ positions: listPaperPositions(q) });
+    const positions = await withLivePrices(listPaperPositions(q));
+    res.json({ positions });
   }),
 );
 

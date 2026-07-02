@@ -223,7 +223,12 @@ function BacktestTradesTable({ trades }: { trades: SimulatedTrade[] }) {
   );
 }
 
+/** Realized P&L for a closed position (from its own exitPrice); unrealized
+ *  P&L for an open one, from the live quote the server resolved this request
+ *  (server/src/routes/autotrade.ts's withLivePrices) — null only when that
+ *  quote itself couldn't be resolved (provider down, nothing cached either). */
 function paperPnl(p: PaperPosition): number | null {
+  if (p.status === 'open') return p.unrealizedPnl;
   if (p.exitPrice === null) return null;
   const sign = p.side === 'buy' ? 1 : -1;
   return (p.exitPrice - p.entryPrice) * p.quantity * sign;
@@ -248,6 +253,7 @@ function PaperPositionsTable({ positions }: { positions: PaperPosition[] }) {
             <th className="th">Status</th>
             <th className="th">Entry</th>
             <th className="th text-right">Entry $</th>
+            <th className="th text-right">Current $</th>
             <th className="th">Exit</th>
             <th className="th text-right">Exit $</th>
             <th className="th">Reason</th>
@@ -273,6 +279,20 @@ function PaperPositionsTable({ positions }: { positions: PaperPosition[] }) {
                 </td>
                 <td className="td text-slate-400">{ago(p.entryAt)}</td>
                 <td className="td text-right tabular-nums">{fmtUsd(p.entryPrice)}</td>
+                <td className="td text-right tabular-nums">
+                  {p.status === 'open' && p.currentPrice !== null ? (
+                    <>
+                      {fmtUsd(p.currentPrice)}
+                      {p.stale && (
+                        <span className="chip bg-amber-500/15 text-amber-400 ml-1" title="last-known cached price">
+                          stale
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    '—'
+                  )}
+                </td>
                 <td className="td text-slate-400">{p.exitAt ? ago(p.exitAt) : '—'}</td>
                 <td className="td text-right tabular-nums">{p.exitPrice === null ? '—' : fmtUsd(p.exitPrice)}</td>
                 <td className="td">
@@ -1064,16 +1084,23 @@ export default function AutoTradePage() {
             const open = rows.filter((p) => p.status === 'open');
             const closed = rows.filter((p) => p.status === 'closed');
             const totalPnl = closed.reduce((s, p) => s + (paperPnl(p) ?? 0), 0);
+            const unrealizedTotal = open.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0);
+            const unrealizedKnown = open.some((p) => p.unrealizedPnl !== null);
             return (
               <>
                 {rows.length > 0 && (
-                  <div className="grid grid-cols-3 gap-2 mb-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
                     <StatTile label="Open" value={open.length} />
                     <StatTile label="Closed" value={closed.length} />
                     <StatTile
                       label="Realized P&L"
                       value={fmtSignedUsd(totalPnl)}
                       valueClass={totalPnl >= 0 ? 'text-bull' : 'text-bear'}
+                    />
+                    <StatTile
+                      label="Unrealized P&L"
+                      value={unrealizedKnown ? fmtSignedUsd(unrealizedTotal) : '—'}
+                      valueClass={unrealizedKnown ? (unrealizedTotal >= 0 ? 'text-bull' : 'text-bear') : undefined}
                     />
                   </div>
                 )}
