@@ -268,6 +268,24 @@ CREATE TABLE IF NOT EXISTS autotrade_paper_positions (
   updated_at    INTEGER NOT NULL
 );
 
+-- Durable cache of real-estate sector/industry classification results
+-- (services/autotrading/realEstateClassifier.ts) — classification is a live
+-- Yahoo fundamentals fetch for any symbol outside the seeded universe, and
+-- without this cache the autonomous loop re-fetched it from Yahoo on EVERY
+-- 60-second tick for every non-seeded symbol, forever — enough sustained
+-- concurrent traffic to trip Yahoo's free-tier rate limiting. A symbol's
+-- sector essentially never changes, so a positive result (real_estate/clear)
+-- is cached for a long time; an 'unknown' result (fetch failed) gets a much
+-- shorter TTL so it's retried reasonably soon without immediately hammering
+-- an already-rate-limited API again on the very next cycle.
+CREATE TABLE IF NOT EXISTS autotrade_sector_cache (
+  symbol      TEXT PRIMARY KEY,
+  outcome     TEXT NOT NULL CHECK(outcome IN ('real_estate','clear','unknown')),
+  sector      TEXT,
+  industry    TEXT,
+  updated_at  INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_exits_position ON position_exits(position_id);
 CREATE INDEX IF NOT EXISTS idx_picks_snapshot ON screener_picks(snapshot_id);

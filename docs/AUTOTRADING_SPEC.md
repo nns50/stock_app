@@ -501,7 +501,7 @@ starts.
    call it, and neither races an in-flight tick, so this is safe as used; a future
    caller (e.g. a "pause" route) would need real cancellation, not just this reset.
 
-   **Three bugs found live, immediately after the first production deploy, all fixed the
+   **Four bugs found live, immediately after the first production deploy, all fixed the
    same day**: `PUT /api/autotrade/config` rebuilt its patch as
    `{ enabled: body.enabled, riskProfile: body.riskProfile, accountEquityUsd:
    body.accountEquityUsd }` unconditionally — when a request omits a field, zod leaves
@@ -532,9 +532,28 @@ starts.
    `computePositionPnl()` without the human journal's multiplier/fees/partial-exit
    complexity paper positions don't have). The table gained a **Current $** column
    (with the same amber "stale" chip the human Positions page uses for a cached
-   fallback price) and an **Unrealized P&L** stat tile alongside Realized P&L. All three
-   fixes have regression tests verified by reverting and confirming they fail against
-   the old code.
+   fallback price) and an **Unrealized P&L** stat tile alongside Realized P&L. Fourth: a
+   live screen showed dozens of "Too many requests" errors from Yahoo. Cause: the
+   real-estate sector/industry classifier (`realEstateClassifier.ts`, Phase 2) re-fetched
+   every non-seeded symbol's classification from Yahoo's fundamentals endpoint on *every*
+   screen — and the autonomous loop screens every 60 seconds, forever, unlike the manual
+   Screener page's occasional, human-triggered use of the identical fetch pattern. A
+   symbol's sector is effectively static, so this was almost entirely wasted, repeated
+   traffic against an unofficial, unauthenticated API with no documented rate limit.
+   Added a durable cache (`autotrade_sector_cache`): a `real_estate`/`clear` result is
+   reused for 30 days; an `unknown` result (the fetch itself failed) gets a much shorter
+   30-minute TTL so it's retried soon without immediately re-hammering an
+   already-rate-limited endpoint on the very next cycle. **This does not fully resolve
+   Yahoo rate-limiting** — most of the errors observed live were for symbols already in
+   the seeded universe (their sector never needed a Yahoo call at all), meaning they came
+   from the *scoring* stage's live `getCandles`/`getQuote` calls instead, which can't be
+   cached the same way without sacrificing the freshness the strategy needs, and for
+   which no batched-candles API exists in this codebase yet to reduce per-symbol call
+   count. If rate-limiting persists after this fix, the durable answer is a
+   `MARKET_DATA_PROVIDER` better suited to sustained automated polling (e.g. Tradier,
+   already supported) rather than Yahoo's free/unofficial API — a separate decision, not
+   made here. All four fixes have regression tests verified by reverting and confirming
+   they fail against the old code.
 8. **Live-trading gate** — the manual flag flip that lets the loop place real orders,
    after reviewing phase 5's backtest/walk-forward results and a period of phase 6
    paper-trading track record. Deliberately the last and smallest phase: it mostly
