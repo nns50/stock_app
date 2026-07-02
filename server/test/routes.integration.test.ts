@@ -459,6 +459,64 @@ describe('two-factor (integration)', () => {
   });
 });
 
+describe('autotrade config routes (integration)', () => {
+  const put = (path: string, body: unknown) =>
+    fetch(`${base}${path}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_config; DELETE FROM autotrade_events;');
+  });
+
+  it('a save that omits a field does not reset that field to its default — enabled survives an equity-only save', async () => {
+    const enabledRes = await put('/api/autotrade/config', { enabled: true });
+    expect((await enabledRes.json()) as { enabled: boolean }).toMatchObject({ enabled: true });
+
+    // A SEPARATE request that only sets equity, mirroring the UI's two
+    // independent Save actions (the checkbox saves immediately on click; the
+    // equity field has its own Save button) — must not touch `enabled`.
+    const equityRes = await put('/api/autotrade/config', { accountEquityUsd: 100_000 });
+    expect((await equityRes.json()) as { enabled: boolean; accountEquityUsd: number }).toMatchObject({
+      enabled: true,
+      accountEquityUsd: 100_000,
+    });
+
+    const final = (await getJson('/api/autotrade/config')) as { enabled: boolean; accountEquityUsd: number };
+    expect(final.enabled).toBe(true);
+    expect(final.accountEquityUsd).toBe(100_000);
+  });
+
+  it('a save that omits equity does not reset it to null — equity survives an enabled-only save', async () => {
+    await put('/api/autotrade/config', { accountEquityUsd: 50_000 });
+    await put('/api/autotrade/config', { enabled: true });
+
+    const final = (await getJson('/api/autotrade/config')) as { enabled: boolean; accountEquityUsd: number | null };
+    expect(final.accountEquityUsd).toBe(50_000);
+    expect(final.enabled).toBe(true);
+  });
+
+  it('a save that omits riskProfile does not reset it to MODERATE — riskProfile survives an equity-only save', async () => {
+    await put('/api/autotrade/config', { riskProfile: 'AGGRESSIVE', confirmAggressive: true });
+    await put('/api/autotrade/config', { accountEquityUsd: 75_000 });
+
+    const final = (await getJson('/api/autotrade/config')) as { riskProfile: string; accountEquityUsd: number };
+    expect(final.riskProfile).toBe('AGGRESSIVE');
+    expect(final.accountEquityUsd).toBe(75_000);
+  });
+
+  it('accountEquityUsd: null still explicitly clears it, distinct from omitting the field entirely', async () => {
+    await put('/api/autotrade/config', { enabled: true, accountEquityUsd: 50_000 });
+    const cleared = await put('/api/autotrade/config', { accountEquityUsd: null });
+    expect((await cleared.json()) as { accountEquityUsd: number | null; enabled: boolean }).toMatchObject({
+      accountEquityUsd: null,
+      enabled: true, // still untouched — only equity was explicitly cleared
+    });
+  });
+});
+
 describe('autotrade backtest routes (integration)', () => {
   // VNQ is on the default real-estate exclusion list (server/data/reExclusions.json),
   // so it's excluded before runBacktest ever fetches history or hits the network —
