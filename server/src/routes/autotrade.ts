@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, HttpError, param, parseBody, parseQuery } from './_helpers';
-import { getAutotradeConfig, setAutotradeConfig, setAutotradeKillSwitch } from '../db/autotradeConfig';
+import { AutotradeConfig, getAutotradeConfig, setAutotradeConfig, setAutotradeKillSwitch } from '../db/autotradeConfig';
 import { addExclusion, listExclusions, removeExclusion } from '../db/autotradeExclusions';
 import { AutotradeStage, listAutotradeEvents, logAutotradeEvent } from '../db/autotradeEvents';
 import { runAutotradeScreen } from '../services/autotrading/screen';
@@ -39,11 +39,19 @@ autotradeRouter.put(
       throw new HttpError(400, 'Switching to AGGRESSIVE requires explicit confirmation (confirmAggressive: true)');
     }
     const before = getAutotradeConfig();
-    const next = setAutotradeConfig({
-      enabled: body.enabled,
-      riskProfile: body.riskProfile,
-      accountEquityUsd: body.accountEquityUsd,
-    });
+    // Only pass along fields the client actually sent — `confirmAggressive` is
+    // deliberately excluded (a one-time confirmation, not a stored setting),
+    // but building { enabled: body.enabled, ... } unconditionally would put an
+    // `enabled: undefined` OWN PROPERTY on the patch for any request that
+    // omits it, which setAutotradeConfig's spread treats as "explicitly clear
+    // it" (falling back to the default), not "leave it alone" — silently
+    // resetting enabled/riskProfile to their defaults on every save that
+    // doesn't happen to also re-send them.
+    const patch: Partial<AutotradeConfig> = {};
+    if (body.enabled !== undefined) patch.enabled = body.enabled;
+    if (body.riskProfile !== undefined) patch.riskProfile = body.riskProfile;
+    if (body.accountEquityUsd !== undefined) patch.accountEquityUsd = body.accountEquityUsd;
+    const next = setAutotradeConfig(patch);
     if (next.riskProfile !== before.riskProfile) {
       logAutotradeEvent({
         stage: 'config',
