@@ -910,5 +910,29 @@ describe('AutoTradePage', () => {
 
       await waitFor(() => expect(dash).toHaveBeenCalled());
     });
+
+    it('the page-level Refresh button reloads the dashboard, paper positions, AND recent activity together', async () => {
+      // Monitoring, Paper trading, and Recent activity all reflect state the
+      // background loop can change on its own with nothing clicked — a single
+      // shared refresh covers all three instead of three independent controls
+      // that could drift out of sync (or be missing entirely, as Recent
+      // activity's was before this fix).
+      const dash = vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
+      const positions = vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
+      const evts = vi.spyOn(client, 'autotradeEvents').mockResolvedValue({ events: [] });
+      renderPage();
+      await screen.findByText('VNQ');
+      dash.mockClear();
+      positions.mockClear();
+      evts.mockClear();
+
+      fireEvent.click(screen.getByRole('button', { name: /Refresh/ }));
+
+      await waitFor(() => {
+        expect(dash).toHaveBeenCalled();
+        expect(positions).toHaveBeenCalled();
+        expect(evts).toHaveBeenCalled();
+      });
+    });
   });
 });

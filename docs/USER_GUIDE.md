@@ -621,8 +621,15 @@ results) is the one remaining phase.
   stop/target levels keep being checked every cycle, exactly as if you'd left the loop
   running. Releasing it resumes the loop automatically if **enabled** is still checked;
   it doesn't touch that setting either way.
-- **Monitoring** — a real-time panel (auto-refreshes only if you turn on polling; there's
-  a manual **Refresh** either way) reading the loop's current state directly: active
+- **Refresh** (top of the page, next to the title) — Monitoring, Paper trading, and
+  Recent activity all reflect state the background loop can change on its own, every
+  minute, with nothing clicked — unlike Configuration, the exclusion list, and the
+  backtest tool, which only change in response to a direct action. One shared control
+  covers all three: a manual **Refresh** always works, and an **Auto** dropdown turns on
+  polling (10s/30s/1m/5m) if you want the page to keep itself current without you
+  clicking anything — off by default, same as everywhere else in this app that offers
+  polling.
+- **Monitoring** — a real-time panel reading the loop's current state directly: active
   **risk profile**, **open positions** vs. the profile's concurrent-position cap,
   **aggregate open risk** used vs. its $ cap, today's **day P&L** vs. the $ level that
   would trigger the daily-drawdown halt, **trades today** vs. the daily cap, and the

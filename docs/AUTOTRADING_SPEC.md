@@ -500,6 +500,28 @@ starts.
    called while a tick is genuinely in flight — today only tests and process shutdown
    call it, and neither races an in-flight tick, so this is safe as used; a future
    caller (e.g. a "pause" route) would need real cancellation, not just this reset.
+
+   **Two bugs found live, immediately after the first production deploy, both fixed the
+   same day**: `PUT /api/autotrade/config` rebuilt its patch as
+   `{ enabled: body.enabled, riskProfile: body.riskProfile, accountEquityUsd:
+   body.accountEquityUsd }` unconditionally — when a request omits a field, zod leaves
+   it genuinely absent on the parsed body, but constructing the object this way put an
+   `enabled: undefined` *own property* on the patch regardless, and
+   `setAutotradeConfig`'s `{ ...current, ...patch }` spread treats an explicit
+   `undefined` the same as "reset to default," not "leave alone." Net effect: checking
+   "Auto-trading enabled," then separately setting account equity and saving (two
+   independent actions, matching how the Configuration card actually works) silently
+   flipped `enabled` back to `false` — the loop looked like it was doing nothing because
+   it genuinely wasn't enabled anymore. `trade.ts`'s equivalent live-trading route never
+   had this bug (it passes the parsed body straight through instead of reconstructing
+   it) — checked for and confirmed clean. Second: Monitoring, Paper trading, and Recent
+   activity all reflect state the background loop changes on its own, but only
+   Monitoring (added in this phase) had any refresh mechanism — Paper trading and Recent
+   activity had none at all, so a user watching the page with nothing to click had no
+   way to see the loop's own activity without reloading the browser tab. Replaced the
+   Monitoring-only `RefreshBar` with one shared control in the page header (manual
+   refresh + the same opt-in polling) that refreshes all three together. Both fixes have
+   regression tests verified by reverting and confirming they fail against the old code.
 8. **Live-trading gate** — the manual flag flip that lets the loop place real orders,
    after reviewing phase 5's backtest/walk-forward results and a period of phase 6
    paper-trading track record. Deliberately the last and smallest phase: it mostly
