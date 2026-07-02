@@ -244,6 +244,57 @@ describe('runAutotradeLoopTick', () => {
     expect(summary.skippedReason).toMatch(/kill switch/i);
     expect(mockScreen).not.toHaveBeenCalled();
   });
+
+  it('aborts entries if the kill switch is engaged WHILE screening/deciding is still in flight, not just before the cycle starts', async () => {
+    // Screening is network-bound (sector classification, market-ATR proxy) and
+    // can take meaningful wall-clock time — the initial gate check only
+    // protects against the kill switch being engaged before a cycle starts.
+    // Simulate it being engaged mid-cycle via a side effect inside the mocked
+    // screen call, since that's the earliest point after the initial gate.
+    mockScreen.mockImplementation(async () => {
+      setAutotradeConfig({ killSwitch: true });
+      return {
+        generatedAt: Date.now(),
+        candidates: [candidate('AAPL', 2)],
+        excluded: [],
+        skipped: [],
+        errors: [],
+        discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      };
+    });
+    mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(mockScreen).toHaveBeenCalledTimes(1); // screening itself wasn't blocked
+    expect(mockDecide).toHaveBeenCalledTimes(1); // nor was deciding — both are read-only
+    expect(mockExecute).not.toHaveBeenCalled(); // but execution (the write stage) never ran
+    expect(summary.ranEntries).toBe(false);
+    expect(summary.skippedReason).toMatch(/kill switch engaged mid-cycle/i);
+    // The numbers from the stages that DID run before the abort are still reported.
+    expect(summary.candidatesScreened).toBe(1);
+    expect(summary.signalsGenerated).toBe(1);
+  });
+
+  it('aborts entries if auto-trading is disabled WHILE screening/deciding is still in flight', async () => {
+    mockScreen.mockImplementation(async () => {
+      setAutotradeConfig({ enabled: false });
+      return {
+        generatedAt: Date.now(),
+        candidates: [],
+        excluded: [],
+        skipped: [],
+        errors: [],
+        discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
+      };
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(mockExecute).not.toHaveBeenCalled();
+    expect(summary.skippedReason).toMatch(/disabled mid-cycle/i);
+  });
 });
 
 describe('startAutotradeLoop / stopAutotradeLoop', () => {

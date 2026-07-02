@@ -16,6 +16,12 @@ vi.mock('yahoo-finance2', () => ({
     async quote() {
       throw new Error('not found'); // deterministic -> must NOT be retried
     }
+    // Simulates a stalled connection: the server accepts it but never responds.
+    // yahoo-finance2 ships with its own queue timeout unset, so nothing but our
+    // own wrapper rescues a caller from this.
+    async quoteSummary() {
+      return new Promise(() => {});
+    }
   },
 }));
 
@@ -40,5 +46,21 @@ describe('YahooProvider retry/backoff', () => {
   it('warmup never throws, even when the priming call fails', async () => {
     const p = new YahooProvider();
     await expect(p.warmup()).resolves.toBeUndefined();
+  });
+
+  it('does not hang forever on a stalled request — rejects after the bounded per-attempt timeout instead of waiting indefinitely', async () => {
+    vi.useFakeTimers();
+    try {
+      const p = new YahooProvider();
+      const result = p.getFundamentals('AAPL').catch((e) => e as Error);
+      // 3 total attempts (2 retries) x a 15s per-attempt timeout, plus backoff
+      // sleeps between them — advance well past all of it in one go.
+      await vi.advanceTimersByTimeAsync(70_000);
+      const err = await result;
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toMatch(/timed out/i);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

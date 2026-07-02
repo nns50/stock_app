@@ -318,6 +318,10 @@ function MonitoringDashboard({ dash }: { dash: AutotradeDashboard }) {
   const positionsBusy = dash.openPositionsCount >= dash.maxConcurrentPositions;
   const tradesBusy = dash.tradesToday >= dash.maxTradesPerDay;
   const stepDownActive = dash.consecutiveLosses >= dash.stepDownAfterLosses;
+  // dailyDrawdownHaltLevel is 0 (equity unset) when the halt has no real
+  // meaning yet — guard the same way riskBusy guards an unconfigured $0 cap,
+  // so a fresh/unconfigured account never misreads as "halted."
+  const haltActive = dash.dailyDrawdownHaltLevel < 0 && dash.dailyPnl <= dash.dailyDrawdownHaltLevel;
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
       <StatTile
@@ -340,7 +344,13 @@ function MonitoringDashboard({ dash }: { dash: AutotradeDashboard }) {
       <StatTile
         label="Day P&L"
         value={fmtSignedUsd(dash.dailyPnl)}
-        sub={`halt at ${fmtUsd(dash.dailyDrawdownHaltLevel)}`}
+        sub={
+          haltActive ? (
+            <span className="text-bear font-semibold">HALT TRIGGERED — new entries blocked</span>
+          ) : (
+            `halt at ${fmtUsd(dash.dailyDrawdownHaltLevel)}`
+          )
+        }
         valueClass={dash.dailyPnl >= 0 ? 'text-bull' : 'text-bear'}
       />
       <StatTile
@@ -599,62 +609,65 @@ export default function AutoTradePage() {
 
       <Card className="p-4">
         <h3 className="font-medium text-sm mb-3">Configuration</h3>
+        {/* Deliberately OUTSIDE the loading/error branch below: it renders
+            from local `killSwitch` state, not `config.data`, so a transient
+            reload failure (e.g. right after a toggle — saveConfig/
+            toggleKillSwitch both fire config.reload() without awaiting it)
+            can never hide the one control that releases it. */}
+        <button
+          onClick={toggleKillSwitch}
+          disabled={killBusy}
+          className={cx(
+            'w-full rounded-lg border px-3 py-2 text-sm font-semibold transition-colors mb-3',
+            killSwitch
+              ? 'border-bear bg-bear/20 text-bear'
+              : 'border-ink-600 bg-ink-700/40 text-slate-300 hover:border-bear/60',
+          )}
+        >
+          {killSwitch ? '■ Kill switch ENGAGED — release' : 'Kill switch — engage halt'}
+        </button>
         {config.loading ? (
           <Spinner />
         ) : config.error ? (
           <ErrorState error={config.error} onRetry={config.reload} />
         ) : (
-          <div className="space-y-3">
-            <button
-              onClick={toggleKillSwitch}
-              disabled={killBusy}
-              className={cx(
-                'w-full rounded-lg border px-3 py-2 text-sm font-semibold transition-colors',
-                killSwitch
-                  ? 'border-bear bg-bear/20 text-bear'
-                  : 'border-ink-600 bg-ink-700/40 text-slate-300 hover:border-bear/60',
-              )}
+          <div className="grid sm:grid-cols-2 gap-3 items-end">
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={enabled} onChange={(e) => saveConfig({ enabled: e.target.checked })} />
+              Auto-trading enabled
+            </label>
+            <Field
+              label="Risk profile"
+              hint={
+                riskProfile === 'AGGRESSIVE'
+                  ? 'Higher risk/trade, drawdown halt, position count, aggregate risk, and trade caps.'
+                  : 'Default — the conservative caps.'
+              }
             >
-              {killSwitch ? '■ Kill switch ENGAGED — release' : 'Kill switch — engage halt'}
-            </button>
-            <div className="grid sm:grid-cols-2 gap-3 items-end">
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={enabled} onChange={(e) => saveConfig({ enabled: e.target.checked })} />
-                Auto-trading enabled
-              </label>
-              <Field
-                label="Risk profile"
-                hint={
-                  riskProfile === 'AGGRESSIVE'
-                    ? 'Higher risk/trade, drawdown halt, position count, aggregate risk, and trade caps.'
-                    : 'Default — the conservative caps.'
-                }
+              <select
+                className="input"
+                value={riskProfile}
+                onChange={(e) => saveConfig({ riskProfile: e.target.value as AutotradeRiskProfile })}
               >
-                <select
-                  className="input"
-                  value={riskProfile}
-                  onChange={(e) => saveConfig({ riskProfile: e.target.value as AutotradeRiskProfile })}
+                <option value="MODERATE">Moderate (default)</option>
+                <option value="AGGRESSIVE">Aggressive</option>
+              </select>
+            </Field>
+            <Field
+              label="Account equity ($)"
+              hint="The risk engine sizes trades and computes its % caps against this. No live broker balance is wired in yet — set it manually."
+            >
+              <div className="flex gap-2">
+                <NumberInput value={equityDraft} onChange={setEquityDraft} placeholder="e.g. 25000" />
+                <button
+                  className="btn-ghost shrink-0"
+                  onClick={() => saveConfig({ accountEquityUsd: equityDraft ?? null })}
+                  disabled={equityDraft === (config.data?.accountEquityUsd ?? undefined)}
                 >
-                  <option value="MODERATE">Moderate (default)</option>
-                  <option value="AGGRESSIVE">Aggressive</option>
-                </select>
-              </Field>
-              <Field
-                label="Account equity ($)"
-                hint="The risk engine sizes trades and computes its % caps against this. No live broker balance is wired in yet — set it manually."
-              >
-                <div className="flex gap-2">
-                  <NumberInput value={equityDraft} onChange={setEquityDraft} placeholder="e.g. 25000" />
-                  <button
-                    className="btn-ghost shrink-0"
-                    onClick={() => saveConfig({ accountEquityUsd: equityDraft ?? null })}
-                    disabled={equityDraft === (config.data?.accountEquityUsd ?? undefined)}
-                  >
-                    Save
-                  </button>
-                </div>
-              </Field>
-            </div>
+                  Save
+                </button>
+              </div>
+            </Field>
           </div>
         )}
         {config.data && config.data.accountEquityUsd === null && (

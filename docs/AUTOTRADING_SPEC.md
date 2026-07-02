@@ -464,6 +464,42 @@ starts.
    warning red immediately; a "Run one cycle now" click while engaged correctly reports
    "New entries skipped — Kill switch is engaged" while still checking exits; releasing
    it restores normal operation; zero console errors throughout.
+
+   **Hardened after an independent adversarial review** (two reviewers, one on the
+   kill-switch/loop-gating logic, one on the UI/routes/tests), before treating a
+   safety-critical kill switch as trustworthy: the initial gate check in
+   `runAutotradeLoopTick()` only protected against the kill switch being engaged
+   *before* a cycle starts — Screen and Decision are network-bound (sector
+   classification, the market-ATR proxy) and can take real wall-clock time, so a kill
+   switch engaged mid-cycle didn't stop that cycle's entries. A second check now runs
+   immediately before `runPaperExecution()` (the write stage), so engaging the kill
+   switch mid-cycle now aborts that same cycle's entries instead of only the next one.
+   Separately — and more seriously — `YahooProvider` (used for the real-estate
+   sector-classification fallback every Screen cycle calls for symbols outside the
+   seeded universe) had no request timeout: `yahoo-finance2` ships with its own queue
+   timeout unset, so a stalled connection could hang the awaiting call forever. Since
+   nothing downstream of that hang would ever resolve, `runAutotradeLoopTick()` would
+   never return, `tickInFlight` would never reset, and the self-rescheduling timer would
+   never re-arm — permanently stopping the *entire* loop, including `checkPaperExits()`,
+   the one thing this phase depends on to keep enforcing stops while halted. Every
+   Yahoo call now races a 15s timeout (matching `util/http.ts`'s existing convention),
+   converting a hang into a bounded, retried transient failure instead. The Monitoring
+   card's Day P&L tile also colored red for any ordinary down day, giving no distinct
+   signal when the daily-drawdown halt was actually breached — contradicting this
+   section's own "a tile goes red once its cap is reached" claim; it now shows a
+   distinct "HALT TRIGGERED" label (guarded against the equity-unset $0/-0 edge case,
+   same guard style as the aggregate-open-risk tile) instead of just reusing the
+   ordinary win/loss color. And a kill-switch toggle's own background config reload
+   (fire-and-forget, to keep the button responsive) failing could swap the *entire*
+   Configuration card — including the button that releases the kill switch — for a
+   generic error box; the button is now rendered from local state outside that
+   error branch, so it can never be hidden by an unrelated reload failure. Each fix
+   has a regression test verified by reverting the fix and confirming the test fails
+   against the old code. **Known, deferred, currently inert**: `stopAutotradeLoop()`
+   unconditionally resets the reentrancy flag, which would defeat the guard if ever
+   called while a tick is genuinely in flight — today only tests and process shutdown
+   call it, and neither races an in-flight tick, so this is safe as used; a future
+   caller (e.g. a "pause" route) would need real cancellation, not just this reset.
 8. **Live-trading gate** — the manual flag flip that lets the loop place real orders,
    after reviewing phase 5's backtest/walk-forward results and a period of phase 6
    paper-trading track record. Deliberately the last and smallest phase: it mostly

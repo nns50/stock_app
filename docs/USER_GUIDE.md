@@ -630,7 +630,10 @@ results) is the one remaining phase.
   is scoped to the loop's own paper positions (never your real ones) and is a direct read
   of the same numbers the risk engine itself checks before approving a trade — this panel
   can't show you something the risk engine would disagree with. A tile goes red once
-  its cap is reached.
+  its cap is reached; the day P&L tile specifically shows a distinct "HALT TRIGGERED"
+  label (not just its ordinary red-for-a-loss coloring) once the daily-drawdown halt is
+  actually breached, so an ordinary down day and a halted one are never hard to tell
+  apart.
 - **Real-estate exclusion list** — real estate is a hard, permanent exclusion for this
   strategy. A starter list of well-known real-estate ETFs ships seeded in; add or remove
   symbols freely. This list is a backstop, not the only check — the screen below also

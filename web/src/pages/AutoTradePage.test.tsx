@@ -800,6 +800,38 @@ describe('AutoTradePage', () => {
       await waitFor(() => expect(client.setAutotradeKillSwitch).toHaveBeenCalled());
       expect(screen.getByRole('button', { name: 'Kill switch — engage halt' })).toBeInTheDocument();
     });
+
+    it('keeps the kill-switch button visible and correct even if the config reload right after a toggle fails', async () => {
+      // toggleKillSwitch fires config.reload() without awaiting it — if THAT
+      // GET fails, config.error gets set, and the rest of the Configuration
+      // card (enabled checkbox, risk profile, equity) falls back to an error
+      // box. The kill-switch button must survive that — it's the one control
+      // that can release it, and it reads local state, not config.data.
+      vi.spyOn(client, 'setAutotradeKillSwitch').mockResolvedValue({
+        enabled: false,
+        killSwitch: true,
+        riskProfile: 'MODERATE',
+        accountEquityUsd: 100_000,
+      });
+      vi.spyOn(client, 'autotradeConfig')
+        .mockResolvedValueOnce({
+          enabled: false,
+          killSwitch: false,
+          riskProfile: 'MODERATE',
+          accountEquityUsd: 100_000,
+        })
+        .mockRejectedValue(new Error('network blip'));
+      renderPage();
+      await screen.findByText('VNQ');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Kill switch — engage halt' }));
+
+      expect(await screen.findByRole('button', { name: '■ Kill switch ENGAGED — release' })).toBeInTheDocument();
+      // The rest of the card fell back to an error state...
+      expect(await screen.findByText('Something went wrong')).toBeInTheDocument();
+      // ...but the button to release the kill switch is still right there.
+      expect(screen.getByRole('button', { name: '■ Kill switch ENGAGED — release' })).toBeInTheDocument();
+    });
   });
 
   describe('Monitoring dashboard', () => {
@@ -831,6 +863,32 @@ describe('AutoTradePage', () => {
       vi.spyOn(client, 'autotradeDashboard').mockRejectedValue(new Error('dashboard unavailable'));
       renderPage();
       expect(await screen.findByText('dashboard unavailable')).toBeInTheDocument();
+    });
+
+    it('shows a distinct HALT TRIGGERED signal when the daily drawdown halt is actually breached', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({ dailyPnl: -3_200, dailyDrawdownHaltLevel: -3_000 }), // breached
+      );
+      renderPage();
+      expect(await screen.findByText(/HALT TRIGGERED/)).toBeInTheDocument();
+    });
+
+    it('does not show HALT TRIGGERED for an ordinary loss that has not reached the halt level', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({ dailyPnl: -50, dailyDrawdownHaltLevel: -3_000 }), // a normal down day, not halted
+      );
+      renderPage();
+      await screen.findByText('VNQ');
+      expect(screen.queryByText(/HALT TRIGGERED/)).toBeNull();
+    });
+
+    it('does not misreport HALT TRIGGERED when equity is unset (halt level is the -0/0 edge case)', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({ dailyPnl: 0, dailyDrawdownHaltLevel: -0 }),
+      );
+      renderPage();
+      await screen.findByText('VNQ');
+      expect(screen.queryByText(/HALT TRIGGERED/)).toBeNull();
     });
 
     it('reloads after running a loop cycle, so risk/P&L figures reflect the new fills', async () => {

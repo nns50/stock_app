@@ -131,6 +131,20 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     const decision = runAutotradeDecision(passedVolatility);
     summary.signalsGenerated = decision.signals.length;
 
+    // Re-check right before executing: screening + deciding above is
+    // network-bound (sector classification, market-ATR proxy) and can take
+    // meaningful wall-clock time, so a kill switch engaged mid-cycle must
+    // still stop THIS cycle's entries, not just the next one — the initial
+    // gate check above only protects against it being engaged before a cycle
+    // starts.
+    const recheck = getAutotradeConfig();
+    if (recheck.killSwitch || !recheck.enabled) {
+      summary.skippedReason = recheck.killSwitch
+        ? 'Kill switch engaged mid-cycle — entries aborted before execution'
+        : 'Auto-trading was disabled mid-cycle — entries aborted before execution';
+      return summary;
+    }
+
     const outcomes = await runPaperExecution(decision.signals.map((signal) => ({ signal })));
     summary.entriesOpened = outcomes.filter((o) => o.ok).length;
     summary.ranEntries = true;
@@ -170,6 +184,14 @@ export function stopAutotradeLoop(): void {
   // the timer doesn't cancel an in-progress await chain) — but resetting
   // this here means a test/shutdown path can never leave a stuck `true`
   // (e.g. from a failed assertion skipping a test's own cleanup) wedged
-  // across whatever runs next.
+  // across whatever runs next. Today only tests and process shutdown call
+  // this, and neither races a genuinely in-flight tick, so this is safe as
+  // used. KNOWN GAP if that ever changes (e.g. a future "pause" route calling
+  // this at an arbitrary moment): resetting the flag here doesn't stop the
+  // in-flight tick itself, so it could still open a paper position after this
+  // returns, concurrently with whatever runs next re-entering the guard as if
+  // it were clear. Would need real cancellation (an AbortSignal threaded
+  // through the tick) to close, not just this reset — deferred until there's
+  // an actual caller that needs it.
   tickInFlight = false;
 }
