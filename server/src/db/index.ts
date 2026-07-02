@@ -181,10 +181,40 @@ CREATE TABLE IF NOT EXISTS screener_picks (
 
 ${ALERTS_TABLE_SQL}
 
+CREATE TABLE IF NOT EXISTS autotrade_config (
+  id          INTEGER PRIMARY KEY CHECK(id = 1),   -- singleton row
+  config      TEXT NOT NULL,           -- JSON AutotradeConfig (risk profile + enabled)
+  updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS autotrade_exclusions (
+  symbol      TEXT PRIMARY KEY,
+  reason      TEXT,
+  source      TEXT NOT NULL DEFAULT 'user' CHECK(source IN ('default','user')),
+  created_at  INTEGER NOT NULL
+);
+
+-- No CHECK on stage/action: both vocabularies grow as later auto-trading phases
+-- land (mirrors alerts.kind / order_intents.order_type — a stale CHECK there
+-- silently rejected new values at INSERT). Validated by the AutotradeStage type
+-- + route-level Zod enum instead.
+CREATE TABLE IF NOT EXISTS autotrade_events (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol       TEXT,
+  stage        TEXT NOT NULL,
+  action       TEXT NOT NULL,
+  detail       TEXT,                   -- JSON payload
+  risk_profile TEXT,
+  created_at   INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_exits_position ON position_exits(position_id);
 CREATE INDEX IF NOT EXISTS idx_picks_snapshot ON screener_picks(snapshot_id);
 CREATE INDEX IF NOT EXISTS idx_order_events_intent ON order_events(intent_id);
+CREATE INDEX IF NOT EXISTS idx_autotrade_events_symbol ON autotrade_events(symbol);
+CREATE INDEX IF NOT EXISTS idx_autotrade_events_stage ON autotrade_events(stage);
+CREATE INDEX IF NOT EXISTS idx_autotrade_events_created ON autotrade_events(created_at);
 `;
 
 interface SeedRow {
@@ -211,6 +241,45 @@ function seedUniverseIfEmpty(): void {
     for (const it of items) {
       if (!it.symbol) continue;
       insert.run(it.symbol.toUpperCase(), it.name ?? null, it.sector ?? null, now);
+    }
+  });
+  tx(list);
+}
+
+interface ExclusionSeedRow {
+  symbol: string;
+  reason?: string;
+}
+
+/**
+ * Starter set of well-known real-estate ETFs (docs/AUTOTRADING_SPEC.md's
+ * EXCLUDED SECTOR requirement), seeded once so the auto-trading screener never
+ * has an empty exclusion list out of the box. Not meant to be exhaustive —
+ * individual REITs/real-estate operating companies are caught by the
+ * sector/industry classification check, not a hand-maintained list. Rows are
+ * freely add/removable afterwards (see db/autotradeExclusions.ts); only the
+ * initial seed lives here.
+ */
+function seedAutotradeExclusionsIfEmpty(): void {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM autotrade_exclusions').get() as { n: number };
+  if (row.n > 0) return;
+
+  const file = path.join(DATA_DIR, 'reExclusions.json');
+  let list: ExclusionSeedRow[];
+  try {
+    list = JSON.parse(fs.readFileSync(file, 'utf8')) as ExclusionSeedRow[];
+  } catch {
+    list = [];
+  }
+
+  const insert = db.prepare(
+    "INSERT OR IGNORE INTO autotrade_exclusions (symbol, reason, source, created_at) VALUES (?, ?, 'default', ?)",
+  );
+  const now = Date.now();
+  const tx = db.transaction((items: ExclusionSeedRow[]) => {
+    for (const it of items) {
+      if (!it.symbol) continue;
+      insert.run(it.symbol.toUpperCase(), it.reason ?? null, now);
     }
   });
   tx(list);
@@ -306,4 +375,5 @@ export function initDb(): void {
   db.exec(SCHEMA);
   migrate();
   seedUniverseIfEmpty();
+  seedAutotradeExclusionsIfEmpty();
 }

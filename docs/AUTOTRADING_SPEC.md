@@ -113,10 +113,19 @@ strategy and risk logic have been validated by backtesting — matching the spec
 gate below. Each phase should be independently mergeable and testable before the next
 starts.
 
-1. **Foundations** — DB schema for risk-profile config, the RE exclusion list, and a
-   shared journal-writing table/service that every later phase logs into (candidate
-   found, excluded, signal generated, risk-check pass/block, order placed, fill). No
-   screening or trading logic yet — just the scaffolding everything else writes to.
+1. **Foundations — shipped.** DB schema for risk-profile config (`autotrade_config`),
+   the RE exclusion list (`autotrade_exclusions`, seeded from
+   `server/data/reExclusions.json`), and the shared journal (`autotrade_events`) every
+   later phase logs into (candidate found, excluded, signal generated, risk-check
+   pass/block, order placed, fill) — see `db/autotradeConfig.ts`,
+   `db/autotradeExclusions.ts`, `db/autotradeEvents.ts`, routed at `/api/autotrade/*`
+   (`routes/autotrade.ts`). Switching to AGGRESSIVE requires `confirmAggressive: true`
+   in the request — the route's stand-in for the spec's "explicit manual confirmation
+   in the UI" until a real confirmation dialog exists. No screening or trading logic
+   yet — just the scaffolding everything else writes to. Deliberately backend-only:
+   no web UI yet, since nothing (no screener, no loop) consumes these settings until
+   Phase 2+ — a settings panel lands once there's something real for it to control,
+   likely alongside Phase 2 or the Phase 7 dashboard rather than as inert controls now.
 2. **Screening & real-estate exclusion** (Research & Screen stage) — scan for
    pre-market gappers / momentum / unusual-volume candidates; apply the RE exclusion
    list + sector/industry check before anything else sees a candidate. Read-only:

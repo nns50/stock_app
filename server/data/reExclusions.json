@@ -1,0 +1,8 @@
+[
+  { "symbol": "VNQ", "reason": "Real estate ETF (Vanguard Real Estate)" },
+  { "symbol": "IYR", "reason": "Real estate ETF (iShares U.S. Real Estate)" },
+  { "symbol": "XLRE", "reason": "Real estate ETF (Real Estate Select Sector SPDR)" },
+  { "symbol": "SCHH", "reason": "Real estate ETF (Schwab U.S. REIT)" },
+  { "symbol": "RWR", "reason": "Real estate ETF (SPDR Dow Jones REIT)" },
+  { "symbol": "USRT", "reason": "Real estate ETF (iShares Core U.S. REIT)" }
+]
