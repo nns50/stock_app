@@ -55,6 +55,30 @@ function filterByVolatility(candidates: ScreenCandidate[], marketAtrPct: number 
   });
 }
 
+function emptySummary(skippedReason?: string): LoopTickSummary {
+  return {
+    ranEntries: false,
+    skippedReason,
+    exitsChecked: 0,
+    exitsClosed: 0,
+    candidatesScreened: 0,
+    candidatesPassedVolatility: 0,
+    signalsGenerated: 0,
+    entriesOpened: 0,
+  };
+}
+
+/** True while a cycle is actively running. The self-rescheduling timer below
+ *  can never overlap ITS OWN ticks (the next setTimeout is only armed after
+ *  the current one settles), but `runAutotradeLoopTick` has a second, wholly
+ *  independent caller — the manual "run one cycle now" route — which has no
+ *  such serialization. Without this guard, a manual trigger landing while the
+ *  background tick is mid-flight lets two runPaperExecution() batches each
+ *  snapshot the paper portfolio independently, so neither sees the other's
+ *  approvals — the same same-batch cap-busting bug class Phase 5's review
+ *  found in the backtest engine, reintroduced via inter-call concurrency. */
+let tickInFlight = false;
+
 /**
  * One full cycle. Exits are checked regardless of the session window (a
  * closed/near-the-bell market doesn't invalidate an already-known stop/target
@@ -62,38 +86,40 @@ function filterByVolatility(candidates: ScreenCandidate[], marketAtrPct: number 
  * Exposed for tests and for a manual "run one cycle now" trigger.
  */
 export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
-  const exitOutcomes = await checkPaperExits();
-  const summary: LoopTickSummary = {
-    ranEntries: false,
-    exitsChecked: exitOutcomes.length,
-    exitsClosed: exitOutcomes.filter((o) => o.closed).length,
-    candidatesScreened: 0,
-    candidatesPassedVolatility: 0,
-    signalsGenerated: 0,
-    entriesOpened: 0,
-  };
+  if (tickInFlight) return emptySummary('A cycle is already running');
+  tickInFlight = true;
+  try {
+    const exitOutcomes = await checkPaperExits();
+    const summary: LoopTickSummary = {
+      ...emptySummary(),
+      exitsChecked: exitOutcomes.length,
+      exitsClosed: exitOutcomes.filter((o) => o.closed).length,
+    };
 
-  const session = checkSessionWindow(SESSION_BUFFER_MINUTES);
-  if (!session.ok) {
-    summary.skippedReason = session.reason;
+    const session = checkSessionWindow(SESSION_BUFFER_MINUTES);
+    if (!session.ok) {
+      summary.skippedReason = session.reason;
+      return summary;
+    }
+
+    const screenResult = await runAutotradeScreen();
+    summary.candidatesScreened = screenResult.candidates.length;
+
+    const volCfg = defaultVolatilityFilterConfig();
+    const marketAtrPct = await getMarketAtrPct(volCfg.marketProxySymbol);
+    const passedVolatility = filterByVolatility(screenResult.candidates, marketAtrPct);
+    summary.candidatesPassedVolatility = passedVolatility.length;
+
+    const decision = runAutotradeDecision(passedVolatility);
+    summary.signalsGenerated = decision.signals.length;
+
+    const outcomes = await runPaperExecution(decision.signals.map((signal) => ({ signal })));
+    summary.entriesOpened = outcomes.filter((o) => o.ok).length;
+    summary.ranEntries = true;
     return summary;
+  } finally {
+    tickInFlight = false;
   }
-
-  const screenResult = await runAutotradeScreen();
-  summary.candidatesScreened = screenResult.candidates.length;
-
-  const volCfg = defaultVolatilityFilterConfig();
-  const marketAtrPct = await getMarketAtrPct(volCfg.marketProxySymbol);
-  const passedVolatility = filterByVolatility(screenResult.candidates, marketAtrPct);
-  summary.candidatesPassedVolatility = passedVolatility.length;
-
-  const decision = runAutotradeDecision(passedVolatility);
-  summary.signalsGenerated = decision.signals.length;
-
-  const outcomes = await runPaperExecution(decision.signals.map((signal) => ({ signal })));
-  summary.entriesOpened = outcomes.filter((o) => o.ok).length;
-  summary.ranEntries = true;
-  return summary;
 }
 
 let timer: NodeJS.Timeout | null = null;

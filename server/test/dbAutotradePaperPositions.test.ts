@@ -53,13 +53,18 @@ describe('autotradePaperPositions', () => {
     expect(closed!.exitAt).toBeGreaterThan(0);
   });
 
-  it('closing an already-closed position is a no-op, not a double-close', () => {
+  it('closing an already-closed position is a no-op that returns null, not a double-close', () => {
     const opened = openPaperPosition(input());
-    closePaperPosition(opened.id, { exitPrice: 54, exitReason: 'target' });
+    const first = closePaperPosition(opened.id, { exitPrice: 54, exitReason: 'target' });
+    expect(first!.exitPrice).toBe(54);
     const secondAttempt = closePaperPosition(opened.id, { exitPrice: 40, exitReason: 'stop' });
-    // Still returns the (unchanged) row — but exit fields weren't overwritten.
-    expect(secondAttempt!.exitPrice).toBe(54);
-    expect(secondAttempt!.exitReason).toBe('target');
+    // null, not the stale row — callers (checkPaperExits) rely on this to avoid
+    // journaling a second "closed" event for a close that didn't actually happen.
+    expect(secondAttempt).toBeNull();
+    // And the exit fields from the FIRST (real) close were never overwritten.
+    const row = listPaperPositions({ symbol: opened.symbol })[0];
+    expect(row.exitPrice).toBe(54);
+    expect(row.exitReason).toBe('target');
   });
 
   it('closing a nonexistent id returns null', () => {

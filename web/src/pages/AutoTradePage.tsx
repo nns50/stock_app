@@ -490,6 +490,7 @@ export default function AutoTradePage() {
   const runLoopOnce = async () => {
     setLoopBusy(true);
     setLoopErr(undefined);
+    setLoopSummary(undefined); // clear the last run's numbers so a failure can't look like it also ran
     try {
       setLoopSummary(await client.runAutotradeLoopOnce());
       paperPositions.reload();

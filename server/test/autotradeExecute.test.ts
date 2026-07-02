@@ -176,6 +176,55 @@ describe('runPaperExecution', () => {
     const totalRisk = open.reduce((s, p) => s + p.riskAmount, 0);
     expect(totalRisk).toBeCloseTo(4500, 5);
   });
+
+  it("buckets dailyPnl by ET trading day, not UTC calendar day — a late-evening loss must not carry into the next trading day's drawdown halt", async () => {
+    // checkPaperExits() runs around the clock, so a position genuinely can
+    // close late in the evening. 2024-01-10T02:00:00Z is 2024-01-09 21:00 ET
+    // (EST, UTC-5, no DST in January) — it belongs to Jan 9's trading day even
+    // though its own ms timestamp already falls on Jan 10 in UTC.
+    const lateEveningExitMs = Date.parse('2024-01-10T02:00:00Z');
+    const stale = openPaperPosition({
+      symbol: 'YEST',
+      side: 'buy',
+      quantity: 100,
+      entryPrice: 100,
+      stopPrice: 70,
+      targetPrice: 130,
+      riskAmount: 3000,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    // (70-100)*100 = -3000, exactly MODERATE's 3%-of-$100k daily-drawdown-halt level.
+    db.prepare(
+      "UPDATE autotrade_paper_positions SET status='closed', exit_price=70, exit_at=?, exit_reason='stop' WHERE id=?",
+    ).run(lateEveningExitMs, stale.id);
+
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse('2024-01-10T15:00:00Z')); // 2024-01-10 10:00 ET — the NEXT trading day
+    try {
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as never);
+      const outcomes = await runPaperExecution([{ signal: signal({ symbol: 'AAPL' }) }]);
+      // If the stale Jan-9 loss were wrongly bucketed into "today" (Jan 10 UTC
+      // calendar date), this clean candidate would be blocked by
+      // daily_drawdown_halt — it must not be.
+      expect(outcomes[0].ok).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("isolates one candidate's persistence failure — the rest of the batch still runs", async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ BAD1: NaN, OK1: 100 }) as never);
+    const outcomes = await runPaperExecution([
+      { signal: signal({ symbol: 'BAD1' }) },
+      { signal: signal({ symbol: 'OK1' }) },
+    ]);
+    expect(outcomes[0].ok).toBe(false);
+    expect(outcomes[0].reason).toMatch(/invalid quote price/i);
+    expect(outcomes[1].ok).toBe(true); // OK1 is unaffected by BAD1's bad quote
+    expect(hasOpenPaperPosition('OK1')).toBe(true);
+    expect(hasOpenPaperPosition('BAD1')).toBe(false);
+  });
 });
 
 describe('checkPaperExits', () => {

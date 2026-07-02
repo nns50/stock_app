@@ -362,6 +362,28 @@ starts.
    (open/closed count, realized P&L), and the full paper trade history. The page's
    "Auto-trading enabled" warning and footer copy were updated — they used to say the
    execution loop hadn't been built yet, which would now be actively wrong.
+
+   **Hardened after an independent adversarial review**, before treating an unattended
+   loop as trustworthy even in paper mode: `runAutotradeLoopTick()` now guards against a
+   second concurrent call while one is already in flight (returns immediately with
+   `skippedReason: 'A cycle is already running'`) — the self-rescheduling timer can never
+   overlap *its own* ticks, but the manual "run one cycle now" route calls the same
+   function completely independently, and without this guard a manual trigger landing
+   mid-cycle let two `runPaperExecution()` batches each snapshot the paper portfolio
+   blind to the other's approvals (the same same-batch cap-busting bug class Phase 5's
+   review found in the backtest engine, reintroduced via inter-call concurrency).
+   `closePaperPosition()` now checks the SQL `UPDATE`'s actual row count instead of just
+   re-`SELECT`ing — it used to return the stale row (not `null`) on a no-op second close,
+   which let `checkPaperExits()` journal a duplicate `paper_position_closed` event for a
+   close that only happened once. Daily P&L / consecutive-loss / trades-today figures are
+   now bucketed by the ET calendar date, not UTC — `checkPaperExits()` runs around the
+   clock, not just during the session, and UTC midnight falls at 7-8pm ET (squarely
+   inside ordinary after-hours activity), so a position closed late one evening could
+   land in a different UTC "day" than its own ET trading day, corrupting the next
+   morning's risk-check inputs. `attemptPaperEntry()` now validates a fetched quote is
+   finite and positive before use, and never lets one candidate's persistence failure
+   abort the rest of the batch. The "Paper trading" card no longer leaves a stale
+   successful summary on screen next to a newer failed run's error.
 7. **Monitoring dashboard & kill switch** — real-time panel (active risk profile, open
    positions, aggregate open risk used vs. limit, day P&L, drawdown vs. halt, trade
    count vs. max, consecutive loss streak) and the kill switch behavior resolved above.

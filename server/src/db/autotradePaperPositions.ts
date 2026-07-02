@@ -134,13 +134,21 @@ export function openPaperPosition(input: OpenPaperPositionInput): PaperPosition 
  *  loop cycle that races a manual close can't double-close. */
 export function closePaperPosition(id: number, input: ClosePaperPositionInput): PaperPosition | null {
   const now = Date.now();
-  db.prepare(
-    `UPDATE autotrade_paper_positions
-     SET status = 'closed', exit_price = ?, exit_at = ?, exit_reason = ?, updated_at = ?
-     WHERE id = ? AND status = 'open'`,
-  ).run(input.exitPrice, now, input.exitReason, now, id);
-  const row = db.prepare('SELECT * FROM autotrade_paper_positions WHERE id = ?').get(id) as Row | undefined;
-  return row ? map(row) : null;
+  const info = db
+    .prepare(
+      `UPDATE autotrade_paper_positions
+       SET status = 'closed', exit_price = ?, exit_at = ?, exit_reason = ?, updated_at = ?
+       WHERE id = ? AND status = 'open'`,
+    )
+    .run(input.exitPrice, now, input.exitReason, now, id);
+  // The WHERE clause makes this UPDATE conditional, but a conditional UPDATE
+  // that matches zero rows still "succeeds" — checking `changes` (not just
+  // re-SELECTing) is what actually distinguishes "closed just now" from
+  // "already closed" or "no such id." Skipping this check previously let a
+  // second, no-op close attempt return the stale row as if it had succeeded.
+  if (info.changes === 0) return null;
+  const row = db.prepare('SELECT * FROM autotrade_paper_positions WHERE id = ?').get(id) as Row;
+  return map(row);
 }
 
 /** All currently-open paper positions, oldest first — what the loop checks

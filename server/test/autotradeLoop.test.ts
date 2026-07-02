@@ -164,6 +164,44 @@ describe('runAutotradeLoopTick', () => {
     const summary = await runAutotradeLoopTick();
     expect(summary.candidatesPassedVolatility).toBe(0);
   });
+
+  it('rejects a second concurrent call while one is already in flight, instead of racing it', async () => {
+    // The background scheduler can never overlap its OWN ticks (the next
+    // setTimeout is only armed after the current one settles), but the
+    // manual "run one cycle now" route calls this same function completely
+    // independently — this is the scenario that actually matters.
+    let resolveExits!: (v: []) => void;
+    const slowExits = new Promise<[]>((resolve) => {
+      resolveExits = resolve;
+    });
+    mockCheckExits.mockReturnValue(slowExits);
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+
+    const firstCall = runAutotradeLoopTick(); // starts, blocks inside checkPaperExits()
+    const secondSummary = await runAutotradeLoopTick(); // must return immediately, not wait for the first
+
+    expect(secondSummary.skippedReason).toBe('A cycle is already running');
+    expect(secondSummary.exitsChecked).toBe(0);
+    expect(mockScreen).not.toHaveBeenCalled(); // never got anywhere near screening
+
+    resolveExits([]); // let the first call proceed to completion
+    const firstSummary = await firstCall;
+    expect(firstSummary.skippedReason).not.toBe('A cycle is already running');
+
+    // The guard releases once the first call finishes — a THIRD call afterward runs normally.
+    mockCheckExits.mockResolvedValue([]);
+    const thirdSummary = await runAutotradeLoopTick();
+    expect(thirdSummary.skippedReason).not.toBe('A cycle is already running');
+  });
 });
 
 describe('startAutotradeLoop / stopAutotradeLoop', () => {

@@ -38,8 +38,23 @@ export interface ExecutionOutcome {
   position?: PaperPosition;
 }
 
-function todayUtcStr(ms: number = Date.now()): string {
-  return new Date(ms).toISOString().slice(0, 10);
+/** Today's date (YYYY-MM-DD) in US/Eastern, NOT UTC — the "trading day" this
+ *  loop's daily P&L / consecutive-loss / trades-today figures are bucketed
+ *  by. checkPaperExits() runs around the clock (not just during the
+ *  session), and UTC midnight falls at 7-8pm ET (squarely inside typical
+ *  after-hours activity) — bucketing by UTC date would split the same ET
+ *  evening's exits across two different "days," corrupting the next
+ *  morning's risk-check inputs (dailyPnl, consecutiveLosses). Mirrors
+ *  executionGuards.ts's ET wall-clock parsing convention. */
+function etDateStr(ms: number = Date.now()): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(ms);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
 /**
@@ -78,17 +93,56 @@ export async function attemptPaperEntry(
     return { symbol: signal.symbol, ok: false, reason };
   }
 
-  const position = openPaperPosition({
-    symbol: signal.symbol,
-    side: signal.side,
-    quantity: riskResult.sizing.suggestedQuantity,
-    entryPrice: fillPrice,
-    stopPrice: signal.stop,
-    targetPrice: signal.target,
-    riskAmount: riskResult.approvedRiskAmount,
-    riskProfile,
-    rationale: signal.rationale,
-  });
+  // A malformed quote (NaN/0/negative — seen from real providers, not just a
+  // theoretical concern) would otherwise reach the DB as a NOT NULL REAL
+  // insert and throw there instead, with a much less useful error message.
+  if (!Number.isFinite(fillPrice) || fillPrice <= 0) {
+    const reason = `Invalid quote price: ${fillPrice}`;
+    logAutotradeEvent({
+      symbol: signal.symbol,
+      stage: 'execution',
+      action: 'paper_entry_failed',
+      detail: { reason },
+      riskProfile,
+    });
+    return { symbol: signal.symbol, ok: false, reason };
+  }
+
+  let position: PaperPosition;
+  try {
+    position = openPaperPosition({
+      symbol: signal.symbol,
+      side: signal.side,
+      quantity: riskResult.sizing.suggestedQuantity,
+      entryPrice: fillPrice,
+      // Sized off the signal's screening-time entry/stop (riskResult), not
+      // this fill's actual price — the two are usually seconds apart within
+      // the same cycle, but not reconciled if the quote moved meaningfully
+      // in between. A known, documented approximation (see the backtest
+      // engine's own header comment for the same kind of tradeoff), not
+      // silently assumed accurate.
+      stopPrice: signal.stop,
+      targetPrice: signal.target,
+      riskAmount: riskResult.approvedRiskAmount,
+      riskProfile,
+      rationale: signal.rationale,
+    });
+  } catch (err) {
+    // A single candidate's persistence failure must not abort the rest of
+    // this batch (runPaperExecution may still have more candidates to try) —
+    // matches the "explicit handling for... rejected orders" the spec calls
+    // for, and mirrors how the quote-fetch failure above is already handled
+    // rather than left to throw.
+    const reason = `Failed to record paper position: ${(err as Error).message}`;
+    logAutotradeEvent({
+      symbol: signal.symbol,
+      stage: 'execution',
+      action: 'paper_entry_failed',
+      detail: { reason },
+      riskProfile,
+    });
+    return { symbol: signal.symbol, ok: false, reason };
+  }
   logAutotradeEvent({
     symbol: signal.symbol,
     stage: 'execution',
@@ -117,12 +171,12 @@ export async function runPaperExecution(candidates: { signal: TradeSignal }[]): 
   const config = getAutotradeConfig();
   const profile = RISK_PROFILES[config.riskProfile];
   const equity = config.accountEquityUsd ?? 0;
-  const today = todayUtcStr();
+  const today = etDateStr();
 
   const openPositions = listOpenPaperPositions();
   const recent = listPaperPositions({ limit: 500 }); // open + closed, newest first — plenty for "today" stats
   const closedTodayChrono = recent
-    .filter((p) => p.status === 'closed' && p.exitAt !== null && todayUtcStr(p.exitAt) === today)
+    .filter((p) => p.status === 'closed' && p.exitAt !== null && etDateStr(p.exitAt) === today)
     .sort((a, b) => a.exitAt! - b.exitAt!);
   const closedPnlsChrono = closedTodayChrono.map(
     (p) => (p.exitPrice! - p.entryPrice) * p.quantity * (p.side === 'buy' ? 1 : -1),
@@ -130,7 +184,7 @@ export async function runPaperExecution(candidates: { signal: TradeSignal }[]): 
   const dailyPnl = closedPnlsChrono.reduce((s, p) => s + p, 0);
   const { currentStreak } = computeStreaksAndDrawdown(closedPnlsChrono);
   const consecutiveLosses = currentStreak.type === 'loss' ? currentStreak.count : 0;
-  const tradesToday = recent.filter((p) => todayUtcStr(p.entryAt) === today).length;
+  const tradesToday = recent.filter((p) => etDateStr(p.entryAt) === today).length;
 
   let runningRisk = openPositions.reduce((s, p) => s + p.riskAmount, 0);
   let runningCount = openPositions.length;

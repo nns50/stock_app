@@ -604,6 +604,30 @@ describe('AutoTradePage', () => {
     expect(await screen.findByText('provider unavailable')).toBeInTheDocument();
   });
 
+  it('clears a previous successful summary when a later run fails, so the error is not shown next to stale numbers', async () => {
+    const run = vi.spyOn(client, 'runAutotradeLoopOnce');
+    run.mockResolvedValueOnce({
+      ranEntries: true,
+      exitsChecked: 0,
+      exitsClosed: 0,
+      candidatesScreened: 5,
+      candidatesPassedVolatility: 5,
+      signalsGenerated: 1,
+      entriesOpened: 1,
+    } satisfies LoopTickSummary);
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run one cycle now' }));
+    expect(await screen.findByText(/Screened 5, 5 passed/)).toBeInTheDocument();
+
+    run.mockRejectedValueOnce(new Error('provider unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: 'Run one cycle now' }));
+
+    expect(await screen.findByText('provider unavailable')).toBeInTheDocument();
+    expect(screen.queryByText(/Screened 5, 5 passed/)).toBeNull();
+  });
+
   it('shows an accurate warning about the live paper loop when enabled, not the old "not built yet" copy', async () => {
     vi.spyOn(client, 'autotradeConfig').mockResolvedValue({
       enabled: true,
