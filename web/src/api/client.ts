@@ -80,6 +80,7 @@ import type {
   WalkForwardResponse,
   LoopTickSummary,
   PaperPosition,
+  AutotradeDashboard,
 } from './types';
 
 export class ApiError extends Error {
@@ -430,4 +431,7 @@ export const client = {
     const qs = new URLSearchParams(params as Record<string, string>).toString();
     return api<{ positions: PaperPosition[] }>(`/autotrade/paper-positions${qs ? `?${qs}` : ''}`);
   },
+  autotradeDashboard: () => api<AutotradeDashboard>('/autotrade/dashboard'),
+  setAutotradeKillSwitch: (on: boolean) =>
+    api<AutotradeConfig>('/autotrade/kill-switch', { method: 'POST', body: JSON.stringify({ on }) }),
 };

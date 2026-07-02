@@ -602,7 +602,7 @@ the human-confirmed live trading on the **Trade** page (which always requires yo
 type a confirmation phrase before an order goes out). The loop now runs — but every
 order it can place is a **paper** simulation; it never reaches a real broker. The
 live-trading gate (a manual flag flip, after reviewing backtest and paper-trading
-results) is still an upcoming phase.
+results) is the one remaining phase.
 
 - **Configuration** — a master **enabled** switch for the execution loop below (when on,
   the server runs the full cycle on its own every minute, placing paper trades — see
@@ -613,7 +613,24 @@ results) is still an upcoming phase.
   correlated-ticker exposure, and the daily trade cap — never a silent dropdown change),
   and **account equity ($)** — what the risk engine sizes trades and computes its %
   caps against. No live broker balance is wired in yet, so set this manually; until you
-  do, the risk engine blocks every trade (fails closed rather than guessing).
+  do, the risk engine blocks every trade (fails closed rather than guessing). The
+  **kill switch** button above these settings is a separate, sticky emergency halt —
+  engaging it (one click, no confirmation needed, mirroring the same button on the
+  **Trade** page) blocks all new entries immediately, regardless of the enabled toggle
+  or session window, but does **not** close your existing paper positions — their
+  stop/target levels keep being checked every cycle, exactly as if you'd left the loop
+  running. Releasing it resumes the loop automatically if **enabled** is still checked;
+  it doesn't touch that setting either way.
+- **Monitoring** — a real-time panel (auto-refreshes only if you turn on polling; there's
+  a manual **Refresh** either way) reading the loop's current state directly: active
+  **risk profile**, **open positions** vs. the profile's concurrent-position cap,
+  **aggregate open risk** used vs. its $ cap, today's **day P&L** vs. the $ level that
+  would trigger the daily-drawdown halt, **trades today** vs. the daily cap, and the
+  **consecutive-loss streak** vs. the count that triggers step-down sizing. Every figure
+  is scoped to the loop's own paper positions (never your real ones) and is a direct read
+  of the same numbers the risk engine itself checks before approving a trade — this panel
+  can't show you something the risk engine would disagree with. A tile goes red once
+  its cap is reached.
 - **Real-estate exclusion list** — real estate is a hard, permanent exclusion for this
   strategy. A starter list of well-known real-estate ETFs ships seeded in; add or remove
   symbols freely. This list is a backstop, not the only check — the screen below also
@@ -676,8 +693,8 @@ results) is still an upcoming phase.
   order placed or closed, a setting changed) — the same feed the execution loop above
   writes into automatically.
 
-This page will keep growing as later phases (a monitoring dashboard, and finally a
-live-trading gate) land — check the spec doc for the full roadmap and current status.
+This page will keep growing as the last remaining phase (the live-trading gate) lands —
+check the spec doc for the full roadmap and current status.
 
 ---
 

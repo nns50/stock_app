@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { initDb, db } from '../src/db';
-import { defaultAutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../src/db/autotradeConfig';
+import {
+  defaultAutotradeConfig,
+  getAutotradeConfig,
+  setAutotradeConfig,
+  setAutotradeKillSwitch,
+} from '../src/db/autotradeConfig';
 
 beforeAll(() => initDb());
 beforeEach(() => db.exec('DELETE FROM autotrade_config'));
@@ -58,5 +63,18 @@ describe('autotrade config persistence', () => {
     // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
     const cfg = setAutotradeConfig({ accountEquityUsd: -10 });
     expect(cfg.accountEquityUsd).toBeNull();
+  });
+
+  it('killSwitch defaults to false', () => {
+    expect(getAutotradeConfig().killSwitch).toBe(false);
+  });
+
+  it('setAutotradeKillSwitch engages and releases independently of other fields', () => {
+    setAutotradeConfig({ enabled: true, riskProfile: 'AGGRESSIVE' });
+    expect(setAutotradeKillSwitch(true).killSwitch).toBe(true);
+    expect(getAutotradeConfig()).toMatchObject({ killSwitch: true, enabled: true, riskProfile: 'AGGRESSIVE' });
+    expect(setAutotradeKillSwitch(false).killSwitch).toBe(false);
+    // Releasing it doesn't touch `enabled` — a loop already armed resumes on its own.
+    expect(getAutotradeConfig()).toMatchObject({ killSwitch: false, enabled: true, riskProfile: 'AGGRESSIVE' });
   });
 });

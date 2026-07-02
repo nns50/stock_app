@@ -7,6 +7,7 @@ import { totp } from '../src/services/totp';
 import { setSetting } from '../src/db/settings';
 import { createIntent } from '../src/db/orders';
 import { addExit, createPosition } from '../src/db/positions';
+import { setAutotradeConfig } from '../src/db/autotradeConfig';
 
 // End-to-end tests through the real Express app → routers → services → SQLite
 // (a throwaway DB; see vitest.config.ts). Catches route wiring, validation, and
@@ -540,6 +541,11 @@ describe('autotrade backtest routes (integration)', () => {
 describe('autotrade paper execution routes (integration)', () => {
   beforeEach(() => {
     db.exec('DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events;');
+    // runAutotradeLoopTick (Phase 7) gates new entries on autotrade_config.enabled
+    // (and the kill switch) — arm it here so this test still exercises the real
+    // Screen -> Decision -> Execution wiring end-to-end, not just the
+    // always-runs exits path.
+    setAutotradeConfig({ enabled: true });
   });
 
   it('runs one loop cycle through the real Screen -> Decision -> Execution wiring and returns a summary', async () => {
@@ -568,4 +574,69 @@ describe('autotrade paper execution routes (integration)', () => {
     const res = await fetch(`${base}/api/autotrade/paper-positions?status=bogus`);
     expect(res.status).toBe(400);
   });
+});
+
+describe('autotrade monitoring dashboard + kill switch routes (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events;');
+  });
+
+  it('GET /dashboard returns a full snapshot with safe defaults', async () => {
+    const dash = (await getJson('/api/autotrade/dashboard')) as {
+      enabled: boolean;
+      killSwitch: boolean;
+      riskProfile: string;
+      equity: number | null;
+      openPositionsCount: number;
+      maxConcurrentPositions: number;
+      maxTradesPerDay: number;
+    };
+    expect(dash.enabled).toBe(false);
+    expect(dash.killSwitch).toBe(false);
+    expect(dash.riskProfile).toBe('MODERATE');
+    expect(dash.equity).toBeNull();
+    expect(dash.openPositionsCount).toBe(0);
+    expect(dash.maxConcurrentPositions).toBe(2);
+    expect(dash.maxTradesPerDay).toBe(6);
+  });
+
+  it('POST /kill-switch engages and releases, journaling each transition', async () => {
+    const engaged = await post('/api/autotrade/kill-switch', { on: true });
+    expect(engaged.status).toBe(200);
+    expect((await engaged.json()) as { killSwitch: boolean }).toMatchObject({ killSwitch: true });
+    expect(((await getJson('/api/autotrade/dashboard')) as { killSwitch: boolean }).killSwitch).toBe(true);
+
+    const released = await post('/api/autotrade/kill-switch', { on: false });
+    expect((await released.json()) as { killSwitch: boolean }).toMatchObject({ killSwitch: false });
+
+    const events = (await getJson('/api/autotrade/events')) as {
+      events: { action: string; stage: string }[];
+    };
+    const actions = events.events.map((e) => e.action);
+    expect(actions).toContain('kill_switch_engaged');
+    expect(actions).toContain('kill_switch_released');
+  });
+
+  it('POST /kill-switch rejects a non-boolean body', async () => {
+    const res = await post('/api/autotrade/kill-switch', { on: 'yes' });
+    expect(res.status).toBe(400);
+  });
+
+  it('engaging the kill switch does not touch the enabled flag', async () => {
+    await setAutotradeConfigViaRoute({ enabled: true });
+    await post('/api/autotrade/kill-switch', { on: true });
+    const cfg = (await getJson('/api/autotrade/config')) as { enabled: boolean; killSwitch: boolean };
+    expect(cfg.enabled).toBe(true);
+    expect(cfg.killSwitch).toBe(true);
+  });
+
+  async function setAutotradeConfigViaRoute(body: unknown) {
+    const res = await fetch(`${base}/api/autotrade/config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(200);
+    return res;
+  }
 });

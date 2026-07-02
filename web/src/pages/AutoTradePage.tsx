@@ -4,6 +4,7 @@ import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { useToast } from '../components/ToastContext';
 import { useConfirm } from '../components/ConfirmContext';
+import { RefreshBar } from '../components/RefreshBar';
 import { ago, cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd, fmtUsd } from '../lib/format';
 import {
   Badge,
@@ -17,6 +18,7 @@ import {
   StatTile,
 } from '../components/ui';
 import type {
+  AutotradeDashboard,
   AutotradeDecideResponse,
   AutotradeRiskCheckResult,
   AutotradeRiskProfile,
@@ -29,11 +31,11 @@ import type {
   WalkForwardResponse,
 } from '../api/types';
 
-// Phases 1-6 of docs/AUTOTRADING_SPEC.md: config, real-estate exclusions,
-// Screen/Decision/Risk-Check preview, backtesting, and the paper execution
-// loop. Every order this page can cause to be placed is a local paper
-// simulation — a monitoring dashboard (Phase 7) and the live-trading gate
-// (Phase 8, a manual flag flip) are still upcoming.
+// Phases 1-7 of docs/AUTOTRADING_SPEC.md: config, real-estate exclusions,
+// Screen/Decision/Risk-Check preview, backtesting, the paper execution loop,
+// and a real-time monitoring dashboard + kill switch. Every order this page
+// can cause to be placed is a local paper simulation — the live-trading gate
+// (Phase 8, a manual flag flip) is the one remaining phase.
 
 // A plain value renders directly; an array/object would otherwise coerce to
 // "[object Object]" in a template literal (e.g. a risk-check event's `checks`
@@ -305,6 +307,57 @@ function PaperPositionsTable({ positions }: { positions: PaperPosition[] }) {
   );
 }
 
+/** Phase 7's real-time panel (docs/AUTOTRADING_SPEC.md — MONITORING & KILL
+ *  SWITCH): active profile, open paper positions vs the concurrent cap,
+ *  aggregate open risk used vs limit, day P&L vs the drawdown halt, trade
+ *  count vs max, and the consecutive-loss streak. Every "used vs limit" pair
+ *  here is a direct read of the server's own risk-check math (dashboard.ts),
+ *  not re-derived in the UI. */
+function MonitoringDashboard({ dash }: { dash: AutotradeDashboard }) {
+  const riskBusy = dash.maxAggregateOpenRisk > 0 && dash.openRisk >= dash.maxAggregateOpenRisk;
+  const positionsBusy = dash.openPositionsCount >= dash.maxConcurrentPositions;
+  const tradesBusy = dash.tradesToday >= dash.maxTradesPerDay;
+  const stepDownActive = dash.consecutiveLosses >= dash.stepDownAfterLosses;
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+      <StatTile
+        label="Risk profile"
+        value={dash.riskProfile === 'AGGRESSIVE' ? 'Aggressive' : 'Moderate'}
+        sub={dash.killSwitch ? 'kill switch engaged' : dash.enabled ? 'loop enabled' : 'loop disabled'}
+        valueClass={dash.killSwitch ? 'text-bear' : undefined}
+      />
+      <StatTile
+        label="Open positions"
+        value={`${dash.openPositionsCount} / ${dash.maxConcurrentPositions}`}
+        valueClass={positionsBusy ? 'text-bear' : undefined}
+      />
+      <StatTile
+        label="Aggregate open risk"
+        value={fmtUsd(dash.openRisk)}
+        sub={`of ${fmtUsd(dash.maxAggregateOpenRisk)} cap`}
+        valueClass={riskBusy ? 'text-bear' : undefined}
+      />
+      <StatTile
+        label="Day P&L"
+        value={fmtSignedUsd(dash.dailyPnl)}
+        sub={`halt at ${fmtUsd(dash.dailyDrawdownHaltLevel)}`}
+        valueClass={dash.dailyPnl >= 0 ? 'text-bull' : 'text-bear'}
+      />
+      <StatTile
+        label="Trades today"
+        value={`${dash.tradesToday} / ${dash.maxTradesPerDay}`}
+        valueClass={tradesBusy ? 'text-bear' : undefined}
+      />
+      <StatTile
+        label="Consecutive losses"
+        value={dash.consecutiveLosses}
+        sub={stepDownActive ? 'step-down active' : `of ${dash.stepDownAfterLosses} to step-down`}
+        valueClass={stepDownActive ? 'text-bear' : undefined}
+      />
+    </div>
+  );
+}
+
 function BacktestWindowResult({
   title,
   hint,
@@ -334,15 +387,24 @@ export default function AutoTradePage() {
   const exclusions = useAsync(() => client.autotradeExclusions(), []);
   const events = useAsync(() => client.autotradeEvents({ limit: 50 }), []);
   const paperPositions = useAsync(() => client.autotradePaperPositions({ limit: 100 }), []);
+  const dashboard = useAsync(() => client.autotradeDashboard(), []);
   const { toast } = useToast();
   const confirm = useConfirm();
 
+  const [dashLastUpdated, setDashLastUpdated] = useState<number | null>(null);
+  const reloadDashboard = () => {
+    setDashLastUpdated(Date.now());
+    dashboard.reload();
+  };
+
   const [enabled, setEnabled] = useState(false);
+  const [killSwitch, setKillSwitch] = useState(false);
   const [riskProfile, setRiskProfile] = useState<AutotradeRiskProfile>('MODERATE');
   const [equityDraft, setEquityDraft] = useState<number | undefined>();
   useEffect(() => {
     if (!config.data) return;
     setEnabled(config.data.enabled);
+    setKillSwitch(config.data.killSwitch);
     setRiskProfile(config.data.riskProfile);
     setEquityDraft(config.data.accountEquityUsd ?? undefined);
   }, [config.data]);
@@ -369,9 +431,29 @@ export default function AutoTradePage() {
       setEnabled(saved.enabled);
       setRiskProfile(saved.riskProfile);
       config.reload(); // keeps config.data — the equity-not-set warning's source of truth — fresh
+      reloadDashboard(); // risk profile / equity changes shift the dashboard's caps
       toast('Auto-trading settings saved', { type: 'success' });
     } catch (e) {
       toast((e as Error).message || 'Could not save settings', { type: 'error' });
+    }
+  };
+
+  const [killBusy, setKillBusy] = useState(false);
+  const toggleKillSwitch = async () => {
+    setKillBusy(true);
+    try {
+      const next = await client.setAutotradeKillSwitch(!killSwitch);
+      setKillSwitch(next.killSwitch);
+      config.reload();
+      reloadDashboard();
+      events.reload();
+      toast(next.killSwitch ? 'Kill switch engaged — new entries halted' : 'Kill switch released', {
+        type: next.killSwitch ? 'info' : 'success',
+      });
+    } catch (e) {
+      toast((e as Error).message || 'Could not toggle the kill switch', { type: 'error' });
+    } finally {
+      setKillBusy(false);
     }
   };
 
@@ -497,6 +579,7 @@ export default function AutoTradePage() {
       setLoopSummary(await client.runAutotradeLoopOnce());
       paperPositions.reload();
       events.reload();
+      reloadDashboard();
     } catch (e) {
       setLoopErr((e as Error).message || 'Loop cycle failed');
     } finally {
@@ -509,9 +592,9 @@ export default function AutoTradePage() {
       <PageHeader
         title="Auto-Trade"
         subtitle="The automated-trading initiative (docs/AUTOTRADING_SPEC.md): screening, signal generation, risk
-          checks, backtesting, and a paper execution loop are all wired up. Paper trading (below) never places a
-          real order — it's a local simulation. A monitoring dashboard and the live-trading gate are still upcoming
-          phases."
+          checks, backtesting, a paper execution loop, and a monitoring dashboard + kill switch are all wired up.
+          Paper trading (below) never places a real order — it's a local simulation. The live-trading gate is the
+          one remaining phase."
       />
 
       <Card className="p-4">
@@ -521,43 +604,57 @@ export default function AutoTradePage() {
         ) : config.error ? (
           <ErrorState error={config.error} onRetry={config.reload} />
         ) : (
-          <div className="grid sm:grid-cols-2 gap-3 items-end">
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={enabled} onChange={(e) => saveConfig({ enabled: e.target.checked })} />
-              Auto-trading enabled
-            </label>
-            <Field
-              label="Risk profile"
-              hint={
-                riskProfile === 'AGGRESSIVE'
-                  ? 'Higher risk/trade, drawdown halt, position count, aggregate risk, and trade caps.'
-                  : 'Default — the conservative caps.'
-              }
+          <div className="space-y-3">
+            <button
+              onClick={toggleKillSwitch}
+              disabled={killBusy}
+              className={cx(
+                'w-full rounded-lg border px-3 py-2 text-sm font-semibold transition-colors',
+                killSwitch
+                  ? 'border-bear bg-bear/20 text-bear'
+                  : 'border-ink-600 bg-ink-700/40 text-slate-300 hover:border-bear/60',
+              )}
             >
-              <select
-                className="input"
-                value={riskProfile}
-                onChange={(e) => saveConfig({ riskProfile: e.target.value as AutotradeRiskProfile })}
+              {killSwitch ? '■ Kill switch ENGAGED — release' : 'Kill switch — engage halt'}
+            </button>
+            <div className="grid sm:grid-cols-2 gap-3 items-end">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={enabled} onChange={(e) => saveConfig({ enabled: e.target.checked })} />
+                Auto-trading enabled
+              </label>
+              <Field
+                label="Risk profile"
+                hint={
+                  riskProfile === 'AGGRESSIVE'
+                    ? 'Higher risk/trade, drawdown halt, position count, aggregate risk, and trade caps.'
+                    : 'Default — the conservative caps.'
+                }
               >
-                <option value="MODERATE">Moderate (default)</option>
-                <option value="AGGRESSIVE">Aggressive</option>
-              </select>
-            </Field>
-            <Field
-              label="Account equity ($)"
-              hint="The risk engine sizes trades and computes its % caps against this. No live broker balance is wired in yet — set it manually."
-            >
-              <div className="flex gap-2">
-                <NumberInput value={equityDraft} onChange={setEquityDraft} placeholder="e.g. 25000" />
-                <button
-                  className="btn-ghost shrink-0"
-                  onClick={() => saveConfig({ accountEquityUsd: equityDraft ?? null })}
-                  disabled={equityDraft === (config.data?.accountEquityUsd ?? undefined)}
+                <select
+                  className="input"
+                  value={riskProfile}
+                  onChange={(e) => saveConfig({ riskProfile: e.target.value as AutotradeRiskProfile })}
                 >
-                  Save
-                </button>
-              </div>
-            </Field>
+                  <option value="MODERATE">Moderate (default)</option>
+                  <option value="AGGRESSIVE">Aggressive</option>
+                </select>
+              </Field>
+              <Field
+                label="Account equity ($)"
+                hint="The risk engine sizes trades and computes its % caps against this. No live broker balance is wired in yet — set it manually."
+              >
+                <div className="flex gap-2">
+                  <NumberInput value={equityDraft} onChange={setEquityDraft} placeholder="e.g. 25000" />
+                  <button
+                    className="btn-ghost shrink-0"
+                    onClick={() => saveConfig({ accountEquityUsd: equityDraft ?? null })}
+                    disabled={equityDraft === (config.data?.accountEquityUsd ?? undefined)}
+                  >
+                    Save
+                  </button>
+                </div>
+              </Field>
+            </div>
           </div>
         )}
         {config.data && config.data.accountEquityUsd === null && (
@@ -566,13 +663,34 @@ export default function AutoTradePage() {
             guessing).
           </p>
         )}
-        {enabled && (
+        {killSwitch && (
+          <p className="text-[11px] text-bear mt-3">
+            <strong>Kill switch engaged</strong> — new entries are halted regardless of the settings above. Existing
+            paper positions keep working: their stop/target levels are still checked every cycle (see &quot;Paper
+            trading&quot; below).
+          </p>
+        )}
+        {enabled && !killSwitch && (
           <p className="text-[11px] text-amber-400 mt-3">
             Auto-trading is enabled — the background loop below is now actively scanning and placing{' '}
             <strong>paper</strong> trades on a schedule. It never touches a real broker (see &quot;Paper trading&quot;
             below); going live is a separate, later phase requiring a manual flag flip.
           </p>
         )}
+      </Card>
+
+      <Card className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-medium text-sm">Monitoring</h3>
+          <RefreshBar onRefresh={reloadDashboard} lastUpdated={dashLastUpdated} loading={dashboard.loading} />
+        </div>
+        {dashboard.loading && !dashboard.data ? (
+          <Spinner />
+        ) : dashboard.error ? (
+          <ErrorState error={dashboard.error} onRetry={reloadDashboard} />
+        ) : dashboard.data ? (
+          <MonitoringDashboard dash={dashboard.data} />
+        ) : null}
       </Card>
 
       <Card className="p-4">
@@ -987,9 +1105,8 @@ export default function AutoTradePage() {
 
       <p className="text-[11px] text-slate-500">
         Decision-support and tracking only — every order this page places, even when enabled, is a paper simulation that
-        never reaches a real broker. See docs/AUTOTRADING_SPEC.md for the full plan; a monitoring dashboard and the
-        live-trading gate (which requires a manual flag flip after reviewing backtest and paper-trading results) are
-        still upcoming phases.
+        never reaches a real broker. See docs/AUTOTRADING_SPEC.md for the full plan; the live-trading gate (a manual
+        flag flip after reviewing backtest and paper-trading results) is the one remaining phase.
       </p>
     </div>
   );

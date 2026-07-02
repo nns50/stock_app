@@ -1029,6 +1029,7 @@ export type AutotradeRiskProfile = 'MODERATE' | 'AGGRESSIVE';
 
 export interface AutotradeConfig {
   enabled: boolean;
+  killSwitch: boolean;
   riskProfile: AutotradeRiskProfile;
   accountEquityUsd: number | null;
 }
@@ -1214,4 +1215,22 @@ export interface LoopTickSummary {
   candidatesPassedVolatility: number;
   signalsGenerated: number;
   entriesOpened: number;
+}
+
+export interface AutotradeDashboard {
+  enabled: boolean;
+  killSwitch: boolean;
+  riskProfile: AutotradeRiskProfile;
+  equity: number | null;
+  openPositions: PaperPosition[];
+  openPositionsCount: number;
+  maxConcurrentPositions: number;
+  openRisk: number;
+  maxAggregateOpenRisk: number;
+  dailyPnl: number;
+  dailyDrawdownHaltLevel: number;
+  tradesToday: number;
+  maxTradesPerDay: number;
+  consecutiveLosses: number;
+  stepDownAfterLosses: number;
 }

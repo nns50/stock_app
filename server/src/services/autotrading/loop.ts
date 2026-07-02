@@ -9,10 +9,14 @@ import { checkSessionWindow, checkVolatility, defaultVolatilityFilterConfig, get
 // The autonomous execution loop (docs/AUTOTRADING_SPEC.md — EXECUTION LOOP):
 // Research & Screen → Decision → Risk Check → Execution → Journal, on a
 // recurring in-process interval. Mirrors alertScheduler.ts's self-scheduling
-// setTimeout pattern exactly: on/off is read fresh from the DB every cycle
-// (autotrade_config.enabled — no restart needed to toggle), one try/catch per
-// tick so a single bad cycle can't kill the loop, and the timer is unref'd so
-// it never keeps the process alive on its own.
+// setTimeout pattern exactly: settings are read fresh from the DB every cycle
+// (no restart needed to toggle), one try/catch per tick so a single bad cycle
+// can't kill the loop, and the timer is unref'd so it never keeps the process
+// alive on its own.
+//
+// The background timer ticks unconditionally — exit-checking (below) must run
+// every cycle regardless of enabled/killSwitch, so the outer loop() no longer
+// gates on those; runAutotradeLoopTick() does its own, more granular gating.
 //
 // Currently paper-only (see execute.ts) — this loop can place a real order
 // only once Phase 8 adds a live-capable execution path and the manual flag
@@ -80,10 +84,14 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
 let tickInFlight = false;
 
 /**
- * One full cycle. Exits are checked regardless of the session window (a
- * closed/near-the-bell market doesn't invalidate an already-known stop/target
- * level); new entries are skipped entirely outside the allowed window.
- * Exposed for tests and for a manual "run one cycle now" trigger.
+ * One full cycle. Exits are checked regardless of the session window, the
+ * master enabled switch, or the kill switch (a closed/near-the-bell market —
+ * or a halted loop — doesn't invalidate an already-known stop/target level;
+ * in paper mode this loop IS the only thing that can enforce one, so it must
+ * keep running). New entries are skipped entirely when the kill switch is
+ * engaged, when auto-trading is disabled, or outside the allowed session
+ * window. Exposed for tests and for a manual "run one cycle now" trigger —
+ * both callers get identical gating from this one function.
  */
 export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
   if (tickInFlight) return emptySummary('A cycle is already running');
@@ -95,6 +103,16 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       exitsChecked: exitOutcomes.length,
       exitsClosed: exitOutcomes.filter((o) => o.closed).length,
     };
+
+    const config = getAutotradeConfig();
+    if (config.killSwitch) {
+      summary.skippedReason = 'Kill switch is engaged — new entries halted';
+      return summary;
+    }
+    if (!config.enabled) {
+      summary.skippedReason = 'Auto-trading is disabled';
+      return summary;
+    }
 
     const session = checkSessionWindow(SESSION_BUFFER_MINUTES);
     if (!session.ok) {
@@ -126,13 +144,10 @@ let timer: NodeJS.Timeout | null = null;
 let started = false;
 
 async function loop(): Promise<void> {
-  const config = getAutotradeConfig();
-  if (config.enabled) {
-    try {
-      await runAutotradeLoopTick();
-    } catch (e) {
-      console.error('[autotrade-loop]', (e as Error).message);
-    }
+  try {
+    await runAutotradeLoopTick();
+  } catch (e) {
+    console.error('[autotrade-loop]', (e as Error).message);
   }
   timer = setTimeout(() => void loop(), TICK_INTERVAL_SECONDS * 1000);
   timer.unref?.(); // don't keep the process alive on the timer alone

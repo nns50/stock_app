@@ -1,6 +1,7 @@
 # Automated Trading — Specification
 
-**Status: draft — not yet implemented.** This is the reference spec for adding a fully
+**Status: phases 1-7 shipped and running in paper mode; phase 8 (the live-trading gate)
+is the one remaining phase.** This is the reference spec for adding a fully
 **autonomous** execution loop (screen → decide → risk-check → place orders) to the app.
 
 This is a different capability from the existing live-trading feature described in
@@ -403,9 +404,66 @@ starts.
    `true` across unrelated tests. Verified live in a browser end to end (Screen →
    Backtest → Paper trading, including a rapid-double-click reentrancy test against the
    real server) with a full recorded activity trail and no console errors.
-7. **Monitoring dashboard & kill switch** — real-time panel (active risk profile, open
-   positions, aggregate open risk used vs. limit, day P&L, drawdown vs. halt, trade
-   count vs. max, consecutive loss streak) and the kill switch behavior resolved above.
+7. **Monitoring dashboard & kill switch — shipped.** `autotrade_config` gained a
+   `killSwitch: boolean` field, independent of `enabled` — mirrors `trading_config`'s
+   existing live-trading kill switch (`db/trading.ts`) exactly, down to the convenience
+   wrapper (`setAutotradeKillSwitch(on)`) and the route shape
+   (`POST /api/autotrade/kill-switch { on }`, no confirmation required either direction —
+   a panic button has to fire in one click, and releasing it is the safe direction
+   anyway). Kept deliberately separate from `enabled` rather than reusing it: `enabled`
+   is the routine on/off a user might flip many times a session, while the kill switch is
+   a sticky, explicit emergency halt — collapsing them into one flag would lose that
+   distinction. Engaging it doesn't touch `enabled`, and releasing it doesn't either, so
+   an already-armed loop resumes on its own the moment the kill switch is released,
+   with no need to re-check "enabled" separately (same recovery behavior as the live
+   system).
+
+   **Implements the resolved kill-switch decision above** ("cancels all new... orders and
+   disables the loop immediately... does not force-close existing positions — their
+   existing hard stop-losses remain in place as the exit mechanism"): `checkPaperExits()`
+   now runs on *every* tick unconditionally, before either the kill switch or `enabled` is
+   even read. This is a correctness fix, not just new-feature wiring — for paper trading
+   specifically there is no broker enforcing a stop/target independently, so this loop
+   *is* the only thing that can honor "stops remain in place" once new-entry generation
+   halts. Previously the outer scheduler (`loop()`) only called `runAutotradeLoopTick()`
+   at all when `enabled` was true, meaning turning the master switch off silently stopped
+   exit-checking too, leaving any already-open paper position unable to ever close on its
+   own stop/target — and the manual "run one cycle now" route didn't check `enabled` (or,
+   before this phase, have a kill switch to check) at all, so it could open *new* entries
+   even while the master switch was off. Both gaps are fixed the same way: the
+   enabled/kill-switch gate now lives *inside* `runAutotradeLoopTick()` itself, checked
+   only after exits run and only before the entries stages (screen/decide/execute) —
+   so the background scheduler and the manual trigger get byte-for-byte identical
+   gating, and `loop()` now calls `runAutotradeLoopTick()` unconditionally every cycle
+   (cheap when nothing is open — `checkPaperExits()` short-circuits on an empty
+   position list with no network calls).
+
+   The dashboard itself (`services/autotrading/dashboard.ts`) is a read-only snapshot:
+   active risk profile, open paper positions vs. the profile's concurrent-position cap,
+   aggregate open risk vs. its $ cap, today's realized paper P&L vs. the $ level that
+   trips the daily-drawdown halt, trades today vs. the daily cap, and the
+   consecutive-loss streak vs. the step-down trigger. Every "used vs. limit" figure is
+   computed the exact same way `evaluateRiskCheck()` (`riskCheck.ts`) computes it for a
+   live pre-trade decision — read from `RISK_PROFILES`, not re-derived — so the panel can
+   never show a number the risk engine itself would disagree with. The open-positions/
+   P&L/streak/trade-count figures come from a new `getPaperPortfolioSnapshot()`,
+   extracted from what used to be inlined at the top of `runPaperExecution()`
+   (`execute.ts`) — both the execution loop's own running-total risk check and the
+   dashboard now share one computation instead of two that could quietly drift apart.
+   Routed at `GET /api/autotrade/dashboard`.
+
+   UI: a kill switch button in the Configuration card — same one-click, no-modal,
+   red-when-engaged styling as the **Trade** page's kill switch — plus an inline warning
+   explaining that existing paper positions keep working while it's engaged. A new
+   "Monitoring" card (placed right after Configuration, so it's visible without
+   scrolling) renders the six stat tiles, going red per-tile once its own cap is
+   reached; a manual **Refresh** button plus an opt-in polling interval
+   (`components/RefreshBar.tsx`, default off) keeps it current, matching this app's
+   existing "polling is opt-in" convention rather than an always-on interval. Verified
+   live in a browser end to end: engaging the kill switch turns the button and an inline
+   warning red immediately; a "Run one cycle now" click while engaged correctly reports
+   "New entries skipped — Kill switch is engaged" while still checking exits; releasing
+   it restores normal operation; zero console errors throughout.
 8. **Live-trading gate** — the manual flag flip that lets the loop place real orders,
    after reviewing phase 5's backtest/walk-forward results and a period of phase 6
    paper-trading track record. Deliberately the last and smallest phase: it mostly

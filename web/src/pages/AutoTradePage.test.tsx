@@ -6,6 +6,7 @@ import { ToastProvider } from '../components/ToastContext';
 import { ConfirmProvider } from '../components/ConfirmContext';
 import { client } from '../api/client';
 import type {
+  AutotradeDashboard,
   AutotradeDecideResponse,
   AutotradeRiskCheckResult,
   BacktestRunResponse,
@@ -26,10 +27,32 @@ function renderPage() {
   );
 }
 
+function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): AutotradeDashboard {
+  return {
+    enabled: false,
+    killSwitch: false,
+    riskProfile: 'MODERATE',
+    equity: 100_000,
+    openPositions: [],
+    openPositionsCount: 0,
+    maxConcurrentPositions: 2,
+    openRisk: 0,
+    maxAggregateOpenRisk: 2_000,
+    dailyPnl: 0,
+    dailyDrawdownHaltLevel: -3_000,
+    tradesToday: 0,
+    maxTradesPerDay: 6,
+    consecutiveLosses: 0,
+    stepDownAfterLosses: 2,
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.spyOn(client, 'autotradeConfig').mockResolvedValue({
     enabled: false,
+    killSwitch: false,
     riskProfile: 'MODERATE',
     accountEquityUsd: 100_000,
   });
@@ -38,6 +61,7 @@ beforeEach(() => {
   });
   vi.spyOn(client, 'autotradeEvents').mockResolvedValue({ events: [] });
   vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
+  vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
 });
 
 describe('AutoTradePage', () => {
@@ -54,6 +78,7 @@ describe('AutoTradePage', () => {
   it('warns when account equity is not set', async () => {
     vi.spyOn(client, 'autotradeConfig').mockResolvedValue({
       enabled: false,
+      killSwitch: false,
       riskProfile: 'MODERATE',
       accountEquityUsd: null,
     });
@@ -64,7 +89,7 @@ describe('AutoTradePage', () => {
   it('saves a new account equity value', async () => {
     const setConfig = vi
       .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, riskProfile: 'MODERATE', accountEquityUsd: 50_000 });
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 50_000 });
     renderPage();
     await screen.findByText('VNQ');
 
@@ -80,6 +105,7 @@ describe('AutoTradePage', () => {
   it('requires confirmation before switching to AGGRESSIVE, and does not save on cancel', async () => {
     const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue({
       enabled: false,
+      killSwitch: false,
       riskProfile: 'AGGRESSIVE',
       accountEquityUsd: 100_000,
     });
@@ -97,6 +123,7 @@ describe('AutoTradePage', () => {
   it('saves with confirmAggressive: true once the switch is confirmed', async () => {
     const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue({
       enabled: false,
+      killSwitch: false,
       riskProfile: 'AGGRESSIVE',
       accountEquityUsd: 100_000,
     });
@@ -112,7 +139,7 @@ describe('AutoTradePage', () => {
   it('toggling enabled does not prompt for confirmation', async () => {
     const setConfig = vi
       .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: true, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+      .mockResolvedValue({ enabled: true, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
     renderPage();
     await screen.findByText('VNQ');
 
@@ -682,11 +709,148 @@ describe('AutoTradePage', () => {
   it('shows an accurate warning about the live paper loop when enabled, not the old "not built yet" copy', async () => {
     vi.spyOn(client, 'autotradeConfig').mockResolvedValue({
       enabled: true,
+      killSwitch: false,
       riskProfile: 'MODERATE',
       accountEquityUsd: 100_000,
     });
     renderPage();
     expect(await screen.findByText(/actively scanning and placing/)).toBeInTheDocument();
     expect(screen.queryByText(/hasn.t been built/)).toBeNull();
+  });
+
+  describe('kill switch', () => {
+    it('renders released by default, with no engaged warning', async () => {
+      renderPage();
+      expect(await screen.findByRole('button', { name: 'Kill switch — engage halt' })).toBeInTheDocument();
+      expect(screen.queryByText(/Kill switch engaged/)).toBeNull();
+    });
+
+    it('engages on click, with no confirmation prompt, and updates config + dashboard', async () => {
+      const setKill = vi
+        .spyOn(client, 'setAutotradeKillSwitch')
+        .mockResolvedValue({ enabled: false, killSwitch: true, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+      // toggleKillSwitch also calls config.reload() right after the optimistic
+      // local update — mock its SECOND call (the reload) to agree with the
+      // just-applied change, matching what the real server would return; the
+      // first call is the page's initial load, still released.
+      vi.spyOn(client, 'autotradeConfig')
+        .mockResolvedValueOnce({
+          enabled: false,
+          killSwitch: false,
+          riskProfile: 'MODERATE',
+          accountEquityUsd: 100_000,
+        })
+        .mockResolvedValue({ enabled: false, killSwitch: true, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+      const dash = vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
+      renderPage();
+      await screen.findByText('VNQ');
+      dash.mockClear();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Kill switch — engage halt' }));
+
+      expect(setKill).toHaveBeenCalledWith(true);
+      expect(await screen.findByRole('button', { name: '■ Kill switch ENGAGED — release' })).toBeInTheDocument();
+      // Matches twice: the inline warning AND the toast notification (its own
+      // copy also starts with "Kill switch engaged") — both are correct, so
+      // assert presence rather than a single unique match.
+      expect((await screen.findAllByText(/Kill switch engaged/)).length).toBeGreaterThan(0);
+      // no AGGRESSIVE-style confirm modal — a panic button must fire in one click.
+      expect(screen.queryByText('Switch to AGGRESSIVE?')).toBeNull();
+      await waitFor(() => expect(dash).toHaveBeenCalled()); // dashboard state refreshed too
+    });
+
+    it('releases on a second click without touching the enabled flag', async () => {
+      vi.spyOn(client, 'autotradeConfig').mockResolvedValue({
+        enabled: true,
+        killSwitch: true,
+        riskProfile: 'MODERATE',
+        accountEquityUsd: 100_000,
+      });
+      const setKill = vi
+        .spyOn(client, 'setAutotradeKillSwitch')
+        .mockResolvedValue({ enabled: true, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+      renderPage();
+
+      fireEvent.click(await screen.findByRole('button', { name: '■ Kill switch ENGAGED — release' }));
+
+      expect(setKill).toHaveBeenCalledWith(false);
+      expect(await screen.findByRole('button', { name: 'Kill switch — engage halt' })).toBeInTheDocument();
+      expect((screen.getByLabelText('Auto-trading enabled') as HTMLInputElement).checked).toBe(true);
+    });
+
+    it('shows the kill-switch warning instead of the enabled warning when both are active', async () => {
+      vi.spyOn(client, 'autotradeConfig').mockResolvedValue({
+        enabled: true,
+        killSwitch: true,
+        riskProfile: 'MODERATE',
+        accountEquityUsd: 100_000,
+      });
+      renderPage();
+      expect(await screen.findByText(/Kill switch engaged/)).toBeInTheDocument();
+      expect(screen.queryByText(/actively scanning and placing/)).toBeNull();
+    });
+
+    it('surfaces an error without changing the button state when the toggle fails', async () => {
+      vi.spyOn(client, 'setAutotradeKillSwitch').mockRejectedValue(new Error('network error'));
+      renderPage();
+      await screen.findByText('VNQ');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Kill switch — engage halt' }));
+
+      await waitFor(() => expect(client.setAutotradeKillSwitch).toHaveBeenCalled());
+      expect(screen.getByRole('button', { name: 'Kill switch — engage halt' })).toBeInTheDocument();
+    });
+  });
+
+  describe('Monitoring dashboard', () => {
+    it('renders stat tiles sourced from the dashboard snapshot', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          riskProfile: 'AGGRESSIVE',
+          openPositionsCount: 1,
+          maxConcurrentPositions: 3,
+          openRisk: 1_500,
+          maxAggregateOpenRisk: 4_500,
+          dailyPnl: -200,
+          dailyDrawdownHaltLevel: -5_000,
+          tradesToday: 2,
+          maxTradesPerDay: 10,
+          consecutiveLosses: 1,
+          stepDownAfterLosses: 2,
+        }),
+      );
+      renderPage();
+      // "Aggressive" also appears as a <select><option> elsewhere on the page.
+      expect((await screen.findAllByText('Aggressive')).length).toBeGreaterThan(0);
+      expect(screen.getByText('1 / 3')).toBeInTheDocument(); // open positions vs cap
+      expect(screen.getByText('2 / 10')).toBeInTheDocument(); // trades today vs cap
+      expect(screen.getByText('-$200.00')).toBeInTheDocument(); // day P&L
+    });
+
+    it('shows an error state with retry when the dashboard fails to load', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockRejectedValue(new Error('dashboard unavailable'));
+      renderPage();
+      expect(await screen.findByText('dashboard unavailable')).toBeInTheDocument();
+    });
+
+    it('reloads after running a loop cycle, so risk/P&L figures reflect the new fills', async () => {
+      vi.spyOn(client, 'runAutotradeLoopOnce').mockResolvedValue({
+        ranEntries: true,
+        exitsChecked: 0,
+        exitsClosed: 0,
+        candidatesScreened: 1,
+        candidatesPassedVolatility: 1,
+        signalsGenerated: 1,
+        entriesOpened: 1,
+      } satisfies LoopTickSummary);
+      const dash = vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
+      renderPage();
+      await screen.findByText('VNQ');
+      dash.mockClear();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Run one cycle now' }));
+
+      await waitFor(() => expect(dash).toHaveBeenCalled());
+    });
   });
 });

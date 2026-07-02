@@ -18,6 +18,14 @@ export type RiskProfileName = 'MODERATE' | 'AGGRESSIVE';
 export interface AutotradeConfig {
   /** Master on/off for the auto-trading execution loop. */
   enabled: boolean;
+  /** Sticky emergency halt (docs/AUTOTRADING_SPEC.md — Phase 7's resolved kill-switch
+   *  decision), independent of `enabled` — mirrors db/trading.ts's TradingConfig.killSwitch.
+   *  Engaging it blocks new entries immediately; it does NOT force-close open paper
+   *  positions (see loop.ts — checkPaperExits() always runs regardless of this flag, since
+   *  in paper mode this loop IS the only thing that can enforce an already-open position's
+   *  stop/target). Independent of `enabled` so releasing it resumes the loop automatically
+   *  without the user needing to re-arm "enabled" too. */
+  killSwitch: boolean;
   /** Active risk profile. Defaults to MODERATE; switching to AGGRESSIVE is
    *  gated by an explicit confirmation at the route (see routes/autotrade.ts). */
   riskProfile: RiskProfileName;
@@ -33,7 +41,7 @@ interface ConfigRow {
 }
 
 export function defaultAutotradeConfig(): AutotradeConfig {
-  return { enabled: false, riskProfile: 'MODERATE', accountEquityUsd: null };
+  return { enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: null };
 }
 
 /** Coerce a stored/patched config into a safe, complete AutotradeConfig. */
@@ -47,6 +55,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
         : d.accountEquityUsd;
   return {
     enabled: typeof input.enabled === 'boolean' ? input.enabled : d.enabled,
+    killSwitch: typeof input.killSwitch === 'boolean' ? input.killSwitch : d.killSwitch,
     riskProfile:
       input.riskProfile === 'AGGRESSIVE' || input.riskProfile === 'MODERATE' ? input.riskProfile : d.riskProfile,
     accountEquityUsd: equity,
@@ -72,4 +81,10 @@ export function setAutotradeConfig(patch: Partial<AutotradeConfig>): AutotradeCo
      ON CONFLICT(id) DO UPDATE SET config = excluded.config, updated_at = excluded.updated_at`,
   ).run(JSON.stringify(next), Date.now());
   return next;
+}
+
+/** Engage or release the auto-trading kill switch (sticky halt). Convenience
+ *  over setAutotradeConfig — mirrors db/trading.ts's setKillSwitch. */
+export function setAutotradeKillSwitch(on: boolean): AutotradeConfig {
+  return setAutotradeConfig({ killSwitch: on });
 }

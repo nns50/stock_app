@@ -159,20 +159,30 @@ export async function attemptPaperEntry(
   return { symbol: signal.symbol, ok: true, position };
 }
 
-/**
- * Risk-check, then attempt to fill, a batch of already-decided signals —
- * sequentially against a RUNNING total (open paper positions + already-
- * approved earlier in this same call), mirroring backtest.ts's
- * simulateBacktest() batch pattern and riskCheck.ts's runAutotradeRiskCheck:
- * a batch of individually-fine signals can't jointly bust a cap none of them
- * would trip alone.
- */
-export async function runPaperExecution(candidates: { signal: TradeSignal }[]): Promise<ExecutionOutcome[]> {
-  const config = getAutotradeConfig();
-  const profile = RISK_PROFILES[config.riskProfile];
-  const equity = config.accountEquityUsd ?? 0;
-  const today = etDateStr();
+export interface PaperPortfolioSnapshot {
+  /** ET calendar date ("today") the figures below are bucketed by. */
+  today: string;
+  openPositions: PaperPosition[];
+  /** $ sum(size × stop distance) across open paper positions. */
+  openRisk: number;
+  openPositionsCount: number;
+  /** Realized P&L from paper positions closed today (ET); negative is a loss. */
+  dailyPnl: number;
+  /** Length of the current losing streak (0 if the last closed trade wasn't a loss). */
+  consecutiveLosses: number;
+  /** Paper positions opened today (ET) — open or closed. */
+  tradesToday: number;
+}
 
+/**
+ * Current paper-portfolio state — open positions, today's (ET) realized P&L,
+ * the consecutive-loss streak, and today's trade count. Shared by
+ * runPaperExecution() (below, for its running risk-check batch) and the Phase
+ * 7 monitoring dashboard (dashboard.ts), so both read the exact same
+ * computation rather than two implementations that could quietly drift apart.
+ */
+export function getPaperPortfolioSnapshot(): PaperPortfolioSnapshot {
+  const today = etDateStr();
   const openPositions = listOpenPaperPositions();
   const recent = listPaperPositions({ limit: 500 }); // open + closed, newest first — plenty for "today" stats
   const closedTodayChrono = recent
@@ -185,14 +195,41 @@ export async function runPaperExecution(candidates: { signal: TradeSignal }[]): 
   const { currentStreak } = computeStreaksAndDrawdown(closedPnlsChrono);
   const consecutiveLosses = currentStreak.type === 'loss' ? currentStreak.count : 0;
   const tradesToday = recent.filter((p) => etDateStr(p.entryAt) === today).length;
+  const openRisk = openPositions.reduce((s, p) => s + p.riskAmount, 0);
 
-  let runningRisk = openPositions.reduce((s, p) => s + p.riskAmount, 0);
-  let runningCount = openPositions.length;
-  const runningPositions: { symbol: string; notional: number }[] = openPositions.map((p) => ({
+  return {
+    today,
+    openPositions,
+    openRisk,
+    openPositionsCount: openPositions.length,
+    dailyPnl,
+    consecutiveLosses,
+    tradesToday,
+  };
+}
+
+/**
+ * Risk-check, then attempt to fill, a batch of already-decided signals —
+ * sequentially against a RUNNING total (open paper positions + already-
+ * approved earlier in this same call), mirroring backtest.ts's
+ * simulateBacktest() batch pattern and riskCheck.ts's runAutotradeRiskCheck:
+ * a batch of individually-fine signals can't jointly bust a cap none of them
+ * would trip alone.
+ */
+export async function runPaperExecution(candidates: { signal: TradeSignal }[]): Promise<ExecutionOutcome[]> {
+  const config = getAutotradeConfig();
+  const profile = RISK_PROFILES[config.riskProfile];
+  const equity = config.accountEquityUsd ?? 0;
+
+  const snapshot = getPaperPortfolioSnapshot();
+  const { dailyPnl, consecutiveLosses, tradesToday } = snapshot;
+  let runningRisk = snapshot.openRisk;
+  let runningCount = snapshot.openPositionsCount;
+  const runningPositions: { symbol: string; notional: number }[] = snapshot.openPositions.map((p) => ({
     symbol: p.symbol,
     notional: p.entryPrice * p.quantity,
   }));
-  const skipSymbols = new Set(openPositions.map((p) => p.symbol));
+  const skipSymbols = new Set(snapshot.openPositions.map((p) => p.symbol));
 
   const outcomes: ExecutionOutcome[] = [];
   for (const { signal } of candidates) {

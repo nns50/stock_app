@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 
 // Each stage already has its own dedicated test coverage (screen.ts ->
 // autotradeScreen.test.ts, decide.ts -> autotradeDecide.test.ts, execute.ts ->
@@ -23,6 +23,8 @@ import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { runAutotradeLoopTick, startAutotradeLoop, stopAutotradeLoop } from '../src/services/autotrading/loop';
 import { ScreenCandidate } from '../src/services/autotrading/screen';
 import { TradeSignal } from '../src/services/autotrading/decide';
+import { initDb } from '../src/db';
+import { setAutotradeConfig } from '../src/db/autotradeConfig';
 
 const mockScreen = vi.mocked(runAutotradeScreen);
 const mockDecide = vi.mocked(runAutotradeDecision);
@@ -63,6 +65,7 @@ function signal(symbol: string): TradeSignal {
   return { symbol, side: 'buy', entry: 100, stop: 95, target: 110, rMultiple: 2, rationale: 'fixture', score: 70 };
 }
 
+beforeAll(() => initDb());
 beforeEach(() => {
   mockScreen.mockReset();
   mockDecide.mockReset();
@@ -71,6 +74,11 @@ beforeEach(() => {
   mockSessionWindow.mockReset().mockReturnValue({ ok: true });
   mockMarketAtr.mockReset().mockResolvedValue(2);
   mockLogEvent.mockReset();
+  // runAutotradeLoopTick's own enabled/killSwitch gate (unlike everything else
+  // in this file) hits the REAL db/autotradeConfig, not a mock — default it to
+  // "armed" so existing tests below still exercise the entries path; the
+  // gating tests further down override this explicitly.
+  setAutotradeConfig({ enabled: true, killSwitch: false });
   stopAutotradeLoop();
 });
 
@@ -201,6 +209,40 @@ describe('runAutotradeLoopTick', () => {
     mockCheckExits.mockResolvedValue([]);
     const thirdSummary = await runAutotradeLoopTick();
     expect(thirdSummary.skippedReason).not.toBe('A cycle is already running');
+  });
+
+  it('still checks exits, but skips new entries, when the kill switch is engaged', async () => {
+    // The kill switch's resolved semantics (docs/AUTOTRADING_SPEC.md): halt new
+    // entries immediately, but existing positions' stops/targets must remain
+    // enforceable — in paper mode this loop IS that enforcement, so exits must
+    // never be gated by it.
+    setAutotradeConfig({ killSwitch: true });
+    mockCheckExits.mockResolvedValue([{ symbol: 'AAPL', closed: true }]);
+    const summary = await runAutotradeLoopTick();
+    expect(mockCheckExits).toHaveBeenCalledTimes(1);
+    expect(summary.exitsChecked).toBe(1);
+    expect(summary.exitsClosed).toBe(1);
+    expect(summary.ranEntries).toBe(false);
+    expect(summary.skippedReason).toMatch(/kill switch/i);
+    expect(mockSessionWindow).not.toHaveBeenCalled(); // blocked before even checking the session window
+    expect(mockScreen).not.toHaveBeenCalled();
+  });
+
+  it('still checks exits, but skips new entries, when auto-trading is disabled', async () => {
+    setAutotradeConfig({ enabled: false });
+    mockCheckExits.mockResolvedValue([{ symbol: 'AAPL', closed: false }]);
+    const summary = await runAutotradeLoopTick();
+    expect(summary.exitsChecked).toBe(1);
+    expect(summary.ranEntries).toBe(false);
+    expect(summary.skippedReason).toMatch(/disabled/i);
+    expect(mockScreen).not.toHaveBeenCalled();
+  });
+
+  it('the kill switch blocks entries even when enabled is also true (kill switch wins)', async () => {
+    setAutotradeConfig({ enabled: true, killSwitch: true });
+    const summary = await runAutotradeLoopTick();
+    expect(summary.skippedReason).toMatch(/kill switch/i);
+    expect(mockScreen).not.toHaveBeenCalled();
   });
 });
 

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, HttpError, param, parseBody, parseQuery } from './_helpers';
-import { getAutotradeConfig, setAutotradeConfig } from '../db/autotradeConfig';
+import { getAutotradeConfig, setAutotradeConfig, setAutotradeKillSwitch } from '../db/autotradeConfig';
 import { addExclusion, listExclusions, removeExclusion } from '../db/autotradeExclusions';
 import { AutotradeStage, listAutotradeEvents, logAutotradeEvent } from '../db/autotradeEvents';
 import { runAutotradeScreen } from '../services/autotrading/screen';
@@ -11,6 +11,7 @@ import { ScreenerConfig } from '../indicators/screener';
 import { computeBacktestStats, runBacktest, runWalkForwardBacktest } from '../services/autotrading/backtest';
 import { listPaperPositions } from '../db/autotradePaperPositions';
 import { runAutotradeLoopTick } from '../services/autotrading/loop';
+import { getAutotradeDashboard } from '../services/autotrading/dashboard';
 
 export const autotradeRouter = Router();
 
@@ -274,6 +275,31 @@ autotradeRouter.get(
   asyncHandler(async (req, res) => {
     const q = parseQuery(paperPositionsQuery, req);
     res.json({ positions: listPaperPositions(q) });
+  }),
+);
+
+// ---- Monitoring dashboard & kill switch (Phase 7) ----------------------------
+
+/** Real-time snapshot for the monitoring panel: active profile, open paper
+ *  positions, aggregate open risk used vs limit, day P&L vs the drawdown
+ *  halt, trade count vs max, and the consecutive-loss streak — plus the
+ *  enabled/kill-switch state itself. Read-only. */
+autotradeRouter.get('/dashboard', (_req, res) => {
+  res.json(getAutotradeDashboard());
+});
+
+const killSwitchBody = z.object({ on: z.boolean() });
+autotradeRouter.post(
+  '/kill-switch',
+  asyncHandler(async (req, res) => {
+    const { on } = parseBody(killSwitchBody, req);
+    const next = setAutotradeKillSwitch(on);
+    logAutotradeEvent({
+      stage: 'config',
+      action: on ? 'kill_switch_engaged' : 'kill_switch_released',
+      riskProfile: next.riskProfile,
+    });
+    res.json(next);
   }),
 );
 
