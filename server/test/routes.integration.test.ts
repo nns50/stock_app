@@ -517,6 +517,80 @@ describe('autotrade config routes (integration)', () => {
       enabled: true, // still untouched — only equity was explicitly cleared
     });
   });
+
+  describe('Phase 8: live-trading enable gate', () => {
+    it('rejects enabling live trading with no confirmation phrase at all', async () => {
+      const res = await put('/api/autotrade/config', { liveAccountId: 'ACC1', liveTradingEnabled: true });
+      expect(res.status).toBe(400);
+      expect(await getJson('/api/autotrade/config')).toMatchObject({ liveTradingEnabled: false });
+    });
+
+    it('rejects enabling live trading with the wrong phrase', async () => {
+      const res = await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        confirmLiveTrading: 'yes please',
+      });
+      expect(res.status).toBe(400);
+      expect(await getJson('/api/autotrade/config')).toMatchObject({ liveTradingEnabled: false });
+    });
+
+    it('rejects enabling live trading with no liveAccountId on file, even with the right phrase', async () => {
+      const res = await put('/api/autotrade/config', {
+        liveTradingEnabled: true,
+        confirmLiveTrading: 'ENABLE LIVE TRADING',
+      });
+      expect(res.status).toBe(400);
+      expect(await getJson('/api/autotrade/config')).toMatchObject({ liveTradingEnabled: false });
+    });
+
+    it('accepts the correct phrase (case/whitespace-insensitive) plus an account, and stamps liveEnabledAt', async () => {
+      const before = Date.now();
+      const res = await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        confirmLiveTrading: '  enable live trading  ',
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { liveTradingEnabled: boolean; liveEnabledAt: number | null };
+      expect(body.liveTradingEnabled).toBe(true);
+      expect(body.liveEnabledAt).not.toBeNull();
+      expect(body.liveEnabledAt as number).toBeGreaterThanOrEqual(before);
+    });
+
+    it('does not require the phrase to turn live trading back off', async () => {
+      await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        confirmLiveTrading: 'ENABLE LIVE TRADING',
+      });
+      const res = await put('/api/autotrade/config', { liveTradingEnabled: false });
+      expect(res.status).toBe(200);
+      expect((await res.json()) as { liveTradingEnabled: boolean }).toMatchObject({ liveTradingEnabled: false });
+    });
+
+    it('does not re-require the phrase for an unrelated save while already enabled', async () => {
+      await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        confirmLiveTrading: 'ENABLE LIVE TRADING',
+      });
+      const res = await put('/api/autotrade/config', { liveMaxOrderUsd: 750 });
+      expect(res.status).toBe(200);
+      expect((await res.json()) as { liveTradingEnabled: boolean; liveMaxOrderUsd: number }).toMatchObject({
+        liveTradingEnabled: true,
+        liveMaxOrderUsd: 750,
+      });
+    });
+
+    it('an unrelated save does not reset liveAccountId or the live caps to their defaults', async () => {
+      await put('/api/autotrade/config', { liveAccountId: 'ACC1', liveMaxOrderUsd: 900 });
+      await put('/api/autotrade/config', { enabled: true });
+      const final = (await getJson('/api/autotrade/config')) as { liveAccountId: string; liveMaxOrderUsd: number };
+      expect(final.liveAccountId).toBe('ACC1');
+      expect(final.liveMaxOrderUsd).toBe(900);
+    });
+  });
 });
 
 describe('autotrade backtest routes (integration)', () => {
