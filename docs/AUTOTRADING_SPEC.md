@@ -220,6 +220,71 @@ this list as decisions change — don't let it drift from what's actually built.
   corrupt the one thing that journal exists to be honest about. A real Webull
   `accountId`/confirm-phrase path is Phase 8's problem, once a human is reviewing
   Phase 5/6 results before flipping the live flag — not before.
+- **Phase 8's confirmation model: one-time only, no per-order gate — and NOT a reuse of
+  `placeOrder()`'s existing type-to-confirm phrase.** `docs/LIVE_TRADING_DESIGN.md`
+  states as a non-negotiable principle that a human confirms *every* order, and lists
+  "no algorithmic/automated/scheduled trading" as an explicit non-goal — this doc's
+  Phase 8 is a deliberate, scoped exception to that, not an oversight (already flagged at
+  the top of this file). Checked `placeOrder.ts` directly: `placeConfirmation(intent)` is
+  `` `${side} ${quantity} ${symbol}` `` — a pure function of the order, echoed back by
+  the caller. It's a UX rail against a human misclicking on the Trade page, not a secret
+  only a human can produce — so the autonomous loop *could* trivially compute and pass
+  it itself, but doing so would be hollow (confirming its own order proves nothing) and
+  is exactly the kind of "technically passes, quietly defeats the purpose" move this
+  repo's operating principles rule out. **Decision, confirmed with the user: no per-order
+  confirmation of any kind, and no daily re-arm either** — "the application [should] be
+  able to trade for itself without my confirmation," with review effort spent on
+  guardrail configuration instead. Phase 8 therefore does **not** call `placeOrder()` —
+  it gets its own entry point that shares the safe, non-human-specific lower layers
+  (guardrail evaluation, the Webull order call, the order lifecycle/audit trail) but has
+  no `confirmation` parameter to fake.
+- **Phase 8 track record gate: no code-enforced minimum, confirmed with the user.** The
+  UI will still surface the paper track record (trade count, date range, win rate) next
+  to the live-enable control so it's visible at decision time, but the server will not
+  block flipping `liveTradingEnabled` on any specific day/trade-count threshold — purely
+  the user's judgment call, matching how AGGRESSIVE-vs-MODERATE is already just a
+  confirmed choice with no enforced graduation criteria either.
+- **Phase 8 live-order caps: separate from the human Trade page's, confirmed with the
+  user.** `trading_config`'s caps (`maxOrderUsd`, `maxExposureUsd`, `maxDailyLossUsd`,
+  etc.) were tuned for a human confirming a specific $ ticket; autotrade sizes
+  risk-based (% of equity × stop distance via `computeRiskSizing()`), which can imply a
+  different notional than those flat numbers were tuned around. A new, autotrade-only
+  cap set (proposed field names: `liveMaxOrderUsd`, `liveMaxDailyLossUsd`,
+  `liveMaxOrdersPerDay`, `liveFatFingerPct`, `liveAllowNakedShort`) reuses the exact same
+  pure `evaluateGuardrails()` function with these numbers instead — same well-tested
+  logic, independently tunable ceiling. `liveAllowNakedShort` defaults `false`, matching
+  `guardrails.ts`'s own default and this project's established defined-risk-by-default
+  posture (mirrors the options addition's undefined-risk exclusion). Defaults will be
+  derived from the configured `accountEquityUsd` and active risk profile rather than
+  fixed dollar figures copied from the human page, so they scale sensibly with account
+  size instead of being an arbitrary number disconnected from it — exact formula to be
+  finalized in Phase 8 Step A, editable afterward in the UI either way (the user's own
+  framing: "I just need to be able to configure and setup the guardrails").
+- **Phase 8 probation period: yes, confirmed with the user.** For the first
+  `liveProbationTrades` live trades after `liveTradingEnabled` first turns true (default
+  proposed: 20), position sizing gets an additional cut (`liveProbationSizeMultiplier`,
+  default proposed: 0.5×) on top of whatever the risk profile and any loss-streak
+  step-down already produce — mirrors `riskCheck.ts`'s existing step-down mechanism
+  exactly (an additional multiplier on `effectiveRiskPct`, composing with step-down
+  rather than replacing it) rather than inventing a parallel sizing path. The probation
+  counter resets if `liveTradingEnabled` is turned off and back on — re-enabling live
+  trading after a pause is itself the risky transition being guarded against, not just
+  the very first time.
+- **Phase 8 additional safety layer, not explicitly asked for but added by inference —
+  flagged here for visibility, not buried silently:** autotrade's live orders are also
+  blocked if the human's own `trading_config.killSwitch` is engaged or
+  `trading_config.enabled` is off, in addition to autotrade's own `killSwitch`/
+  `liveTradingEnabled`. Same broker, same account — if the human ever hits "Halt
+  trading" on the manual Trade page, that should stop the autonomous loop's live orders
+  too, not just new manual ones. Zero added friction for normal operation (it only
+  matters if the human has manually halted trading), so this was added as a sensible
+  default rather than posed as an open question — reversible if the user disagrees.
+  **Exits are the one exception, on both sides**: closing an already-open live position
+  to honor its own already-approved stop/target is risk-*reducing*, so it proceeds even
+  if either kill switch is engaged — exactly mirroring Phase 7's resolved decision for
+  paper positions ("does not force-close existing positions — their existing hard
+  stop-losses remain in place as the exit mechanism") and the human pipeline's own
+  cancel-order exemption from `TRADING_ENABLED`.
 - **Options IV-extreme filter: proposed default `ivRankMax: 70`, not yet confirmed.** The
   existing `EntryStrategyConfig` (`entryRules.ts`) already has an `ivRankMin`/`ivRankMax`
   field — `defaultEntryConfig()` just doesn't set one, since the human-facing Options page
@@ -744,10 +809,56 @@ starts.
    already supported) rather than Yahoo's free/unofficial API — a separate decision, not
    made here. All four fixes have regression tests verified by reverting and confirming
    they fail against the old code.
-8. **Live-trading gate** — the manual flag flip that lets the loop place real orders,
-   after reviewing phase 5's backtest/walk-forward results and a period of phase 6
-   paper-trading track record. Deliberately the last and smallest phase: it mostly
-   unlocks what phases 1-7 already built, rather than adding new logic.
+8. **Live-trading gate — in progress.** The manual flag flip that lets the loop place
+   real orders, prioritized ahead of the options addition (phases 9-13) per the user's
+   explicit sequencing call. See the four Phase-8-specific "Resolved decisions" entries
+   above for the confirmed design (one-time confirmation only, no code-enforced track
+   record minimum, autotrade-specific live caps, a probation period). Broken into
+   independently-mergeable steps, mirroring how phases 5-7 were each built in reviewed
+   sub-steps rather than one large change:
+   - **Step A — config & schema.** New fields (on `autotrade_config` or a sibling
+     table): `liveTradingEnabled`, `liveAccountId` (server-side, replacing the human
+     Trade page's browser-`localStorage` source — meaningless for an unattended loop),
+     the autotrade-specific cap set (`liveMaxOrderUsd`, `liveMaxDailyLossUsd`,
+     `liveMaxOrdersPerDay`, `liveFatFingerPct`, `liveAllowNakedShort`), and the
+     probation fields (`liveProbationTrades`, `liveProbationSizeMultiplier`). Setting
+     `liveTradingEnabled: true` requires an explicit typed-phrase confirmation at the
+     route (a new, stronger analog of `confirmAggressive`'s boolean, given the stakes
+     categorically exceed a risk-profile change) — a one-time gesture, not per-order
+     friction, consistent with the confirmed confirmation model. No execution capability
+     yet — pure plumbing, reviewable on its own like Phase 1 was.
+   - **Step B — live execution service.** A new `services/autotrading/liveExecute.ts`,
+     parallel to (not a modification of) `execute.ts` — paper execution and
+     `autotrade_paper_positions` stay completely unchanged and keep running by default
+     even after live trading is on, as an ongoing live-vs-paper sanity check. Reuses the
+     lower, non-human-specific layers of the existing live pipeline (guardrail
+     evaluation via `evaluateGuardrails()` against the new live-cap config,
+     `webullPlaceOrder()`, the order lifecycle/audit trail with `created_by: 'autotrade'`)
+     without going through `placeOrder()`'s confirmation parameter. `checkLiveExits()`
+     mirrors `checkPaperExits()` and always runs regardless of either kill switch, per
+     the exits-are-risk-reducing decision above. Probation and step-down multipliers
+     compose on top of the risk profile's normal sizing.
+   - **Step C — wire into the loop.** `runAutotradeLoopTick()` gates live entries behind
+     `liveTradingEnabled` **and** `TRADING_ENABLED` (env) **and** both kill switches
+     (autotrade's own, and the human pipeline's `trading_config.killSwitch`/`enabled`)
+     **and** guardrails passing — every layer, not a subset. Live and paper execution
+     both run each cycle when both are enabled.
+   - **Step D — UI.** A new "Live trading" section on the Auto-Trade page: the one-time
+     enable flow with its typed confirmation, `liveAccountId` input, an editor for the
+     autotrade-specific caps, probation status (trades remaining, current multiplier),
+     and the paper track record surfaced alongside the control (visible, not enforced).
+     The Monitoring dashboard (Phase 7) extends to show live positions/risk alongside
+     paper's.
+   - **Adversarial review before considering this phase done** — non-negotiable given
+     the stakes, mirroring phases 5-7's own review discipline (two independent
+     reviewers, matching Phase 7's precedent, given this phase's blast radius is real
+     money rather than paper). Focus areas going in: can any code path place a live
+     order without every one of {`TRADING_ENABLED`, `liveTradingEnabled`, both kill
+     switches off, guardrails passing} being true; can the probation multiplier be
+     bypassed or reset without also resetting the trade counter honestly; does exit
+     checking keep running when a kill switch is engaged (the exact bug class Phase 7
+     found and fixed for paper); is `liveAccountId` ever reachable from anywhere
+     insecure.
 
 ### Options trading addition — phases 9-13, proposed, not yet approved
 
