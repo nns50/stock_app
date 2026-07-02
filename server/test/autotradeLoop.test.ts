@@ -1,0 +1,182 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// Each stage already has its own dedicated test coverage (screen.ts ->
+// autotradeScreen.test.ts, decide.ts -> autotradeDecide.test.ts, execute.ts ->
+// autotradeExecute.test.ts, executionGuards.ts -> executionGuards.test.ts) —
+// mocked here so these tests exercise ONLY loop.ts's own orchestration:
+// stage ordering, the session-window skip, and how the volatility filter
+// narrows what reaches Decision.
+vi.mock('../src/services/autotrading/screen', () => ({ runAutotradeScreen: vi.fn() }));
+vi.mock('../src/services/autotrading/decide', () => ({ runAutotradeDecision: vi.fn() }));
+vi.mock('../src/services/autotrading/execute', () => ({ runPaperExecution: vi.fn(), checkPaperExits: vi.fn() }));
+vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/autotrading/executionGuards')>();
+  return { ...actual, checkSessionWindow: vi.fn(), getMarketAtrPct: vi.fn() };
+});
+vi.mock('../src/db/autotradeEvents', () => ({ logAutotradeEvent: vi.fn() }));
+
+import { runAutotradeScreen } from '../src/services/autotrading/screen';
+import { runAutotradeDecision } from '../src/services/autotrading/decide';
+import { runPaperExecution, checkPaperExits } from '../src/services/autotrading/execute';
+import { checkSessionWindow, getMarketAtrPct } from '../src/services/autotrading/executionGuards';
+import { logAutotradeEvent } from '../src/db/autotradeEvents';
+import { runAutotradeLoopTick, startAutotradeLoop, stopAutotradeLoop } from '../src/services/autotrading/loop';
+import { ScreenCandidate } from '../src/services/autotrading/screen';
+import { TradeSignal } from '../src/services/autotrading/decide';
+
+const mockScreen = vi.mocked(runAutotradeScreen);
+const mockDecide = vi.mocked(runAutotradeDecision);
+const mockExecute = vi.mocked(runPaperExecution);
+const mockCheckExits = vi.mocked(checkPaperExits);
+const mockSessionWindow = vi.mocked(checkSessionWindow);
+const mockMarketAtr = vi.mocked(getMarketAtrPct);
+const mockLogEvent = vi.mocked(logAutotradeEvent);
+
+function candidate(symbol: string, atrPct: number | null): ScreenCandidate {
+  return {
+    symbol,
+    price: 100,
+    total: 70,
+    passedFilters: true,
+    filterReasons: [],
+    components: [],
+    indicators: {
+      price: 100,
+      changePct: 0,
+      maShort: null,
+      maLong: null,
+      distShortPct: null,
+      distLongPct: null,
+      rsi: null,
+      atr: 2,
+      atrPct,
+      relVolume: null,
+      avgVolume: null,
+      volume: null,
+      gapPct: null,
+    },
+    discoverySource: 'universe',
+  };
+}
+
+function signal(symbol: string): TradeSignal {
+  return { symbol, side: 'buy', entry: 100, stop: 95, target: 110, rMultiple: 2, rationale: 'fixture', score: 70 };
+}
+
+beforeEach(() => {
+  mockScreen.mockReset();
+  mockDecide.mockReset();
+  mockExecute.mockReset();
+  mockCheckExits.mockReset().mockResolvedValue([]);
+  mockSessionWindow.mockReset().mockReturnValue({ ok: true });
+  mockMarketAtr.mockReset().mockResolvedValue(2);
+  mockLogEvent.mockReset();
+  stopAutotradeLoop();
+});
+
+describe('runAutotradeLoopTick', () => {
+  it('always checks exits, even when the session window blocks new entries', async () => {
+    mockSessionWindow.mockReturnValue({ ok: false, reason: 'Market is closed' });
+    mockCheckExits.mockResolvedValue([{ symbol: 'AAPL', closed: true }]);
+    const summary = await runAutotradeLoopTick();
+    expect(mockCheckExits).toHaveBeenCalledTimes(1);
+    expect(summary.exitsChecked).toBe(1);
+    expect(summary.exitsClosed).toBe(1);
+    expect(summary.ranEntries).toBe(false);
+    expect(summary.skippedReason).toBe('Market is closed');
+    expect(mockScreen).not.toHaveBeenCalled();
+  });
+
+  it('screens, decides, and executes when the session window is open', async () => {
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(mockScreen).toHaveBeenCalledTimes(1);
+    expect(mockDecide).toHaveBeenCalledWith([candidate('AAPL', 2)]);
+    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }]);
+    expect(summary.ranEntries).toBe(true);
+    expect(summary.candidatesScreened).toBe(1);
+    expect(summary.candidatesPassedVolatility).toBe(1);
+    expect(summary.signalsGenerated).toBe(1);
+    expect(summary.entriesOpened).toBe(1);
+  });
+
+  it('filters out a high-ATR candidate before Decision ever sees it', async () => {
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('CALM', 2), candidate('WILD', 40)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 2, moversCount: 0, scannedCount: 2 },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('CALM')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'CALM', ok: true }]);
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(mockDecide).toHaveBeenCalledWith([candidate('CALM', 2)]); // WILD excluded
+    expect(summary.candidatesScreened).toBe(2);
+    expect(summary.candidatesPassedVolatility).toBe(1);
+    const volEvent = mockLogEvent.mock.calls.find((c) => c[0].action === 'excluded_volatility');
+    expect(volEvent?.[0].symbol).toBe('WILD');
+  });
+
+  it('excludes every candidate when the broad-market proxy is itself too volatile', async () => {
+    mockMarketAtr.mockResolvedValue(50); // way above the default 5% cap
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('CALM', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+
+    const summary = await runAutotradeLoopTick();
+    expect(summary.candidatesPassedVolatility).toBe(0);
+    expect(mockDecide).toHaveBeenCalledWith([]);
+  });
+
+  it('does not throw when a candidate has no computable ATR — it is excluded, not crashed on', async () => {
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('NOATR', null)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+    const summary = await runAutotradeLoopTick();
+    expect(summary.candidatesPassedVolatility).toBe(0);
+  });
+});
+
+describe('startAutotradeLoop / stopAutotradeLoop', () => {
+  it('is idempotent — a second start before stop is a no-op', () => {
+    expect(() => {
+      startAutotradeLoop();
+      startAutotradeLoop();
+    }).not.toThrow();
+  });
+
+  it('stop clears state so a later start can run again', () => {
+    startAutotradeLoop();
+    stopAutotradeLoop();
+    expect(() => startAutotradeLoop()).not.toThrow();
+  });
+});

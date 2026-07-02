@@ -28,6 +28,7 @@ import { tradeRouter } from './routes/trade';
 import { autotradeRouter } from './routes/autotrade';
 import { authRouter, requireAuth } from './routes/auth';
 import { startAlertScheduler } from './services/alertScheduler';
+import { startAutotradeLoop } from './services/autotrading/loop';
 
 initDb();
 
@@ -129,5 +130,8 @@ if (require.main === module) {
     if (warm) warm.catch(() => {});
     // Start the background alert poller (no-op until enabled in Settings).
     startAlertScheduler();
+    // Start the autonomous paper execution loop (no-op until enabled on the
+    // Auto-Trade page — see docs/AUTOTRADING_SPEC.md, Phase 6).
+    startAutotradeLoop();
   });
 }
