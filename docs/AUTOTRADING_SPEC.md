@@ -307,15 +307,61 @@ starts.
    trade-by-trade table per window. Nothing downstream of this phase — paper or live
    execution — is wired up yet; this phase only produces the report a human reviews
    before either of those is allowed to run.
-6. **Paper execution loop — in progress.** Wire Research → Decision → Risk Check →
-   Execution → Journal into a recurring scheduled loop (reusing the alerts-poller's
-   in-process interval pattern). Per the resolved decision above, "paper" is a fully
-   local simulation — no real Webull order is ever placed; a synthetic fill (from a
-   live quote) is recorded into a new `autotrade_paper_positions` table, kept separate
-   from the human's real trading journal. Idempotent placement (never double up on an
-   already-open/pending symbol), explicit handling for a quote fetch failing (skip,
-   don't guess), no entries in the first/last N minutes of the session, volatility
-   filter (ticker ATR + a broad-market proxy).
+6. **Paper execution loop — shipped.** `services/autotrading/loop.ts` mirrors the
+   alerts-poller's self-rescheduling `setTimeout` pattern exactly (`services/alertScheduler.ts`):
+   `autotrade_config.enabled` is read fresh every cycle (no restart to toggle), one
+   `try`/`catch` wraps each tick so a single bad cycle can't kill the loop, and the timer
+   is `unref`'d so it never keeps the process alive alone. Wired into `index.ts`'s startup
+   next to the alert scheduler.
+
+   One cycle (`runAutotradeLoopTick()`): check every open paper position for a stop/target
+   hit first (`checkPaperExits()` — this runs regardless of the session window, since a
+   closed or near-the-bell market doesn't invalidate an already-known stop/target level);
+   then, only inside the allowed session window, Screen (Phase 2, unmodified) → a
+   ticker-ATR + broad-market-proxy volatility filter (new — see below) → Decision (Phase
+   3, unmodified) → `runPaperExecution()` (Execution). Every stage journals to
+   `autotrade_events` exactly as the manual preview flow already does, so the activity
+   feed reads the same whether a human clicked "Run screen" or the loop ran itself.
+
+   **Paper is a fully local simulation** (the resolved decision above): `execute.ts` never
+   calls the live Webull order pipeline. `attemptPaperEntry()` fills at a *freshly-fetched*
+   quote (not the signal's own screening-time price — this loop runs in real time, unlike
+   the backtest's next-day-open convention, so "now" genuinely is the fill moment),
+   recording a row in the new `autotrade_paper_positions` table (kept fully separate from
+   `positions`, the human's real journal). A quote-fetch failure is reported per-symbol,
+   not silently guessed at. `checkPaperExits()` closes at the declared stop/target *level*,
+   not the observed quote — the same convention `backtest.ts` uses, so paper and backtest
+   results stay comparable.
+
+   `runPaperExecution()` risk-checks a batch sequentially against a **running** total
+   (mirrors `simulateBacktest()`'s batch pattern and `runAutotradeRiskCheck()` — the same
+   same-batch-correlation-threading fix Phase 5's review found and fixed in the backtest
+   engine, built correctly here from the start), reusing `evaluateRiskCheck()` and the
+   now-exported `correlatedNotional()` directly rather than a third parallel
+   implementation. **This resolves the Phase 4 "known interim scope" note**: autotrade's
+   own concurrent-position-count and aggregate-open-risk caps are scoped to its *own* open
+   paper positions, not combined with the human's real ones. Paper trades carry zero real
+   financial exposure, so combining them wouldn't add real safety — and would make this
+   phase impossible to observe for anyone who has real positions open (a very ordinary case
+   for this app's primary manual-trading UI).
+
+   `executionGuards.ts` adds two hard blocks specific to the unattended loop (distinct from
+   `services/trading/marketHours.ts`, which is deliberately warn-only for the
+   human-confirmed live pipeline — a person can see a warning and decide anyway; a loop with
+   no one watching can't): `checkSessionWindow()` blocks outside market hours and within 15
+   minutes of the open or close (the spec's "no entries in the first/last N minutes"), and
+   `checkVolatility()` blocks a candidate whose own ATR% is too high, or *every* candidate
+   this cycle if a broad-market proxy (SPY by default, its own ATR% — no VIX feed exists in
+   this app, so this reuses whatever `MARKET_DATA_PROVIDER` is already configured instead of
+   adding a new data source) is itself too volatile.
+
+   Routed at `POST /api/autotrade/loop/run-once` (run one cycle immediately — the same
+   function the background scheduler calls, so a human can watch it work without waiting
+   for the real-time interval) and `GET /api/autotrade/paper-positions`. The Auto-Trade
+   page's new "Paper trading" card shows the last run's summary, per-window stat tiles
+   (open/closed count, realized P&L), and the full paper trade history. The page's
+   "Auto-trading enabled" warning and footer copy were updated — they used to say the
+   execution loop hadn't been built yet, which would now be actively wrong.
 7. **Monitoring dashboard & kill switch** — real-time panel (active risk profile, open
    positions, aggregate open risk used vs. limit, day P&L, drawdown vs. halt, trade
    count vs. max, consecutive loss streak) and the kill switch behavior resolved above.

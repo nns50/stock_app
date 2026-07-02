@@ -1180,3 +1180,38 @@ export interface BacktestRequest {
 export interface WalkForwardRequest extends BacktestRequest {
   splitDate: string;
 }
+
+// --- Phase 6: paper execution loop ---
+
+export type PaperExitReason = 'stop' | 'target' | 'manual';
+
+export interface PaperPosition {
+  id: number;
+  symbol: string;
+  side: AutotradeSignalSide;
+  quantity: number;
+  entryPrice: number;
+  entryAt: number;
+  stopPrice: number;
+  targetPrice: number;
+  riskAmount: number;
+  riskProfile: string;
+  rationale: string;
+  status: 'open' | 'closed';
+  exitPrice: number | null;
+  exitAt: number | null;
+  exitReason: PaperExitReason | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface LoopTickSummary {
+  ranEntries: boolean;
+  skippedReason?: string;
+  exitsChecked: number;
+  exitsClosed: number;
+  candidatesScreened: number;
+  candidatesPassedVolatility: number;
+  signalsGenerated: number;
+  entriesOpened: number;
+}

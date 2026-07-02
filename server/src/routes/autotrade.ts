@@ -9,6 +9,8 @@ import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/de
 import { runAutotradeRiskCheck } from '../services/autotrading/riskCheck';
 import { ScreenerConfig } from '../indicators/screener';
 import { computeBacktestStats, runBacktest, runWalkForwardBacktest } from '../services/autotrading/backtest';
+import { listPaperPositions } from '../db/autotradePaperPositions';
+import { runAutotradeLoopTick } from '../services/autotrading/loop';
 
 export const autotradeRouter = Router();
 
@@ -246,6 +248,32 @@ autotradeRouter.post(
       excludedSymbols: wf.excludedSymbols,
       errors: wf.errors,
     });
+  }),
+);
+
+// ---- Paper execution loop (Phase 6) ------------------------------------------
+
+/** Run one loop cycle right now — the same function the background scheduler
+ *  calls, exposed so a human can watch it work without waiting for the next
+ *  real-time tick. Still fully paper — see services/autotrading/execute.ts. */
+autotradeRouter.post(
+  '/loop/run-once',
+  asyncHandler(async (_req, res) => {
+    const summary = await runAutotradeLoopTick();
+    res.json(summary);
+  }),
+);
+
+const paperPositionsQuery = z.object({
+  status: z.enum(['open', 'closed']).optional(),
+  symbol: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(1000).optional(),
+});
+autotradeRouter.get(
+  '/paper-positions',
+  asyncHandler(async (req, res) => {
+    const q = parseQuery(paperPositionsQuery, req);
+    res.json({ positions: listPaperPositions(q) });
   }),
 );
 

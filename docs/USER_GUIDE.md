@@ -599,13 +599,15 @@ that fires to your webhooks**.
 initiative described in **[docs/AUTOTRADING_SPEC.md](../docs/AUTOTRADING_SPEC.md)** — a
 fully autonomous screen → decide → risk-check → execute → journal loop, distinct from
 the human-confirmed live trading on the **Trade** page (which always requires you to
-type a confirmation phrase before an order goes out). Auto-Trade's execution loop and
-live-trading gate don't exist yet — what's live today is the foundation plus the
-screen/decide/risk-check stages:
+type a confirmation phrase before an order goes out). The loop now runs — but every
+order it can place is a **paper** simulation; it never reaches a real broker. The
+live-trading gate (a manual flag flip, after reviewing backtest and paper-trading
+results) is still an upcoming phase.
 
-- **Configuration** — a master **enabled** switch for the eventual execution loop
-  (currently a no-op — nothing acts on it until the loop is built), the active
-  **risk profile** (`Moderate`, the conservative default, or `Aggressive`; switching to
+- **Configuration** — a master **enabled** switch for the execution loop below (when on,
+  the server runs the full cycle on its own every minute, placing paper trades — see
+  "Paper trading" below), the active **risk profile** (`Moderate`, the conservative
+  default, or `Aggressive`; switching to
   Aggressive always pops a confirmation dialog explaining what it raises — per-trade
   risk, the daily drawdown halt, concurrent positions, max aggregate open risk,
   correlated-ticker exposure, and the daily trade cap — never a silent dropdown change),
@@ -657,13 +659,25 @@ screen/decide/risk-check stages:
   yours to make, same as the eventual live-trading flag. At most 50 symbols per run; if
   one symbol's historical data can't be fetched (bad ticker, provider rate limit), it's
   called out separately and excluded — the rest of the run still completes.
+- **Paper trading** — the execution loop itself. When **Auto-trading enabled** is checked
+  above, the server runs Screen → Decision → Risk Check → Execution on its own every
+  minute; **Run one cycle now** runs the exact same cycle immediately, so you can watch
+  it work without waiting. Every fill is a local simulation from a live quote — it never
+  places a real order. No new entries in the first/last 15 minutes of the session, and a
+  volatility filter (the candidate's own ATR%, plus a broad-market proxy) can skip a
+  cycle's entries entirely; open positions are still checked for a stop/target hit
+  either way. Shows open/closed counts, realized P&L, and the full paper trade history
+  (side, entry/exit, reason, P&L, R). Concurrent-position and aggregate-open-risk caps
+  here are scoped to the loop's own paper positions, not your real ones on the
+  **Positions**/**Journal** pages — paper trades carry no real financial exposure, so
+  they're evaluated independently, the same way a real paper-trading account would be.
 - **Recent activity** — a journal of what the screen, decision, and risk-check stages
-  did and why (candidate found, excluded, signal generated, passed/blocked and which
-  rule, a setting changed), the foundation the execution stage will log into as well.
+  did and why (candidate found, excluded, signal generated, passed/blocked, a paper
+  order placed or closed, a setting changed) — the same feed the execution loop above
+  writes into automatically.
 
-This page will keep growing as later phases (a paper-trading execution loop, a
-monitoring dashboard, and finally a live-trading gate) land — check the spec doc for
-the full roadmap and current status.
+This page will keep growing as later phases (a monitoring dashboard, and finally a
+live-trading gate) land — check the spec doc for the full roadmap and current status.
 
 ---
 

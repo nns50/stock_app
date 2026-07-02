@@ -9,6 +9,8 @@ import type {
   AutotradeDecideResponse,
   AutotradeRiskCheckResult,
   BacktestRunResponse,
+  LoopTickSummary,
+  PaperPosition,
   WalkForwardResponse,
 } from '../api/types';
 
@@ -35,6 +37,7 @@ beforeEach(() => {
     exclusions: [{ symbol: 'VNQ', reason: 'Real estate ETF', source: 'default', createdAt: Date.now() }],
   });
   vi.spyOn(client, 'autotradeEvents').mockResolvedValue({ events: [] });
+  vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
 });
 
 describe('AutoTradePage', () => {
@@ -497,5 +500,118 @@ describe('AutoTradePage', () => {
     expect(await screen.findByText(/BAD1 \(Polygon 429: rate limited\)/)).toBeInTheDocument();
     // The rest of the report still renders — one bad symbol doesn't blank the page.
     expect(screen.getByText('target')).toBeInTheDocument();
+  });
+
+  function paperPosition(overrides: Partial<PaperPosition> = {}): PaperPosition {
+    return {
+      id: 1,
+      symbol: 'AAPL',
+      side: 'buy',
+      quantity: 10,
+      entryPrice: 100,
+      entryAt: Date.now(),
+      stopPrice: 95,
+      targetPrice: 110,
+      riskAmount: 50,
+      riskProfile: 'MODERATE',
+      rationale: 'test fixture',
+      status: 'open',
+      exitPrice: null,
+      exitAt: null,
+      exitReason: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ...overrides,
+    };
+  }
+
+  it('shows an empty state when there are no paper positions', async () => {
+    renderPage();
+    expect(await screen.findByText('No paper trades yet')).toBeInTheDocument();
+  });
+
+  it('renders open and closed paper positions with summary stat tiles', async () => {
+    vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({
+      positions: [
+        paperPosition({ id: 1, symbol: 'AAPL', status: 'open' }),
+        paperPosition({
+          id: 2,
+          symbol: 'MSFT',
+          status: 'closed',
+          entryPrice: 100,
+          exitPrice: 110,
+          exitAt: Date.now(),
+          exitReason: 'target',
+          quantity: 10,
+          riskAmount: 50,
+        }),
+      ],
+    });
+    renderPage();
+    expect(await screen.findByText('AAPL')).toBeInTheDocument();
+    expect(screen.getByText('MSFT')).toBeInTheDocument();
+    // (110-100)*10 realized pnl — appears twice: the stat tile total and the trade's own row.
+    expect(screen.getAllByText('+$100.00').length).toBeGreaterThan(0);
+    expect(screen.getByText('2.00R')).toBeInTheDocument(); // 100 pnl / 50 risk, fmtNum's default 2 decimals
+  });
+
+  it('runs one loop cycle, shows the summary, and reloads positions', async () => {
+    const runOnce = vi.spyOn(client, 'runAutotradeLoopOnce').mockResolvedValue({
+      ranEntries: true,
+      exitsChecked: 2,
+      exitsClosed: 1,
+      candidatesScreened: 10,
+      candidatesPassedVolatility: 8,
+      signalsGenerated: 3,
+      entriesOpened: 1,
+    } satisfies LoopTickSummary);
+    const positions = vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
+    renderPage();
+    await screen.findByText('VNQ');
+    positions.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run one cycle now' }));
+
+    expect(await screen.findByText(/Screened 10, 8 passed/)).toBeInTheDocument();
+    expect(screen.getByText(/3 signal\(s\) generated/)).toBeInTheDocument();
+    expect(screen.getByText(/Exits checked: 2 \(1 closed\)/)).toBeInTheDocument();
+    await waitFor(() => expect(positions).toHaveBeenCalled()); // reloaded after the run
+    expect(runOnce).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the skipped reason when the session window blocked new entries', async () => {
+    vi.spyOn(client, 'runAutotradeLoopOnce').mockResolvedValue({
+      ranEntries: false,
+      skippedReason: 'Market is closed',
+      exitsChecked: 0,
+      exitsClosed: 0,
+      candidatesScreened: 0,
+      candidatesPassedVolatility: 0,
+      signalsGenerated: 0,
+      entriesOpened: 0,
+    } satisfies LoopTickSummary);
+    renderPage();
+    await screen.findByText('VNQ');
+    fireEvent.click(screen.getByRole('button', { name: 'Run one cycle now' }));
+    expect(await screen.findByText(/New entries skipped — Market is closed/)).toBeInTheDocument();
+  });
+
+  it('surfaces an error when running a loop cycle fails', async () => {
+    vi.spyOn(client, 'runAutotradeLoopOnce').mockRejectedValue(new Error('provider unavailable'));
+    renderPage();
+    await screen.findByText('VNQ');
+    fireEvent.click(screen.getByRole('button', { name: 'Run one cycle now' }));
+    expect(await screen.findByText('provider unavailable')).toBeInTheDocument();
+  });
+
+  it('shows an accurate warning about the live paper loop when enabled, not the old "not built yet" copy', async () => {
+    vi.spyOn(client, 'autotradeConfig').mockResolvedValue({
+      enabled: true,
+      riskProfile: 'MODERATE',
+      accountEquityUsd: 100_000,
+    });
+    renderPage();
+    expect(await screen.findByText(/actively scanning and placing/)).toBeInTheDocument();
+    expect(screen.queryByText(/hasn.t been built/)).toBeNull();
   });
 });

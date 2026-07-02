@@ -78,6 +78,8 @@ import type {
   BacktestRunResponse,
   WalkForwardRequest,
   WalkForwardResponse,
+  LoopTickSummary,
+  PaperPosition,
 } from './types';
 
 export class ApiError extends Error {
@@ -423,4 +425,9 @@ export const client = {
   runAutotradeBacktest: (body: BacktestRequest) => api<BacktestRunResponse>('/autotrade/backtest', post(body)),
   runAutotradeWalkForward: (body: WalkForwardRequest) =>
     api<WalkForwardResponse>('/autotrade/backtest/walk-forward', post(body)),
+  runAutotradeLoopOnce: () => api<LoopTickSummary>('/autotrade/loop/run-once', post({})),
+  autotradePaperPositions: (params: { status?: 'open' | 'closed'; symbol?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams(params as Record<string, string>).toString();
+    return api<{ positions: PaperPosition[] }>(`/autotrade/paper-positions${qs ? `?${qs}` : ''}`);
+  },
 };

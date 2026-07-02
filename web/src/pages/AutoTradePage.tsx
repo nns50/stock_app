@@ -23,14 +23,17 @@ import type {
   BacktestEquityPoint,
   BacktestRunResponse,
   BacktestStats,
+  LoopTickSummary,
+  PaperPosition,
   SimulatedTrade,
   WalkForwardResponse,
 } from '../api/types';
 
-// Foundations + Research & Screen + Decision + Risk Check (Phases 1-4 of
-// docs/AUTOTRADING_SPEC.md). Read-only end to end: this page configures and
-// observes the auto-trading initiative, it never places an order — Execution
-// is the only stage left before the live-trading gate.
+// Phases 1-6 of docs/AUTOTRADING_SPEC.md: config, real-estate exclusions,
+// Screen/Decision/Risk-Check preview, backtesting, and the paper execution
+// loop. Every order this page can cause to be placed is a local paper
+// simulation — a monitoring dashboard (Phase 7) and the live-trading gate
+// (Phase 8, a manual flag flip) are still upcoming.
 
 // A plain value renders directly; an array/object would otherwise coerce to
 // "[object Object]" in a template literal (e.g. a risk-check event's `checks`
@@ -218,6 +221,90 @@ function BacktestTradesTable({ trades }: { trades: SimulatedTrade[] }) {
   );
 }
 
+function paperPnl(p: PaperPosition): number | null {
+  if (p.exitPrice === null) return null;
+  const sign = p.side === 'buy' ? 1 : -1;
+  return (p.exitPrice - p.entryPrice) * p.quantity * sign;
+}
+
+function PaperPositionsTable({ positions }: { positions: PaperPosition[] }) {
+  if (positions.length === 0) {
+    return (
+      <EmptyState
+        title="No paper trades yet"
+        hint='Enable auto-trading above, or click "Run one cycle now" below, to see paper fills here.'
+      />
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead className="border-b border-ink-600/60">
+          <tr>
+            <th className="th">Symbol</th>
+            <th className="th">Side</th>
+            <th className="th">Status</th>
+            <th className="th">Entry</th>
+            <th className="th text-right">Entry $</th>
+            <th className="th">Exit</th>
+            <th className="th text-right">Exit $</th>
+            <th className="th">Reason</th>
+            <th className="th text-right">Qty</th>
+            <th className="th text-right">P&amp;L</th>
+            <th className="th text-right">R</th>
+          </tr>
+        </thead>
+        <tbody>
+          {positions.map((p) => {
+            const pnl = paperPnl(p);
+            const rMultiple = pnl !== null && p.riskAmount > 0 ? pnl / p.riskAmount : null;
+            return (
+              <tr key={p.id} className="border-b border-ink-700/50">
+                <td className="td font-semibold" title={p.rationale}>
+                  {p.symbol}
+                </td>
+                <td className="td">
+                  <Badge color={p.side === 'buy' ? 'green' : 'red'}>{p.side}</Badge>
+                </td>
+                <td className="td">
+                  <Badge color={p.status === 'open' ? 'blue' : 'slate'}>{p.status}</Badge>
+                </td>
+                <td className="td text-slate-400">{ago(p.entryAt)}</td>
+                <td className="td text-right tabular-nums">{fmtUsd(p.entryPrice)}</td>
+                <td className="td text-slate-400">{p.exitAt ? ago(p.exitAt) : '—'}</td>
+                <td className="td text-right tabular-nums">{p.exitPrice === null ? '—' : fmtUsd(p.exitPrice)}</td>
+                <td className="td">
+                  {p.exitReason ? (
+                    <Badge color={p.exitReason === 'target' ? 'green' : p.exitReason === 'stop' ? 'red' : 'slate'}>
+                      {p.exitReason}
+                    </Badge>
+                  ) : (
+                    '—'
+                  )}
+                </td>
+                <td className="td text-right tabular-nums">{p.quantity}</td>
+                <td
+                  className={cx('td text-right tabular-nums', pnl === null ? '' : pnl >= 0 ? 'text-bull' : 'text-bear')}
+                >
+                  {pnl === null ? '—' : fmtSignedUsd(pnl)}
+                </td>
+                <td
+                  className={cx(
+                    'td text-right tabular-nums',
+                    rMultiple === null ? '' : rMultiple >= 0 ? 'text-bull' : 'text-bear',
+                  )}
+                >
+                  {rMultiple === null ? '—' : `${fmtNum(rMultiple)}R`}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function BacktestWindowResult({
   title,
   hint,
@@ -246,6 +333,7 @@ export default function AutoTradePage() {
   const config = useAsync(() => client.autotradeConfig(), []);
   const exclusions = useAsync(() => client.autotradeExclusions(), []);
   const events = useAsync(() => client.autotradeEvents({ limit: 50 }), []);
+  const paperPositions = useAsync(() => client.autotradePaperPositions({ limit: 100 }), []);
   const { toast } = useToast();
   const confirm = useConfirm();
 
@@ -396,13 +484,31 @@ export default function AutoTradePage() {
     }
   };
 
+  const [loopBusy, setLoopBusy] = useState(false);
+  const [loopSummary, setLoopSummary] = useState<LoopTickSummary>();
+  const [loopErr, setLoopErr] = useState<string>();
+  const runLoopOnce = async () => {
+    setLoopBusy(true);
+    setLoopErr(undefined);
+    try {
+      setLoopSummary(await client.runAutotradeLoopOnce());
+      paperPositions.reload();
+      events.reload();
+    } catch (e) {
+      setLoopErr((e as Error).message || 'Loop cycle failed');
+    } finally {
+      setLoopBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <PageHeader
         title="Auto-Trade"
-        subtitle="Foundations for the automated-trading initiative (docs/AUTOTRADING_SPEC.md). Screening,
-          real-estate exclusion, and signal generation are wired up; risk checks and execution are later phases.
-          Nothing here places an order."
+        subtitle="The automated-trading initiative (docs/AUTOTRADING_SPEC.md): screening, signal generation, risk
+          checks, backtesting, and a paper execution loop are all wired up. Paper trading (below) never places a
+          real order — it's a local simulation. A monitoring dashboard and the live-trading gate are still upcoming
+          phases."
       />
 
       <Card className="p-4">
@@ -459,8 +565,9 @@ export default function AutoTradePage() {
         )}
         {enabled && (
           <p className="text-[11px] text-amber-400 mt-3">
-            Auto-trading is enabled, but nothing acts on it yet — the execution loop (a later phase) hasn&apos;t been
-            built.
+            Auto-trading is enabled — the background loop below is now actively scanning and placing{' '}
+            <strong>paper</strong> trades on a schedule. It never touches a real broker (see &quot;Paper trading&quot;
+            below); going live is a separate, later phase requiring a manual flag flip.
           </p>
         )}
       </Card>
@@ -776,6 +883,65 @@ export default function AutoTradePage() {
       </Card>
 
       <Card className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-medium text-sm">Paper trading</h3>
+          <button className="btn-primary" onClick={runLoopOnce} disabled={loopBusy}>
+            {loopBusy ? 'Running…' : 'Run one cycle now'}
+          </button>
+        </div>
+        <p className="text-xs text-slate-500 mb-3">
+          When enabled above, the server runs this same Screen → Decision → Risk Check → Execution cycle on its own
+          every minute — this button just runs one cycle immediately, so you can watch it work without waiting. Every
+          fill here is a local simulation from a live quote; it never places a real order (see
+          docs/AUTOTRADING_SPEC.md). No entries in the first/last 15 minutes of the session, and a volatility filter
+          (per-ticker and broad-market) can skip a cycle&apos;s entries entirely.
+        </p>
+        {loopErr && <div className="text-bear text-sm mb-2">{loopErr}</div>}
+        {loopSummary && (
+          <p className="text-[11px] text-slate-500 mb-3">
+            {loopSummary.skippedReason ? (
+              <>New entries skipped — {loopSummary.skippedReason}. </>
+            ) : (
+              <>
+                Screened {loopSummary.candidatesScreened}, {loopSummary.candidatesPassedVolatility} passed the
+                volatility filter, {loopSummary.signalsGenerated} signal(s) generated, {loopSummary.entriesOpened}{' '}
+                opened.{' '}
+              </>
+            )}
+            Exits checked: {loopSummary.exitsChecked} ({loopSummary.exitsClosed} closed).
+          </p>
+        )}
+        {paperPositions.loading ? (
+          <Spinner />
+        ) : paperPositions.error ? (
+          <ErrorState error={paperPositions.error} onRetry={paperPositions.reload} />
+        ) : (
+          (() => {
+            const rows = paperPositions.data?.positions ?? [];
+            const open = rows.filter((p) => p.status === 'open');
+            const closed = rows.filter((p) => p.status === 'closed');
+            const totalPnl = closed.reduce((s, p) => s + (paperPnl(p) ?? 0), 0);
+            return (
+              <>
+                {rows.length > 0 && (
+                  <div className="grid grid-cols-3 gap-2 mb-3">
+                    <StatTile label="Open" value={open.length} />
+                    <StatTile label="Closed" value={closed.length} />
+                    <StatTile
+                      label="Realized P&L"
+                      value={fmtSignedUsd(totalPnl)}
+                      valueClass={totalPnl >= 0 ? 'text-bull' : 'text-bear'}
+                    />
+                  </div>
+                )}
+                <PaperPositionsTable positions={rows} />
+              </>
+            );
+          })()
+        )}
+      </Card>
+
+      <Card className="p-4">
         <h3 className="font-medium text-sm mb-3">Recent activity</h3>
         {events.loading ? (
           <Spinner />
@@ -817,8 +983,10 @@ export default function AutoTradePage() {
       </Card>
 
       <p className="text-[11px] text-slate-500">
-        Decision-support and tracking only — this scans, sizes, and journals but never places an order. See
-        docs/AUTOTRADING_SPEC.md for the full plan; the execution loop and live-trading gate are still upcoming phases.
+        Decision-support and tracking only — every order this page places, even when enabled, is a paper simulation that
+        never reaches a real broker. See docs/AUTOTRADING_SPEC.md for the full plan; a monitoring dashboard and the
+        live-trading gate (which requires a manual flag flip after reviewing backtest and paper-trading results) are
+        still upcoming phases.
       </p>
     </div>
   );

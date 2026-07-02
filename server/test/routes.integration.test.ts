@@ -536,3 +536,36 @@ describe('autotrade backtest routes (integration)', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('autotrade paper execution routes (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events;');
+  });
+
+  it('runs one loop cycle through the real Screen -> Decision -> Execution wiring and returns a summary', async () => {
+    // Nothing is open yet, so exits are deterministically zero regardless of
+    // whatever the real wall-clock session-window state happens to be right
+    // now (already covered, with full control, by autotradeLoop.test.ts).
+    const res = await post('/api/autotrade/loop/run-once', {});
+    expect(res.status).toBe(200);
+    const summary = (await res.json()) as {
+      exitsChecked: number;
+      exitsClosed: number;
+      ranEntries: boolean;
+      candidatesScreened: number;
+    };
+    expect(summary.exitsChecked).toBe(0);
+    expect(summary.exitsClosed).toBe(0);
+    expect(typeof summary.ranEntries).toBe('boolean');
+  });
+
+  it('lists paper positions (empty when none exist)', async () => {
+    const body = (await getJson('/api/autotrade/paper-positions')) as { positions: unknown[] };
+    expect(body.positions).toEqual([]);
+  });
+
+  it('rejects an invalid status filter', async () => {
+    const res = await fetch(`${base}/api/autotrade/paper-positions?status=bogus`);
+    expect(res.status).toBe(400);
+  });
+});
