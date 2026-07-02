@@ -72,32 +72,39 @@ this list as decisions change — don't let it drift from what's actually built.
   loop immediately. It does **not** force-close existing positions — their existing
   hard stop-losses remain in place as the exit mechanism. This is a deliberate,
   narrower blast radius than "flatten everything."
-- **Backtest data source**: [FirstRate Data](https://firstratedata.com)'s free tier —
-  a one-time bulk CSV download of ~1 year of 1-minute bars for popular/liquid symbols,
-  not a rate-limited API — as the historical corpus for the backtest + walk-forward
-  harness. Alternatives ruled out: Alpha Vantage's free tier has real depth (~2 years)
-  but only 25 requests/day, which can't realistically pull multi-ticker 1-minute
-  history; Polygon.io's free tier is oriented around daily bars; Yahoo (already
-  integrated) is hard-capped at 7 days of 1-min / 59 days of 5-15min history, fine for
-  live scanning but not a walk-forward split. Backtest data and live-scan data are
-  intentionally decoupled — Yahoo's shallow depth is a non-issue for live screening,
-  which only needs a recent window, not years of history. Caveat: FirstRate's exact
-  current ticker coverage and file format under the free tier should be manually
-  verified (in a browser) before the backtesting phase starts — an automated fetch of
-  their download page was blocked by bot protection during research.
+- **Backtest data source: Polygon.io Stocks "Starter" plan (paid, ~$29/mo)**. Polygon
+  rebranded to [Massive](https://massive.com) on 2025-10-30 — same accounts/APIs, old
+  `polygon.io` endpoints still work, no forced migration. Starter's headline
+  restriction is 15-minute-delayed data, which is irrelevant for backtesting (a
+  walk-forward harness only ever queries *past* bars — "delayed" doesn't apply to
+  history that's already months or years old). Reasonably confirmed: unlimited
+  requests/minute on paid plans (no free-tier-style throttling), multi-year historical
+  aggregates. Not independently confirmed — verify at signup before relying on it:
+  whether the ~10-year depth quoted for Starter applies to **minute**-granularity
+  aggregates specifically, versus daily bars (direct fetches of Polygon/Massive's own
+  pricing docs were blocked by bot protection during research, so this is based on
+  secondary sources, not the primary doc). Action item: this requires the user to
+  create a Massive/Polygon account and pay for the plan directly — not something that
+  can be done from here; the resulting API key goes server-side only in
+  `server/.env`, same as every other provider key.
 
-  **Tiingo — considered and ruled out for this role.** Its IEX intraday endpoint
-  returns only the most recent ~2000 bars at whatever frequency is requested — at
-  1-minute bars that's roughly 5 trading days, at 5-minute bars roughly 26 days. That's
-  *shallower* than Yahoo's already-free, already-integrated 7-day (1-min) / 59-day
-  (5-15min) caps, so it would be a downgrade, not an upgrade, for the walk-forward
-  corpus. Tiingo's daily (EOD) history is genuinely deep (30+ years) but too coarse for
-  an intraday breakout strategy. Its fundamentals endpoint does return `sector`/
-  `industry` fields (relevant to the RE-exclusion classification need), but that
-  endpoint is a paid add-on — free access is limited to the Dow 30 with 3 years of
-  history, too narrow to cover the small/mid-cap gappers the exclusion check most needs
-  to catch. Worth revisiting if a small paid add-on is ever on the table, but not a fit
-  for the free-tier backtest corpus.
+  Superseded candidates, kept for the record: **FirstRate Data**'s free tier (~1yr of
+  1-min bars via bulk CSV download, no account needed) was the original free-tier
+  recommendation before the user opted to pay for Polygon/Massive instead — still a
+  reasonable fallback if the Polygon minute-bar depth doesn't pan out. **Tiingo** was
+  considered and ruled out regardless of price sensitivity: its IEX intraday endpoint
+  caps at the most recent ~2000 bars at any frequency (~5 trading days at 1-min),
+  *shallower* than Yahoo's already-free 7-day cap already in this repo, so it's a
+  downgrade even as a paid option wouldn't fix. **Alpha Vantage** (25 req/day free) and
+  **Polygon's own free tier** (daily-bar-oriented) were ruled out for the reasons
+  already noted when they were free-tier candidates.
+
+  This is decoupled from the live Research & Screen stage's data source (still
+  whatever `MARKET_DATA_PROVIDER` is configured, e.g. Yahoo) — Polygon/Massive is
+  scoped to Phase 5's historical corpus only, not a replacement for the app's live
+  market-data provider. If live scanning ever needs Polygon/Massive too, note Starter's
+  15-min delay would matter there (unlike for backtesting) and a higher tier would be
+  needed — that's a separate decision, not part of this one.
 
 ## Phased roadmap
 
