@@ -1022,3 +1022,46 @@ export interface PlaceResult {
   broker?: { ok: boolean; orderId?: string; error?: string };
   error?: string;
 }
+
+// --- auto-trading (docs/AUTOTRADING_SPEC.md) ---
+
+export type AutotradeRiskProfile = 'MODERATE' | 'AGGRESSIVE';
+
+export interface AutotradeConfig {
+  enabled: boolean;
+  riskProfile: AutotradeRiskProfile;
+}
+
+export type AutotradeExclusionSource = 'default' | 'user';
+
+export interface AutotradeExclusion {
+  symbol: string;
+  reason: string | null;
+  source: AutotradeExclusionSource;
+  createdAt: number;
+}
+
+export interface AutotradeCandidate extends SymbolScore {
+  discoverySource: 'universe' | 'movers';
+}
+
+export interface AutotradeScreenResult {
+  generatedAt: number;
+  candidates: AutotradeCandidate[];
+  excluded: { symbol: string; reason: string }[];
+  skipped: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+  discovery: { universeCount: number; moversCount: number; scannedCount: number };
+}
+
+export type AutotradeStage = 'screen' | 'decision' | 'risk_check' | 'execution' | 'config';
+
+export interface AutotradeEvent {
+  id: number;
+  symbol: string | null;
+  stage: AutotradeStage;
+  action: string;
+  detail: string | null;
+  riskProfile: string | null;
+  createdAt: number;
+}

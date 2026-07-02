@@ -120,29 +120,30 @@ starts.
    pass/block, order placed, fill) — see `db/autotradeConfig.ts`,
    `db/autotradeExclusions.ts`, `db/autotradeEvents.ts`, routed at `/api/autotrade/*`
    (`routes/autotrade.ts`). Switching to AGGRESSIVE requires `confirmAggressive: true`
-   in the request — the route's stand-in for the spec's "explicit manual confirmation
-   in the UI" until a real confirmation dialog exists. No screening or trading logic
-   yet — just the scaffolding everything else writes to. Deliberately backend-only:
-   no web UI yet, since nothing (no screener, no loop) consumes these settings until
-   Phase 2+ — a settings panel lands once there's something real for it to control,
-   likely alongside Phase 2 or the Phase 7 dashboard rather than as inert controls now.
-2. **Screening & real-estate exclusion — shipped (backend).** Discovers candidates
-   from `universe` plus (when Webull is configured) its pre-market "unusual volume"
-   and gainers movers — the only source in this app that finds gappers outside the
+   in the request, enforced by a `useConfirm()` modal in the UI (below) — not just a
+   config edit. No screening or trading logic yet — just the scaffolding everything
+   else writes to.
+2. **Screening & real-estate exclusion — shipped.** Discovers candidates from
+   `universe` plus (when Webull is configured) its pre-market "unusual volume" and
+   gainers movers — the only source in this app that finds gappers outside the
    ~124-symbol seeded universe; falls back to universe-only otherwise. Each candidate
    is checked against the exclusion list, then (`services/autotrading/realEstateClassifier.ts`)
    `universe.sector`, then — for the common case of a symbol outside that seed — a
    live Yahoo fundamentals fetch (independent of `MARKET_DATA_PROVIDER`, since Tradier
    returns no sector/industry at all), matching sector/industry against
-   `/real estate|reit/i`. A fetch failure classifies as **unknown**, not clear — that
-   candidate is skipped for this cycle and re-tried next cycle, never silently waved
-   through. Only symbols that clear both checks are scored, reusing the existing
-   `indicators/screener.ts` engine unmodified (`services/autotrading/screen.ts`) —
-   this stage adds discovery + the exclusion gate on top of it, not a parallel scoring
-   engine. Real-estate exclusions and confirmed candidates are journaled
-   (`autotrade_events`, stage `screen`); routine non-matches aren't, to avoid flooding
-   the journal every cycle. Routed at `POST /api/autotrade/screen`. Read-only — no
-   orders. UI still pending: bundling with a small Auto-Trade settings page next.
+   `/real estate|reit/i`. Verified live against the seeded universe: AMT, PLD, and EQIX
+   (REITs not on the static ETF list) are correctly caught by the sector check alone. A
+   fetch failure classifies as **unknown**, not clear — that candidate is skipped for
+   this cycle and re-tried next cycle, never silently waved through. Only symbols that
+   clear both checks are scored, reusing the existing `indicators/screener.ts` engine
+   unmodified (`services/autotrading/screen.ts`) — this stage adds discovery + the
+   exclusion gate on top of it, not a parallel scoring engine. Real-estate exclusions
+   and confirmed candidates are journaled (`autotrade_events`, stage `screen`); routine
+   non-matches aren't, to avoid flooding the journal every cycle. Routed at
+   `POST /api/autotrade/screen`. Read-only — no orders. UI: `web/src/pages/AutoTradePage.tsx`
+   (`/auto-trade`) covers config, the exclusion list, a "Run screen" button with
+   candidates/excluded/skipped/errors, and the recent-activity journal — the AGGRESSIVE
+   switch is gated by a `useConfirm()` modal, not just a raw `<select>`.
 3. **Strategy / Decision module** — generate buy/sell signals (entry, stop, target)
    from the screened candidates. Still fully read-only/logged-only — no risk engine,
    no orders yet. This isolates "does the signal logic make sense" from "is it sized

@@ -65,6 +65,12 @@ import type {
   CancelResult,
   ReplacePatch,
   ReplaceResult,
+  AutotradeConfig,
+  AutotradeRiskProfile,
+  AutotradeExclusion,
+  AutotradeScreenResult,
+  AutotradeEvent,
+  AutotradeStage,
 } from './types';
 
 export class ApiError extends Error {
@@ -383,4 +389,20 @@ export const client = {
     api<LivePreviewResult>('/trade/preview', { method: 'POST', body: JSON.stringify({ intent, accountId }) }),
   tradePlace: (intent: OrderIntentInput, accountId: string, confirmation: string) =>
     api<PlaceResult>('/trade/place', { method: 'POST', body: JSON.stringify({ intent, accountId, confirmation }) }),
+
+  // --- auto-trading (docs/AUTOTRADING_SPEC.md) ---
+  autotradeConfig: () => api<AutotradeConfig>('/autotrade/config'),
+  setAutotradeConfig: (body: { enabled?: boolean; riskProfile?: AutotradeRiskProfile; confirmAggressive?: boolean }) =>
+    api<AutotradeConfig>('/autotrade/config', { method: 'PUT', body: JSON.stringify(body) }),
+  autotradeExclusions: () => api<{ exclusions: AutotradeExclusion[] }>('/autotrade/exclusions'),
+  addAutotradeExclusion: (body: { symbol: string; reason?: string }) =>
+    api<AutotradeExclusion>('/autotrade/exclusions', post(body)),
+  removeAutotradeExclusion: (symbol: string) =>
+    api<{ removed: string }>(`/autotrade/exclusions/${encodeURIComponent(symbol)}`, { method: 'DELETE' }),
+  runAutotradeScreen: (body: { symbols?: string[] } = {}) =>
+    api<AutotradeScreenResult>('/autotrade/screen', post(body)),
+  autotradeEvents: (params: { stage?: AutotradeStage; symbol?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams(params as Record<string, string>).toString();
+    return api<{ events: AutotradeEvent[] }>(`/autotrade/events${qs ? `?${qs}` : ''}`);
+  },
 };

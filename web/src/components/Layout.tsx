@@ -4,6 +4,7 @@ import {
   Bell,
   BellRing,
   BookOpen,
+  Bot,
   Briefcase,
   CandlestickChart,
   Command,
@@ -45,6 +46,7 @@ const TABS = [
   { to: '/positions', label: 'Positions', Icon: Briefcase },
   { to: '/journal', label: 'Journal', Icon: BookOpen },
   { to: '/alerts', label: 'Alerts', Icon: BellRing },
+  { to: '/auto-trade', label: 'Auto', Icon: Bot },
 ];
 
 function ProviderChip({ onClick }: { onClick: () => void }) {

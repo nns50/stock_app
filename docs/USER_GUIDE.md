@@ -24,9 +24,10 @@ places trades.
 8. [Positions & P&L](#positions--pl)
 9. [Journal & analytics](#journal--analytics)
 10. [Alerts](#alerts)
-11. [Settings](#settings)
-12. [A recommended daily workflow](#a-recommended-daily-workflow)
-13. [Data, privacy & providers](#data-privacy--providers)
+11. [Auto-Trade](#auto-trade)
+12. [Settings](#settings)
+13. [A recommended daily workflow](#a-recommended-daily-workflow)
+14. [Data, privacy & providers](#data-privacy--providers)
 
 ---
 
@@ -589,6 +590,46 @@ that fires to your webhooks**.
   notification** posts to each and reports per-channel success/failure.
 - The **server process must stay running** for this to work (leave `npm run dev`/the
   server up, or run it as a service / in Docker). It's independent of any open tab.
+
+---
+
+## Auto-Trade
+
+**Draft / in progress.** The **Auto** tab is the working area for the automated-trading
+initiative described in **[docs/AUTOTRADING_SPEC.md](../docs/AUTOTRADING_SPEC.md)** — a
+fully autonomous screen → decide → risk-check → execute → journal loop, distinct from
+the human-confirmed live trading on the **Trade** page (which always requires you to
+type a confirmation phrase before an order goes out). Auto-Trade's execution loop, risk
+engine, and live-trading gate don't exist yet — what's live today is the foundation and
+the first stage:
+
+- **Configuration** — a master **enabled** switch for the eventual execution loop
+  (currently a no-op — nothing acts on it until the loop is built), and the active
+  **risk profile** (`Moderate`, the conservative default, or `Aggressive`). Switching to
+  Aggressive always pops a confirmation dialog explaining what it raises (per-trade
+  risk, the daily drawdown halt, concurrent positions, max aggregate open risk,
+  correlated-ticker exposure, and the daily trade cap) — never a silent dropdown change.
+- **Real-estate exclusion list** — real estate is a hard, permanent exclusion for this
+  strategy. A starter list of well-known real-estate ETFs ships seeded in; add or remove
+  symbols freely. This list is a backstop, not the only check — the screen below also
+  classifies every candidate by sector/industry, so REITs and real-estate operating
+  companies that aren't on the list (e.g. cell-tower or data-center REITs) still get
+  caught.
+- **Research & Screen** — **Run screen** scans your universe (plus Webull's pre-market
+  "unusual volume" and gainers movers, when Webull is configured) for volatility/
+  volume-breakout candidates, reusing the same scoring engine as the **Screener** page.
+  Real-estate exclusion runs *before* scoring, so an excluded symbol never shows up as a
+  candidate. Results split into **Candidates** (passed screening), **Excluded** (real
+  estate), **Skipped** (sector/industry couldn't be verified this run — reconsidered
+  next run, never silently allowed through), and **Errors**. This is read-only: running
+  a screen never places an order.
+- **Recent activity** — a journal of what the screen did and why (candidate found,
+  excluded, a setting changed), the foundation the later risk-check and execution stages
+  will log into as well.
+
+This page will keep growing as later phases (signal generation, the risk engine, a
+paper-trading execution loop, a monitoring dashboard, and finally a live-trading gate)
+land — check the spec doc for the full roadmap and current status.
 
 ---
 
