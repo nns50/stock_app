@@ -247,8 +247,8 @@ this list as decisions change — don't let it drift from what's actually built.
   undefined-risk strategies, both require an explicit, separate opt-in rather than shipping
   bundled by default. Rolling could be added later the same way, if wanted. **Not yet
   confirmed with the user.**
-- **Options backtest data source: Massive/Polygon options pricing now confirmed —
-  tier choice pending.** The earlier attempt to verify this from Polygon's/Massive's own
+- **Options backtest data source: Options Starter, $29/mo — confirmed and final.** The
+  earlier attempt to verify this from Polygon's/Massive's own
   pricing pages was blocked by HTTP 403s on both `polygon.io/options` and
   `massive.com/pricing`; the user then checked the Massive options pricing page directly
   (screenshot reviewed 2026-07-02), which resolves it. Options data is a separate
@@ -277,24 +277,32 @@ this list as decisions change — don't let it drift from what's actually built.
   live-vs-backtest data split every other decision in this doc already makes) — it only
   limits how faithfully the *backtest* can simulate that one specific filter.
 
-  **Recommendation, not yet confirmed with the user: Options Starter ($29/mo).** Mirrors
-  the stocks-plan decision's own reasoning almost exactly — unlimited calls, Flat Files
-  for bulk ingestion, doesn't need the real-time data a backtest can't use anyway — and
-  treats the spread-backtest gap as an accepted, explicitly-documented approximation
-  (OI/volume/IV-rank still backtest faithfully; the spread filter either isn't simulated
-  during backtesting at all, or is approximated from Greeks rather than an observed
-  quote), in the same spirit as Phase 5's own documented daily-bar approximations
-  (stop-wins-ties, next-day-open fills). Options Developer ($79/mo) doesn't close this
-  gap either — its only additions over Starter (4yr history, historical trade prints) do
-  nothing for spread backtesting, so it's only worth it for reasons unrelated to this
-  decision. Paying ~6.9x more for Advanced buys real historical quotes plus 5+ years of
-  history and real-time data — the latter two don't matter for backtesting, so the
-  entire incremental cost is really only about one filter's backtest fidelity. **Final
-  tier choice pending the user's answer** before writing any options-backtest ingestion
-  code. Per the user's own explicit choice, this still blocks not just backtesting but
-  all options implementation work below (phases 9-13) — options should get the same
-  backtest-before-built rigor equities got, not a weaker validation path just because
-  more of the underlying math already exists in this codebase.
+  **Confirmed with the user: Options Starter ($29/mo).** Mirrors the stocks-plan
+  decision's own reasoning almost exactly — unlimited calls, Flat Files for bulk
+  ingestion, doesn't need the real-time data a backtest can't use anyway — and accepts
+  the spread-backtest gap as an explicitly-documented approximation (OI/volume/IV-rank
+  still backtest faithfully; the spread filter either isn't simulated during backtesting
+  at all, or is approximated from Greeks rather than an observed quote), in the same
+  spirit as Phase 5's own documented daily-bar approximations (stop-wins-ties,
+  next-day-open fills). Options Developer and Advanced were both considered and passed
+  over: Developer ($79/mo) doesn't close the quotes gap either — its only additions over
+  Starter (4yr history, historical trade prints) do nothing for spread backtesting;
+  Advanced ($199/mo, ~6.9x Starter) does close it, but the rest of what it adds (5+
+  years of history, real-time data) doesn't matter for backtesting, so nearly the entire
+  incremental cost would have been for one filter's backtest fidelity alone.
+
+  **Action item — the user's, not from here:** actually subscribing to the Options
+  Starter add-on (billing, same as the stocks plan) still needs to happen before any
+  options history can be ingested — presumably against the same Massive/Polygon
+  account and `POLYGON_API_KEY` already configured for stocks, since options is an
+  add-on tier on the same platform rather than a separate vendor, but that should be
+  confirmed once actually subscribed (options endpoints may need their own key/scope).
+  **This resolves the data-source question, but does not by itself green-light writing
+  phases 9-13** — per the user's own explicit sequencing choice earlier (data before
+  implementation), the next step is confirming the subscription is active and history is
+  actually fetchable, then getting an explicit go-ahead on the phase 9-13 roadmap the
+  same way phases 1-8 got one (task-tracked separately), before any options code is
+  written.
 
 ## Phased roadmap
 
