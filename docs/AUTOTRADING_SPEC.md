@@ -240,6 +240,26 @@ starts.
    exclusion runs once upfront, before any history is fetched, exactly as it does at
    live Screen time.
 
+   **Hardened after an independent adversarial review of the whole harness (routes,
+   simulation core, and orchestration), before treating any of it as trustworthy:** the
+   correlated-exposure check now threads the *running* same-day-batch position list
+   through, not a stale pre-batch snapshot — the bug let several mutually-correlated
+   candidates all clear the cap on the same day, since none of them saw each other as
+   already-approved (mirrors `riskCheck.ts`'s own `runningPositions` pattern, which was
+   already correct). Candidate ties on score now break deterministically by symbol name
+   instead of falling back to `historyBySymbol`'s Map insertion order, which depended on
+   real concurrent-fetch completion timing — a rerun of an identical config against
+   identical cached data could otherwise approve a different candidate. `tradesToday`
+   is wired to positions actually filled that simulated day (was hardcoded to `0`,
+   masked today only because both shipped profiles' `maxConcurrentPositions` binds
+   before `maxTradesPerDay` would). At the route layer, `from`/`to`/`splitDate` are now
+   validated as real calendar dates (not just `YYYY-MM-DD`-shaped — a value like
+   `2024-02-30` used to either 500 or silently roll to March 1st), `symbols` is capped
+   at 50 per run, and one symbol's historical-bar fetch failing (bad ticker, rate limit)
+   no longer 500s the whole request — it's now reported per-symbol in a new
+   `errors: {symbol, message}[]` on `BacktestReport`/`WalkForwardReport`, surfaced in the
+   UI, while every other symbol's result still comes back normally.
+
    `runWalkForwardBacktest()` is the validation gate itself: it fetches each symbol's
    history **once**, then replays it independently over an in-sample `[from, splitDate]`
    window and an out-of-sample `(splitDate, to]` window — both starting from the same

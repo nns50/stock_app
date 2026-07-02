@@ -168,9 +168,29 @@ autotradeRouter.post(
 
 // ---- Backtesting & walk-forward (the validation gate) -----------------------
 
-const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
+/** True only for a real calendar date — rejects both structurally-invalid
+ *  values (month 00/13+, day 00/32+) AND values JS's Date would otherwise
+ *  silently roll over to a different date (e.g. "2024-02-30" -> Mar 1,
+ *  "2023-02-29" -> Mar 1 on a non-leap year) by round-tripping through
+ *  Date.UTC and comparing every field back against the input. Without this,
+ *  a structurally-invalid date reaches backtest.ts's addDays()/toISO(), whose
+ *  `new Date(NaN).toISOString()` throws an uncaught RangeError — a 500, not a
+ *  clean 400. */
+function isValidCalendarDate(s: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return false;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const dt = new Date(Date.UTC(year, month - 1, day));
+  return dt.getUTCFullYear() === year && dt.getUTCMonth() === month - 1 && dt.getUTCDate() === day;
+}
+const dateStr = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD')
+  .refine(isValidCalendarDate, { message: 'Not a valid calendar date' });
 const backtestBodyBase = z.object({
-  symbols: z.array(z.string().min(1)).min(1),
+  symbols: z.array(z.string().min(1)).min(1).max(50, 'At most 50 symbols per backtest run'),
   from: dateStr,
   to: dateStr,
   riskProfile: z.enum(['MODERATE', 'AGGRESSIVE']),
@@ -224,6 +244,7 @@ autotradeRouter.post(
       inSample: { report: wf.inSample, stats: computeBacktestStats(wf.inSample) },
       outOfSample: { report: wf.outOfSample, stats: computeBacktestStats(wf.outOfSample) },
       excludedSymbols: wf.excludedSymbols,
+      errors: wf.errors,
     });
   }),
 );

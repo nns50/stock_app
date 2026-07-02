@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { simulateBacktest, BacktestConfig } from '../src/services/autotrading/backtest';
 import { Candle } from '../src/providers/types';
+import { RISK_PROFILES } from '../src/services/autotrading/riskProfiles';
 
 // Fully relaxed filters so a signal fires on the very first eligible day
 // (once ATR has its 14-day warmup) regardless of the exact price action —
@@ -198,5 +199,115 @@ describe('simulateBacktest', () => {
     const report = simulateBacktest(history, baseConfig({ from: signalDay, to: signalDay }));
     expect(report.equityCurve).toHaveLength(1);
     expect(report.equityCurve[0].date).toBe(signalDay);
+  });
+
+  it('breaks exact score ties deterministically by symbol name, not Map/fetch insertion order', () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const history = [...warmupThrough(signalDay), bar(entryDay)];
+    // Inserted in reverse-alphabetical order — if the candidate sort ever
+    // regresses to relying on Map iteration order (which mirrors real
+    // concurrent-fetch completion timing in loadBacktestHistory), this would
+    // flip which two of the three tied candidates get approved.
+    const historyBySymbol = new Map([
+      ['ZZZZ', history],
+      ['MMM', history],
+      ['AAA', history],
+    ]);
+    const report = simulateBacktest(
+      historyBySymbol,
+      baseConfig({ symbols: ['ZZZZ', 'MMM', 'AAA'], from: signalDay, to: entryDay }),
+    );
+    // MODERATE caps at 2 concurrent positions; all three tie on score (identical
+    // price data) and are mutually uncorrelated (a flat-close series has zero
+    // variance, so pearsonCorrelation is null — never counted as correlated) —
+    // so exactly the two alphabetically-first symbols should be approved.
+    expect(report.trades.map((t) => t.symbol).sort()).toEqual(['AAA', 'MMM']);
+  });
+
+  it('threads same-day approvals into the correlation check, not a stale pre-batch snapshot', () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    // A zigzag close (100/102) so daily returns have real variance —
+    // pearsonCorrelation is undefined (null) against the flat-close
+    // warmupThrough() fixture used elsewhere, since a constant close has zero
+    // variance.
+    const days: string[] = [];
+    for (let i = 60; i >= -1; i--) days.push(d(signalDay, -i));
+    const series: Candle[] = days.map((day, idx) => {
+      const close = idx % 2 === 0 ? 100 : 102;
+      return {
+        time: Date.parse(`${day}T00:00:00Z`),
+        open: close,
+        high: close + 1,
+        low: close - 1,
+        close,
+        volume: 500_000,
+      };
+    });
+    const historyBySymbol = new Map([
+      ['CORRA', series],
+      ['CORRB', series], // identical series -> pearsonCorrelation = 1.0
+    ]);
+    const report = simulateBacktest(
+      historyBySymbol,
+      baseConfig({ symbols: ['CORRA', 'CORRB'], from: signalDay, to: entryDay }),
+    );
+    // CORRA (alphabetically first among the tied scores) is approved first;
+    // CORRB is perfectly correlated (r=1.0), and CORRA's OWN just-approved
+    // notional alone (position sizing at 1% risk on a ~$100 stock produces a
+    // notional far larger than MODERATE's 6%-of-equity correlated cap) should
+    // block CORRB — but only if the running (not stale pre-batch) position
+    // list is what the correlation check actually sees.
+    expect(report.trades).toHaveLength(1);
+    expect(report.trades[0].symbol).toBe('CORRA');
+  });
+
+  it('blocks a same-day candidate via max_trades_per_day once enough positions have filled today', () => {
+    const original = { ...RISK_PROFILES.MODERATE };
+    // Generous on every other cap so max_trades_per_day is unambiguously the
+    // one doing the blocking below.
+    Object.assign(RISK_PROFILES.MODERATE, {
+      maxConcurrentPositions: 100,
+      maxAggregateOpenRiskPct: 100,
+      maxCorrelatedExposurePct: 100,
+      maxDailyDrawdownPct: 100,
+      maxTradesPerDay: 1,
+    });
+    try {
+      const day0 = '2024-03-01';
+      const day1 = d(day0, 1);
+      const day2 = d(day0, 2);
+      // TDAYA: standard 60-day warmup, signals on day0, fills on day1 ->
+      // one position has already filled "today" by the time day1's step 3 runs.
+      // Extends through day2 so a day1 approval (if wrongly allowed) has a day
+      // to actually fill and show up in report.trades — a signal approved on
+      // the LAST simulated day never fills and would be silently invisible
+      // either way, which would make this test pass for the wrong reason.
+      const tdayA = [...warmupThrough(day0), bar(day1), bar(day2)];
+      // TDAYD: exactly 14 bars through day0 — atrSeries needs >= period+1 (15)
+      // bars to produce a non-null ATR, so TDAYD's ATR is null (no signal
+      // possible) on day0. The 15th bar (day1) makes ATR computable for the
+      // FIRST time exactly on day1 — the same day TDAYA's fill already used
+      // up the day's one-trade cap.
+      const tdayDWarmup: Candle[] = [];
+      for (let i = 13; i >= 0; i--) tdayDWarmup.push(bar(d(day0, -i)));
+      const tdayD = [...tdayDWarmup, bar(day1), bar(day2)];
+
+      const historyBySymbol = new Map([
+        ['TDAYA', tdayA],
+        ['TDAYD', tdayD],
+      ]);
+      const report = simulateBacktest(
+        historyBySymbol,
+        baseConfig({ symbols: ['TDAYA', 'TDAYD'], from: day0, to: day2 }),
+      );
+      // Only TDAYA's trade should exist — TDAYD's first-ever eligible signal
+      // (day1) is blocked by max_trades_per_day, not approved as a second
+      // same-day trade (which would otherwise fill, and appear here, on day2).
+      expect(report.trades.map((t) => t.symbol)).toEqual(['TDAYA']);
+    } finally {
+      Object.assign(RISK_PROFILES.MODERATE, original);
+    }
   });
 });

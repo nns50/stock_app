@@ -112,6 +112,26 @@ describe('runBacktest', () => {
     expect(report.excludedSymbols).toEqual([]);
   });
 
+  it("isolates one symbol's fetch failure — the rest of the batch still runs, error reported separately", async () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const targetDay = d(signalDay, 2);
+    const goodBars = [
+      ...warmupThrough(signalDay),
+      bar(entryDay),
+      bar(targetDay, { open: 101, high: 107, low: 100, close: 106 }),
+    ];
+    mockGetBars.mockImplementation(async (symbol: string) => {
+      if (symbol === 'BAD1') throw new Error('Polygon 429: rate limited');
+      return goodBars;
+    });
+    const report = await runBacktest(cfg({ symbols: ['BAD1', 'OK1'], from: signalDay, to: targetDay }));
+    // OK1's result is unaffected by BAD1's failure — no 500, no dropped batch.
+    expect(report.trades).toHaveLength(1);
+    expect(report.trades[0].symbol).toBe('OK1');
+    expect(report.errors).toEqual([{ symbol: 'BAD1', message: 'Polygon 429: rate limited' }]);
+  });
+
   it('feeds fetched bars into the simulation end to end and returns a real trade', async () => {
     const signalDay = '2024-03-01';
     const entryDay = d(signalDay, 1);

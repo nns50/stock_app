@@ -77,6 +77,10 @@ export interface BacktestReport {
   startingEquity: number;
   finalEquity: number;
   excludedSymbols: { symbol: string; reason: string }[];
+  /** Symbols whose historical-bar fetch failed (bad ticker, provider error,
+   *  rate limit) — reported so one bad symbol doesn't fail the whole request;
+   *  every other symbol's result is still simulated normally. */
+  errors: { symbol: string; message: string }[];
 }
 
 interface OpenPosition {
@@ -122,14 +126,18 @@ function indexAsOf(candles: Candle[], asOfMs: number): number {
 }
 
 /** Correlation, computed entirely from already-loaded history (no I/O) — the
- *  backtest analog of riskCheck.ts's provider-fetching correlatedNotional. */
+ *  backtest analog of riskCheck.ts's provider-fetching correlatedNotional.
+ *  Takes the same lightweight `{symbol, notional}[]` shape riskCheck.ts's
+ *  runningPositions uses, not the full OpenPosition[], so callers can pass a
+ *  running (open + already-approved-this-batch) list, not just currently-open
+ *  positions. */
 function backtestCorrelatedNotional(
   candidateSymbol: string,
   asOfMs: number,
-  openPositions: OpenPosition[],
+  positions: { symbol: string; notional: number }[],
   historyBySymbol: Map<string, Candle[]>,
 ): number {
-  if (openPositions.length === 0) return 0;
+  if (positions.length === 0) return 0;
   const closesUpTo = (symbol: string): number[] | null => {
     const candles = historyBySymbol.get(symbol);
     if (!candles) return null;
@@ -144,7 +152,7 @@ function backtestCorrelatedNotional(
   if (!candidateReturns) return 0;
 
   let amount = 0;
-  for (const pos of openPositions) {
+  for (const pos of positions) {
     const posCloses = closesUpTo(pos.symbol);
     const r = posCloses ? pearsonCorrelation(candidateReturns, dailyReturns(posCloses)) : null;
     if (r !== null && Math.abs(r) >= CORRELATION_THRESHOLD) amount += pos.notional;
@@ -187,6 +195,7 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
     let dailyPnl = 0;
 
     // 1) Fill yesterday's approved signals at TODAY's open, if this symbol has a bar today.
+    let filledToday = 0;
     const stillPending: PendingEntry[] = [];
     for (const p of pendingEntries) {
       const candles = historyBySymbol.get(p.symbol);
@@ -204,6 +213,7 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
           riskAmount: p.riskAmount,
           notional: p.notional,
         });
+        filledToday += 1;
       } else if (idx < 0 || candles![idx].time < dayMs) {
         stillPending.push(p); // no bar yet today — keep waiting
       }
@@ -268,7 +278,11 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
       const signal = generateSignal({ ...score, discoverySource: 'universe' }, decisionCfg);
       if (signal) candidates.push({ score, signal });
     }
-    candidates.sort((a, b) => b.score.total - a.score.total);
+    // Deterministic tie-break on exact score ties: fall back to symbol name, not
+    // Map/candle-array insertion order (which depends on real fetch-completion
+    // timing in loadBacktestHistory's mapPool — reruns of an identical config
+    // against identical cached data must produce identical results).
+    candidates.sort((a, b) => b.score.total - a.score.total || a.score.symbol.localeCompare(b.score.symbol));
 
     let runningRisk = openPositions.reduce((s, p) => s + p.riskAmount, 0);
     let runningCount = openPositions.length;
@@ -278,11 +292,24 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
     }));
 
     for (const { signal } of candidates) {
-      const correlated = backtestCorrelatedNotional(signal.symbol, dayMs, openPositions, historyBySymbol);
+      // Threaded through runningPositions (open + already-approved-this-batch),
+      // not the pre-batch openPositions snapshot — matches riskCheck.ts's
+      // runAutotradeRiskCheck, which correctly counts a signal approved
+      // earlier in the same batch against the next one. Using the stale
+      // snapshot here would let several mutually-correlated candidates all
+      // clear this cap on the same day, understating exactly the correlated-
+      // cluster risk this check exists to catch.
+      const correlated = backtestCorrelatedNotional(signal.symbol, dayMs, runningPositions, historyBySymbol);
       const ctx: RiskCheckContext = {
         equity,
         dailyPnl,
-        tradesToday: 0, // backtest has no separate "auto-trade orders today" concept — nothing today has executed yet
+        // Trades actually filled today (step 1, above) — matches the live
+        // system's getPortfolioSnapshot().tradesToday, which counts orders
+        // ALREADY placed, held constant across a single risk-check batch
+        // (not incremented per-approval within the batch, since nothing
+        // approved today has "placed" yet — in this daily-bar model, an
+        // approval today fills at tomorrow's open, not today's).
+        tradesToday: filledToday,
         consecutiveLosses,
         openRisk: runningRisk,
         openPositionsCount: runningCount,
@@ -332,7 +359,14 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
     equityCurve[equityCurve.length - 1] = { date: equityCurve[equityCurve.length - 1].date, equity };
   }
 
-  return { trades, equityCurve, startingEquity: cfg.startingEquity, finalEquity: equity, excludedSymbols: [] };
+  return {
+    trades,
+    equityCurve,
+    startingEquity: cfg.startingEquity,
+    finalEquity: equity,
+    excludedSymbols: [],
+    errors: [],
+  };
 }
 
 export interface BacktestStats {
@@ -396,16 +430,20 @@ export function computeBacktestStats(report: BacktestReport): BacktestStats {
 }
 
 /** Real-estate pre-filter — checked ONCE upfront (not per simulated day), the
- *  same list+classifier checks Screen uses live. */
+ *  same list+classifier checks Screen uses live. Pooled (mirrors screen.ts's
+ *  discoverSymbols loop) since classifySector falls back to a live
+ *  fundamentals fetch for any symbol outside the seeded universe — a large
+ *  symbol list run sequentially would serialize one network round-trip per
+ *  symbol before the (already-pooled) bar fetch below even starts. */
 async function filterEligibleSymbols(
   symbols: string[],
 ): Promise<{ eligible: string[]; excluded: { symbol: string; reason: string }[] }> {
   const eligible: string[] = [];
   const excluded: { symbol: string; reason: string }[] = [];
-  for (const symbol of symbols) {
+  await mapPool(symbols, 6, async (symbol) => {
     if (isExcluded(symbol)) {
       excluded.push({ symbol, reason: 'On the real-estate exclusion list' });
-      continue;
+      return;
     }
     const classification = await classifySector(symbol);
     if (classification.outcome === 'real_estate') {
@@ -413,10 +451,10 @@ async function filterEligibleSymbols(
         symbol,
         reason: `Classified as real estate (${classification.sector ?? classification.industry ?? ''})`,
       });
-      continue;
+      return;
     }
     eligible.push(symbol);
-  }
+  });
   return { eligible, excluded };
 }
 
@@ -426,22 +464,34 @@ async function filterEligibleSymbols(
  *  indicators have a full warmup window on the first simulated day. Fetches
  *  run with bounded concurrency (mirrors screen.ts's mapPool(symbols, 6, …))
  *  so a multi-symbol backtest doesn't serialize one HTTP round-trip per
- *  symbol. */
+ *  symbol. A single symbol's fetch failure (bad ticker, provider error, rate
+ *  limit) is caught and reported per-symbol, not left to reject the whole
+ *  mapPool — one bad symbol in a 10-symbol request must not discard the
+ *  other nine's results (mirrors screen.ts's per-symbol errors[] handling). */
 async function loadBacktestHistory(
   symbols: string[],
   from: string,
   to: string,
-): Promise<{ historyBySymbol: Map<string, Candle[]>; excludedSymbols: { symbol: string; reason: string }[] }> {
+): Promise<{
+  historyBySymbol: Map<string, Candle[]>;
+  excludedSymbols: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+}> {
   const { eligible, excluded } = await filterEligibleSymbols(symbols);
   const paddedFrom = addDays(from, -WARMUP_PADDING_DAYS);
 
   const historyBySymbol = new Map<string, Candle[]>();
+  const errors: { symbol: string; message: string }[] = [];
   await mapPool(eligible, 6, async (symbol) => {
-    const bars = await getHistoricalBars(symbol, TIMEFRAME, paddedFrom, to);
-    if (bars.length) historyBySymbol.set(symbol.toUpperCase(), bars);
+    try {
+      const bars = await getHistoricalBars(symbol, TIMEFRAME, paddedFrom, to);
+      if (bars.length) historyBySymbol.set(symbol.toUpperCase(), bars);
+    } catch (err) {
+      errors.push({ symbol, message: (err as Error).message });
+    }
   });
 
-  return { historyBySymbol, excludedSymbols: excluded };
+  return { historyBySymbol, excludedSymbols: excluded, errors };
 }
 
 /**
@@ -450,9 +500,9 @@ async function loadBacktestHistory(
  * the pure simulateBacktest() core.
  */
 export async function runBacktest(cfg: BacktestConfig): Promise<BacktestReport> {
-  const { historyBySymbol, excludedSymbols } = await loadBacktestHistory(cfg.symbols, cfg.from, cfg.to);
+  const { historyBySymbol, excludedSymbols, errors } = await loadBacktestHistory(cfg.symbols, cfg.from, cfg.to);
   const report = simulateBacktest(historyBySymbol, cfg);
-  return { ...report, excludedSymbols };
+  return { ...report, excludedSymbols, errors };
 }
 
 export interface WalkForwardConfig extends BacktestConfig {
@@ -466,6 +516,7 @@ export interface WalkForwardReport {
   inSample: BacktestReport;
   outOfSample: BacktestReport;
   excludedSymbols: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
 }
 
 /**
@@ -479,9 +530,9 @@ export interface WalkForwardReport {
  * confounded by a different effective account size.
  */
 export async function runWalkForwardBacktest(cfg: WalkForwardConfig): Promise<WalkForwardReport> {
-  const { historyBySymbol, excludedSymbols } = await loadBacktestHistory(cfg.symbols, cfg.from, cfg.to);
+  const { historyBySymbol, excludedSymbols, errors } = await loadBacktestHistory(cfg.symbols, cfg.from, cfg.to);
   const outOfSampleFrom = addDays(cfg.splitDate, 1);
   const inSample = simulateBacktest(historyBySymbol, { ...cfg, from: cfg.from, to: cfg.splitDate });
   const outOfSample = simulateBacktest(historyBySymbol, { ...cfg, from: outOfSampleFrom, to: cfg.to });
-  return { inSample, outOfSample, excludedSymbols };
+  return { inSample, outOfSample, excludedSymbols, errors };
 }

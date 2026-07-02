@@ -735,6 +735,12 @@ export default function AutoTradePage() {
                 Excluded (real estate): {btResult.report.excludedSymbols.map((e) => e.symbol).join(', ')}
               </p>
             )}
+            {btResult.report.errors.length > 0 && (
+              <p className="text-[11px] text-bear">
+                Couldn&apos;t fetch data — excluded from this run:{' '}
+                {btResult.report.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
+              </p>
+            )}
             <BacktestStatsGrid stats={btResult.stats} />
             <BacktestEquityChart equityCurve={btResult.report.equityCurve} gradientId="btEquityPlain" />
             <BacktestTradesTable trades={btResult.report.trades} />
@@ -745,6 +751,12 @@ export default function AutoTradePage() {
             {btWfResult.excludedSymbols.length > 0 && (
               <p className="text-[11px] text-slate-500">
                 Excluded (real estate): {btWfResult.excludedSymbols.map((e) => e.symbol).join(', ')}
+              </p>
+            )}
+            {btWfResult.errors.length > 0 && (
+              <p className="text-[11px] text-bear">
+                Couldn&apos;t fetch data — excluded from this run:{' '}
+                {btWfResult.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
               </p>
             )}
             <BacktestWindowResult

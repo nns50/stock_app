@@ -654,7 +654,9 @@ screen/decide/risk-check stages:
   profit factor, average R, return, max drawdown, win/loss streaks), an equity curve,
   and the full trade-by-trade list. This tool doesn't render a pass/fail verdict —
   reviewing in-sample vs. out-of-sample and deciding whether a configuration held up is
-  yours to make, same as the eventual live-trading flag.
+  yours to make, same as the eventual live-trading flag. At most 50 symbols per run; if
+  one symbol's historical data can't be fetched (bad ticker, provider rate limit), it's
+  called out separately and excluded — the rest of the run still completes.
 - **Recent activity** — a journal of what the screen, decision, and risk-check stages
   did and why (candidate found, excluded, signal generated, passed/blocked and which
   rule, a setting changed), the foundation the execution stage will log into as well.

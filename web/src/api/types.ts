@@ -1133,6 +1133,9 @@ export interface BacktestReport {
   startingEquity: number;
   finalEquity: number;
   excludedSymbols: { symbol: string; reason: string }[];
+  /** Symbols whose historical-bar fetch failed — every other symbol's result
+   *  is still simulated normally. */
+  errors: { symbol: string; message: string }[];
 }
 
 export interface BacktestStats {
@@ -1163,6 +1166,7 @@ export interface WalkForwardResponse {
   inSample: BacktestRunResponse;
   outOfSample: BacktestRunResponse;
   excludedSymbols: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
 }
 
 export interface BacktestRequest {

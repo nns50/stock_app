@@ -516,4 +516,23 @@ describe('autotrade backtest routes (integration)', () => {
     const res = await post('/api/autotrade/backtest/walk-forward', baseBody);
     expect(res.status).toBe(400);
   });
+
+  it('rejects a structurally-invalid calendar date with 400, not a 500 crash', async () => {
+    // Regex-shaped but not a real date (month 00) — used to reach addDays()/
+    // toISO()'s `new Date(NaN).toISOString()`, an uncaught RangeError -> 500.
+    const res = await post('/api/autotrade/backtest', { ...baseBody, from: '2024-00-00' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/valid calendar date/i);
+  });
+
+  it('rejects a calendar-overflow date (Feb 30) with 400 instead of silently rolling to March 1', async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, to: '2024-02-30' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects more than 50 symbols', async () => {
+    const symbols = Array.from({ length: 51 }, (_, i) => `SYM${i}`);
+    const res = await post('/api/autotrade/backtest', { ...baseBody, symbols });
+    expect(res.status).toBe(400);
+  });
 });

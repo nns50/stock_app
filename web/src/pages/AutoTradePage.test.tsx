@@ -394,6 +394,7 @@ describe('AutoTradePage', () => {
       startingEquity: 100_000,
       finalEquity: 100_300,
       excludedSymbols: [],
+      errors: [],
     },
     stats: {
       totalTrades: 1,
@@ -441,6 +442,7 @@ describe('AutoTradePage', () => {
       inSample: btRun({ totalPnl: 300, returnPct: 0.3 }),
       outOfSample: btRun({ totalPnl: -50, returnPct: -0.05, wins: 0, losses: 1, winRate: 0 }),
       excludedSymbols: [],
+      errors: [],
     };
     const run = vi.spyOn(client, 'runAutotradeWalkForward').mockResolvedValue(wfResult);
     renderPage();
@@ -480,5 +482,20 @@ describe('AutoTradePage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Run backtest' }));
 
     expect(await screen.findByText('from must be on or before to')).toBeInTheDocument();
+  });
+
+  it('surfaces a per-symbol data-fetch failure without blocking the rest of the report', async () => {
+    const run = btRun();
+    run.report.errors = [{ symbol: 'BAD1', message: 'Polygon 429: rate limited' }];
+    vi.spyOn(client, 'runAutotradeBacktest').mockResolvedValue(run);
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'AAPL, BAD1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Run backtest' }));
+
+    expect(await screen.findByText(/BAD1 \(Polygon 429: rate limited\)/)).toBeInTheDocument();
+    // The rest of the report still renders — one bad symbol doesn't blank the page.
+    expect(screen.getByText('target')).toBeInTheDocument();
   });
 });
