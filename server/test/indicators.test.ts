@@ -10,6 +10,8 @@ import {
   relativeVolume,
   gapPercent,
   distanceFromMa,
+  dailyReturns,
+  pearsonCorrelation,
   Bar,
 } from '../src/indicators/indicators';
 
@@ -86,5 +88,46 @@ describe('derived helpers', () => {
   it('distanceFromMa', () => {
     expect(distanceFromMa(110, 100)).toBeCloseTo(10);
     expect(distanceFromMa(110, null)).toBeNull();
+  });
+});
+
+describe('dailyReturns', () => {
+  it('computes period-over-period returns as decimals', () => {
+    expect(dailyReturns([100, 110, 99])).toEqual([0.1, -0.1]);
+  });
+  it('returns one fewer value than the input', () => {
+    expect(dailyReturns([1, 2, 3, 4]).length).toBe(3);
+  });
+  it('skips a step where the prior close is zero', () => {
+    expect(dailyReturns([0, 5, 10])).toEqual([1]); // (10-5)/5, the 0->5 step is skipped
+  });
+});
+
+describe('pearsonCorrelation', () => {
+  it('is exactly 1 for a series against itself', () => {
+    const returns = [0.01, -0.02, 0.03, 0.015, -0.005, 0.02];
+    expect(pearsonCorrelation(returns, returns)).toBeCloseTo(1, 10);
+  });
+  it('is exactly -1 for perfectly inverse series', () => {
+    const a = [0.01, -0.02, 0.03, 0.015, -0.005];
+    const b = a.map((v) => -v);
+    expect(pearsonCorrelation(a, b)).toBeCloseTo(-1, 10);
+  });
+  it('is near 0 for uncorrelated series', () => {
+    const a = [1, -1, 1, -1, 1, -1, 1, -1];
+    const b = [1, 1, -1, -1, 1, 1, -1, -1];
+    expect(pearsonCorrelation(a, b)).toBeCloseTo(0, 10);
+  });
+  it('is null with fewer than 2 points', () => {
+    expect(pearsonCorrelation([1], [2])).toBeNull();
+    expect(pearsonCorrelation([], [])).toBeNull();
+  });
+  it('is null when a series has zero variance (flat)', () => {
+    expect(pearsonCorrelation([0.01, 0.02, 0.03], [1, 1, 1])).toBeNull();
+  });
+  it('aligns from the end when lengths differ', () => {
+    const longer = [0.5, 0.01, -0.02, 0.03]; // an extra leading point
+    const shorter = [0.01, -0.02, 0.03];
+    expect(pearsonCorrelation(longer, shorter)).toBeCloseTo(1, 10);
   });
 });

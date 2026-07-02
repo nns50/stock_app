@@ -1,0 +1,99 @@
+import { config } from '../../config';
+import { Candle, Timeframe } from '../../providers/types';
+
+// ---------------------------------------------------------------------------
+// Polygon.io (rebranded Massive.com, same account/API) historical aggregates
+// client, for the backtest + walk-forward harness ONLY (docs/AUTOTRADING_SPEC.md
+// — Phase 5). Never used for live screening or quotes — see config.polygon.
+//
+// https://api.polygon.io/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from}/{to}
+// `adjusted=true` — split/dividend-adjusted, so a backtest doesn't see fake
+// gaps around corporate actions. Auth via `Authorization: Bearer <key>`.
+// ---------------------------------------------------------------------------
+
+const BASE_URL = 'https://api.polygon.io';
+/** Hard cap on paginated pages (50 × the 50,000-row limit = 2.5M bars) — far
+ *  beyond any realistic single-symbol pull; a backstop against a runaway loop
+ *  if `next_url` ever misbehaves, not a real limit in practice. */
+const MAX_PAGES = 50;
+
+export class PolygonError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message);
+    this.name = 'PolygonError';
+  }
+}
+
+interface PolygonBar {
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+  /** Unix ms epoch, start of the bar. */
+  t: number;
+}
+
+interface PolygonAggsResponse {
+  results?: PolygonBar[];
+  next_url?: string;
+  status?: string;
+  error?: string;
+  message?: string;
+}
+
+function mapBar(b: PolygonBar): Candle {
+  return { time: b.t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v };
+}
+
+function timespanFor(timeframe: Timeframe): { multiplier: number; timespan: string } {
+  switch (timeframe) {
+    case '1min':
+      return { multiplier: 1, timespan: 'minute' };
+    case '5min':
+      return { multiplier: 5, timespan: 'minute' };
+    case '15min':
+      return { multiplier: 15, timespan: 'minute' };
+    case 'daily':
+      return { multiplier: 1, timespan: 'day' };
+    case 'weekly':
+      return { multiplier: 1, timespan: 'week' };
+  }
+}
+
+/**
+ * Fetch historical aggregate bars for `symbol` between `from`/`to`
+ * (YYYY-MM-DD, inclusive), paginating via `next_url` until exhausted.
+ * Throws PolygonError if POLYGON_API_KEY is unset or the request fails.
+ */
+export async function fetchPolygonBars(
+  symbol: string,
+  timeframe: Timeframe,
+  from: string,
+  to: string,
+): Promise<Candle[]> {
+  const apiKey = config.polygon.apiKey;
+  if (!apiKey) {
+    throw new PolygonError('POLYGON_API_KEY is not set — required for the backtest harness (see docs/DEPLOY.md).');
+  }
+
+  const { multiplier, timespan } = timespanFor(timeframe);
+  let url: string | undefined =
+    `${BASE_URL}/v2/aggs/ticker/${encodeURIComponent(symbol.toUpperCase())}/range/${multiplier}/${timespan}/${from}/${to}` +
+    `?adjusted=true&sort=asc&limit=50000`;
+
+  const bars: Candle[] = [];
+  for (let page = 0; url && page < MAX_PAGES; page++) {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+    const body = (await res.json()) as PolygonAggsResponse;
+    if (!res.ok) {
+      throw new PolygonError(body.error || body.message || `Polygon request failed (${res.status})`, res.status);
+    }
+    for (const bar of body.results ?? []) bars.push(mapBar(bar));
+    url = body.next_url || undefined;
+  }
+  return bars;
+}

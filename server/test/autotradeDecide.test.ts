@@ -1,0 +1,109 @@
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { initDb, db } from '../src/db';
+import { defaultDecisionConfig, generateSignal, runAutotradeDecision } from '../src/services/autotrading/decide';
+import { ScreenCandidate } from '../src/services/autotrading/screen';
+import { IndicatorSnapshot } from '../src/indicators/screener';
+import { listAutotradeEvents } from '../src/db/autotradeEvents';
+
+beforeAll(() => initDb());
+beforeEach(() => db.exec('DELETE FROM autotrade_events'));
+
+function ind(overrides: Partial<IndicatorSnapshot> = {}): IndicatorSnapshot {
+  return {
+    price: 100,
+    changePct: 3,
+    maShort: 95,
+    maLong: 90,
+    distShortPct: 5,
+    distLongPct: 10,
+    rsi: 65,
+    atr: 4,
+    atrPct: 4,
+    relVolume: 1.8,
+    avgVolume: 1_000_000,
+    volume: 1_800_000,
+    gapPct: 3.5,
+    ...overrides,
+  };
+}
+
+function candidate(overrides: Partial<ScreenCandidate> = {}): ScreenCandidate {
+  return {
+    symbol: 'AAPL',
+    price: 100,
+    total: 72.5,
+    passedFilters: true,
+    filterReasons: [],
+    components: [],
+    indicators: ind(),
+    discoverySource: 'universe',
+    ...overrides,
+  };
+}
+
+describe('generateSignal', () => {
+  it('computes an ATR-based stop and R-multiple target for a long', () => {
+    const signal = generateSignal(candidate(), { direction: 'long', stopAtrMultiple: 1.5, targetRMultiple: 2 });
+    expect(signal).not.toBeNull();
+    expect(signal!.side).toBe('buy');
+    expect(signal!.entry).toBe(100);
+    expect(signal!.stop).toBe(100 - 1.5 * 4); // 94
+    expect(signal!.target).toBe(100 + 1.5 * 4 * 2); // entry + 2x the stop distance = 112
+    expect(signal!.rMultiple).toBe(2);
+  });
+
+  it('mirrors the math for a short', () => {
+    const signal = generateSignal(candidate(), { direction: 'short', stopAtrMultiple: 1.5, targetRMultiple: 2 });
+    expect(signal).not.toBeNull();
+    expect(signal!.side).toBe('sell');
+    expect(signal!.stop).toBe(100 + 1.5 * 4); // 106
+    expect(signal!.target).toBe(100 - 1.5 * 4 * 2); // 88
+  });
+
+  it('returns null when ATR is unavailable (insufficient history)', () => {
+    expect(generateSignal(candidate({ indicators: ind({ atr: null }) }))).toBeNull();
+  });
+
+  it('returns null when ATR is zero or negative', () => {
+    expect(generateSignal(candidate({ indicators: ind({ atr: 0 }) }))).toBeNull();
+  });
+
+  it('returns null when the computed stop would be at or below zero', () => {
+    // price 2, atr 3, stopAtrMultiple 1.5 -> stop = 2 - 4.5 = negative
+    const c = candidate({ price: 2, indicators: ind({ price: 2, atr: 3 }) });
+    expect(generateSignal(c, { direction: 'long', stopAtrMultiple: 1.5, targetRMultiple: 2 })).toBeNull();
+  });
+
+  it('includes a human-readable rationale', () => {
+    const signal = generateSignal(candidate());
+    expect(signal!.rationale).toMatch(/Long breakout/);
+    expect(signal!.rationale).toMatch(/ATR/);
+  });
+
+  it('defaults to a long, 1.5x ATR stop, 2R target', () => {
+    expect(defaultDecisionConfig()).toEqual({ direction: 'long', stopAtrMultiple: 1.5, targetRMultiple: 2 });
+  });
+});
+
+describe('runAutotradeDecision', () => {
+  it('generates a signal per valid candidate and journals it', () => {
+    const result = runAutotradeDecision([candidate({ symbol: 'AAPL' }), candidate({ symbol: 'MSFT' })]);
+    expect(result.signals).toHaveLength(2);
+    expect(result.skipped).toHaveLength(0);
+    const events = listAutotradeEvents({ stage: 'decision' });
+    expect(events.filter((e) => e.action === 'signal_generated')).toHaveLength(2);
+  });
+
+  it('skips and journals candidates with no usable ATR', () => {
+    const result = runAutotradeDecision([candidate({ symbol: 'NOATR', indicators: ind({ atr: null }) })]);
+    expect(result.signals).toHaveLength(0);
+    expect(result.skipped).toEqual([{ symbol: 'NOATR', reason: expect.stringMatching(/ATR/) }]);
+    const events = listAutotradeEvents({ stage: 'decision', symbol: 'NOATR' });
+    expect(events[0].action).toBe('no_signal');
+  });
+
+  it('applies a config patch (e.g. a tighter stop) across all candidates', () => {
+    const result = runAutotradeDecision([candidate()], { stopAtrMultiple: 1 });
+    expect(result.signals[0].stop).toBe(100 - 1 * 4); // 96, not the default 1.5x
+  });
+});

@@ -181,10 +181,102 @@ CREATE TABLE IF NOT EXISTS screener_picks (
 
 ${ALERTS_TABLE_SQL}
 
+CREATE TABLE IF NOT EXISTS autotrade_config (
+  id          INTEGER PRIMARY KEY CHECK(id = 1),   -- singleton row
+  config      TEXT NOT NULL,           -- JSON AutotradeConfig (risk profile + enabled)
+  updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS autotrade_exclusions (
+  symbol      TEXT PRIMARY KEY,
+  reason      TEXT,
+  source      TEXT NOT NULL DEFAULT 'user' CHECK(source IN ('default','user')),
+  created_at  INTEGER NOT NULL
+);
+
+-- No CHECK on stage/action: both vocabularies grow as later auto-trading phases
+-- land (mirrors alerts.kind / order_intents.order_type — a stale CHECK there
+-- silently rejected new values at INSERT). Validated by the AutotradeStage type
+-- + route-level Zod enum instead.
+CREATE TABLE IF NOT EXISTS autotrade_events (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol       TEXT,
+  stage        TEXT NOT NULL,
+  action       TEXT NOT NULL,
+  detail       TEXT,                   -- JSON payload
+  risk_profile TEXT,
+  created_at   INTEGER NOT NULL
+);
+
+-- Local cache of Polygon/Massive historical bars for the backtest harness
+-- (docs/AUTOTRADING_SPEC.md, Phase 5) — a walk-forward run re-queries the same
+-- symbol/period repeatedly, and Polygon Starter's depth is finite, so this
+-- avoids re-fetching from the network every run.
+CREATE TABLE IF NOT EXISTS backtest_bars (
+  symbol      TEXT NOT NULL,
+  timeframe   TEXT NOT NULL,
+  time        INTEGER NOT NULL,        -- ms epoch, bar start
+  open        REAL NOT NULL,
+  high        REAL NOT NULL,
+  low         REAL NOT NULL,
+  close       REAL NOT NULL,
+  volume      REAL NOT NULL,
+  PRIMARY KEY (symbol, timeframe, time)
+);
+
+-- Tracks which [from,to] ranges have actually been FETCHED from Polygon, per
+-- symbol/timeframe — deliberately separate from backtest_bars' own min/max,
+-- since trading data has gaps (weekends/holidays) that never align exactly
+-- with a requested calendar boundary. Inferring "is this range cached" from
+-- the data's own earliest/latest bar was tried and is wrong (see the fix in
+-- historicalData.ts) — this explicit log is the correct source of truth for
+-- "did we already ask for this."
+CREATE TABLE IF NOT EXISTS backtest_fetch_log (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol      TEXT NOT NULL,
+  timeframe   TEXT NOT NULL,
+  from_date   TEXT NOT NULL,          -- YYYY-MM-DD, as requested
+  to_date     TEXT NOT NULL,
+  fetched_at  INTEGER NOT NULL
+);
+
+-- The Phase 6 paper execution loop's own journal of simulated trades —
+-- deliberately separate from positions/position_exits (the human's real
+-- trading journal): mixing autonomous synthetic fills into that would
+-- corrupt the one thing it exists to be honest about. One row per round
+-- trip (open, and — once closed — exit fields on the SAME row), not a
+-- split positions/exits table: the auto-trading engine (decide.ts,
+-- riskCheck.ts, backtest.ts's SimulatedTrade) never models partial fills or
+-- partial exits, so there's nothing a second table would need to hold.
+CREATE TABLE IF NOT EXISTS autotrade_paper_positions (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol        TEXT NOT NULL,
+  side          TEXT NOT NULL CHECK(side IN ('buy','sell')),
+  quantity      REAL NOT NULL,
+  entry_price   REAL NOT NULL,
+  entry_at      INTEGER NOT NULL,       -- ms epoch (real time, not a backtest date)
+  stop_price    REAL NOT NULL,
+  target_price  REAL NOT NULL,
+  risk_amount   REAL NOT NULL,          -- $ risked at entry, for R-multiple stats
+  risk_profile  TEXT NOT NULL,
+  rationale     TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+  exit_price    REAL,
+  exit_at       INTEGER,
+  exit_reason   TEXT CHECK(exit_reason IN ('stop','target','manual') OR exit_reason IS NULL),
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_exits_position ON position_exits(position_id);
 CREATE INDEX IF NOT EXISTS idx_picks_snapshot ON screener_picks(snapshot_id);
 CREATE INDEX IF NOT EXISTS idx_order_events_intent ON order_events(intent_id);
+CREATE INDEX IF NOT EXISTS idx_autotrade_events_symbol ON autotrade_events(symbol);
+CREATE INDEX IF NOT EXISTS idx_autotrade_events_stage ON autotrade_events(stage);
+CREATE INDEX IF NOT EXISTS idx_autotrade_events_created ON autotrade_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_backtest_fetch_log_lookup ON backtest_fetch_log(symbol, timeframe);
+CREATE INDEX IF NOT EXISTS idx_autotrade_paper_positions_status ON autotrade_paper_positions(symbol, status);
 `;
 
 interface SeedRow {
@@ -211,6 +303,45 @@ function seedUniverseIfEmpty(): void {
     for (const it of items) {
       if (!it.symbol) continue;
       insert.run(it.symbol.toUpperCase(), it.name ?? null, it.sector ?? null, now);
+    }
+  });
+  tx(list);
+}
+
+interface ExclusionSeedRow {
+  symbol: string;
+  reason?: string;
+}
+
+/**
+ * Starter set of well-known real-estate ETFs (docs/AUTOTRADING_SPEC.md's
+ * EXCLUDED SECTOR requirement), seeded once so the auto-trading screener never
+ * has an empty exclusion list out of the box. Not meant to be exhaustive —
+ * individual REITs/real-estate operating companies are caught by the
+ * sector/industry classification check, not a hand-maintained list. Rows are
+ * freely add/removable afterwards (see db/autotradeExclusions.ts); only the
+ * initial seed lives here.
+ */
+function seedAutotradeExclusionsIfEmpty(): void {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM autotrade_exclusions').get() as { n: number };
+  if (row.n > 0) return;
+
+  const file = path.join(DATA_DIR, 'reExclusions.json');
+  let list: ExclusionSeedRow[];
+  try {
+    list = JSON.parse(fs.readFileSync(file, 'utf8')) as ExclusionSeedRow[];
+  } catch {
+    list = [];
+  }
+
+  const insert = db.prepare(
+    "INSERT OR IGNORE INTO autotrade_exclusions (symbol, reason, source, created_at) VALUES (?, ?, 'default', ?)",
+  );
+  const now = Date.now();
+  const tx = db.transaction((items: ExclusionSeedRow[]) => {
+    for (const it of items) {
+      if (!it.symbol) continue;
+      insert.run(it.symbol.toUpperCase(), it.reason ?? null, now);
     }
   });
   tx(list);
@@ -306,4 +437,5 @@ export function initDb(): void {
   db.exec(SCHEMA);
   migrate();
   seedUniverseIfEmpty();
+  seedAutotradeExclusionsIfEmpty();
 }

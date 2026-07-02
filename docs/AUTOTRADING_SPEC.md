@@ -1,6 +1,7 @@
 # Automated Trading — Specification
 
-**Status: draft — not yet implemented.** This is the reference spec for adding a fully
+**Status: phases 1-7 shipped and running in paper mode; phase 8 (the live-trading gate)
+is the one remaining phase.** This is the reference spec for adding a fully
 **autonomous** execution loop (screen → decide → risk-check → place orders) to the app.
 
 This is a different capability from the existing live-trading feature described in
@@ -48,6 +49,461 @@ repo, worth resolving before implementation:
   poller"). The same pattern — an in-process scheduled loop, on/off in the DB, checked
   every cycle — is the natural fit for the research → decide → risk-check → execute →
   journal cycle below, given the app's single always-on Node process on Fly.io.
+
+## Resolved decisions
+
+Answers to the open questions worked through before implementation started. Update
+this list as decisions change — don't let it drift from what's actually built.
+
+- **Broker: Webull**, via the existing v2 OpenAPI order pipeline (guardrails, order
+  lifecycle state machine, brackets, reconcile). No new broker integration — the
+  execution stage places orders through the same pipeline the human-confirmed
+  live-trading feature already uses, just without the per-trade confirmation prompt.
+- **Real-estate exclusion**: checked at the Research & Screen stage against *both* a
+  configurable symbol list (VNQ, IYR, XLRE, etc.) *and* sector/industry classification
+  pulled from the market-data provider (fundamentals lookup), so REITs and real-estate
+  operating companies outside the seeded S&P 500 `universe.sector` data still get
+  caught. Either match excludes the candidate before it reaches Decision.
+- **Correlated-ticker exposure cap**: defined by **statistical price correlation**
+  (pairwise correlation of returns across open + candidate positions), not sector
+  membership. The specific lookback window and correlation threshold (e.g. rolling
+  N-day return correlation, block above some |r|) still need to be pinned down during
+  the risk-engine phase — flagged there, not decided yet.
+- **Kill switch**: cancels all new and working orders and disables the auto-trading
+  loop immediately. It does **not** force-close existing positions — their existing
+  hard stop-losses remain in place as the exit mechanism. This is a deliberate,
+  narrower blast radius than "flatten everything."
+- **Backtest data source: Polygon.io Stocks "Starter" plan, $29/mo — confirmed and
+  final.** Polygon rebranded to [Massive](https://massive.com) on 2025-10-30 — same
+  account/API, old `polygon.io` endpoints still work, no forced migration. Confirmed
+  directly from Massive's current pricing page (not secondary sources): all US stock
+  tickers, **unlimited API calls**, **5 years of historical data**, **100% market
+  coverage**, minute aggregates, Flat Files (bulk download — no pagination needed to
+  ingest years of history), reference data, and corporate actions. The 15-minute-delay
+  restriction is irrelevant for backtesting (a walk-forward harness only ever queries
+  *past* bars). The $79/mo Developer tier (10yr + trade-level tick data) isn't worth it
+  for this app — the strategy only needs aggregated bars, and 5 years is comfortably
+  enough depth for a real walk-forward split (e.g. train on 3 years, test out-of-sample
+  on the remaining 2).
+
+  **Alpaca's free tier was seriously considered as an alternative** (free; 200
+  req/min; SIP — full market — historical data once a query is >15min old; supports
+  split/dividend-adjusted bars; no KYC for a paper/data-only account) and stays worth
+  knowing about, but Polygon/Massive was kept: Alpaca's ~7-year depth claim is
+  community-sourced, not vendor-confirmed like Polygon's numbers above, there have been
+  community reports of its split-adjustment parameter misbehaving on some tickers, and
+  it has no bulk-download equivalent to Flat Files — ingesting years of 1-minute bars
+  would mean writing pagination/backoff logic instead of just downloading files. Given
+  the user was already willing to pay for reliability/support, and Polygon's numbers
+  are now confirmed rather than partially-verified, sticking with the paid plan won
+  out.
+
+  **Action items — done by the user, not from here:** Massive/Polygon account created
+  and paid for directly; the resulting `POLYGON_API_KEY` goes server-side only
+  (`server/.env` locally, `fly secrets set POLYGON_API_KEY=...` in production — see
+  `docs/DEPLOY.md`). Deliberately a separate config namespace from
+  `MARKET_DATA_PROVIDER` (`config.polygon.apiKey`, not one of the `mock`/`tradier`/
+  `yahoo`/`webull` live-provider choices) — this key only ever feeds the backtest
+  corpus, never live screening or quotes.
+
+  Superseded candidates, kept for the record: **FirstRate Data**'s free tier (~1yr of
+  1-min bars via bulk CSV download, no account needed) was the original free-tier
+  recommendation before the user opted to pay for Polygon/Massive instead. **Tiingo**
+  was ruled out regardless of price sensitivity: its IEX intraday endpoint caps at the
+  most recent ~2000 bars at any frequency (~5 trading days at 1-min), *shallower* than
+  Yahoo's already-free 7-day cap already in this repo. **Alpha Vantage** (25 req/day
+  free) and **Polygon's own free tier** (daily-bar-oriented) were ruled out for the
+  reasons already noted when they were free-tier candidates.
+
+  This is decoupled from the live Research & Screen stage's data source (still
+  whatever `MARKET_DATA_PROVIDER` is configured, e.g. Yahoo) — Polygon/Massive is
+  scoped to Phase 5's historical corpus only, not a replacement for the app's live
+  market-data provider. If live scanning ever needs Polygon/Massive too, note Starter's
+  15-min delay would matter there (unlike for backtesting) and a higher tier would be
+  needed — that's a separate decision, not part of this one.
+
+- **What "paper" execution actually means (Phase 6)**: confirmed via
+  `docs/LIVE_TRADING_DESIGN.md` §13 — the Webull OpenAPI plan this app is integrated
+  against has **no paper/sandbox account** ("None — go straight to the real account").
+  So Phase 6's paper mode is a **fully local simulation**: it never calls
+  `webullPlaceOrder()` or anything in the live order pipeline
+  (`services/trading/placeOrder.ts`) — it records a synthetic fill (from a live quote)
+  into a new, separate `autotrade_paper_positions` table and journals it, exactly
+  mirroring the real `positions`/`position_exits` shape but kept fully apart from it.
+  This is deliberate, not a shortcut: it means Phase 6 is **structurally incapable** of
+  placing a real order, regardless of any bug in its risk/decision logic, since the
+  code path that could do that is never invoked. It also sidesteps the live pipeline's
+  `placeOrder()` requiring an exact human-typed confirmation phrase
+  (`placeConfirmation(intent)`, `services/trading/placeOrder.ts`) and a manually-chosen
+  `accountId` sourced from browser `localStorage` today — neither has any meaning for
+  an unattended loop, and forging a bypass for either would be exactly the kind of
+  "quietly weaken a safety check" move this repo's operating principles rule out.
+  Paper positions never touch `positions`/`orders` (the human's real trading journal)
+  — mixing autonomous synthetic trades into the user's real P&L/win-rate stats would
+  corrupt the one thing that journal exists to be honest about. A real Webull
+  `accountId`/confirm-phrase path is Phase 8's problem, once a human is reviewing
+  Phase 5/6 results before flipping the live flag — not before.
+
+## Phased roadmap
+
+Sequenced so that execution-capable (order-placing) code is built **last**, after the
+strategy and risk logic have been validated by backtesting — matching the spec's own
+gate below. Each phase should be independently mergeable and testable before the next
+starts.
+
+1. **Foundations — shipped.** DB schema for risk-profile config (`autotrade_config`),
+   the RE exclusion list (`autotrade_exclusions`, seeded from
+   `server/data/reExclusions.json`), and the shared journal (`autotrade_events`) every
+   later phase logs into (candidate found, excluded, signal generated, risk-check
+   pass/block, order placed, fill) — see `db/autotradeConfig.ts`,
+   `db/autotradeExclusions.ts`, `db/autotradeEvents.ts`, routed at `/api/autotrade/*`
+   (`routes/autotrade.ts`). Switching to AGGRESSIVE requires `confirmAggressive: true`
+   in the request, enforced by a `useConfirm()` modal in the UI (below) — not just a
+   config edit. No screening or trading logic yet — just the scaffolding everything
+   else writes to.
+2. **Screening & real-estate exclusion — shipped.** Discovers candidates from
+   `universe` plus (when Webull is configured) its pre-market "unusual volume" and
+   gainers movers — the only source in this app that finds gappers outside the
+   ~124-symbol seeded universe; falls back to universe-only otherwise. Each candidate
+   is checked against the exclusion list, then (`services/autotrading/realEstateClassifier.ts`)
+   `universe.sector`, then — for the common case of a symbol outside that seed — a
+   live Yahoo fundamentals fetch (independent of `MARKET_DATA_PROVIDER`, since Tradier
+   returns no sector/industry at all), matching sector/industry against
+   `/real estate|reit/i`. Verified live against the seeded universe: AMT, PLD, and EQIX
+   (REITs not on the static ETF list) are correctly caught by the sector check alone. A
+   fetch failure classifies as **unknown**, not clear — that candidate is skipped for
+   this cycle and re-tried next cycle, never silently waved through. Only symbols that
+   clear both checks are scored, reusing the existing `indicators/screener.ts` engine
+   unmodified (`services/autotrading/screen.ts`) — this stage adds discovery + the
+   exclusion gate on top of it, not a parallel scoring engine. Real-estate exclusions
+   and confirmed candidates are journaled (`autotrade_events`, stage `screen`); routine
+   non-matches aren't, to avoid flooding the journal every cycle. Routed at
+   `POST /api/autotrade/screen`. Read-only — no orders. UI: `web/src/pages/AutoTradePage.tsx`
+   (`/auto-trade`) covers config, the exclusion list, a "Run screen" button with
+   candidates/excluded/skipped/errors, and the recent-activity journal — the AGGRESSIVE
+   switch is gated by a `useConfirm()` modal, not just a raw `<select>`.
+3. **Strategy / Decision module — shipped.** Turns each screened candidate into a
+   concrete trade plan (`services/autotrading/decide.ts`): entry = current price, a
+   **hard stop** at `stopAtrMultiple`× the symbol's own ATR (default 1.5×, so the stop
+   adapts to each symbol's actual volatility rather than a fixed dollar/percent), and a
+   target at a fixed reward:risk multiple of that stop distance (default 2R). The
+   reward:risk multiple is a fixed, generic ratio, not tuned to any target return — per
+   the spec, what the strategy actually returns is for backtesting (a later phase) to
+   measure, not an input to this logic. A candidate with no usable ATR (insufficient
+   history) gets no signal, logged and skipped rather than guessed at. Pure function,
+   no I/O — `generateSignal()`/`runAutotradeDecision()` take already-screened
+   candidates and only journal (stage `decision`, `signal_generated` / `no_signal`).
+   Still fully read-only — no risk engine, no orders yet; this isolates "does the
+   signal logic make sense" from "is it sized and risk-checked correctly." Routed at
+   `POST /api/autotrade/decide` (runs screen + decision together); the Auto-Trade page's
+   candidates table now shows Entry/Stop/Target/R per candidate.
+4. **Risk engine — shipped.** `services/autotrading/riskCheck.ts` sizes each signal by
+   the active profile's `riskPerTradePct` (reusing `services/riskSizing.ts`'s
+   `computeRiskSizing()` unchanged — same math the manual "Size by risk" tool uses),
+   applying step-down (50% cut) once the losing streak reaches `stepDownAfterLosses`,
+   then gates it through every profile cap: `equity_configured` (fails closed — blocks
+   everything — until equity is set), `quantity`, `daily_drawdown_halt`,
+   `max_trades_per_day`, `max_concurrent_positions`, the CRITICAL
+   `max_aggregate_open_risk`, and `max_correlated_exposure`. Correlation window/
+   threshold (the spec's deferred decision): **30 trading days, |r| ≥ 0.7** — a
+   standard "strong correlation" convention, applied to daily-return Pearson
+   correlation (`indicators.ts`'s new `pearsonCorrelation`/`dailyReturns`) between each
+   open position and the candidate. The correlated-exposure check does **not** count
+   the candidate's own notional — a symbol is trivially "correlated" with itself, so
+   including it would block even a lone, uncorrelated first trade purely against
+   itself (caught by hand-checking the numbers before writing tests, not by a test
+   failure — worth having caught before it shipped).
+   Signals are risk-checked **sequentially as a batch**, not independently against a
+   static snapshot — an approved signal's risk/notional/position-count is added to a
+   running total before the next signal in the batch is checked, so a batch of
+   individually-fine signals can't jointly bust a cap none of them would trip alone
+   (verified live: with 5 candidates and MODERATE's 2-position cap, the top-2-scored
+   candidates were approved and every candidate after that was correctly blocked on
+   `max_concurrent_positions` once the running count hit the cap).
+   **Known interim scope at the time this phase shipped, resolved in Phase 6:**
+   concurrent-position count and aggregate open risk were account-wide regardless of
+   source, since nothing had executed an auto-trade yet and `positions` (the human's
+   real journal) was the only position data that existed anywhere. Once Phase 6 gave
+   auto-trading its own position marker (`autotrade_paper_positions`), this was
+   revisited — see Phase 6's writeup below for the resolved answer (autotrade's own
+   caps are scoped to its own paper positions, not combined with the human's real
+   ones; the original "combine for safety" framing turned out not to apply once the
+   positions in question carry zero real financial exposure). Equity is a manually-set
+   number (`autotrade_config.accountEquityUsd`), not live broker data — Webull's
+   account-state call needs an `accountId` with no natural source for an unattended
+   loop, and paper mode never calls it at all (see Phase 6). Pure evaluator (`evaluateRiskCheck`) is heavily unit-tested,
+   per the spec's call for the heaviest coverage on this phase; the orchestration
+   wrapper (`runAutotradeRiskCheck`) assembles real portfolio state and is exercised
+   against the real `positions` journal in tests, plus verified live in a browser.
+   Routed at `POST /api/autotrade/risk-check`; the Auto-Trade page's candidates table
+   shows a Qty + pass/fail Risk-check column per candidate.
+   **Known gap, flagged during Phase 6's review, deferred to Phase 8:**
+   `getPortfolioSnapshot()`'s "today" bucketing (`new Date().toISOString().slice(0, 10)`)
+   is still UTC-based — the same bug class Phase 6's `execute.ts` was fixed for. Left
+   alone here because this function is only reachable from the manual, human-triggered
+   `POST /api/autotrade/risk-check` preview — never the 24/7 paper loop, which has its
+   own, already-ET-correct bucketing — so it's a live concern only once Phase 8 puts a
+   real order-placing path behind this same function on a schedule that isn't
+   "whenever a human happens to click a button."
+5. **Backtesting & walk-forward harness — the validation gate — shipped.** Ingests
+   Polygon/Massive daily bars into a local cache (`backtest_bars`, keyed by
+   symbol/timeframe/time) and tracks which `[from, to]` ranges have already been
+   fetched in a separate `backtest_fetch_log` ledger — the cached data's own min/max
+   bar time can't answer "is this range covered," since weekend/holiday gaps mean a
+   requested calendar boundary is rarely an actual trading day (`db/backtestBars.ts`,
+   `services/autotrading/polygonClient.ts`, `services/autotrading/historicalData.ts`).
+   Decoupled from live scanning, per the resolved decision above —
+   `config.polygon.apiKey` only ever feeds this corpus.
+
+   The simulation core (`services/autotrading/backtest.ts`'s `simulateBacktest()`) is a
+   pure, I/O-free function that replays Screen → Decision → Risk Check day by day over
+   pre-loaded candle arrays, reusing the exact same functions phases 2-4 already
+   shipped (`scoreSymbol`, `generateSignal`, `evaluateRiskCheck`) so the backtest can't
+   silently drift from what the live loop actually does. A daily-bar backtest can only
+   approximate an intraday loop, so the approximations are explicit and documented in
+   code: a signal is generated from data through day N's close; if approved, it fills at
+   day (N+1)'s open — never the signal day's own price; each day after entry, a stop/
+   target hit is checked against that day's high/low, and if a single day's range could
+   have hit both, the **stop** is assumed to win the tie (the conservative read, since a
+   daily bar can't reveal the actual intraday order of events); anything still open at
+   the end of the window force-closes at the last available close
+   (`exitReason: 'end_of_period'`). Correlated-exposure sizing reuses the same
+   Pearson-correlation math as the live risk engine, computed entirely from
+   already-loaded history (no network calls inside the simulation loop). The real-estate
+   exclusion runs once upfront, before any history is fetched, exactly as it does at
+   live Screen time.
+
+   **Hardened after an independent adversarial review of the whole harness (routes,
+   simulation core, and orchestration), before treating any of it as trustworthy:** the
+   correlated-exposure check now threads the *running* same-day-batch position list
+   through, not a stale pre-batch snapshot — the bug let several mutually-correlated
+   candidates all clear the cap on the same day, since none of them saw each other as
+   already-approved (mirrors `riskCheck.ts`'s own `runningPositions` pattern, which was
+   already correct). Candidate ties on score now break deterministically by symbol name
+   instead of falling back to `historyBySymbol`'s Map insertion order, which depended on
+   real concurrent-fetch completion timing — a rerun of an identical config against
+   identical cached data could otherwise approve a different candidate. `tradesToday`
+   is wired to positions actually filled that simulated day (was hardcoded to `0`,
+   masked today only because both shipped profiles' `maxConcurrentPositions` binds
+   before `maxTradesPerDay` would). At the route layer, `from`/`to`/`splitDate` are now
+   validated as real calendar dates (not just `YYYY-MM-DD`-shaped — a value like
+   `2024-02-30` used to either 500 or silently roll to March 1st), `symbols` is capped
+   at 50 per run, and one symbol's historical-bar fetch failing (bad ticker, rate limit)
+   no longer 500s the whole request — it's now reported per-symbol in a new
+   `errors: {symbol, message}[]` on `BacktestReport`/`WalkForwardReport`, surfaced in the
+   UI, while every other symbol's result still comes back normally.
+
+   `runWalkForwardBacktest()` is the validation gate itself: it fetches each symbol's
+   history **once**, then replays it independently over an in-sample `[from, splitDate]`
+   window and an out-of-sample `(splitDate, to]` window — both starting from the same
+   configured equity (not the out-of-sample window compounding on the in-sample
+   result), so their stats are directly comparable rather than confounded by a
+   different effective account size. `computeBacktestStats()` summarizes either window
+   (win rate, avg win/loss, expectancy, profit factor, R-multiple edge, max drawdown,
+   win/loss streaks), reusing `computeStreaksAndDrawdown()` from `services/pnl.ts` — the
+   same function the live Journal's own stats use — rather than a second drawdown
+   implementation. The harness itself renders no pass/fail verdict: per the spec below
+   ("going live requires me to manually flip a flag after reviewing backtest +
+   walk-forward results"), it's the person reviewing in-sample vs. out-of-sample who
+   judges whether a strategy configuration held up, not an automated gate.
+
+   Routed at `POST /api/autotrade/backtest` (a single window) and
+   `POST /api/autotrade/backtest/walk-forward` (the in-sample/out-of-sample split,
+   `splitDate` required and validated to fall strictly between `from` and `to`). The
+   Auto-Trade page's "Backtest & walk-forward" card takes a symbol list, date range, an
+   optional split date, a risk profile independent of the live Configuration card's
+   profile, and starting equity; it renders a stat grid, an equity-curve chart, and a
+   trade-by-trade table per window. Nothing downstream of this phase — paper or live
+   execution — is wired up yet; this phase only produces the report a human reviews
+   before either of those is allowed to run.
+6. **Paper execution loop — shipped.** `services/autotrading/loop.ts` mirrors the
+   alerts-poller's self-rescheduling `setTimeout` pattern exactly (`services/alertScheduler.ts`):
+   `autotrade_config.enabled` is read fresh every cycle (no restart to toggle), one
+   `try`/`catch` wraps each tick so a single bad cycle can't kill the loop, and the timer
+   is `unref`'d so it never keeps the process alive alone. Wired into `index.ts`'s startup
+   next to the alert scheduler.
+
+   One cycle (`runAutotradeLoopTick()`): check every open paper position for a stop/target
+   hit first (`checkPaperExits()` — this runs regardless of the session window, since a
+   closed or near-the-bell market doesn't invalidate an already-known stop/target level);
+   then, only inside the allowed session window, Screen (Phase 2, unmodified) → a
+   ticker-ATR + broad-market-proxy volatility filter (new — see below) → Decision (Phase
+   3, unmodified) → `runPaperExecution()` (Execution). Every stage journals to
+   `autotrade_events` exactly as the manual preview flow already does, so the activity
+   feed reads the same whether a human clicked "Run screen" or the loop ran itself.
+
+   **Paper is a fully local simulation** (the resolved decision above): `execute.ts` never
+   calls the live Webull order pipeline. `attemptPaperEntry()` fills at a *freshly-fetched*
+   quote (not the signal's own screening-time price — this loop runs in real time, unlike
+   the backtest's next-day-open convention, so "now" genuinely is the fill moment),
+   recording a row in the new `autotrade_paper_positions` table (kept fully separate from
+   `positions`, the human's real journal). A quote-fetch failure is reported per-symbol,
+   not silently guessed at. `checkPaperExits()` closes at the declared stop/target *level*,
+   not the observed quote — the same convention `backtest.ts` uses, so paper and backtest
+   results stay comparable.
+
+   `runPaperExecution()` risk-checks a batch sequentially against a **running** total
+   (mirrors `simulateBacktest()`'s batch pattern and `runAutotradeRiskCheck()` — the same
+   same-batch-correlation-threading fix Phase 5's review found and fixed in the backtest
+   engine, built correctly here from the start), reusing `evaluateRiskCheck()` and the
+   now-exported `correlatedNotional()` directly rather than a third parallel
+   implementation. **This resolves the Phase 4 "known interim scope" note**: autotrade's
+   own concurrent-position-count and aggregate-open-risk caps are scoped to its *own* open
+   paper positions, not combined with the human's real ones. Paper trades carry zero real
+   financial exposure, so combining them wouldn't add real safety — and would make this
+   phase impossible to observe for anyone who has real positions open (a very ordinary case
+   for this app's primary manual-trading UI).
+
+   `executionGuards.ts` adds two hard blocks specific to the unattended loop (distinct from
+   `services/trading/marketHours.ts`, which is deliberately warn-only for the
+   human-confirmed live pipeline — a person can see a warning and decide anyway; a loop with
+   no one watching can't): `checkSessionWindow()` blocks outside market hours and within 15
+   minutes of the open or close (the spec's "no entries in the first/last N minutes"), and
+   `checkVolatility()` blocks a candidate whose own ATR% is too high, or *every* candidate
+   this cycle if a broad-market proxy (SPY by default, its own ATR% — no VIX feed exists in
+   this app, so this reuses whatever `MARKET_DATA_PROVIDER` is already configured instead of
+   adding a new data source) is itself too volatile.
+
+   Routed at `POST /api/autotrade/loop/run-once` (run one cycle immediately — the same
+   function the background scheduler calls, so a human can watch it work without waiting
+   for the real-time interval) and `GET /api/autotrade/paper-positions`. The Auto-Trade
+   page's new "Paper trading" card shows the last run's summary, per-window stat tiles
+   (open/closed count, realized P&L), and the full paper trade history. The page's
+   "Auto-trading enabled" warning and footer copy were updated — they used to say the
+   execution loop hadn't been built yet, which would now be actively wrong.
+
+   **Hardened after an independent adversarial review**, before treating an unattended
+   loop as trustworthy even in paper mode: `runAutotradeLoopTick()` now guards against a
+   second concurrent call while one is already in flight (returns immediately with
+   `skippedReason: 'A cycle is already running'`) — the self-rescheduling timer can never
+   overlap *its own* ticks, but the manual "run one cycle now" route calls the same
+   function completely independently, and without this guard a manual trigger landing
+   mid-cycle let two `runPaperExecution()` batches each snapshot the paper portfolio
+   blind to the other's approvals (the same same-batch cap-busting bug class Phase 5's
+   review found in the backtest engine, reintroduced via inter-call concurrency).
+   `closePaperPosition()` now checks the SQL `UPDATE`'s actual row count instead of just
+   re-`SELECT`ing — it used to return the stale row (not `null`) on a no-op second close,
+   which let `checkPaperExits()` journal a duplicate `paper_position_closed` event for a
+   close that only happened once. Daily P&L / consecutive-loss / trades-today figures are
+   now bucketed by the ET calendar date, not UTC — `checkPaperExits()` runs around the
+   clock, not just during the session, and UTC midnight falls at 7-8pm ET (squarely
+   inside ordinary after-hours activity), so a position closed late one evening could
+   land in a different UTC "day" than its own ET trading day, corrupting the next
+   morning's risk-check inputs. `attemptPaperEntry()` now validates a fetched quote is
+   finite and positive before use, and never lets one candidate's persistence failure
+   abort the rest of the batch. The "Paper trading" card no longer leaves a stale
+   successful summary on screen next to a newer failed run's error.
+
+   A follow-up focused review of that fix commit found the same "stale success next to
+   a fresh error" pattern still unfixed in the sibling "Research, Screen & Decide" card
+   (now fixed identically) and a regression test that didn't actually exercise the new
+   `openPaperPosition()` try/catch it was named for (it hit an earlier validation check
+   instead — replaced with one that spies on `openPaperPosition` directly to force a
+   genuine persistence-layer throw). `stopAutotradeLoop()` now also resets the
+   reentrancy flag, defensively, so a failed test assertion elsewhere can never wedge it
+   `true` across unrelated tests. Verified live in a browser end to end (Screen →
+   Backtest → Paper trading, including a rapid-double-click reentrancy test against the
+   real server) with a full recorded activity trail and no console errors.
+7. **Monitoring dashboard & kill switch — shipped.** `autotrade_config` gained a
+   `killSwitch: boolean` field, independent of `enabled` — mirrors `trading_config`'s
+   existing live-trading kill switch (`db/trading.ts`) exactly, down to the convenience
+   wrapper (`setAutotradeKillSwitch(on)`) and the route shape
+   (`POST /api/autotrade/kill-switch { on }`, no confirmation required either direction —
+   a panic button has to fire in one click, and releasing it is the safe direction
+   anyway). Kept deliberately separate from `enabled` rather than reusing it: `enabled`
+   is the routine on/off a user might flip many times a session, while the kill switch is
+   a sticky, explicit emergency halt — collapsing them into one flag would lose that
+   distinction. Engaging it doesn't touch `enabled`, and releasing it doesn't either, so
+   an already-armed loop resumes on its own the moment the kill switch is released,
+   with no need to re-check "enabled" separately (same recovery behavior as the live
+   system).
+
+   **Implements the resolved kill-switch decision above** ("cancels all new... orders and
+   disables the loop immediately... does not force-close existing positions — their
+   existing hard stop-losses remain in place as the exit mechanism"): `checkPaperExits()`
+   now runs on *every* tick unconditionally, before either the kill switch or `enabled` is
+   even read. This is a correctness fix, not just new-feature wiring — for paper trading
+   specifically there is no broker enforcing a stop/target independently, so this loop
+   *is* the only thing that can honor "stops remain in place" once new-entry generation
+   halts. Previously the outer scheduler (`loop()`) only called `runAutotradeLoopTick()`
+   at all when `enabled` was true, meaning turning the master switch off silently stopped
+   exit-checking too, leaving any already-open paper position unable to ever close on its
+   own stop/target — and the manual "run one cycle now" route didn't check `enabled` (or,
+   before this phase, have a kill switch to check) at all, so it could open *new* entries
+   even while the master switch was off. Both gaps are fixed the same way: the
+   enabled/kill-switch gate now lives *inside* `runAutotradeLoopTick()` itself, checked
+   only after exits run and only before the entries stages (screen/decide/execute) —
+   so the background scheduler and the manual trigger get byte-for-byte identical
+   gating, and `loop()` now calls `runAutotradeLoopTick()` unconditionally every cycle
+   (cheap when nothing is open — `checkPaperExits()` short-circuits on an empty
+   position list with no network calls).
+
+   The dashboard itself (`services/autotrading/dashboard.ts`) is a read-only snapshot:
+   active risk profile, open paper positions vs. the profile's concurrent-position cap,
+   aggregate open risk vs. its $ cap, today's realized paper P&L vs. the $ level that
+   trips the daily-drawdown halt, trades today vs. the daily cap, and the
+   consecutive-loss streak vs. the step-down trigger. Every "used vs. limit" figure is
+   computed the exact same way `evaluateRiskCheck()` (`riskCheck.ts`) computes it for a
+   live pre-trade decision — read from `RISK_PROFILES`, not re-derived — so the panel can
+   never show a number the risk engine itself would disagree with. The open-positions/
+   P&L/streak/trade-count figures come from a new `getPaperPortfolioSnapshot()`,
+   extracted from what used to be inlined at the top of `runPaperExecution()`
+   (`execute.ts`) — both the execution loop's own running-total risk check and the
+   dashboard now share one computation instead of two that could quietly drift apart.
+   Routed at `GET /api/autotrade/dashboard`.
+
+   UI: a kill switch button in the Configuration card — same one-click, no-modal,
+   red-when-engaged styling as the **Trade** page's kill switch — plus an inline warning
+   explaining that existing paper positions keep working while it's engaged. A new
+   "Monitoring" card (placed right after Configuration, so it's visible without
+   scrolling) renders the six stat tiles, going red per-tile once its own cap is
+   reached; a manual **Refresh** button plus an opt-in polling interval
+   (`components/RefreshBar.tsx`, default off) keeps it current, matching this app's
+   existing "polling is opt-in" convention rather than an always-on interval. Verified
+   live in a browser end to end: engaging the kill switch turns the button and an inline
+   warning red immediately; a "Run one cycle now" click while engaged correctly reports
+   "New entries skipped — Kill switch is engaged" while still checking exits; releasing
+   it restores normal operation; zero console errors throughout.
+
+   **Hardened after an independent adversarial review** (two reviewers, one on the
+   kill-switch/loop-gating logic, one on the UI/routes/tests), before treating a
+   safety-critical kill switch as trustworthy: the initial gate check in
+   `runAutotradeLoopTick()` only protected against the kill switch being engaged
+   *before* a cycle starts — Screen and Decision are network-bound (sector
+   classification, the market-ATR proxy) and can take real wall-clock time, so a kill
+   switch engaged mid-cycle didn't stop that cycle's entries. A second check now runs
+   immediately before `runPaperExecution()` (the write stage), so engaging the kill
+   switch mid-cycle now aborts that same cycle's entries instead of only the next one.
+   Separately — and more seriously — `YahooProvider` (used for the real-estate
+   sector-classification fallback every Screen cycle calls for symbols outside the
+   seeded universe) had no request timeout: `yahoo-finance2` ships with its own queue
+   timeout unset, so a stalled connection could hang the awaiting call forever. Since
+   nothing downstream of that hang would ever resolve, `runAutotradeLoopTick()` would
+   never return, `tickInFlight` would never reset, and the self-rescheduling timer would
+   never re-arm — permanently stopping the *entire* loop, including `checkPaperExits()`,
+   the one thing this phase depends on to keep enforcing stops while halted. Every
+   Yahoo call now races a 15s timeout (matching `util/http.ts`'s existing convention),
+   converting a hang into a bounded, retried transient failure instead. The Monitoring
+   card's Day P&L tile also colored red for any ordinary down day, giving no distinct
+   signal when the daily-drawdown halt was actually breached — contradicting this
+   section's own "a tile goes red once its cap is reached" claim; it now shows a
+   distinct "HALT TRIGGERED" label (guarded against the equity-unset $0/-0 edge case,
+   same guard style as the aggregate-open-risk tile) instead of just reusing the
+   ordinary win/loss color. And a kill-switch toggle's own background config reload
+   (fire-and-forget, to keep the button responsive) failing could swap the *entire*
+   Configuration card — including the button that releases the kill switch — for a
+   generic error box; the button is now rendered from local state outside that
+   error branch, so it can never be hidden by an unrelated reload failure. Each fix
+   has a regression test verified by reverting the fix and confirming the test fails
+   against the old code. **Known, deferred, currently inert**: `stopAutotradeLoop()`
+   unconditionally resets the reentrancy flag, which would defeat the guard if ever
+   called while a tick is genuinely in flight — today only tests and process shutdown
+   call it, and neither races an in-flight tick, so this is safe as used; a future
+   caller (e.g. a "pause" route) would need real cancellation, not just this reset.
+8. **Live-trading gate** — the manual flag flip that lets the loop place real orders,
+   after reviewing phase 5's backtest/walk-forward results and a period of phase 6
+   paper-trading track record. Deliberately the last and smallest phase: it mostly
+   unlocks what phases 1-7 already built, rather than adding new logic.
 
 ---
 

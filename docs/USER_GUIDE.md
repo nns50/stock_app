@@ -24,9 +24,10 @@ places trades.
 8. [Positions & P&L](#positions--pl)
 9. [Journal & analytics](#journal--analytics)
 10. [Alerts](#alerts)
-11. [Settings](#settings)
-12. [A recommended daily workflow](#a-recommended-daily-workflow)
-13. [Data, privacy & providers](#data-privacy--providers)
+11. [Auto-Trade](#auto-trade)
+12. [Settings](#settings)
+13. [A recommended daily workflow](#a-recommended-daily-workflow)
+14. [Data, privacy & providers](#data-privacy--providers)
 
 ---
 
@@ -589,6 +590,114 @@ that fires to your webhooks**.
   notification** posts to each and reports per-channel success/failure.
 - The **server process must stay running** for this to work (leave `npm run dev`/the
   server up, or run it as a service / in Docker). It's independent of any open tab.
+
+---
+
+## Auto-Trade
+
+**Draft / in progress.** The **Auto** tab is the working area for the automated-trading
+initiative described in **[docs/AUTOTRADING_SPEC.md](../docs/AUTOTRADING_SPEC.md)** — a
+fully autonomous screen → decide → risk-check → execute → journal loop, distinct from
+the human-confirmed live trading on the **Trade** page (which always requires you to
+type a confirmation phrase before an order goes out). The loop now runs — but every
+order it can place is a **paper** simulation; it never reaches a real broker. The
+live-trading gate (a manual flag flip, after reviewing backtest and paper-trading
+results) is the one remaining phase.
+
+- **Configuration** — a master **enabled** switch for the execution loop below (when on,
+  the server runs the full cycle on its own every minute, placing paper trades — see
+  "Paper trading" below), the active **risk profile** (`Moderate`, the conservative
+  default, or `Aggressive`; switching to
+  Aggressive always pops a confirmation dialog explaining what it raises — per-trade
+  risk, the daily drawdown halt, concurrent positions, max aggregate open risk,
+  correlated-ticker exposure, and the daily trade cap — never a silent dropdown change),
+  and **account equity ($)** — what the risk engine sizes trades and computes its %
+  caps against. No live broker balance is wired in yet, so set this manually; until you
+  do, the risk engine blocks every trade (fails closed rather than guessing). The
+  **kill switch** button above these settings is a separate, sticky emergency halt —
+  engaging it (one click, no confirmation needed, mirroring the same button on the
+  **Trade** page) blocks all new entries immediately, regardless of the enabled toggle
+  or session window, but does **not** close your existing paper positions — their
+  stop/target levels keep being checked every cycle, exactly as if you'd left the loop
+  running. Releasing it resumes the loop automatically if **enabled** is still checked;
+  it doesn't touch that setting either way.
+- **Monitoring** — a real-time panel (auto-refreshes only if you turn on polling; there's
+  a manual **Refresh** either way) reading the loop's current state directly: active
+  **risk profile**, **open positions** vs. the profile's concurrent-position cap,
+  **aggregate open risk** used vs. its $ cap, today's **day P&L** vs. the $ level that
+  would trigger the daily-drawdown halt, **trades today** vs. the daily cap, and the
+  **consecutive-loss streak** vs. the count that triggers step-down sizing. Every figure
+  is scoped to the loop's own paper positions (never your real ones) and is a direct read
+  of the same numbers the risk engine itself checks before approving a trade — this panel
+  can't show you something the risk engine would disagree with. A tile goes red once
+  its cap is reached; the day P&L tile specifically shows a distinct "HALT TRIGGERED"
+  label (not just its ordinary red-for-a-loss coloring) once the daily-drawdown halt is
+  actually breached, so an ordinary down day and a halted one are never hard to tell
+  apart.
+- **Real-estate exclusion list** — real estate is a hard, permanent exclusion for this
+  strategy. A starter list of well-known real-estate ETFs ships seeded in; add or remove
+  symbols freely. This list is a backstop, not the only check — the screen below also
+  classifies every candidate by sector/industry, so REITs and real-estate operating
+  companies that aren't on the list (e.g. cell-tower or data-center REITs) still get
+  caught.
+- **Research, Screen & Decide** — **Run screen** scans your universe (plus Webull's
+  pre-market "unusual volume" and gainers movers, when Webull is configured) for
+  volatility/volume-breakout candidates, reusing the same scoring engine as the
+  **Screener** page. Real-estate exclusion runs *before* scoring, so an excluded symbol
+  never shows up as a candidate. Results split into **Candidates** (passed screening,
+  now with an **Entry / Stop / Target / R** trade plan for each — the stop is set at
+  1.5× the symbol's own ATR so it adapts to its actual volatility, and the target is a
+  fixed 2:1 reward:risk multiple of that stop distance, not a number tuned to hit any
+  particular return), **Excluded** (real estate), **Skipped** (sector/industry couldn't
+  be verified this run — reconsidered next run, never silently allowed through), and
+  **Errors**. A candidate with no usable volatility history (ATR) gets no trade plan —
+  shown separately as "no signal," not guessed at. Each candidate with a trade plan is
+  then sized (by the active risk profile's per-trade risk %, cut in half after 2
+  consecutive losing trades) and risk-checked against every cap — daily drawdown halt,
+  concurrent-position count, the aggregate open-risk check (sum of size × stop distance
+  across everything open plus this trade — distinct from the daily halt, since it
+  catches several positions getting stopped out together before that halt could even
+  fire), statistical-correlation exposure to other open positions, and the daily trade
+  count — showing a **Qty** and an **approved/blocked** badge (with the failing rule)
+  per candidate. Candidates are risk-checked in score order against a running total, so
+  a batch of signals that would each pass alone can still correctly exhaust a shared cap
+  (e.g. the position-count cap) partway through. This is read-only: running a screen
+  never places an order.
+- **Backtest & walk-forward** — the validation gate every strategy configuration has to
+  clear before it's allowed anywhere near a paper or live order. Give it a symbol list,
+  a date range, a starting equity, and (independently of the Configuration card above)
+  a risk profile, and it replays Screen → Decision → Risk Check day by day over
+  historical daily bars — the exact same logic the live loop above uses, so a backtest
+  can't tell you something the live system wouldn't actually do. Leave **Out-of-sample
+  split** blank for a single-window run, or set it to split the range into an
+  **in-sample** window (what the configuration was "tuned" on) and an **out-of-sample**
+  window (unseen data) — a strategy that only performs in-sample is exactly what this
+  split is meant to expose. Each run shows a stat grid (trades, win rate, expectancy,
+  profit factor, average R, return, max drawdown, win/loss streaks), an equity curve,
+  and the full trade-by-trade list. This tool doesn't render a pass/fail verdict —
+  reviewing in-sample vs. out-of-sample and deciding whether a configuration held up is
+  yours to make, same as the eventual live-trading flag. At most 50 symbols per run; if
+  one symbol's historical data can't be fetched (bad ticker, provider rate limit), it's
+  called out separately and excluded — the rest of the run still completes.
+- **Paper trading** — the execution loop itself. When **Auto-trading enabled** is checked
+  above, the server runs Screen → Decision → Risk Check → Execution on its own every
+  minute; **Run one cycle now** runs the exact same cycle immediately, so you can watch
+  it work without waiting. Every fill is a local simulation from a live quote — it never
+  places a real order. No new entries in the first/last 15 minutes of the session, and a
+  volatility filter (the candidate's own ATR%, plus a broad-market proxy) can skip a
+  cycle's entries entirely; open positions are still checked for a stop/target hit
+  either way. Shows open/closed counts, realized P&L, and the full paper trade history
+  (side, entry/exit, reason, P&L, R). Concurrent-position and aggregate-open-risk caps
+  here are scoped to the loop's own paper positions, not your real ones on the
+  **Positions**/**Journal** pages — paper trades carry no real financial exposure, so
+  they're evaluated independently, the same way a real paper-trading account would be.
+- **Recent activity** — a journal of what the screen, decision, and risk-check stages
+  did and why (candidate found, excluded, signal generated, passed/blocked, a paper
+  order placed or closed, a setting changed) — the same feed the execution loop above
+  writes into automatically.
+
+This page will keep growing as the last remaining phase (the live-trading gate) lands —
+check the spec doc for the full roadmap and current status.
 
 ---
 

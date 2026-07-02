@@ -65,6 +65,22 @@ import type {
   CancelResult,
   ReplacePatch,
   ReplaceResult,
+  AutotradeConfig,
+  AutotradeRiskProfile,
+  AutotradeExclusion,
+  AutotradeScreenResult,
+  AutotradeDecideResponse,
+  AutotradeSignal,
+  AutotradeRiskCheckResult,
+  AutotradeEvent,
+  AutotradeStage,
+  BacktestRequest,
+  BacktestRunResponse,
+  WalkForwardRequest,
+  WalkForwardResponse,
+  LoopTickSummary,
+  PaperPosition,
+  AutotradeDashboard,
 } from './types';
 
 export class ApiError extends Error {
@@ -383,4 +399,39 @@ export const client = {
     api<LivePreviewResult>('/trade/preview', { method: 'POST', body: JSON.stringify({ intent, accountId }) }),
   tradePlace: (intent: OrderIntentInput, accountId: string, confirmation: string) =>
     api<PlaceResult>('/trade/place', { method: 'POST', body: JSON.stringify({ intent, accountId, confirmation }) }),
+
+  // --- auto-trading (docs/AUTOTRADING_SPEC.md) ---
+  autotradeConfig: () => api<AutotradeConfig>('/autotrade/config'),
+  setAutotradeConfig: (body: {
+    enabled?: boolean;
+    riskProfile?: AutotradeRiskProfile;
+    confirmAggressive?: boolean;
+    accountEquityUsd?: number | null;
+  }) => api<AutotradeConfig>('/autotrade/config', { method: 'PUT', body: JSON.stringify(body) }),
+  autotradeExclusions: () => api<{ exclusions: AutotradeExclusion[] }>('/autotrade/exclusions'),
+  addAutotradeExclusion: (body: { symbol: string; reason?: string }) =>
+    api<AutotradeExclusion>('/autotrade/exclusions', post(body)),
+  removeAutotradeExclusion: (symbol: string) =>
+    api<{ removed: string }>(`/autotrade/exclusions/${encodeURIComponent(symbol)}`, { method: 'DELETE' }),
+  runAutotradeScreen: (body: { symbols?: string[] } = {}) =>
+    api<AutotradeScreenResult>('/autotrade/screen', post(body)),
+  runAutotradeDecision: (body: { symbols?: string[] } = {}) =>
+    api<AutotradeDecideResponse>('/autotrade/decide', post(body)),
+  runAutotradeRiskCheck: (signals: AutotradeSignal[]) =>
+    api<{ results: AutotradeRiskCheckResult[] }>('/autotrade/risk-check', post({ signals })),
+  autotradeEvents: (params: { stage?: AutotradeStage; symbol?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams(params as Record<string, string>).toString();
+    return api<{ events: AutotradeEvent[] }>(`/autotrade/events${qs ? `?${qs}` : ''}`);
+  },
+  runAutotradeBacktest: (body: BacktestRequest) => api<BacktestRunResponse>('/autotrade/backtest', post(body)),
+  runAutotradeWalkForward: (body: WalkForwardRequest) =>
+    api<WalkForwardResponse>('/autotrade/backtest/walk-forward', post(body)),
+  runAutotradeLoopOnce: () => api<LoopTickSummary>('/autotrade/loop/run-once', post({})),
+  autotradePaperPositions: (params: { status?: 'open' | 'closed'; symbol?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams(params as Record<string, string>).toString();
+    return api<{ positions: PaperPosition[] }>(`/autotrade/paper-positions${qs ? `?${qs}` : ''}`);
+  },
+  autotradeDashboard: () => api<AutotradeDashboard>('/autotrade/dashboard'),
+  setAutotradeKillSwitch: (on: boolean) =>
+    api<AutotradeConfig>('/autotrade/kill-switch', { method: 'POST', body: JSON.stringify({ on }) }),
 };

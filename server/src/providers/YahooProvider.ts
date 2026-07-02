@@ -57,6 +57,32 @@ const INTERVAL: Record<Timeframe, string> = {
   weekly: '1wk',
 };
 
+/** yahoo-finance2 ships with its own queue timeout unset (commented out in its
+ *  own defaults), so a stalled request — the server accepts the connection but
+ *  never responds — hangs forever with no library-level rescue. Matches
+ *  util/http.ts's getJson() default. The underlying request itself isn't
+ *  aborted (yahoo-finance2 exposes no per-call cancellation hook here); this
+ *  only stops OUR code from waiting on it past this point, which is what
+ *  matters for a caller that must not hang indefinitely (e.g. the autonomous
+ *  trading loop's Screen stage — see realEstateClassifier.ts). */
+const YAHOO_TIMEOUT_MS = 15000;
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Yahoo ${label} timed out after ${ms}ms`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
 export class YahooProvider implements MarketDataProvider {
   readonly name = 'yahoo';
   readonly synthetic = false;
@@ -88,7 +114,7 @@ export class YahooProvider implements MarketDataProvider {
     let lastErr: unknown;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        return await fn();
+        return await withTimeout(fn(), YAHOO_TIMEOUT_MS, label);
       } catch (err) {
         lastErr = err;
         const message = (err as Error).message || String(err);

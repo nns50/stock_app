@@ -161,3 +161,40 @@ export function meanOfLast(values: number[], n: number): number | null {
   const slice = values.slice(Math.max(0, values.length - n));
   return slice.reduce((a, b) => a + b, 0) / slice.length;
 }
+
+/** Simple period-over-period % returns between consecutive closes (as
+ *  decimals, e.g. 0.02 = 2%). Length is closes.length - 1. Skips a step where
+ *  the prior close is zero (can't divide). */
+export function dailyReturns(closes: number[]): number[] {
+  const out: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    if (closes[i - 1]) out.push((closes[i] - closes[i - 1]) / closes[i - 1]);
+  }
+  return out;
+}
+
+/** Pearson correlation coefficient between two numeric series. Uses the
+ *  shorter series' length (aligning from the end, not by date) — fine for two
+ *  US-equity return series over the same calendar window, which is the only
+ *  use case today. Null if either series has fewer than 2 points, or either
+ *  has zero variance (a correlation is undefined against a flat series). */
+export function pearsonCorrelation(a: number[], b: number[]): number | null {
+  const n = Math.min(a.length, b.length);
+  if (n < 2) return null;
+  const ax = a.slice(a.length - n);
+  const bx = b.slice(b.length - n);
+  const meanA = ax.reduce((s, v) => s + v, 0) / n;
+  const meanB = bx.reduce((s, v) => s + v, 0) / n;
+  let cov = 0;
+  let varA = 0;
+  let varB = 0;
+  for (let i = 0; i < n; i++) {
+    const da = ax[i] - meanA;
+    const db = bx[i] - meanB;
+    cov += da * db;
+    varA += da * da;
+    varB += db * db;
+  }
+  if (varA === 0 || varB === 0) return null;
+  return cov / Math.sqrt(varA * varB);
+}

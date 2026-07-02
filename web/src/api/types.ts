@@ -1022,3 +1022,215 @@ export interface PlaceResult {
   broker?: { ok: boolean; orderId?: string; error?: string };
   error?: string;
 }
+
+// --- auto-trading (docs/AUTOTRADING_SPEC.md) ---
+
+export type AutotradeRiskProfile = 'MODERATE' | 'AGGRESSIVE';
+
+export interface AutotradeConfig {
+  enabled: boolean;
+  killSwitch: boolean;
+  riskProfile: AutotradeRiskProfile;
+  accountEquityUsd: number | null;
+}
+
+export type AutotradeExclusionSource = 'default' | 'user';
+
+export interface AutotradeExclusion {
+  symbol: string;
+  reason: string | null;
+  source: AutotradeExclusionSource;
+  createdAt: number;
+}
+
+export interface AutotradeCandidate extends SymbolScore {
+  discoverySource: 'universe' | 'movers';
+}
+
+export interface AutotradeScreenResult {
+  generatedAt: number;
+  candidates: AutotradeCandidate[];
+  excluded: { symbol: string; reason: string }[];
+  skipped: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+  discovery: { universeCount: number; moversCount: number; scannedCount: number };
+}
+
+export type AutotradeStage = 'screen' | 'decision' | 'risk_check' | 'execution' | 'config';
+
+export interface AutotradeEvent {
+  id: number;
+  symbol: string | null;
+  stage: AutotradeStage;
+  action: string;
+  detail: string | null;
+  riskProfile: string | null;
+  createdAt: number;
+}
+
+export type AutotradeSignalSide = 'buy' | 'sell';
+
+export interface AutotradeSignal {
+  symbol: string;
+  side: AutotradeSignalSide;
+  entry: number;
+  stop: number;
+  target: number;
+  rMultiple: number;
+  rationale: string;
+  score: number;
+}
+
+export interface AutotradeDecisionResult {
+  signals: AutotradeSignal[];
+  skipped: { symbol: string; reason: string }[];
+}
+
+export interface AutotradeDecideResponse {
+  screen: AutotradeScreenResult;
+  decision: AutotradeDecisionResult;
+}
+
+export interface AutotradeRiskCheckRule {
+  rule: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface AutotradeRiskCheckResult {
+  symbol: string;
+  ok: boolean;
+  checks: AutotradeRiskCheckRule[];
+  sizing: RiskSizingResult;
+  stepDownActive: boolean;
+  approvedRiskAmount: number;
+  approvedNotional: number;
+}
+
+// --- backtesting & walk-forward (Phase 5 — the validation gate) ---
+
+export interface SimulatedTrade {
+  symbol: string;
+  side: AutotradeSignalSide;
+  signalDate: string;
+  entryDate: string;
+  entryPrice: number;
+  exitDate: string;
+  exitPrice: number;
+  exitReason: 'stop' | 'target' | 'end_of_period';
+  quantity: number;
+  pnl: number;
+  rMultiple: number;
+}
+
+export interface BacktestEquityPoint {
+  date: string;
+  equity: number;
+}
+
+export interface BacktestReport {
+  trades: SimulatedTrade[];
+  equityCurve: BacktestEquityPoint[];
+  startingEquity: number;
+  finalEquity: number;
+  excludedSymbols: { symbol: string; reason: string }[];
+  /** Symbols whose historical-bar fetch failed — every other symbol's result
+   *  is still simulated normally. */
+  errors: { symbol: string; message: string }[];
+}
+
+export interface BacktestStats {
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  avgWin: number;
+  avgLoss: number;
+  expectancy: number;
+  profitFactor: number | null;
+  totalPnl: number;
+  returnPct: number;
+  avgR: number | null;
+  bestR: number | null;
+  worstR: number | null;
+  maxDrawdown: number;
+  longestWinStreak: number;
+  longestLossStreak: number;
+}
+
+export interface BacktestRunResponse {
+  report: BacktestReport;
+  stats: BacktestStats;
+}
+
+export interface WalkForwardResponse {
+  inSample: BacktestRunResponse;
+  outOfSample: BacktestRunResponse;
+  excludedSymbols: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+}
+
+export interface BacktestRequest {
+  symbols: string[];
+  from: string;
+  to: string;
+  riskProfile: AutotradeRiskProfile;
+  startingEquity: number;
+}
+
+export interface WalkForwardRequest extends BacktestRequest {
+  splitDate: string;
+}
+
+// --- Phase 6: paper execution loop ---
+
+export type PaperExitReason = 'stop' | 'target' | 'manual';
+
+export interface PaperPosition {
+  id: number;
+  symbol: string;
+  side: AutotradeSignalSide;
+  quantity: number;
+  entryPrice: number;
+  entryAt: number;
+  stopPrice: number;
+  targetPrice: number;
+  riskAmount: number;
+  riskProfile: string;
+  rationale: string;
+  status: 'open' | 'closed';
+  exitPrice: number | null;
+  exitAt: number | null;
+  exitReason: PaperExitReason | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface LoopTickSummary {
+  ranEntries: boolean;
+  skippedReason?: string;
+  exitsChecked: number;
+  exitsClosed: number;
+  candidatesScreened: number;
+  candidatesPassedVolatility: number;
+  signalsGenerated: number;
+  entriesOpened: number;
+}
+
+export interface AutotradeDashboard {
+  enabled: boolean;
+  killSwitch: boolean;
+  riskProfile: AutotradeRiskProfile;
+  equity: number | null;
+  openPositions: PaperPosition[];
+  openPositionsCount: number;
+  maxConcurrentPositions: number;
+  openRisk: number;
+  maxAggregateOpenRisk: number;
+  dailyPnl: number;
+  dailyDrawdownHaltLevel: number;
+  tradesToday: number;
+  maxTradesPerDay: number;
+  consecutiveLosses: number;
+  stepDownAfterLosses: number;
+}

@@ -7,6 +7,7 @@ import { totp } from '../src/services/totp';
 import { setSetting } from '../src/db/settings';
 import { createIntent } from '../src/db/orders';
 import { addExit, createPosition } from '../src/db/positions';
+import { setAutotradeConfig } from '../src/db/autotradeConfig';
 
 // End-to-end tests through the real Express app → routers → services → SQLite
 // (a throwaway DB; see vitest.config.ts). Catches route wiring, validation, and
@@ -456,4 +457,186 @@ describe('two-factor (integration)', () => {
       config.auth.mfaDisabled = false;
     }
   });
+});
+
+describe('autotrade backtest routes (integration)', () => {
+  // VNQ is on the default real-estate exclusion list (server/data/reExclusions.json),
+  // so it's excluded before runBacktest ever fetches history or hits the network —
+  // safe to exercise the real route end to end without mocking Polygon/Yahoo.
+  const baseBody = {
+    symbols: ['VNQ'],
+    from: '2024-01-01',
+    to: '2024-03-01',
+    riskProfile: 'MODERATE',
+    startingEquity: 100_000,
+  };
+
+  it('runs a plain backtest and reports the real-estate exclusion, with no trades', async () => {
+    const res = await post('/api/autotrade/backtest', baseBody);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      report: { trades: unknown[]; excludedSymbols: { symbol: string }[] };
+      stats: { totalTrades: number };
+    };
+    expect(body.report.excludedSymbols).toEqual([{ symbol: 'VNQ', reason: 'On the real-estate exclusion list' }]);
+    expect(body.report.trades).toEqual([]);
+    expect(body.stats.totalTrades).toBe(0);
+  });
+
+  it('rejects a backtest request where to is before from', async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, from: '2024-03-01', to: '2024-01-01' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a backtest request with an empty symbols list', async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, symbols: [] });
+    expect(res.status).toBe(400);
+  });
+
+  it('runs a walk-forward split and reports both windows with the exclusion applied to each', async () => {
+    const res = await post('/api/autotrade/backtest/walk-forward', { ...baseBody, splitDate: '2024-02-01' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      inSample: { report: { excludedSymbols: { symbol: string }[] }; stats: { totalTrades: number } };
+      outOfSample: { report: { excludedSymbols: { symbol: string }[] }; stats: { totalTrades: number } };
+      excludedSymbols: { symbol: string }[];
+    };
+    expect(body.excludedSymbols).toEqual([{ symbol: 'VNQ', reason: 'On the real-estate exclusion list' }]);
+    expect(body.inSample.stats.totalTrades).toBe(0);
+    expect(body.outOfSample.stats.totalTrades).toBe(0);
+  });
+
+  it('rejects a walk-forward request when splitDate is not between from and to', async () => {
+    const beforeFrom = await post('/api/autotrade/backtest/walk-forward', { ...baseBody, splitDate: '2023-12-01' });
+    expect(beforeFrom.status).toBe(400);
+    const atOrAfterTo = await post('/api/autotrade/backtest/walk-forward', { ...baseBody, splitDate: '2024-03-01' });
+    expect(atOrAfterTo.status).toBe(400);
+  });
+
+  it('rejects a walk-forward request missing splitDate', async () => {
+    const res = await post('/api/autotrade/backtest/walk-forward', baseBody);
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a structurally-invalid calendar date with 400, not a 500 crash', async () => {
+    // Regex-shaped but not a real date (month 00) — used to reach addDays()/
+    // toISO()'s `new Date(NaN).toISOString()`, an uncaught RangeError -> 500.
+    const res = await post('/api/autotrade/backtest', { ...baseBody, from: '2024-00-00' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/valid calendar date/i);
+  });
+
+  it('rejects a calendar-overflow date (Feb 30) with 400 instead of silently rolling to March 1', async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, to: '2024-02-30' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects more than 50 symbols', async () => {
+    const symbols = Array.from({ length: 51 }, (_, i) => `SYM${i}`);
+    const res = await post('/api/autotrade/backtest', { ...baseBody, symbols });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('autotrade paper execution routes (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events;');
+    // runAutotradeLoopTick (Phase 7) gates new entries on autotrade_config.enabled
+    // (and the kill switch) — arm it here so this test still exercises the real
+    // Screen -> Decision -> Execution wiring end-to-end, not just the
+    // always-runs exits path.
+    setAutotradeConfig({ enabled: true });
+  });
+
+  it('runs one loop cycle through the real Screen -> Decision -> Execution wiring and returns a summary', async () => {
+    // Nothing is open yet, so exits are deterministically zero regardless of
+    // whatever the real wall-clock session-window state happens to be right
+    // now (already covered, with full control, by autotradeLoop.test.ts).
+    const res = await post('/api/autotrade/loop/run-once', {});
+    expect(res.status).toBe(200);
+    const summary = (await res.json()) as {
+      exitsChecked: number;
+      exitsClosed: number;
+      ranEntries: boolean;
+      candidatesScreened: number;
+    };
+    expect(summary.exitsChecked).toBe(0);
+    expect(summary.exitsClosed).toBe(0);
+    expect(typeof summary.ranEntries).toBe('boolean');
+  });
+
+  it('lists paper positions (empty when none exist)', async () => {
+    const body = (await getJson('/api/autotrade/paper-positions')) as { positions: unknown[] };
+    expect(body.positions).toEqual([]);
+  });
+
+  it('rejects an invalid status filter', async () => {
+    const res = await fetch(`${base}/api/autotrade/paper-positions?status=bogus`);
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('autotrade monitoring dashboard + kill switch routes (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events;');
+  });
+
+  it('GET /dashboard returns a full snapshot with safe defaults', async () => {
+    const dash = (await getJson('/api/autotrade/dashboard')) as {
+      enabled: boolean;
+      killSwitch: boolean;
+      riskProfile: string;
+      equity: number | null;
+      openPositionsCount: number;
+      maxConcurrentPositions: number;
+      maxTradesPerDay: number;
+    };
+    expect(dash.enabled).toBe(false);
+    expect(dash.killSwitch).toBe(false);
+    expect(dash.riskProfile).toBe('MODERATE');
+    expect(dash.equity).toBeNull();
+    expect(dash.openPositionsCount).toBe(0);
+    expect(dash.maxConcurrentPositions).toBe(2);
+    expect(dash.maxTradesPerDay).toBe(6);
+  });
+
+  it('POST /kill-switch engages and releases, journaling each transition', async () => {
+    const engaged = await post('/api/autotrade/kill-switch', { on: true });
+    expect(engaged.status).toBe(200);
+    expect((await engaged.json()) as { killSwitch: boolean }).toMatchObject({ killSwitch: true });
+    expect(((await getJson('/api/autotrade/dashboard')) as { killSwitch: boolean }).killSwitch).toBe(true);
+
+    const released = await post('/api/autotrade/kill-switch', { on: false });
+    expect((await released.json()) as { killSwitch: boolean }).toMatchObject({ killSwitch: false });
+
+    const events = (await getJson('/api/autotrade/events')) as {
+      events: { action: string; stage: string }[];
+    };
+    const actions = events.events.map((e) => e.action);
+    expect(actions).toContain('kill_switch_engaged');
+    expect(actions).toContain('kill_switch_released');
+  });
+
+  it('POST /kill-switch rejects a non-boolean body', async () => {
+    const res = await post('/api/autotrade/kill-switch', { on: 'yes' });
+    expect(res.status).toBe(400);
+  });
+
+  it('engaging the kill switch does not touch the enabled flag', async () => {
+    await setAutotradeConfigViaRoute({ enabled: true });
+    await post('/api/autotrade/kill-switch', { on: true });
+    const cfg = (await getJson('/api/autotrade/config')) as { enabled: boolean; killSwitch: boolean };
+    expect(cfg.enabled).toBe(true);
+    expect(cfg.killSwitch).toBe(true);
+  });
+
+  async function setAutotradeConfigViaRoute(body: unknown) {
+    const res = await fetch(`${base}/api/autotrade/config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(200);
+    return res;
+  }
 });
