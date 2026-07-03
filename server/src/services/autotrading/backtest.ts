@@ -36,10 +36,10 @@ import { mapPool } from '../../util/async';
 //     the last available close, tagged exitReason: 'end_of_period'.
 // ---------------------------------------------------------------------------
 
-const TIMEFRAME: Timeframe = 'daily';
+export const TIMEFRAME: Timeframe = 'daily';
 /** Calendar-day padding before `from` so indicators (up to a 50-day MA by
  *  default) have a full warmup window on the very first simulated day. */
-const WARMUP_PADDING_DAYS = 100;
+export const WARMUP_PADDING_DAYS = 100;
 
 export interface BacktestConfig {
   symbols: string[];
@@ -105,18 +105,22 @@ interface PendingEntry {
   notional: number;
 }
 
-function toISO(ms: number): string {
+/** Exported for reuse by optionsBacktest.ts — a plain YYYY-MM-DD formatter,
+ *  not worth a second copy. */
+export function toISO(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-function addDays(dateStr: string, days: number): string {
+export function addDays(dateStr: string, days: number): string {
   const d = new Date(`${dateStr}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
   return toISO(d.getTime());
 }
 
-/** Index of the last candle with `time <= asOfMs`, or -1 if none. */
-function indexAsOf(candles: Candle[], asOfMs: number): number {
+/** Index of the last candle with `time <= asOfMs`, or -1 if none. Exported
+ *  for reuse by optionsBacktest.ts, which needs the identical "as of this
+ *  simulated day" lookup for option contract bars, not just equity ones. */
+export function indexAsOf(candles: Candle[], asOfMs: number): number {
   let idx = -1;
   for (let i = 0; i < candles.length; i++) {
     if (candles[i].time <= asOfMs) idx = i;
@@ -468,7 +472,11 @@ async function filterEligibleSymbols(
  *  limit) is caught and reported per-symbol, not left to reject the whole
  *  mapPool — one bad symbol in a 10-symbol request must not discard the
  *  other nine's results (mirrors screen.ts's per-symbol errors[] handling). */
-async function loadBacktestHistory(
+/** Exported for reuse by optionsBacktest.ts's runOptionsBacktest — the same
+ *  real-estate pre-filter and equity daily-bar fetch, since options entries
+ *  are gated by the same equity screen (docs/AUTOTRADING_SPEC.md, phase 9)
+ *  and there's no reason to re-fetch/re-classify the same underlyings twice. */
+export async function loadBacktestHistory(
   symbols: string[],
   from: string,
   to: string,
