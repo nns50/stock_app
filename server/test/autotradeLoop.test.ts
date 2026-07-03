@@ -10,6 +10,12 @@ vi.mock('../src/services/autotrading/screen', () => ({ runAutotradeScreen: vi.fn
 vi.mock('../src/services/autotrading/decide', () => ({ runAutotradeDecision: vi.fn() }));
 vi.mock('../src/services/autotrading/optionsDecide', () => ({ runOptionsDecision: vi.fn() }));
 vi.mock('../src/services/autotrading/execute', () => ({ runPaperExecution: vi.fn(), checkPaperExits: vi.fn() }));
+vi.mock('../src/services/autotrading/optionsExecute', () => ({
+  runOptionsPaperExecution: vi.fn(),
+  checkOptionsPaperExits: vi.fn(),
+  getOptionsPaperPortfolioSnapshot: vi.fn(),
+  optionsSeedForEquity: vi.fn(),
+}));
 vi.mock('../src/services/autotrading/liveExecute', () => ({ runLiveExecution: vi.fn(), reconcileLiveOrders: vi.fn() }));
 vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/autotrading/executionGuards')>();
@@ -21,6 +27,12 @@ import { runAutotradeScreen } from '../src/services/autotrading/screen';
 import { runAutotradeDecision } from '../src/services/autotrading/decide';
 import { runOptionsDecision } from '../src/services/autotrading/optionsDecide';
 import { runPaperExecution, checkPaperExits } from '../src/services/autotrading/execute';
+import {
+  runOptionsPaperExecution,
+  checkOptionsPaperExits,
+  getOptionsPaperPortfolioSnapshot,
+  optionsSeedForEquity,
+} from '../src/services/autotrading/optionsExecute';
 import { runLiveExecution, reconcileLiveOrders } from '../src/services/autotrading/liveExecute';
 import { checkSessionWindow, getMarketAtrPct } from '../src/services/autotrading/executionGuards';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
@@ -37,6 +49,10 @@ const mockDecide = vi.mocked(runAutotradeDecision);
 const mockOptionsDecide = vi.mocked(runOptionsDecision);
 const mockExecute = vi.mocked(runPaperExecution);
 const mockCheckExits = vi.mocked(checkPaperExits);
+const mockOptionsExecute = vi.mocked(runOptionsPaperExecution);
+const mockCheckOptionsExits = vi.mocked(checkOptionsPaperExits);
+const mockGetOptionsSnapshot = vi.mocked(getOptionsPaperPortfolioSnapshot);
+const mockOptionsSeed = vi.mocked(optionsSeedForEquity);
 const mockLiveExecute = vi.mocked(runLiveExecution);
 const mockReconcileLive = vi.mocked(reconcileLiveOrders);
 const mockSessionWindow = vi.mocked(checkSessionWindow);
@@ -74,6 +90,42 @@ function signal(symbol: string): TradeSignal {
   return { symbol, side: 'buy', entry: 100, stop: 95, target: 110, rMultiple: 2, rationale: 'fixture', score: 70 };
 }
 
+function optionSignal(symbol: string) {
+  return {
+    symbol,
+    side: 'call' as const,
+    contractSymbol: `${symbol}-fixture`,
+    strike: 100,
+    expiration: '2024-02-01',
+    dte: 14,
+    premium: 3,
+    delta: 0.4,
+    ivRank: 50,
+    maxLossPerContract: 300,
+    rationale: 'fixture',
+    score: 70,
+  };
+}
+
+const emptyOptionsSnapshot = {
+  today: '2024-01-01',
+  openPositions: [],
+  openRisk: 0,
+  openPositionsCount: 0,
+  dailyPnl: 0,
+  consecutiveLosses: 0,
+  tradesToday: 0,
+};
+
+const emptySeed = {
+  openRisk: 0,
+  openPositionsCount: 0,
+  dailyPnl: 0,
+  consecutiveLosses: 0,
+  tradesToday: 0,
+  positions: [],
+};
+
 const origPlaceEnabled = config.trading.placeEnabled;
 
 beforeAll(() => initDb());
@@ -83,6 +135,10 @@ beforeEach(() => {
   mockOptionsDecide.mockReset().mockResolvedValue({ signals: [], skipped: [] });
   mockExecute.mockReset();
   mockCheckExits.mockReset().mockResolvedValue([]);
+  mockOptionsExecute.mockReset().mockResolvedValue([]);
+  mockCheckOptionsExits.mockReset().mockResolvedValue([]);
+  mockGetOptionsSnapshot.mockReset().mockReturnValue(emptyOptionsSnapshot);
+  mockOptionsSeed.mockReset().mockReturnValue(emptySeed);
   mockLiveExecute.mockReset();
   mockReconcileLive.mockReset().mockResolvedValue([]);
   mockSessionWindow.mockReset().mockReturnValue({ ok: true });
@@ -122,6 +178,16 @@ describe('runAutotradeLoopTick', () => {
     expect(mockScreen).not.toHaveBeenCalled();
   });
 
+  it('always checks options exits too, even when the session window blocks new entries', async () => {
+    mockSessionWindow.mockReturnValue({ ok: false, reason: 'Market is closed' });
+    mockCheckOptionsExits.mockResolvedValue([{ symbol: 'AAPL', closed: true }]);
+    const summary = await runAutotradeLoopTick();
+    expect(mockCheckOptionsExits).toHaveBeenCalledTimes(1);
+    expect(summary.optionsExitsChecked).toBe(1);
+    expect(summary.optionsExitsClosed).toBe(1);
+    expect(summary.ranEntries).toBe(false);
+  });
+
   it('always reconciles live orders too, even when neither paper nor live can open new entries', async () => {
     setAutotradeConfig({ enabled: false }); // paper off, live never configured either
     mockReconcileLive.mockResolvedValue([
@@ -151,12 +217,62 @@ describe('runAutotradeLoopTick', () => {
 
     expect(mockScreen).toHaveBeenCalledTimes(1);
     expect(mockDecide).toHaveBeenCalledWith([candidate('AAPL', 2)]);
-    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }]);
+    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed);
     expect(summary.ranEntries).toBe(true);
     expect(summary.candidatesScreened).toBe(1);
     expect(summary.candidatesPassedVolatility).toBe(1);
     expect(summary.signalsGenerated).toBe(1);
     expect(summary.entriesOpened).toBe(1);
+  });
+
+  it('runs options paper execution alongside equity, seeding equity with options’ own pre-existing snapshot', async () => {
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+    mockOptionsDecide.mockResolvedValue({ signals: [optionSignal('AAPL')], skipped: [] });
+    mockOptionsExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+    const optSnapshot = { ...emptyOptionsSnapshot, openRisk: 500 };
+    mockGetOptionsSnapshot.mockReturnValue(optSnapshot);
+    const seed = { ...emptySeed, openRisk: 500 };
+    mockOptionsSeed.mockReturnValue(seed);
+
+    const summary = await runAutotradeLoopTick();
+
+    // Equity's batch is seeded from options' pre-existing snapshot...
+    expect(mockOptionsSeed).toHaveBeenCalledWith(optSnapshot);
+    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], seed);
+    // ...and options execution runs too, on its own decided signals.
+    expect(mockOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }]);
+    expect(summary.optionsEntriesOpened).toBe(1);
+  });
+
+  it('does not run options paper execution when paper is inactive (options has no live path of its own)', async () => {
+    setAutotradeConfig({ enabled: false, liveTradingEnabled: true, liveAccountId: 'ACC1' });
+    setTradingConfig({ enabled: true, killSwitch: false });
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+    mockLiveExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+    mockOptionsDecide.mockResolvedValue({ signals: [optionSignal('AAPL')], skipped: [] });
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(mockLiveExecute).toHaveBeenCalledTimes(1); // live still ran
+    expect(mockOptionsExecute).not.toHaveBeenCalled(); // but options paper execution did not
+    expect(summary.optionsEntriesOpened).toBe(0);
   });
 
   it('also runs the options decision stage alongside the equity one, on the same volatility-filtered candidates', async () => {
