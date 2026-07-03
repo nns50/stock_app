@@ -510,6 +510,18 @@ describe('autotrade config routes (integration)', () => {
     expect(final.accountEquityUsd).toBe(75_000);
   });
 
+  it('persists optionsStrategyType and survives an unrelated save, mirroring riskProfile', async () => {
+    await put('/api/autotrade/config', { optionsStrategyType: 'debit_spread' });
+    await put('/api/autotrade/config', { accountEquityUsd: 20_000 });
+
+    const final = (await getJson('/api/autotrade/config')) as {
+      optionsStrategyType: string;
+      accountEquityUsd: number;
+    };
+    expect(final.optionsStrategyType).toBe('debit_spread');
+    expect(final.accountEquityUsd).toBe(20_000);
+  });
+
   it('accountEquityUsd: null still explicitly clears it, distinct from omitting the field entirely', async () => {
     await put('/api/autotrade/config', { enabled: true, accountEquityUsd: 50_000 });
     const cleared = await put('/api/autotrade/config', { accountEquityUsd: null });
@@ -647,6 +659,106 @@ describe('autotrade config routes (integration)', () => {
         });
       });
     });
+  });
+});
+
+describe('autotrade options risk-check route (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_config; DELETE FROM autotrade_events;');
+    setAutotradeConfig({ accountEquityUsd: 100_000, riskProfile: 'MODERATE' });
+  });
+
+  it('accepts a single_leg signal body (kind discriminant) and sizes by premium', async () => {
+    const res = await post('/api/autotrade/risk-check-options', {
+      signals: [
+        {
+          kind: 'single_leg',
+          symbol: 'AAPL',
+          side: 'call',
+          contractSymbol: 'AAPL-fixture',
+          strike: 100,
+          expiration: '2024-06-21',
+          dte: 21,
+          premium: 3,
+          delta: 0.45,
+          ivRank: 50,
+          maxLossPerContract: 300,
+          rationale: 'fixture',
+          score: 70,
+        },
+      ],
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { results: { ok: boolean; sizing: { suggestedQuantity: number } }[] };
+    expect(body.results[0].ok).toBe(true);
+    expect(body.results[0].sizing.suggestedQuantity).toBe(3); // 1% of $100k / $300 per contract
+  });
+
+  it('accepts a debit_spread signal body (kind discriminant) and sizes by max loss per spread', async () => {
+    const res = await post('/api/autotrade/risk-check-options', {
+      signals: [
+        {
+          kind: 'debit_spread',
+          symbol: 'AAPL',
+          side: 'call',
+          expiration: '2024-06-21',
+          dte: 21,
+          ivRank: 50,
+          longContractSymbol: 'AAPL-long',
+          longStrike: 100,
+          longPremium: 3,
+          longDelta: 0.45,
+          shortContractSymbol: 'AAPL-short',
+          shortStrike: 110,
+          shortPremium: 1,
+          shortDelta: 0.2,
+          width: 10,
+          netDebit: 2,
+          maxLossPerContract: 200,
+          maxProfitPerContract: 800,
+          rationale: 'fixture',
+          score: 70,
+        },
+      ],
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { results: { ok: boolean; sizing: { suggestedContracts: number } }[] };
+    expect(body.results[0].ok).toBe(true);
+    expect(body.results[0].sizing.suggestedContracts).toBe(5); // 1% of $100k / $200 max loss per spread
+  });
+
+  it('rejects a signal body with no kind discriminant at all', async () => {
+    const res = await post('/api/autotrade/risk-check-options', {
+      signals: [{ symbol: 'AAPL', side: 'call', score: 70 }],
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a debit_spread body missing spread-only fields (e.g. shortStrike)', async () => {
+    const res = await post('/api/autotrade/risk-check-options', {
+      signals: [
+        {
+          kind: 'debit_spread',
+          symbol: 'AAPL',
+          side: 'call',
+          expiration: '2024-06-21',
+          dte: 21,
+          ivRank: 50,
+          longContractSymbol: 'AAPL-long',
+          longStrike: 100,
+          longPremium: 3,
+          longDelta: 0.45,
+          // shortContractSymbol/shortStrike/etc. deliberately omitted
+          width: 10,
+          netDebit: 2,
+          maxLossPerContract: 200,
+          maxProfitPerContract: 800,
+          rationale: 'fixture',
+          score: 70,
+        },
+      ],
+    });
+    expect(res.status).toBe(400);
   });
 });
 

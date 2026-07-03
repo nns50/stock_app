@@ -67,12 +67,14 @@ import type {
   ReplaceResult,
   AutotradeConfig,
   AutotradeRiskProfile,
+  AutotradeOptionsStrategyType,
   AutotradeExclusion,
   AutotradeScreenResult,
   AutotradeDecideResponse,
   AutotradeSignal,
   AutotradeOptionsSignal,
   AutotradeRiskCheckResult,
+  AutotradeOptionsRiskCheckResult,
   AutotradeEvent,
   AutotradeStage,
   BacktestRequest,
@@ -424,6 +426,7 @@ export const client = {
     liveAllowNakedShort?: boolean;
     liveProbationTrades?: number;
     liveProbationSizeMultiplier?: number;
+    optionsStrategyType?: AutotradeOptionsStrategyType;
   }) => api<AutotradeConfig>('/autotrade/config', { method: 'PUT', body: JSON.stringify(body) }),
   autotradeExclusions: () => api<{ exclusions: AutotradeExclusion[] }>('/autotrade/exclusions'),
   addAutotradeExclusion: (body: { symbol: string; reason?: string }) =>
@@ -437,7 +440,10 @@ export const client = {
   runAutotradeRiskCheck: (signals: AutotradeSignal[]) =>
     api<{ results: AutotradeRiskCheckResult[] }>('/autotrade/risk-check', post({ signals })),
   runOptionsRiskCheck: (signals: AutotradeOptionsSignal[], equityResults: AutotradeRiskCheckResult[] = []) =>
-    api<{ results: AutotradeRiskCheckResult[] }>('/autotrade/risk-check-options', post({ signals, equityResults })),
+    api<{ results: AutotradeOptionsRiskCheckResult[] }>(
+      '/autotrade/risk-check-options',
+      post({ signals, equityResults }),
+    ),
   autotradeEvents: (params: { stage?: AutotradeStage; symbol?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams(params as Record<string, string>).toString();
     return api<{ events: AutotradeEvent[] }>(`/autotrade/events${qs ? `?${qs}` : ''}`);

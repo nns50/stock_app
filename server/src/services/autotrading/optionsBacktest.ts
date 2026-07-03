@@ -5,7 +5,7 @@ import { defaultAutotradeScreenerConfig } from './screen';
 import { addDays, indexAsOf, loadBacktestHistory, toISO, WARMUP_PADDING_DAYS, EquityPoint } from './backtest';
 import { defaultAutotradeEntryConfig, OptionsDecisionConfig, OptionsSignalSide } from './optionsDecide';
 import { evaluateOptionsRiskCheck } from './optionsRiskCheck';
-import { RiskCheckContext, RiskCheckResult } from './riskCheck';
+import { RiskCheckContext } from './riskCheck';
 import { CORRELATION_LOOKBACK_DAYS, CORRELATION_THRESHOLD, RISK_PROFILES, RiskProfileParams } from './riskProfiles';
 import { RiskProfileName } from '../../db/autotradeConfig';
 import { getHistoricalOptionContracts } from './optionsHistoricalData';
@@ -458,8 +458,9 @@ export async function simulateOptionsBacktest(
         openPositionsCount: runningCount,
         correlatedNotional: correlated,
       };
-      const result: RiskCheckResult = evaluateOptionsRiskCheck(
+      const result = evaluateOptionsRiskCheck(
         {
+          kind: 'single_leg',
           symbol: candidate.symbol,
           side,
           contractSymbol: ref.ticker,
@@ -485,6 +486,10 @@ export async function simulateOptionsBacktest(
         continue;
       }
 
+      // This backtest only ever builds 'single_leg' signals (see file header,
+      // scope reduction #1), so result.sizing is always a RiskSizingResult —
+      // the 'in' check just satisfies the (necessarily wider) return type.
+      const quantity = 'suggestedQuantity' in result.sizing ? result.sizing.suggestedQuantity : 0;
       pendingEntries.push({
         symbol: candidate.symbol,
         side,
@@ -492,7 +497,7 @@ export async function simulateOptionsBacktest(
         strike: ref.strike,
         expiration: ref.expiration,
         signalDate: day,
-        contracts: result.sizing.suggestedQuantity,
+        contracts: quantity,
         riskAmount: result.approvedRiskAmount,
         notional: result.approvedNotional,
       });

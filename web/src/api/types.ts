@@ -1027,6 +1027,8 @@ export interface PlaceResult {
 
 export type AutotradeRiskProfile = 'MODERATE' | 'AGGRESSIVE';
 
+export type AutotradeOptionsStrategyType = 'single_leg' | 'debit_spread';
+
 export interface AutotradeConfig {
   enabled: boolean;
   killSwitch: boolean;
@@ -1044,6 +1046,9 @@ export interface AutotradeConfig {
   liveAllowNakedShort: boolean;
   liveProbationTrades: number;
   liveProbationSizeMultiplier: number;
+
+  // --- Options strategy shape ---
+  optionsStrategyType: AutotradeOptionsStrategyType;
 }
 
 export type AutotradeExclusionSource = 'default' | 'user';
@@ -1100,7 +1105,8 @@ export interface AutotradeDecisionResult {
 
 export type AutotradeOptionsSignalSide = 'call' | 'put';
 
-export interface AutotradeOptionsSignal {
+export interface AutotradeSingleLegOptionsSignal {
+  kind: 'single_leg';
   symbol: string;
   side: AutotradeOptionsSignalSide;
   contractSymbol: string;
@@ -1114,6 +1120,34 @@ export interface AutotradeOptionsSignal {
   rationale: string;
   score: number;
 }
+
+/** A long leg + a further out-of-the-money short leg — caps both max loss
+ *  AND max gain (docs/AUTOTRADING_SPEC.md's phase 9/10 debit-spread
+ *  follow-up). Opt-in via AutotradeConfig.optionsStrategyType. */
+export interface AutotradeDebitSpreadOptionsSignal {
+  kind: 'debit_spread';
+  symbol: string;
+  side: AutotradeOptionsSignalSide;
+  expiration: string;
+  dte: number;
+  ivRank: number;
+  longContractSymbol: string;
+  longStrike: number;
+  longPremium: number;
+  longDelta: number | null;
+  shortContractSymbol: string;
+  shortStrike: number;
+  shortPremium: number;
+  shortDelta: number | null;
+  width: number;
+  netDebit: number;
+  maxLossPerContract: number;
+  maxProfitPerContract: number;
+  rationale: string;
+  score: number;
+}
+
+export type AutotradeOptionsSignal = AutotradeSingleLegOptionsSignal | AutotradeDebitSpreadOptionsSignal;
 
 export interface AutotradeOptionsDecisionResult {
   signals: AutotradeOptionsSignal[];
@@ -1137,6 +1171,20 @@ export interface AutotradeRiskCheckResult {
   ok: boolean;
   checks: AutotradeRiskCheckRule[];
   sizing: RiskSizingResult;
+  stepDownActive: boolean;
+  approvedRiskAmount: number;
+  approvedNotional: number;
+}
+
+/** Same shape as AutotradeRiskCheckResult, except sizing can ALSO be a
+ *  SpreadSizingResult when the checked signal was a debit spread — kept
+ *  separate so the equity-only AutotradeRiskCheckResult above never needs
+ *  narrowing. */
+export interface AutotradeOptionsRiskCheckResult {
+  symbol: string;
+  ok: boolean;
+  checks: AutotradeRiskCheckRule[];
+  sizing: RiskSizingResult | SpreadSizingResult;
   stepDownActive: boolean;
   approvedRiskAmount: number;
   approvedNotional: number;

@@ -73,6 +73,65 @@ function chainFor(expiration: string, opts: { delta?: number; mark?: number } = 
   return { underlying: 'AAPL', expiration, underlyingPrice: 100, calls: [contract('call')], puts: [contract('put')] };
 }
 
+/** A two-strike chain for a debit-spread test: one contract in the long leg's
+ *  own delta band (0.30-0.60, defaultAutotradeEntryConfig's default) and one
+ *  further OTM in the short leg's band (SHORT_LEG_DELTA_BAND: 0.15-0.25).
+ *  callShortStrike/putShortStrike differ since "further OTM" points opposite
+ *  ways per side (higher strike for a call, lower for a put). */
+function spreadChainFor(
+  expiration: string,
+  opts: {
+    longStrike?: number;
+    longDelta?: number;
+    longMark?: number;
+    callShortStrike?: number;
+    putShortStrike?: number;
+    shortDelta?: number;
+    shortMark?: number;
+  } = {},
+): OptionsChain {
+  const {
+    longStrike = 100,
+    longDelta = 0.45,
+    longMark = 3,
+    callShortStrike = 110,
+    putShortStrike = 90,
+    shortDelta = 0.2,
+    shortMark = 1,
+  } = opts;
+  // A fixed ±0.02 (not ±0.05, as chainFor() above uses) keeps the spread %
+  // comfortably under maxSpreadPct: 10 even at the short leg's low $1 mark —
+  // ask-bid = 0.05 at mark 1 lands almost exactly AT the 10% boundary, where
+  // floating-point rounding (1.05 - 0.95 = 0.10000000000000009) can push a
+  // fixture over the limit unpredictably.
+  const mk = (type: 'call' | 'put', strike: number, delta: number, mark: number, tag: string) => ({
+    symbol: `AAPL-${expiration}-${type}-${tag}`,
+    underlying: 'AAPL',
+    type,
+    strike,
+    expiration,
+    bid: mark - 0.02,
+    ask: mark + 0.02,
+    mark,
+    volume: 500,
+    openInterest: 1000,
+    greeks: { delta: type === 'call' ? delta : -delta, iv: 0.4 },
+  });
+  return {
+    underlying: 'AAPL',
+    expiration,
+    underlyingPrice: 100,
+    calls: [
+      mk('call', longStrike, longDelta, longMark, 'long'),
+      mk('call', callShortStrike, shortDelta, shortMark, 'short'),
+    ],
+    puts: [
+      mk('put', longStrike, longDelta, longMark, 'long'),
+      mk('put', putShortStrike, shortDelta, shortMark, 'short'),
+    ],
+  };
+}
+
 /** N days out from "now", YYYY-MM-DD (UTC), safely inside the default 7-60d window at N=21. */
 function expirationDaysOut(days: number): string {
   const d = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
@@ -208,6 +267,92 @@ describe('generateOptionsSignal', () => {
     const result = await generateOptionsSignal(candidate());
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.signal.expiration).toBe(near);
+  });
+
+  describe('debit spread (strategyType: debit_spread)', () => {
+    it('produces a call debit-spread signal with a short leg further OTM than the long leg', async () => {
+      fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 });
+      const expiration = expirationDaysOut(21);
+      mockGetProvider.mockReturnValue({
+        getOptionsExpirations: vi.fn(async () => [expiration]),
+        getOptionsChain: vi.fn(async () => spreadChainFor(expiration)),
+      } as unknown as ReturnType<typeof getProvider>);
+
+      const result = await generateOptionsSignal(candidate(), {
+        ...defaultOptionsDecisionConfig(),
+        strategyType: 'debit_spread',
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.signal.kind).toBe('debit_spread');
+      if (result.signal.kind !== 'debit_spread') return;
+      expect(result.signal.side).toBe('call');
+      expect(result.signal.longStrike).toBe(100);
+      expect(result.signal.shortStrike).toBe(110); // further OTM (higher) than the long leg
+      expect(result.signal.longPremium).toBe(3);
+      expect(result.signal.shortPremium).toBe(1);
+      expect(result.signal.netDebit).toBe(2); // 3 - 1
+      expect(result.signal.width).toBe(10); // 110 - 100
+      expect(result.signal.maxLossPerContract).toBe(200); // net debit x 100
+      expect(result.signal.maxProfitPerContract).toBe(800); // (width - net debit) x 100
+      expect(result.signal.rationale).toMatch(/debit spread/i);
+    });
+
+    it('produces a put debit-spread signal with the short leg at a LOWER strike than the long leg', async () => {
+      fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 });
+      const expiration = expirationDaysOut(21);
+      mockGetProvider.mockReturnValue({
+        getOptionsExpirations: vi.fn(async () => [expiration]),
+        getOptionsChain: vi.fn(async () => spreadChainFor(expiration)),
+      } as unknown as ReturnType<typeof getProvider>);
+
+      const result = await generateOptionsSignal(candidate(), {
+        ...defaultOptionsDecisionConfig(),
+        direction: 'short',
+        strategyType: 'debit_spread',
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.signal.kind).toBe('debit_spread');
+      if (result.signal.kind !== 'debit_spread') return;
+      expect(result.signal.side).toBe('put');
+      expect(result.signal.longStrike).toBe(100);
+      expect(result.signal.shortStrike).toBe(90); // further OTM (lower) than the long leg
+    });
+
+    it('skips when no short-leg contract exists further OTM than the long leg', async () => {
+      fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 });
+      const expiration = expirationDaysOut(21);
+      mockGetProvider.mockReturnValue({
+        getOptionsExpirations: vi.fn(async () => [expiration]),
+        getOptionsChain: vi.fn(async () => chainFor(expiration)), // single-strike chain — no short leg available
+      } as unknown as ReturnType<typeof getProvider>);
+
+      const result = await generateOptionsSignal(candidate(), {
+        ...defaultOptionsDecisionConfig(),
+        strategyType: 'debit_spread',
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toMatch(/no short-leg contract/i);
+    });
+
+    it('skips when the short leg premium would leave a net credit instead of a net debit', async () => {
+      fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 });
+      const expiration = expirationDaysOut(21);
+      mockGetProvider.mockReturnValue({
+        getOptionsExpirations: vi.fn(async () => [expiration]),
+        // Short leg priced ABOVE the long leg — not a real spread chain, but
+        // exercises the net-debit guard deterministically.
+        getOptionsChain: vi.fn(async () => spreadChainFor(expiration, { longMark: 1, shortMark: 3 })),
+      } as unknown as ReturnType<typeof getProvider>);
+
+      const result = await generateOptionsSignal(candidate(), {
+        ...defaultOptionsDecisionConfig(),
+        strategyType: 'debit_spread',
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toMatch(/not a net debit/i);
+    });
   });
 });
 

@@ -612,8 +612,11 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   Aggressive always pops a confirmation dialog explaining what it raises — per-trade
   risk, the daily drawdown halt, concurrent positions, max aggregate open risk,
   correlated-ticker exposure, and the daily trade cap — never a silent dropdown change),
-  and **account equity ($)** — what the risk engine sizes trades and computes its %
-  caps against. No live broker balance is wired in yet, so set this manually; until you
+  the **options strategy** the loop builds (`Single leg` — a long call/put, uncapped
+  upside, the default — or `Debit spread` — the same long leg plus a further
+  out-of-the-money short leg that caps both max loss and max gain; switch anytime, no
+  confirmation needed, unlike the risk-profile change above), and **account equity ($)**
+  — what the risk engine sizes trades and computes its % caps against. No live broker balance is wired in yet, so set this manually; until you
   do, the risk engine blocks every trade (fails closed rather than guessing). The
   **kill switch** button above these settings is a separate, sticky emergency halt —
   engaging it (one click, no confirmation needed, mirroring the same button on the
@@ -713,16 +716,25 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   7–60 days out. A candidate only gets an options signal once the app has accumulated at
   least 15 real days of that symbol's own implied-vol history — until then it's skipped
   rather than scored on a cruder proxy, and its reason shows in a **No options signal**
-  list below the table. Each options signal is also risk-checked — sized by full premium
-  paid (contracts × $100, the option's real worst case) against the same active risk
-  profile, showing an **approved/blocked** badge and the sized contract count right below
-  its contract details. This draws from **one combined risk budget** shared with the
+  list below the table. When the **options strategy** (Configuration, above) is set to
+  `Debit spread` instead of the default `Single leg`, the column shows both strikes
+  (long/short) and the net debit paid instead of a single strike and premium — the short
+  leg is picked from the same chain, further out-of-the-money than the long leg, so the
+  trade caps both max loss and max gain instead of just max loss. Each options signal is
+  also risk-checked — a single leg sized by full premium paid (contracts × $100, the
+  option's real worst case), a debit spread sized by max loss per spread instead (there's
+  no price stop for either shape) — against the same active risk profile, showing an
+  **approved/blocked** badge and the sized contract (or spread) count right below its
+  contract details. This draws from **one combined risk budget** shared with the
   equity signals in the same run, not a separate options-only pool: an approved equity
   trade's risk counts against an options candidate's cap in the same screen, and vice
   versa. This manual preview never places an order, for either instrument type — that's
   true of **Run screen** generally, not specific to options. The automated background
-  loop is the separate path that can act on an approved options signal (paper only — see
-  **Paper trading** below); running a screen here also accrues IV history in the
+  loop is the separate path that can act on an approved **single-leg** options signal
+  (paper only — see **Paper trading** below); a debit-spread signal is decided and
+  risk-checked exactly like a single leg, including counting against the same combined
+  budget, but the loop doesn't yet open a paper position for one — that's preview/decision
+  support only for now. Running a screen here also accrues IV history in the
   background, a day at a time, for whatever gets screened, regardless of whether the loop
   itself is enabled.
 - **Backtest & walk-forward** — the validation gate every strategy configuration has to

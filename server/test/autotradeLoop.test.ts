@@ -92,6 +92,7 @@ function signal(symbol: string): TradeSignal {
 
 function optionSignal(symbol: string) {
   return {
+    kind: 'single_leg' as const,
     symbol,
     side: 'call' as const,
     contractSymbol: `${symbol}-fixture`,
@@ -289,6 +290,7 @@ describe('runAutotradeLoopTick', () => {
     mockOptionsDecide.mockResolvedValue({
       signals: [
         {
+          kind: 'single_leg',
           symbol: 'AAPL',
           side: 'call',
           contractSymbol: 'AAPL-fixture',
@@ -308,7 +310,7 @@ describe('runAutotradeLoopTick', () => {
 
     const summary = await runAutotradeLoopTick();
 
-    expect(mockOptionsDecide).toHaveBeenCalledWith([candidate('AAPL', 2)]);
+    expect(mockOptionsDecide).toHaveBeenCalledWith([candidate('AAPL', 2)], { strategyType: 'single_leg' });
     expect(summary.optionsSignalsGenerated).toBe(1);
   });
 

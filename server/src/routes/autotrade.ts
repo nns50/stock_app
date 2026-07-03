@@ -66,6 +66,8 @@ const configBody = z.object({
   liveAllowNakedShort: z.boolean().optional(),
   liveProbationTrades: z.number().int().nonnegative().optional(),
   liveProbationSizeMultiplier: z.number().positive().max(1).optional(),
+  // --- Options strategy shape -------------------------------------------------
+  optionsStrategyType: z.enum(['single_leg', 'debit_spread']).optional(),
 });
 autotradeRouter.put(
   '/config',
@@ -97,6 +99,7 @@ autotradeRouter.put(
     if (body.liveProbationSizeMultiplier !== undefined) {
       patch.liveProbationSizeMultiplier = body.liveProbationSizeMultiplier;
     }
+    if (body.optionsStrategyType !== undefined) patch.optionsStrategyType = body.optionsStrategyType;
 
     // liveTradingEnabled and liveAccountId are handled together, NOT in the
     // generic patch above: going false -> true requires the typed
@@ -172,6 +175,14 @@ autotradeRouter.put(
       logAutotradeEvent({
         stage: 'config',
         action: next.liveTradingEnabled ? 'live_trading_enabled' : 'live_trading_disabled',
+        riskProfile: next.riskProfile,
+      });
+    }
+    if (next.optionsStrategyType !== before.optionsStrategyType) {
+      logAutotradeEvent({
+        stage: 'config',
+        action: 'options_strategy_type_changed',
+        detail: { from: before.optionsStrategyType, to: next.optionsStrategyType },
         riskProfile: next.riskProfile,
       });
     }
@@ -251,7 +262,9 @@ autotradeRouter.post(
       symbols: body.symbols,
     });
     const decision = runAutotradeDecision(screen.candidates, body.decision as Partial<DecisionConfig> | undefined);
-    const optionsDecision = await runOptionsDecision(screen.candidates);
+    const optionsDecision = await runOptionsDecision(screen.candidates, {
+      strategyType: getAutotradeConfig().optionsStrategyType,
+    });
     res.json({ screen, decision, optionsDecision });
   }),
 );
@@ -278,7 +291,8 @@ autotradeRouter.post(
   }),
 );
 
-const optionsSignalBody = z.object({
+const singleLegSignalBody = z.object({
+  kind: z.literal('single_leg'),
   symbol: z.string().min(1),
   side: z.enum(['call', 'put']),
   contractSymbol: z.string().min(1),
@@ -292,6 +306,32 @@ const optionsSignalBody = z.object({
   rationale: z.string(),
   score: z.number(),
 });
+const debitSpreadSignalBody = z.object({
+  kind: z.literal('debit_spread'),
+  symbol: z.string().min(1),
+  side: z.enum(['call', 'put']),
+  expiration: z.string().min(8),
+  dte: z.number().nonnegative(),
+  ivRank: z.number(),
+  longContractSymbol: z.string().min(1),
+  longStrike: z.number().positive(),
+  longPremium: z.number().nonnegative(),
+  longDelta: z.number().nullable(),
+  shortContractSymbol: z.string().min(1),
+  shortStrike: z.number().positive(),
+  shortPremium: z.number().nonnegative(),
+  shortDelta: z.number().nullable(),
+  width: z.number().positive(),
+  netDebit: z.number().nonnegative(),
+  maxLossPerContract: z.number().nonnegative(),
+  maxProfitPerContract: z.number().nonnegative(),
+  rationale: z.string(),
+  score: z.number(),
+});
+// Discriminated on `kind` — matches optionsDecide.ts's OptionsTradeSignal
+// union exactly; the frontend only ever echoes back a signal it already got
+// verbatim from an earlier /decide response.
+const optionsSignalBody = z.discriminatedUnion('kind', [singleLegSignalBody, debitSpreadSignalBody]);
 // Only the fields runOptionsRiskCheck actually reads to seed the combined
 // budget — not a full re-validation of a RiskCheckResult's nested checks/
 // sizing shape, which the frontend only ever echoes back verbatim from an
