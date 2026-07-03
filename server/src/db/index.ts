@@ -297,6 +297,35 @@ CREATE TABLE IF NOT EXISTS autotrade_paper_positions (
   updated_at    INTEGER NOT NULL
 );
 
+-- Phase 12 (options paper execution): the options counterpart to
+-- autotrade_paper_positions. Separate table, not a shared/unioned one — a
+-- long option is identified by contract (strike/expiration/side), not a
+-- buy/sell direction + stop/target price the way a stock paper position is,
+-- so the two shapes don't overlay cleanly onto one schema. exit_reason is
+-- 'time_exit' (the only automated trigger phase 12 wires — see
+-- options/exitRules.ts's timeExitDaysBeforeExpiry) or 'manual', mirroring
+-- autotrade_paper_positions's own reserved-but-not-yet-used 'manual' value.
+CREATE TABLE IF NOT EXISTS autotrade_options_paper_positions (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol           TEXT NOT NULL,        -- underlying
+  side             TEXT NOT NULL CHECK(side IN ('call','put')),
+  contract_symbol  TEXT NOT NULL,        -- provider contract symbol (e.g. OCC code)
+  strike           REAL NOT NULL,
+  expiration       TEXT NOT NULL,        -- YYYY-MM-DD
+  quantity         REAL NOT NULL,        -- contracts
+  entry_price      REAL NOT NULL,        -- premium per share at fill
+  entry_at         INTEGER NOT NULL,     -- ms epoch (real time, not a backtest date)
+  risk_amount      REAL NOT NULL,        -- $ risked at entry (contracts x premium x 100 — full premium paid)
+  risk_profile     TEXT NOT NULL,
+  rationale        TEXT NOT NULL,
+  status           TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+  exit_price       REAL,                 -- premium per share at exit
+  exit_at          INTEGER,
+  exit_reason      TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL),
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL
+);
+
 -- Durable cache of real-estate sector/industry classification results
 -- (services/autotrading/realEstateClassifier.ts) — classification is a live
 -- Yahoo fundamentals fetch for any symbol outside the seeded universe, and
@@ -346,6 +375,7 @@ CREATE INDEX IF NOT EXISTS idx_autotrade_events_stage ON autotrade_events(stage)
 CREATE INDEX IF NOT EXISTS idx_autotrade_events_created ON autotrade_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_backtest_fetch_log_lookup ON backtest_fetch_log(symbol, timeframe);
 CREATE INDEX IF NOT EXISTS idx_autotrade_paper_positions_status ON autotrade_paper_positions(symbol, status);
+CREATE INDEX IF NOT EXISTS idx_autotrade_options_paper_positions_status ON autotrade_options_paper_positions(symbol, status);
 CREATE INDEX IF NOT EXISTS idx_autotrade_live_orders_symbol ON autotrade_live_orders(symbol);
 CREATE INDEX IF NOT EXISTS idx_backtest_option_contracts_lookup ON backtest_option_contracts(underlying, expiration);
 CREATE INDEX IF NOT EXISTS idx_backtest_option_contracts_fetch_log_lookup ON backtest_option_contracts_fetch_log(underlying);
