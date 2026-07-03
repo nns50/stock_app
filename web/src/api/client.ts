@@ -407,6 +407,16 @@ export const client = {
     riskProfile?: AutotradeRiskProfile;
     confirmAggressive?: boolean;
     accountEquityUsd?: number | null;
+    liveTradingEnabled?: boolean;
+    confirmLiveTrading?: string;
+    liveAccountId?: string | null;
+    liveMaxOrderUsd?: number;
+    liveMaxDailyLossUsd?: number;
+    liveMaxOrdersPerDay?: number;
+    liveFatFingerPct?: number;
+    liveAllowNakedShort?: boolean;
+    liveProbationTrades?: number;
+    liveProbationSizeMultiplier?: number;
   }) => api<AutotradeConfig>('/autotrade/config', { method: 'PUT', body: JSON.stringify(body) }),
   autotradeExclusions: () => api<{ exclusions: AutotradeExclusion[] }>('/autotrade/exclusions'),
   addAutotradeExclusion: (body: { symbol: string; reason?: string }) =>

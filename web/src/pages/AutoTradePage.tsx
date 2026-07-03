@@ -18,6 +18,7 @@ import {
   StatTile,
 } from '../components/ui';
 import type {
+  AutotradeConfig,
   AutotradeDashboard,
   AutotradeDecideResponse,
   AutotradeRiskCheckResult,
@@ -31,11 +32,12 @@ import type {
   WalkForwardResponse,
 } from '../api/types';
 
-// Phases 1-7 of docs/AUTOTRADING_SPEC.md: config, real-estate exclusions,
+// Phases 1-8 of docs/AUTOTRADING_SPEC.md: config, real-estate exclusions,
 // Screen/Decision/Risk-Check preview, backtesting, the paper execution loop,
-// and a real-time monitoring dashboard + kill switch. Every order this page
-// can cause to be placed is a local paper simulation — the live-trading gate
-// (Phase 8, a manual flag flip) is the one remaining phase.
+// a real-time monitoring dashboard + kill switch, and live trading. Paper
+// trading is always a local simulation, independent of live trading — which
+// DOES place real orders once explicitly enabled (a typed confirmation phrase,
+// not per-order, per Phase 8's confirmed design).
 
 // A plain value renders directly; an array/object would otherwise coerce to
 // "[object Object]" in a template literal (e.g. a risk-check event's `checks`
@@ -327,6 +329,205 @@ function PaperPositionsTable({ positions }: { positions: PaperPosition[] }) {
   );
 }
 
+interface PaperTrackRecord {
+  total: number;
+  closed: number;
+  wins: number;
+  /** 0-100 scale (a %), matching services/pnl.ts's own winRate convention and
+   *  fmtPct()'s expected input — NOT a 0-1 fraction. */
+  winRate: number | null;
+  earliestEntry: number | null;
+  latestEntry: number | null;
+}
+
+/** Surfaced next to the live-enable control so a human can review the paper
+ *  track record before flipping the switch — NOT a code-enforced gate (the
+ *  Phase 8 "track record gate" resolved decision: purely the user's judgment
+ *  call, matching how AGGRESSIVE-vs-MODERATE has no enforced graduation
+ *  criteria either). */
+function paperTrackRecord(positions: PaperPosition[]): PaperTrackRecord {
+  const closedPositions = positions.filter((p) => p.status === 'closed');
+  const wins = closedPositions.filter((p) => (paperPnl(p) ?? 0) > 0);
+  const entryTimes = positions.map((p) => p.entryAt);
+  return {
+    total: positions.length,
+    closed: closedPositions.length,
+    wins: wins.length,
+    winRate: closedPositions.length > 0 ? (wins.length / closedPositions.length) * 100 : null,
+    earliestEntry: entryTimes.length ? Math.min(...entryTimes) : null,
+    latestEntry: entryTimes.length ? Math.max(...entryTimes) : null,
+  };
+}
+
+interface LiveTradingSectionProps {
+  config: AutotradeConfig;
+  paperPositions: PaperPosition[];
+  liveAccountIdDraft: string;
+  setLiveAccountIdDraft: (v: string) => void;
+  liveMaxOrderUsdDraft: number | undefined;
+  setLiveMaxOrderUsdDraft: (v: number | undefined) => void;
+  liveMaxDailyLossUsdDraft: number | undefined;
+  setLiveMaxDailyLossUsdDraft: (v: number | undefined) => void;
+  liveMaxOrdersPerDayDraft: number | undefined;
+  setLiveMaxOrdersPerDayDraft: (v: number | undefined) => void;
+  liveFatFingerPctDraft: number | undefined;
+  setLiveFatFingerPctDraft: (v: number | undefined) => void;
+  liveAllowNakedShortDraft: boolean;
+  setLiveAllowNakedShortDraft: (v: boolean) => void;
+  liveProbationTradesDraft: number | undefined;
+  setLiveProbationTradesDraft: (v: number | undefined) => void;
+  liveProbationSizeMultiplierDraft: number | undefined;
+  setLiveProbationSizeMultiplierDraft: (v: number | undefined) => void;
+  liveCapsBusy: boolean;
+  onSaveLiveCaps: () => void;
+  confirmLiveText: string;
+  setConfirmLiveText: (v: string) => void;
+  confirmPhrase: string;
+  liveEnableBusy: boolean;
+  onEnable: () => void;
+  onDisable: () => void;
+  dashboard: AutotradeDashboard | undefined;
+}
+
+function LiveTradingSection(p: LiveTradingSectionProps) {
+  const track = paperTrackRecord(p.paperPositions);
+  const canEnable =
+    p.liveAccountIdDraft.trim() !== '' && p.confirmLiveText.trim().toUpperCase() === p.confirmPhrase.toUpperCase();
+
+  return (
+    <div className="space-y-4">
+      <div className="grid sm:grid-cols-2 gap-3 items-end">
+        <Field
+          label="Webull account ID"
+          hint="Server-side only — never sourced from the browser, unlike the Trade page."
+        >
+          <input
+            className="input"
+            value={p.liveAccountIdDraft}
+            onChange={(e) => p.setLiveAccountIdDraft(e.target.value)}
+            placeholder="e.g. 1234567_INDIVIDUAL_CASH"
+            disabled={p.config.liveTradingEnabled}
+          />
+        </Field>
+      </div>
+
+      <div>
+        <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-2">Live guardrail caps</h4>
+        <div className="grid sm:grid-cols-3 gap-3">
+          <Field label="Max order ($)">
+            <NumberInput value={p.liveMaxOrderUsdDraft} onChange={p.setLiveMaxOrderUsdDraft} placeholder="e.g. 20000" />
+          </Field>
+          <Field label="Max daily loss ($)">
+            <NumberInput
+              value={p.liveMaxDailyLossUsdDraft}
+              onChange={p.setLiveMaxDailyLossUsdDraft}
+              placeholder="e.g. 3000"
+            />
+          </Field>
+          <Field label="Max orders/day">
+            <NumberInput
+              value={p.liveMaxOrdersPerDayDraft}
+              onChange={p.setLiveMaxOrdersPerDayDraft}
+              placeholder="e.g. 6"
+            />
+          </Field>
+          <Field label="Fat-finger (%)" hint="Limit price must sit within this % of the reference price.">
+            <NumberInput value={p.liveFatFingerPctDraft} onChange={p.setLiveFatFingerPctDraft} placeholder="e.g. 10" />
+          </Field>
+          <Field label="Probation trades" hint="First N live trades after enabling get an extra size cut.">
+            <NumberInput
+              value={p.liveProbationTradesDraft}
+              onChange={p.setLiveProbationTradesDraft}
+              placeholder="e.g. 20"
+            />
+          </Field>
+          <Field label="Probation size multiplier" hint="e.g. 0.5 = half size during probation.">
+            <NumberInput
+              value={p.liveProbationSizeMultiplierDraft}
+              onChange={p.setLiveProbationSizeMultiplierDraft}
+              placeholder="e.g. 0.5"
+            />
+          </Field>
+        </div>
+        <label className="flex items-center gap-2 text-sm mt-3">
+          <input
+            type="checkbox"
+            checked={p.liveAllowNakedShortDraft}
+            onChange={(e) => p.setLiveAllowNakedShortDraft(e.target.checked)}
+          />
+          Allow naked short (defined-risk only is strongly recommended — leave unchecked)
+        </label>
+        <button className="btn-ghost mt-3" onClick={p.onSaveLiveCaps} disabled={p.liveCapsBusy}>
+          {p.liveCapsBusy ? 'Saving…' : 'Save live-trading settings'}
+        </button>
+      </div>
+
+      <div className="rounded-lg border border-ink-600 bg-ink-700/40 p-3">
+        <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-1">Paper track record (for your review)</h4>
+        <p className="text-[11px] text-slate-500 mb-2">
+          Not an enforced gate — reviewing this before enabling live trading is your call.
+        </p>
+        {track.total === 0 ? (
+          <p className="text-sm text-slate-400">No paper trades yet.</p>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <StatTile label="Paper trades" value={track.total} sub={`${track.closed} closed`} />
+            <StatTile label="Win rate" value={track.winRate === null ? '—' : fmtPct(track.winRate, 0, false)} />
+            <StatTile
+              label="From"
+              value={track.earliestEntry ? fmtDate(new Date(track.earliestEntry).toISOString()) : '—'}
+            />
+            <StatTile label="To" value={track.latestEntry ? fmtDate(new Date(track.latestEntry).toISOString()) : '—'} />
+          </div>
+        )}
+      </div>
+
+      {p.config.liveTradingEnabled ? (
+        <div className="rounded-lg border border-bear/60 bg-bear/10 p-3 space-y-2">
+          <p className="text-sm font-semibold text-bear">● LIVE TRADING ENABLED</p>
+          <p className="text-[11px] text-slate-400">
+            Account {p.config.liveAccountId} — the loop places real orders on its own schedule, no per-order
+            confirmation.
+          </p>
+          {p.dashboard?.probation.active && (
+            <p className="text-[11px] text-amber-400">
+              Probation active: {p.dashboard.probation.tradesRemaining} of {p.config.liveProbationTrades} trades
+              remaining at {p.dashboard.probation.multiplier}× size.
+            </p>
+          )}
+          <button className="btn-ghost" onClick={p.onDisable} disabled={p.liveEnableBusy}>
+            {p.liveEnableBusy ? 'Disabling…' : 'Disable live trading'}
+          </button>
+        </div>
+      ) : (
+        <div className="rounded-lg border border-ink-600 bg-ink-700/40 p-3 space-y-2">
+          <p className="text-sm font-medium">Enable live trading</p>
+          <p className="text-[11px] text-slate-500">
+            One-time confirmation, not per-order — type <strong>{p.confirmPhrase}</strong> below and set an account ID
+            above to arm it.
+          </p>
+          <div className="flex flex-wrap gap-2 items-center">
+            <input
+              className="input max-w-[260px] font-mono"
+              value={p.confirmLiveText}
+              onChange={(e) => p.setConfirmLiveText(e.target.value.toUpperCase())}
+              placeholder={p.confirmPhrase}
+              aria-label="type to confirm enabling live trading"
+            />
+            <button
+              className="btn-primary !bg-bear !border-bear disabled:opacity-40"
+              onClick={p.onEnable}
+              disabled={p.liveEnableBusy || !canEnable}
+            >
+              {p.liveEnableBusy ? 'Enabling…' : 'Enable live trading'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Phase 7's real-time panel (docs/AUTOTRADING_SPEC.md — MONITORING & KILL
  *  SWITCH): active profile, open paper positions vs the concurrent cap,
  *  aggregate open risk used vs limit, day P&L vs the drawdown halt, trade
@@ -342,48 +543,117 @@ function MonitoringDashboard({ dash }: { dash: AutotradeDashboard }) {
   // meaning yet — guard the same way riskBusy guards an unconfigured $0 cap,
   // so a fresh/unconfigured account never misreads as "halted."
   const haltActive = dash.dailyDrawdownHaltLevel < 0 && dash.dailyPnl <= dash.dailyDrawdownHaltLevel;
+
+  // Phase 8: live is its OWN pool (see dashboard.ts's header comment) — the
+  // caps are the same profile numbers as paper's above, but "used" is never
+  // combined with paper's, matching how runLiveExecution()/runPaperExecution()
+  // each risk-check against only their own snapshot.
+  const liveRiskBusy = dash.maxAggregateOpenRisk > 0 && dash.liveOpenRisk >= dash.maxAggregateOpenRisk;
+  const livePositionsBusy = dash.liveOpenPositionsCount >= dash.maxConcurrentPositions;
+  const liveTradesBusy = dash.liveTradesToday >= dash.maxTradesPerDay;
+  const liveStepDownActive = dash.liveConsecutiveLosses >= dash.stepDownAfterLosses;
+  const liveHaltActive = dash.dailyDrawdownHaltLevel < 0 && dash.liveDailyPnl <= dash.dailyDrawdownHaltLevel;
+
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-      <StatTile
-        label="Risk profile"
-        value={dash.riskProfile === 'AGGRESSIVE' ? 'Aggressive' : 'Moderate'}
-        sub={dash.killSwitch ? 'kill switch engaged' : dash.enabled ? 'loop enabled' : 'loop disabled'}
-        valueClass={dash.killSwitch ? 'text-bear' : undefined}
-      />
-      <StatTile
-        label="Open positions"
-        value={`${dash.openPositionsCount} / ${dash.maxConcurrentPositions}`}
-        valueClass={positionsBusy ? 'text-bear' : undefined}
-      />
-      <StatTile
-        label="Aggregate open risk"
-        value={fmtUsd(dash.openRisk)}
-        sub={`of ${fmtUsd(dash.maxAggregateOpenRisk)} cap`}
-        valueClass={riskBusy ? 'text-bear' : undefined}
-      />
-      <StatTile
-        label="Day P&L"
-        value={fmtSignedUsd(dash.dailyPnl)}
-        sub={
-          haltActive ? (
-            <span className="text-bear font-semibold">HALT TRIGGERED — new entries blocked</span>
+    <div className="space-y-4">
+      <div>
+        <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-2">Paper</h4>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          <StatTile
+            label="Risk profile"
+            value={dash.riskProfile === 'AGGRESSIVE' ? 'Aggressive' : 'Moderate'}
+            sub={dash.killSwitch ? 'kill switch engaged' : dash.enabled ? 'loop enabled' : 'loop disabled'}
+            valueClass={dash.killSwitch ? 'text-bear' : undefined}
+          />
+          <StatTile
+            label="Open positions"
+            value={`${dash.openPositionsCount} / ${dash.maxConcurrentPositions}`}
+            valueClass={positionsBusy ? 'text-bear' : undefined}
+          />
+          <StatTile
+            label="Aggregate open risk"
+            value={fmtUsd(dash.openRisk)}
+            sub={`of ${fmtUsd(dash.maxAggregateOpenRisk)} cap`}
+            valueClass={riskBusy ? 'text-bear' : undefined}
+          />
+          <StatTile
+            label="Day P&L"
+            value={fmtSignedUsd(dash.dailyPnl)}
+            sub={
+              haltActive ? (
+                <span className="text-bear font-semibold">HALT TRIGGERED — new entries blocked</span>
+              ) : (
+                `halt at ${fmtUsd(dash.dailyDrawdownHaltLevel)}`
+              )
+            }
+            valueClass={dash.dailyPnl >= 0 ? 'text-bull' : 'text-bear'}
+          />
+          <StatTile
+            label="Trades today"
+            value={`${dash.tradesToday} / ${dash.maxTradesPerDay}`}
+            valueClass={tradesBusy ? 'text-bear' : undefined}
+          />
+          <StatTile
+            label="Consecutive losses"
+            value={dash.consecutiveLosses}
+            sub={stepDownActive ? 'step-down active' : `of ${dash.stepDownAfterLosses} to step-down`}
+            valueClass={stepDownActive ? 'text-bear' : undefined}
+          />
+        </div>
+      </div>
+
+      <div>
+        <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-2">
+          Live{' '}
+          {dash.liveTradingEnabled ? (
+            <span className="text-bear normal-case">● enabled</span>
           ) : (
-            `halt at ${fmtUsd(dash.dailyDrawdownHaltLevel)}`
-          )
-        }
-        valueClass={dash.dailyPnl >= 0 ? 'text-bull' : 'text-bear'}
-      />
-      <StatTile
-        label="Trades today"
-        value={`${dash.tradesToday} / ${dash.maxTradesPerDay}`}
-        valueClass={tradesBusy ? 'text-bear' : undefined}
-      />
-      <StatTile
-        label="Consecutive losses"
-        value={dash.consecutiveLosses}
-        sub={stepDownActive ? 'step-down active' : `of ${dash.stepDownAfterLosses} to step-down`}
-        valueClass={stepDownActive ? 'text-bear' : undefined}
-      />
+            <span className="normal-case">(disabled)</span>
+          )}
+        </h4>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          <StatTile
+            label="Open positions"
+            value={`${dash.liveOpenPositionsCount} / ${dash.maxConcurrentPositions}`}
+            valueClass={livePositionsBusy ? 'text-bear' : undefined}
+          />
+          <StatTile
+            label="Aggregate open risk"
+            value={fmtUsd(dash.liveOpenRisk)}
+            sub={`of ${fmtUsd(dash.maxAggregateOpenRisk)} cap`}
+            valueClass={liveRiskBusy ? 'text-bear' : undefined}
+          />
+          <StatTile
+            label="Day P&L"
+            value={fmtSignedUsd(dash.liveDailyPnl)}
+            sub={
+              liveHaltActive ? (
+                <span className="text-bear font-semibold">HALT TRIGGERED</span>
+              ) : (
+                `halt at ${fmtUsd(dash.dailyDrawdownHaltLevel)}`
+              )
+            }
+            valueClass={dash.liveDailyPnl >= 0 ? 'text-bull' : 'text-bear'}
+          />
+          <StatTile
+            label="Trades today"
+            value={`${dash.liveTradesToday} / ${dash.maxTradesPerDay}`}
+            valueClass={liveTradesBusy ? 'text-bear' : undefined}
+          />
+          <StatTile
+            label="Consecutive losses"
+            value={dash.liveConsecutiveLosses}
+            sub={liveStepDownActive ? 'step-down active' : `of ${dash.stepDownAfterLosses} to step-down`}
+            valueClass={liveStepDownActive ? 'text-bear' : undefined}
+          />
+          <StatTile
+            label="Probation"
+            value={dash.probation.active ? `${dash.probation.multiplier}× size` : 'complete'}
+            sub={dash.probation.active ? `${dash.probation.tradesRemaining} trades left` : undefined}
+            valueClass={dash.probation.active ? 'text-amber-400' : undefined}
+          />
+        </div>
+      </div>
     </div>
   );
 }
@@ -439,12 +709,28 @@ export default function AutoTradePage() {
   const [killSwitch, setKillSwitch] = useState(false);
   const [riskProfile, setRiskProfile] = useState<AutotradeRiskProfile>('MODERATE');
   const [equityDraft, setEquityDraft] = useState<number | undefined>();
+  const [liveAccountIdDraft, setLiveAccountIdDraft] = useState('');
+  const [liveMaxOrderUsdDraft, setLiveMaxOrderUsdDraft] = useState<number | undefined>();
+  const [liveMaxDailyLossUsdDraft, setLiveMaxDailyLossUsdDraft] = useState<number | undefined>();
+  const [liveMaxOrdersPerDayDraft, setLiveMaxOrdersPerDayDraft] = useState<number | undefined>();
+  const [liveFatFingerPctDraft, setLiveFatFingerPctDraft] = useState<number | undefined>();
+  const [liveAllowNakedShortDraft, setLiveAllowNakedShortDraft] = useState(false);
+  const [liveProbationTradesDraft, setLiveProbationTradesDraft] = useState<number | undefined>();
+  const [liveProbationSizeMultiplierDraft, setLiveProbationSizeMultiplierDraft] = useState<number | undefined>();
   useEffect(() => {
     if (!config.data) return;
     setEnabled(config.data.enabled);
     setKillSwitch(config.data.killSwitch);
     setRiskProfile(config.data.riskProfile);
     setEquityDraft(config.data.accountEquityUsd ?? undefined);
+    setLiveAccountIdDraft(config.data.liveAccountId ?? '');
+    setLiveMaxOrderUsdDraft(config.data.liveMaxOrderUsd);
+    setLiveMaxDailyLossUsdDraft(config.data.liveMaxDailyLossUsd);
+    setLiveMaxOrdersPerDayDraft(config.data.liveMaxOrdersPerDay);
+    setLiveFatFingerPctDraft(config.data.liveFatFingerPct);
+    setLiveAllowNakedShortDraft(config.data.liveAllowNakedShort);
+    setLiveProbationTradesDraft(config.data.liveProbationTrades);
+    setLiveProbationSizeMultiplierDraft(config.data.liveProbationSizeMultiplier);
   }, [config.data]);
 
   const saveConfig = async (patch: {
@@ -491,6 +777,67 @@ export default function AutoTradePage() {
       toast((e as Error).message || 'Could not toggle the kill switch', { type: 'error' });
     } finally {
       setKillBusy(false);
+    }
+  };
+
+  const LIVE_TRADING_CONFIRMATION_PHRASE = 'ENABLE LIVE TRADING';
+  const [confirmLiveText, setConfirmLiveText] = useState('');
+  const [liveCapsBusy, setLiveCapsBusy] = useState(false);
+  const [liveEnableBusy, setLiveEnableBusy] = useState(false);
+
+  const saveLiveCaps = async () => {
+    setLiveCapsBusy(true);
+    try {
+      await client.setAutotradeConfig({
+        liveAccountId: liveAccountIdDraft.trim() || null,
+        liveMaxOrderUsd: liveMaxOrderUsdDraft,
+        liveMaxDailyLossUsd: liveMaxDailyLossUsdDraft,
+        liveMaxOrdersPerDay: liveMaxOrdersPerDayDraft,
+        liveFatFingerPct: liveFatFingerPctDraft,
+        liveAllowNakedShort: liveAllowNakedShortDraft,
+        liveProbationTrades: liveProbationTradesDraft,
+        liveProbationSizeMultiplier: liveProbationSizeMultiplierDraft,
+      });
+      config.reload();
+      refreshLiveData();
+      toast('Live-trading settings saved', { type: 'success' });
+    } catch (e) {
+      toast((e as Error).message || 'Could not save live-trading settings', { type: 'error' });
+    } finally {
+      setLiveCapsBusy(false);
+    }
+  };
+
+  const enableLiveTrading = async () => {
+    setLiveEnableBusy(true);
+    try {
+      await client.setAutotradeConfig({
+        liveAccountId: liveAccountIdDraft.trim() || null,
+        liveTradingEnabled: true,
+        confirmLiveTrading: confirmLiveText.trim(),
+      });
+      setConfirmLiveText('');
+      config.reload();
+      refreshLiveData();
+      toast('Live trading enabled — the loop will place real orders on its next cycle', { type: 'info' });
+    } catch (e) {
+      toast((e as Error).message || 'Could not enable live trading', { type: 'error' });
+    } finally {
+      setLiveEnableBusy(false);
+    }
+  };
+
+  const disableLiveTrading = async () => {
+    setLiveEnableBusy(true);
+    try {
+      await client.setAutotradeConfig({ liveTradingEnabled: false });
+      config.reload();
+      refreshLiveData();
+      toast('Live trading disabled', { type: 'success' });
+    } catch (e) {
+      toast((e as Error).message || 'Could not disable live trading', { type: 'error' });
+    } finally {
+      setLiveEnableBusy(false);
     }
   };
 
@@ -627,9 +974,9 @@ export default function AutoTradePage() {
       <PageHeader
         title="Auto-Trade"
         subtitle="The automated-trading initiative (docs/AUTOTRADING_SPEC.md): screening, signal generation, risk
-          checks, backtesting, a paper execution loop, and a monitoring dashboard + kill switch are all wired up.
-          Paper trading (below) never places a real order — it's a local simulation. The live-trading gate is the
-          one remaining phase."
+          checks, backtesting, a paper execution loop, a monitoring dashboard + kill switch, and live trading are all
+          wired up. Paper trading never places a real order — it's a local simulation, and runs independently of
+          live trading below."
         actions={
           <RefreshBar
             onRefresh={refreshLiveData}
@@ -719,8 +1066,52 @@ export default function AutoTradePage() {
           <p className="text-[11px] text-amber-400 mt-3">
             Auto-trading is enabled — the background loop below is now actively scanning and placing{' '}
             <strong>paper</strong> trades on a schedule. It never touches a real broker (see &quot;Paper trading&quot;
-            below); going live is a separate, later phase requiring a manual flag flip.
+            below); going live is configured separately (see &quot;Live trading&quot; below).
           </p>
+        )}
+      </Card>
+
+      <Card className="p-4">
+        <h3 className="font-medium text-sm mb-3">Live trading</h3>
+        <p className="text-[11px] text-slate-500 mb-3">
+          Places REAL orders through Webull once enabled — no per-order confirmation, only the guardrails configured
+          here plus the kill switch. Independent of paper trading above (both can run at once). See
+          docs/AUTOTRADING_SPEC.md&apos;s Phase 8 design for the full reasoning.
+        </p>
+        {/* No separate loading/error rendering here — this card is driven by
+            the SAME config request as Configuration above, which already
+            shows its own Spinner/ErrorState; repeating it here would just
+            show "Something went wrong" twice for one failed request. */}
+        {config.data && (
+          <LiveTradingSection
+            config={config.data}
+            paperPositions={paperPositions.data?.positions ?? []}
+            liveAccountIdDraft={liveAccountIdDraft}
+            setLiveAccountIdDraft={setLiveAccountIdDraft}
+            liveMaxOrderUsdDraft={liveMaxOrderUsdDraft}
+            setLiveMaxOrderUsdDraft={setLiveMaxOrderUsdDraft}
+            liveMaxDailyLossUsdDraft={liveMaxDailyLossUsdDraft}
+            setLiveMaxDailyLossUsdDraft={setLiveMaxDailyLossUsdDraft}
+            liveMaxOrdersPerDayDraft={liveMaxOrdersPerDayDraft}
+            setLiveMaxOrdersPerDayDraft={setLiveMaxOrdersPerDayDraft}
+            liveFatFingerPctDraft={liveFatFingerPctDraft}
+            setLiveFatFingerPctDraft={setLiveFatFingerPctDraft}
+            liveAllowNakedShortDraft={liveAllowNakedShortDraft}
+            setLiveAllowNakedShortDraft={setLiveAllowNakedShortDraft}
+            liveProbationTradesDraft={liveProbationTradesDraft}
+            setLiveProbationTradesDraft={setLiveProbationTradesDraft}
+            liveProbationSizeMultiplierDraft={liveProbationSizeMultiplierDraft}
+            setLiveProbationSizeMultiplierDraft={setLiveProbationSizeMultiplierDraft}
+            liveCapsBusy={liveCapsBusy}
+            onSaveLiveCaps={saveLiveCaps}
+            confirmLiveText={confirmLiveText}
+            setConfirmLiveText={setConfirmLiveText}
+            confirmPhrase={LIVE_TRADING_CONFIRMATION_PHRASE}
+            liveEnableBusy={liveEnableBusy}
+            onEnable={enableLiveTrading}
+            onDisable={disableLiveTrading}
+            dashboard={dashboard.data}
+          />
         )}
       </Card>
 
@@ -1153,9 +1544,9 @@ export default function AutoTradePage() {
       </Card>
 
       <p className="text-[11px] text-slate-500">
-        Decision-support and tracking only — every order this page places, even when enabled, is a paper simulation that
-        never reaches a real broker. See docs/AUTOTRADING_SPEC.md for the full plan; the live-trading gate (a manual
-        flag flip after reviewing backtest and paper-trading results) is the one remaining phase.
+        Decision-support and tracking, not financial advice. Paper trading above is always a local simulation that never
+        reaches a real broker. Live trading (below) does place real orders once explicitly enabled — review backtest and
+        paper-trading results first. See docs/AUTOTRADING_SPEC.md for the full plan.
       </p>
     </div>
   );
