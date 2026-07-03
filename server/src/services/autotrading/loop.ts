@@ -6,6 +6,12 @@ import { runAutotradeScreen, ScreenCandidate } from './screen';
 import { runAutotradeDecision } from './decide';
 import { runOptionsDecision } from './optionsDecide';
 import { runPaperExecution, checkPaperExits } from './execute';
+import {
+  runOptionsPaperExecution,
+  checkOptionsPaperExits,
+  getOptionsPaperPortfolioSnapshot,
+  optionsSeedForEquity,
+} from './optionsExecute';
 import { runLiveExecution, reconcileLiveOrders } from './liveExecute';
 import { checkSessionWindow, checkVolatility, defaultVolatilityFilterConfig, getMarketAtrPct } from './executionGuards';
 
@@ -45,6 +51,13 @@ export interface LoopTickSummary {
   skippedReason?: string;
   exitsChecked: number;
   exitsClosed: number;
+  /** Options paper positions checked/closed for the time-exit trigger this
+   *  cycle (Phase 12) — like exitsChecked/exitsClosed, runs unconditionally
+   *  regardless of any gate or session window (an approaching expiration
+   *  doesn't wait for the market to be open, or for the kill switch to be
+   *  off — see optionsExecute.ts's checkOptionsPaperExits()). */
+  optionsExitsChecked: number;
+  optionsExitsClosed: number;
   /** Live order reconcile — always runs, regardless of any gate (read-only
    *  toward the broker; materializes fills the broker already produced). */
   liveOrdersReconciled: number;
@@ -60,6 +73,10 @@ export interface LoopTickSummary {
   /** Paper entries opened this cycle — 0 whenever paper wasn't active, same
    *  as always (unchanged from pre-Phase-8 behavior). */
   entriesOpened: number;
+  /** Options paper entries opened this cycle (Phase 12) — 0 whenever paper
+   *  wasn't active. There is no options-live path (Phase 12 is paper-only),
+   *  so unlike equity this has no liveEntriesOpened counterpart. */
+  optionsEntriesOpened: number;
   /** Live entries opened this cycle — 0 whenever live wasn't active (never
    *  attempted), not "zero of some attempted". */
   liveEntriesOpened: number;
@@ -92,6 +109,8 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     skippedReason,
     exitsChecked: 0,
     exitsClosed: 0,
+    optionsExitsChecked: 0,
+    optionsExitsClosed: 0,
     liveOrdersReconciled: 0,
     livePositionsClosed: 0,
     candidatesScreened: 0,
@@ -99,6 +118,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     signalsGenerated: 0,
     optionsSignalsGenerated: 0,
     entriesOpened: 0,
+    optionsEntriesOpened: 0,
     liveEntriesOpened: 0,
   };
 }
@@ -157,11 +177,14 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
   tickInFlight = true;
   try {
     const exitOutcomes = await checkPaperExits();
+    const optionsExitOutcomes = await checkOptionsPaperExits();
     const liveReconcileOutcomes = await reconcileLiveOrders();
     const summary: LoopTickSummary = {
       ...emptySummary(),
       exitsChecked: exitOutcomes.length,
       exitsClosed: exitOutcomes.filter((o) => o.closed).length,
+      optionsExitsChecked: optionsExitOutcomes.length,
+      optionsExitsClosed: optionsExitOutcomes.filter((o) => o.closed).length,
       liveOrdersReconciled: liveReconcileOutcomes.length,
       livePositionsClosed: liveReconcileOutcomes.filter((o) => o.action === 'exit_filled').length,
     };
@@ -223,8 +246,22 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     }
 
     if (paperStillActive) {
-      const outcomes = await runPaperExecution(decision.signals.map((signal) => ({ signal })));
+      // Equity runs first, seeded with options' PRE-EXISTING snapshot (this
+      // tick's options entries haven't happened yet); options runs second and
+      // reads equity's book directly (optionsExecute.ts's own
+      // getPaperPortfolioSnapshot() import), which by now already reflects
+      // any equity fills just placed above — see optionsExecute.ts's header
+      // comment for why this ordering makes the combined budget real without
+      // a circular import between the two files.
+      const seed = optionsSeedForEquity(getOptionsPaperPortfolioSnapshot());
+      const outcomes = await runPaperExecution(
+        decision.signals.map((signal) => ({ signal })),
+        seed,
+      );
       summary.entriesOpened = outcomes.filter((o) => o.ok).length;
+
+      const optionsOutcomes = await runOptionsPaperExecution(optionsDecision.signals.map((signal) => ({ signal })));
+      summary.optionsEntriesOpened = optionsOutcomes.filter((o) => o.ok).length;
     }
     if (liveStillActive) {
       const liveOutcomes = await runLiveExecution(decision.signals.map((signal) => ({ signal })));
