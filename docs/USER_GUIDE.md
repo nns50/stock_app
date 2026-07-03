@@ -746,6 +746,16 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   to the loop's own paper positions, not your real ones on the **Positions**/**Journal**
   pages — paper trades carry no real financial exposure, so they're evaluated
   independently, the same way a real paper-trading account would be.
+  **Options paper positions**, right below, mirrors the same idea for the options
+  overlay — single-leg long calls/puts only, sized and risk-checked against the exact
+  same combined budget as equity above: an approved equity fill counts against the next
+  options candidate's cap, and vice versa, for the real running loop now, not just the
+  preview risk-check. The only automated exit here is time-based — closing a position as
+  expiration approaches, matching "never hold an option through expiration" — take-profit,
+  stop-loss, and delta-drift stay human-review-only on the Options page. Shows the same
+  open/closed counts, realized/unrealized P&L, and full trade history (contract,
+  strike/expiration, entry, a live **Current $** for open positions from a fresh contract
+  quote, exit, reason, contracts, P&L, R) as equity's own paper trading above.
 - **Recent activity** — a journal of what the screen, decision, and risk-check stages
   did and why (candidate found, excluded, signal generated, passed/blocked, a paper
   order placed or closed, a setting changed) — the same feed the execution loop above

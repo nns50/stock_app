@@ -28,6 +28,7 @@ import type {
   BacktestStats,
   LoopTickSummary,
   OptionsBacktestRunResponse,
+  OptionsPaperPosition,
   OptionsWalkForwardResponse,
   PaperPosition,
   SimulatedOptionsTrade,
@@ -381,6 +382,101 @@ function PaperPositionsTable({ positions }: { positions: PaperPosition[] }) {
                   {p.exitReason ? (
                     <Badge color={p.exitReason === 'target' ? 'green' : p.exitReason === 'stop' ? 'red' : 'slate'}>
                       {p.exitReason}
+                    </Badge>
+                  ) : (
+                    '—'
+                  )}
+                </td>
+                <td className="td text-right tabular-nums">{p.quantity}</td>
+                <td
+                  className={cx('td text-right tabular-nums', pnl === null ? '' : pnl >= 0 ? 'text-bull' : 'text-bear')}
+                >
+                  {pnl === null ? '—' : fmtSignedUsd(pnl)}
+                </td>
+                <td
+                  className={cx(
+                    'td text-right tabular-nums',
+                    rMultiple === null ? '' : rMultiple >= 0 ? 'text-bull' : 'text-bear',
+                  )}
+                >
+                  {rMultiple === null ? '—' : `${fmtNum(rMultiple)}R`}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Realized P&L for a closed options paper position; unrealized for an open
+ *  one, from the live contract mark the server resolved this request
+ *  (server/src/routes/autotrade.ts's withLiveOptionMarks). No sign flip —
+ *  every options paper position is long the contract itself. */
+function optionsPaperPnl(p: OptionsPaperPosition): number | null {
+  if (p.status === 'open') return p.unrealizedPnl;
+  if (p.exitPrice === null) return null;
+  return (p.exitPrice - p.entryPrice) * p.quantity * 100;
+}
+
+function OptionsPaperPositionsTable({ positions }: { positions: OptionsPaperPosition[] }) {
+  if (positions.length === 0) {
+    return (
+      <EmptyState
+        title="No options paper trades yet"
+        hint='Enable auto-trading above, or click "Run one cycle now" below, to see options paper fills here.'
+      />
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead className="border-b border-ink-600/60">
+          <tr>
+            <th className="th">Symbol</th>
+            <th className="th">Contract</th>
+            <th className="th">Status</th>
+            <th className="th">Entry</th>
+            <th className="th text-right">Entry $</th>
+            <th className="th text-right">Current $</th>
+            <th className="th">Exit</th>
+            <th className="th text-right">Exit $</th>
+            <th className="th">Reason</th>
+            <th className="th text-right">Qty</th>
+            <th className="th text-right">P&amp;L</th>
+            <th className="th text-right">R</th>
+          </tr>
+        </thead>
+        <tbody>
+          {positions.map((p) => {
+            const pnl = optionsPaperPnl(p);
+            const rMultiple = pnl !== null && p.riskAmount > 0 ? pnl / p.riskAmount : null;
+            return (
+              <tr key={p.id} className="border-b border-ink-700/50">
+                <td className="td font-semibold" title={p.rationale}>
+                  {p.symbol}
+                </td>
+                <td className="td">
+                  <Badge color={p.side === 'call' ? 'green' : 'red'}>
+                    {p.side} {p.strike}
+                  </Badge>{' '}
+                  <span className="text-[11px] text-slate-500">{fmtDate(p.expiration)}</span>
+                </td>
+                <td className="td">
+                  <Badge color={p.status === 'open' ? 'blue' : 'slate'}>{p.status}</Badge>
+                </td>
+                <td className="td text-slate-400">{ago(p.entryAt)}</td>
+                <td className="td text-right tabular-nums">{fmtUsd(p.entryPrice)}</td>
+                <td className="td text-right tabular-nums">
+                  {p.status === 'open' && p.currentPrice !== null ? fmtUsd(p.currentPrice) : '—'}
+                </td>
+                <td className="td text-slate-400">{p.exitAt ? ago(p.exitAt) : '—'}</td>
+                <td className="td text-right tabular-nums">{p.exitPrice === null ? '—' : fmtUsd(p.exitPrice)}</td>
+                <td className="td">
+                  {p.exitReason ? (
+                    <Badge color={p.exitReason === 'time_exit' ? 'blue' : 'slate'}>
+                      {p.exitReason.replace('_', ' ')}
                     </Badge>
                   ) : (
                     '—'
@@ -767,6 +863,7 @@ export default function AutoTradePage() {
   const exclusions = useAsync(() => client.autotradeExclusions(), []);
   const events = useAsync(() => client.autotradeEvents({ limit: 50 }), []);
   const paperPositions = useAsync(() => client.autotradePaperPositions({ limit: 100 }), []);
+  const optionsPaperPositions = useAsync(() => client.autotradeOptionsPaperPositions({ limit: 100 }), []);
   const dashboard = useAsync(() => client.autotradeDashboard(), []);
   const { toast } = useToast();
   const confirm = useConfirm();
@@ -782,6 +879,7 @@ export default function AutoTradePage() {
     setLiveDataLastUpdated(Date.now());
     dashboard.reload();
     paperPositions.reload();
+    optionsPaperPositions.reload();
     events.reload();
   };
 
@@ -1119,7 +1217,7 @@ export default function AutoTradePage() {
           <RefreshBar
             onRefresh={refreshLiveData}
             lastUpdated={liveDataLastUpdated}
-            loading={dashboard.loading || paperPositions.loading || events.loading}
+            loading={dashboard.loading || paperPositions.loading || optionsPaperPositions.loading || events.loading}
           />
         }
       />
@@ -1706,10 +1804,11 @@ export default function AutoTradePage() {
               <>
                 Screened {loopSummary.candidatesScreened}, {loopSummary.candidatesPassedVolatility} passed the
                 volatility filter, {loopSummary.signalsGenerated} signal(s) generated, {loopSummary.entriesOpened}{' '}
-                opened.{' '}
+                opened ({loopSummary.optionsEntriesOpened} options).{' '}
               </>
             )}
-            Exits checked: {loopSummary.exitsChecked} ({loopSummary.exitsClosed} closed).
+            Exits checked: {loopSummary.exitsChecked} ({loopSummary.exitsClosed} closed) — options:{' '}
+            {loopSummary.optionsExitsChecked} ({loopSummary.optionsExitsClosed} closed).
           </p>
         )}
         {paperPositions.loading ? (
@@ -1743,6 +1842,48 @@ export default function AutoTradePage() {
                   </div>
                 )}
                 <PaperPositionsTable positions={rows} />
+              </>
+            );
+          })()
+        )}
+
+        <h4 className="font-medium text-sm mt-5 mb-3">Options paper positions</h4>
+        <p className="text-xs text-slate-500 mb-3">
+          Single-leg long calls/puts only, gated by the same combined risk budget as equity above. Automated exit is
+          time-based only (close as expiration approaches, no roll) — take-profit/stop-loss/delta-drift stay
+          human-review-only on the Options page.
+        </p>
+        {optionsPaperPositions.loading ? (
+          <Spinner />
+        ) : optionsPaperPositions.error ? (
+          <ErrorState error={optionsPaperPositions.error} onRetry={optionsPaperPositions.reload} />
+        ) : (
+          (() => {
+            const rows = optionsPaperPositions.data?.positions ?? [];
+            const open = rows.filter((p) => p.status === 'open');
+            const closed = rows.filter((p) => p.status === 'closed');
+            const totalPnl = closed.reduce((s, p) => s + (optionsPaperPnl(p) ?? 0), 0);
+            const unrealizedTotal = open.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0);
+            const unrealizedKnown = open.some((p) => p.unrealizedPnl !== null);
+            return (
+              <>
+                {rows.length > 0 && (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+                    <StatTile label="Open" value={open.length} />
+                    <StatTile label="Closed" value={closed.length} />
+                    <StatTile
+                      label="Realized P&L"
+                      value={fmtSignedUsd(totalPnl)}
+                      valueClass={totalPnl >= 0 ? 'text-bull' : 'text-bear'}
+                    />
+                    <StatTile
+                      label="Unrealized P&L"
+                      value={unrealizedKnown ? fmtSignedUsd(unrealizedTotal) : '—'}
+                      valueClass={unrealizedKnown ? (unrealizedTotal >= 0 ? 'text-bull' : 'text-bear') : undefined}
+                    />
+                  </div>
+                )}
+                <OptionsPaperPositionsTable positions={rows} />
               </>
             );
           })()

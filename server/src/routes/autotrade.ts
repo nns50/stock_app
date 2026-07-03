@@ -19,10 +19,12 @@ import { ScreenerConfig } from '../indicators/screener';
 import { computeBacktestStats, runBacktest, runWalkForwardBacktest } from '../services/autotrading/backtest';
 import { runOptionsBacktest, runOptionsWalkForwardBacktest } from '../services/autotrading/optionsBacktest';
 import { listPaperPositions, PaperPosition } from '../db/autotradePaperPositions';
+import { listOptionsPaperPositions, OptionsPaperPosition } from '../db/autotradeOptionsPaperPositions';
 import { runAutotradeLoopTick } from '../services/autotrading/loop';
 import { getAutotradeDashboard } from '../services/autotrading/dashboard';
 import { resolveStockPrices } from '../services/quotes';
-import { computePaperUnrealizedPnl } from '../services/pnl';
+import { computePaperUnrealizedPnl, computeOptionsPaperUnrealizedPnl } from '../services/pnl';
+import { getProvider } from '../providers';
 
 export const autotradeRouter = Router();
 
@@ -511,6 +513,62 @@ autotradeRouter.get(
   asyncHandler(async (req, res) => {
     const q = parseQuery(paperPositionsQuery, req);
     const positions = await withLivePrices(listPaperPositions(q));
+    res.json({ positions });
+  }),
+);
+
+export interface OptionsPaperPositionLive extends OptionsPaperPosition {
+  /** A live contract mark as of this request — null for a closed position or
+   *  if the chain fetch failed. */
+  currentPrice: number | null;
+  /** (currentPrice - entryPrice) * quantity * 100 — null for a closed
+   *  position or when currentPrice is unavailable. */
+  unrealizedPnl: number | null;
+}
+
+/** Enrich open options paper positions with a live contract mark + unrealized
+ *  P&L. Fetches one chain per distinct (symbol, expiration) among the open
+ *  positions (mirrors services/quotes.ts's resolveOptionMarks grouping, just
+ *  keyed off this table's own shape instead of the human Position type) and
+ *  matches strike + side within it. A chain-fetch failure degrades that
+ *  group to null marks, never fails the whole request. */
+async function withLiveOptionMarks(positions: OptionsPaperPosition[]): Promise<OptionsPaperPositionLive[]> {
+  const open = positions.filter((p) => p.status === 'open');
+  const marks = new Map<number, number | null>();
+  if (open.length) {
+    const groups = new Map<string, OptionsPaperPosition[]>();
+    for (const p of open) {
+      const key = `${p.symbol}|${p.expiration}`;
+      (groups.get(key) ?? groups.set(key, []).get(key)!).push(p);
+    }
+    const provider = getProvider();
+    await Promise.all(
+      Array.from(groups.entries()).map(async ([key, members]) => {
+        const [symbol, expiration] = key.split('|');
+        try {
+          const chain = await provider.getOptionsChain(symbol, expiration);
+          for (const p of members) {
+            const pool = p.side === 'call' ? chain.calls : chain.puts;
+            const match = pool.find((c) => Math.abs(c.strike - p.strike) < 1e-6);
+            marks.set(p.id, match?.mark ?? match?.last ?? null);
+          }
+        } catch {
+          for (const p of members) marks.set(p.id, null);
+        }
+      }),
+    );
+  }
+  return positions.map((p) => {
+    const currentPrice = p.status === 'open' ? (marks.get(p.id) ?? null) : null;
+    return { ...p, currentPrice, unrealizedPnl: computeOptionsPaperUnrealizedPnl(p, currentPrice) };
+  });
+}
+
+autotradeRouter.get(
+  '/options-paper-positions',
+  asyncHandler(async (req, res) => {
+    const q = parseQuery(paperPositionsQuery, req);
+    const positions = await withLiveOptionMarks(listOptionsPaperPositions(q));
     res.json({ positions });
   }),
 );
