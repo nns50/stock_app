@@ -875,17 +875,29 @@ export default function AutoTradePage() {
   const [screenBusy, setScreenBusy] = useState(false);
   const [result, setResult] = useState<AutotradeDecideResponse>();
   const [riskResults, setRiskResults] = useState<AutotradeRiskCheckResult[]>([]);
+  const [optionsRiskResults, setOptionsRiskResults] = useState<AutotradeRiskCheckResult[]>([]);
   const [screenErr, setScreenErr] = useState<string>();
   const runScreen = async () => {
     setScreenBusy(true);
     setScreenErr(undefined);
     setResult(undefined); // clear the last run's candidates so a failure can't look like it also ran
     setRiskResults([]);
+    setOptionsRiskResults([]);
     try {
       const decided = await client.runAutotradeDecision();
       setResult(decided);
-      setRiskResults(
-        decided.decision.signals.length ? (await client.runAutotradeRiskCheck(decided.decision.signals)).results : [],
+      // Equity risk-check runs first so its approvals can be threaded into the
+      // options risk-check's combined budget (services/autotrading/
+      // optionsRiskCheck.ts) — an approved equity signal's risk correctly
+      // counts against an options candidate's cap this same cycle.
+      const equityRisk = decided.decision.signals.length
+        ? (await client.runAutotradeRiskCheck(decided.decision.signals)).results
+        : [];
+      setRiskResults(equityRisk);
+      setOptionsRiskResults(
+        decided.optionsDecision.signals.length
+          ? (await client.runOptionsRiskCheck(decided.optionsDecision.signals, equityRisk)).results
+          : [],
       );
       events.reload();
     } catch (e) {
@@ -901,6 +913,7 @@ export default function AutoTradePage() {
   const signalBySymbol = new Map((result?.decision.signals ?? []).map((s) => [s.symbol, s]));
   const riskBySymbol = new Map(riskResults.map((r) => [r.symbol, r]));
   const optionsSignalBySymbol = new Map((result?.optionsDecision.signals ?? []).map((s) => [s.symbol, s]));
+  const optionsRiskBySymbol = new Map(optionsRiskResults.map((r) => [r.symbol, r]));
 
   const [btSymbols, setBtSymbols] = useState('');
   const [btFrom, setBtFrom] = useState(yearAgoStr);
@@ -1237,7 +1250,9 @@ export default function AutoTradePage() {
                         const signal = signalBySymbol.get(c.symbol);
                         const risk = riskBySymbol.get(c.symbol);
                         const optSignal = optionsSignalBySymbol.get(c.symbol);
+                        const optRisk = optionsRiskBySymbol.get(c.symbol);
                         const failing = risk?.checks.filter((chk) => !chk.passed) ?? [];
+                        const optFailing = optRisk?.checks.filter((chk) => !chk.passed) ?? [];
                         return (
                           <tr key={c.symbol} className="border-b border-ink-700/50">
                             <td className="td font-semibold">{c.symbol}</td>
@@ -1281,14 +1296,34 @@ export default function AutoTradePage() {
                             </td>
                             <td className="td" title={optSignal?.rationale}>
                               {optSignal ? (
-                                <span className="whitespace-nowrap">
-                                  <Badge color={optSignal.side === 'call' ? 'green' : 'red'}>
-                                    {optSignal.side} {optSignal.strike}
-                                  </Badge>{' '}
-                                  <span className="text-[11px] text-slate-500">
-                                    {fmtUsd(optSignal.premium)} · {fmtDate(optSignal.expiration)}
+                                <div className="space-y-0.5">
+                                  <span className="whitespace-nowrap">
+                                    <Badge color={optSignal.side === 'call' ? 'green' : 'red'}>
+                                      {optSignal.side} {optSignal.strike}
+                                    </Badge>{' '}
+                                    <span className="text-[11px] text-slate-500">
+                                      {fmtUsd(optSignal.premium)} · {fmtDate(optSignal.expiration)}
+                                    </span>
                                   </span>
-                                </span>
+                                  {optRisk && (
+                                    <div>
+                                      {optRisk.ok ? (
+                                        <span className="whitespace-nowrap">
+                                          <Badge color="green">approved</Badge>{' '}
+                                          <span className="text-[11px] text-slate-500">
+                                            {optRisk.sizing.suggestedQuantity} contract
+                                            {optRisk.sizing.suggestedQuantity === 1 ? '' : 's'}
+                                          </span>
+                                        </span>
+                                      ) : (
+                                        <span title={optFailing.map((chk) => `${chk.rule}: ${chk.detail}`).join('\n')}>
+                                          <Badge color="red">blocked</Badge>{' '}
+                                          <span className="text-[11px] text-slate-500">{optFailing[0]?.rule}</span>
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
                               ) : (
                                 <span className="text-[11px] text-slate-500">—</span>
                               )}

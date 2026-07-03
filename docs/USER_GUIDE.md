@@ -697,9 +697,15 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   7–60 days out. A candidate only gets an options signal once the app has accumulated at
   least 15 real days of that symbol's own implied-vol history — until then it's skipped
   rather than scored on a cruder proxy, and its reason shows in a **No options signal**
-  list below the table. This side of the loop is also read-only for now (no options
-  risk-check or order exists yet); its only other effect today is accruing that IV
-  history in the background, a day at a time, for whatever the loop screens.
+  list below the table. Each options signal is also risk-checked — sized by full premium
+  paid (contracts × $100, the option's real worst case) against the same active risk
+  profile, showing an **approved/blocked** badge and the sized contract count right below
+  its contract details. This draws from **one combined risk budget** shared with the
+  equity signals in the same run, not a separate options-only pool: an approved equity
+  trade's risk counts against an options candidate's cap in the same screen, and vice
+  versa. This side of the loop is still read-only for now (no options order exists
+  yet — that's a later phase); its only other effect today is accruing IV history in the
+  background, a day at a time, for whatever the loop screens.
 - **Backtest & walk-forward** — the validation gate every strategy configuration has to
   clear before it's allowed anywhere near a paper or live order. Give it a symbol list,
   a date range, a starting equity, and (independently of the Configuration card above)
