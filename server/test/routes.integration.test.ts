@@ -947,6 +947,87 @@ describe('autotrade options paper execution routes (integration)', () => {
   });
 });
 
+describe('autotrade live positions route (integration)', () => {
+  beforeEach(() => db.exec('DELETE FROM position_exits; DELETE FROM positions;'));
+
+  it('lists live positions (empty when none exist)', async () => {
+    const body = (await getJson('/api/autotrade/live-positions')) as { positions: unknown[] };
+    expect(body.positions).toEqual([]);
+  });
+
+  it('only returns positions tagged autotrade, ignoring a human-placed live position', async () => {
+    createPosition({
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-07-01',
+      tags: ['live', 'autotrade'],
+    });
+    createPosition({
+      assetType: 'stock',
+      symbol: 'MSFT',
+      side: 'long',
+      quantity: 5,
+      entryPrice: 200,
+      entryDate: '2026-07-01',
+      tags: ['live'], // human-placed — must not appear
+    });
+
+    const body = (await getJson('/api/autotrade/live-positions')) as { positions: { symbol: string }[] };
+    expect(body.positions.map((p) => p.symbol)).toEqual(['AAPL']);
+  });
+
+  it('enriches an OPEN position with a live quote and full P&L, leaving a closed one alone', async () => {
+    const open = createPosition({
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 1, // far below any real/mock quote, so unrealized P&L is unambiguously positive
+      entryDate: '2026-07-01',
+      tags: ['live', 'autotrade'],
+    });
+    const closed = createPosition({
+      assetType: 'stock',
+      symbol: 'MSFT',
+      side: 'long',
+      quantity: 5,
+      entryPrice: 50,
+      entryDate: '2026-06-01',
+      tags: ['live', 'autotrade'],
+    });
+    addExit(closed.id, { quantity: 5, exitPrice: 60, exitDate: '2026-06-05' });
+
+    const liveQuote = await getProvider().getQuote('AAPL');
+    const body = (await getJson('/api/autotrade/live-positions')) as {
+      positions: {
+        id: number;
+        symbol: string;
+        currentPrice: number | null;
+        pnl: { unrealizedPnl: number | null; realizedPnl: number };
+      }[];
+    };
+
+    const openRow = body.positions.find((p) => p.id === open.id)!;
+    expect(openRow.currentPrice).toBe(liveQuote.last);
+    expect(openRow.pnl.unrealizedPnl).toBeCloseTo((liveQuote.last - 1) * 10, 2);
+
+    // Unlike paper trading's routes, priceMap() (shared with the human
+    // Positions page) resolves a price for closed positions too — a closed
+    // position's own realized P&L (not currentPrice) is what matters here.
+    const closedRow = body.positions.find((p) => p.id === closed.id)!;
+    expect(closedRow.pnl.unrealizedPnl).toBe(0);
+    expect(closedRow.pnl.realizedPnl).toBe((60 - 50) * 5); // 50
+  });
+
+  it('rejects an invalid status filter', async () => {
+    const res = await fetch(`${base}/api/autotrade/live-positions?status=bogus`);
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('autotrade monitoring dashboard + kill switch routes (integration)', () => {
   beforeEach(() => {
     db.exec('DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events;');

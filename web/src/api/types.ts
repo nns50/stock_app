@@ -1410,3 +1410,14 @@ export interface AutotradeDashboard {
   liveMaxOrdersPerDay: number;
   probation: AutotradeProbationStatus;
 }
+
+/** A real, live-money position the autotrade loop itself placed — the SAME
+ *  `positions` row a human's own manual trade would use, tagged
+ *  `live`+`autotrade` server-side. For GET /api/autotrade/live-positions,
+ *  the Auto-Trade page's own dedicated live-positions view (distinct from
+ *  the Monitoring dashboard's aggregate liveOpenPositions* figures above). */
+export interface AutotradeLivePosition extends Position {
+  currentPrice: number | null;
+  stale: boolean;
+  pnl: PositionPnl;
+}

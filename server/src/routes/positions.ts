@@ -12,7 +12,7 @@ import {
   PositionFilter,
   updatePosition,
 } from '../db/positions';
-import { resolveOptionMarks, resolveStockPrices } from '../services/quotes';
+import { priceMap } from '../services/quotes';
 import { aggregatePnl, computePositionPnl } from '../services/pnl';
 import { computeExposure, ExposureInput } from '../services/exposure';
 import { listUniverse } from '../db/universe';
@@ -78,31 +78,6 @@ const listQuery = z.object({
   assetType: z.enum(['stock', 'option']).optional(),
   withPnl: z.string().optional(),
 });
-
-/** Resolve a current price per position (stocks via quote, options via mark). */
-async function priceMap(
-  positions: Position[],
-): Promise<Map<number, { price: number | null; stale: boolean; asOf: number | null }>> {
-  const out = new Map<number, { price: number | null; stale: boolean; asOf: number | null }>();
-  const stocks = positions.filter((p) => p.assetType === 'stock');
-  const options = positions.filter((p) => p.assetType === 'option');
-
-  if (stocks.length) {
-    const prices = await resolveStockPrices(stocks.map((p) => p.symbol));
-    for (const p of stocks) {
-      const r = prices.get(p.symbol.toUpperCase());
-      out.set(p.id, { price: r?.price ?? null, stale: r?.stale ?? false, asOf: r?.asOf ?? null });
-    }
-  }
-  if (options.length) {
-    const marks = await resolveOptionMarks(options);
-    for (const p of options) {
-      const m = marks.get(p.id);
-      out.set(p.id, { price: m?.mark ?? null, stale: false, asOf: m?.mark != null ? Date.now() : null });
-    }
-  }
-  return out;
-}
 
 async function withPnlPayload(positions: Position[]) {
   const prices = await priceMap(positions);

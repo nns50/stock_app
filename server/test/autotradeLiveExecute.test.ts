@@ -26,6 +26,7 @@ import {
   buildLiveTradingConfig,
   getProbationStatus,
   getLivePortfolioSnapshot,
+  listAutotradeLivePositions,
   reconcileLiveOrders,
   runLiveExecution,
 } from '../src/services/autotrading/liveExecute';
@@ -369,6 +370,48 @@ describe('getLivePortfolioSnapshot', () => {
     insertPosition(['live', 'autotrade']); // entry 100, stop 95, qty 10 -> risk 50
     const snap = getLivePortfolioSnapshot();
     expect(snap.openRisk).toBe(50);
+  });
+});
+
+describe('listAutotradeLivePositions', () => {
+  function insertPosition(symbol: string, tags: string[], overrides: Partial<Record<string, unknown>> = {}) {
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO positions (asset_type, symbol, side, quantity, entry_price, entry_date, fees, multiplier, status, tags, stop_price, target_price, created_at, updated_at)
+       VALUES ('stock',?,'long',10,100,?,0,1,?,?,95,110,?,?)`,
+    ).run(symbol, overrides.entryDate ?? '2026-07-02', overrides.status ?? 'open', JSON.stringify(tags), now, now);
+  }
+
+  it('only returns positions tagged autotrade, ignoring human-only "live" positions', () => {
+    insertPosition('AAPL', ['live']); // human-placed — must not appear
+    insertPosition('MSFT', ['live', 'autotrade']);
+    const positions = listAutotradeLivePositions();
+    expect(positions.map((p) => p.symbol)).toEqual(['MSFT']);
+  });
+
+  it('filters by status', () => {
+    insertPosition('AAPL', ['live', 'autotrade'], { status: 'closed' });
+    insertPosition('MSFT', ['live', 'autotrade'], { status: 'open' });
+    expect(listAutotradeLivePositions({ status: 'open' }).map((p) => p.symbol)).toEqual(['MSFT']);
+    expect(listAutotradeLivePositions({ status: 'closed' }).map((p) => p.symbol)).toEqual(['AAPL']);
+  });
+
+  it('filters by symbol', () => {
+    insertPosition('AAPL', ['live', 'autotrade']);
+    insertPosition('MSFT', ['live', 'autotrade']);
+    expect(listAutotradeLivePositions({ symbol: 'aapl' }).map((p) => p.symbol)).toEqual(['AAPL']);
+  });
+
+  it('caps results at the given limit', () => {
+    insertPosition('AAA', ['live', 'autotrade']);
+    insertPosition('BBB', ['live', 'autotrade']);
+    insertPosition('CCC', ['live', 'autotrade']);
+    expect(listAutotradeLivePositions({ limit: 2 })).toHaveLength(2);
+  });
+
+  it('returns an empty array when nothing is tagged autotrade', () => {
+    insertPosition('AAPL', ['live']);
+    expect(listAutotradeLivePositions()).toEqual([]);
   });
 });
 
