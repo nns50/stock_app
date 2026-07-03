@@ -122,14 +122,17 @@ export function listPendingLiveOrders(): LiveOrderMeta[] {
  *  probation-window trade count (services/autotrading/liveExecute.ts). Counts
  *  an intent the moment it's placed (not just once filled): an order that's
  *  working or filled both represent a real, already-committed live trade for
- *  probation-sizing purposes — a rejected/cancelled one does not. */
+ *  probation-sizing purposes — a rejected/cancelled/expired one does not
+ *  (expired means the broker never filled it before it timed out — the same
+ *  "never became a real trade" category as rejected/cancelled, not a
+ *  distinct one). */
 export function countLiveOrdersSince(sinceMs: number): number {
   const row = db
     .prepare(
       `SELECT COUNT(*) AS n
          FROM autotrade_live_orders alo
          JOIN order_intents oi ON oi.id = alo.intent_id
-        WHERE alo.created_at >= ? AND oi.state NOT IN ('rejected','cancelled')`,
+        WHERE alo.created_at >= ? AND oi.state NOT IN ('rejected','cancelled','expired')`,
     )
     .get(sinceMs) as { n: number };
   return row.n;
