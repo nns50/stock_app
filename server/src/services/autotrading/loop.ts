@@ -1,3 +1,4 @@
+import { config } from '../../config';
 import { getAutotradeConfig, AutotradeConfig } from '../../db/autotradeConfig';
 import { getTradingConfig } from '../../db/trading';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
@@ -96,17 +97,22 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
 }
 
 /** Whether autotrade's live path is allowed to place NEW entries right now —
- *  autotrade's own liveTradingEnabled + killSwitch, AND the human Trade
- *  page's own enabled/killSwitch, since live orders share that same real
- *  broker account. Mirrors liveExecute.ts's buildLiveTradingConfig()'s
- *  combination logic exactly (kept as a small, duplicated boolean check
- *  rather than importing that function here, since this is just a gate on
- *  whether to even ATTEMPT the stage — buildLiveTradingConfig() itself still
- *  runs per-candidate inside runLiveExecution() for the actual guardrail
- *  evaluation). */
+ *  the deploy-level TRADING_ENABLED env gate, autotrade's own
+ *  liveTradingEnabled + killSwitch, AND the human Trade page's own
+ *  enabled/killSwitch, since live orders share that same real broker
+ *  account. Mirrors liveExecute.ts's buildLiveTradingConfig() (this is a
+ *  cheap early check so the loop doesn't bother screening at all when live
+ *  can't place anyway; attemptLiveEntry() re-checks TRADING_ENABLED itself
+ *  as the authoritative, final gate — never rely on this one alone). */
 function isLiveEntryActive(autotradeCfg: AutotradeConfig): boolean {
   const humanCfg = getTradingConfig();
-  return autotradeCfg.liveTradingEnabled && !autotradeCfg.killSwitch && humanCfg.enabled && !humanCfg.killSwitch;
+  return (
+    config.trading.placeEnabled &&
+    autotradeCfg.liveTradingEnabled &&
+    !autotradeCfg.killSwitch &&
+    humanCfg.enabled &&
+    !humanCfg.killSwitch
+  );
 }
 
 function isPaperEntryActive(autotradeCfg: AutotradeConfig): boolean {

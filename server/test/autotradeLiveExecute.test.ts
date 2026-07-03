@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
 vi.mock('../src/providers/webull/accountState', () => ({ webullAccountState: vi.fn() }));
@@ -7,6 +7,7 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
   return { ...actual, webullPlaceOrder: vi.fn(), webullOrderStatus: vi.fn() };
 });
 
+import { config } from '../src/config';
 import { getProvider } from '../src/providers';
 import { webullAccountState } from '../src/providers/webull/accountState';
 import { webullPlaceOrder, webullOrderStatus, WebullOrderStatus } from '../src/providers/webull/orders';
@@ -25,6 +26,7 @@ import {
   getProbationStatus,
   getLivePortfolioSnapshot,
   reconcileLiveOrders,
+  runLiveExecution,
 } from '../src/services/autotrading/liveExecute';
 
 const mockGetProvider = vi.mocked(getProvider);
@@ -80,6 +82,8 @@ function liveConfig(overrides: Partial<AutotradeConfig> = {}): AutotradeConfig {
   };
 }
 
+const origPlaceEnabled = config.trading.placeEnabled;
+
 beforeAll(() => initDb());
 beforeEach(() => {
   db.exec(
@@ -88,10 +92,14 @@ beforeEach(() => {
       'DELETE FROM position_exits; DELETE FROM positions;',
   );
   setTradingConfig({ enabled: true, killSwitch: false });
+  config.trading.placeEnabled = true; // env master gate ON — see placeOrder.test.ts's own convention
   mockGetProvider.mockReset();
   mockAccountState.mockReset();
   mockPlaceOrder.mockReset();
   mockOrderStatus.mockReset();
+});
+afterEach(() => {
+  config.trading.placeEnabled = origPlaceEnabled;
 });
 
 describe('buildLiveTradingConfig', () => {
@@ -162,6 +170,15 @@ describe('attemptLiveEntry', () => {
       maxTradesPerDay: 6,
     },
   );
+
+  it('refuses when TRADING_ENABLED is off — no intent, no broker call, regardless of every other gate passing', async () => {
+    config.trading.placeEnabled = false;
+    const r = await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/TRADING_ENABLED/);
+    expect(listIntents()).toHaveLength(0);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
 
   it('refuses with no liveAccountId configured — no intent created, no broker call', async () => {
     const r = await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig({ liveAccountId: null }));
@@ -251,6 +268,42 @@ describe('attemptLiveEntry', () => {
     const full = mockPlaceOrder.mock.calls[0][1].quantity;
 
     expect(halved).toBe(Math.floor(full * 0.5));
+  });
+});
+
+describe('runLiveExecution', () => {
+  it('re-checks autotrade’s own config fresh for EACH candidate in a batch — engaging the kill switch mid-batch stops the next candidate, not just the next cycle', async () => {
+    setAutotradeConfig({
+      accountEquityUsd: 100_000,
+      riskProfile: 'MODERATE',
+      liveAccountId: 'ACC1',
+      liveTradingEnabled: true,
+      liveEnabledAt: Date.now(),
+      liveMaxOrderUsd: 50_000,
+      liveMaxDailyLossUsd: 5_000,
+      liveMaxOrdersPerDay: 20,
+      killSwitch: false,
+    });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100, MSFT: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockImplementationOnce(async () => {
+      // Simulate the user hitting autotrade's OWN kill switch while this
+      // first order is still in flight (the same real-world timing the
+      // adversarial review flagged: this loop awaits real broker round-trips
+      // between candidates in the same batch).
+      setAutotradeConfig({ killSwitch: true });
+      return { ok: true, orderId: 'WB-1' };
+    });
+
+    const outcomes = await runLiveExecution([
+      { signal: signal({ symbol: 'AAPL' }) },
+      { signal: signal({ symbol: 'MSFT' }) },
+    ]);
+
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', ok: true }); // placed before the kill switch was engaged
+    expect(outcomes[1].ok).toBe(false); // MSFT: blocked, not placed after the kill switch was engaged
+    expect(outcomes[1].reason).toMatch(/kill_switch/);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1); // MSFT never reached the broker at all
   });
 });
 

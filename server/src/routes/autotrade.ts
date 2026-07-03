@@ -76,7 +76,6 @@ autotradeRouter.put(
     if (body.enabled !== undefined) patch.enabled = body.enabled;
     if (body.riskProfile !== undefined) patch.riskProfile = body.riskProfile;
     if (body.accountEquityUsd !== undefined) patch.accountEquityUsd = body.accountEquityUsd;
-    if (body.liveAccountId !== undefined) patch.liveAccountId = body.liveAccountId;
     if (body.liveMaxOrderUsd !== undefined) patch.liveMaxOrderUsd = body.liveMaxOrderUsd;
     if (body.liveMaxDailyLossUsd !== undefined) patch.liveMaxDailyLossUsd = body.liveMaxDailyLossUsd;
     if (body.liveMaxOrdersPerDay !== undefined) patch.liveMaxOrdersPerDay = body.liveMaxOrdersPerDay;
@@ -87,23 +86,46 @@ autotradeRouter.put(
       patch.liveProbationSizeMultiplier = body.liveProbationSizeMultiplier;
     }
 
-    // liveTradingEnabled gets its own gate, separate from the generic patch
-    // above: going false -> true requires the typed confirmation phrase AND
-    // a live account already on file (either already stored, or set in this
-    // same request) — fails closed, same posture as accountEquityUsd. Going
-    // true -> false (or an unrelated save while already true/false) needs
-    // neither and always passes through.
-    if (body.liveTradingEnabled === true && !before.liveTradingEnabled) {
+    // liveTradingEnabled and liveAccountId are handled together, NOT in the
+    // generic patch above: going false -> true requires the typed
+    // confirmation phrase AND a live account already on file (either already
+    // stored, or set in this same request) — fails closed, same posture as
+    // accountEquityUsd. The SAME confirmation is also required to CHANGE
+    // liveAccountId to a genuinely different value while live trading is (or
+    // will remain) enabled — an adversarial review caught that this route
+    // originally let the account be silently redirected post-enable with no
+    // re-confirmation at all, which would have quietly sent real orders to a
+    // different broker account. Going true -> false, or an unrelated save
+    // that doesn't touch the account id, needs neither and always passes
+    // through — releasing/leaving-alone is never the risky direction.
+    const accountIdChanging = body.liveAccountId !== undefined && body.liveAccountId !== before.liveAccountId;
+    const enablingNow = body.liveTradingEnabled === true && !before.liveTradingEnabled;
+    const stayingEnabled = before.liveTradingEnabled && body.liveTradingEnabled !== false;
+    if (enablingNow || (stayingEnabled && accountIdChanging)) {
       if ((body.confirmLiveTrading ?? '').trim().toUpperCase() !== LIVE_TRADING_CONFIRMATION_PHRASE) {
         throw new HttpError(
           400,
-          `Enabling live trading requires explicit confirmation (confirmLiveTrading: "${LIVE_TRADING_CONFIRMATION_PHRASE}")`,
+          `${enablingNow ? 'Enabling live trading' : 'Changing the live account while live trading is enabled'} requires explicit confirmation (confirmLiveTrading: "${LIVE_TRADING_CONFIRMATION_PHRASE}")`,
         );
       }
-      const accountId = body.liveAccountId ?? before.liveAccountId;
+      // NOT `??` — that would treat an explicit `liveAccountId: null` (a
+      // deliberate clear) the same as "omitted", silently keeping the OLD
+      // account instead of honoring the clear. Only fall back to `before`
+      // when the field is genuinely absent from this request.
+      const accountId = body.liveAccountId !== undefined ? body.liveAccountId : before.liveAccountId;
       if (!accountId) {
-        throw new HttpError(400, 'Enabling live trading requires a liveAccountId to be set first');
+        throw new HttpError(
+          400,
+          enablingNow
+            ? 'Enabling live trading requires a liveAccountId to be set first'
+            : 'Cannot clear liveAccountId while live trading remains enabled — disable it first',
+        );
       }
+      patch.liveAccountId = accountId;
+    } else if (body.liveAccountId !== undefined) {
+      patch.liveAccountId = body.liveAccountId;
+    }
+    if (enablingNow) {
       patch.liveTradingEnabled = true;
       patch.liveEnabledAt = Date.now();
     } else if (body.liveTradingEnabled !== undefined) {
