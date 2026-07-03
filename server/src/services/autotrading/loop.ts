@@ -4,6 +4,7 @@ import { getTradingConfig } from '../../db/trading';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { runAutotradeScreen, ScreenCandidate } from './screen';
 import { runAutotradeDecision } from './decide';
+import { runOptionsDecision } from './optionsDecide';
 import { runPaperExecution, checkPaperExits } from './execute';
 import { runLiveExecution, reconcileLiveOrders } from './liveExecute';
 import { checkSessionWindow, checkVolatility, defaultVolatilityFilterConfig, getMarketAtrPct } from './executionGuards';
@@ -51,6 +52,11 @@ export interface LoopTickSummary {
   candidatesScreened: number;
   candidatesPassedVolatility: number;
   signalsGenerated: number;
+  /** Options signals generated this cycle (Phase 9) — read-only, like
+   *  signalsGenerated: no risk-check or order exists for these yet. 0 when
+   *  the configured provider doesn't support options, not just when none
+   *  qualified. */
+  optionsSignalsGenerated: number;
   /** Paper entries opened this cycle — 0 whenever paper wasn't active, same
    *  as always (unchanged from pre-Phase-8 behavior). */
   entriesOpened: number;
@@ -91,6 +97,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     candidatesScreened: 0,
     candidatesPassedVolatility: 0,
     signalsGenerated: 0,
+    optionsSignalsGenerated: 0,
     entriesOpened: 0,
     liveEntriesOpened: 0,
   };
@@ -185,6 +192,17 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
 
     const decision = runAutotradeDecision(passedVolatility);
     summary.signalsGenerated = decision.signals.length;
+
+    // Options decide (Phase 9) — same already-screened/volatility-filtered
+    // candidates, run unconditionally alongside the equity decision (no
+    // separate enable toggle yet, mirroring how equity decide itself has
+    // none — Phase 10+ is where a risk-checked/executable options path, and
+    // therefore something worth gating, will actually exist). This is also
+    // how real IV-rank history accrues over time for anything the loop
+    // screens, per the spec's own stated goal — skipping this call would
+    // leave that coverage permanently bootstrapped.
+    const optionsDecision = await runOptionsDecision(passedVolatility);
+    summary.optionsSignalsGenerated = optionsDecision.signals.length;
 
     // Re-check right before executing: screening + deciding above is
     // network-bound (sector classification, market-ATR proxy) and can take

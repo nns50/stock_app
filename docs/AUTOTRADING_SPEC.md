@@ -1,11 +1,11 @@
 # Automated Trading — Specification
 
-**Status: phases 1-7 shipped and running in paper mode; phase 8 (the live-trading gate)
-is the one remaining phase for equities.** An options-trading addition has since been
-scoped against this codebase (phases 9-13 in the roadmap below) but is **not yet approved
-for implementation** — blocked pending an options historical-data source decision (see
-"Resolved decisions" below, and the addendum to "Original spec" at the end of this doc).
-This is the reference spec for adding a fully
+**Status: phases 1-8 shipped and running — equities screening, decision, risk engine,
+backtesting, paper execution, monitoring/kill-switch, and the live-trading gate are all
+built and have each cleared adversarial review.** An options-trading addition has since
+been scoped against this codebase (phases 9-13 in the roadmap below); the data source and
+remaining design defaults are now confirmed (see "Resolved decisions" below) and
+implementation is approved, starting with phase 9. This is the reference spec for adding a fully
 **autonomous** execution loop (screen → decide → risk-check → place orders) to the app.
 
 This is a different capability from the existing live-trading feature described in
@@ -285,7 +285,7 @@ this list as decisions change — don't let it drift from what's actually built.
   paper positions ("does not force-close existing positions — their existing hard
   stop-losses remain in place as the exit mechanism") and the human pipeline's own
   cancel-order exemption from `TRADING_ENABLED`.
-- **Options IV-extreme filter: proposed default `ivRankMax: 70`, not yet confirmed.** The
+- **Options IV-extreme filter: `ivRankMax: 70`, confirmed with the user.** The
   existing `EntryStrategyConfig` (`entryRules.ts`) already has an `ivRankMin`/`ivRankMax`
   field — `defaultEntryConfig()` just doesn't set one, since the human-facing Options page
   uses the same config for both buying and selling strategies, where "high IV" cuts the
@@ -300,18 +300,17 @@ this list as decisions change — don't let it drift from what's actually built.
   as a candidate whose IV rank computes above the threshold. The earnings example in the
   original ask doesn't need a separate earnings-calendar lookup — an approaching earnings
   date is exactly the kind of thing that already shows up as an elevated IV rank, which is
-  what this filter is actually checking. **Not yet confirmed with the user** — flagging the
-  number here so it's visible and easy to override before implementation.
-- **Options assignment/expiration handling: proposed default is close-only, no roll —
-  not yet confirmed.** The original ask offered close-or-roll. Rolling means the loop has to
+  what this filter is actually checking. **Confirmed with the user** (2026-07-03) — the
+  recommended 70 was accepted as-is.
+- **Options assignment/expiration handling: close-only, no roll — confirmed with the
+  user (2026-07-03).** The original ask offered close-or-roll. Rolling means the loop has to
   pick a *new* contract (strike + expiration), which is a second entry decision — it would
   need to pass through the same liquidity/DTE/IV-rank filters as a fresh entry, roughly
   doubling this feature's decision surface for what's fundamentally a risk-avoidance step,
-  not a strategy one. Proposing **close-only** for the first version, consistent with how
+  not a strategy one. Close-only for the first version, consistent with how
   this project already treats scope expansions elsewhere — AGGRESSIVE vs. MODERATE, and
   undefined-risk strategies, both require an explicit, separate opt-in rather than shipping
-  bundled by default. Rolling could be added later the same way, if wanted. **Not yet
-  confirmed with the user.**
+  bundled by default. Rolling could be added later the same way, if wanted.
 - **Options backtest data source: Options Starter, $29/mo — confirmed and final,**
   **including the exact endpoint-level shape of the data (not just the marketing pricing
   page).** The earlier attempt to verify this from Polygon's/Massive's own pricing pages
@@ -364,9 +363,10 @@ this list as decisions change — don't let it drift from what's actually built.
   (documented as an explicit, permanent simplification, not a bug) **and remains fully
   enforced at live/paper execution**, where OI comes from the live chain via whichever
   `MARKET_DATA_PROVIDER` is configured, never Polygon — the same live-vs-backtest split
-  every other decision in this doc already makes. **Not yet confirmed with the user** —
-  flagging it here since it's a real, permanent backtest limitation, not a bug to later
-  fix.
+  every other decision in this doc already makes. **Confirmed with the user** (2026-07-03)
+  — a real, permanent backtest limitation, not a bug to later fix; options backtesting
+  proceeds on this basis rather than being blocked indefinitely on data that doesn't exist
+  at any tier.
 
   **The pre-existing bid-ask-spread gap stands, and is now better understood as part of
   the same pattern**: the spread filter can't be backtested against a real historical
@@ -809,7 +809,7 @@ starts.
    already supported) rather than Yahoo's free/unofficial API — a separate decision, not
    made here. All four fixes have regression tests verified by reverting and confirming
    they fail against the old code.
-8. **Live-trading gate — in progress.** The manual flag flip that lets the loop place
+8. **Live-trading gate — shipped.** The manual flag flip that lets the loop place
    real orders, prioritized ahead of the options addition (phases 9-13) per the user's
    explicit sequencing call. See the four Phase-8-specific "Resolved decisions" entries
    above for the confirmed design (one-time confirmation only, no code-enforced track
@@ -849,45 +849,84 @@ starts.
      and the paper track record surfaced alongside the control (visible, not enforced).
      The Monitoring dashboard (Phase 7) extends to show live positions/risk alongside
      paper's.
-   - **Adversarial review before considering this phase done** — non-negotiable given
-     the stakes, mirroring phases 5-7's own review discipline (two independent
-     reviewers, matching Phase 7's precedent, given this phase's blast radius is real
-     money rather than paper). Focus areas going in: can any code path place a live
-     order without every one of {`TRADING_ENABLED`, `liveTradingEnabled`, both kill
-     switches off, guardrails passing} being true; can the probation multiplier be
-     bypassed or reset without also resetting the trade counter honestly; does exit
-     checking keep running when a kill switch is engaged (the exact bug class Phase 7
-     found and fixed for paper); is `liveAccountId` ever reachable from anywhere
-     insecure.
+   - **Adversarial review — done, two independent reviewers, matching Phase 7's
+     precedent** (given this phase's blast radius is real money rather than paper).
+     Reviewer 1 (gating/safety invariants) found three real gaps, all fixed: the
+     deploy-level `TRADING_ENABLED` env var was never checked anywhere in the live
+     path; `runLiveExecution()` reused a stale per-batch config snapshot instead of
+     re-checking the kill switch before each candidate; `liveAccountId` could be
+     silently redirected post-enable with no re-confirmation. Reviewer 2 (reconcile/
+     probation/data-integrity) found four real gaps, all fixed: `webullOrderStatus()`
+     trusted broker response ordering instead of the `combo_type` tag to find a
+     bracket's MASTER leg; fill materialization had no error isolation (an exception
+     after the intent already committed to `'filled'` would silently lose the fill
+     forever); two bracket exit legs both reporting FILLED would have been resolved
+     arbitrarily instead of flagged ambiguous; the probation trade count didn't
+     exclude expired orders. One finding (a partial-fill-then-cancelled bracket) was
+     left as-is — it mirrors an identical pre-existing gap in the human-confirmed
+     path, not something specific to autotrade. Every fix has a regression test
+     verified by reverting the fix and confirming it fails against the old code.
 
-### Options trading addition — phases 9-13, proposed, not yet approved
+### Options trading addition — phases 9-13, approved (2026-07-03)
 
-Everything below is scoping only. **No code for any of these phases should be written
-yet** — per the user's own explicit choice (get proper options historical data before
-implementing, not after), all five phases are blocked on the open backtest-data-source
-decision above, not just the backtesting phase itself. This mirrors the spec's own
-validation-gate principle ("backtesting harness required before any strategy can run
-live") but applies it more strictly than equities got: rather than letting screening/
-decision/sizing ship first and backtest later (the order phases 2-4 vs. 5 actually
-happened in), options holds off on all of it until the data question is settled. Numbered
-to continue on from equities' phase 8; independent of it — phase 8 (equities live-trading
-gate) can ship on its own timeline regardless of when or whether this options work starts.
+The data-source question and the three design defaults flagged below (IV-rank ceiling,
+expiration handling, the backtest open-interest gap) are now confirmed — see "Resolved
+decisions" above — and implementation is approved, starting with phase 9. This still
+mirrors the spec's own validation-gate principle ("backtesting harness required before
+any strategy can run live") but applies it more strictly than equities got: rather than
+letting screening/decision/sizing ship first and backtest later (the order phases 2-4 vs.
+5 actually happened in), options holds phase 12 (paper execution) on clearing phase 11's
+walk-forward gate first, exactly like equities' own phase 5 gate. Numbered to continue on
+from equities' phase 8; independent of it — phase 8 (equities live-trading gate) shipped
+on its own timeline regardless of this options work.
 
-9. **Options screening & decision — proposed, blocked.** Extends Research & Screen so
-   that a candidate clearing the existing equity screen (same real-estate exclusion —
-   applies identically to the underlying) also pulls an option chain and runs it through
+9. **Options screening & decision — shipped.** Extends Research & Screen so that a
+   candidate clearing the existing equity screen (same real-estate exclusion — applies
+   identically to the underlying) also pulls an option chain and runs it through
    `scanEntries()` (`entryRules.ts`, already built for the human Options page) with an
-   autotrade-specific `EntryStrategyConfig` — the existing defaults already satisfy
-   "exclude 0DTE and same-week expirations" (`minDaysToExpiration: 7`); add the proposed
-   `ivRankMax: 70` from the decision above. The loop starts recording its own daily ATM-IV
-   samples (`recordAtmIv()`, `db/ivHistory.ts`) for anything it screens, the same call the
-   human Options page already makes when a chain is viewed, so real `'history'`-method IV
-   rank coverage grows over time instead of staying permanently bootstrapped; until a
-   symbol has enough samples, it's skipped (fails closed), not scored on a cruder proxy.
-   A new options-shaped signal (long call, long put, or debit spread — never anything
-   `analyzeStrategy()` reports as `unboundedLoss` or a non-finite `maxLoss`, checked in
-   code as a structural backstop, not just a policy) replaces the stock-only `TradeSignal`
-   for this path. Read-only, like equities' phase 3 — no risk-check, no orders.
+   autotrade-specific `EntryStrategyConfig` (`defaultAutotradeEntryConfig()`,
+   `services/autotrading/optionsDecide.ts`) — the existing defaults already satisfy
+   "exclude 0DTE and same-week expirations" (`minDaysToExpiration: 7`), plus the confirmed
+   `ivRankMax: 70`. Of the expirations the provider returns, only the **nearest one inside
+   the configured DTE window** is fetched and scanned — not every qualifying expiration —
+   both to bound provider calls per candidate per cycle and because `db/ivHistory.ts`'s
+   schema records one ATM-IV sample per symbol per day with no expiration dimension, so a
+   single, consistently-chosen expiration keeps that history meaningful day over day.
+   The loop records its own daily ATM-IV sample (`recordAtmIv()`) for anything it
+   screens — the same call the human Options page already makes when a chain is
+   viewed — so real `'history'`-method IV-rank coverage grows over time instead of
+   staying permanently bootstrapped; this happens even on a cycle that ends up skipping
+   the candidate for insufficient history, since accruing the sample is what eventually
+   fixes that. Until a symbol has **15** real daily samples, it's skipped (fails
+   closed) rather than scored on the `computeIvContext()` fallback proxy (realized
+   volatility) that the human page's own IV panel is willing to use — a deliberately
+   stricter policy than that page, since this system acts on the number rather than just
+   displaying it.
+   A new options-shaped signal (`OptionsTradeSignal`) replaces the stock-only
+   `TradeSignal` for this path, structurally defined-risk by construction and confirmed
+   via `analyzeStrategy()` as a code-level backstop (never approves anything reporting
+   `unboundedLoss` or a non-finite `maxLoss`), with `maxLossPerContract` read directly
+   from that same analysis rather than computed independently, so it can't silently
+   drift from the check that approved it. **First-cut scope, narrower than the original
+   "long call, long put, or debit spread"**: only single-leg long calls/puts ship here.
+   A debit spread's short leg has no strike-selection logic anywhere in this codebase to
+   reuse — `computeSpreadSizing()` (phase 10) only sizes an already-defined spread, it
+   doesn't construct one — so building that from scratch would be a real, additional
+   strategy surface with its own risk/reward trade-offs, unlike everything else here
+   which reuses existing, already-shipped logic. Single-leg longs are the strictly more
+   conservative subset (uncapped upside, one fewer decision), so shipping this first
+   mirrors this codebase's own established convention of gating anything with more scope
+   behind an explicit, separate opt-in (AGGRESSIVE vs. MODERATE, undefined-risk
+   strategies) — debit-spread construction can be added later the same way, if wanted.
+   Read-only, like equities' phase 3 — no risk-check, no orders — but wired into the
+   real, unconditional loop tick (`runAutotradeLoopTick()`) right alongside the equity
+   decision, on the exact same already-screened/volatility-filtered candidates, since
+   IV-history accrual only happens by actually running this every cycle. Exposed in the
+   UI as a new **Options** column on the existing candidates table (Auto-Trade page) plus
+   a **No options signal** list mirroring the equity "no signal" section, and in the API
+   as a third `optionsDecision` field alongside `screen`/`decision` on the existing
+   `POST /api/autotrade/decide` response — not a separate endpoint, since it consumes the
+   exact same screened candidates in the same preview round-trip.
 10. **Options risk engine, sizing & combined budget — proposed, blocked.** A new
     position/signal shape that expresses an option's max-loss in dollars (premium paid,
     not notional) so it can sum into one combined aggregate-open-risk budget alongside
@@ -902,8 +941,7 @@ gate) can ship on its own timeline regardless of when or whether this options wo
     × 100, sized to the active profile's `riskPerTradePct` exactly like equities are sized
     to it via stop distance — matching the original ask's "1% risk on MODERATE means max
     1% of account equity spent on premium for that trade."
-11. **Options backtesting — proposed, blocked on getting an explicit go-ahead (data
-    source is now resolved and subscribed).** Extend or add a sibling to
+11. **Options backtesting — proposed, blocked on phase 10 clearing.** Extend or add a sibling to
     `polygonClient.ts` for options price aggregates/chains, extend the
     `backtest_bars`-style cache for options-shaped data (strike/expiration/right), and
     extend `simulateBacktest()` to replay phases 9-10's entry/exit/sizing logic exactly
@@ -924,7 +962,7 @@ gate) can ship on its own timeline regardless of when or whether this options wo
     existing `timeExitDaysBeforeExpiry` trigger (`exitRules.ts`, today only a human-facing
     alert via `services/positionExits.ts`) to actually close the paper position
     automatically — implementing "I do not want the automated system holding options
-    through expiration." Close-only, per the proposed default above — no roll logic in
+    through expiration." Close-only, per the confirmed default above — no roll logic in
     this phase. Underlying real-estate exclusion applies identically, inherited from
     whatever the underlying already cleared at Screen.
 13. **Options monitoring — proposed, blocked on phase 12.** Extends the phase 7 dashboard
@@ -1111,6 +1149,7 @@ what already exists and what's still open.
 
 **Sequencing decision, given separately when asked how to proceed:** get proper options
 historical data (backtest-grade) before writing any options implementation code, rather
-than implementing against the existing live/manual data paths and backtesting later. See
-"Options backtest data source: OPEN, blocking Phase 11" under "Resolved decisions" above
+than implementing against the existing live/manual data paths and backtesting later. That
+data-source question is now resolved — see "Options backtest data source: Options
+Starter, $29/mo — confirmed and final" under "Resolved decisions" above
 for the current state of that data-source search.
