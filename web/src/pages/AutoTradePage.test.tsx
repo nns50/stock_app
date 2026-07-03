@@ -243,7 +243,31 @@ describe('AutoTradePage', () => {
       },
     };
     vi.spyOn(client, 'runAutotradeDecision').mockResolvedValue(result);
-    const riskCheck = vi.spyOn(client, 'runAutotradeRiskCheck').mockResolvedValue({
+    const equityResults: AutotradeRiskCheckResult[] = [
+      {
+        symbol: 'AAPL',
+        ok: true,
+        checks: [{ rule: 'equity_configured', passed: true, detail: '$100,000.00' }],
+        sizing: {
+          maxRiskDollars: 1000,
+          stopDistance: 4.5,
+          riskPerUnit: 4.5,
+          suggestedQuantity: 222,
+          positionCost: 46_761,
+          positionPctOfAccount: 46.76,
+          riskOfPosition: 999,
+          targetPrice: null,
+          targetProfit: null,
+          rewardRiskRatio: null,
+          warnings: [],
+        },
+        stepDownActive: false,
+        approvedRiskAmount: 999,
+        approvedNotional: 46_761,
+      },
+    ];
+    const riskCheck = vi.spyOn(client, 'runAutotradeRiskCheck').mockResolvedValue({ results: equityResults });
+    const optionsRiskCheck = vi.spyOn(client, 'runOptionsRiskCheck').mockResolvedValue({
       results: [
         {
           symbol: 'AAPL',
@@ -251,20 +275,20 @@ describe('AutoTradePage', () => {
           checks: [{ rule: 'equity_configured', passed: true, detail: '$100,000.00' }],
           sizing: {
             maxRiskDollars: 1000,
-            stopDistance: 4.5,
-            riskPerUnit: 4.5,
-            suggestedQuantity: 222,
-            positionCost: 46_761,
-            positionPctOfAccount: 46.76,
-            riskOfPosition: 999,
+            stopDistance: 4.2,
+            riskPerUnit: 420,
+            suggestedQuantity: 2,
+            positionCost: 840,
+            positionPctOfAccount: 0.84,
+            riskOfPosition: 840,
             targetPrice: null,
             targetProfit: null,
             rewardRiskRatio: null,
             warnings: [],
           },
           stepDownActive: false,
-          approvedRiskAmount: 999,
-          approvedNotional: 46_761,
+          approvedRiskAmount: 840,
+          approvedNotional: 840,
         },
       ],
     });
@@ -281,10 +305,13 @@ describe('AutoTradePage', () => {
     expect(screen.getByText('$219.50')).toBeInTheDocument(); // target
     expect(screen.getByText('2R')).toBeInTheDocument();
     await waitFor(() => expect(riskCheck).toHaveBeenCalledWith(result.decision.signals));
-    expect(await screen.findByText('approved')).toBeInTheDocument();
-    expect(screen.getByText('222')).toBeInTheDocument(); // sized quantity
+    expect(await screen.findByText('222')).toBeInTheDocument(); // sized quantity
     expect(screen.getByText('call 210')).toBeInTheDocument(); // options signal badge
     expect(screen.getByText('$4.20 · Mar 15, 2024')).toBeInTheDocument();
+    // Equity risk-check results feed the options risk-check's combined budget.
+    await waitFor(() => expect(optionsRiskCheck).toHaveBeenCalledWith(result.optionsDecision.signals, equityResults));
+    expect(screen.getAllByText('approved')).toHaveLength(2); // one for equity, one for the options signal
+    expect(screen.getByText('2 contracts')).toBeInTheDocument();
   });
 
   it('clears stale candidates when a later screen run fails, so the error is not shown next to old results', async () => {

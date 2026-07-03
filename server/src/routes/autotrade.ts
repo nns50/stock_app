@@ -14,6 +14,7 @@ import { runAutotradeScreen } from '../services/autotrading/screen';
 import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/decide';
 import { runOptionsDecision } from '../services/autotrading/optionsDecide';
 import { runAutotradeRiskCheck } from '../services/autotrading/riskCheck';
+import { runOptionsRiskCheck } from '../services/autotrading/optionsRiskCheck';
 import { ScreenerConfig } from '../indicators/screener';
 import { computeBacktestStats, runBacktest, runWalkForwardBacktest } from '../services/autotrading/backtest';
 import { listPaperPositions, PaperPosition } from '../db/autotradePaperPositions';
@@ -263,6 +264,43 @@ autotradeRouter.post(
   asyncHandler(async (req, res) => {
     const body = parseBody(riskCheckBody, req);
     const results = await runAutotradeRiskCheck(body.signals);
+    res.json({ results });
+  }),
+);
+
+const optionsSignalBody = z.object({
+  symbol: z.string().min(1),
+  side: z.enum(['call', 'put']),
+  contractSymbol: z.string().min(1),
+  strike: z.number().positive(),
+  expiration: z.string().min(8),
+  dte: z.number().nonnegative(),
+  premium: z.number().nonnegative(),
+  delta: z.number().nullable(),
+  ivRank: z.number(),
+  maxLossPerContract: z.number().nonnegative(),
+  rationale: z.string(),
+  score: z.number(),
+});
+// Only the fields runOptionsRiskCheck actually reads to seed the combined
+// budget — not a full re-validation of a RiskCheckResult's nested checks/
+// sizing shape, which the frontend only ever echoes back verbatim from an
+// earlier /risk-check response it already trusts.
+const equityResultBody = z.object({
+  symbol: z.string().min(1),
+  ok: z.boolean(),
+  approvedRiskAmount: z.number(),
+  approvedNotional: z.number(),
+});
+const riskCheckOptionsBody = z.object({
+  signals: z.array(optionsSignalBody).min(1),
+  equityResults: z.array(equityResultBody).optional(),
+});
+autotradeRouter.post(
+  '/risk-check-options',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(riskCheckOptionsBody, req);
+    const results = await runOptionsRiskCheck(body.signals, body.equityResults);
     res.json({ results });
   }),
 );

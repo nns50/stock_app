@@ -927,21 +927,48 @@ on its own timeline regardless of this options work.
    as a third `optionsDecision` field alongside `screen`/`decision` on the existing
    `POST /api/autotrade/decide` response — not a separate endpoint, since it consumes the
    exact same screened candidates in the same preview round-trip.
-10. **Options risk engine, sizing & combined budget — proposed, blocked.** A new
-    position/signal shape that expresses an option's max-loss in dollars (premium paid,
-    not notional) so it can sum into one combined aggregate-open-risk budget alongside
-    equity stop-distance risk — extending the existing running-total accumulator pattern
-    in `riskCheck.ts`/`execute.ts` (already asset-type-blind, per the gap noted above) to
-    actually have something option-shaped to add. Sizing reuses existing math rather than
-    new formulas: a single long call/put sizes via `computeRiskSizing()` with
+10. **Options risk engine, sizing & combined budget — shipped.** A new
+    `services/autotrading/optionsRiskCheck.ts` — a deliberate PARALLEL implementation of
+    `riskCheck.ts`, not a shared/refactored core, mirroring this codebase's established
+    convention for every other equity/options split (`decide.ts` vs. `optionsDecide.ts`,
+    `execute.ts` vs. `liveExecute.ts`): keeps each path's tests fully isolated and avoids
+    awkwardly parameterizing away what's genuinely asset-specific about sizing. Sizes a
+    single long call/put via the exact same `computeRiskSizing()` equities use, with
     `stopPrice: 0` (the option's real worst case — expires worthless — already produces
-    "size by full premium paid"); a debit spread sizes via `computeSpreadSizing()`
-    (`riskSizing.ts`, already correct, currently unused anywhere under
-    `services/autotrading/`). Every options trade's risk-per-trade is contracts × premium
-    × 100, sized to the active profile's `riskPerTradePct` exactly like equities are sized
-    to it via stop distance — matching the original ask's "1% risk on MODERATE means max
-    1% of account equity spent on premium for that trade."
-11. **Options backtesting — proposed, blocked on phase 10 clearing.** Extend or add a sibling to
+    "size by full premium paid," not a new formula) and `assetType: 'option'` (100×
+    multiplier). Every options trade's risk-per-trade is contracts × premium × 100, sized
+    to the active profile's `riskPerTradePct` exactly like equities are sized to it via
+    stop distance — matching the original ask's "1% risk on MODERATE means max 1% of
+    account equity spent on premium for that trade." Gates through the identical set of
+    checks `evaluateRiskCheck()` does — `equity_configured`, `step_down_sizing`,
+    `quantity`, `daily_drawdown_halt`, `max_trades_per_day`, `max_concurrent_positions`,
+    `max_aggregate_open_risk`, `max_correlated_exposure` — since this codebase's own
+    `riskCheck.ts` already treats every one of those as account-wide regardless of source
+    ("the safer reading, since it can't understate real exposure"), not something specific
+    to combine just for this phase.
+    **The combined budget is real, not just a shared risk-profile config**:
+    `runOptionsRiskCheck()` seeds its running totals from the same real open-position
+    snapshot (`getPortfolioSnapshot()`) equity's own risk-check uses, PLUS whatever an
+    equity batch already approved earlier in the exact same cycle (threaded in via an
+    `equityResults` parameter — only the four fields actually needed: `symbol`, `ok`,
+    `approvedRiskAmount`, `approvedNotional`, not the full nested shape) — an approved
+    options signal's risk correctly counts against the next equity OR options candidate's
+    cap, and vice versa, verified with tests that reproduce the exact multi-position
+    gap-risk scenario `max_aggregate_open_risk` exists to prevent (docs/AUTOTRADING_SPEC.md,
+    phase 4), now across both instrument types at once. A correlated-ticker position's
+    "notional" for a long option is its premium paid (= its own risk amount) — a
+    deliberate simplification, not a delta-adjusted/leveraged exposure figure, flagged in
+    code as such since nothing in this codebase computes one today.
+    **First-cut scope, mirroring phase 9's own scope reduction**: only single-leg long
+    calls/puts are sized here; `computeSpreadSizing()` stays unused under
+    `services/autotrading/` until a debit-spread SIGNAL shape actually exists to size (see
+    phase 9's own deferral). Preview-only for now (a new `POST /api/autotrade/
+    risk-check-options` route plus an approved/blocked badge on the Auto-Trade page's
+    existing Options column) — not wired into the unconditional 24/7 loop tick, since
+    there is no options EXECUTION path yet (phase 12) for it to gate; mirrors how equity's
+    OWN risk-check started (phase 4, preview-only) before phase 6 gave it a real
+    paper-execution consumer.
+11. **Options backtesting — proposed, next up.** Extend or add a sibling to
     `polygonClient.ts` for options price aggregates/chains, extend the
     `backtest_bars`-style cache for options-shaped data (strike/expiration/right), and
     extend `simulateBacktest()` to replay phases 9-10's entry/exit/sizing logic exactly
