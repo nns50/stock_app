@@ -67,6 +67,7 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     maxTradesPerDay: 6,
     consecutiveLosses: 0,
     stepDownAfterLosses: 2,
+    openOptionsPositions: [],
     liveTradingEnabled: false,
     liveAccountId: null,
     liveOpenPositions: [],
@@ -1141,6 +1142,109 @@ describe('AutoTradePage', () => {
       vi.spyOn(client, 'autotradeDashboard').mockRejectedValue(new Error('dashboard unavailable'));
       renderPage();
       expect(await screen.findByText('dashboard unavailable')).toBeInTheDocument();
+    });
+
+    it('shows the equity/options breakdown for the combined open-positions and aggregate-risk tiles', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          openPositions: [
+            {
+              id: 1,
+              symbol: 'AAPL',
+              side: 'buy',
+              quantity: 10,
+              entryPrice: 100,
+              entryAt: Date.now(),
+              stopPrice: 95,
+              targetPrice: 110,
+              riskAmount: 500,
+              riskProfile: 'MODERATE',
+              rationale: 'fixture',
+              status: 'open',
+              exitPrice: null,
+              exitAt: null,
+              exitReason: null,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            },
+          ],
+          openOptionsPositions: [
+            {
+              id: 1,
+              symbol: 'MSFT',
+              side: 'call',
+              contractSymbol: 'MSFT-fixture',
+              strike: 400,
+              expiration: '2026-08-21',
+              quantity: 1,
+              entryPrice: 3,
+              entryAt: Date.now(),
+              riskAmount: 300,
+              riskProfile: 'MODERATE',
+              rationale: 'fixture',
+              status: 'open',
+              exitPrice: null,
+              exitAt: null,
+              exitReason: null,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              dte: 30,
+            },
+          ],
+          openPositionsCount: 2,
+          openRisk: 800,
+        }),
+      );
+      renderPage();
+      expect(await screen.findByText('2 / 2')).toBeInTheDocument(); // combined count
+      expect(screen.getByText('1 equity + 1 options')).toBeInTheDocument();
+      expect(screen.getByText(/equity \+ options combined/)).toBeInTheDocument();
+    });
+
+    it('lists open options positions sorted by days-to-expiration, flagging an imminent one', async () => {
+      const optPos = (overrides: { id: number; symbol: string; dte: number; strike: number }) => ({
+        id: overrides.id,
+        symbol: overrides.symbol,
+        side: 'call' as const,
+        contractSymbol: `${overrides.symbol}-fixture`,
+        strike: overrides.strike,
+        expiration: '2026-08-21',
+        quantity: 1,
+        entryPrice: 3,
+        entryAt: Date.now(),
+        riskAmount: 300,
+        riskProfile: 'MODERATE',
+        rationale: 'fixture',
+        status: 'open' as const,
+        exitPrice: null,
+        exitAt: null,
+        exitReason: null,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        dte: overrides.dte,
+      });
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          openOptionsPositions: [
+            optPos({ id: 1, symbol: 'FAROUT', dte: 30, strike: 100 }),
+            optPos({ id: 2, symbol: 'SOON', dte: 3, strike: 200 }),
+          ],
+        }),
+      );
+      renderPage();
+      const soonEl = await screen.findByText('3.0d');
+      const farEl = screen.getByText('30.0d');
+      expect(soonEl.className).toMatch(/text-bear/); // <=7d imminent -> flagged
+      expect(farEl.className).not.toMatch(/text-bear/);
+      // Sorted soonest-first: SOON's row comes before FAROUT's in the DOM.
+      expect(soonEl.compareDocumentPosition(farEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('hides the options expirations section when there are no open options positions', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture({ openOptionsPositions: [] }));
+      renderPage();
+      await screen.findByText('VNQ');
+      expect(screen.queryByText(/Options expirations/)).toBeNull();
     });
 
     it('shows a distinct HALT TRIGGERED signal when the daily drawdown halt is actually breached', async () => {

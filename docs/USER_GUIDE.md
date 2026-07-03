@@ -658,11 +658,17 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   its cap is reached; the day P&L tile specifically shows a distinct "HALT TRIGGERED"
   label (not just its ordinary red-for-a-loss coloring) once the daily-drawdown halt is
   actually breached, so an ordinary down day and a halted one are never hard to tell
-  apart. A second **Live** section right below shows the exact same figures for your
-  live positions — its **own** pool, never combined with paper's counts or risk (they're
-  risk-checked completely independently, matching how the loop actually enforces the
-  caps), plus a **Probation** tile showing the size cut and trades remaining while it's
-  active.
+  apart. **Open positions** and **aggregate open risk** fold in your open options paper
+  positions too — one combined pool, not a second one, matching how the risk engine
+  really enforces both caps together — with a sub-label breaking the combined number back
+  out into its equity/options parts. Whenever any options paper positions are open, an
+  **Options expirations** list appears below, sorted soonest-first, so you can see an
+  upcoming expiration (and the automated close-only exit that's coming for it) before it
+  happens — a position within a week of expiring is flagged in red. A second **Live**
+  section right below shows the exact same figures for your live (equity) positions —
+  its **own** pool, never combined with paper's counts or risk (they're risk-checked
+  completely independently, matching how the loop actually enforces the caps), plus a
+  **Probation** tile showing the size cut and trades remaining while it's active.
 - **Real-estate exclusion list** — real estate is a hard, permanent exclusion for this
   strategy. A starter list of well-known real-estate ETFs ships seeded in; add or remove
   symbols freely. This list is a backstop, not the only check — the screen below also
@@ -703,9 +709,12 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   its contract details. This draws from **one combined risk budget** shared with the
   equity signals in the same run, not a separate options-only pool: an approved equity
   trade's risk counts against an options candidate's cap in the same screen, and vice
-  versa. This side of the loop is still read-only for now (no options order exists
-  yet — that's a later phase); its only other effect today is accruing IV history in the
-  background, a day at a time, for whatever the loop screens.
+  versa. This manual preview never places an order, for either instrument type — that's
+  true of **Run screen** generally, not specific to options. The automated background
+  loop is the separate path that can act on an approved options signal (paper only — see
+  **Paper trading** below); running a screen here also accrues IV history in the
+  background, a day at a time, for whatever gets screened, regardless of whether the loop
+  itself is enabled.
 - **Backtest & walk-forward** — the validation gate every strategy configuration has to
   clear before it's allowed anywhere near a paper or live order. Give it a symbol list,
   a date range, a starting equity, and (independently of the Configuration card above)

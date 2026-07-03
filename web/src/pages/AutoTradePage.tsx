@@ -744,12 +744,13 @@ function MonitoringDashboard({ dash }: { dash: AutotradeDashboard }) {
           <StatTile
             label="Open positions"
             value={`${dash.openPositionsCount} / ${dash.maxConcurrentPositions}`}
+            sub={`${dash.openPositions.length} equity + ${dash.openOptionsPositions.length} options`}
             valueClass={positionsBusy ? 'text-bear' : undefined}
           />
           <StatTile
             label="Aggregate open risk"
             value={fmtUsd(dash.openRisk)}
-            sub={`of ${fmtUsd(dash.maxAggregateOpenRisk)} cap`}
+            sub={`of ${fmtUsd(dash.maxAggregateOpenRisk)} cap (equity + options combined)`}
             valueClass={riskBusy ? 'text-bear' : undefined}
           />
           <StatTile
@@ -777,6 +778,33 @@ function MonitoringDashboard({ dash }: { dash: AutotradeDashboard }) {
           />
         </div>
       </div>
+
+      {dash.openOptionsPositions.length > 0 && (
+        <div>
+          <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-2">
+            Options expirations — folded into the combined caps above, not a second pool
+          </h4>
+          <div className="space-y-1">
+            {dash.openOptionsPositions
+              .slice()
+              .sort((a, b) => a.dte - b.dte)
+              .map((p) => (
+                <div key={p.id} className="flex items-center justify-between text-sm">
+                  <span>
+                    <span className="font-semibold">{p.symbol}</span>{' '}
+                    <Badge color={p.side === 'call' ? 'green' : 'red'}>
+                      {p.side} {p.strike}
+                    </Badge>{' '}
+                    <span className="text-[11px] text-slate-500">{fmtDate(p.expiration)}</span>
+                  </span>
+                  <span className={cx('tabular-nums', p.dte <= 7 ? 'text-bear font-semibold' : 'text-slate-400')}>
+                    {p.dte.toFixed(1)}d
+                  </span>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
 
       <div>
         <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-2">

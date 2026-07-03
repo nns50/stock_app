@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { initDb, db } from '../src/db';
 import { setAutotradeConfig, setAutotradeKillSwitch } from '../src/db/autotradeConfig';
 import { openPaperPosition } from '../src/db/autotradePaperPositions';
+import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
 import { getAutotradeDashboard } from '../src/services/autotrading/dashboard';
 
 // Unit coverage for the Phase 7 dashboard snapshot (docs/AUTOTRADING_SPEC.md —
@@ -13,7 +14,8 @@ import { getAutotradeDashboard } from '../src/services/autotrading/dashboard';
 beforeAll(() => initDb());
 beforeEach(() => {
   db.exec(
-    'DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events; ' +
+    'DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_options_paper_positions; ' +
+      'DELETE FROM autotrade_config; DELETE FROM autotrade_events; ' +
       'DELETE FROM position_exits; DELETE FROM positions; DELETE FROM autotrade_live_orders; DELETE FROM order_events; DELETE FROM order_intents;',
   );
 });
@@ -42,6 +44,22 @@ function openPos(overrides: Partial<Parameters<typeof openPaperPosition>[0]> = {
     stopPrice: 95,
     targetPrice: 110,
     riskAmount: 50,
+    riskProfile: 'MODERATE',
+    rationale: 'fixture',
+    ...overrides,
+  });
+}
+
+function openOptionsPos(overrides: Partial<Parameters<typeof openOptionsPaperPosition>[0]> = {}) {
+  return openOptionsPaperPosition({
+    symbol: 'AAPL',
+    side: 'call',
+    contractSymbol: 'AAPL-fixture',
+    strike: 100,
+    expiration: '2026-08-21',
+    quantity: 2,
+    entryPrice: 3,
+    riskAmount: 600,
     riskProfile: 'MODERATE',
     rationale: 'fixture',
     ...overrides,
@@ -122,6 +140,81 @@ describe('getAutotradeDashboard', () => {
     expect(dash.dailyPnl).toBe((90 - 100) * 10 + (80 - 100) * 10); // -100 + -200 = -300
     expect(dash.consecutiveLosses).toBe(2);
     expect(dash.tradesToday).toBe(2);
+  });
+
+  describe('Phase 13: options paper fields — combined with equity, not a second pool', () => {
+    it('combines equity + options paper positions into ONE count/risk pool, unlike live', () => {
+      setAutotradeConfig({ accountEquityUsd: 100_000 });
+      openPos({ symbol: 'AAPL', riskAmount: 500 });
+      openOptionsPos({ symbol: 'MSFT', riskAmount: 300 });
+      const dash = getAutotradeDashboard();
+      expect(dash.openPositionsCount).toBe(2); // 1 equity + 1 options
+      expect(dash.openRisk).toBe(800); // 500 + 300
+      // openPositions itself stays equity-only — options get their own array below.
+      expect(dash.openPositions.map((p) => p.symbol)).toEqual(['AAPL']);
+      expect(dash.openOptionsPositions.map((p) => p.symbol)).toEqual(['MSFT']);
+    });
+
+    it('combines dailyPnl and tradesToday by SUM across equity + options', () => {
+      setAutotradeConfig({ accountEquityUsd: 100_000 });
+      const eq = openPos({ symbol: 'AAA', entryPrice: 100, riskAmount: 500 });
+      db.prepare(
+        "UPDATE autotrade_paper_positions SET status='closed', exit_price=90, exit_at=?, exit_reason='stop' WHERE id=?",
+      ).run(Date.now(), eq.id); // (90-100)*10 = -100
+      const opt = openOptionsPos({ symbol: 'BBB', entryPrice: 3, quantity: 2 });
+      db.prepare(
+        "UPDATE autotrade_options_paper_positions SET status='closed', exit_price=1, exit_at=?, exit_reason='time_exit' WHERE id=?",
+      ).run(Date.now(), opt.id); // (1-3)*2*100 = -400
+
+      const dash = getAutotradeDashboard();
+      expect(dash.dailyPnl).toBe(-500); // -100 + -400
+      expect(dash.tradesToday).toBe(2); // 1 equity + 1 options
+    });
+
+    it('combines consecutiveLosses by MAX (not sum) across equity + options', () => {
+      setAutotradeConfig({ accountEquityUsd: 100_000 });
+      // Equity: two losses in a row.
+      const a = openPos({ symbol: 'AAA', entryPrice: 100, riskAmount: 500 });
+      db.prepare(
+        "UPDATE autotrade_paper_positions SET status='closed', exit_price=90, exit_at=?, exit_reason='stop' WHERE id=?",
+      ).run(Date.now(), a.id);
+      const b = openPos({ symbol: 'BBB', entryPrice: 100, riskAmount: 500 });
+      db.prepare(
+        "UPDATE autotrade_paper_positions SET status='closed', exit_price=90, exit_at=?, exit_reason='stop' WHERE id=?",
+      ).run(Date.now(), b.id);
+      // Options: a single win — its own streak is 0.
+      const c = openOptionsPos({ symbol: 'CCC', entryPrice: 3 });
+      db.prepare(
+        "UPDATE autotrade_options_paper_positions SET status='closed', exit_price=5, exit_at=?, exit_reason='time_exit' WHERE id=?",
+      ).run(Date.now(), c.id);
+
+      const dash = getAutotradeDashboard();
+      // max(2 equity losses, 0 options losses) = 2, not 2+0 and not double-counted.
+      expect(dash.consecutiveLosses).toBe(2);
+    });
+
+    it('computes days-to-expiration for each open options position', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(Date.parse('2026-08-01T15:00:00Z'));
+      try {
+        setAutotradeConfig({ accountEquityUsd: 100_000 });
+        openOptionsPos({ symbol: 'AAPL', expiration: '2026-08-15' }); // ~14 days out
+        const dash = getAutotradeDashboard();
+        expect(dash.openOptionsPositions).toHaveLength(1);
+        expect(dash.openOptionsPositions[0].dte).toBeCloseTo(14.2, 1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('is empty when there are no options paper positions at all', () => {
+      setAutotradeConfig({ accountEquityUsd: 100_000 });
+      openPos({ symbol: 'AAPL', riskAmount: 500 });
+      const dash = getAutotradeDashboard();
+      expect(dash.openOptionsPositions).toEqual([]);
+      expect(dash.openPositionsCount).toBe(1); // equity only, unaffected
+      expect(dash.openRisk).toBe(500);
+    });
   });
 
   describe('Phase 8: live-trading fields', () => {

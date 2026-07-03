@@ -1371,17 +1371,30 @@ export interface AutotradeDashboard {
   killSwitch: boolean;
   riskProfile: AutotradeRiskProfile;
   equity: number | null;
+  /** Equity paper positions only — see openOptionsPositions below for the
+   *  options side of this SAME combined pool. */
   openPositions: PaperPosition[];
+  /** Combined equity + options paper count (phase 13) — ONE pool, not a
+   *  second one the way live's own figures are. */
   openPositionsCount: number;
   maxConcurrentPositions: number;
+  /** Combined equity + options paper risk $ (phase 13). */
   openRisk: number;
   maxAggregateOpenRisk: number;
+  /** Combined equity + options today's realized paper P&L. */
   dailyPnl: number;
   dailyDrawdownHaltLevel: number;
+  /** Combined equity + options paper entries opened today. */
   tradesToday: number;
   maxTradesPerDay: number;
+  /** max(equity streak, options streak) — not additive across the two books. */
   consecutiveLosses: number;
   stepDownAfterLosses: number;
+
+  // --- Phase 13: options paper positions — folded into the SAME pool above,
+  // not a second one (see openPositionsCount/openRisk doc comments). This
+  // array is for per-position display (contract/strike/expiration/DTE).
+  openOptionsPositions: (OptionsPaperPosition & { dte: number })[];
 
   // --- Phase 8: live trading — own pool, caps shared with paper above ---
   liveTradingEnabled: boolean;
