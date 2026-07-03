@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 vi.mock('../src/services/autotrading/screen', () => ({ runAutotradeScreen: vi.fn() }));
 vi.mock('../src/services/autotrading/decide', () => ({ runAutotradeDecision: vi.fn() }));
 vi.mock('../src/services/autotrading/execute', () => ({ runPaperExecution: vi.fn(), checkPaperExits: vi.fn() }));
+vi.mock('../src/services/autotrading/liveExecute', () => ({ runLiveExecution: vi.fn(), reconcileLiveOrders: vi.fn() }));
 vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/autotrading/executionGuards')>();
   return { ...actual, checkSessionWindow: vi.fn(), getMarketAtrPct: vi.fn() };
@@ -18,6 +19,7 @@ vi.mock('../src/db/autotradeEvents', () => ({ logAutotradeEvent: vi.fn() }));
 import { runAutotradeScreen } from '../src/services/autotrading/screen';
 import { runAutotradeDecision } from '../src/services/autotrading/decide';
 import { runPaperExecution, checkPaperExits } from '../src/services/autotrading/execute';
+import { runLiveExecution, reconcileLiveOrders } from '../src/services/autotrading/liveExecute';
 import { checkSessionWindow, getMarketAtrPct } from '../src/services/autotrading/executionGuards';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { runAutotradeLoopTick, startAutotradeLoop, stopAutotradeLoop } from '../src/services/autotrading/loop';
@@ -25,11 +27,14 @@ import { ScreenCandidate } from '../src/services/autotrading/screen';
 import { TradeSignal } from '../src/services/autotrading/decide';
 import { initDb } from '../src/db';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
+import { setTradingConfig } from '../src/db/trading';
 
 const mockScreen = vi.mocked(runAutotradeScreen);
 const mockDecide = vi.mocked(runAutotradeDecision);
 const mockExecute = vi.mocked(runPaperExecution);
 const mockCheckExits = vi.mocked(checkPaperExits);
+const mockLiveExecute = vi.mocked(runLiveExecution);
+const mockReconcileLive = vi.mocked(reconcileLiveOrders);
 const mockSessionWindow = vi.mocked(checkSessionWindow);
 const mockMarketAtr = vi.mocked(getMarketAtrPct);
 const mockLogEvent = vi.mocked(logAutotradeEvent);
@@ -71,14 +76,25 @@ beforeEach(() => {
   mockDecide.mockReset();
   mockExecute.mockReset();
   mockCheckExits.mockReset().mockResolvedValue([]);
+  mockLiveExecute.mockReset();
+  mockReconcileLive.mockReset().mockResolvedValue([]);
   mockSessionWindow.mockReset().mockReturnValue({ ok: true });
   mockMarketAtr.mockReset().mockResolvedValue(2);
   mockLogEvent.mockReset();
-  // runAutotradeLoopTick's own enabled/killSwitch gate (unlike everything else
-  // in this file) hits the REAL db/autotradeConfig, not a mock — default it to
-  // "armed" so existing tests below still exercise the entries path; the
-  // gating tests further down override this explicitly.
-  setAutotradeConfig({ enabled: true, killSwitch: false });
+  // runAutotradeLoopTick's own gates (unlike everything else in this file)
+  // hit the REAL db/autotradeConfig and db/trading, not a mock — default to
+  // "paper armed, live untouched/off" so existing tests below still exercise
+  // the paper entries path; the gating tests further down override
+  // explicitly. liveTradingEnabled/liveAccountId are reset every test (not
+  // just left to their previous test's value) since, unlike enabled/
+  // killSwitch, nothing else in this shared beforeEach was resetting them.
+  setAutotradeConfig({
+    enabled: true,
+    killSwitch: false,
+    liveTradingEnabled: false,
+    liveAccountId: null,
+  });
+  setTradingConfig({ enabled: false, killSwitch: false });
   stopAutotradeLoop();
 });
 
@@ -93,6 +109,19 @@ describe('runAutotradeLoopTick', () => {
     expect(summary.ranEntries).toBe(false);
     expect(summary.skippedReason).toBe('Market is closed');
     expect(mockScreen).not.toHaveBeenCalled();
+  });
+
+  it('always reconciles live orders too, even when neither paper nor live can open new entries', async () => {
+    setAutotradeConfig({ enabled: false }); // paper off, live never configured either
+    mockReconcileLive.mockResolvedValue([
+      { intentId: 1, symbol: 'AAPL', changed: true, action: 'exit_filled' },
+      { intentId: 2, symbol: 'MSFT', changed: false },
+    ]);
+    const summary = await runAutotradeLoopTick();
+    expect(mockReconcileLive).toHaveBeenCalledTimes(1);
+    expect(summary.liveOrdersReconciled).toBe(2);
+    expect(summary.livePositionsClosed).toBe(1);
+    expect(summary.ranEntries).toBe(false);
   });
 
   it('screens, decides, and executes when the session window is open', async () => {
@@ -228,13 +257,15 @@ describe('runAutotradeLoopTick', () => {
     expect(mockScreen).not.toHaveBeenCalled();
   });
 
-  it('still checks exits, but skips new entries, when auto-trading is disabled', async () => {
+  it('still checks exits, but skips new entries, when auto-trading is disabled (and live is not configured either)', async () => {
     setAutotradeConfig({ enabled: false });
     mockCheckExits.mockResolvedValue([{ symbol: 'AAPL', closed: false }]);
     const summary = await runAutotradeLoopTick();
     expect(summary.exitsChecked).toBe(1);
     expect(summary.ranEntries).toBe(false);
-    expect(summary.skippedReason).toMatch(/disabled/i);
+    // Phase 8: the message now covers both paths, since live can be active
+    // independently of paper's own `enabled` flag.
+    expect(summary.skippedReason).toMatch(/neither paper nor live/i);
     expect(mockScreen).not.toHaveBeenCalled();
   });
 
@@ -294,6 +325,114 @@ describe('runAutotradeLoopTick', () => {
 
     expect(mockExecute).not.toHaveBeenCalled();
     expect(summary.skippedReason).toMatch(/disabled mid-cycle/i);
+  });
+
+  describe('Phase 8: paper and live execution are independent', () => {
+    function armScreenAndDecide() {
+      mockScreen.mockResolvedValue({
+        generatedAt: Date.now(),
+        candidates: [candidate('AAPL', 2)],
+        excluded: [],
+        skipped: [],
+        errors: [],
+        discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      });
+      mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+    }
+
+    it('runs live entries when paper is disabled but live is active', async () => {
+      setAutotradeConfig({ enabled: false, liveTradingEnabled: true, liveAccountId: 'ACC1' });
+      setTradingConfig({ enabled: true, killSwitch: false });
+      armScreenAndDecide();
+      mockLiveExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+      const summary = await runAutotradeLoopTick();
+
+      expect(mockScreen).toHaveBeenCalledTimes(1); // screening ran — live alone was enough to justify it
+      expect(mockExecute).not.toHaveBeenCalled(); // paper stayed off
+      expect(mockLiveExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }]);
+      expect(summary.ranEntries).toBe(true);
+      expect(summary.entriesOpened).toBe(0);
+      expect(summary.liveEntriesOpened).toBe(1);
+    });
+
+    it('runs paper entries when live is not configured, without ever calling runLiveExecution', async () => {
+      armScreenAndDecide();
+      mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+      const summary = await runAutotradeLoopTick();
+
+      expect(mockExecute).toHaveBeenCalledTimes(1);
+      expect(mockLiveExecute).not.toHaveBeenCalled();
+      expect(summary.entriesOpened).toBe(1);
+      expect(summary.liveEntriesOpened).toBe(0);
+    });
+
+    it('runs BOTH when both are active', async () => {
+      setAutotradeConfig({ enabled: true, liveTradingEnabled: true, liveAccountId: 'ACC1' });
+      setTradingConfig({ enabled: true, killSwitch: false });
+      armScreenAndDecide();
+      mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+      mockLiveExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+      const summary = await runAutotradeLoopTick();
+
+      expect(mockExecute).toHaveBeenCalledTimes(1);
+      expect(mockLiveExecute).toHaveBeenCalledTimes(1);
+      expect(summary.entriesOpened).toBe(1);
+      expect(summary.liveEntriesOpened).toBe(1);
+    });
+
+    it("does not activate live just because liveTradingEnabled is true — the human Trade page's own enabled must also be true", async () => {
+      setAutotradeConfig({ enabled: false, liveTradingEnabled: true, liveAccountId: 'ACC1' });
+      setTradingConfig({ enabled: false }); // human page's own master switch is off
+      const summary = await runAutotradeLoopTick();
+      expect(summary.ranEntries).toBe(false);
+      expect(mockScreen).not.toHaveBeenCalled();
+    });
+
+    it("does not activate live when the human Trade page's OWN kill switch is engaged, even though autotrade's own kill switch is off", async () => {
+      setAutotradeConfig({ enabled: false, killSwitch: false, liveTradingEnabled: true, liveAccountId: 'ACC1' });
+      setTradingConfig({ enabled: true, killSwitch: true }); // the shared-broker defense-in-depth default
+      const summary = await runAutotradeLoopTick();
+      expect(summary.ranEntries).toBe(false);
+      expect(mockScreen).not.toHaveBeenCalled();
+    });
+
+    it("autotrade's own kill switch blocks BOTH paper and live, not just paper", async () => {
+      setAutotradeConfig({ enabled: true, killSwitch: true, liveTradingEnabled: true, liveAccountId: 'ACC1' });
+      setTradingConfig({ enabled: true, killSwitch: false });
+      const summary = await runAutotradeLoopTick();
+      expect(summary.ranEntries).toBe(false);
+      expect(summary.skippedReason).toMatch(/kill switch/i);
+      expect(mockScreen).not.toHaveBeenCalled();
+    });
+
+    it('aborts only the LIVE path if live is disabled mid-cycle, while paper — still active — proceeds', async () => {
+      setAutotradeConfig({ enabled: true, liveTradingEnabled: true, liveAccountId: 'ACC1' });
+      setTradingConfig({ enabled: true, killSwitch: false });
+      mockScreen.mockImplementation(async () => {
+        setAutotradeConfig({ liveTradingEnabled: false }); // live disabled mid-cycle
+        return {
+          generatedAt: Date.now(),
+          candidates: [candidate('AAPL', 2)],
+          excluded: [],
+          skipped: [],
+          errors: [],
+          discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+        };
+      });
+      mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+      mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+      const summary = await runAutotradeLoopTick();
+
+      expect(mockExecute).toHaveBeenCalledTimes(1); // paper still ran
+      expect(mockLiveExecute).not.toHaveBeenCalled(); // live did not
+      expect(summary.ranEntries).toBe(true);
+      expect(summary.entriesOpened).toBe(1);
+      expect(summary.liveEntriesOpened).toBe(0);
+    });
   });
 });
 

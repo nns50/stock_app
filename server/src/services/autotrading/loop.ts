@@ -1,8 +1,10 @@
-import { getAutotradeConfig } from '../../db/autotradeConfig';
+import { getAutotradeConfig, AutotradeConfig } from '../../db/autotradeConfig';
+import { getTradingConfig } from '../../db/trading';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { runAutotradeScreen, ScreenCandidate } from './screen';
 import { runAutotradeDecision } from './decide';
 import { runPaperExecution, checkPaperExits } from './execute';
+import { runLiveExecution, reconcileLiveOrders } from './liveExecute';
 import { checkSessionWindow, checkVolatility, defaultVolatilityFilterConfig, getMarketAtrPct } from './executionGuards';
 
 // ---------------------------------------------------------------------------
@@ -14,13 +16,22 @@ import { checkSessionWindow, checkVolatility, defaultVolatilityFilterConfig, get
 // can't kill the loop, and the timer is unref'd so it never keeps the process
 // alive on its own.
 //
-// The background timer ticks unconditionally — exit-checking (below) must run
-// every cycle regardless of enabled/killSwitch, so the outer loop() no longer
-// gates on those; runAutotradeLoopTick() does its own, more granular gating.
+// The background timer ticks unconditionally — exit-checking and live-order
+// reconcile (below) must run every cycle regardless of any gate, so the outer
+// loop() no longer gates on those; runAutotradeLoopTick() does its own, more
+// granular gating.
 //
-// Currently paper-only (see execute.ts) — this loop can place a real order
-// only once Phase 8 adds a live-capable execution path and the manual flag
-// for it is flipped; nothing here calls that path.
+// Phase 8: paper and live execution are INDEPENDENT — screening/deciding runs
+// once per cycle whenever EITHER is active, then each of runPaperExecution()/
+// runLiveExecution() is individually gated on its OWN still-active check, so
+// disabling one doesn't stop the other. Paper only ever needs autotrade's own
+// enabled/killSwitch (it never touches a broker); live additionally needs
+// liveTradingEnabled AND the human Trade page's own enabled/killSwitch, since
+// live orders share that same real broker account (see liveExecute.ts's
+// buildLiveTradingConfig() for the identical combination logic used at
+// guardrail-evaluation time — kept in sync deliberately, not by import, since
+// this is a plain boolean gate and evaluateGuardrails() needs the full
+// TradingConfig shape).
 // ---------------------------------------------------------------------------
 
 const TICK_INTERVAL_SECONDS = 60;
@@ -32,10 +43,19 @@ export interface LoopTickSummary {
   skippedReason?: string;
   exitsChecked: number;
   exitsClosed: number;
+  /** Live order reconcile — always runs, regardless of any gate (read-only
+   *  toward the broker; materializes fills the broker already produced). */
+  liveOrdersReconciled: number;
+  livePositionsClosed: number;
   candidatesScreened: number;
   candidatesPassedVolatility: number;
   signalsGenerated: number;
+  /** Paper entries opened this cycle — 0 whenever paper wasn't active, same
+   *  as always (unchanged from pre-Phase-8 behavior). */
   entriesOpened: number;
+  /** Live entries opened this cycle — 0 whenever live wasn't active (never
+   *  attempted), not "zero of some attempted". */
+  liveEntriesOpened: number;
 }
 
 /** Ticker-level volatility pre-filter, applied between Screen and Decision —
@@ -65,11 +85,32 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     skippedReason,
     exitsChecked: 0,
     exitsClosed: 0,
+    liveOrdersReconciled: 0,
+    livePositionsClosed: 0,
     candidatesScreened: 0,
     candidatesPassedVolatility: 0,
     signalsGenerated: 0,
     entriesOpened: 0,
+    liveEntriesOpened: 0,
   };
+}
+
+/** Whether autotrade's live path is allowed to place NEW entries right now —
+ *  autotrade's own liveTradingEnabled + killSwitch, AND the human Trade
+ *  page's own enabled/killSwitch, since live orders share that same real
+ *  broker account. Mirrors liveExecute.ts's buildLiveTradingConfig()'s
+ *  combination logic exactly (kept as a small, duplicated boolean check
+ *  rather than importing that function here, since this is just a gate on
+ *  whether to even ATTEMPT the stage — buildLiveTradingConfig() itself still
+ *  runs per-candidate inside runLiveExecution() for the actual guardrail
+ *  evaluation). */
+function isLiveEntryActive(autotradeCfg: AutotradeConfig): boolean {
+  const humanCfg = getTradingConfig();
+  return autotradeCfg.liveTradingEnabled && !autotradeCfg.killSwitch && humanCfg.enabled && !humanCfg.killSwitch;
+}
+
+function isPaperEntryActive(autotradeCfg: AutotradeConfig): boolean {
+  return autotradeCfg.enabled && !autotradeCfg.killSwitch;
 }
 
 /** True while a cycle is actively running. The self-rescheduling timer below
@@ -84,33 +125,41 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
 let tickInFlight = false;
 
 /**
- * One full cycle. Exits are checked regardless of the session window, the
- * master enabled switch, or the kill switch (a closed/near-the-bell market —
- * or a halted loop — doesn't invalidate an already-known stop/target level;
- * in paper mode this loop IS the only thing that can enforce one, so it must
- * keep running). New entries are skipped entirely when the kill switch is
- * engaged, when auto-trading is disabled, or outside the allowed session
- * window. Exposed for tests and for a manual "run one cycle now" trigger —
- * both callers get identical gating from this one function.
+ * One full cycle. Exits and the live-order reconcile are checked regardless
+ * of the session window or either gate (a closed/near-the-bell market — or a
+ * halted loop — doesn't invalidate an already-known stop/target level; in
+ * paper mode this loop IS the only thing that can enforce one, and the live
+ * reconcile is read-only toward the broker, so both must keep running).
+ *
+ * New entries are skipped entirely (screening doesn't even run) when NEITHER
+ * paper nor live is active, or outside the allowed session window. When at
+ * least one is active, screening/deciding runs ONCE and each of paper/live
+ * execution is independently gated on its OWN still-active check — disabling
+ * one doesn't stop the other. Exposed for tests and for a manual "run one
+ * cycle now" trigger — both callers get identical gating from this one
+ * function.
  */
 export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
   if (tickInFlight) return emptySummary('A cycle is already running');
   tickInFlight = true;
   try {
     const exitOutcomes = await checkPaperExits();
+    const liveReconcileOutcomes = await reconcileLiveOrders();
     const summary: LoopTickSummary = {
       ...emptySummary(),
       exitsChecked: exitOutcomes.length,
       exitsClosed: exitOutcomes.filter((o) => o.closed).length,
+      liveOrdersReconciled: liveReconcileOutcomes.length,
+      livePositionsClosed: liveReconcileOutcomes.filter((o) => o.action === 'exit_filled').length,
     };
 
     const config = getAutotradeConfig();
-    if (config.killSwitch) {
-      summary.skippedReason = 'Kill switch is engaged — new entries halted';
-      return summary;
-    }
-    if (!config.enabled) {
-      summary.skippedReason = 'Auto-trading is disabled';
+    const paperActive = isPaperEntryActive(config);
+    const liveActive = isLiveEntryActive(config);
+    if (!paperActive && !liveActive) {
+      summary.skippedReason = config.killSwitch
+        ? 'Kill switch is engaged — new entries halted'
+        : 'Neither paper nor live auto-trading is active';
       return summary;
     }
 
@@ -133,20 +182,30 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
 
     // Re-check right before executing: screening + deciding above is
     // network-bound (sector classification, market-ATR proxy) and can take
-    // meaningful wall-clock time, so a kill switch engaged mid-cycle must
-    // still stop THIS cycle's entries, not just the next one — the initial
-    // gate check above only protects against it being engaged before a cycle
-    // starts.
+    // meaningful wall-clock time, so either gate changing mid-cycle must
+    // still affect THIS cycle's entries, not just the next one — the initial
+    // gate check above only protects against it being set before a cycle
+    // starts. Each path is re-checked independently, not as a combined
+    // all-or-nothing recheck: paper going inactive mid-cycle must not also
+    // cancel an otherwise-still-active live cycle, and vice versa.
     const recheck = getAutotradeConfig();
-    if (recheck.killSwitch || !recheck.enabled) {
+    const paperStillActive = isPaperEntryActive(recheck);
+    const liveStillActive = isLiveEntryActive(recheck);
+    if (!paperStillActive && !liveStillActive) {
       summary.skippedReason = recheck.killSwitch
         ? 'Kill switch engaged mid-cycle — entries aborted before execution'
         : 'Auto-trading was disabled mid-cycle — entries aborted before execution';
       return summary;
     }
 
-    const outcomes = await runPaperExecution(decision.signals.map((signal) => ({ signal })));
-    summary.entriesOpened = outcomes.filter((o) => o.ok).length;
+    if (paperStillActive) {
+      const outcomes = await runPaperExecution(decision.signals.map((signal) => ({ signal })));
+      summary.entriesOpened = outcomes.filter((o) => o.ok).length;
+    }
+    if (liveStillActive) {
+      const liveOutcomes = await runLiveExecution(decision.signals.map((signal) => ({ signal })));
+      summary.liveEntriesOpened = liveOutcomes.filter((o) => o.ok).length;
+    }
     summary.ranEntries = true;
     return summary;
   } finally {
