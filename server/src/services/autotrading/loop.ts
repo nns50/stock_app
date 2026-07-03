@@ -224,7 +224,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // how real IV-rank history accrues over time for anything the loop
     // screens, per the spec's own stated goal — skipping this call would
     // leave that coverage permanently bootstrapped.
-    const optionsDecision = await runOptionsDecision(passedVolatility);
+    const optionsDecision = await runOptionsDecision(passedVolatility, { strategyType: config.optionsStrategyType });
     summary.optionsSignalsGenerated = optionsDecision.signals.length;
 
     // Re-check right before executing: screening + deciding above is

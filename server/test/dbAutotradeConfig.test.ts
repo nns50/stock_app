@@ -150,4 +150,31 @@ describe('autotrade config persistence', () => {
       expect(cfg.liveMaxOrderUsd).toBe(1_234);
     });
   });
+
+  describe('options strategy type', () => {
+    it("defaults to 'single_leg'", () => {
+      expect(defaultAutotradeConfig().optionsStrategyType).toBe('single_leg');
+      expect(getAutotradeConfig().optionsStrategyType).toBe('single_leg');
+    });
+
+    it("persists 'debit_spread' and round-trips", () => {
+      const cfg = setAutotradeConfig({ optionsStrategyType: 'debit_spread' });
+      expect(cfg.optionsStrategyType).toBe('debit_spread');
+      expect(getAutotradeConfig().optionsStrategyType).toBe('debit_spread');
+    });
+
+    it('rejects an invalid value, failing closed to single_leg', () => {
+      setAutotradeConfig({ optionsStrategyType: 'debit_spread' });
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+      const cfg = setAutotradeConfig({ optionsStrategyType: 'iron_condor' });
+      expect(cfg.optionsStrategyType).toBe('single_leg');
+    });
+
+    it('round-trips independently of unrelated patches', () => {
+      setAutotradeConfig({ optionsStrategyType: 'debit_spread' });
+      const cfg = setAutotradeConfig({ riskProfile: 'AGGRESSIVE' });
+      expect(cfg.optionsStrategyType).toBe('debit_spread');
+      expect(cfg.riskProfile).toBe('AGGRESSIVE');
+    });
+  });
 });

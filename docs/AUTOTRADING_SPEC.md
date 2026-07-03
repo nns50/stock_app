@@ -930,7 +930,8 @@ on its own timeline regardless of this options work.
    conservative subset (uncapped upside, one fewer decision), so shipping this first
    mirrors this codebase's own established convention of gating anything with more scope
    behind an explicit, separate opt-in (AGGRESSIVE vs. MODERATE, undefined-risk
-   strategies) — debit-spread construction can be added later the same way, if wanted.
+   strategies) — debit-spread construction was added later the same way; see the
+   follow-up note after phase 10.
    Read-only, like equities' phase 3 — no risk-check, no orders — but wired into the
    real, unconditional loop tick (`runAutotradeLoopTick()`) right alongside the equity
    decision, on the exact same already-screened/volatility-filtered candidates, since
@@ -973,14 +974,45 @@ on its own timeline regardless of this options work.
     deliberate simplification, not a delta-adjusted/leveraged exposure figure, flagged in
     code as such since nothing in this codebase computes one today.
     **First-cut scope, mirroring phase 9's own scope reduction**: only single-leg long
-    calls/puts are sized here; `computeSpreadSizing()` stays unused under
-    `services/autotrading/` until a debit-spread SIGNAL shape actually exists to size (see
-    phase 9's own deferral). Preview-only for now (a new `POST /api/autotrade/
+    calls/puts were sized here initially; `computeSpreadSizing()` stayed unused under
+    `services/autotrading/` until a debit-spread SIGNAL shape existed to size — see the
+    follow-up note below. Preview-only for now (a new `POST /api/autotrade/
     risk-check-options` route plus an approved/blocked badge on the Auto-Trade page's
     existing Options column) — not wired into the unconditional 24/7 loop tick, since
     there is no options EXECUTION path yet (phase 12) for it to gate; mirrors how equity's
     OWN risk-check started (phase 4, preview-only) before phase 6 gave it a real
     paper-execution consumer.
+
+    **Follow-up — debit-spread signal shape (2026-07-03):** `OptionsTradeSignal`
+    (`optionsDecide.ts`) is now a discriminated union on a new `kind` field —
+    `'single_leg'` (unchanged) or `'debit_spread'` — picked by a new persisted
+    `optionsStrategyType` config field (`db/autotradeConfig.ts`, default `'single_leg'`,
+    zero behavior change unless explicitly switched, same posture as `riskProfile`). The
+    short leg is found by reusing `scanEntries()` a second time with a shifted,
+    further-out-of-the-money delta band (`SHORT_LEG_DELTA_BAND`: 0.15-0.25, vs. the long
+    leg's own 0.30-0.60), constrained to a strike strictly further OTM than the long leg
+    (higher for a call spread, lower for a put spread) and rejected if the short leg's
+    premium would leave a net credit rather than a net debit. The structural backstop is
+    extended to both bounds — a debit vertical caps max loss AND max gain by construction,
+    so `analyzeStrategy()` is checked for `unboundedProfit` as well as `unboundedLoss` now,
+    not just the single-leg check. Sizing finally puts `computeSpreadSizing()` to use
+    under `services/autotrading/`: `evaluateOptionsRiskCheck()` branches on `signal.kind`
+    — `computeSpreadSizing()` for a spread (sized by max loss per spread, not a stop
+    distance), the existing `computeRiskSizing()` call for a single leg — sharing every
+    other check (drawdown halt, trade/position caps, the combined aggregate-risk budget,
+    correlated exposure) unchanged. `OptionsRiskCheckResult` is a new type (not a change to
+    the shared `RiskCheckResult` equity's own risk-check returns) since a spread's sizing
+    result is a `SpreadSizingResult`, not a `RiskSizingResult` — kept separate so equity's
+    risk-check path never needs to narrow a union it can't produce.
+    **Still decision + risk-check only, mirroring exactly where phases 9→10 originally
+    stopped**: a `'debit_spread'` signal that passes risk-check is risk-checked against the
+    same combined budget as a single leg, but `attemptOptionsPaperEntry()` skips it with a
+    clear logged reason at the final "open a position" step rather than opening one — the
+    `autotrade_options_paper_positions` schema is single-contract, with no shape yet for a
+    two-leg paper position. Options backtesting (phase 11) is unaffected and remains
+    single-leg only. Exposed as a new **Options strategy** selector on the Auto-Trade
+    page's config panel (single leg / debit spread), and the existing Options preview
+    column on the candidates table now renders whichever shape the signal is.
 11. **Options backtesting — shipped.** Given the scope (a new contract-discovery data
     layer, deriving IV/Greeks from historical prices, and a day-by-day simulator reusing
     phases 9-10's real functions), this was built in four independently-mergeable steps,

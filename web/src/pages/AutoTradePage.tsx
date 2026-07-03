@@ -22,6 +22,8 @@ import type {
   AutotradeDashboard,
   AutotradeDecideResponse,
   AutotradeLivePosition,
+  AutotradeOptionsRiskCheckResult,
+  AutotradeOptionsStrategyType,
   AutotradeRiskCheckResult,
   AutotradeRiskProfile,
   BacktestEquityPoint,
@@ -1003,6 +1005,7 @@ export default function AutoTradePage() {
   const [enabled, setEnabled] = useState(false);
   const [killSwitch, setKillSwitch] = useState(false);
   const [riskProfile, setRiskProfile] = useState<AutotradeRiskProfile>('MODERATE');
+  const [optionsStrategyType, setOptionsStrategyType] = useState<AutotradeOptionsStrategyType>('single_leg');
   const [equityDraft, setEquityDraft] = useState<number | undefined>();
   const [liveAccountIdDraft, setLiveAccountIdDraft] = useState('');
   const [liveMaxOrderUsdDraft, setLiveMaxOrderUsdDraft] = useState<number | undefined>();
@@ -1017,6 +1020,7 @@ export default function AutoTradePage() {
     setEnabled(config.data.enabled);
     setKillSwitch(config.data.killSwitch);
     setRiskProfile(config.data.riskProfile);
+    setOptionsStrategyType(config.data.optionsStrategyType);
     setEquityDraft(config.data.accountEquityUsd ?? undefined);
     setLiveAccountIdDraft(config.data.liveAccountId ?? '');
     setLiveMaxOrderUsdDraft(config.data.liveMaxOrderUsd);
@@ -1032,6 +1036,7 @@ export default function AutoTradePage() {
     enabled?: boolean;
     riskProfile?: AutotradeRiskProfile;
     accountEquityUsd?: number | null;
+    optionsStrategyType?: AutotradeOptionsStrategyType;
   }) => {
     if (patch.riskProfile === 'AGGRESSIVE' && riskProfile !== 'AGGRESSIVE') {
       const ok = await confirm({
@@ -1049,6 +1054,7 @@ export default function AutoTradePage() {
       });
       setEnabled(saved.enabled);
       setRiskProfile(saved.riskProfile);
+      setOptionsStrategyType(saved.optionsStrategyType);
       config.reload(); // keeps config.data — the equity-not-set warning's source of truth — fresh
       refreshLiveData(); // risk profile / equity changes shift the dashboard's caps, and get journaled
       toast('Auto-trading settings saved', { type: 'success' });
@@ -1170,7 +1176,7 @@ export default function AutoTradePage() {
   const [screenBusy, setScreenBusy] = useState(false);
   const [result, setResult] = useState<AutotradeDecideResponse>();
   const [riskResults, setRiskResults] = useState<AutotradeRiskCheckResult[]>([]);
-  const [optionsRiskResults, setOptionsRiskResults] = useState<AutotradeRiskCheckResult[]>([]);
+  const [optionsRiskResults, setOptionsRiskResults] = useState<AutotradeOptionsRiskCheckResult[]>([]);
   const [screenErr, setScreenErr] = useState<string>();
   const runScreen = async () => {
     setScreenBusy(true);
@@ -1389,6 +1395,23 @@ export default function AutoTradePage() {
               >
                 <option value="MODERATE">Moderate (default)</option>
                 <option value="AGGRESSIVE">Aggressive</option>
+              </select>
+            </Field>
+            <Field
+              label="Options strategy"
+              hint={
+                optionsStrategyType === 'debit_spread'
+                  ? 'Long leg + a further out-of-the-money short leg — caps both max loss and max gain.'
+                  : 'Long call/put only (default) — uncapped upside, simplest structure.'
+              }
+            >
+              <select
+                className="input"
+                value={optionsStrategyType}
+                onChange={(e) => saveConfig({ optionsStrategyType: e.target.value as AutotradeOptionsStrategyType })}
+              >
+                <option value="single_leg">Single leg (default)</option>
+                <option value="debit_spread">Debit spread</option>
               </select>
             </Field>
             <Field
@@ -1643,6 +1666,12 @@ export default function AutoTradePage() {
                         const optRisk = optionsRiskBySymbol.get(c.symbol);
                         const failing = risk?.checks.filter((chk) => !chk.passed) ?? [];
                         const optFailing = optRisk?.checks.filter((chk) => !chk.passed) ?? [];
+                        const optRiskIsSpread = !!optRisk && 'suggestedContracts' in optRisk.sizing;
+                        const optRiskQty = !optRisk
+                          ? 0
+                          : 'suggestedContracts' in optRisk.sizing
+                            ? optRisk.sizing.suggestedContracts
+                            : optRisk.sizing.suggestedQuantity;
                         return (
                           <tr key={c.symbol} className="border-b border-ink-700/50">
                             <td className="td font-semibold">{c.symbol}</td>
@@ -1688,12 +1717,25 @@ export default function AutoTradePage() {
                               {optSignal ? (
                                 <div className="space-y-0.5">
                                   <span className="whitespace-nowrap">
-                                    <Badge color={optSignal.side === 'call' ? 'green' : 'red'}>
-                                      {optSignal.side} {optSignal.strike}
-                                    </Badge>{' '}
-                                    <span className="text-[11px] text-slate-500">
-                                      {fmtUsd(optSignal.premium)} · {fmtDate(optSignal.expiration)}
-                                    </span>
+                                    {optSignal.kind === 'single_leg' ? (
+                                      <>
+                                        <Badge color={optSignal.side === 'call' ? 'green' : 'red'}>
+                                          {optSignal.side} {optSignal.strike}
+                                        </Badge>{' '}
+                                        <span className="text-[11px] text-slate-500">
+                                          {fmtUsd(optSignal.premium)} · {fmtDate(optSignal.expiration)}
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Badge color={optSignal.side === 'call' ? 'green' : 'red'}>
+                                          {optSignal.side} {optSignal.longStrike}/{optSignal.shortStrike}
+                                        </Badge>{' '}
+                                        <span className="text-[11px] text-slate-500">
+                                          {fmtUsd(optSignal.netDebit)} debit · {fmtDate(optSignal.expiration)}
+                                        </span>
+                                      </>
+                                    )}
                                   </span>
                                   {optRisk && (
                                     <div>
@@ -1701,8 +1743,8 @@ export default function AutoTradePage() {
                                         <span className="whitespace-nowrap">
                                           <Badge color="green">approved</Badge>{' '}
                                           <span className="text-[11px] text-slate-500">
-                                            {optRisk.sizing.suggestedQuantity} contract
-                                            {optRisk.sizing.suggestedQuantity === 1 ? '' : 's'}
+                                            {optRiskQty} {optRiskIsSpread ? 'spread' : 'contract'}
+                                            {optRiskQty === 1 ? '' : 's'}
                                           </span>
                                         </span>
                                       ) : (

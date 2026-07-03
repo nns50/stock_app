@@ -47,6 +47,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     liveAllowNakedShort: false,
     liveProbationTrades: 20,
     liveProbationSizeMultiplier: 0.5,
+    optionsStrategyType: 'single_leg',
     ...overrides,
   };
 }
@@ -251,6 +252,7 @@ describe('AutoTradePage', () => {
       optionsDecision: {
         signals: [
           {
+            kind: 'single_leg',
             symbol: 'AAPL',
             side: 'call',
             contractSymbol: 'AAPL-fixture',
@@ -338,6 +340,107 @@ describe('AutoTradePage', () => {
     await waitFor(() => expect(optionsRiskCheck).toHaveBeenCalledWith(result.optionsDecision.signals, equityResults));
     expect(screen.getAllByText('approved')).toHaveLength(2); // one for equity, one for the options signal
     expect(screen.getByText('2 contracts')).toBeInTheDocument();
+  });
+
+  it('renders a debit-spread options signal (both strikes, net debit, sized "spreads" not "contracts")', async () => {
+    const result: AutotradeDecideResponse = {
+      screen: {
+        generatedAt: Date.now(),
+        candidates: [
+          {
+            symbol: 'AAPL',
+            price: 210.5,
+            total: 82.4,
+            passedFilters: true,
+            filterReasons: [],
+            components: [],
+            indicators: {
+              price: 210.5,
+              changePct: 3.2,
+              maShort: 200,
+              maLong: 190,
+              distShortPct: 5,
+              distLongPct: 10,
+              rsi: 65,
+              atr: 3,
+              atrPct: 1.4,
+              relVolume: 2.1,
+              avgVolume: 1_000_000,
+              volume: 2_100_000,
+              gapPct: 4.5,
+            },
+            discoverySource: 'movers',
+          },
+        ],
+        excluded: [],
+        skipped: [],
+        errors: [],
+        discovery: { universeCount: 124, moversCount: 5, scannedCount: 129 },
+      },
+      decision: { signals: [], skipped: [{ symbol: 'AAPL', reason: 'no usable volatility history' }] },
+      optionsDecision: {
+        signals: [
+          {
+            kind: 'debit_spread',
+            symbol: 'AAPL',
+            side: 'call',
+            expiration: '2024-03-15',
+            dte: 21,
+            ivRank: 55,
+            longContractSymbol: 'AAPL-long',
+            longStrike: 210,
+            longPremium: 4.2,
+            longDelta: 0.42,
+            shortContractSymbol: 'AAPL-short',
+            shortStrike: 220,
+            shortPremium: 2.2,
+            shortDelta: 0.2,
+            width: 10,
+            netDebit: 2,
+            maxLossPerContract: 200,
+            maxProfitPerContract: 800,
+            rationale: 'Call debit spread on AAPL: long 210/short 220, exp 2024-03-15 (21d), net debit 2.00, width 10',
+            score: 82.4,
+          },
+        ],
+        skipped: [],
+      },
+    };
+    vi.spyOn(client, 'runAutotradeDecision').mockResolvedValue(result);
+    vi.spyOn(client, 'runAutotradeRiskCheck').mockResolvedValue({ results: [] });
+    vi.spyOn(client, 'runOptionsRiskCheck').mockResolvedValue({
+      results: [
+        {
+          symbol: 'AAPL',
+          ok: true,
+          checks: [{ rule: 'equity_configured', passed: true, detail: '$100,000.00' }],
+          sizing: {
+            maxRiskDollars: 1000,
+            maxLossPerSpread: 200,
+            maxProfitPerSpread: 800,
+            suggestedContracts: 5,
+            totalMaxLoss: 1000,
+            totalMaxProfit: 4000,
+            positionPctOfAccount: 1,
+            rewardRiskRatio: 4,
+            warnings: [],
+          },
+          stepDownActive: false,
+          approvedRiskAmount: 1000,
+          approvedNotional: 1000,
+        },
+      ],
+    });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run screen' }));
+
+    expect(await screen.findByText('Candidates (1)')).toBeInTheDocument();
+    expect(screen.getByText('call 210/220')).toBeInTheDocument(); // both strikes shown
+    expect(screen.getByText('$2.00 debit · Mar 15, 2024')).toBeInTheDocument();
+    expect(await screen.findByText('approved')).toBeInTheDocument();
+    expect(screen.getByText('5 spreads')).toBeInTheDocument(); // NOT "5 contracts"
   });
 
   it('clears stale candidates when a later screen run fails, so the error is not shown next to old results', async () => {

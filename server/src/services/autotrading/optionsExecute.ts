@@ -1,8 +1,8 @@
 import { getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
 import { RISK_PROFILES } from './riskProfiles';
 import { OptionsTradeSignal } from './optionsDecide';
-import { evaluateOptionsRiskCheck } from './optionsRiskCheck';
-import { correlatedNotional, RiskCheckContext, RiskCheckResult } from './riskCheck';
+import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskCheck';
+import { correlatedNotional, RiskCheckContext } from './riskCheck';
 import { getPaperPortfolioSnapshot, PaperPortfolioSeed } from './execute';
 import { computeStreaksAndDrawdown } from '../pnl';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
@@ -106,13 +106,27 @@ async function fetchContractMark(
  * an open options paper position is skipped, never stacked. Fills at a
  * FRESHLY-fetched contract mark, not the signal's own screening-time
  * premium — same "now IS the fill moment" reasoning as attemptPaperEntry().
+ *
+ * Single-leg only: a 'debit_spread' signal is risk-checked exactly like a
+ * single-leg one (see optionsRiskCheck.ts — the combined budget applies to
+ * both), but is skipped here rather than opened, since a spread has no
+ * paper-execution path yet (autotrade_options_paper_positions is a
+ * single-contract schema). docs/AUTOTRADING_SPEC.md's own phase 9/10 scoping
+ * note applies again: decision + risk-check, not execution, until asked for.
  */
 export async function attemptOptionsPaperEntry(
   signal: OptionsTradeSignal,
-  riskResult: RiskCheckResult,
+  riskResult: OptionsRiskCheckResult,
   riskProfile: RiskProfileName,
 ): Promise<OptionsExecutionOutcome> {
   if (!riskResult.ok) return { symbol: signal.symbol, ok: false, reason: 'Risk check did not pass' };
+  if (signal.kind === 'debit_spread') {
+    return {
+      symbol: signal.symbol,
+      ok: false,
+      reason: 'Debit-spread paper execution is not supported yet (decision/risk-check only)',
+    };
+  }
   if (hasOpenOptionsPaperPosition(signal.symbol)) {
     return { symbol: signal.symbol, ok: false, reason: 'Already has an open options paper position' };
   }
@@ -144,6 +158,10 @@ export async function attemptOptionsPaperEntry(
     return { symbol: signal.symbol, ok: false, reason };
   }
 
+  // riskResult.sizing is RiskSizingResult here — signal.kind === 'single_leg'
+  // (the spread branch already returned above), and evaluateOptionsRiskCheck
+  // always sizes a single-leg signal via computeRiskSizing().
+  const quantity = 'suggestedQuantity' in riskResult.sizing ? riskResult.sizing.suggestedQuantity : 0;
   let position: OptionsPaperPosition;
   try {
     position = openOptionsPaperPosition({
@@ -152,7 +170,7 @@ export async function attemptOptionsPaperEntry(
       contractSymbol: signal.contractSymbol,
       strike: signal.strike,
       expiration: signal.expiration,
-      quantity: riskResult.sizing.suggestedQuantity,
+      quantity,
       entryPrice: fillPremium,
       riskAmount: riskResult.approvedRiskAmount,
       riskProfile,
@@ -293,12 +311,14 @@ export async function runOptionsPaperExecution(
       correlatedNotional: correlated,
     };
     const result = evaluateOptionsRiskCheck(signal, ctx, profile);
+    const contracts =
+      'suggestedContracts' in result.sizing ? result.sizing.suggestedContracts : result.sizing.suggestedQuantity;
     logAutotradeEvent({
       symbol,
       stage: 'risk_check',
       riskProfile: config.riskProfile,
       action: result.ok ? 'passed' : 'blocked',
-      detail: { checks: result.checks, contracts: result.sizing.suggestedQuantity },
+      detail: { checks: result.checks, contracts },
     });
     if (!result.ok) {
       outcomes.push({ symbol, ok: false, reason: 'Risk check blocked' });

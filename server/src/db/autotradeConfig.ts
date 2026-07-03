@@ -15,6 +15,13 @@ import { db } from './index';
 
 export type RiskProfileName = 'MODERATE' | 'AGGRESSIVE';
 
+/** Which options strategy shape the loop builds (docs/AUTOTRADING_SPEC.md,
+ *  phase 9/10's own deferred "debit spread" follow-up). 'single_leg' (long
+ *  call/put) by default — a debit spread caps both max loss AND max gain, a
+ *  genuinely different risk/reward trade a human should opt into explicitly,
+ *  not something the loop silently switches to based on market conditions. */
+export type OptionsStrategyType = 'single_leg' | 'debit_spread';
+
 export interface AutotradeConfig {
   /** Master on/off for the auto-trading execution loop. */
   enabled: boolean;
@@ -77,6 +84,14 @@ export interface AutotradeConfig {
    *  sizing and any loss-streak step-down already active (Phase 8 Step B). */
   liveProbationTrades: number;
   liveProbationSizeMultiplier: number;
+
+  // --- Options strategy shape (docs/AUTOTRADING_SPEC.md — phase 9/10 follow-up) ---
+
+  /** 'single_leg' (default) or 'debit_spread' — see OptionsStrategyType doc
+   *  comment above. Applies to both the paper-trading loop (loop.ts) and the
+   *  /decide preview route (routes/autotrade.ts); backtesting is unaffected
+   *  (options backtests remain single-leg only). */
+  optionsStrategyType: OptionsStrategyType;
 }
 
 interface ConfigRow {
@@ -111,6 +126,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveAllowNakedShort: false,
     liveProbationTrades: 20,
     liveProbationSizeMultiplier: 0.5,
+    optionsStrategyType: 'single_leg',
   };
 }
 
@@ -163,6 +179,10 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       const n = Number(input.liveProbationSizeMultiplier);
       return Number.isFinite(n) && n > 0 && n <= 1 ? n : d.liveProbationSizeMultiplier;
     })(),
+    optionsStrategyType:
+      input.optionsStrategyType === 'debit_spread' || input.optionsStrategyType === 'single_leg'
+        ? input.optionsStrategyType
+        : d.optionsStrategyType,
   };
 }
 

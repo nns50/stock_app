@@ -20,15 +20,15 @@ import {
   optionsSeedForEquity,
   runOptionsPaperExecution,
 } from '../src/services/autotrading/optionsExecute';
-import { evaluateOptionsRiskCheck } from '../src/services/autotrading/optionsRiskCheck';
-import { RiskCheckResult } from '../src/services/autotrading/riskCheck';
+import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from '../src/services/autotrading/optionsRiskCheck';
 import { RISK_PROFILES } from '../src/services/autotrading/riskProfiles';
-import { OptionsTradeSignal } from '../src/services/autotrading/optionsDecide';
+import { DebitSpreadOptionsSignal, SingleLegOptionsSignal } from '../src/services/autotrading/optionsDecide';
 
 const mockGetProvider = vi.mocked(getProvider);
 
-function optionSignal(overrides: Partial<OptionsTradeSignal> = {}): OptionsTradeSignal {
+function optionSignal(overrides: Partial<SingleLegOptionsSignal> = {}): SingleLegOptionsSignal {
   return {
+    kind: 'single_leg',
     symbol: 'AAPL',
     side: 'call',
     contractSymbol: 'AAPL-fixture',
@@ -39,6 +39,32 @@ function optionSignal(overrides: Partial<OptionsTradeSignal> = {}): OptionsTrade
     delta: 0.45,
     ivRank: 50,
     maxLossPerContract: 300,
+    rationale: 'test fixture',
+    score: 70,
+    ...overrides,
+  };
+}
+
+function spreadSignal(overrides: Partial<DebitSpreadOptionsSignal> = {}): DebitSpreadOptionsSignal {
+  return {
+    kind: 'debit_spread',
+    symbol: 'AAPL',
+    side: 'call',
+    expiration: '2024-06-21',
+    dte: 21,
+    ivRank: 50,
+    longContractSymbol: 'AAPL-long',
+    longStrike: 100,
+    longPremium: 3,
+    longDelta: 0.45,
+    shortContractSymbol: 'AAPL-short',
+    shortStrike: 110,
+    shortPremium: 1,
+    shortDelta: 0.2,
+    width: 10,
+    netDebit: 2,
+    maxLossPerContract: 200,
+    maxProfitPerContract: 800,
     rationale: 'test fixture',
     score: 70,
     ...overrides,
@@ -84,7 +110,7 @@ beforeEach(() => {
 });
 
 describe('attemptOptionsPaperEntry', () => {
-  const okResult: RiskCheckResult = evaluateOptionsRiskCheck(
+  const okResult: OptionsRiskCheckResult = evaluateOptionsRiskCheck(
     optionSignal(),
     {
       equity: 100_000,
@@ -109,7 +135,7 @@ describe('attemptOptionsPaperEntry', () => {
 
   it('never fetches a chain or opens anything when the risk check did not pass', async () => {
     mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.25 } }) as never);
-    const blocked: RiskCheckResult = { ...okResult, ok: false };
+    const blocked: OptionsRiskCheckResult = { ...okResult, ok: false };
     const outcome = await attemptOptionsPaperEntry(optionSignal(), blocked, 'MODERATE');
     expect(outcome.ok).toBe(false);
     expect(mockGetProvider).not.toHaveBeenCalled();
@@ -161,6 +187,28 @@ describe('attemptOptionsPaperEntry', () => {
     const events = listAutotradeEvents({ stage: 'execution', symbol: 'AAPL' });
     expect(events[0].action).toBe('options_paper_order_placed');
     expect(events[0].riskProfile).toBe('MODERATE');
+  });
+
+  it('skips a debit-spread signal even when its risk check passed — no paper-execution path for spreads yet', async () => {
+    const spreadOkResult: OptionsRiskCheckResult = evaluateOptionsRiskCheck(
+      spreadSignal(),
+      {
+        equity: 100_000,
+        dailyPnl: 0,
+        tradesToday: 0,
+        consecutiveLosses: 0,
+        openRisk: 0,
+        openPositionsCount: 0,
+        correlatedNotional: 0,
+      },
+      RISK_PROFILES.MODERATE,
+    );
+    expect(spreadOkResult.ok).toBe(true); // risk check itself passes fine
+    const outcome = await attemptOptionsPaperEntry(spreadSignal(), spreadOkResult, 'MODERATE');
+    expect(outcome.ok).toBe(false);
+    expect(outcome.reason).toMatch(/not supported yet/i);
+    expect(mockGetProvider).not.toHaveBeenCalled(); // never even attempts a quote fetch
+    expect(hasOpenOptionsPaperPosition('AAPL')).toBe(false);
   });
 });
 
@@ -301,6 +349,21 @@ describe('runOptionsPaperExecution', () => {
     } finally {
       openSpy.mockRestore();
     }
+  });
+
+  it('risk-checks a debit-spread candidate but never opens a paper position for it, and its un-opened risk does not carry into the next candidate', async () => {
+    // No mock chain registered for the spread's own symbol at all — proves
+    // attemptOptionsPaperEntry skips it BEFORE ever fetching a quote.
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3 } }) as never);
+    const outcomes = await runOptionsPaperExecution([
+      { signal: spreadSignal({ symbol: 'SPRD' }) },
+      { signal: optionSignal({ symbol: 'AAPL' }) },
+    ]);
+    expect(outcomes[0].ok).toBe(false);
+    expect(outcomes[0].reason).toMatch(/not supported yet/i);
+    expect(hasOpenOptionsPaperPosition('SPRD')).toBe(false);
+    expect(outcomes[1].ok).toBe(true);
+    expect(hasOpenOptionsPaperPosition('AAPL')).toBe(true);
   });
 });
 

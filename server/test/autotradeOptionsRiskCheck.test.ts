@@ -6,13 +6,14 @@ import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { evaluateOptionsRiskCheck, runOptionsRiskCheck } from '../src/services/autotrading/optionsRiskCheck';
 import { runAutotradeRiskCheck, RiskCheckContext } from '../src/services/autotrading/riskCheck';
 import { RISK_PROFILES } from '../src/services/autotrading/riskProfiles';
-import { OptionsTradeSignal } from '../src/services/autotrading/optionsDecide';
+import { DebitSpreadOptionsSignal, SingleLegOptionsSignal } from '../src/services/autotrading/optionsDecide';
 import { TradeSignal } from '../src/services/autotrading/decide';
 
 const MODERATE = RISK_PROFILES.MODERATE;
 
-function optionSignal(overrides: Partial<OptionsTradeSignal> = {}): OptionsTradeSignal {
+function optionSignal(overrides: Partial<SingleLegOptionsSignal> = {}): SingleLegOptionsSignal {
   return {
+    kind: 'single_leg',
     symbol: 'TEST',
     side: 'call',
     contractSymbol: 'TEST-fixture',
@@ -23,6 +24,32 @@ function optionSignal(overrides: Partial<OptionsTradeSignal> = {}): OptionsTrade
     delta: 0.45,
     ivRank: 50,
     maxLossPerContract: 300,
+    rationale: 'test fixture',
+    score: 70,
+    ...overrides,
+  };
+}
+
+function spreadSignal(overrides: Partial<DebitSpreadOptionsSignal> = {}): DebitSpreadOptionsSignal {
+  return {
+    kind: 'debit_spread',
+    symbol: 'TEST',
+    side: 'call',
+    expiration: '2024-03-15',
+    dte: 21,
+    ivRank: 50,
+    longContractSymbol: 'TEST-long',
+    longStrike: 100,
+    longPremium: 3,
+    longDelta: 0.45,
+    shortContractSymbol: 'TEST-short',
+    shortStrike: 110,
+    shortPremium: 1,
+    shortDelta: 0.2,
+    width: 10,
+    netDebit: 2,
+    maxLossPerContract: 200,
+    maxProfitPerContract: 800,
     rationale: 'test fixture',
     score: 70,
     ...overrides,
@@ -156,6 +183,46 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
       expect(findCheck(result, 'max_correlated_exposure').passed).toBe(false); // 7000 > 6000 cap
     });
   });
+
+  describe('debit spread (signal.kind: debit_spread)', () => {
+    it('sizes by max loss per spread, not premium alone: 1% of $100k = $1000 budget / $200 max loss per spread = 5 spreads', () => {
+      const result = evaluateOptionsRiskCheck(spreadSignal(), baseCtx(), MODERATE);
+      expect(result.ok).toBe(true);
+      expect('suggestedContracts' in result.sizing && result.sizing.suggestedContracts).toBe(5);
+      expect(result.approvedRiskAmount).toBe(1000); // 5 spreads x $200 max loss/spread
+    });
+
+    it('approvedNotional equals approvedRiskAmount — capital tied up IS the max loss for a debit spread', () => {
+      const result = evaluateOptionsRiskCheck(spreadSignal(), baseCtx(), MODERATE);
+      expect(result.approvedNotional).toBe(result.approvedRiskAmount);
+      expect(result.approvedNotional).toBe(1000);
+    });
+
+    it('blocks when the risk budget cannot size even one spread', () => {
+      // $10 equity x 1% = $0.10 budget; $200 max loss/spread -> 0 spreads.
+      const result = evaluateOptionsRiskCheck(spreadSignal(), baseCtx({ equity: 10 }), MODERATE);
+      expect(result.ok).toBe(false);
+      expect(findCheck(result, 'quantity').passed).toBe(false);
+    });
+
+    it("counts a spread's max loss (not its notional/premium) toward the combined aggregate-risk budget", () => {
+      // MODERATE cap = 2% of 100k = $2000. $1000 already at risk; this spread's
+      // own risk is $1000 (5 x $200) - 1000+1000=2000, exactly at the cap.
+      const atCap = evaluateOptionsRiskCheck(spreadSignal(), baseCtx({ openRisk: 1000 }), MODERATE);
+      expect(findCheck(atCap, 'max_aggregate_open_risk').passed).toBe(true);
+
+      const overCap = evaluateOptionsRiskCheck(spreadSignal(), baseCtx({ openRisk: 1001 }), MODERATE);
+      expect(overCap.ok).toBe(false);
+      expect(findCheck(overCap, 'max_aggregate_open_risk').passed).toBe(false);
+    });
+
+    it('cuts spread size via step-down sizing exactly like a single leg', () => {
+      // 0.5% of 100,000 = $500 budget / $200 per spread = 2 spreads (floor(2.5)).
+      const result = evaluateOptionsRiskCheck(spreadSignal(), baseCtx({ consecutiveLosses: 2 }), MODERATE);
+      expect(result.stepDownActive).toBe(true);
+      expect('suggestedContracts' in result.sizing && result.sizing.suggestedContracts).toBe(2);
+    });
+  });
 });
 
 describe('runOptionsRiskCheck — batch orchestration', () => {
@@ -250,5 +317,29 @@ describe('runOptionsRiskCheck — batch orchestration', () => {
     const results = await runOptionsRiskCheck([optionSignal({ symbol: 'AAPL', premium: 3 })], [forcedBlocked]);
     // If the $5000 had wrongly been added, 5000+900=5900 > 2000 would block.
     expect(results[0].ok).toBe(true);
+  });
+
+  it('accumulates a single leg and a debit spread against the SAME running budget, in one batch', async () => {
+    // MODERATE aggregate cap = $2000. The single leg risks $900; the spread
+    // risks $1000 (5 spreads x $200 max loss/spread). 900+1000=1900<=2000
+    // both pass; a third signal of either shape would now push over the cap.
+    const results = await runOptionsRiskCheck([optionSignal({ symbol: 'ONE' }), spreadSignal({ symbol: 'TWO' })]);
+    expect(results.map((r) => r.ok)).toEqual([true, true]);
+    expect(results[0].approvedRiskAmount).toBe(900);
+    expect(results[1].approvedRiskAmount).toBe(1000);
+
+    const overCap = await runOptionsRiskCheck([
+      optionSignal({ symbol: 'ONE' }),
+      spreadSignal({ symbol: 'TWO' }),
+      optionSignal({ symbol: 'THREE' }),
+    ]);
+    expect(overCap.map((r) => r.ok)).toEqual([true, true, false]);
+  });
+
+  it("journals a debit spread's SUGGESTED CONTRACT COUNT as its spread count, not a single-leg quantity", async () => {
+    await runOptionsRiskCheck([spreadSignal({ symbol: 'AAPL' })]);
+    const events = listAutotradeEvents({ stage: 'risk_check', symbol: 'AAPL' });
+    const detail = JSON.parse(events[0].detail!) as { contracts: number };
+    expect(detail.contracts).toBe(5); // suggestedContracts, not suggestedQuantity (which doesn't exist here)
   });
 });

@@ -5,6 +5,7 @@ import { analyzeStrategy } from '../../options/optionStrategy';
 import { atmIvOfChain, computeIvContext } from '../ivRank';
 import { getIvHistory, recordAtmIv } from '../../db/ivHistory';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
+import { OptionsStrategyType } from '../../db/autotradeConfig';
 import { mapPool } from '../../util/async';
 import { Direction } from '../../indicators/screener';
 import { ScreenCandidate } from './screen';
@@ -16,7 +17,8 @@ import { ScreenCandidate } from './screen';
 // stock one — reusing entryRules.ts's scanEntries() (already built for the
 // human Options page) rather than a parallel scoring engine, and
 // optionStrategy.ts's analyzeStrategy() as a structural, code-level backstop
-// against ever approving an undefined-risk structure.
+// against ever approving an undefined-risk (or, for a spread, undefined-
+// reward) structure.
 //
 // Unlike decide.ts (pure, synchronous — everything it needs is already on the
 // candidate), this stage needs real I/O per candidate: an option chain from
@@ -24,19 +26,19 @@ import { ScreenCandidate } from './screen';
 // history. It's still read-only toward the BROKER (no risk-check, no orders)
 // — the I/O here is a data fetch and a journal write, not an order.
 //
-// First cut, deliberately scoped down from the spec's full "long call, long
-// put, or debit spread": only single-leg long calls/puts are produced here.
-// A debit spread's short leg has no strike-selection logic anywhere in this
-// codebase to reuse (computeSpreadSizing() in Phase 10 only SIZES an
-// already-defined spread, it doesn't construct one) — building that from
-// scratch is a real, additional strategy surface the user hasn't weighed in
-// on, unlike everything else here which reuses existing, already-shipped
-// logic. Single-leg long options are the strictly more conservative subset
-// (uncapped upside, one fewer decision), so shipping this first and adding
-// spread construction later — if wanted — mirrors this codebase's own
-// established convention of gating anything with more scope/complexity
-// behind an explicit, separate opt-in (AGGRESSIVE vs MODERATE, undefined-risk
-// strategies).
+// Two strategy shapes, gated by db/autotradeConfig.ts's OptionsStrategyType
+// (default 'single_leg' — a deliberate, explicit opt-in to switch, not
+// something the loop picks based on market conditions):
+//   - 'single_leg': a long call/put — uncapped upside, the simplest structure
+//     and the strictly more conservative default (one fewer decision).
+//   - 'debit_spread': the same long leg, PLUS a short leg further
+//     out-of-the-money (found by reusing scanEntries() a second time with a
+//     shifted, further-OTM delta band — see SHORT_LEG_DELTA_BAND), which caps
+//     both max loss AND max gain — a genuinely different risk/reward trade.
+// Both shapes reuse the same entryRules.ts/optionStrategy.ts building blocks;
+// computeSpreadSizing() (services/riskSizing.ts, Phase 10) is what actually
+// sizes an approved spread signal (see optionsRiskCheck.ts) — this file only
+// constructs and structurally validates the spread itself.
 // ---------------------------------------------------------------------------
 
 export type OptionsSignalSide = 'call' | 'put';
@@ -46,10 +48,21 @@ export interface OptionsDecisionConfig {
   /** Merged onto defaultAutotradeEntryConfig(side) — same override shape as
    *  decide.ts's DecisionConfig patch convention. */
   entryConfig?: Partial<EntryStrategyConfig>;
+  /** 'single_leg' (default) or 'debit_spread' — see db/autotradeConfig.ts's
+   *  OptionsStrategyType doc comment. Changes WHICH contract(s)
+   *  generateOptionsSignal() builds; entryConfig still governs the long
+   *  leg's own scan either way. */
+  strategyType?: OptionsStrategyType;
+  /** Short-leg overrides for a debit spread, merged onto the long leg's own
+   *  resolved entryCfg plus SHORT_LEG_DELTA_BAND's further-OTM default (so
+   *  liquidity/spread/OI/volume/IV-rank gates stay identical for both legs
+   *  unless explicitly overridden here). Ignored when strategyType is
+   *  'single_leg'. */
+  shortLegEntryConfig?: Partial<EntryStrategyConfig>;
 }
 
 export function defaultOptionsDecisionConfig(): OptionsDecisionConfig {
-  return { direction: 'long' };
+  return { direction: 'long', strategyType: 'single_leg' };
 }
 
 /** entryRules.ts's own default plus the confirmed autotrade-specific IV-rank
@@ -62,25 +75,21 @@ export function defaultAutotradeEntryConfig(side: OptionsSignalSide): EntryStrat
   return { ...defaultEntryConfig(side), ivRankMax: 70 };
 }
 
-export interface OptionsTradeSignal {
+/** Short leg of a debit spread targets a delta band further OTM than the long
+ *  leg's own band (defaultAutotradeEntryConfig: 0.30-0.60) — sell a
+ *  further-OTM strike to collect some premium back, capping both max loss
+ *  and max gain. Everything else (liquidity/spread/OI/volume/IV-rank gates)
+ *  is inherited from the long leg's own resolved entryCfg (see
+ *  generateOptionsSignal) so both legs are held to the identical
+ *  contract-quality bar — only delta differs. */
+const SHORT_LEG_DELTA_BAND: Pick<EntryStrategyConfig, 'deltaMin' | 'deltaMax'> = { deltaMin: 0.15, deltaMax: 0.25 };
+
+interface OptionsSignalBase {
   symbol: string;
   side: OptionsSignalSide;
-  /** Provider contract symbol (e.g. OCC code) — what an eventual order (Phase
-   *  12) would actually reference. */
-  contractSymbol: string;
-  strike: number;
   expiration: string;
   dte: number;
-  /** Entry price per share (the contract's mark). */
-  premium: number;
-  delta: number | null;
   ivRank: number;
-  /** Dollars at risk for ONE contract (100 × premium) — a positive $ amount,
-   *  matching this codebase's risk-amount convention (services/pnl.ts,
-   *  riskCheck.ts). Derived from analyzeStrategy()'s maxLoss, not computed
-   *  independently, so it can never silently drift from the same structural
-   *  check that approved this signal in the first place. */
-  maxLossPerContract: number;
   rationale: string;
   /** The underlying's screener score, carried over — same convention as
    *  TradeSignal.score (decide.ts): sorting/comparison across DIFFERENT
@@ -89,6 +98,53 @@ export interface OptionsTradeSignal {
    *  which only ranks contracts WITHIN one underlying's own chain. */
   score: number;
 }
+
+export interface SingleLegOptionsSignal extends OptionsSignalBase {
+  kind: 'single_leg';
+  /** Provider contract symbol (e.g. OCC code) — what an eventual order
+   *  actually references. */
+  contractSymbol: string;
+  strike: number;
+  /** Entry price per share (the contract's mark). */
+  premium: number;
+  delta: number | null;
+  /** Dollars at risk for ONE contract (100 × premium) — a positive $ amount,
+   *  matching this codebase's risk-amount convention (services/pnl.ts,
+   *  riskCheck.ts). Derived from analyzeStrategy()'s maxLoss, not computed
+   *  independently, so it can never silently drift from the same structural
+   *  check that approved this signal in the first place. */
+  maxLossPerContract: number;
+}
+
+export interface DebitSpreadOptionsSignal extends OptionsSignalBase {
+  kind: 'debit_spread';
+  /** Long leg — closer to the money (entryCfg's own delta band, e.g. 0.30-0.60). */
+  longContractSymbol: string;
+  longStrike: number;
+  longPremium: number;
+  longDelta: number | null;
+  /** Short leg — further OTM (SHORT_LEG_DELTA_BAND), caps both loss and gain. */
+  shortContractSymbol: string;
+  shortStrike: number;
+  shortPremium: number;
+  shortDelta: number | null;
+  /** |shortStrike - longStrike|, per share. */
+  width: number;
+  /** Net debit PAID per share (longPremium - shortPremium), always > 0 — a
+   *  signal where the short leg would net a credit is rejected before this
+   *  type is ever constructed (see generateOptionsSignal). */
+  netDebit: number;
+  /** $ at risk for ONE spread (100 × netDebit) — derived from
+   *  analyzeStrategy()'s maxLoss, same non-independent-drift reasoning as
+   *  the single-leg field of the same name. */
+  maxLossPerContract: number;
+  /** $ max profit for ONE spread (100 × (width - netDebit)) — meaningful for
+   *  a spread (unlike a single long leg, whose upside is uncapped), derived
+   *  from analyzeStrategy()'s maxProfit. */
+  maxProfitPerContract: number;
+}
+
+export type OptionsTradeSignal = SingleLegOptionsSignal | DebitSpreadOptionsSignal;
 
 export type OptionsSignalResult = { ok: true; signal: OptionsTradeSignal } | { ok: false; reason: string };
 
@@ -106,6 +162,7 @@ export async function generateOptionsSignal(
 ): Promise<OptionsSignalResult> {
   const symbol = candidate.symbol.toUpperCase();
   const side: OptionsSignalSide = cfg.direction === 'long' ? 'call' : 'put';
+  const strategyType: OptionsStrategyType = cfg.strategyType ?? 'single_leg';
   const entryCfg: EntryStrategyConfig = { ...defaultAutotradeEntryConfig(side), ...cfg.entryConfig, side };
   const provider = getProvider();
   const now = new Date();
@@ -165,49 +222,148 @@ export async function generateOptionsSignal(
     return { ok: false, reason: 'No contract passed entry rules (liquidity/spread/delta/IV band)' };
   }
 
+  const underlyingPrice = chain.underlyingPrice ?? candidate.price;
   const premium = best.metrics.mark ?? 0;
+
+  if (strategyType === 'single_leg') {
+    const analysis = analyzeStrategy({
+      underlyingPrice,
+      dte: best.metrics.dte,
+      legs: [
+        {
+          type: side,
+          action: 'buy',
+          strike: best.contract.strike,
+          quantity: 1,
+          premium,
+          iv: best.metrics.iv ?? undefined,
+        },
+      ],
+    });
+    // Structural backstop (docs/AUTOTRADING_SPEC.md): never approve anything
+    // analyzeStrategy() itself reports as unbounded-loss or non-finite max
+    // loss. A single long call/put is defined-risk by construction, so this
+    // should always pass — but checking it in code, not just assuming the
+    // invariant, is exactly what the spec calls for.
+    if (analysis.unboundedLoss || analysis.maxLoss === null || !Number.isFinite(analysis.maxLoss)) {
+      return { ok: false, reason: 'Structural defined-risk check failed (unbounded or non-finite max loss)' };
+    }
+
+    const rationale =
+      `Long ${side} on ${symbol}: strike ${best.contract.strike}, exp ${best.contract.expiration} ` +
+      `(${best.metrics.dte.toFixed(0)}d), premium ${premium.toFixed(2)}, ` +
+      `Δ ${best.metrics.delta === null ? 'n/a' : best.metrics.delta.toFixed(2)}, IV rank ${ivContext.ivRank.toFixed(0)}`;
+
+    return {
+      ok: true,
+      signal: {
+        kind: 'single_leg',
+        symbol,
+        side,
+        contractSymbol: best.contract.symbol,
+        strike: best.contract.strike,
+        expiration: best.contract.expiration,
+        dte: best.metrics.dte,
+        premium,
+        delta: best.metrics.delta,
+        ivRank: ivContext.ivRank,
+        // analysis.maxLoss is a P&L figure (negative); flip to a positive $-at-risk amount.
+        maxLossPerContract: Math.abs(analysis.maxLoss),
+        rationale,
+        score: candidate.total,
+      },
+    };
+  }
+
+  // strategyType === 'debit_spread': pick a short leg further OTM than the
+  // long leg just chosen above, by reusing scanEntries() again with
+  // SHORT_LEG_DELTA_BAND merged onto the SAME resolved entryCfg (so
+  // liquidity/spread/OI/volume/IV-rank gates match the long leg exactly).
+  const shortLegCfg: EntryStrategyConfig = {
+    ...entryCfg,
+    ...SHORT_LEG_DELTA_BAND,
+    ...cfg.shortLegEntryConfig,
+    side,
+  };
+  const longStrike = best.contract.strike;
+  const shortEntries = scanEntries(chain, shortLegCfg, now, ivContext.ivRank);
+  const bestShort = shortEntries.find(
+    (e) => e.passed && (side === 'call' ? e.contract.strike > longStrike : e.contract.strike < longStrike),
+  );
+  if (!bestShort) {
+    return {
+      ok: false,
+      reason: 'No short-leg contract passed entry rules further out-of-the-money than the long leg',
+    };
+  }
+
+  const shortPremium = bestShort.metrics.mark ?? 0;
+  const netDebit = premium - shortPremium;
+  if (netDebit <= 0) {
+    return { ok: false, reason: 'Short leg premium ≥ long leg premium — not a net debit, skipped' };
+  }
+
   const analysis = analyzeStrategy({
-    underlyingPrice: chain.underlyingPrice ?? candidate.price,
+    underlyingPrice,
     dte: best.metrics.dte,
     legs: [
+      { type: side, action: 'buy', strike: longStrike, quantity: 1, premium, iv: best.metrics.iv ?? undefined },
       {
         type: side,
-        action: 'buy',
-        strike: best.contract.strike,
+        action: 'sell',
+        strike: bestShort.contract.strike,
         quantity: 1,
-        premium,
-        iv: best.metrics.iv ?? undefined,
+        premium: shortPremium,
+        iv: bestShort.metrics.iv ?? undefined,
       },
     ],
   });
-  // Structural backstop (docs/AUTOTRADING_SPEC.md): never approve anything
-  // analyzeStrategy() itself reports as unbounded-loss or non-finite max
-  // loss. A single long call/put is defined-risk by construction, so this
-  // should always pass — but checking it in code, not just assuming the
-  // invariant, is exactly what the spec calls for.
-  if (analysis.unboundedLoss || analysis.maxLoss === null || !Number.isFinite(analysis.maxLoss)) {
-    return { ok: false, reason: 'Structural defined-risk check failed (unbounded or non-finite max loss)' };
+  // Structural backstop, extended for a spread: a debit vertical (same
+  // underlying/expiration/type, opposite actions, equal quantity) is defined-
+  // risk AND defined-reward by construction — verify BOTH bounds in code
+  // rather than assume the invariant, same reasoning as the single-leg check.
+  if (
+    analysis.unboundedLoss ||
+    analysis.unboundedProfit ||
+    analysis.maxLoss === null ||
+    analysis.maxProfit === null ||
+    !Number.isFinite(analysis.maxLoss) ||
+    !Number.isFinite(analysis.maxProfit)
+  ) {
+    return {
+      ok: false,
+      reason: 'Structural defined-risk/reward check failed (unbounded or non-finite max loss/profit)',
+    };
   }
 
+  const width = Math.abs(bestShort.contract.strike - longStrike);
   const rationale =
-    `Long ${side} on ${symbol}: strike ${best.contract.strike}, exp ${best.contract.expiration} ` +
-    `(${best.metrics.dte.toFixed(0)}d), premium ${premium.toFixed(2)}, ` +
-    `Δ ${best.metrics.delta === null ? 'n/a' : best.metrics.delta.toFixed(2)}, IV rank ${ivContext.ivRank.toFixed(0)}`;
+    `${side === 'call' ? 'Call' : 'Put'} debit spread on ${symbol}: long ${longStrike}/short ${bestShort.contract.strike}, ` +
+    `exp ${best.contract.expiration} (${best.metrics.dte.toFixed(0)}d), net debit ${netDebit.toFixed(2)}, ` +
+    `width ${width}, IV rank ${ivContext.ivRank.toFixed(0)}`;
 
   return {
     ok: true,
     signal: {
+      kind: 'debit_spread',
       symbol,
       side,
-      contractSymbol: best.contract.symbol,
-      strike: best.contract.strike,
       expiration: best.contract.expiration,
       dte: best.metrics.dte,
-      premium,
-      delta: best.metrics.delta,
       ivRank: ivContext.ivRank,
-      // analysis.maxLoss is a P&L figure (negative); flip to a positive $-at-risk amount.
+      longContractSymbol: best.contract.symbol,
+      longStrike,
+      longPremium: premium,
+      longDelta: best.metrics.delta,
+      shortContractSymbol: bestShort.contract.symbol,
+      shortStrike: bestShort.contract.strike,
+      shortPremium,
+      shortDelta: bestShort.metrics.delta,
+      width,
+      netDebit,
+      // analysis.maxLoss/maxProfit are P&L figures; flip to positive $ amounts.
       maxLossPerContract: Math.abs(analysis.maxLoss),
+      maxProfitPerContract: Math.abs(analysis.maxProfit),
       rationale,
       score: candidate.total,
     },
@@ -243,19 +399,36 @@ export async function runOptionsDecision(
     const result = results[i];
     if (result.ok) {
       signals.push(result.signal);
+      const signal = result.signal;
       logAutotradeEvent({
         symbol: candidate.symbol,
         stage: 'decision',
         action: 'options_signal_generated',
-        detail: {
-          side: result.signal.side,
-          strike: result.signal.strike,
-          expiration: result.signal.expiration,
-          premium: result.signal.premium,
-          ivRank: result.signal.ivRank,
-          maxLossPerContract: result.signal.maxLossPerContract,
-          rationale: result.signal.rationale,
-        },
+        detail:
+          signal.kind === 'single_leg'
+            ? {
+                kind: signal.kind,
+                side: signal.side,
+                strike: signal.strike,
+                expiration: signal.expiration,
+                premium: signal.premium,
+                ivRank: signal.ivRank,
+                maxLossPerContract: signal.maxLossPerContract,
+                rationale: signal.rationale,
+              }
+            : {
+                kind: signal.kind,
+                side: signal.side,
+                longStrike: signal.longStrike,
+                shortStrike: signal.shortStrike,
+                expiration: signal.expiration,
+                netDebit: signal.netDebit,
+                width: signal.width,
+                ivRank: signal.ivRank,
+                maxLossPerContract: signal.maxLossPerContract,
+                maxProfitPerContract: signal.maxProfitPerContract,
+                rationale: signal.rationale,
+              },
       });
     } else {
       skipped.push({ symbol: candidate.symbol, reason: result.reason });
