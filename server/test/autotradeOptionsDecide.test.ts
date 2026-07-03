@@ -1,0 +1,259 @@
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+
+vi.mock('../src/providers', () => ({ getProvider: vi.fn(), getProviderStatus: vi.fn() }));
+
+import { getProvider, getProviderStatus } from '../src/providers';
+import { initDb, db } from '../src/db';
+import { listAutotradeEvents } from '../src/db/autotradeEvents';
+import { getIvHistory, recordAtmIv } from '../src/db/ivHistory';
+import { ScreenCandidate } from '../src/services/autotrading/screen';
+import {
+  defaultAutotradeEntryConfig,
+  defaultOptionsDecisionConfig,
+  generateOptionsSignal,
+  runOptionsDecision,
+} from '../src/services/autotrading/optionsDecide';
+import { OptionsChain } from '../src/providers/types';
+
+const mockGetProvider = vi.mocked(getProvider);
+const mockGetProviderStatus = vi.mocked(getProviderStatus);
+
+const OPTIONS_CAPABLE_STATUS = {
+  name: 'mock',
+  synthetic: true,
+  configured: true,
+  capabilities: { quotes: true, candles: true, options: true, fundamentals: true },
+};
+
+function candidate(symbol = 'AAPL', price = 100): ScreenCandidate {
+  return {
+    symbol,
+    price,
+    total: 70,
+    passedFilters: true,
+    filterReasons: [],
+    components: [],
+    indicators: {
+      price,
+      changePct: 0,
+      maShort: null,
+      maLong: null,
+      distShortPct: null,
+      distLongPct: null,
+      rsi: null,
+      atr: 2,
+      atrPct: 2,
+      relVolume: null,
+      avgVolume: null,
+      volume: null,
+      gapPct: null,
+    },
+    discoverySource: 'universe',
+  };
+}
+
+/** A minimal, deterministic chain — one strike, calls and puts both priced so
+ *  they pass entryRules.ts's default liquidity/spread/delta rules. */
+function chainFor(expiration: string, opts: { delta?: number; mark?: number } = {}): OptionsChain {
+  const delta = opts.delta ?? 0.45;
+  const mark = opts.mark ?? 3;
+  const contract = (type: 'call' | 'put') => ({
+    symbol: `AAPL-${expiration}-${type}`,
+    underlying: 'AAPL',
+    type,
+    strike: 100,
+    expiration,
+    bid: mark - 0.05,
+    ask: mark + 0.05,
+    mark,
+    volume: 500,
+    openInterest: 1000,
+    greeks: { delta: type === 'call' ? delta : -delta, iv: 0.4 },
+  });
+  return { underlying: 'AAPL', expiration, underlyingPrice: 100, calls: [contract('call')], puts: [contract('put')] };
+}
+
+/** N days out from "now", YYYY-MM-DD (UTC), safely inside the default 7-60d window at N=21. */
+function expirationDaysOut(days: number): string {
+  const d = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Backfills a RANGE of historical IV samples (not a flat value — computeIvContext's
+ *  rankFrom() falls back to rank=50 whenever min===max, which would make every
+ *  test pass the ivRankMax check regardless of the "current" chain IV). */
+function fillIvHistory(symbol: string, samples: number, opts: { min?: number; max?: number } = {}): void {
+  const { min = 0.2, max = 0.6 } = opts;
+  for (let i = 0; i < samples; i++) {
+    const date = new Date(Date.now() - (samples - i) * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const value = samples === 1 ? min : min + ((max - min) * i) / (samples - 1);
+    recordAtmIv(symbol, value, date);
+  }
+}
+
+beforeAll(() => initDb());
+beforeEach(() => {
+  db.exec("DELETE FROM iv_history; DELETE FROM autotrade_events WHERE symbol = 'AAPL'");
+  mockGetProviderStatus.mockReset().mockReturnValue(OPTIONS_CAPABLE_STATUS);
+  mockGetProvider.mockReset();
+});
+
+describe('generateOptionsSignal', () => {
+  it('fails closed when fewer than 15 real IV-history samples exist, even though ATM IV is computable', async () => {
+    fillIvHistory('AAPL', 5); // below the 15-sample 'history' threshold
+    const expiration = expirationDaysOut(21);
+    mockGetProvider.mockReturnValue({
+      getOptionsExpirations: vi.fn(async () => [expiration]),
+      getOptionsChain: vi.fn(async () => chainFor(expiration)),
+    } as unknown as ReturnType<typeof getProvider>);
+
+    const result = await generateOptionsSignal(candidate());
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/insufficient real iv-rank history/i);
+  });
+
+  it("still records today's ATM IV even when the candidate is skipped for insufficient history", async () => {
+    fillIvHistory('AAPL', 3);
+    const expiration = expirationDaysOut(21);
+    mockGetProvider.mockReturnValue({
+      getOptionsExpirations: vi.fn(async () => [expiration]),
+      getOptionsChain: vi.fn(async () => chainFor(expiration)),
+    } as unknown as ReturnType<typeof getProvider>);
+
+    await generateOptionsSignal(candidate());
+    expect(getIvHistory('AAPL').length).toBe(4); // 3 backfilled + today's new sample
+  });
+
+  it('skips when no expiration falls within the configured DTE window', async () => {
+    fillIvHistory('AAPL', 20);
+    mockGetProvider.mockReturnValue({
+      getOptionsExpirations: vi.fn(async () => [expirationDaysOut(1), expirationDaysOut(200)]), // both outside [7,60]
+      getOptionsChain: vi.fn(),
+    } as unknown as ReturnType<typeof getProvider>);
+
+    const result = await generateOptionsSignal(candidate());
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/no expiration within the configured dte window/i);
+  });
+
+  it('skips when the expirations fetch itself fails', async () => {
+    mockGetProvider.mockReturnValue({
+      getOptionsExpirations: vi.fn(async () => {
+        throw new Error('rate limited');
+      }),
+    } as unknown as ReturnType<typeof getProvider>);
+
+    const result = await generateOptionsSignal(candidate());
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/failed to fetch option expirations/i);
+  });
+
+  it('skips when IV rank is above the confirmed ivRankMax: 70 ceiling', async () => {
+    // History range [0.1, 0.2]; the fixture chain's IV is 0.4 -> rank clamps to 100, above 70.
+    fillIvHistory('AAPL', 20, { min: 0.1, max: 0.2 });
+    const expiration = expirationDaysOut(21);
+    mockGetProvider.mockReturnValue({
+      getOptionsExpirations: vi.fn(async () => [expiration]),
+      getOptionsChain: vi.fn(async () => chainFor(expiration)),
+    } as unknown as ReturnType<typeof getProvider>);
+
+    const result = await generateOptionsSignal(candidate());
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/no contract passed entry rules/i);
+  });
+
+  it('produces a long-call signal when everything lines up (direction: long)', async () => {
+    fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 }); // history centered near the chain's own 0.4 IV -> mid rank, under 70
+    const expiration = expirationDaysOut(21);
+    mockGetProvider.mockReturnValue({
+      getOptionsExpirations: vi.fn(async () => [expiration]),
+      getOptionsChain: vi.fn(async () => chainFor(expiration, { mark: 3 })),
+    } as unknown as ReturnType<typeof getProvider>);
+
+    const result = await generateOptionsSignal(candidate());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.signal.side).toBe('call');
+    expect(result.signal.symbol).toBe('AAPL');
+    expect(result.signal.strike).toBe(100);
+    expect(result.signal.expiration).toBe(expiration);
+    expect(result.signal.premium).toBe(3);
+    expect(result.signal.maxLossPerContract).toBe(300); // premium x 100, defined risk by construction
+    expect(result.signal.score).toBe(70); // carried from the screener's own score, not the contract's own rank
+  });
+
+  it('produces a long-put signal when direction is short', async () => {
+    fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 });
+    const expiration = expirationDaysOut(21);
+    mockGetProvider.mockReturnValue({
+      getOptionsExpirations: vi.fn(async () => [expiration]),
+      getOptionsChain: vi.fn(async () => chainFor(expiration, { mark: 3 })),
+    } as unknown as ReturnType<typeof getProvider>);
+
+    const result = await generateOptionsSignal(candidate(), { ...defaultOptionsDecisionConfig(), direction: 'short' });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.signal.side).toBe('put');
+  });
+
+  it('picks the nearest in-window expiration when several qualify', async () => {
+    fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 });
+    const near = expirationDaysOut(10);
+    const far = expirationDaysOut(45);
+    mockGetProvider.mockReturnValue({
+      // Deliberately out of order — the function must sort, not trust input order.
+      getOptionsExpirations: vi.fn(async () => [far, near]),
+      getOptionsChain: vi.fn(async (_symbol: string, expiration: string) => chainFor(expiration, { mark: 3 })),
+    } as unknown as ReturnType<typeof getProvider>);
+
+    const result = await generateOptionsSignal(candidate());
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.signal.expiration).toBe(near);
+  });
+});
+
+describe('defaultAutotradeEntryConfig', () => {
+  it("adds the confirmed ivRankMax: 70 ceiling on top of entryRules.ts's own defaults", () => {
+    const cfg = defaultAutotradeEntryConfig('call');
+    expect(cfg.ivRankMax).toBe(70);
+    expect(cfg.minDaysToExpiration).toBe(7);
+    expect(cfg.maxDaysToExpiration).toBe(60);
+  });
+});
+
+describe('runOptionsDecision', () => {
+  it('skips every candidate without attempting any provider call when the provider lacks options capability', async () => {
+    mockGetProviderStatus.mockReturnValue({
+      ...OPTIONS_CAPABLE_STATUS,
+      capabilities: { ...OPTIONS_CAPABLE_STATUS.capabilities, options: false },
+    });
+    const getOptionsExpirations = vi.fn();
+    mockGetProvider.mockReturnValue({ getOptionsExpirations } as unknown as ReturnType<typeof getProvider>);
+
+    const result = await runOptionsDecision([candidate('AAPL'), candidate('MSFT')]);
+    expect(result.signals).toEqual([]);
+    expect(result.skipped).toHaveLength(2);
+    expect(result.skipped[0].reason).toMatch(/not available from the configured provider/i);
+    expect(getOptionsExpirations).not.toHaveBeenCalled();
+  });
+
+  it('journals options_signal_generated and no_options_signal per candidate outcome', async () => {
+    fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 });
+    const expiration = expirationDaysOut(21);
+    mockGetProvider.mockReturnValue({
+      getOptionsExpirations: vi.fn(async (symbol: string) => (symbol === 'AAPL' ? [expiration] : [])),
+      getOptionsChain: vi.fn(async () => chainFor(expiration, { mark: 3 })),
+    } as unknown as ReturnType<typeof getProvider>);
+
+    const result = await runOptionsDecision([candidate('AAPL'), candidate('MSFT')]);
+    expect(result.signals).toHaveLength(1);
+    expect(result.signals[0].symbol).toBe('AAPL');
+    expect(result.skipped).toEqual([
+      { symbol: 'MSFT', reason: expect.stringMatching(/no expiration within the configured dte window/i) },
+    ]);
+
+    const aaplEvents = listAutotradeEvents({ stage: 'decision', symbol: 'AAPL' });
+    expect(aaplEvents.some((e) => e.action === 'options_signal_generated')).toBe(true);
+    const msftEvents = listAutotradeEvents({ stage: 'decision', symbol: 'MSFT' });
+    expect(msftEvents.some((e) => e.action === 'no_options_signal')).toBe(true);
+  });
+});

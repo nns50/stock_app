@@ -1098,9 +1098,32 @@ export interface AutotradeDecisionResult {
   skipped: { symbol: string; reason: string }[];
 }
 
+export type AutotradeOptionsSignalSide = 'call' | 'put';
+
+export interface AutotradeOptionsSignal {
+  symbol: string;
+  side: AutotradeOptionsSignalSide;
+  contractSymbol: string;
+  strike: number;
+  expiration: string;
+  dte: number;
+  premium: number;
+  delta: number | null;
+  ivRank: number;
+  maxLossPerContract: number;
+  rationale: string;
+  score: number;
+}
+
+export interface AutotradeOptionsDecisionResult {
+  signals: AutotradeOptionsSignal[];
+  skipped: { symbol: string; reason: string }[];
+}
+
 export interface AutotradeDecideResponse {
   screen: AutotradeScreenResult;
   decision: AutotradeDecisionResult;
+  optionsDecision: AutotradeOptionsDecisionResult;
 }
 
 export interface AutotradeRiskCheckRule {
@@ -1239,6 +1262,7 @@ export interface LoopTickSummary {
   candidatesScreened: number;
   candidatesPassedVolatility: number;
   signalsGenerated: number;
+  optionsSignalsGenerated: number;
   entriesOpened: number;
   liveEntriesOpened: number;
 }

@@ -900,6 +900,7 @@ export default function AutoTradePage() {
   const screenResult = result?.screen;
   const signalBySymbol = new Map((result?.decision.signals ?? []).map((s) => [s.symbol, s]));
   const riskBySymbol = new Map(riskResults.map((r) => [r.symbol, r]));
+  const optionsSignalBySymbol = new Map((result?.optionsDecision.signals ?? []).map((s) => [s.symbol, s]));
 
   const [btSymbols, setBtSymbols] = useState('');
   const [btFrom, setBtFrom] = useState(yearAgoStr);
@@ -1228,12 +1229,14 @@ export default function AutoTradePage() {
                         <th className="th text-right">R</th>
                         <th className="th text-right">Qty</th>
                         <th className="th">Risk check</th>
+                        <th className="th">Options</th>
                       </tr>
                     </thead>
                     <tbody>
                       {screenResult.candidates.map((c) => {
                         const signal = signalBySymbol.get(c.symbol);
                         const risk = riskBySymbol.get(c.symbol);
+                        const optSignal = optionsSignalBySymbol.get(c.symbol);
                         const failing = risk?.checks.filter((chk) => !chk.passed) ?? [];
                         return (
                           <tr key={c.symbol} className="border-b border-ink-700/50">
@@ -1276,6 +1279,20 @@ export default function AutoTradePage() {
                                 </span>
                               )}
                             </td>
+                            <td className="td" title={optSignal?.rationale}>
+                              {optSignal ? (
+                                <span className="whitespace-nowrap">
+                                  <Badge color={optSignal.side === 'call' ? 'green' : 'red'}>
+                                    {optSignal.side} {optSignal.strike}
+                                  </Badge>{' '}
+                                  <span className="text-[11px] text-slate-500">
+                                    {fmtUsd(optSignal.premium)} · {fmtDate(optSignal.expiration)}
+                                  </span>
+                                </span>
+                              ) : (
+                                <span className="text-[11px] text-slate-500">—</span>
+                              )}
+                            </td>
                           </tr>
                         );
                       })}
@@ -1288,6 +1305,17 @@ export default function AutoTradePage() {
               <ScreenSection title={`No signal — insufficient volatility history (${result.decision.skipped.length})`}>
                 <ul className="text-xs text-slate-500 space-y-0.5">
                   {result.decision.skipped.map((s) => (
+                    <li key={s.symbol}>
+                      <span className="font-semibold text-slate-300">{s.symbol}</span> — {s.reason}
+                    </li>
+                  ))}
+                </ul>
+              </ScreenSection>
+            )}
+            {result && result.optionsDecision.skipped.length > 0 && (
+              <ScreenSection title={`No options signal (${result.optionsDecision.skipped.length})`}>
+                <ul className="text-xs text-slate-500 space-y-0.5">
+                  {result.optionsDecision.skipped.map((s) => (
                     <li key={s.symbol}>
                       <span className="font-semibold text-slate-300">{s.symbol}</span> — {s.reason}
                     </li>

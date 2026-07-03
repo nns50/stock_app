@@ -691,7 +691,15 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   per candidate. Candidates are risk-checked in score order against a running total, so
   a batch of signals that would each pass alone can still correctly exhaust a shared cap
   (e.g. the position-count cap) partway through. This is read-only: running a screen
-  never places an order.
+  never places an order. An **Options** column shows a matching options trade alongside
+  the equity one — a long call (or, if the loop is configured for short equity signals, a
+  long put) on the same underlying, picked from its option chain's nearest expiration
+  7–60 days out. A candidate only gets an options signal once the app has accumulated at
+  least 15 real days of that symbol's own implied-vol history — until then it's skipped
+  rather than scored on a cruder proxy, and its reason shows in a **No options signal**
+  list below the table. This side of the loop is also read-only for now (no options
+  risk-check or order exists yet); its only other effect today is accruing that IV
+  history in the background, a day at a time, for whatever the loop screens.
 - **Backtest & walk-forward** — the validation gate every strategy configuration has to
   clear before it's allowed anywhere near a paper or live order. Give it a symbol list,
   a date range, a starting equity, and (independently of the Configuration card above)

@@ -12,6 +12,7 @@ import { addExclusion, listExclusions, removeExclusion } from '../db/autotradeEx
 import { AutotradeStage, listAutotradeEvents, logAutotradeEvent } from '../db/autotradeEvents';
 import { runAutotradeScreen } from '../services/autotrading/screen';
 import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/decide';
+import { runOptionsDecision } from '../services/autotrading/optionsDecide';
 import { runAutotradeRiskCheck } from '../services/autotrading/riskCheck';
 import { ScreenerConfig } from '../indicators/screener';
 import { computeBacktestStats, runBacktest, runWalkForwardBacktest } from '../services/autotrading/backtest';
@@ -239,7 +240,8 @@ autotradeRouter.post(
       symbols: body.symbols,
     });
     const decision = runAutotradeDecision(screen.candidates, body.decision as Partial<DecisionConfig> | undefined);
-    res.json({ screen, decision });
+    const optionsDecision = await runOptionsDecision(screen.candidates);
+    res.json({ screen, decision, optionsDecision });
   }),
 );
 

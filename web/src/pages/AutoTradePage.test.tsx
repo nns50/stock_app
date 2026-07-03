@@ -222,6 +222,25 @@ describe('AutoTradePage', () => {
         ],
         skipped: [],
       },
+      optionsDecision: {
+        signals: [
+          {
+            symbol: 'AAPL',
+            side: 'call',
+            contractSymbol: 'AAPL-fixture',
+            strike: 210,
+            expiration: '2024-03-15',
+            dte: 21,
+            premium: 4.2,
+            delta: 0.42,
+            ivRank: 55,
+            maxLossPerContract: 420,
+            rationale: 'Long call on AAPL: strike 210, exp 2024-03-15 (21d), premium 4.20, Δ 0.42, IV rank 55',
+            score: 82.4,
+          },
+        ],
+        skipped: [],
+      },
     };
     vi.spyOn(client, 'runAutotradeDecision').mockResolvedValue(result);
     const riskCheck = vi.spyOn(client, 'runAutotradeRiskCheck').mockResolvedValue({
@@ -264,6 +283,8 @@ describe('AutoTradePage', () => {
     await waitFor(() => expect(riskCheck).toHaveBeenCalledWith(result.decision.signals));
     expect(await screen.findByText('approved')).toBeInTheDocument();
     expect(screen.getByText('222')).toBeInTheDocument(); // sized quantity
+    expect(screen.getByText('call 210')).toBeInTheDocument(); // options signal badge
+    expect(screen.getByText('$4.20 · Mar 15, 2024')).toBeInTheDocument();
   });
 
   it('clears stale candidates when a later screen run fails, so the error is not shown next to old results', async () => {
@@ -302,6 +323,7 @@ describe('AutoTradePage', () => {
         discovery: { universeCount: 124, moversCount: 5, scannedCount: 129 },
       },
       decision: { signals: [], skipped: [] },
+      optionsDecision: { signals: [], skipped: [] },
     };
     const decide = vi.spyOn(client, 'runAutotradeDecision').mockResolvedValueOnce(okResult);
     renderPage();
@@ -367,6 +389,7 @@ describe('AutoTradePage', () => {
         ],
         skipped: [],
       },
+      optionsDecision: { signals: [], skipped: [] },
     };
     vi.spyOn(client, 'runAutotradeDecision').mockResolvedValue(decideResult);
     const blocked: AutotradeRiskCheckResult = {
@@ -439,6 +462,7 @@ describe('AutoTradePage', () => {
         discovery: { universeCount: 124, moversCount: 0, scannedCount: 124 },
       },
       decision: { signals: [], skipped: [{ symbol: 'MU', reason: 'insufficient volatility history (ATR)' }] },
+      optionsDecision: { signals: [], skipped: [] },
     };
     vi.spyOn(client, 'runAutotradeDecision').mockResolvedValue(result);
     renderPage();
@@ -711,6 +735,7 @@ describe('AutoTradePage', () => {
       candidatesScreened: 10,
       candidatesPassedVolatility: 8,
       signalsGenerated: 3,
+      optionsSignalsGenerated: 1,
       entriesOpened: 1,
     } satisfies LoopTickSummary);
     const positions = vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
@@ -736,6 +761,7 @@ describe('AutoTradePage', () => {
       candidatesScreened: 0,
       candidatesPassedVolatility: 0,
       signalsGenerated: 0,
+      optionsSignalsGenerated: 0,
       entriesOpened: 0,
     } satisfies LoopTickSummary);
     renderPage();
@@ -761,6 +787,7 @@ describe('AutoTradePage', () => {
       candidatesScreened: 5,
       candidatesPassedVolatility: 5,
       signalsGenerated: 1,
+      optionsSignalsGenerated: 0,
       entriesOpened: 1,
     } satisfies LoopTickSummary);
     renderPage();
@@ -954,6 +981,7 @@ describe('AutoTradePage', () => {
         candidatesScreened: 1,
         candidatesPassedVolatility: 1,
         signalsGenerated: 1,
+        optionsSignalsGenerated: 0,
         entriesOpened: 1,
       } satisfies LoopTickSummary);
       const dash = vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());

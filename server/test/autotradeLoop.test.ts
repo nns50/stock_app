@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vite
 // narrows what reaches Decision.
 vi.mock('../src/services/autotrading/screen', () => ({ runAutotradeScreen: vi.fn() }));
 vi.mock('../src/services/autotrading/decide', () => ({ runAutotradeDecision: vi.fn() }));
+vi.mock('../src/services/autotrading/optionsDecide', () => ({ runOptionsDecision: vi.fn() }));
 vi.mock('../src/services/autotrading/execute', () => ({ runPaperExecution: vi.fn(), checkPaperExits: vi.fn() }));
 vi.mock('../src/services/autotrading/liveExecute', () => ({ runLiveExecution: vi.fn(), reconcileLiveOrders: vi.fn() }));
 vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) => {
@@ -18,6 +19,7 @@ vi.mock('../src/db/autotradeEvents', () => ({ logAutotradeEvent: vi.fn() }));
 
 import { runAutotradeScreen } from '../src/services/autotrading/screen';
 import { runAutotradeDecision } from '../src/services/autotrading/decide';
+import { runOptionsDecision } from '../src/services/autotrading/optionsDecide';
 import { runPaperExecution, checkPaperExits } from '../src/services/autotrading/execute';
 import { runLiveExecution, reconcileLiveOrders } from '../src/services/autotrading/liveExecute';
 import { checkSessionWindow, getMarketAtrPct } from '../src/services/autotrading/executionGuards';
@@ -32,6 +34,7 @@ import { config } from '../src/config';
 
 const mockScreen = vi.mocked(runAutotradeScreen);
 const mockDecide = vi.mocked(runAutotradeDecision);
+const mockOptionsDecide = vi.mocked(runOptionsDecision);
 const mockExecute = vi.mocked(runPaperExecution);
 const mockCheckExits = vi.mocked(checkPaperExits);
 const mockLiveExecute = vi.mocked(runLiveExecution);
@@ -77,6 +80,7 @@ beforeAll(() => initDb());
 beforeEach(() => {
   mockScreen.mockReset();
   mockDecide.mockReset();
+  mockOptionsDecide.mockReset().mockResolvedValue({ signals: [], skipped: [] });
   mockExecute.mockReset();
   mockCheckExits.mockReset().mockResolvedValue([]);
   mockLiveExecute.mockReset();
@@ -153,6 +157,43 @@ describe('runAutotradeLoopTick', () => {
     expect(summary.candidatesPassedVolatility).toBe(1);
     expect(summary.signalsGenerated).toBe(1);
     expect(summary.entriesOpened).toBe(1);
+  });
+
+  it('also runs the options decision stage alongside the equity one, on the same volatility-filtered candidates', async () => {
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+    mockOptionsDecide.mockResolvedValue({
+      signals: [
+        {
+          symbol: 'AAPL',
+          side: 'call',
+          contractSymbol: 'AAPL-fixture',
+          strike: 100,
+          expiration: '2024-02-01',
+          dte: 14,
+          premium: 3,
+          delta: 0.4,
+          ivRank: 50,
+          maxLossPerContract: 300,
+          rationale: 'fixture',
+          score: 70,
+        },
+      ],
+      skipped: [],
+    });
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(mockOptionsDecide).toHaveBeenCalledWith([candidate('AAPL', 2)]);
+    expect(summary.optionsSignalsGenerated).toBe(1);
   });
 
   it('filters out a high-ATR candidate before Decision ever sees it', async () => {
