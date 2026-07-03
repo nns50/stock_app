@@ -1,12 +1,11 @@
 # Automated Trading — Specification
 
-**Status: phases 1-8 shipped and running — equities screening, decision, risk engine,
-backtesting, paper execution, monitoring/kill-switch, and the live-trading gate are all
-built and have each cleared adversarial review.** An options-trading addition (phases
-9-13) has since been scoped and approved against this codebase; phases 9-12 (screening &
-decision, risk engine & combined budget, backtesting, and paper execution & expiration
-management) are now shipped too. Phase 13 (options monitoring) is next up. This is the
-reference spec for adding a fully
+**Status: all phases (1-13) shipped and running.** Equities screening, decision, risk
+engine, backtesting, paper execution, monitoring/kill-switch, and the live-trading gate
+(phases 1-8) are built and have each cleared adversarial review. An options-trading
+addition (phases 9-13 — screening & decision, risk engine & combined budget, backtesting,
+paper execution & expiration management, and monitoring) has since been scoped, approved,
+and shipped on top of the same codebase. This is the reference spec for adding a fully
 **autonomous** execution loop (screen → decide → risk-check → place orders) to the app.
 
 This is a different capability from the existing live-trading feature described in
@@ -1070,14 +1069,35 @@ on its own timeline regardless of this options work.
     option has no numeric stop/target price the way a stock paper position does (phase 10:
     sized by full premium paid, worst case = expires worthless), so there's nothing for
     those rules to mirror; they stay human-review-only on the Options page.
-13. **Options monitoring — proposed, blocked on phase 12.** Extends the phase 7 dashboard
-    (`getAutotradeDashboard()`) with options-specific rows: open options positions (folded
-    into the same combined cap phase 10 introduces, not a second pool), premium at risk
-    vs. the combined aggregate-risk cap, and days-to-expiration on each open options
-    position so a human can see an upcoming expiration before it happens. No separate
-    options live-trading-gate phase — options rides the same phase 8 flag equities uses
-    once its own paper track record exists, since paper-vs-live is one system-wide switch
-    already, not one per asset class.
+13. **Options monitoring — shipped.** Extends the phase 7 dashboard
+    (`getAutotradeDashboard()`) with options-specific rows. Unlike live trading (phase 8),
+    which genuinely is a second, independent pool — `runLiveExecution()` risk-checks only
+    against its own snapshot, never equity paper's — options paper is the OPPOSITE case:
+    phase 12 made the equity/options combined budget real (`runPaperExecution()` and
+    `runOptionsPaperExecution()` each fold the other's running totals into every
+    risk-check), so `openPositionsCount`, `openRisk`, `dailyPnl`, and `tradesToday` are now
+    genuinely COMBINED across both books — one pool, not a second one — matching what the
+    risk engine actually enforces; showing them separately would misrepresent that.
+    `dailyPnl`/`tradesToday` combine by sum, `consecutiveLosses` by max (not sum — a
+    losing streak isn't additive across two books without merging their closed-trade
+    timestamps chronologically, which step-down sizing doesn't need to be precise about;
+    erring toward a MORE conservative streak after recent losses in either book is the
+    safe direction). A new `openOptionsPositions` array carries each open options paper
+    position plus a computed `dte` (days-to-expiration, via `blackScholes.ts`'s
+    `daysToExpiration()`) for per-position display — the equity `openPositions` array
+    itself stays equity-only, since an option position's contract/strike/expiration shape
+    doesn't overlay onto a stock position's shape.
+
+    UI: the existing "Open positions"/"Aggregate open risk" tiles now show the combined
+    figure with an equity/options breakdown as a sub-label, and a new "Options
+    expirations" list appears (only when something is open) sorted soonest-first, flagging
+    anything within the automated system's own time-exit window (7 days) in red — so a
+    human sees an upcoming expiration, and the automated close that's coming for it,
+    before it happens.
+
+    No separate options live-trading-gate phase — options rides the same phase 8 flag
+    equities uses once its own paper track record exists, since paper-vs-live is one
+    system-wide switch already, not one per asset class.
 
 ---
 
