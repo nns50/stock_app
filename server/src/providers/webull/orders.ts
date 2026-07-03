@@ -411,17 +411,40 @@ export async function webullPlaceOrder(
   return { ok: true, orderId: pickOrderId(r.data), raw: r.data };
 }
 
+/** One sub-order within a combo (bracket MASTER/STOP_PROFIT/STOP_LOSS, or a
+ *  spread's legs) as echoed back by the broker. UNVERIFIED against a live
+ *  bracket fill — `combo_type` is what we SEND per leg when placing (see
+ *  buildOrderRequest below), but whether the order-history response echoes it
+ *  back per-leg hasn't been probe-confirmed the way the rest of this file's
+ *  shapes have been (design principle #9: confirm every response shape
+ *  against a real account before relying on it). Treat `comboType` here as
+ *  best-effort until confirmed against a real bracket fill. */
+export interface WebullOrderLeg {
+  comboType?: string;
+  orderType?: string;
+  status?: string;
+  filledQty?: number;
+  filledPrice?: number;
+  brokerOrderId?: string;
+}
+
 export interface WebullOrderStatus {
   ok: boolean;
   /** Whether an order matching our client_order_id was found at the broker. */
   found: boolean;
-  /** Raw Webull status (uppercased), e.g. FILLED / CANCELLED / PARTIAL_FILLED. */
+  /** Raw Webull status (uppercased), e.g. FILLED / CANCELLED / PARTIAL_FILLED.
+   *  For a combo (bracket/spread), this is specifically the FIRST leg
+   *  (orders[0], the MASTER for a bracket) — see `legs` for every sub-order. */
   status?: string;
   /** Broker order id (envelope `combo_order_id`, mirrored as the order's `order_id`). */
   brokerOrderId?: string;
   filledQty?: number;
   totalQty?: number;
   filledPrice?: number;
+  /** Every sub-order in the combo (length 1 for a plain order; up to 3 for a
+   *  bracket). See WebullOrderLeg's caveat — best-effort, not yet
+   *  probe-confirmed for a real bracket fill. */
+  legs?: WebullOrderLeg[];
   /** The matched order envelope — kept so new fields can be read without a code change. */
   raw?: unknown;
   error?: string;
@@ -432,6 +455,17 @@ interface OrderEnvelope {
   client_order_id?: string;
   combo_order_id?: string;
   orders?: Array<Record<string, unknown>>;
+}
+
+function mapLeg(o: Record<string, unknown>): WebullOrderLeg {
+  return {
+    comboType: typeof o.combo_type === 'string' ? o.combo_type : undefined,
+    orderType: typeof o.order_type === 'string' ? o.order_type : undefined,
+    status: o.status ? String(o.status).toUpperCase() : undefined,
+    filledQty: num(o.filled_quantity),
+    filledPrice: num(o.filled_price),
+    brokerOrderId: o.order_id !== undefined && o.order_id !== null ? String(o.order_id) : undefined,
+  };
 }
 
 function matchEnvelope(list: unknown, clientOrderId: string): OrderEnvelope | undefined {
@@ -473,6 +507,7 @@ export async function webullOrderStatus(accountId: string, clientOrderId: string
         filledQty: num(o.filled_quantity),
         totalQty: num(o.total_quantity),
         filledPrice: num(o.filled_price),
+        legs: Array.isArray(env.orders) ? env.orders.map((leg) => mapLeg(leg as Record<string, unknown>)) : undefined,
         raw: env,
       };
     }

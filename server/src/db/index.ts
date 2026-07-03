@@ -286,6 +286,28 @@ CREATE TABLE IF NOT EXISTS autotrade_sector_cache (
   updated_at  INTEGER NOT NULL
 );
 
+-- Phase 8 (live-trading gate): metadata for order_intents the AUTOTRADE loop
+-- placed (vs. the human Trade page), since order_intents itself carries no
+-- "who placed this" column. NOT a duplicate of order/position data -- just
+-- enough to (a) identify autotrade's own intents for the probation-trade
+-- count and dashboard, and (b) remember the signal's intended stop/target/
+-- risk so the real positions row created on fill (services/autotrading/
+-- liveExecute.ts) can carry them, same as a paper position does. Live
+-- entries are placed as BRACKET orders (entry + linked stop-loss + linked
+-- take-profit), so the stop/target are ALSO enforced by the broker directly
+-- -- this table is bookkeeping for OUR OWN tracking, not the sole mechanism
+-- protecting the position the way autotrade_paper_positions's polling is.
+CREATE TABLE IF NOT EXISTS autotrade_live_orders (
+  intent_id     INTEGER PRIMARY KEY REFERENCES order_intents(id),
+  symbol        TEXT NOT NULL,
+  stop_price    REAL NOT NULL,
+  target_price  REAL NOT NULL,
+  risk_amount   REAL NOT NULL,
+  risk_profile  TEXT NOT NULL,
+  position_id   INTEGER,              -- set once the entry fill materializes into positions
+  created_at    INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_exits_position ON position_exits(position_id);
 CREATE INDEX IF NOT EXISTS idx_picks_snapshot ON screener_picks(snapshot_id);
@@ -295,6 +317,7 @@ CREATE INDEX IF NOT EXISTS idx_autotrade_events_stage ON autotrade_events(stage)
 CREATE INDEX IF NOT EXISTS idx_autotrade_events_created ON autotrade_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_backtest_fetch_log_lookup ON backtest_fetch_log(symbol, timeframe);
 CREATE INDEX IF NOT EXISTS idx_autotrade_paper_positions_status ON autotrade_paper_positions(symbol, status);
+CREATE INDEX IF NOT EXISTS idx_autotrade_live_orders_symbol ON autotrade_live_orders(symbol);
 `;
 
 interface SeedRow {
