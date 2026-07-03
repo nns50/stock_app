@@ -240,6 +240,35 @@ CREATE TABLE IF NOT EXISTS backtest_fetch_log (
   fetched_at  INTEGER NOT NULL
 );
 
+-- Reference data for which OPTION CONTRACTS (strike/expiration/type) existed
+-- for an underlying (docs/AUTOTRADING_SPEC.md, Phase 11) — genuinely
+-- different shape from backtest_bars (no OHLCV here, this is metadata about
+-- which tickers exist at all), so it gets its own table. A contract's own
+-- PRICE history, once its ticker is known, is cached in backtest_bars/
+-- backtest_fetch_log UNCHANGED (an options ticker works there exactly like a
+-- stock symbol) — no schema change needed for that half.
+CREATE TABLE IF NOT EXISTS backtest_option_contracts (
+  underlying    TEXT NOT NULL,
+  ticker        TEXT NOT NULL,
+  contract_type TEXT NOT NULL CHECK(contract_type IN ('call','put')),
+  strike        REAL NOT NULL,
+  expiration    TEXT NOT NULL,        -- YYYY-MM-DD
+  PRIMARY KEY (underlying, ticker)
+);
+
+-- Tracks which [fromExpiration,toExpiration] ranges have actually been
+-- fetched per underlying — same "explicit fetch log, not inferred from the
+-- data's own min/max" rationale as backtest_fetch_log, since an underlying
+-- with zero contracts expiring in some sub-range would otherwise look
+-- indistinguishable from "never fetched."
+CREATE TABLE IF NOT EXISTS backtest_option_contracts_fetch_log (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  underlying    TEXT NOT NULL,
+  from_expiration TEXT NOT NULL,
+  to_expiration   TEXT NOT NULL,
+  fetched_at    INTEGER NOT NULL
+);
+
 -- The Phase 6 paper execution loop's own journal of simulated trades —
 -- deliberately separate from positions/position_exits (the human's real
 -- trading journal): mixing autonomous synthetic fills into that would
@@ -318,6 +347,8 @@ CREATE INDEX IF NOT EXISTS idx_autotrade_events_created ON autotrade_events(crea
 CREATE INDEX IF NOT EXISTS idx_backtest_fetch_log_lookup ON backtest_fetch_log(symbol, timeframe);
 CREATE INDEX IF NOT EXISTS idx_autotrade_paper_positions_status ON autotrade_paper_positions(symbol, status);
 CREATE INDEX IF NOT EXISTS idx_autotrade_live_orders_symbol ON autotrade_live_orders(symbol);
+CREATE INDEX IF NOT EXISTS idx_backtest_option_contracts_lookup ON backtest_option_contracts(underlying, expiration);
+CREATE INDEX IF NOT EXISTS idx_backtest_option_contracts_fetch_log_lookup ON backtest_option_contracts_fetch_log(underlying);
 `;
 
 interface SeedRow {
