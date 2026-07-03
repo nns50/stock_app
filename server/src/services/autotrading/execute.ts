@@ -208,27 +208,68 @@ export function getPaperPortfolioSnapshot(): PaperPortfolioSnapshot {
   };
 }
 
+/** Extra running totals to seed a paper-execution batch with, on top of this
+ *  book's own snapshot — how Phase 12 makes the "combined budget" real for
+ *  options: `runOptionsPaperExecution()` reads this file's own
+ *  getPaperPortfolioSnapshot() directly (a plain one-way import) to see
+ *  equity's side, but equity can't import back from optionsExecute.ts
+ *  without a cycle, so the loop (which already imports both) reads options'
+ *  pre-existing snapshot and passes it in here instead. Every field defaults
+ *  to a no-op (0 / empty) when omitted, so every existing caller/test that
+ *  doesn't pass one gets EXACTLY today's equity-only behavior. */
+export interface PaperPortfolioSeed {
+  openRisk: number;
+  openPositionsCount: number;
+  dailyPnl: number;
+  /** Combined via max(), not sum — a losing streak isn't additive across two
+   *  books without merging their closed-trade timestamps chronologically,
+   *  which step-down sizing doesn't need to be precise about: erring toward
+   *  a MORE conservative (larger) streak after recent losses in EITHER book
+   *  is the safe direction, not a correctness gap. */
+  consecutiveLosses: number;
+  tradesToday: number;
+  positions: { symbol: string; notional: number }[];
+}
+
+const EMPTY_SEED: PaperPortfolioSeed = {
+  openRisk: 0,
+  openPositionsCount: 0,
+  dailyPnl: 0,
+  consecutiveLosses: 0,
+  tradesToday: 0,
+  positions: [],
+};
+
 /**
  * Risk-check, then attempt to fill, a batch of already-decided signals —
  * sequentially against a RUNNING total (open paper positions + already-
  * approved earlier in this same call), mirroring backtest.ts's
  * simulateBacktest() batch pattern and riskCheck.ts's runAutotradeRiskCheck:
  * a batch of individually-fine signals can't jointly bust a cap none of them
- * would trip alone.
+ * would trip alone. `seed` optionally folds in another book's (options')
+ * running totals — see PaperPortfolioSeed.
  */
-export async function runPaperExecution(candidates: { signal: TradeSignal }[]): Promise<ExecutionOutcome[]> {
+export async function runPaperExecution(
+  candidates: { signal: TradeSignal }[],
+  seed: PaperPortfolioSeed = EMPTY_SEED,
+): Promise<ExecutionOutcome[]> {
   const config = getAutotradeConfig();
   const profile = RISK_PROFILES[config.riskProfile];
   const equity = config.accountEquityUsd ?? 0;
 
   const snapshot = getPaperPortfolioSnapshot();
-  const { dailyPnl, consecutiveLosses, tradesToday } = snapshot;
-  let runningRisk = snapshot.openRisk;
-  let runningCount = snapshot.openPositionsCount;
-  const runningPositions: { symbol: string; notional: number }[] = snapshot.openPositions.map((p) => ({
-    symbol: p.symbol,
-    notional: p.entryPrice * p.quantity,
-  }));
+  const dailyPnl = snapshot.dailyPnl + seed.dailyPnl;
+  const consecutiveLosses = Math.max(snapshot.consecutiveLosses, seed.consecutiveLosses);
+  const tradesToday = snapshot.tradesToday + seed.tradesToday;
+  let runningRisk = snapshot.openRisk + seed.openRisk;
+  let runningCount = snapshot.openPositionsCount + seed.openPositionsCount;
+  const runningPositions: { symbol: string; notional: number }[] = [
+    ...snapshot.openPositions.map((p) => ({
+      symbol: p.symbol,
+      notional: p.entryPrice * p.quantity,
+    })),
+    ...seed.positions,
+  ];
   const skipSymbols = new Set(snapshot.openPositions.map((p) => p.symbol));
 
   const outcomes: ExecutionOutcome[] = [];
