@@ -639,6 +639,16 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   are enforced by the broker directly. Live trading is blocked if *either* kill switch is
   engaged — this page's own, or the **Trade** page's — since both places orders through
   the same real account; either one's "Halt trading" is a genuine, shared emergency stop.
+  A **Live positions** table below shows every real position the loop has actually
+  placed — the exact same `positions` rows your own manual trades use on the
+  **Positions**/**Journal** pages, filtered here to just autotrade's own fills (tagged
+  server-side, not a separate table the way paper trading is). Shows the same open/closed
+  counts and realized/unrealized P&L stat tiles as the paper tables, plus each position's
+  live price/mark, quantity (showing the remaining fraction once partially closed), P&L,
+  and R-multiple — stock and option positions both render here, with option contract
+  details (strike/type/expiration) shown inline. This is the dedicated place to see your
+  real autotrade fills at a glance; they also appear, unmarked, mixed in with your manual
+  trades on the Positions/Journal pages and the Trade page's Orders panel.
 - **Refresh** (top of the page, next to the title) — Monitoring, Paper trading, and
   Recent activity all reflect state the background loop can change on its own, every
   minute, with nothing clicked — unlike Configuration, the exclusion list, and the

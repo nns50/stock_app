@@ -86,6 +86,7 @@ import type {
   LoopTickSummary,
   PaperPosition,
   OptionsPaperPosition,
+  AutotradeLivePosition,
   AutotradeDashboard,
 } from './types';
 
@@ -456,6 +457,10 @@ export const client = {
   autotradeOptionsPaperPositions: (params: { status?: 'open' | 'closed'; symbol?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams(params as Record<string, string>).toString();
     return api<{ positions: OptionsPaperPosition[] }>(`/autotrade/options-paper-positions${qs ? `?${qs}` : ''}`);
+  },
+  autotradeLivePositions: (params: { status?: 'open' | 'closed'; symbol?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams(params as Record<string, string>).toString();
+    return api<{ positions: AutotradeLivePosition[] }>(`/autotrade/live-positions${qs ? `?${qs}` : ''}`);
   },
   autotradeDashboard: () => api<AutotradeDashboard>('/autotrade/dashboard'),
   setAutotradeKillSwitch: (on: boolean) =>

@@ -9,6 +9,7 @@ import type {
   AutotradeConfig,
   AutotradeDashboard,
   AutotradeDecideResponse,
+  AutotradeLivePosition,
   AutotradeRiskCheckResult,
   BacktestRunResponse,
   LoopTickSummary,
@@ -113,6 +114,7 @@ beforeEach(() => {
   vi.spyOn(client, 'autotradeEvents').mockResolvedValue({ events: [] });
   vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({ positions: [] });
+  vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
 });
 
@@ -1440,6 +1442,148 @@ describe('AutoTradePage', () => {
       vi.spyOn(client, 'autotradeConfig').mockRejectedValue(new Error('network blip'));
       renderPage();
       expect(await screen.findByText('Something went wrong')).toBeInTheDocument(); // exactly one — findBy throws on 2+
+    });
+
+    function livePosition(overrides: Partial<AutotradeLivePosition> = {}): AutotradeLivePosition {
+      return {
+        id: 1,
+        assetType: 'stock',
+        symbol: 'AAPL',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        entryDate: '2026-07-01',
+        entryTime: null,
+        fees: 0,
+        optionType: null,
+        strike: null,
+        expiration: null,
+        multiplier: 1,
+        status: 'open',
+        tags: ['live', 'autotrade'],
+        grade: null,
+        notes: null,
+        checklist: [],
+        stopPrice: 95,
+        targetPrice: 110,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        exits: [],
+        remainingQuantity: 10,
+        currentPrice: null,
+        stale: false,
+        pnl: {
+          positionId: 1,
+          currentPrice: null,
+          costBasis: 1000,
+          realizedPnl: 0,
+          unrealizedPnl: null,
+          totalPnl: 0,
+          returnPct: null,
+          rMultiple: null,
+          marketValue: null,
+          remainingQuantity: 10,
+          closedQuantity: 0,
+        },
+        ...overrides,
+      };
+    }
+
+    it('shows an empty state when there are no live positions', async () => {
+      renderPage();
+      expect(await screen.findByText('No live positions yet')).toBeInTheDocument();
+    });
+
+    it('renders open and closed live positions with summary stat tiles', async () => {
+      vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({
+        positions: [
+          livePosition({ id: 1, symbol: 'AAPL', status: 'open' }),
+          livePosition({
+            id: 2,
+            symbol: 'MSFT',
+            status: 'closed',
+            remainingQuantity: 0,
+            exits: [
+              {
+                id: 1,
+                positionId: 2,
+                quantity: 10,
+                exitPrice: 110,
+                exitDate: '2026-07-02',
+                fees: 0,
+                notes: null,
+                createdAt: Date.now(),
+              },
+            ],
+            pnl: {
+              positionId: 2,
+              currentPrice: 110,
+              costBasis: 1000,
+              realizedPnl: 100,
+              unrealizedPnl: 0,
+              totalPnl: 100,
+              returnPct: 10,
+              rMultiple: 2,
+              marketValue: 0,
+              remainingQuantity: 0,
+              closedQuantity: 10,
+            },
+          }),
+        ],
+      });
+      renderPage();
+      expect(await screen.findByText('AAPL')).toBeInTheDocument();
+      expect(screen.getByText('MSFT')).toBeInTheDocument();
+      expect(screen.getAllByText('+$100.00').length).toBeGreaterThan(0); // stat tile + row
+      expect(screen.getByText('2.00R')).toBeInTheDocument();
+    });
+
+    it('shows option contract details inline for an option live position', async () => {
+      vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({
+        positions: [
+          livePosition({
+            id: 1,
+            symbol: 'AAPL',
+            assetType: 'option',
+            optionType: 'call',
+            strike: 200,
+            expiration: '2026-08-21',
+            multiplier: 100,
+          }),
+        ],
+      });
+      renderPage();
+      await screen.findByText('AAPL');
+      expect(screen.getByText(/200\.00 C 2026-08-21/)).toBeInTheDocument();
+    });
+
+    it('shows the live current price for an OPEN position, not a blank dash', async () => {
+      vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({
+        positions: [
+          livePosition({
+            id: 1,
+            symbol: 'AAPL',
+            currentPrice: 108,
+            pnl: {
+              positionId: 1,
+              currentPrice: 108,
+              costBasis: 1000,
+              realizedPnl: 0,
+              unrealizedPnl: 80,
+              totalPnl: 80,
+              returnPct: 8,
+              rMultiple: 1.6,
+              marketValue: 1080,
+              remainingQuantity: 10,
+              closedQuantity: 0,
+            },
+          }),
+        ],
+      });
+      renderPage();
+      await screen.findByText('AAPL');
+      expect(screen.getByText('$108.00')).toBeInTheDocument();
+      expect(screen.getAllByText('+$80.00').length).toBeGreaterThan(0);
     });
   });
 });

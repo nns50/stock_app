@@ -118,3 +118,32 @@ export async function resolveOptionMarks(
   }
   return out;
 }
+
+/** Resolve a current price per position (stocks via quote, options via mark) —
+ *  shared by routes/positions.ts (the human's own book) and the autotrade
+ *  live-positions route (server/src/routes/autotrade.ts), so both read the
+ *  exact same stock/option price-resolution logic rather than two
+ *  implementations that could quietly drift apart. */
+export async function priceMap(
+  positions: Position[],
+): Promise<Map<number, { price: number | null; stale: boolean; asOf: number | null }>> {
+  const out = new Map<number, { price: number | null; stale: boolean; asOf: number | null }>();
+  const stocks = positions.filter((p) => p.assetType === 'stock');
+  const options = positions.filter((p) => p.assetType === 'option');
+
+  if (stocks.length) {
+    const prices = await resolveStockPrices(stocks.map((p) => p.symbol));
+    for (const p of stocks) {
+      const r = prices.get(p.symbol.toUpperCase());
+      out.set(p.id, { price: r?.price ?? null, stale: r?.stale ?? false, asOf: r?.asOf ?? null });
+    }
+  }
+  if (options.length) {
+    const marks = await resolveOptionMarks(options);
+    for (const p of options) {
+      const m = marks.get(p.id);
+      out.set(p.id, { price: m?.mark ?? null, stale: false, asOf: m?.mark != null ? Date.now() : null });
+    }
+  }
+  return out;
+}

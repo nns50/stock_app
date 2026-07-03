@@ -20,10 +20,17 @@ import { computeBacktestStats, runBacktest, runWalkForwardBacktest } from '../se
 import { runOptionsBacktest, runOptionsWalkForwardBacktest } from '../services/autotrading/optionsBacktest';
 import { listPaperPositions, PaperPosition } from '../db/autotradePaperPositions';
 import { listOptionsPaperPositions, OptionsPaperPosition } from '../db/autotradeOptionsPaperPositions';
+import { listAutotradeLivePositions } from '../services/autotrading/liveExecute';
+import { Position } from '../db/positions';
 import { runAutotradeLoopTick } from '../services/autotrading/loop';
 import { getAutotradeDashboard } from '../services/autotrading/dashboard';
-import { resolveStockPrices } from '../services/quotes';
-import { computePaperUnrealizedPnl, computeOptionsPaperUnrealizedPnl } from '../services/pnl';
+import { resolveStockPrices, priceMap } from '../services/quotes';
+import {
+  computePaperUnrealizedPnl,
+  computeOptionsPaperUnrealizedPnl,
+  computePositionPnl,
+  PositionPnl,
+} from '../services/pnl';
 import { getProvider } from '../providers';
 
 export const autotradeRouter = Router();
@@ -569,6 +576,41 @@ autotradeRouter.get(
   asyncHandler(async (req, res) => {
     const q = parseQuery(paperPositionsQuery, req);
     const positions = await withLiveOptionMarks(listOptionsPaperPositions(q));
+    res.json({ positions });
+  }),
+);
+
+export interface AutotradeLivePositionLive extends Position {
+  /** A live quote/mark as of this request — null for a closed position or a
+   *  resolution failure. */
+  currentPrice: number | null;
+  stale: boolean;
+  /** Full P&L breakdown (realized/unrealized/total/R-multiple/market value),
+   *  reusing services/pnl.ts's computePositionPnl() unchanged — the exact
+   *  same math the human Positions/Journal pages already use, so this never
+   *  shows a number those pages would disagree with. Handles partial exits
+   *  and the stock/option multiplier difference correctly, unlike paper
+   *  trading's simpler single-entry/single-exit shape. */
+  pnl: PositionPnl;
+}
+
+/** Enrich real autotrade-placed positions with a live price/mark + full P&L —
+ *  reuses services/quotes.ts's priceMap() (shared with routes/positions.ts,
+ *  the human's own book) rather than a second stock/option price-resolution
+ *  implementation. */
+async function withLivePositionPnl(positions: Position[]): Promise<AutotradeLivePositionLive[]> {
+  const prices = await priceMap(positions);
+  return positions.map((p) => {
+    const info = prices.get(p.id) ?? { price: null, stale: false, asOf: null };
+    return { ...p, currentPrice: info.price, stale: info.stale, pnl: computePositionPnl(p, info.price) };
+  });
+}
+
+autotradeRouter.get(
+  '/live-positions',
+  asyncHandler(async (req, res) => {
+    const q = parseQuery(paperPositionsQuery, req);
+    const positions = await withLivePositionPnl(listAutotradeLivePositions(q));
     res.json({ positions });
   }),
 );

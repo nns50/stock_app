@@ -867,6 +867,19 @@ starts.
      path, not something specific to autotrade. Every fix has a regression test
      verified by reverting the fix and confirming it fails against the old code.
 
+     **Follow-up, added after live trading was actually enabled (2026-07-03):** live
+     fills had no dedicated view on the Auto-Trade page itself — only the Monitoring
+     dashboard's aggregate `liveOpenPositions*` figures, with individual positions
+     visible only by cross-referencing the Positions/Journal pages (where they render
+     identically to a manual trade, distinguished only by a `tags`/`notes` value you'd
+     have to open the position to see). A new `GET /api/autotrade/live-positions`
+     route and a **Live positions** table close that gap — read-only, purely additive,
+     no execution-path change. Reuses `services/pnl.ts`'s `computePositionPnl()`
+     (handles partial exits and the stock/option multiplier correctly, unlike paper
+     trading's simpler shape) and a `priceMap()` helper relocated from
+     `routes/positions.ts` into `services/quotes.ts` so both routes share one
+     stock/option price-resolution implementation instead of two.
+
 ### Options trading addition — phases 9-13, approved (2026-07-03)
 
 The data-source question and the three design defaults flagged below (IV-rank ceiling,

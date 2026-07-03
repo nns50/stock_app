@@ -172,6 +172,27 @@ export function getLivePortfolioSnapshot(): LivePortfolioSnapshot {
   };
 }
 
+export interface ListAutotradeLivePositionsFilter {
+  status?: 'open' | 'closed';
+  symbol?: string;
+  /** Max rows to return (default 200, capped at 1000) — same convention as
+   *  listPaperPositions/listOptionsPaperPositions. */
+  limit?: number;
+}
+
+/** Real (live-money) positions the autotrade loop itself placed, filtered by
+ *  the same 'autotrade' tag getLivePortfolioSnapshot() uses — from the SAME
+ *  `positions` table a human's own manual trades live in, not a separate
+ *  autotrade-only table (unlike paper trading, which is fully separate by
+ *  design). Newest first (listPositions()'s own ordering, preserved through
+ *  the tag filter). For the Auto-Trade page's own "Live positions" view —
+ *  read-only, no execution here. */
+export function listAutotradeLivePositions(filter: ListAutotradeLivePositionsFilter = {}): Position[] {
+  const all = listPositions({ status: filter.status, symbol: filter.symbol }).filter(isAutotradePosition);
+  const limit = Math.min(Math.max(filter.limit ?? 200, 1), 1000);
+  return all.slice(0, limit);
+}
+
 export interface LiveExecutionOutcome {
   symbol: string;
   ok: boolean;
