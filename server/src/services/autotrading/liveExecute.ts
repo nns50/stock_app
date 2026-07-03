@@ -453,16 +453,41 @@ function reconcileOneLiveOrder(
       brokerOrderId: broker.brokerOrderId,
     });
     if (masterTarget === 'filled') {
-      materializeEntryFill(
-        intent,
-        stopPrice,
-        targetPrice,
-        riskAmount,
-        riskProfile,
-        broker.filledQty ?? intent.quantity,
-        broker.filledPrice ?? intent.limitPrice ?? 0,
-      );
-      return { changed: true, action: 'entry_filled' };
+      // The intent transition above has ALREADY committed by this point — if
+      // materializing the position throws, the intent is left at terminal
+      // 'filled' with no positions row and, since listPendingLiveOrders()
+      // only keeps polling a 'filled' intent while its linked position is
+      // open, NOTHING would ever retry this. An adversarial review flagged
+      // this as a real, permanent-data-loss gap (no try/catch existed at
+      // all). This can't be prevented outright (the write already
+      // happened), but it must not crash the rest of this reconcile cycle's
+      // other pending orders, and it must be LOUD — there's no human
+      // watching this path in real time the way the Trade page assumes, so
+      // silently swallowing it (as the human path's own equivalent,
+      // reconcile.ts's recordFillAsPosition, deliberately does) would leave
+      // a real fill permanently invisible with no trace anywhere.
+      try {
+        materializeEntryFill(
+          intent,
+          stopPrice,
+          targetPrice,
+          riskAmount,
+          riskProfile,
+          broker.filledQty ?? intent.quantity,
+          broker.filledPrice ?? intent.limitPrice ?? 0,
+        );
+        return { changed: true, action: 'entry_filled' };
+      } catch (err) {
+        const message = (err as Error).message;
+        logAutotradeEvent({
+          symbol: intent.symbol,
+          stage: 'execution',
+          action: 'live_entry_materialization_failed',
+          detail: { intentId: intent.id, error: message },
+          riskProfile,
+        });
+        return { changed: true, error: `Broker fill recorded but failed to materialize a Position: ${message}` };
+      }
     }
     return { changed: true };
   }
@@ -470,13 +495,42 @@ function reconcileOneLiveOrder(
   // Once the entry itself is filled, look for an EXIT leg (STOP_LOSS or
   // STOP_PROFIT) having also filled. Best-effort per this function's header
   // caveat: only acts on a leg unambiguously identified as non-MASTER AND
-  // FILLED; anything else leaves the position open rather than guessing.
+  // FILLED; anything else (including two legs BOTH reporting FILLED, which
+  // shouldn't happen under normal OCO semantics but isn't ruled out given
+  // this response shape is unconfirmed) leaves the position open rather
+  // than guessing.
   if (intent.state === 'filled' && intent.isBracket && broker.legs) {
-    const exitLeg = broker.legs.find((l) => l.comboType && l.comboType !== 'MASTER' && l.status === 'FILLED');
+    const filledExitLegs = broker.legs.filter((l) => l.comboType && l.comboType !== 'MASTER' && l.status === 'FILLED');
+    if (filledExitLegs.length > 1) {
+      logAutotradeEvent({
+        symbol: intent.symbol,
+        stage: 'execution',
+        action: 'live_exit_ambiguous',
+        detail: { intentId: intent.id, legs: filledExitLegs.map((l) => l.comboType) },
+        riskProfile,
+      });
+      return { changed: false, error: 'Two exit legs both reported FILLED — ambiguous, left open rather than guessed' };
+    }
+    const exitLeg = filledExitLegs[0];
     if (exitLeg) {
       const fallbackPrice = exitLeg.comboType === 'STOP_LOSS' ? stopPrice : targetPrice;
-      const recorded = materializeExitFill(intent, exitLeg.filledPrice ?? fallbackPrice, riskProfile);
-      return recorded ? { changed: true, action: 'exit_filled' } : { changed: false };
+      try {
+        const recorded = materializeExitFill(intent, exitLeg.filledPrice ?? fallbackPrice, riskProfile);
+        return recorded ? { changed: true, action: 'exit_filled' } : { changed: false };
+      } catch (err) {
+        const message = (err as Error).message;
+        logAutotradeEvent({
+          symbol: intent.symbol,
+          stage: 'execution',
+          action: 'live_exit_materialization_failed',
+          detail: { intentId: intent.id, error: message },
+          riskProfile,
+        });
+        return {
+          changed: true,
+          error: `Broker exit recorded but failed to materialize against the Position: ${message}`,
+        };
+      }
     }
   }
   return { changed: false };

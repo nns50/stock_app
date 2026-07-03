@@ -420,6 +420,58 @@ describe('webull stock order + preview', () => {
     expect(String(fetchSpy.mock.calls[0][0])).toContain('/openapi/trade/order/open');
   });
 
+  it('prefers an explicitly-tagged MASTER leg over array position for a bracket combo — even when it is NOT first', async () => {
+    // An adversarial review flagged that this response shape is unconfirmed
+    // against a real account, and that trusting orders[0] positionally could
+    // misread a cancelled OCO exit sibling as the entry's own status if the
+    // broker ever orders a bracket's legs with an exit first. This response
+    // deliberately puts a CANCELLED exit leg at index 0 and the real,
+    // FILLED master at index 1.
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const env = {
+      client_order_id: 'CID-BRACKET',
+      combo_order_id: 'WB-BRACKET-1',
+      orders: [
+        { combo_type: 'STOP_LOSS', status: 'CANCELLED', order_id: 'WB-BRACKET-SL' },
+        {
+          combo_type: 'MASTER',
+          status: 'FILLED',
+          order_id: 'WB-BRACKET-MASTER',
+          filled_quantity: '10',
+          filled_price: '100',
+        },
+        { combo_type: 'STOP_PROFIT', status: 'WORKING', order_id: 'WB-BRACKET-TP' },
+      ],
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify([env]),
+    } as Response);
+
+    const r = await webullOrderStatus('ACC1', 'CID-BRACKET');
+    expect(r.status).toBe('FILLED'); // the MASTER leg's status, not orders[0]'s (CANCELLED)
+    expect(r.filledQty).toBe(10);
+    expect(r.legs).toHaveLength(3); // all three legs still surfaced for exit-leg detection
+  });
+
+  it('falls back to orders[0] when no leg is tagged MASTER — unaffected for verticals/covered/iron-condors/plain orders', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const env = {
+      client_order_id: 'CID-VERTICAL',
+      combo_order_id: 'WB-VERTICAL-1',
+      orders: [{ combo_type: 'NORMAL', status: 'FILLED', order_id: 'WB-VERTICAL-1', filled_quantity: '1' }],
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify([env]),
+    } as Response);
+
+    const r = await webullOrderStatus('ACC1', 'CID-VERTICAL');
+    expect(r.status).toBe('FILLED');
+  });
+
   it('reports not-found when neither open nor history has the order', async () => {
     Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
     vi.spyOn(globalThis, 'fetch')

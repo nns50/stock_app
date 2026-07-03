@@ -497,7 +497,19 @@ export async function webullOrderStatus(accountId: string, clientOrderId: string
     }
     const env = matchEnvelope(r.data, clientOrderId);
     if (env) {
-      const o = (Array.isArray(env.orders) ? (env.orders[0] ?? {}) : {}) as Record<string, unknown>;
+      const orders = Array.isArray(env.orders) ? env.orders : [];
+      // A bracket's entry leg is submitted tagged combo_type: 'MASTER' (see
+      // buildOrderRequest below) — prefer that EXPLICIT tag over position
+      // when present, rather than assuming orders[0] is always the entry.
+      // An adversarial review flagged that this response shape is
+      // unconfirmed against a real account; if the broker ever orders a
+      // bracket's legs with an exit first, positionally trusting orders[0]
+      // could misread a cancelled OCO sibling as the entry's own status.
+      // Verticals/covered/iron-condors/plain orders never produce a
+      // 'MASTER'-tagged leg, so they fall through to the exact same
+      // orders[0] behavior as before — unaffected by this change.
+      const explicitMaster = orders.find((leg) => (leg as { combo_type?: string }).combo_type === 'MASTER');
+      const o = (explicitMaster ?? orders[0] ?? {}) as Record<string, unknown>;
       const brokerOrderId = env.combo_order_id ?? (o.order_id as string | undefined);
       return {
         ok: true,
@@ -507,7 +519,7 @@ export async function webullOrderStatus(accountId: string, clientOrderId: string
         filledQty: num(o.filled_quantity),
         totalQty: num(o.total_quantity),
         filledPrice: num(o.filled_price),
-        legs: Array.isArray(env.orders) ? env.orders.map((leg) => mapLeg(leg as Record<string, unknown>)) : undefined,
+        legs: orders.length ? orders.map((leg) => mapLeg(leg as Record<string, unknown>)) : undefined,
         raw: env,
       };
     }

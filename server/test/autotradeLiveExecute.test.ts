@@ -16,8 +16,9 @@ import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../
 import { setTradingConfig } from '../src/db/trading';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { listPositions } from '../src/db/positions';
+import * as positionsDb from '../src/db/positions';
 import { getLiveOrder, listPendingLiveOrders } from '../src/db/autotradeLiveOrders';
-import { listIntents } from '../src/db/orders';
+import { listIntents, transitionIntent } from '../src/db/orders';
 import { evaluateRiskCheck, RiskCheckResult } from '../src/services/autotrading/riskCheck';
 import { TradeSignal } from '../src/services/autotrading/decide';
 import {
@@ -143,6 +144,47 @@ describe('getProbationStatus', () => {
     const status = getProbationStatus(cfg);
     expect(status.active).toBe(true);
     expect(status.multiplier).toBe(0.4);
+    expect(status.tradesRemaining).toBe(5);
+  });
+
+  it("doesn't count an order that expired unfilled toward the probation trade total", async () => {
+    // Same "never became a real trade" category as rejected/cancelled — an
+    // adversarial review found this one was missing from the exclusion list,
+    // so an expired order was silently consuming probation slots.
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-9' });
+    const enabledAt = Date.now() - 1000;
+    const cfg = liveConfig({ liveEnabledAt: enabledAt, liveProbationTrades: 5, liveProbationSizeMultiplier: 0.4 });
+    const okResult = evaluateRiskCheck(
+      signal(),
+      {
+        equity: 100_000,
+        dailyPnl: 0,
+        tradesToday: 0,
+        consecutiveLosses: 0,
+        openRisk: 0,
+        openPositionsCount: 0,
+        correlatedNotional: 0,
+      },
+      {
+        riskPerTradePct: 1,
+        maxDailyDrawdownPct: 3,
+        stepDownAfterLosses: 2,
+        stepDownSizeCutPct: 50,
+        maxConcurrentPositions: 2,
+        maxAggregateOpenRiskPct: 2,
+        maxCorrelatedExposurePct: 6,
+        maxTradesPerDay: 6,
+      },
+    );
+    await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
+    const intentId = listIntents()[0].id;
+    transitionIntent(intentId, 'expired', { detail: 'test: order timed out unfilled' });
+
+    const status = getProbationStatus(cfg);
+    expect(status.tradesPlaced).toBe(0);
+    expect(status.active).toBe(true);
     expect(status.tradesRemaining).toBe(5);
   });
 });
@@ -495,6 +537,137 @@ describe('reconcileLiveOrders', () => {
     const outcomes = await reconcileLiveOrders();
     expect(outcomes[0]).toMatchObject({ changed: false });
     expect(listPositions({ status: 'open' })).toHaveLength(1);
+  });
+
+  it("isolates a genuine persistence failure materializing an entry fill (createPosition itself throwing) — doesn't crash the reconcile pass", async () => {
+    // Distinct from the broker-side checks above: this exercises the
+    // try/catch ADDED AROUND materializeEntryFill() itself, for a failure
+    // that can't be predicted from the broker response (e.g. a DB-layer
+    // error). Before this fix, the intent transition to 'filled' had already
+    // committed by the time createPosition() throws, and since
+    // listPendingLiveOrders() only keeps polling a 'filled' intent while its
+    // linked position is open, the fill would be silently lost forever.
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-7' });
+    const okResult = evaluateRiskCheck(
+      signal(),
+      {
+        equity: 100_000,
+        dailyPnl: 0,
+        tradesToday: 0,
+        consecutiveLosses: 0,
+        openRisk: 0,
+        openPositionsCount: 0,
+        correlatedNotional: 0,
+      },
+      {
+        riskPerTradePct: 1,
+        maxDailyDrawdownPct: 3,
+        stepDownAfterLosses: 2,
+        stepDownSizeCutPct: 50,
+        maxConcurrentPositions: 2,
+        maxAggregateOpenRiskPct: 2,
+        maxCorrelatedExposurePct: 6,
+        maxTradesPerDay: 6,
+      },
+    );
+    await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
+    const intentId = listIntents()[0].id;
+
+    const createSpy = vi.spyOn(positionsDb, 'createPosition').mockImplementationOnce(() => {
+      throw new Error('disk I/O error');
+    });
+    try {
+      mockOrderStatus.mockResolvedValue({
+        ok: true,
+        found: true,
+        status: 'FILLED',
+        filledQty: okResult.sizing.suggestedQuantity,
+        filledPrice: 100.5,
+        legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+      } as WebullOrderStatus);
+
+      const outcomes = await reconcileLiveOrders();
+      expect(outcomes[0]).toMatchObject({ intentId, symbol: 'AAPL', changed: true });
+      expect(outcomes[0].error).toMatch(/failed to materialize a position/i);
+      expect(listPositions({ status: 'open' })).toHaveLength(0); // no Position was created
+
+      const failedEvent = listAutotradeEvents({ stage: 'execution', symbol: 'AAPL' }).find(
+        (e) => e.action === 'live_entry_materialization_failed',
+      );
+      expect(failedEvent).toBeDefined();
+      expect(JSON.parse(failedEvent!.detail!)).toMatchObject({ intentId });
+    } finally {
+      createSpy.mockRestore();
+    }
+  });
+
+  it('treats two exit legs BOTH reporting FILLED as ambiguous, journals it, and leaves the position open', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-8' });
+    const okResult = evaluateRiskCheck(
+      signal(),
+      {
+        equity: 100_000,
+        dailyPnl: 0,
+        tradesToday: 0,
+        consecutiveLosses: 0,
+        openRisk: 0,
+        openPositionsCount: 0,
+        correlatedNotional: 0,
+      },
+      {
+        riskPerTradePct: 1,
+        maxDailyDrawdownPct: 3,
+        stepDownAfterLosses: 2,
+        stepDownSizeCutPct: 50,
+        maxConcurrentPositions: 2,
+        maxAggregateOpenRiskPct: 2,
+        maxCorrelatedExposurePct: 6,
+        maxTradesPerDay: 6,
+      },
+    );
+    await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
+
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: okResult.sizing.suggestedQuantity,
+      filledPrice: 100,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+    expect(listPositions({ status: 'open' })).toHaveLength(1);
+
+    // Both the STOP_LOSS and STOP_PROFIT legs report FILLED — shouldn't
+    // happen under normal OCO semantics but isn't ruled out given this
+    // response shape is unconfirmed against a live account (see
+    // WebullOrderLeg's own caveat) — must not be guessed either way.
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      legs: [
+        { comboType: 'MASTER', status: 'FILLED' },
+        { comboType: 'STOP_LOSS', status: 'FILLED', filledPrice: 95 },
+        { comboType: 'STOP_PROFIT', status: 'FILLED', filledPrice: 110 },
+      ],
+    } as WebullOrderStatus);
+    const outcomes = await reconcileLiveOrders();
+    expect(outcomes[0]).toMatchObject({ changed: false });
+    expect(outcomes[0].error).toMatch(/ambiguous/i);
+    expect(listPositions({ status: 'open' })).toHaveLength(1); // left open, not guessed closed
+
+    const ambiguousEvent = listAutotradeEvents({ stage: 'execution', symbol: 'AAPL' }).find(
+      (e) => e.action === 'live_exit_ambiguous',
+    );
+    expect(ambiguousEvent).toBeDefined();
+    expect(JSON.parse(ambiguousEvent!.detail!).legs).toEqual(expect.arrayContaining(['STOP_LOSS', 'STOP_PROFIT']));
   });
 });
 
