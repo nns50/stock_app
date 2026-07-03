@@ -722,6 +722,14 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   yours to make, same as the eventual live-trading flag. At most 50 symbols per run; if
   one symbol's historical data can't be fetched (bad ticker, provider rate limit), it's
   called out separately and excluded — the rest of the run still completes.
+  **Run options backtest** / **Run options walk-forward** replays the identical
+  symbols/dates/profile/equity through the options overlay instead (single-leg long
+  calls/puts only, gated by the same equity screen and risk caps) — a separate,
+  independent run shown below the equity results, not combined with it. IV rank here
+  falls back to the same realized-volatility estimate the human Options page already
+  uses, and open interest/bid-ask spread can't be backtested at all (no historical feed
+  exists at any data tier) — both are still fully enforced once a real order is ever on
+  the table, just not checkable against history.
 - **Paper trading** — the execution loop itself. When **Auto-trading enabled** is checked
   above, the server runs Screen → Decision → Risk Check → Execution on its own every
   minute; **Run one cycle now** runs the exact same cycle immediately, so you can watch
