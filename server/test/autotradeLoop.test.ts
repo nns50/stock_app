@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 
 // Each stage already has its own dedicated test coverage (screen.ts ->
 // autotradeScreen.test.ts, decide.ts -> autotradeDecide.test.ts, execute.ts ->
@@ -28,6 +28,7 @@ import { TradeSignal } from '../src/services/autotrading/decide';
 import { initDb } from '../src/db';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
+import { config } from '../src/config';
 
 const mockScreen = vi.mocked(runAutotradeScreen);
 const mockDecide = vi.mocked(runAutotradeDecision);
@@ -70,6 +71,8 @@ function signal(symbol: string): TradeSignal {
   return { symbol, side: 'buy', entry: 100, stop: 95, target: 110, rMultiple: 2, rationale: 'fixture', score: 70 };
 }
 
+const origPlaceEnabled = config.trading.placeEnabled;
+
 beforeAll(() => initDb());
 beforeEach(() => {
   mockScreen.mockReset();
@@ -95,7 +98,11 @@ beforeEach(() => {
     liveAccountId: null,
   });
   setTradingConfig({ enabled: false, killSwitch: false });
+  config.trading.placeEnabled = true; // env master gate ON — see placeOrder.test.ts's own convention
   stopAutotradeLoop();
+});
+afterEach(() => {
+  config.trading.placeEnabled = origPlaceEnabled;
 });
 
 describe('runAutotradeLoopTick', () => {

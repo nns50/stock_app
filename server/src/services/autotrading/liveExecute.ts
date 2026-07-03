@@ -1,3 +1,4 @@
+import { config } from '../../config';
 import { AutotradeConfig, getAutotradeConfig } from '../../db/autotradeConfig';
 import { getTradingConfig } from '../../db/trading';
 import { AccountState, evaluateGuardrails, OrderIntent, blockingFailures, TradingConfig } from '../trading/guardrails';
@@ -193,6 +194,14 @@ export async function attemptLiveEntry(
   autotradeCfg: AutotradeConfig,
 ): Promise<LiveExecutionOutcome> {
   const symbol = signal.symbol.toUpperCase();
+  // The deploy-level master gate, checked FIRST — mirrors placeOrder.ts's own
+  // ordering exactly. This was missing entirely until an adversarial review
+  // caught it: nothing else in this file (or loop.ts's isLiveEntryActive)
+  // consulted it, so a deploy with TRADING_ENABLED unset could still place
+  // real orders through this path alone.
+  if (!config.trading.placeEnabled) {
+    return { symbol, ok: false, reason: 'Order placement is disabled on the server (TRADING_ENABLED is not set).' };
+  }
   if (!riskResult.ok) return { symbol, ok: false, reason: 'Risk check did not pass' };
 
   const accountId = autotradeCfg.liveAccountId;
@@ -343,7 +352,18 @@ export async function runLiveExecution(candidates: { signal: TradeSignal }[]): P
       continue;
     }
 
-    const outcome = await attemptLiveEntry(signal, result, cfg.riskProfile, cfg);
+    // Re-fetch fresh config for the actual placement attempt — NOT the same
+    // `cfg` snapshotted once above. That snapshot is deliberately reused for
+    // the risk-check MATH across the batch (equity/profile consistency,
+    // mirroring runPaperExecution()'s own batch convention), but the SAFETY
+    // GATE (liveTradingEnabled/killSwitch/live caps) must not be "batch-frozen"
+    // the same way: this loop awaits real broker round-trips between
+    // candidates, and a kill switch engaged mid-batch has to stop the NEXT
+    // candidate immediately, not just the next full cycle (an adversarial
+    // review caught this — the human config was already re-fetched fresh
+    // inside buildLiveTradingConfig(), but autotrade's own config wasn't).
+    const freshCfg = getAutotradeConfig();
+    const outcome = await attemptLiveEntry(signal, result, freshCfg.riskProfile, freshCfg);
     outcomes.push(outcome);
     if (outcome.ok) {
       runningRisk += result.approvedRiskAmount;

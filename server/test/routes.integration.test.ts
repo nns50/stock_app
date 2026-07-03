@@ -590,6 +590,62 @@ describe('autotrade config routes (integration)', () => {
       expect(final.liveAccountId).toBe('ACC1');
       expect(final.liveMaxOrderUsd).toBe(900);
     });
+
+    describe('re-confirmation required to change the live account while already enabled', () => {
+      // An adversarial review caught that this route originally let
+      // liveAccountId be changed to a DIFFERENT value with no re-confirmation
+      // at all once already enabled — silently redirecting real orders to a
+      // different broker account.
+      beforeEach(async () => {
+        await put('/api/autotrade/config', {
+          liveAccountId: 'ACC1',
+          liveTradingEnabled: true,
+          confirmLiveTrading: 'ENABLE LIVE TRADING',
+        });
+      });
+
+      it('rejects switching to a different account with no confirmation phrase', async () => {
+        const res = await put('/api/autotrade/config', { liveAccountId: 'ACC2' });
+        expect(res.status).toBe(400);
+        expect(await getJson('/api/autotrade/config')).toMatchObject({ liveAccountId: 'ACC1' }); // unchanged
+      });
+
+      it('accepts switching to a different account WITH the confirmation phrase', async () => {
+        const res = await put('/api/autotrade/config', {
+          liveAccountId: 'ACC2',
+          confirmLiveTrading: 'ENABLE LIVE TRADING',
+        });
+        expect(res.status).toBe(200);
+        expect(await getJson('/api/autotrade/config')).toMatchObject({
+          liveAccountId: 'ACC2',
+          liveTradingEnabled: true,
+        });
+      });
+
+      it('does not require confirmation to re-send the SAME account id (a no-op resend)', async () => {
+        const res = await put('/api/autotrade/config', { liveAccountId: 'ACC1' });
+        expect(res.status).toBe(200);
+        expect(await getJson('/api/autotrade/config')).toMatchObject({ liveAccountId: 'ACC1' });
+      });
+
+      it('rejects clearing the account (null) while remaining enabled, even with the confirmation phrase', async () => {
+        const res = await put('/api/autotrade/config', {
+          liveAccountId: null,
+          confirmLiveTrading: 'ENABLE LIVE TRADING',
+        });
+        expect(res.status).toBe(400);
+        expect(await getJson('/api/autotrade/config')).toMatchObject({ liveAccountId: 'ACC1' }); // unchanged
+      });
+
+      it('allows changing the account with no confirmation when the SAME request also disables live trading', async () => {
+        const res = await put('/api/autotrade/config', { liveAccountId: 'ACC2', liveTradingEnabled: false });
+        expect(res.status).toBe(200);
+        expect(await getJson('/api/autotrade/config')).toMatchObject({
+          liveAccountId: 'ACC2',
+          liveTradingEnabled: false,
+        });
+      });
+    });
   });
 });
 
