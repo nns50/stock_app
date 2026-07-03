@@ -402,8 +402,18 @@ function round2(n: number): number {
  *  than reimplementing drawdown/streak math for a second trade-record shape;
  *  the rest mirrors services/pnl.ts's computeJournalStats conventions
  *  (e.g. profitFactor is null — not Infinity — when there are wins and no
- *  losses yet) so the two "how did this perform" surfaces read the same way. */
-export function computeBacktestStats(report: BacktestReport): BacktestStats {
+ *  losses yet) so the two "how did this perform" surfaces read the same way.
+ *
+ *  Parameter is intentionally a structural subset of BacktestReport (not the
+ *  type itself) — every field this function actually reads (trade pnl/
+ *  rMultiple, starting/final equity) is already 100% asset-type-blind, so
+ *  optionsBacktest.ts's OptionsBacktestReport (a differently-shaped trade
+ *  record) satisfies this signature too, without a duplicate stats function. */
+export function computeBacktestStats(report: {
+  trades: { pnl: number; rMultiple: number }[];
+  startingEquity: number;
+  finalEquity: number;
+}): BacktestStats {
   const { trades, startingEquity, finalEquity } = report;
   const wins = trades.filter((t) => t.pnl > 0);
   const losses = trades.filter((t) => t.pnl < 0);
