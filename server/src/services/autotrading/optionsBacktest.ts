@@ -1,0 +1,603 @@
+import { Candle } from '../../providers/types';
+import { ScreenerConfig, scoreSymbol } from '../../indicators/screener';
+import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
+import { defaultAutotradeScreenerConfig } from './screen';
+import { addDays, indexAsOf, loadBacktestHistory, toISO, WARMUP_PADDING_DAYS, EquityPoint } from './backtest';
+import { defaultAutotradeEntryConfig, OptionsDecisionConfig, OptionsSignalSide } from './optionsDecide';
+import { evaluateOptionsRiskCheck } from './optionsRiskCheck';
+import { RiskCheckContext, RiskCheckResult } from './riskCheck';
+import { CORRELATION_LOOKBACK_DAYS, CORRELATION_THRESHOLD, RISK_PROFILES, RiskProfileParams } from './riskProfiles';
+import { RiskProfileName } from '../../db/autotradeConfig';
+import { getHistoricalOptionContracts } from './optionsHistoricalData';
+import { getHistoricalBars } from './historicalData';
+import { OptionContractRef } from './polygonOptionsClient';
+import { impliedVol, bsGreeks, yearsToExpiration, daysToExpiration } from '../../options/blackScholes';
+import { computeIvContext } from '../ivRank';
+import { computeStreaksAndDrawdown } from '../pnl';
+
+// ---------------------------------------------------------------------------
+// The options counterpart to backtest.ts (docs/AUTOTRADING_SPEC.md, phase 11)
+// — replays phases 9-10's entry/sizing logic day-by-day over historical
+// data, exactly like backtest.ts's simulateBacktest() does for equities: the
+// SAME evaluateOptionsRiskCheck() (phase 10) gates every candidate, and the
+// SAME entryRules.ts threshold values (defaultAutotradeEntryConfig(), phase
+// 9) define what counts as a qualifying contract — not new numbers guessed
+// for this phase.
+//
+// Six deliberate, documented scope reductions versus a maximally-faithful
+// simulation (mirroring phase 9's own "first cut" framing, not silent
+// shortcuts):
+//
+//  1. INDEPENDENT backtest, not combined with a concurrent equity backtest's
+//     risk in the same run. Phase 10's evaluateOptionsRiskCheck() is reused
+//     verbatim (the exact same combined-budget-capable function), just
+//     seeded with no equity approvals to combine with (an empty
+//     equityResults) — this is the same posture Phase 4's risk-check had
+//     before Phase 6 gave it a concurrent execution consumer.
+//  2. Exactly ONE reference contract is considered per underlying per day —
+//     the nearest-to-spot strike among contracts in the confirmed DTE
+//     window — not a full multi-strike scan via entryRules.ts's
+//     scanEntries(). scanEntries()'s bid/ask-based spread check is
+//     UNCONDITIONAL (no config flag can disable it), so it would reject
+//     100% of backtested candidates outright (no historical bid/ask exists
+//     at this tier) — reusing it here isn't possible without touching
+//     shared, human-facing code. The delta-band/IV-rank/volume checks
+//     entryRules.ts actually specifies are re-implemented directly below
+//     against synthetically-derived data, importing the SAME threshold
+//     values from defaultAutotradeEntryConfig(), not re-guessing them.
+//  3. Open interest and bid-ask spread are skipped entirely (the ALREADY-
+//     CONFIRMED backtest gap, docs/AUTOTRADING_SPEC.md "Resolved
+//     decisions" — no tier has historical OI, and this tier has no
+//     historical quotes either). Volume, delta band, DTE window, and
+//     IV-rank ceiling are still enforced.
+//  4. IV rank always uses computeIvContext()'s hv-estimate (realized-vol)
+//     fallback — the SAME proxy the human Options page is already willing
+//     to use live — rather than a genuinely-derived historical options-IV
+//     series. The day's OWN implied vol is still real, computed from that
+//     day's actual historical option price via Black-Scholes; only the
+//     RANKING methodology (what range to rank it against) falls back to the
+//     cruder proxy. This is the same category of confirmed, permanent
+//     backtest-only gap as OI/spread above, extended here with the same
+//     reasoning — NOT a change to the live/paper system, which still fails
+//     closed without 15 real samples exactly as phase 9 shipped it.
+//  5. Exit is TIME-BASED ONLY (exitRules.ts's timeExitDaysBeforeExpiry),
+//     matching phase 12's OWN already-scoped "close-only, time-based"
+//     automated-exit design — not the human Options page's fuller
+//     stop-loss/take-profit/delta-drift default config, which is for manual
+//     review, not automation.
+//  6. Delta is recomputed via Black-Scholes directly (not entryRules.ts's
+//     evaluateContract()) for the same reason as #2 — evaluateContract()
+//     expects a live-shaped OptionContract this backtest cannot produce.
+// ---------------------------------------------------------------------------
+
+/** Same fallback used elsewhere in this codebase when no live rate is
+ *  available (optionStrategy.ts's combinedGreeks/probabilityOfProfit). */
+const RISK_FREE_RATE = 0.04;
+
+export interface OptionsBacktestConfig {
+  symbols: string[];
+  /** YYYY-MM-DD, inclusive. */
+  from: string;
+  to: string;
+  riskProfile: RiskProfileName;
+  startingEquity: number;
+  screenerConfig?: Partial<ScreenerConfig>;
+  optionsDecisionConfig?: Partial<OptionsDecisionConfig>;
+}
+
+export interface SimulatedOptionsTrade {
+  symbol: string; // underlying
+  side: OptionsSignalSide;
+  contractTicker: string;
+  strike: number;
+  expiration: string;
+  signalDate: string;
+  entryDate: string;
+  entryPremium: number;
+  exitDate: string;
+  exitPremium: number;
+  exitReason: 'time_exit' | 'expiration' | 'end_of_period';
+  contracts: number;
+  pnl: number;
+  rMultiple: number;
+}
+
+export interface OptionsBacktestReport {
+  trades: SimulatedOptionsTrade[];
+  equityCurve: EquityPoint[];
+  startingEquity: number;
+  finalEquity: number;
+  excludedSymbols: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+  /** Candidates that cleared the equity screen but never got an options
+   *  signal — mirrors optionsDecide.ts's own skip transparency. */
+  skipped: { symbol: string; date: string; reason: string }[];
+}
+
+interface OpenOptionPosition {
+  symbol: string;
+  side: OptionsSignalSide;
+  contractTicker: string;
+  strike: number;
+  expiration: string;
+  signalDate: string;
+  entryDate: string;
+  entryPremium: number;
+  contracts: number;
+  riskAmount: number;
+  notional: number;
+}
+
+interface PendingOptionEntry {
+  symbol: string;
+  side: OptionsSignalSide;
+  contractTicker: string;
+  strike: number;
+  expiration: string;
+  signalDate: string;
+  contracts: number;
+  riskAmount: number;
+  notional: number;
+}
+
+/** The single reference contract for `underlying` as of `asOfDate`: nearest
+ *  strike to `underlyingClose` among contracts whose DTE falls in
+ *  [minDte, maxDte] and whose type matches `side`. Null if none qualify —
+ *  the SAME "no expiration in window" skip reason optionsDecide.ts reports
+ *  live, just evaluated against pre-fetched reference data instead of a live
+ *  chain lookup. */
+function pickReferenceContract(
+  contracts: OptionContractRef[],
+  side: OptionsSignalSide,
+  asOfDate: string,
+  underlyingClose: number,
+  minDte: number,
+  maxDte: number,
+): OptionContractRef | null {
+  const asOf = new Date(`${asOfDate}T00:00:00Z`);
+  let best: OptionContractRef | null = null;
+  for (const c of contracts) {
+    if (c.contractType !== side) continue;
+    const dte = daysToExpiration(c.expiration, asOf);
+    if (dte < minDte || dte > maxDte) continue;
+    if (!best || Math.abs(c.strike - underlyingClose) < Math.abs(best.strike - underlyingClose)) best = c;
+  }
+  return best;
+}
+
+/** The backtest analog of riskCheck.ts's correlatedNotional / backtest.ts's
+ *  own backtestCorrelatedNotional — computed entirely from already-loaded
+ *  EQUITY history (no I/O), since correlation between two options positions
+ *  is evaluated on their UNDERLYINGS' price co-movement, identical math to
+ *  the equity backtest. Duplicated here (not imported) for the same reason
+ *  backtest.ts's own version isn't shared with riskCheck.ts's live one: this
+ *  file's "running positions" are options-shaped, but the correlation
+ *  input/output shape ({symbol, notional}[] -> number) is identical, so the
+ *  underlying math is copied, not reinvented. */
+function optionsBacktestCorrelatedNotional(
+  candidateSymbol: string,
+  asOfMs: number,
+  positions: { symbol: string; notional: number }[],
+  historyBySymbol: Map<string, Candle[]>,
+): number {
+  if (positions.length === 0) return 0;
+  const closesUpTo = (symbol: string): number[] | null => {
+    const candles = historyBySymbol.get(symbol);
+    if (!candles) return null;
+    const idx = indexAsOf(candles, asOfMs);
+    if (idx < 1) return null;
+    const start = Math.max(0, idx - CORRELATION_LOOKBACK_DAYS);
+    return candles.slice(start, idx + 1).map((c) => c.close);
+  };
+
+  const candidateCloses = closesUpTo(candidateSymbol);
+  const candidateReturns = candidateCloses ? dailyReturns(candidateCloses) : null;
+  if (!candidateReturns) return 0;
+
+  let amount = 0;
+  for (const pos of positions) {
+    const posCloses = closesUpTo(pos.symbol);
+    const r = posCloses ? pearsonCorrelation(candidateReturns, dailyReturns(posCloses)) : null;
+    if (r !== null && Math.abs(r) >= CORRELATION_THRESHOLD) amount += pos.notional;
+  }
+  return amount;
+}
+
+/**
+ * Run the options simulation over already-loaded equity history and
+ * pre-fetched contract reference data. Unlike backtest.ts's simulateBacktest
+ * (100% pure/sync — everything it needs is pre-loaded), this is ASYNC: which
+ * contract's price bars are needed depends on the underlying's own price
+ * path as the simulation unfolds, so bars are fetched on demand via
+ * getHistoricalBars() (already cache-or-fetch — a re-run over the same data
+ * is fast) and memoized per contract ticker for the life of this one run.
+ */
+export async function simulateOptionsBacktest(
+  historyBySymbol: Map<string, Candle[]>,
+  contractsBySymbol: Map<string, OptionContractRef[]>,
+  cfg: OptionsBacktestConfig,
+): Promise<OptionsBacktestReport> {
+  const profile: RiskProfileParams = RISK_PROFILES[cfg.riskProfile];
+  const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
+  const direction = cfg.optionsDecisionConfig?.direction ?? 'long';
+  const side: OptionsSignalSide = direction === 'long' ? 'call' : 'put';
+  const entryCfg = { ...defaultAutotradeEntryConfig(side), ...cfg.optionsDecisionConfig?.entryConfig, side };
+
+  const fromMs = Date.parse(`${cfg.from}T00:00:00Z`);
+  const toMs = Date.parse(`${cfg.to}T00:00:00Z`);
+
+  const dateSet = new Set<string>();
+  for (const candles of historyBySymbol.values()) {
+    for (const c of candles) {
+      if (c.time >= fromMs && c.time <= toMs) dateSet.add(toISO(c.time));
+    }
+  }
+  const tradingDays = Array.from(dateSet).sort();
+
+  const barsMemo = new Map<string, Candle[]>();
+  const getContractBars = async (ticker: string): Promise<Candle[]> => {
+    if (!barsMemo.has(ticker)) {
+      const bars = await getHistoricalBars(ticker, 'daily', addDays(cfg.from, -WARMUP_PADDING_DAYS), cfg.to);
+      barsMemo.set(ticker, bars);
+    }
+    return barsMemo.get(ticker)!;
+  };
+
+  const trades: SimulatedOptionsTrade[] = [];
+  const skipped: { symbol: string; date: string; reason: string }[] = [];
+  const equityCurve: EquityPoint[] = [];
+  const closedPnls: number[] = [];
+  let equity = cfg.startingEquity;
+  let openPositions: OpenOptionPosition[] = [];
+  let pendingEntries: PendingOptionEntry[] = [];
+
+  for (const day of tradingDays) {
+    const dayMs = Date.parse(`${day}T00:00:00Z`);
+    let dailyPnl = 0;
+
+    // 1) Fill yesterday's approved signals at today's contract OPEN.
+    let filledToday = 0;
+    const stillPending: PendingOptionEntry[] = [];
+    for (const p of pendingEntries) {
+      const bars = await getContractBars(p.contractTicker);
+      const idx = indexAsOf(bars, dayMs);
+      if (idx >= 0 && bars[idx].time === dayMs) {
+        openPositions.push({
+          symbol: p.symbol,
+          side: p.side,
+          contractTicker: p.contractTicker,
+          strike: p.strike,
+          expiration: p.expiration,
+          signalDate: p.signalDate,
+          entryDate: day,
+          entryPremium: bars[idx].open,
+          contracts: p.contracts,
+          riskAmount: p.riskAmount,
+          notional: p.notional,
+        });
+        filledToday += 1;
+      } else if (idx < 0 || bars[idx].time < dayMs) {
+        stillPending.push(p);
+      }
+      // else: a later bar already passed this date without landing on it exactly — drop (stale).
+    }
+    pendingEntries = stillPending;
+
+    // 2) Check already-open positions for the time-exit trigger. A position
+    // that just filled TODAY (step 1) is deliberately excluded from this
+    // check until the NEXT day — a date-based trigger (unlike a price gap)
+    // can't meaningfully "surprise" a position on its own entry day, and a
+    // contract entered right at the minDaysToExpiration boundary would
+    // otherwise immediately re-trigger the timeExitDaysBeforeExpiry exit the
+    // same day it opened.
+    const stillOpen: OpenOptionPosition[] = [];
+    for (const pos of openPositions) {
+      if (pos.entryDate === day) {
+        stillOpen.push(pos);
+        continue;
+      }
+      const bars = await getContractBars(pos.contractTicker);
+      const idx = indexAsOf(bars, dayMs);
+      const bar = idx >= 0 && bars[idx].time === dayMs ? bars[idx] : null;
+      if (!bar) {
+        stillOpen.push(pos);
+        continue;
+      }
+      const dte = daysToExpiration(pos.expiration, new Date(dayMs));
+      if (dte <= (entryCfg.minDaysToExpiration ?? 7) || dte <= 0) {
+        const exitPremium = bar.close;
+        const pnl = (exitPremium - pos.entryPremium) * pos.contracts * 100;
+        trades.push({
+          symbol: pos.symbol,
+          side: pos.side,
+          contractTicker: pos.contractTicker,
+          strike: pos.strike,
+          expiration: pos.expiration,
+          signalDate: pos.signalDate,
+          entryDate: pos.entryDate,
+          entryPremium: pos.entryPremium,
+          exitDate: day,
+          exitPremium,
+          exitReason: dte <= 0 ? 'expiration' : 'time_exit',
+          contracts: pos.contracts,
+          pnl,
+          rMultiple: pos.riskAmount > 0 ? pnl / pos.riskAmount : 0,
+        });
+        closedPnls.push(pnl);
+        dailyPnl += pnl;
+        equity += pnl;
+      } else {
+        stillOpen.push(pos);
+      }
+    }
+    openPositions = stillOpen;
+
+    // 3) Screen equity candidates through today's close (the SAME gate
+    // optionsDecide.ts's live path sits behind — an options signal only
+    // ever considers a candidate the equity screener already approved).
+    const streak = computeStreaksAndDrawdown(closedPnls).currentStreak;
+    const consecutiveLosses = streak.type === 'loss' ? streak.count : 0;
+    const openSymbols = new Set([...openPositions.map((p) => p.symbol), ...pendingEntries.map((p) => p.symbol)]);
+
+    const candidates: { symbol: string; total: number; underlyingClose: number; history: Candle[] }[] = [];
+    for (const [symbol, candles] of historyBySymbol) {
+      if (openSymbols.has(symbol)) continue;
+      const idx = indexAsOf(candles, dayMs);
+      if (idx < 1 || candles[idx].time !== dayMs) continue;
+      const history = candles.slice(0, idx + 1);
+      const score = scoreSymbol(symbol, history, undefined, screenerCfg);
+      if (!score.passedFilters) continue;
+      candidates.push({ symbol, total: score.total, underlyingClose: candles[idx].close, history });
+    }
+    candidates.sort((a, b) => b.total - a.total || a.symbol.localeCompare(b.symbol));
+
+    let runningRisk = openPositions.reduce((s, p) => s + p.riskAmount, 0);
+    let runningCount = openPositions.length;
+    const runningPositions: { symbol: string; notional: number }[] = openPositions.map((p) => ({
+      symbol: p.symbol,
+      notional: p.notional,
+    }));
+
+    for (const candidate of candidates) {
+      const contracts = contractsBySymbol.get(candidate.symbol) ?? [];
+      const ref = pickReferenceContract(
+        contracts,
+        side,
+        day,
+        candidate.underlyingClose,
+        entryCfg.minDaysToExpiration ?? 7,
+        entryCfg.maxDaysToExpiration ?? 60,
+      );
+      if (!ref) {
+        skipped.push({ symbol: candidate.symbol, date: day, reason: 'No contract within the configured DTE window' });
+        continue;
+      }
+
+      const bars = await getContractBars(ref.ticker);
+      const idx = indexAsOf(bars, dayMs);
+      const bar = idx >= 0 && bars[idx].time === dayMs ? bars[idx] : null;
+      if (!bar) {
+        skipped.push({
+          symbol: candidate.symbol,
+          date: day,
+          reason: 'No historical price for the reference contract on this day',
+        });
+        continue;
+      }
+      if (bar.volume < entryCfg.minVolume) {
+        skipped.push({
+          symbol: candidate.symbol,
+          date: day,
+          reason: `Volume ${bar.volume} below minVolume ${entryCfg.minVolume}`,
+        });
+        continue;
+      }
+
+      const T = yearsToExpiration(ref.expiration, new Date(dayMs));
+      const iv = impliedVol({
+        type: side,
+        marketPrice: bar.close,
+        S: candidate.underlyingClose,
+        K: ref.strike,
+        T,
+        r: RISK_FREE_RATE,
+      });
+      if (iv === undefined) {
+        skipped.push({
+          symbol: candidate.symbol,
+          date: day,
+          reason: 'Implied vol could not be solved from the historical price',
+        });
+        continue;
+      }
+
+      // hv-estimate fallback only (empty real history) — see file header, scope reduction #4.
+      const ivContext = computeIvContext(iv, [], candidate.history);
+      if (ivContext.ivRank === null) {
+        skipped.push({
+          symbol: candidate.symbol,
+          date: day,
+          reason: 'Insufficient underlying price history to estimate IV rank',
+        });
+        continue;
+      }
+      if (entryCfg.ivRankMax !== undefined && ivContext.ivRank > entryCfg.ivRankMax) {
+        skipped.push({
+          symbol: candidate.symbol,
+          date: day,
+          reason: `IV rank ${ivContext.ivRank.toFixed(0)} above ivRankMax ${entryCfg.ivRankMax}`,
+        });
+        continue;
+      }
+
+      const delta = bsGreeks({
+        type: side,
+        S: candidate.underlyingClose,
+        K: ref.strike,
+        T,
+        r: RISK_FREE_RATE,
+        sigma: iv,
+      }).delta;
+      const absDelta = Math.abs(delta);
+      if (absDelta < entryCfg.deltaMin || absDelta > entryCfg.deltaMax) {
+        skipped.push({
+          symbol: candidate.symbol,
+          date: day,
+          reason: `|delta| ${absDelta.toFixed(2)} outside [${entryCfg.deltaMin}, ${entryCfg.deltaMax}]`,
+        });
+        continue;
+      }
+
+      const correlated = optionsBacktestCorrelatedNotional(candidate.symbol, dayMs, runningPositions, historyBySymbol);
+      const ctx: RiskCheckContext = {
+        equity,
+        dailyPnl,
+        tradesToday: filledToday,
+        consecutiveLosses,
+        openRisk: runningRisk,
+        openPositionsCount: runningCount,
+        correlatedNotional: correlated,
+      };
+      const result: RiskCheckResult = evaluateOptionsRiskCheck(
+        {
+          symbol: candidate.symbol,
+          side,
+          contractSymbol: ref.ticker,
+          strike: ref.strike,
+          expiration: ref.expiration,
+          dte: T * 365,
+          premium: bar.close,
+          delta,
+          ivRank: ivContext.ivRank,
+          maxLossPerContract: bar.close * 100,
+          rationale: `Backtest reference contract ${ref.ticker}`,
+          score: candidate.total,
+        },
+        ctx,
+        profile,
+      );
+      if (!result.ok) {
+        skipped.push({
+          symbol: candidate.symbol,
+          date: day,
+          reason: `Risk check blocked: ${result.checks.find((c) => !c.passed)?.rule}`,
+        });
+        continue;
+      }
+
+      pendingEntries.push({
+        symbol: candidate.symbol,
+        side,
+        contractTicker: ref.ticker,
+        strike: ref.strike,
+        expiration: ref.expiration,
+        signalDate: day,
+        contracts: result.sizing.suggestedQuantity,
+        riskAmount: result.approvedRiskAmount,
+        notional: result.approvedNotional,
+      });
+      runningRisk += result.approvedRiskAmount;
+      runningCount += 1;
+      runningPositions.push({ symbol: candidate.symbol, notional: result.approvedNotional });
+    }
+
+    equityCurve.push({ date: day, equity });
+  }
+
+  // Force-close anything still open at period end.
+  for (const pos of openPositions) {
+    const bars = await getContractBars(pos.contractTicker);
+    const last = bars.length ? bars[bars.length - 1] : null;
+    const exitPremium = last?.close ?? pos.entryPremium;
+    const pnl = (exitPremium - pos.entryPremium) * pos.contracts * 100;
+    trades.push({
+      symbol: pos.symbol,
+      side: pos.side,
+      contractTicker: pos.contractTicker,
+      strike: pos.strike,
+      expiration: pos.expiration,
+      signalDate: pos.signalDate,
+      entryDate: pos.entryDate,
+      entryPremium: pos.entryPremium,
+      exitDate: cfg.to,
+      exitPremium,
+      exitReason: 'end_of_period',
+      contracts: pos.contracts,
+      pnl,
+      rMultiple: pos.riskAmount > 0 ? pnl / pos.riskAmount : 0,
+    });
+    equity += pnl;
+  }
+  if (openPositions.length && equityCurve.length) {
+    equityCurve[equityCurve.length - 1] = { date: equityCurve[equityCurve.length - 1].date, equity };
+  }
+
+  return {
+    trades,
+    equityCurve,
+    startingEquity: cfg.startingEquity,
+    finalEquity: equity,
+    excludedSymbols: [],
+    errors: [],
+    skipped,
+  };
+}
+
+/**
+ * Full options backtest: reuse the equity backtest's real-estate pre-filter
+ * and historical-bar fetch (loadBacktestHistory), then fetch (or reuse
+ * cached) each eligible underlying's option contract reference data for the
+ * whole [from, to] span padded by the entry config's own maxDaysToExpiration
+ * (so a contract expiring shortly after `to` — a legitimate entry near the
+ * end of the window — is still discoverable), then simulate.
+ */
+export async function runOptionsBacktest(cfg: OptionsBacktestConfig): Promise<OptionsBacktestReport> {
+  const { historyBySymbol, excludedSymbols, errors } = await loadBacktestHistory(cfg.symbols, cfg.from, cfg.to);
+  const maxDte = defaultAutotradeEntryConfig('call').maxDaysToExpiration ?? 60;
+  const contractsBySymbol = new Map<string, OptionContractRef[]>();
+  for (const symbol of historyBySymbol.keys()) {
+    const contracts = await getHistoricalOptionContracts(symbol, cfg.from, addDays(cfg.to, maxDte));
+    contractsBySymbol.set(symbol, contracts);
+  }
+  const report = await simulateOptionsBacktest(historyBySymbol, contractsBySymbol, cfg);
+  return { ...report, excludedSymbols, errors };
+}
+
+export interface OptionsWalkForwardConfig extends OptionsBacktestConfig {
+  /** YYYY-MM-DD — same in-sample [from, splitDate] / out-of-sample
+   *  (splitDate, to] split as equities' own walk-forward gate. */
+  splitDate: string;
+}
+
+export interface OptionsWalkForwardReport {
+  inSample: OptionsBacktestReport;
+  outOfSample: OptionsBacktestReport;
+  excludedSymbols: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+}
+
+/** The same validation-gate structure as equities' runWalkForwardBacktest:
+ *  history and contract data fetched ONCE, replayed independently over two
+ *  windows both starting from the same startingEquity, so their stats are
+ *  directly comparable. */
+export async function runOptionsWalkForwardBacktest(cfg: OptionsWalkForwardConfig): Promise<OptionsWalkForwardReport> {
+  const { historyBySymbol, excludedSymbols, errors } = await loadBacktestHistory(cfg.symbols, cfg.from, cfg.to);
+  const maxDte = defaultAutotradeEntryConfig('call').maxDaysToExpiration ?? 60;
+  const contractsBySymbol = new Map<string, OptionContractRef[]>();
+  for (const symbol of historyBySymbol.keys()) {
+    const contracts = await getHistoricalOptionContracts(symbol, cfg.from, addDays(cfg.to, maxDte));
+    contractsBySymbol.set(symbol, contracts);
+  }
+  const outOfSampleFrom = addDays(cfg.splitDate, 1);
+  const inSample = await simulateOptionsBacktest(historyBySymbol, contractsBySymbol, {
+    ...cfg,
+    from: cfg.from,
+    to: cfg.splitDate,
+  });
+  const outOfSample = await simulateOptionsBacktest(historyBySymbol, contractsBySymbol, {
+    ...cfg,
+    from: outOfSampleFrom,
+    to: cfg.to,
+  });
+  return { inSample, outOfSample, excludedSymbols, errors };
+}
