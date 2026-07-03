@@ -1217,6 +1217,64 @@ export interface WalkForwardRequest extends BacktestRequest {
   splitDate: string;
 }
 
+// --- Phase 11: options backtest ---
+
+export interface SimulatedOptionsTrade {
+  symbol: string; // underlying
+  side: AutotradeOptionsSignalSide;
+  contractTicker: string;
+  strike: number;
+  expiration: string;
+  signalDate: string;
+  entryDate: string;
+  entryPremium: number;
+  exitDate: string;
+  exitPremium: number;
+  exitReason: 'time_exit' | 'expiration' | 'end_of_period';
+  contracts: number;
+  pnl: number;
+  rMultiple: number;
+}
+
+export interface OptionsBacktestReport {
+  trades: SimulatedOptionsTrade[];
+  equityCurve: BacktestEquityPoint[];
+  startingEquity: number;
+  finalEquity: number;
+  excludedSymbols: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+  /** Candidates that cleared the equity screen but never got an options signal. */
+  skipped: { symbol: string; date: string; reason: string }[];
+}
+
+// BacktestStats is reused as-is (not a new OptionsBacktestStats type) — every
+// field it has (win rate, expectancy, profit factor, R-multiple stats,
+// drawdown/streaks) is already 100% asset-type-blind, matching the server's
+// own computeBacktestStats() reuse (services/autotrading/backtest.ts).
+export interface OptionsBacktestRunResponse {
+  report: OptionsBacktestReport;
+  stats: BacktestStats;
+}
+
+export interface OptionsWalkForwardResponse {
+  inSample: OptionsBacktestRunResponse;
+  outOfSample: OptionsBacktestRunResponse;
+  excludedSymbols: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+}
+
+export interface OptionsBacktestRequest {
+  symbols: string[];
+  from: string;
+  to: string;
+  riskProfile: AutotradeRiskProfile;
+  startingEquity: number;
+}
+
+export interface OptionsWalkForwardRequest extends OptionsBacktestRequest {
+  splitDate: string;
+}
+
 // --- Phase 6: paper execution loop ---
 
 export type PaperExitReason = 'stop' | 'target' | 'manual';

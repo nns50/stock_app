@@ -27,7 +27,10 @@ import type {
   BacktestRunResponse,
   BacktestStats,
   LoopTickSummary,
+  OptionsBacktestRunResponse,
+  OptionsWalkForwardResponse,
   PaperPosition,
+  SimulatedOptionsTrade,
   SimulatedTrade,
   WalkForwardResponse,
 } from '../api/types';
@@ -221,6 +224,83 @@ function BacktestTradesTable({ trades }: { trades: SimulatedTrade[] }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function OptionsBacktestTradesTable({ trades }: { trades: SimulatedOptionsTrade[] }) {
+  if (trades.length === 0) return <p className="text-xs text-slate-500">No trades in this window.</p>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead className="border-b border-ink-600/60">
+          <tr>
+            <th className="th">Symbol</th>
+            <th className="th">Contract</th>
+            <th className="th">Entry</th>
+            <th className="th text-right">Entry $</th>
+            <th className="th">Exit</th>
+            <th className="th text-right">Exit $</th>
+            <th className="th">Reason</th>
+            <th className="th text-right">Contracts</th>
+            <th className="th text-right">P&amp;L</th>
+            <th className="th text-right">R</th>
+          </tr>
+        </thead>
+        <tbody>
+          {trades.map((t, i) => (
+            <tr key={`${t.symbol}-${t.entryDate}-${i}`} className="border-b border-ink-700/50">
+              <td className="td font-semibold">{t.symbol}</td>
+              <td className="td">
+                <Badge color={t.side === 'call' ? 'green' : 'red'}>
+                  {t.side} {t.strike}
+                </Badge>{' '}
+                <span className="text-[11px] text-slate-500">{fmtDate(t.expiration)}</span>
+              </td>
+              <td className="td text-slate-400">{fmtDate(t.entryDate)}</td>
+              <td className="td text-right tabular-nums">{fmtUsd(t.entryPremium)}</td>
+              <td className="td text-slate-400">{fmtDate(t.exitDate)}</td>
+              <td className="td text-right tabular-nums">{fmtUsd(t.exitPremium)}</td>
+              <td className="td">
+                <Badge color={t.exitReason === 'end_of_period' ? 'slate' : 'blue'}>
+                  {t.exitReason.replace('_', ' ')}
+                </Badge>
+              </td>
+              <td className="td text-right tabular-nums">{t.contracts}</td>
+              <td className={cx('td text-right tabular-nums', t.pnl >= 0 ? 'text-bull' : 'text-bear')}>
+                {fmtSignedUsd(t.pnl)}
+              </td>
+              <td className={cx('td text-right tabular-nums', t.rMultiple >= 0 ? 'text-bull' : 'text-bear')}>
+                {fmtNum(t.rMultiple)}R
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function OptionsBacktestWindowResult({
+  title,
+  hint,
+  run,
+  gradientId,
+}: {
+  title: string;
+  hint: string;
+  run: OptionsBacktestRunResponse;
+  gradientId: string;
+}) {
+  return (
+    <div className="space-y-3">
+      <div>
+        <h4 className="text-xs uppercase tracking-wide text-slate-400">{title}</h4>
+        <p className="text-[11px] text-slate-500">{hint}</p>
+      </div>
+      <BacktestStatsGrid stats={run.stats} />
+      <BacktestEquityChart equityCurve={run.report.equityCurve} gradientId={gradientId} />
+      <OptionsBacktestTradesTable trades={run.report.trades} />
     </div>
   );
 }
@@ -966,6 +1046,50 @@ export default function AutoTradePage() {
     }
   };
 
+  const [optBtBusy, setOptBtBusy] = useState(false);
+  const [optBtErr, setOptBtErr] = useState<string>();
+  const [optBtResult, setOptBtResult] = useState<OptionsBacktestRunResponse>();
+  const [optBtWfResult, setOptBtWfResult] = useState<OptionsWalkForwardResponse>();
+
+  // Same form fields as the equity backtest above (symbols/from/to/splitDate/
+  // riskProfile/equity) — a human comparing the two overlays wants to run
+  // both against the identical window, not fill out a second form.
+  const runOptionsBacktest = async () => {
+    const symbols = Array.from(
+      new Set(
+        btSymbols
+          .split(',')
+          .map((s) => s.trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    );
+    if (!symbols.length) {
+      setOptBtErr('Enter at least one symbol');
+      return;
+    }
+    if (!btFrom || !btTo || !btEquity) {
+      setOptBtErr('From, to, and starting equity are required');
+      return;
+    }
+    setOptBtBusy(true);
+    setOptBtErr(undefined);
+    setOptBtResult(undefined);
+    setOptBtWfResult(undefined);
+    setBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
+    try {
+      const body = { symbols, from: btFrom, to: btTo, riskProfile: btRiskProfile, startingEquity: btEquity };
+      if (btSplitDate) {
+        setOptBtWfResult(await client.runOptionsWalkForward({ ...body, splitDate: btSplitDate }));
+      } else {
+        setOptBtResult(await client.runOptionsBacktest(body));
+      }
+    } catch (e) {
+      setOptBtErr((e as Error).message || 'Options backtest failed');
+    } finally {
+      setOptBtBusy(false);
+    }
+  };
+
   const [loopBusy, setLoopBusy] = useState(false);
   const [loopSummary, setLoopSummary] = useState<LoopTickSummary>();
   const [loopErr, setLoopErr] = useState<string>();
@@ -1412,7 +1536,9 @@ export default function AutoTradePage() {
           live loop uses — the validation gate docs/AUTOTRADING_SPEC.md requires before any paper or live trading. Leave
           &quot;Out-of-sample split&quot; blank for a single-window backtest, or set it to split the run into in-sample
           vs out-of-sample windows (a strategy that only performs in-sample should look weak or negative out-of-sample).
-          Read-only — nothing here places an order.
+          &quot;Run options backtest&quot; replays the same window through the options overlay instead (single-leg long
+          calls/puts only, gated by the same equity screen) — a separate, independent run, not combined with the equity
+          book above. Read-only — nothing here places an order.
         </p>
         <div className="grid sm:grid-cols-3 gap-3 items-end mb-3">
           <div className="sm:col-span-3">
@@ -1447,9 +1573,19 @@ export default function AutoTradePage() {
           <Field label="Starting equity ($)">
             <NumberInput value={btEquity} onChange={setBtEquity} placeholder="e.g. 100000" />
           </Field>
-          <button className="btn-primary" onClick={runBacktest} disabled={btBusy}>
-            {btBusy ? 'Running…' : btSplitDate ? 'Run walk-forward' : 'Run backtest'}
-          </button>
+          <div className="flex gap-2">
+            <button className="btn-primary" onClick={runBacktest} disabled={btBusy}>
+              {btBusy ? 'Running…' : btSplitDate ? 'Run walk-forward' : 'Run backtest'}
+            </button>
+            <button
+              className="btn-ghost"
+              onClick={runOptionsBacktest}
+              disabled={optBtBusy}
+              title="Replays the same window through the options overlay (phases 9-11) instead of the equity strategy."
+            >
+              {optBtBusy ? 'Running…' : btSplitDate ? 'Run options walk-forward' : 'Run options backtest'}
+            </button>
+          </div>
         </div>
         {btErr && <div className="text-bear text-sm mb-2">{btErr}</div>}
         {btResult && (
@@ -1494,6 +1630,54 @@ export default function AutoTradePage() {
               hint="Unseen data — this is the number that matters for the validation gate."
               run={btWfResult.outOfSample}
               gradientId="btEquityOut"
+            />
+          </div>
+        )}
+        {optBtErr && <div className="text-bear text-sm mb-2">{optBtErr}</div>}
+        {optBtResult && (
+          <div className="space-y-3">
+            <h4 className="text-xs uppercase tracking-wide text-slate-400">Options overlay</h4>
+            {optBtResult.report.excludedSymbols.length > 0 && (
+              <p className="text-[11px] text-slate-500">
+                Excluded (real estate): {optBtResult.report.excludedSymbols.map((e) => e.symbol).join(', ')}
+              </p>
+            )}
+            {optBtResult.report.errors.length > 0 && (
+              <p className="text-[11px] text-bear">
+                Couldn&apos;t fetch data — excluded from this run:{' '}
+                {optBtResult.report.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
+              </p>
+            )}
+            <BacktestStatsGrid stats={optBtResult.stats} />
+            <BacktestEquityChart equityCurve={optBtResult.report.equityCurve} gradientId="optBtEquityPlain" />
+            <OptionsBacktestTradesTable trades={optBtResult.report.trades} />
+          </div>
+        )}
+        {optBtWfResult && btSubmitted && (
+          <div className="space-y-5">
+            <h4 className="text-xs uppercase tracking-wide text-slate-400">Options overlay</h4>
+            {optBtWfResult.excludedSymbols.length > 0 && (
+              <p className="text-[11px] text-slate-500">
+                Excluded (real estate): {optBtWfResult.excludedSymbols.map((e) => e.symbol).join(', ')}
+              </p>
+            )}
+            {optBtWfResult.errors.length > 0 && (
+              <p className="text-[11px] text-bear">
+                Couldn&apos;t fetch data — excluded from this run:{' '}
+                {optBtWfResult.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
+              </p>
+            )}
+            <OptionsBacktestWindowResult
+              title={`In-sample (${btSubmitted.from} → ${btSubmitted.splitDate})`}
+              hint="The tuning window — strong performance here alone proves nothing."
+              run={optBtWfResult.inSample}
+              gradientId="optBtEquityIn"
+            />
+            <OptionsBacktestWindowResult
+              title={`Out-of-sample (${btSubmitted.splitDate} → ${btSubmitted.to})`}
+              hint="Unseen data — this is the number that matters for the validation gate."
+              run={optBtWfResult.outOfSample}
+              gradientId="optBtEquityOut"
             />
           </div>
         )}

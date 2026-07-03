@@ -968,22 +968,71 @@ on its own timeline regardless of this options work.
     there is no options EXECUTION path yet (phase 12) for it to gate; mirrors how equity's
     OWN risk-check started (phase 4, preview-only) before phase 6 gave it a real
     paper-execution consumer.
-11. **Options backtesting — proposed, next up.** Extend or add a sibling to
-    `polygonClient.ts` for options price aggregates/chains, extend the
-    `backtest_bars`-style cache for options-shaped data (strike/expiration/right), and
-    extend `simulateBacktest()` to replay phases 9-10's entry/exit/sizing logic exactly
-    as shipped — mirroring how equities' phase 5 reused phases 2-4's real functions
-    rather than a parallel implementation, so the backtest can't silently drift from what
-    the live loop actually does. Per the confirmed data-source finding above: IV/Greeks
-    are computed from historical option + underlying price bars via the existing
-    `blackScholes.ts`, not ingested from a packaged feed (none exists at any tier); the
-    open-interest filter is skipped during backtesting (documented gap, still enforced
-    live) since historical OI isn't available at any tier either. Must clear the same
-    walk-forward in-sample/out-of-sample gate as equities before phase 12 is allowed to
-    run — no shortcut for options just because more of the underlying math already
-    exists in this codebase.
+11. **Options backtesting — shipped.** Given the scope (a new contract-discovery data
+    layer, deriving IV/Greeks from historical prices, and a day-by-day simulator reusing
+    phases 9-10's real functions), this was built in four independently-mergeable steps,
+    mirroring how equities' own phase 5 was constructed:
+    - **Step A — data layer.** `services/autotrading/polygonOptionsClient.ts`
+      (`fetchPolygonOptionContracts()`, a sibling to `polygonClient.ts` — Polygon's
+      `/v3/reference/options/contracts` endpoint, which contracts existed for an
+      underlying by expiration range) plus `db/backtestOptionContracts.ts` (a
+      `backtest_bars`-style cache-and-fetch-log, keyed by expiration range instead of a
+      trading-day range). A contract's own PRICE history needed **no new code at
+      all** — `historicalData.ts`'s existing `getHistoricalBars()` is reused completely
+      unchanged, since Polygon's Aggregates endpoint is ticker-format-agnostic (an
+      OCC-style options ticker works there exactly like a stock symbol).
+    - **Step B — the simulation engine.** `services/autotrading/optionsBacktest.ts`'s
+      `simulateOptionsBacktest()` replays phases 9-10's entry/sizing logic day-by-day —
+      the same `evaluateOptionsRiskCheck()` (phase 10) gates every candidate, and the
+      same `entryRules.ts` threshold values (`defaultAutotradeEntryConfig()`, phase 9)
+      define a qualifying contract, not new numbers guessed for this phase. Unlike
+      equities' pure/sync `simulateBacktest()`, this is **async**: which contract's price
+      bars are needed depends on the underlying's own price path as the simulation
+      unfolds, so bars are fetched on demand (already cache-or-fetch) and memoized per
+      contract for the run. `backtest.ts` itself needed only purely-additive changes
+      (`export` on already-existing internals it needed to reuse, plus widening
+      `computeBacktestStats()`'s parameter type to a structural subset it already
+      satisfied) — zero behavior change to the existing, heavily-tested equity backtest.
+    - **Step C — routes.** `POST /api/autotrade/backtest-options` and
+      `.../backtest-options/walk-forward`, mirroring the equity routes' exact validation
+      and response shape.
+    - **Step D — UI.** A second button ("Run options backtest" / "Run options
+      walk-forward") on the existing Backtest & walk-forward card, reusing the same
+      symbols/dates/profile/equity form — a human comparing the two overlays wants to run
+      both against the identical window, not fill out a second form. Renders as an
+      independent result section (own stats grid, equity curve, and a
+      contract/strike/expiration-shaped trades table) below the equity results, reusing
+      `BacktestStatsGrid`/`BacktestEquityChart` unchanged (already 100% asset-type-blind).
+
+    **Six deliberate, documented scope reductions** (in the file's own header comment,
+    mirroring phase 9's own "first cut" framing, not silent shortcuts): (1) an
+    independent backtest, not combined with a concurrent equity backtest's risk in the
+    same run — `evaluateOptionsRiskCheck()` is reused verbatim, just with no equity
+    approvals to combine with this run, the same posture phase 4's risk-check had before
+    phase 6 gave it a concurrent execution consumer; (2) exactly one reference contract
+    (nearest-to-spot strike, in the confirmed DTE window) is considered per underlying
+    per day, not a full multi-strike scan via `scanEntries()` — that function's bid/ask
+    spread check is unconditional (no config can disable it) and would reject 100% of
+    backtested candidates outright, since no tier has historical bid/ask data; (3) open
+    interest and bid-ask spread are skipped (the already-confirmed backtest gap); volume,
+    delta band, DTE window, and IV-rank ceiling are still enforced; (4) IV rank always
+    uses `computeIvContext()`'s hv-estimate (realized-vol) fallback — the same proxy the
+    human Options page already uses live — rather than a genuinely-derived historical
+    options-IV series (the day's own implied vol is still real and Black-Scholes-derived
+    from that day's actual historical option price; only the ranking methodology falls
+    back to the cruder proxy; live/paper is unchanged, still failing closed without 15
+    real samples exactly as phase 9 shipped it); (5) exit is time-based only
+    (`timeExitDaysBeforeExpiry`), matching phase 12's own already-scoped close-only
+    automated-exit design, not the human page's fuller stop-loss/take-profit/delta-drift
+    default (which is for manual review, not automation); (6) delta is recomputed via
+    Black-Scholes directly, not `entryRules.ts`'s `evaluateContract()`, for the same
+    reason as (2).
 12. **Options paper execution & expiration management — proposed, blocked on phase 11
-    clearing the validation gate.** Extends the paper loop the same structurally-
+    actually clearing the validation gate.** Phase 11's harness is built and shipped, but
+    "clearing the gate" means a human runs it against real data and judges the
+    in-sample/out-of-sample results as sound enough to build on — the same bar equities'
+    own phase 5 → 6 transition required, not just "the code exists." Extends the paper
+    loop the same structurally-
     incapable-of-a-real-order way phase 6 built for equities — a new options-shaped paper
     position table, never touching the live Webull pipeline. Wires `evaluateExit()`'s
     existing `timeExitDaysBeforeExpiry` trigger (`exitRules.ts`, today only a human-facing

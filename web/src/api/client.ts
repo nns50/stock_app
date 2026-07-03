@@ -79,6 +79,10 @@ import type {
   BacktestRunResponse,
   WalkForwardRequest,
   WalkForwardResponse,
+  OptionsBacktestRequest,
+  OptionsBacktestRunResponse,
+  OptionsWalkForwardRequest,
+  OptionsWalkForwardResponse,
   LoopTickSummary,
   PaperPosition,
   AutotradeDashboard,
@@ -439,6 +443,10 @@ export const client = {
   runAutotradeBacktest: (body: BacktestRequest) => api<BacktestRunResponse>('/autotrade/backtest', post(body)),
   runAutotradeWalkForward: (body: WalkForwardRequest) =>
     api<WalkForwardResponse>('/autotrade/backtest/walk-forward', post(body)),
+  runOptionsBacktest: (body: OptionsBacktestRequest) =>
+    api<OptionsBacktestRunResponse>('/autotrade/backtest-options', post(body)),
+  runOptionsWalkForward: (body: OptionsWalkForwardRequest) =>
+    api<OptionsWalkForwardResponse>('/autotrade/backtest-options/walk-forward', post(body)),
   runAutotradeLoopOnce: () => api<LoopTickSummary>('/autotrade/loop/run-once', post({})),
   autotradePaperPositions: (params: { status?: 'open' | 'closed'; symbol?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams(params as Record<string, string>).toString();

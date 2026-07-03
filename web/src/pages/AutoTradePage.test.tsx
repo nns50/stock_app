@@ -12,6 +12,7 @@ import type {
   AutotradeRiskCheckResult,
   BacktestRunResponse,
   LoopTickSummary,
+  OptionsBacktestRunResponse,
   PaperPosition,
   WalkForwardResponse,
 } from '../api/types';
@@ -652,6 +653,74 @@ describe('AutoTradePage', () => {
     expect(await screen.findByText(/BAD1 \(Polygon 429: rate limited\)/)).toBeInTheDocument();
     // The rest of the report still renders — one bad symbol doesn't blank the page.
     expect(screen.getByText('target')).toBeInTheDocument();
+  });
+
+  it('runs a plain options backtest and renders stats + the options trade', async () => {
+    const optResult: OptionsBacktestRunResponse = {
+      report: {
+        trades: [
+          {
+            symbol: 'AAPL',
+            side: 'call',
+            contractTicker: 'O:AAPL240315C00210000',
+            strike: 210,
+            expiration: '2024-03-15',
+            signalDate: '2024-01-01',
+            entryDate: '2024-01-02',
+            entryPremium: 4,
+            exitDate: '2024-01-10',
+            exitPremium: 6,
+            exitReason: 'time_exit',
+            contracts: 3,
+            pnl: 600,
+            rMultiple: 0.5,
+          },
+        ],
+        equityCurve: [
+          { date: '2024-01-02', equity: 100_000 },
+          { date: '2024-01-10', equity: 100_600 },
+        ],
+        startingEquity: 100_000,
+        finalEquity: 100_600,
+        excludedSymbols: [],
+        errors: [],
+        skipped: [],
+      },
+      stats: {
+        totalTrades: 1,
+        wins: 1,
+        losses: 0,
+        winRate: 100,
+        avgWin: 600,
+        avgLoss: 0,
+        expectancy: 600,
+        profitFactor: null,
+        totalPnl: 600,
+        returnPct: 0.6,
+        avgR: 0.5,
+        bestR: 0.5,
+        worstR: 0.5,
+        maxDrawdown: 0,
+        longestWinStreak: 1,
+        longestLossStreak: 0,
+      },
+    };
+    const run = vi.spyOn(client, 'runOptionsBacktest').mockResolvedValue(optResult);
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Run options backtest' }));
+
+    await waitFor(() =>
+      expect(run).toHaveBeenCalledWith(
+        expect.objectContaining({ symbols: ['AAPL'], riskProfile: 'MODERATE', startingEquity: 100_000 }),
+      ),
+    );
+    expect(await screen.findByText('time exit')).toBeInTheDocument();
+    expect(screen.getByText('call 210')).toBeInTheDocument();
+    expect(screen.getByText('3')).toBeInTheDocument(); // contracts
+    expect(screen.getAllByText('+$600.00').length).toBeGreaterThan(0); // expectancy stat + trade pnl
   });
 
   function paperPosition(overrides: Partial<PaperPosition> = {}): PaperPosition {
