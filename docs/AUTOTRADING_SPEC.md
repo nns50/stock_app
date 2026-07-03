@@ -2,10 +2,11 @@
 
 **Status: phases 1-8 shipped and running — equities screening, decision, risk engine,
 backtesting, paper execution, monitoring/kill-switch, and the live-trading gate are all
-built and have each cleared adversarial review.** An options-trading addition has since
-been scoped against this codebase (phases 9-13 in the roadmap below); the data source and
-remaining design defaults are now confirmed (see "Resolved decisions" below) and
-implementation is approved, starting with phase 9. This is the reference spec for adding a fully
+built and have each cleared adversarial review.** An options-trading addition (phases
+9-13) has since been scoped and approved against this codebase; phases 9-12 (screening &
+decision, risk engine & combined budget, backtesting, and paper execution & expiration
+management) are now shipped too. Phase 13 (options monitoring) is next up. This is the
+reference spec for adding a fully
 **autonomous** execution loop (screen → decide → risk-check → place orders) to the app.
 
 This is a different capability from the existing live-trading feature described in
@@ -1027,20 +1028,48 @@ on its own timeline regardless of this options work.
     default (which is for manual review, not automation); (6) delta is recomputed via
     Black-Scholes directly, not `entryRules.ts`'s `evaluateContract()`, for the same
     reason as (2).
-12. **Options paper execution & expiration management — proposed, blocked on phase 11
-    actually clearing the validation gate.** Phase 11's harness is built and shipped, but
-    "clearing the gate" means a human runs it against real data and judges the
-    in-sample/out-of-sample results as sound enough to build on — the same bar equities'
-    own phase 5 → 6 transition required, not just "the code exists." Extends the paper
-    loop the same structurally-
-    incapable-of-a-real-order way phase 6 built for equities — a new options-shaped paper
-    position table, never touching the live Webull pipeline. Wires `evaluateExit()`'s
-    existing `timeExitDaysBeforeExpiry` trigger (`exitRules.ts`, today only a human-facing
-    alert via `services/positionExits.ts`) to actually close the paper position
-    automatically — implementing "I do not want the automated system holding options
-    through expiration." Close-only, per the confirmed default above — no roll logic in
-    this phase. Underlying real-estate exclusion applies identically, inherited from
-    whatever the underlying already cleared at Screen.
+12. **Options paper execution & expiration management — shipped.** Cleared for
+    implementation after the user confirmed (2026-07-03) they had reviewed phase 11's
+    options backtest/walk-forward against real data and judged the results sound enough
+    to build on — the same bar equities' own phase 5 → 6 transition required, not just
+    "the code exists." Built in four independently-mergeable steps, mirroring phases 6 and
+    11's own structure:
+    - **Step A — data layer.** `db/autotradeOptionsPaperPositions.ts` and a new
+      `autotrade_options_paper_positions` table — a deliberate PARALLEL table/module to
+      `autotradePaperPositions.ts`, not a shared/unioned one, since a long option position
+      is identified by contract (strike/expiration/side), not a buy/sell direction +
+      stop/target price.
+    - **Step B — execution service.** `services/autotrading/optionsExecute.ts`:
+      `attemptOptionsPaperEntry()` fills at a freshly-fetched contract mark (never the
+      signal's own screening-time premium), `checkOptionsPaperExits()` wires ONLY
+      `exitRules.ts`'s `timeExitDaysBeforeExpiry` trigger — implementing "I do not want
+      the automated system holding options through expiration," close-only per the
+      confirmed default, no roll logic — and `runOptionsPaperExecution()` risk-checks a
+      batch via `evaluateOptionsRiskCheck()` (phase 10). The phase 10 combined budget is
+      made REAL here, not just preview: `execute.ts`'s `runPaperExecution()` gained an
+      optional, default-safe `PaperPortfolioSeed` parameter so options' pre-existing risk
+      folds into equity's own batch, and `runOptionsPaperExecution()` reads `execute.ts`'s
+      `getPaperPortfolioSnapshot()` directly (a one-way import, no cycle) to fold equity's
+      book into every options risk-check — an approved signal of either type now correctly
+      counts against the other's cap in the actual unattended loop, not only the phase 10
+      preview route.
+    - **Step C — loop wiring.** `checkOptionsPaperExits()` runs unconditionally in
+      `runAutotradeLoopTick()`, alongside `checkPaperExits()` — an approaching expiration
+      doesn't wait for market hours or the kill switch. `runOptionsPaperExecution()` runs
+      after equity's own paper execution, gated solely on paper being active (options has
+      no live-trading path of its own).
+    - **Step D — routes + UI.** `GET /api/autotrade/options-paper-positions` (mirrors
+      `/paper-positions`, enriching with a live contract mark fetched by re-querying the
+      chain and matching strike + side) and an **Options paper positions** table on the
+      Auto-Trade page, right below equity's own paper trading, with the same open/closed
+      counts and realized/unrealized P&L stat tiles.
+
+    Underlying real-estate exclusion applies identically throughout, inherited from
+    whatever the underlying already cleared at Screen. No P&L-based automated exit
+    (take-profit/stop-loss/delta-drift) exists for options paper positions — a long
+    option has no numeric stop/target price the way a stock paper position does (phase 10:
+    sized by full premium paid, worst case = expires worthless), so there's nothing for
+    those rules to mirror; they stay human-review-only on the Options page.
 13. **Options monitoring — proposed, blocked on phase 12.** Extends the phase 7 dashboard
     (`getAutotradeDashboard()`) with options-specific rows: open options positions (folded
     into the same combined cap phase 10 introduces, not a second pool), premium at risk

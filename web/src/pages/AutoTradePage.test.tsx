@@ -13,6 +13,7 @@ import type {
   BacktestRunResponse,
   LoopTickSummary,
   OptionsBacktestRunResponse,
+  OptionsPaperPosition,
   PaperPosition,
   WalkForwardResponse,
 } from '../api/types';
@@ -82,6 +83,26 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
   };
 }
 
+function loopSummaryFixture(overrides: Partial<LoopTickSummary> = {}): LoopTickSummary {
+  return {
+    ranEntries: false,
+    exitsChecked: 0,
+    exitsClosed: 0,
+    optionsExitsChecked: 0,
+    optionsExitsClosed: 0,
+    liveOrdersReconciled: 0,
+    livePositionsClosed: 0,
+    candidatesScreened: 0,
+    candidatesPassedVolatility: 0,
+    signalsGenerated: 0,
+    optionsSignalsGenerated: 0,
+    entriesOpened: 0,
+    optionsEntriesOpened: 0,
+    liveEntriesOpened: 0,
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture());
@@ -90,6 +111,7 @@ beforeEach(() => {
   });
   vi.spyOn(client, 'autotradeEvents').mockResolvedValue({ events: [] });
   vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
+  vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
 });
 
@@ -823,17 +845,103 @@ describe('AutoTradePage', () => {
     expect(within(tile).getByText('—')).toBeInTheDocument();
   });
 
+  function optionsPaperPosition(overrides: Partial<OptionsPaperPosition> = {}): OptionsPaperPosition {
+    return {
+      id: 1,
+      symbol: 'AAPL',
+      side: 'call',
+      contractSymbol: 'AAPL-fixture',
+      strike: 100,
+      expiration: '2026-08-21',
+      quantity: 2,
+      entryPrice: 3,
+      entryAt: Date.now(),
+      riskAmount: 600,
+      riskProfile: 'MODERATE',
+      rationale: 'test fixture',
+      status: 'open',
+      exitPrice: null,
+      exitAt: null,
+      exitReason: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      currentPrice: null,
+      unrealizedPnl: null,
+      ...overrides,
+    };
+  }
+
+  it('shows an empty state when there are no options paper positions', async () => {
+    renderPage();
+    expect(await screen.findByText('No options paper trades yet')).toBeInTheDocument();
+  });
+
+  it('renders open and closed options paper positions with summary stat tiles', async () => {
+    vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({
+      positions: [
+        optionsPaperPosition({ id: 1, symbol: 'AAPL', status: 'open' }),
+        optionsPaperPosition({
+          id: 2,
+          symbol: 'MSFT',
+          side: 'put',
+          strike: 90,
+          status: 'closed',
+          entryPrice: 2,
+          exitPrice: 5,
+          exitAt: Date.now(),
+          exitReason: 'time_exit',
+          quantity: 1,
+          riskAmount: 200,
+        }),
+      ],
+    });
+    renderPage();
+    expect(await screen.findByText('AAPL')).toBeInTheDocument();
+    expect(screen.getByText('MSFT')).toBeInTheDocument();
+    // (5-2)*1*100 = 300 realized pnl — appears twice: the stat tile total and the trade's own row.
+    expect(screen.getAllByText('+$300.00').length).toBeGreaterThan(0);
+    expect(screen.getByText('1.50R')).toBeInTheDocument(); // 300 pnl / 200 risk
+    expect(screen.getByText('put 90')).toBeInTheDocument();
+  });
+
+  it('shows the live current price and unrealized P&L for an OPEN options position, not a blank dash', async () => {
+    vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({
+      positions: [
+        optionsPaperPosition({
+          id: 1,
+          symbol: 'AAPL',
+          status: 'open',
+          entryPrice: 3,
+          quantity: 2,
+          riskAmount: 600,
+          currentPrice: 4,
+          unrealizedPnl: 200, // (4-3)*2*100
+        }),
+      ],
+    });
+    renderPage();
+    expect(await screen.findByText('AAPL')).toBeInTheDocument();
+    expect(screen.getByText('$4.00')).toBeInTheDocument(); // Current $ column
+    expect(screen.getAllByText('+$200.00').length).toBeGreaterThan(0);
+    expect(screen.getByText('0.33R')).toBeInTheDocument(); // 200 / 600 risk
+  });
+
   it('runs one loop cycle, shows the summary, and reloads positions', async () => {
-    const runOnce = vi.spyOn(client, 'runAutotradeLoopOnce').mockResolvedValue({
-      ranEntries: true,
-      exitsChecked: 2,
-      exitsClosed: 1,
-      candidatesScreened: 10,
-      candidatesPassedVolatility: 8,
-      signalsGenerated: 3,
-      optionsSignalsGenerated: 1,
-      entriesOpened: 1,
-    } satisfies LoopTickSummary);
+    const runOnce = vi.spyOn(client, 'runAutotradeLoopOnce').mockResolvedValue(
+      loopSummaryFixture({
+        ranEntries: true,
+        exitsChecked: 2,
+        exitsClosed: 1,
+        optionsExitsChecked: 1,
+        optionsExitsClosed: 1,
+        candidatesScreened: 10,
+        candidatesPassedVolatility: 8,
+        signalsGenerated: 3,
+        optionsSignalsGenerated: 1,
+        entriesOpened: 1,
+        optionsEntriesOpened: 1,
+      }),
+    );
     const positions = vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
     renderPage();
     await screen.findByText('VNQ');
@@ -843,23 +951,16 @@ describe('AutoTradePage', () => {
 
     expect(await screen.findByText(/Screened 10, 8 passed/)).toBeInTheDocument();
     expect(screen.getByText(/3 signal\(s\) generated/)).toBeInTheDocument();
-    expect(screen.getByText(/Exits checked: 2 \(1 closed\)/)).toBeInTheDocument();
+    expect(screen.getByText(/1 opened \(1 options\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Exits checked: 2 \(1 closed\) — options: 1 \(1 closed\)/)).toBeInTheDocument();
     await waitFor(() => expect(positions).toHaveBeenCalled()); // reloaded after the run
     expect(runOnce).toHaveBeenCalledTimes(1);
   });
 
   it('shows the skipped reason when the session window blocked new entries', async () => {
-    vi.spyOn(client, 'runAutotradeLoopOnce').mockResolvedValue({
-      ranEntries: false,
-      skippedReason: 'Market is closed',
-      exitsChecked: 0,
-      exitsClosed: 0,
-      candidatesScreened: 0,
-      candidatesPassedVolatility: 0,
-      signalsGenerated: 0,
-      optionsSignalsGenerated: 0,
-      entriesOpened: 0,
-    } satisfies LoopTickSummary);
+    vi.spyOn(client, 'runAutotradeLoopOnce').mockResolvedValue(
+      loopSummaryFixture({ ranEntries: false, skippedReason: 'Market is closed' }),
+    );
     renderPage();
     await screen.findByText('VNQ');
     fireEvent.click(screen.getByRole('button', { name: 'Run one cycle now' }));
@@ -876,16 +977,15 @@ describe('AutoTradePage', () => {
 
   it('clears a previous successful summary when a later run fails, so the error is not shown next to stale numbers', async () => {
     const run = vi.spyOn(client, 'runAutotradeLoopOnce');
-    run.mockResolvedValueOnce({
-      ranEntries: true,
-      exitsChecked: 0,
-      exitsClosed: 0,
-      candidatesScreened: 5,
-      candidatesPassedVolatility: 5,
-      signalsGenerated: 1,
-      optionsSignalsGenerated: 0,
-      entriesOpened: 1,
-    } satisfies LoopTickSummary);
+    run.mockResolvedValueOnce(
+      loopSummaryFixture({
+        ranEntries: true,
+        candidatesScreened: 5,
+        candidatesPassedVolatility: 5,
+        signalsGenerated: 1,
+        entriesOpened: 1,
+      }),
+    );
     renderPage();
     await screen.findByText('VNQ');
 
@@ -1070,16 +1170,15 @@ describe('AutoTradePage', () => {
     });
 
     it('reloads after running a loop cycle, so risk/P&L figures reflect the new fills', async () => {
-      vi.spyOn(client, 'runAutotradeLoopOnce').mockResolvedValue({
-        ranEntries: true,
-        exitsChecked: 0,
-        exitsClosed: 0,
-        candidatesScreened: 1,
-        candidatesPassedVolatility: 1,
-        signalsGenerated: 1,
-        optionsSignalsGenerated: 0,
-        entriesOpened: 1,
-      } satisfies LoopTickSummary);
+      vi.spyOn(client, 'runAutotradeLoopOnce').mockResolvedValue(
+        loopSummaryFixture({
+          ranEntries: true,
+          candidatesScreened: 1,
+          candidatesPassedVolatility: 1,
+          signalsGenerated: 1,
+          entriesOpened: 1,
+        }),
+      );
       const dash = vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
       renderPage();
       await screen.findByText('VNQ');

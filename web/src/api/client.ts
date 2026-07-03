@@ -85,6 +85,7 @@ import type {
   OptionsWalkForwardResponse,
   LoopTickSummary,
   PaperPosition,
+  OptionsPaperPosition,
   AutotradeDashboard,
 } from './types';
 
@@ -451,6 +452,10 @@ export const client = {
   autotradePaperPositions: (params: { status?: 'open' | 'closed'; symbol?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams(params as Record<string, string>).toString();
     return api<{ positions: PaperPosition[] }>(`/autotrade/paper-positions${qs ? `?${qs}` : ''}`);
+  },
+  autotradeOptionsPaperPositions: (params: { status?: 'open' | 'closed'; symbol?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams(params as Record<string, string>).toString();
+    return api<{ positions: OptionsPaperPosition[] }>(`/autotrade/options-paper-positions${qs ? `?${qs}` : ''}`);
   },
   autotradeDashboard: () => api<AutotradeDashboard>('/autotrade/dashboard'),
   setAutotradeKillSwitch: (on: boolean) =>

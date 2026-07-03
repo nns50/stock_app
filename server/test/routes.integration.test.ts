@@ -9,6 +9,7 @@ import { createIntent } from '../src/db/orders';
 import { addExit, createPosition } from '../src/db/positions';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { openPaperPosition } from '../src/db/autotradePaperPositions';
+import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
 import { getProvider } from '../src/providers';
 
 // End-to-end tests through the real Express app → routers → services → SQLite
@@ -877,6 +878,71 @@ describe('autotrade paper execution routes (integration)', () => {
 
   it('rejects an invalid status filter', async () => {
     const res = await fetch(`${base}/api/autotrade/paper-positions?status=bogus`);
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('autotrade options paper execution routes (integration)', () => {
+  beforeEach(() => {
+    db.exec(
+      'DELETE FROM autotrade_options_paper_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events;',
+    );
+  });
+
+  it('lists options paper positions (empty when none exist)', async () => {
+    const body = (await getJson('/api/autotrade/options-paper-positions')) as { positions: unknown[] };
+    expect(body.positions).toEqual([]);
+  });
+
+  it('enriches an OPEN position with a live contract mark and unrealized P&L, leaving a closed one alone', async () => {
+    const [expiration] = await getProvider().getOptionsExpirations('AAPL');
+    const chain = await getProvider().getOptionsChain('AAPL', expiration);
+    const contract = chain.calls[0];
+
+    const open = openOptionsPaperPosition({
+      symbol: 'AAPL',
+      side: 'call',
+      contractSymbol: contract.symbol,
+      strike: contract.strike,
+      expiration,
+      quantity: 2,
+      entryPrice: 0.01, // far below any real/mock mark, so unrealizedPnl is unambiguously positive
+      riskAmount: 2,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    const closed = openOptionsPaperPosition({
+      symbol: 'AAPL',
+      side: 'put',
+      contractSymbol: `${contract.symbol}-closed`,
+      strike: contract.strike,
+      expiration,
+      quantity: 1,
+      entryPrice: 1,
+      riskAmount: 100,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    db.prepare(
+      "UPDATE autotrade_options_paper_positions SET status='closed', exit_price=0.5, exit_at=?, exit_reason='time_exit' WHERE id=?",
+    ).run(Date.now(), closed.id);
+
+    const mark = contract.mark ?? contract.last!;
+    const body = (await getJson('/api/autotrade/options-paper-positions')) as {
+      positions: { id: number; symbol: string; currentPrice: number | null; unrealizedPnl: number | null }[];
+    };
+
+    const openRow = body.positions.find((p) => p.id === open.id)!;
+    expect(openRow.currentPrice).toBe(mark);
+    expect(openRow.unrealizedPnl).toBeCloseTo((mark - 0.01) * 2 * 100, 2);
+
+    const closedRow = body.positions.find((p) => p.id === closed.id)!;
+    expect(closedRow.currentPrice).toBeNull();
+    expect(closedRow.unrealizedPnl).toBeNull();
+  });
+
+  it('rejects an invalid status filter', async () => {
+    const res = await fetch(`${base}/api/autotrade/options-paper-positions?status=bogus`);
     expect(res.status).toBe(400);
   });
 });

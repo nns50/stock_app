@@ -1315,6 +1315,8 @@ export interface LoopTickSummary {
   skippedReason?: string;
   exitsChecked: number;
   exitsClosed: number;
+  optionsExitsChecked: number;
+  optionsExitsClosed: number;
   liveOrdersReconciled: number;
   livePositionsClosed: number;
   candidatesScreened: number;
@@ -1322,7 +1324,39 @@ export interface LoopTickSummary {
   signalsGenerated: number;
   optionsSignalsGenerated: number;
   entriesOpened: number;
+  optionsEntriesOpened: number;
   liveEntriesOpened: number;
+}
+
+// --- Phase 12: options paper execution ---
+
+export type OptionsPaperExitReason = 'time_exit' | 'manual';
+
+export interface OptionsPaperPosition {
+  id: number;
+  symbol: string;
+  side: AutotradeOptionsSignalSide;
+  contractSymbol: string;
+  strike: number;
+  expiration: string;
+  quantity: number;
+  entryPrice: number;
+  entryAt: number;
+  riskAmount: number;
+  riskProfile: string;
+  rationale: string;
+  status: 'open' | 'closed';
+  exitPrice: number | null;
+  exitAt: number | null;
+  exitReason: OptionsPaperExitReason | null;
+  createdAt: number;
+  updatedAt: number;
+  /** A live contract mark as of the request — null for a closed position or
+   *  if the chain fetch failed. */
+  currentPrice: number | null;
+  /** (currentPrice - entryPrice) * quantity * 100 — null for a closed
+   *  position or when currentPrice is unavailable. */
+  unrealizedPnl: number | null;
 }
 
 export interface AutotradeProbationStatus {

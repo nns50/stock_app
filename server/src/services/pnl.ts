@@ -114,6 +114,20 @@ export function computePaperUnrealizedPnl(
   return round2((currentPrice - p.entryPrice) * p.quantity * sign);
 }
 
+/**
+ * Unrealized P&L for an OPEN options autotrade paper position (Phase 12).
+ * No sign flip like the stock version — every options paper position is
+ * long the contract itself (call or put), matching optionsRiskCheck.ts's
+ * sizing convention — and the 100x contract multiplier applies.
+ */
+export function computeOptionsPaperUnrealizedPnl(
+  p: { status: 'open' | 'closed'; entryPrice: number; quantity: number },
+  currentPrice: number | null,
+): number | null {
+  if (p.status !== 'open' || currentPrice === null) return null;
+  return round2((currentPrice - p.entryPrice) * p.quantity * 100);
+}
+
 export interface AggregatePnl {
   realized: number;
   unrealized: number;
