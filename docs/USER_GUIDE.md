@@ -595,14 +595,15 @@ that fires to your webhooks**.
 
 ## Auto-Trade
 
-**Draft / in progress.** The **Auto** tab is the working area for the automated-trading
-initiative described in **[docs/AUTOTRADING_SPEC.md](../docs/AUTOTRADING_SPEC.md)** — a
-fully autonomous screen → decide → risk-check → execute → journal loop, distinct from
-the human-confirmed live trading on the **Trade** page (which always requires you to
-type a confirmation phrase before an order goes out). The loop now runs — but every
-order it can place is a **paper** simulation; it never reaches a real broker. The
-live-trading gate (a manual flag flip, after reviewing backtest and paper-trading
-results) is the one remaining phase.
+The **Auto** tab is the working area for the automated-trading initiative described in
+**[docs/AUTOTRADING_SPEC.md](../docs/AUTOTRADING_SPEC.md)** — a fully autonomous
+screen → decide → risk-check → execute → journal loop, distinct from the human-confirmed
+live trading on the **Trade** page (which always requires you to type a confirmation
+phrase before *every* order). **Paper trading** and **Live trading** below are
+independent: paper is always a local simulation that never reaches a real broker, and
+runs whether or not live trading is on. Live trading, once explicitly enabled, places
+real orders through Webull with **no per-order confirmation** — only a one-time typed
+phrase to turn it on, plus the guardrails and kill switches described below.
 
 - **Configuration** — a master **enabled** switch for the execution loop below (when on,
   the server runs the full cycle on its own every minute, placing paper trades — see
@@ -621,6 +622,23 @@ results) is the one remaining phase.
   stop/target levels keep being checked every cycle, exactly as if you'd left the loop
   running. Releasing it resumes the loop automatically if **enabled** is still checked;
   it doesn't touch that setting either way.
+- **Live trading** — configure and arm the loop to place **real** orders through Webull.
+  Set a **Webull account ID** (server-side only — unlike the Trade page, never sourced
+  from your browser) and the **live guardrail caps**: max order size ($), max daily loss
+  ($), max orders/day, fat-finger %, and whether to allow naked-short exposure (leave
+  unchecked — this app only takes defined-risk positions by default). A **probation**
+  setting cuts position size (e.g. to half) for the first N live trades after you enable
+  it, on top of whatever the risk profile and any loss-streak step-down already produce —
+  save these before enabling. Your **paper track record** (trade count, win rate, date
+  range) is shown for you to review first — it's informational only, not an enforced
+  gate. To actually go live, type the exact phrase shown (**ENABLE LIVE TRADING**) into
+  the confirmation box — a one-time, deliberate gesture, not a per-order one: once
+  enabled, the loop places real orders on its own schedule with no further confirmation.
+  Turning it back **off** needs no confirmation, just a click. Live orders go out as
+  **bracket orders** (an entry plus linked stop-loss and take-profit), so your stop/target
+  are enforced by the broker directly. Live trading is blocked if *either* kill switch is
+  engaged — this page's own, or the **Trade** page's — since both places orders through
+  the same real account; either one's "Halt trading" is a genuine, shared emergency stop.
 - **Refresh** (top of the page, next to the title) — Monitoring, Paper trading, and
   Recent activity all reflect state the background loop can change on its own, every
   minute, with nothing clicked — unlike Configuration, the exclusion list, and the
@@ -640,7 +658,11 @@ results) is the one remaining phase.
   its cap is reached; the day P&L tile specifically shows a distinct "HALT TRIGGERED"
   label (not just its ordinary red-for-a-loss coloring) once the daily-drawdown halt is
   actually breached, so an ordinary down day and a halted one are never hard to tell
-  apart.
+  apart. A second **Live** section right below shows the exact same figures for your
+  live positions — its **own** pool, never combined with paper's counts or risk (they're
+  risk-checked completely independently, matching how the loop actually enforces the
+  caps), plus a **Probation** tile showing the size cut and trades remaining while it's
+  active.
 - **Real-estate exclusion list** — real estate is a hard, permanent exclusion for this
   strategy. A starter list of well-known real-estate ETFs ships seeded in; add or remove
   symbols freely. This list is a backstop, not the only check — the screen below also
@@ -707,8 +729,9 @@ results) is the one remaining phase.
   order placed or closed, a setting changed) — the same feed the execution loop above
   writes into automatically.
 
-This page will keep growing as the last remaining phase (the live-trading gate) lands —
-check the spec doc for the full roadmap and current status.
+This is decision-support and tracking, not financial advice — check the spec doc for the
+full design, current status, and the roadmap for the options-trading addition still to
+come.
 
 ---
 

@@ -1032,6 +1032,18 @@ export interface AutotradeConfig {
   killSwitch: boolean;
   riskProfile: AutotradeRiskProfile;
   accountEquityUsd: number | null;
+
+  // --- Phase 8: live trading ---
+  liveTradingEnabled: boolean;
+  liveEnabledAt: number | null;
+  liveAccountId: string | null;
+  liveMaxOrderUsd: number;
+  liveMaxDailyLossUsd: number;
+  liveMaxOrdersPerDay: number;
+  liveFatFingerPct: number;
+  liveAllowNakedShort: boolean;
+  liveProbationTrades: number;
+  liveProbationSizeMultiplier: number;
 }
 
 export type AutotradeExclusionSource = 'default' | 'user';
@@ -1222,10 +1234,20 @@ export interface LoopTickSummary {
   skippedReason?: string;
   exitsChecked: number;
   exitsClosed: number;
+  liveOrdersReconciled: number;
+  livePositionsClosed: number;
   candidatesScreened: number;
   candidatesPassedVolatility: number;
   signalsGenerated: number;
   entriesOpened: number;
+  liveEntriesOpened: number;
+}
+
+export interface AutotradeProbationStatus {
+  active: boolean;
+  multiplier: number;
+  tradesPlaced: number;
+  tradesRemaining: number;
 }
 
 export interface AutotradeDashboard {
@@ -1244,4 +1266,18 @@ export interface AutotradeDashboard {
   maxTradesPerDay: number;
   consecutiveLosses: number;
   stepDownAfterLosses: number;
+
+  // --- Phase 8: live trading — own pool, caps shared with paper above ---
+  liveTradingEnabled: boolean;
+  liveAccountId: string | null;
+  liveOpenPositions: Position[];
+  liveOpenPositionsCount: number;
+  liveOpenRisk: number;
+  liveDailyPnl: number;
+  liveTradesToday: number;
+  liveConsecutiveLosses: number;
+  liveMaxOrderUsd: number;
+  liveMaxDailyLossUsd: number;
+  liveMaxOrdersPerDay: number;
+  probation: AutotradeProbationStatus;
 }

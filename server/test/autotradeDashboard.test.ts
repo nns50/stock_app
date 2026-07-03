@@ -12,8 +12,26 @@ import { getAutotradeDashboard } from '../src/services/autotrading/dashboard';
 
 beforeAll(() => initDb());
 beforeEach(() => {
-  db.exec('DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events;');
+  db.exec(
+    'DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events; ' +
+      'DELETE FROM position_exits; DELETE FROM positions; DELETE FROM autotrade_live_orders; DELETE FROM order_events; DELETE FROM order_intents;',
+  );
 });
+
+/** entry 100, stop 95, qty 10 -> initialRiskOf() derives $50 risk. */
+function insertLivePosition(overrides: { symbol?: string; tags?: string[] } = {}) {
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO positions (asset_type, symbol, side, quantity, entry_price, entry_date, fees, multiplier, status, tags, stop_price, target_price, created_at, updated_at)
+     VALUES ('stock', ?, 'long', 10, 100, ?, 0, 1, 'open', ?, 95, 110, ?, ?)`,
+  ).run(
+    overrides.symbol ?? 'AAPL',
+    new Date(now).toISOString().slice(0, 10),
+    JSON.stringify(overrides.tags ?? ['live', 'autotrade']),
+    now,
+    now,
+  );
+}
 
 function openPos(overrides: Partial<Parameters<typeof openPaperPosition>[0]> = {}) {
   return openPaperPosition({
@@ -104,5 +122,57 @@ describe('getAutotradeDashboard', () => {
     expect(dash.dailyPnl).toBe((90 - 100) * 10 + (80 - 100) * 10); // -100 + -200 = -300
     expect(dash.consecutiveLosses).toBe(2);
     expect(dash.tradesToday).toBe(2);
+  });
+
+  describe('Phase 8: live-trading fields', () => {
+    it('surfaces liveTradingEnabled/liveAccountId directly from config', () => {
+      setAutotradeConfig({ liveTradingEnabled: false, liveAccountId: null });
+      expect(getAutotradeDashboard()).toMatchObject({ liveTradingEnabled: false, liveAccountId: null });
+
+      setAutotradeConfig({ liveAccountId: 'ACC1', liveTradingEnabled: true, liveEnabledAt: Date.now() });
+      expect(getAutotradeDashboard()).toMatchObject({ liveTradingEnabled: true, liveAccountId: 'ACC1' });
+    });
+
+    it('counts only positions tagged autotrade for the live pool, ignoring human-only "live" positions', () => {
+      insertLivePosition({ symbol: 'AAPL', tags: ['live', 'autotrade'] });
+      insertLivePosition({ symbol: 'MSFT', tags: ['live'] }); // human-placed — must not count
+      const dash = getAutotradeDashboard();
+      expect(dash.liveOpenPositionsCount).toBe(1);
+      expect(dash.liveOpenPositions.map((p) => p.symbol)).toEqual(['AAPL']);
+    });
+
+    it('computes liveOpenRisk from the stop distance of open autotrade-tagged positions', () => {
+      insertLivePosition({ symbol: 'AAPL' }); // entry 100, stop 95, qty 10 -> $50 risk
+      insertLivePosition({ symbol: 'MSFT' });
+      expect(getAutotradeDashboard().liveOpenRisk).toBe(100);
+    });
+
+    it("keeps the live pool independent of paper's — a paper position never affects live figures or vice versa", () => {
+      openPos({ symbol: 'AAPL', riskAmount: 500 }); // paper
+      insertLivePosition({ symbol: 'MSFT' }); // live
+      const dash = getAutotradeDashboard();
+      expect(dash.openPositionsCount).toBe(1);
+      expect(dash.openRisk).toBe(500);
+      expect(dash.liveOpenPositionsCount).toBe(1);
+      expect(dash.liveOpenRisk).toBe(50);
+    });
+
+    it('surfaces the live-specific caps directly from config, distinct from the human Trade page caps', () => {
+      setAutotradeConfig({ liveMaxOrderUsd: 12_345, liveMaxDailyLossUsd: 678, liveMaxOrdersPerDay: 9 });
+      const dash = getAutotradeDashboard();
+      expect(dash.liveMaxOrderUsd).toBe(12_345);
+      expect(dash.liveMaxDailyLossUsd).toBe(678);
+      expect(dash.liveMaxOrdersPerDay).toBe(9);
+    });
+
+    it('surfaces probation status derived from liveEnabledAt', () => {
+      const dash = getAutotradeDashboard();
+      expect(dash.probation.active).toBe(false); // never enabled
+
+      setAutotradeConfig({ liveEnabledAt: Date.now(), liveProbationTrades: 20 });
+      const enabled = getAutotradeDashboard();
+      expect(enabled.probation.active).toBe(true);
+      expect(enabled.probation.tradesRemaining).toBe(20);
+    });
   });
 });

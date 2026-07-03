@@ -6,6 +6,7 @@ import { ToastProvider } from '../components/ToastContext';
 import { ConfirmProvider } from '../components/ConfirmContext';
 import { client } from '../api/client';
 import type {
+  AutotradeConfig,
   AutotradeDashboard,
   AutotradeDecideResponse,
   AutotradeRiskCheckResult,
@@ -27,6 +28,26 @@ function renderPage() {
   );
 }
 
+function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfig {
+  return {
+    enabled: false,
+    killSwitch: false,
+    riskProfile: 'MODERATE',
+    accountEquityUsd: 100_000,
+    liveTradingEnabled: false,
+    liveEnabledAt: null,
+    liveAccountId: null,
+    liveMaxOrderUsd: 25_000,
+    liveMaxDailyLossUsd: 3_000,
+    liveMaxOrdersPerDay: 6,
+    liveFatFingerPct: 10,
+    liveAllowNakedShort: false,
+    liveProbationTrades: 20,
+    liveProbationSizeMultiplier: 0.5,
+    ...overrides,
+  };
+}
+
 function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): AutotradeDashboard {
   return {
     enabled: false,
@@ -44,18 +65,25 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     maxTradesPerDay: 6,
     consecutiveLosses: 0,
     stepDownAfterLosses: 2,
+    liveTradingEnabled: false,
+    liveAccountId: null,
+    liveOpenPositions: [],
+    liveOpenPositionsCount: 0,
+    liveOpenRisk: 0,
+    liveDailyPnl: 0,
+    liveTradesToday: 0,
+    liveConsecutiveLosses: 0,
+    liveMaxOrderUsd: 25_000,
+    liveMaxDailyLossUsd: 3_000,
+    liveMaxOrdersPerDay: 6,
+    probation: { active: false, multiplier: 1, tradesPlaced: 0, tradesRemaining: 20 },
     ...overrides,
   };
 }
 
 beforeEach(() => {
   vi.restoreAllMocks();
-  vi.spyOn(client, 'autotradeConfig').mockResolvedValue({
-    enabled: false,
-    killSwitch: false,
-    riskProfile: 'MODERATE',
-    accountEquityUsd: 100_000,
-  });
+  vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture());
   vi.spyOn(client, 'autotradeExclusions').mockResolvedValue({
     exclusions: [{ symbol: 'VNQ', reason: 'Real estate ETF', source: 'default', createdAt: Date.now() }],
   });
@@ -76,12 +104,7 @@ describe('AutoTradePage', () => {
   });
 
   it('warns when account equity is not set', async () => {
-    vi.spyOn(client, 'autotradeConfig').mockResolvedValue({
-      enabled: false,
-      killSwitch: false,
-      riskProfile: 'MODERATE',
-      accountEquityUsd: null,
-    });
+    vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture({ accountEquityUsd: null }));
     renderPage();
     expect(await screen.findByText(/equity isn.t set/i)).toBeInTheDocument();
   });
@@ -754,12 +777,7 @@ describe('AutoTradePage', () => {
   });
 
   it('shows an accurate warning about the live paper loop when enabled, not the old "not built yet" copy', async () => {
-    vi.spyOn(client, 'autotradeConfig').mockResolvedValue({
-      enabled: true,
-      killSwitch: false,
-      riskProfile: 'MODERATE',
-      accountEquityUsd: 100_000,
-    });
+    vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture({ enabled: true }));
     renderPage();
     expect(await screen.findByText(/actively scanning and placing/)).toBeInTheDocument();
     expect(screen.queryByText(/hasn.t been built/)).toBeNull();
@@ -807,12 +825,7 @@ describe('AutoTradePage', () => {
     });
 
     it('releases on a second click without touching the enabled flag', async () => {
-      vi.spyOn(client, 'autotradeConfig').mockResolvedValue({
-        enabled: true,
-        killSwitch: true,
-        riskProfile: 'MODERATE',
-        accountEquityUsd: 100_000,
-      });
+      vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture({ enabled: true, killSwitch: true }));
       const setKill = vi
         .spyOn(client, 'setAutotradeKillSwitch')
         .mockResolvedValue({ enabled: true, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
@@ -826,12 +839,7 @@ describe('AutoTradePage', () => {
     });
 
     it('shows the kill-switch warning instead of the enabled warning when both are active', async () => {
-      vi.spyOn(client, 'autotradeConfig').mockResolvedValue({
-        enabled: true,
-        killSwitch: true,
-        riskProfile: 'MODERATE',
-        accountEquityUsd: 100_000,
-      });
+      vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture({ enabled: true, killSwitch: true }));
       renderPage();
       expect(await screen.findByText(/Kill switch engaged/)).toBeInTheDocument();
       expect(screen.queryByText(/actively scanning and placing/)).toBeNull();
@@ -980,6 +988,131 @@ describe('AutoTradePage', () => {
         expect(positions).toHaveBeenCalled();
         expect(evts).toHaveBeenCalled();
       });
+    });
+  });
+
+  describe('Phase 8: Live trading', () => {
+    it('shows the enable flow when live trading is off, with the button disabled until BOTH an account id and the exact phrase are entered', async () => {
+      renderPage();
+      await screen.findByText('VNQ');
+
+      const enableButton = screen.getByRole('button', { name: 'Enable live trading' });
+      const confirmInput = screen.getByLabelText('type to confirm enabling live trading');
+      expect(enableButton).toBeDisabled();
+
+      fireEvent.change(confirmInput, { target: { value: 'ENABLE LIVE TRADING' } });
+      expect(enableButton).toBeDisabled(); // the exact phrase alone, with no account id, isn't enough either
+
+      fireEvent.change(confirmInput, { target: { value: '' } }); // clear the phrase back out
+      fireEvent.change(screen.getByPlaceholderText(/INDIVIDUAL_CASH/), { target: { value: 'ACC1' } });
+      expect(enableButton).toBeDisabled(); // account id alone isn't enough
+
+      fireEvent.change(confirmInput, {
+        target: { value: 'enable live trading' }, // lower-case — matched case-insensitively
+      });
+      expect(enableButton).not.toBeDisabled();
+    });
+
+    it('calls setAutotradeConfig with the account id, liveTradingEnabled, and the typed phrase when enabling', async () => {
+      const setConfig = vi
+        .spyOn(client, 'setAutotradeConfig')
+        .mockResolvedValue(configFixture({ liveTradingEnabled: true, liveAccountId: 'ACC1' }));
+      renderPage();
+      await screen.findByText('VNQ');
+
+      fireEvent.change(screen.getByPlaceholderText(/INDIVIDUAL_CASH/), { target: { value: 'ACC1' } });
+      fireEvent.change(screen.getByLabelText('type to confirm enabling live trading'), {
+        target: { value: 'ENABLE LIVE TRADING' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Enable live trading' }));
+
+      await waitFor(() =>
+        expect(setConfig).toHaveBeenCalledWith({
+          liveAccountId: 'ACC1',
+          liveTradingEnabled: true,
+          confirmLiveTrading: 'ENABLE LIVE TRADING',
+        }),
+      );
+    });
+
+    it('shows the LIVE TRADING ENABLED banner and a Disable button once enabled, hiding the confirm flow', async () => {
+      vi.spyOn(client, 'autotradeConfig').mockResolvedValue(
+        configFixture({ liveTradingEnabled: true, liveAccountId: 'ACC1' }),
+      );
+      renderPage();
+      await screen.findByText('VNQ');
+
+      expect(await screen.findByText('● LIVE TRADING ENABLED')).toBeInTheDocument();
+      expect(screen.getByText(/Account ACC1/)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Enable live trading' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Disable live trading' })).toBeInTheDocument();
+    });
+
+    it('disabling requires no confirmation phrase — a single click calls setAutotradeConfig', async () => {
+      vi.spyOn(client, 'autotradeConfig').mockResolvedValue(
+        configFixture({ liveTradingEnabled: true, liveAccountId: 'ACC1' }),
+      );
+      const setConfig = vi
+        .spyOn(client, 'setAutotradeConfig')
+        .mockResolvedValue(configFixture({ liveTradingEnabled: false }));
+      renderPage();
+      await screen.findByText('VNQ');
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Disable live trading' }));
+
+      await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ liveTradingEnabled: false }));
+    });
+
+    it('shows probation status when active', async () => {
+      vi.spyOn(client, 'autotradeConfig').mockResolvedValue(
+        configFixture({ liveTradingEnabled: true, liveAccountId: 'ACC1', liveProbationTrades: 20 }),
+      );
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          liveTradingEnabled: true,
+          liveAccountId: 'ACC1',
+          probation: { active: true, multiplier: 0.5, tradesPlaced: 3, tradesRemaining: 17 },
+        }),
+      );
+      renderPage();
+      expect(await screen.findByText(/Probation active: 17 of 20 trades remaining at 0.5× size/)).toBeInTheDocument();
+    });
+
+    it('saves the live-trading caps as one batch', async () => {
+      const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+      renderPage();
+      await screen.findByText('VNQ');
+
+      fireEvent.change(screen.getByPlaceholderText('e.g. 20000'), { target: { value: '30000' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save live-trading settings' }));
+
+      await waitFor(() =>
+        expect(setConfig).toHaveBeenCalledWith(
+          expect.objectContaining({ liveMaxOrderUsd: 30_000, liveMaxDailyLossUsd: 3_000, liveMaxOrdersPerDay: 6 }),
+        ),
+      );
+    });
+
+    it('surfaces the paper track record for review — not an enforced gate, just informational', async () => {
+      vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({
+        positions: [
+          paperPosition({ id: 1, symbol: 'AAA', status: 'closed', exitPrice: 110, entryAt: Date.parse('2026-01-05') }), // win
+          paperPosition({ id: 2, symbol: 'BBB', status: 'closed', exitPrice: 90, entryAt: Date.parse('2026-01-10') }), // loss
+          paperPosition({ id: 3, symbol: 'CCC', status: 'open', entryAt: Date.parse('2026-01-15') }),
+        ],
+      });
+      renderPage();
+      await screen.findByText('VNQ');
+
+      expect(await screen.findByText('3')).toBeInTheDocument(); // total paper trades
+      expect(screen.getByText('2 closed')).toBeInTheDocument();
+      expect(screen.getByText('50%')).toBeInTheDocument(); // 1 win / 2 closed
+    });
+
+    it('does not show a second "Something went wrong" box when config fails to load — only Configuration\'s own error shows', async () => {
+      vi.spyOn(client, 'autotradeConfig').mockRejectedValue(new Error('network blip'));
+      renderPage();
+      expect(await screen.findByText('Something went wrong')).toBeInTheDocument(); // exactly one — findBy throws on 2+
     });
   });
 });
