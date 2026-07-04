@@ -190,13 +190,11 @@ describe('AutoTradePage', () => {
     vi.spyOn(client, 'autotradeConfig').mockResolvedValue(
       configFixture({ liveAccountId: 'ACC1', accountEquityUsd: 100_000 }),
     );
-    const sync = vi
-      .spyOn(client, 'syncAutotradeEquity')
-      .mockResolvedValue({
-        ok: false,
-        accountId: 'ACC1',
-        error: 'Webull did not return a usable net liquidation value',
-      });
+    const sync = vi.spyOn(client, 'syncAutotradeEquity').mockResolvedValue({
+      ok: false,
+      accountId: 'ACC1',
+      error: 'Webull did not return a usable net liquidation value',
+    });
     renderPage();
     await screen.findByText('VNQ');
 
