@@ -1051,6 +1051,16 @@ export interface AutotradeConfig {
   optionsStrategyType: AutotradeOptionsStrategyType;
 }
 
+export interface EquitySyncResult {
+  ok: boolean;
+  accountId?: string;
+  previousEquityUsd?: number | null;
+  netLiquidationUsd?: number;
+  buyingPowerUsd?: number;
+  config?: AutotradeConfig;
+  error?: string;
+}
+
 export type AutotradeExclusionSource = 'default' | 'user';
 
 export interface AutotradeExclusion {

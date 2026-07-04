@@ -1094,6 +1094,30 @@ export default function AutoTradePage() {
     }
   };
 
+  const [equitySyncBusy, setEquitySyncBusy] = useState(false);
+  const syncEquityFromBroker = async () => {
+    setEquitySyncBusy(true);
+    try {
+      const result = await client.syncAutotradeEquity();
+      if (!result.ok) {
+        toast(result.error ?? 'Could not sync equity from Webull', { type: 'error' });
+        return;
+      }
+      setEquityDraft(result.netLiquidationUsd);
+      config.reload();
+      refreshLiveData(); // synced equity shifts the dashboard's caps, same as a manual edit
+      const prevLabel =
+        result.previousEquityUsd != null ? `$${result.previousEquityUsd.toLocaleString('en-US')}` : 'unset';
+      toast(`Synced from Webull — ${prevLabel} → $${result.netLiquidationUsd!.toLocaleString('en-US')}`, {
+        type: 'success',
+      });
+    } catch (e) {
+      toast((e as Error).message || 'Could not sync equity from Webull', { type: 'error' });
+    } finally {
+      setEquitySyncBusy(false);
+    }
+  };
+
   const [killBusy, setKillBusy] = useState(false);
   const toggleKillSwitch = async () => {
     setKillBusy(true);
@@ -1491,16 +1515,30 @@ export default function AutoTradePage() {
             </Field>
             <Field
               label="Account equity ($)"
-              hint="The risk engine sizes trades and computes its % caps against this. No live broker balance is wired in yet — set it manually."
+              hint={
+                config.data?.liveAccountId
+                  ? 'The risk engine sizes trades and computes its % caps against this. Set manually, or sync it from your live Webull account below.'
+                  : 'The risk engine sizes trades and computes its % caps against this. Set manually — or set a Webull account ID under Live trading below to sync it instead.'
+              }
             >
-              <div className="flex gap-2">
-                <NumberInput value={equityDraft} onChange={setEquityDraft} placeholder="e.g. 25000" />
+              <div className="flex flex-col gap-2">
+                <div className="flex gap-2">
+                  <NumberInput value={equityDraft} onChange={setEquityDraft} placeholder="e.g. 25000" />
+                  <button
+                    className="btn-ghost shrink-0"
+                    onClick={() => saveConfig({ accountEquityUsd: equityDraft ?? null })}
+                    disabled={equityDraft === (config.data?.accountEquityUsd ?? undefined)}
+                  >
+                    Save
+                  </button>
+                </div>
                 <button
-                  className="btn-ghost shrink-0"
-                  onClick={() => saveConfig({ accountEquityUsd: equityDraft ?? null })}
-                  disabled={equityDraft === (config.data?.accountEquityUsd ?? undefined)}
+                  className="btn-ghost self-start text-xs"
+                  onClick={syncEquityFromBroker}
+                  disabled={equitySyncBusy || !config.data?.liveAccountId}
+                  title={!config.data?.liveAccountId ? 'Set a Webull account ID under Live trading first' : undefined}
                 >
-                  Save
+                  {equitySyncBusy ? 'Syncing…' : 'Sync from Webull (net liquidation value)'}
                 </button>
               </div>
             </Field>

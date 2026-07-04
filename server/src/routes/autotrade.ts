@@ -21,7 +21,7 @@ import { runOptionsBacktest, runOptionsWalkForwardBacktest } from '../services/a
 import { runCombinedBacktest, runCombinedWalkForwardBacktest } from '../services/autotrading/combinedBacktest';
 import { listPaperPositions, PaperPosition } from '../db/autotradePaperPositions';
 import { listOptionsPaperPositions, OptionsPaperPosition } from '../db/autotradeOptionsPaperPositions';
-import { listAutotradeLivePositions } from '../services/autotrading/liveExecute';
+import { listAutotradeLivePositions, syncAccountEquityFromBroker } from '../services/autotrading/liveExecute';
 import { Position } from '../db/positions';
 import { runAutotradeLoopTick } from '../services/autotrading/loop';
 import { getAutotradeDashboard } from '../services/autotrading/dashboard';
@@ -189,6 +189,19 @@ autotradeRouter.put(
       });
     }
     res.json(next);
+  }),
+);
+
+/** Pull accountEquityUsd from the live Webull account's net liquidation
+ *  value, using the configured liveAccountId — see syncAccountEquityFromBroker()
+ *  for why netLiquidationUsd (not buying power) is the right figure. Read-only
+ *  against the broker; requires no confirmation phrase, unlike liveTradingEnabled
+ *  itself, since nothing here places an order. */
+autotradeRouter.post(
+  '/sync-equity',
+  asyncHandler(async (_req, res) => {
+    const result = await syncAccountEquityFromBroker();
+    res.json(result);
   }),
 );
 

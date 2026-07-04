@@ -66,6 +66,7 @@ import type {
   ReplacePatch,
   ReplaceResult,
   AutotradeConfig,
+  EquitySyncResult,
   AutotradeRiskProfile,
   AutotradeOptionsStrategyType,
   AutotradeExclusion,
@@ -479,4 +480,5 @@ export const client = {
   autotradeDashboard: () => api<AutotradeDashboard>('/autotrade/dashboard'),
   setAutotradeKillSwitch: (on: boolean) =>
     api<AutotradeConfig>('/autotrade/kill-switch', { method: 'POST', body: JSON.stringify({ on }) }),
+  syncAutotradeEquity: () => api<EquitySyncResult>('/autotrade/sync-equity', { method: 'POST' }),
 };

@@ -492,6 +492,19 @@ starts.
    against the real `positions` journal in tests, plus verified live in a browser.
    Routed at `POST /api/autotrade/risk-check`; the Auto-Trade page's candidates table
    shows a Qty + pass/fail Risk-check column per candidate.
+   **Fixed (2026-07-04):** the "no natural source for an unattended loop" framing above
+   was accurate when written, but Phase 8 subsequently added `liveAccountId` —
+   server-side, set once, with no browser dependency — for exactly the live-order path
+   (`liveExecute.ts`'s `attemptLiveEntry`). `syncAccountEquityFromBroker()` reuses that
+   same account id to pull the live account's net liquidation value (not buying power,
+   which reflects available leverage rather than the account's actual value) and set
+   `accountEquityUsd` from it. A "Sync from Webull" button next to the manual equity
+   field does this on demand; there is still no automatic/periodic sync, and paper mode
+   still never calls the broker — this only replaces how the manual number gets typed
+   in, not what consumes it. Read-only against the broker and gated only on
+   `liveAccountId` being set, independent of `liveTradingEnabled` and both kill
+   switches, since nothing here places an order — equity can be synced and reviewed
+   long before ever going live.
    **Fixed (2026-07-04), originally flagged during Phase 6's review, deferred through
    Phase 8:** `getPortfolioSnapshot()`'s "today" bucketing was UTC-based
    (`new Date().toISOString().slice(0, 10)`) for `dailyPnl`, plus a SEPARATE
