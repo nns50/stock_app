@@ -12,24 +12,39 @@ import { db } from './index';
 // ---------------------------------------------------------------------------
 
 export type OptionsPaperSide = 'call' | 'put';
+export type OptionsPaperKind = 'single_leg' | 'debit_spread';
 export type OptionsPaperExitReason = 'time_exit' | 'manual';
 
 export interface OpenOptionsPaperPositionInput {
   symbol: string;
   side: OptionsPaperSide;
+  /** Defaults to 'single_leg'. */
+  kind?: OptionsPaperKind;
+  /** The long leg's contract for a debit spread. */
   contractSymbol: string;
+  /** The long leg's strike for a debit spread. */
   strike: number;
+  /** Debit spreads only — the short leg's contract/strike/entry premium. */
+  shortContractSymbol?: string;
+  shortStrike?: number;
+  shortEntryPrice?: number;
   expiration: string;
+  /** Contracts (single_leg) or spreads (debit_spread). */
   quantity: number;
+  /** The long leg's fill premium for a debit spread. */
   entryPrice: number;
-  /** $ risked at entry (contracts x premium x 100) — for R-multiple stats. */
+  /** $ risked at entry (full premium for single_leg; net debit x 100 for a
+   *  spread) — for R-multiple stats. */
   riskAmount: number;
   riskProfile: string;
   rationale: string;
 }
 
 export interface CloseOptionsPaperPositionInput {
+  /** The long leg's exit premium for a debit spread. */
   exitPrice: number;
+  /** The short leg's exit premium — debit spreads only. */
+  shortExitPrice?: number;
   exitReason: OptionsPaperExitReason;
 }
 
@@ -37,17 +52,22 @@ export interface OptionsPaperPosition {
   id: number;
   symbol: string;
   side: OptionsPaperSide;
+  kind: OptionsPaperKind;
   contractSymbol: string;
   strike: number;
+  shortContractSymbol: string | null;
+  shortStrike: number | null;
   expiration: string;
   quantity: number;
   entryPrice: number;
+  shortEntryPrice: number | null;
   entryAt: number;
   riskAmount: number;
   riskProfile: string;
   rationale: string;
   status: 'open' | 'closed';
   exitPrice: number | null;
+  shortExitPrice: number | null;
   exitAt: number | null;
   exitReason: OptionsPaperExitReason | null;
   createdAt: number;
@@ -65,17 +85,22 @@ interface Row {
   id: number;
   symbol: string;
   side: OptionsPaperSide;
+  kind: OptionsPaperKind;
   contract_symbol: string;
   strike: number;
+  short_contract_symbol: string | null;
+  short_strike: number | null;
   expiration: string;
   quantity: number;
   entry_price: number;
+  short_entry_price: number | null;
   entry_at: number;
   risk_amount: number;
   risk_profile: string;
   rationale: string;
   status: 'open' | 'closed';
   exit_price: number | null;
+  short_exit_price: number | null;
   exit_at: number | null;
   exit_reason: OptionsPaperExitReason | null;
   created_at: number;
@@ -87,17 +112,22 @@ function map(r: Row): OptionsPaperPosition {
     id: r.id,
     symbol: r.symbol,
     side: r.side,
+    kind: r.kind,
     contractSymbol: r.contract_symbol,
     strike: r.strike,
+    shortContractSymbol: r.short_contract_symbol,
+    shortStrike: r.short_strike,
     expiration: r.expiration,
     quantity: r.quantity,
     entryPrice: r.entry_price,
+    shortEntryPrice: r.short_entry_price,
     entryAt: r.entry_at,
     riskAmount: r.risk_amount,
     riskProfile: r.risk_profile,
     rationale: r.rationale,
     status: r.status,
     exitPrice: r.exit_price,
+    shortExitPrice: r.short_exit_price,
     exitAt: r.exit_at,
     exitReason: r.exit_reason,
     createdAt: r.created_at,
@@ -111,18 +141,23 @@ export function openOptionsPaperPosition(input: OpenOptionsPaperPositionInput): 
   const info = db
     .prepare(
       `INSERT INTO autotrade_options_paper_positions
-         (symbol, side, contract_symbol, strike, expiration, quantity, entry_price, entry_at,
+         (symbol, side, kind, contract_symbol, strike, short_contract_symbol, short_strike,
+          expiration, quantity, entry_price, short_entry_price, entry_at,
           risk_amount, risk_profile, rationale, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
     )
     .run(
       input.symbol.toUpperCase(),
       input.side,
+      input.kind ?? 'single_leg',
       input.contractSymbol,
       input.strike,
+      input.shortContractSymbol ?? null,
+      input.shortStrike ?? null,
       input.expiration,
       input.quantity,
       input.entryPrice,
+      input.shortEntryPrice ?? null,
       now,
       input.riskAmount,
       input.riskProfile,
@@ -146,10 +181,10 @@ export function closeOptionsPaperPosition(
   const info = db
     .prepare(
       `UPDATE autotrade_options_paper_positions
-       SET status = 'closed', exit_price = ?, exit_at = ?, exit_reason = ?, updated_at = ?
+       SET status = 'closed', exit_price = ?, short_exit_price = ?, exit_at = ?, exit_reason = ?, updated_at = ?
        WHERE id = ? AND status = 'open'`,
     )
-    .run(input.exitPrice, now, input.exitReason, now, id);
+    .run(input.exitPrice, input.shortExitPrice ?? null, now, input.exitReason, now, id);
   // The WHERE clause makes this UPDATE conditional, but a conditional UPDATE
   // that matches zero rows still "succeeds" — checking `changes` (not just
   // re-SELECTing) is what actually distinguishes "closed just now" from

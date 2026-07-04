@@ -67,11 +67,25 @@ function etDateStr(ms: number = Date.now()): string {
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
-/** A long option's realized P&L: (exit - entry) premium per share x
- *  contracts x 100 — no buy/sell sign flip, since every options paper
- *  position is long the contract itself (call or put), matching phase 10's
- *  sizing convention. */
-function optionsPnl(p: OptionsPaperPosition, exitPrice: number): number {
+/** Realized P&L. Single-leg: (exit - entry) premium per share x contracts x
+ *  100 — no buy/sell sign flip, since a single-leg position is long the
+ *  contract itself, matching phase 10's sizing convention. Debit spread: the
+ *  spread is one unit whose "price" is long premium minus short premium —
+ *  P&L is (netCreditAtExit - netDebitAtEntry) x spreads x 100. shortExitPrice
+ *  defaults to the row's own (already-persisted) value, so callers computing
+ *  P&L from an already-closed row (e.g. the portfolio snapshot) can omit it;
+ *  checkOptionsPaperExits() passes it explicitly since it computes P&L from a
+ *  freshly-fetched mark just BEFORE the row is closed. */
+function optionsPnl(
+  p: OptionsPaperPosition,
+  exitPrice: number,
+  shortExitPrice: number | null = p.shortExitPrice,
+): number {
+  if (p.kind === 'debit_spread') {
+    const netDebitAtEntry = p.entryPrice - (p.shortEntryPrice ?? 0);
+    const netCreditAtExit = exitPrice - (shortExitPrice ?? 0);
+    return (netCreditAtExit - netDebitAtEntry) * p.quantity * 100;
+  }
   return (exitPrice - p.entryPrice) * p.quantity * 100;
 }
 
@@ -100,19 +114,35 @@ async function fetchContractMark(
   return mark;
 }
 
+/** Shared "log + return failure" for an entry attempt, so both the single-leg
+ *  and debit-spread paths report a failed entry identically. */
+function entryFailure(symbol: string, riskProfile: RiskProfileName, reason: string): OptionsExecutionOutcome {
+  logAutotradeEvent({
+    symbol,
+    stage: 'execution',
+    action: 'options_paper_entry_failed',
+    detail: { reason },
+    riskProfile,
+  });
+  return { symbol, ok: false, reason };
+}
+
+function validPremium(v: number): boolean {
+  return Number.isFinite(v) && v > 0;
+}
+
 /**
  * Attempt to open an options paper position for an approved (already
  * risk-checked) signal. Idempotent per underlying: a symbol that already has
- * an open options paper position is skipped, never stacked. Fills at a
- * FRESHLY-fetched contract mark, not the signal's own screening-time
- * premium — same "now IS the fill moment" reasoning as attemptPaperEntry().
+ * an open options paper position is skipped, never stacked (single-leg or
+ * spread — one options position per underlying either way). Fills at
+ * FRESHLY-fetched contract mark(s), not the signal's own screening-time
+ * premium(s) — same "now IS the fill moment" reasoning as attemptPaperEntry().
  *
- * Single-leg only: a 'debit_spread' signal is risk-checked exactly like a
- * single-leg one (see optionsRiskCheck.ts — the combined budget applies to
- * both), but is skipped here rather than opened, since a spread has no
- * paper-execution path yet (autotrade_options_paper_positions is a
- * single-contract schema). docs/AUTOTRADING_SPEC.md's own phase 9/10 scoping
- * note applies again: decision + risk-check, not execution, until asked for.
+ * A debit spread fills BOTH legs or neither: if either leg's quote fetch
+ * fails, or the net debit has vanished/inverted between screening and fill
+ * (stale quotes), the whole entry is rejected — there is no partial-spread
+ * position.
  */
 export async function attemptOptionsPaperEntry(
   signal: OptionsTradeSignal,
@@ -120,47 +150,92 @@ export async function attemptOptionsPaperEntry(
   riskProfile: RiskProfileName,
 ): Promise<OptionsExecutionOutcome> {
   if (!riskResult.ok) return { symbol: signal.symbol, ok: false, reason: 'Risk check did not pass' };
-  if (signal.kind === 'debit_spread') {
-    return {
-      symbol: signal.symbol,
-      ok: false,
-      reason: 'Debit-spread paper execution is not supported yet (decision/risk-check only)',
-    };
-  }
   if (hasOpenOptionsPaperPosition(signal.symbol)) {
     return { symbol: signal.symbol, ok: false, reason: 'Already has an open options paper position' };
+  }
+
+  if (signal.kind === 'debit_spread') {
+    let longFill: number;
+    let shortFill: number;
+    try {
+      [longFill, shortFill] = await Promise.all([
+        fetchContractMark(signal.symbol, signal.expiration, signal.longStrike, signal.side),
+        fetchContractMark(signal.symbol, signal.expiration, signal.shortStrike, signal.side),
+      ]);
+    } catch (err) {
+      return entryFailure(signal.symbol, riskProfile, `Quote fetch failed: ${(err as Error).message}`);
+    }
+    if (!validPremium(longFill) || !validPremium(shortFill)) {
+      return entryFailure(signal.symbol, riskProfile, `Invalid premium: long=${longFill} short=${shortFill}`);
+    }
+    if (longFill <= shortFill) {
+      return entryFailure(
+        signal.symbol,
+        riskProfile,
+        `Net debit vanished at fill (long ${longFill} <= short ${shortFill})`,
+      );
+    }
+
+    const quantity = 'suggestedContracts' in riskResult.sizing ? riskResult.sizing.suggestedContracts : 0;
+    let position: OptionsPaperPosition;
+    try {
+      position = openOptionsPaperPosition({
+        symbol: signal.symbol,
+        side: signal.side,
+        kind: 'debit_spread',
+        contractSymbol: signal.longContractSymbol,
+        strike: signal.longStrike,
+        shortContractSymbol: signal.shortContractSymbol,
+        shortStrike: signal.shortStrike,
+        shortEntryPrice: shortFill,
+        expiration: signal.expiration,
+        quantity,
+        entryPrice: longFill,
+        riskAmount: riskResult.approvedRiskAmount,
+        riskProfile,
+        rationale: signal.rationale,
+      });
+    } catch (err) {
+      return entryFailure(
+        signal.symbol,
+        riskProfile,
+        `Failed to record options paper position: ${(err as Error).message}`,
+      );
+    }
+    logAutotradeEvent({
+      symbol: signal.symbol,
+      stage: 'execution',
+      action: 'options_paper_order_placed',
+      detail: {
+        kind: 'debit_spread',
+        side: signal.side,
+        longContractSymbol: signal.longContractSymbol,
+        longStrike: signal.longStrike,
+        shortContractSymbol: signal.shortContractSymbol,
+        shortStrike: signal.shortStrike,
+        expiration: signal.expiration,
+        quantity: position.quantity,
+        netDebit: longFill - shortFill,
+      },
+      riskProfile,
+    });
+    return { symbol: signal.symbol, ok: true, position };
   }
 
   let fillPremium: number;
   try {
     fillPremium = await fetchContractMark(signal.symbol, signal.expiration, signal.strike, signal.side);
   } catch (err) {
-    const reason = `Quote fetch failed: ${(err as Error).message}`;
-    logAutotradeEvent({
-      symbol: signal.symbol,
-      stage: 'execution',
-      action: 'options_paper_entry_failed',
-      detail: { reason },
-      riskProfile,
-    });
-    return { symbol: signal.symbol, ok: false, reason };
+    return entryFailure(signal.symbol, riskProfile, `Quote fetch failed: ${(err as Error).message}`);
   }
 
-  if (!Number.isFinite(fillPremium) || fillPremium <= 0) {
-    const reason = `Invalid premium: ${fillPremium}`;
-    logAutotradeEvent({
-      symbol: signal.symbol,
-      stage: 'execution',
-      action: 'options_paper_entry_failed',
-      detail: { reason },
-      riskProfile,
-    });
-    return { symbol: signal.symbol, ok: false, reason };
+  if (!validPremium(fillPremium)) {
+    return entryFailure(signal.symbol, riskProfile, `Invalid premium: ${fillPremium}`);
   }
 
-  // riskResult.sizing is RiskSizingResult here — signal.kind === 'single_leg'
-  // (the spread branch already returned above), and evaluateOptionsRiskCheck
-  // always sizes a single-leg signal via computeRiskSizing().
+  // riskResult.sizing is RiskSizingResult here — signal.kind === 'single_leg',
+  // and evaluateOptionsRiskCheck always sizes a single-leg signal via
+  // computeRiskSizing().
   const quantity = 'suggestedQuantity' in riskResult.sizing ? riskResult.sizing.suggestedQuantity : 0;
   let position: OptionsPaperPosition;
   try {
@@ -177,15 +252,11 @@ export async function attemptOptionsPaperEntry(
       rationale: signal.rationale,
     });
   } catch (err) {
-    const reason = `Failed to record options paper position: ${(err as Error).message}`;
-    logAutotradeEvent({
-      symbol: signal.symbol,
-      stage: 'execution',
-      action: 'options_paper_entry_failed',
-      detail: { reason },
+    return entryFailure(
+      signal.symbol,
       riskProfile,
-    });
-    return { symbol: signal.symbol, ok: false, reason };
+      `Failed to record options paper position: ${(err as Error).message}`,
+    );
   }
   logAutotradeEvent({
     symbol: signal.symbol,
@@ -366,22 +437,33 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
     );
     if (!ev.triggered) return { symbol: pos.symbol, closed: false };
 
+    // A spread closes BOTH legs together or not at all — either quote
+    // fetch failing leaves the whole position open for the next cycle's
+    // retry, same as a single leg's own quote-fetch failure.
     let exitPrice: number;
+    let shortExitPrice: number | undefined;
     try {
-      exitPrice = await fetchContractMark(pos.symbol, pos.expiration, pos.strike, pos.side);
+      if (pos.kind === 'debit_spread') {
+        [exitPrice, shortExitPrice] = await Promise.all([
+          fetchContractMark(pos.symbol, pos.expiration, pos.strike, pos.side),
+          fetchContractMark(pos.symbol, pos.expiration, pos.shortStrike!, pos.side),
+        ]);
+      } else {
+        exitPrice = await fetchContractMark(pos.symbol, pos.expiration, pos.strike, pos.side);
+      }
     } catch (err) {
       return { symbol: pos.symbol, closed: false, reason: `Quote fetch failed: ${(err as Error).message}` };
     }
 
     const exitReason: OptionsPaperExitReason = 'time_exit';
-    const closed = closeOptionsPaperPosition(pos.id, { exitPrice, exitReason });
+    const closed = closeOptionsPaperPosition(pos.id, { exitPrice, shortExitPrice, exitReason });
     if (closed) {
-      const pnl = optionsPnl(pos, exitPrice);
+      const pnl = optionsPnl(pos, exitPrice, shortExitPrice ?? null);
       logAutotradeEvent({
         symbol: pos.symbol,
         stage: 'execution',
         action: 'options_paper_position_closed',
-        detail: { exitReason, exitPrice, pnl, dte: ev.dte },
+        detail: { exitReason, exitPrice, shortExitPrice, pnl, dte: ev.dte },
         riskProfile: pos.riskProfile,
       });
     }

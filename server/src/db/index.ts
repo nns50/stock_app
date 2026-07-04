@@ -305,25 +305,34 @@ CREATE TABLE IF NOT EXISTS autotrade_paper_positions (
 -- 'time_exit' (the only automated trigger phase 12 wires — see
 -- options/exitRules.ts's timeExitDaysBeforeExpiry) or 'manual', mirroring
 -- autotrade_paper_positions's own reserved-but-not-yet-used 'manual' value.
+-- kind/short_* (Task #69): a 'debit_spread' row reuses contract_symbol/strike/
+-- entry_price/exit_price for the LONG leg and adds the short_* columns for the
+-- further-OTM short leg; both null for 'single_leg'. quantity is spreads, not
+-- contracts-per-leg (one spread = one long + one short contract).
 CREATE TABLE IF NOT EXISTS autotrade_options_paper_positions (
-  id               INTEGER PRIMARY KEY AUTOINCREMENT,
-  symbol           TEXT NOT NULL,        -- underlying
-  side             TEXT NOT NULL CHECK(side IN ('call','put')),
-  contract_symbol  TEXT NOT NULL,        -- provider contract symbol (e.g. OCC code)
-  strike           REAL NOT NULL,
-  expiration       TEXT NOT NULL,        -- YYYY-MM-DD
-  quantity         REAL NOT NULL,        -- contracts
-  entry_price      REAL NOT NULL,        -- premium per share at fill
-  entry_at         INTEGER NOT NULL,     -- ms epoch (real time, not a backtest date)
-  risk_amount      REAL NOT NULL,        -- $ risked at entry (contracts x premium x 100 — full premium paid)
-  risk_profile     TEXT NOT NULL,
-  rationale        TEXT NOT NULL,
-  status           TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
-  exit_price       REAL,                 -- premium per share at exit
-  exit_at          INTEGER,
-  exit_reason      TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL),
-  created_at       INTEGER NOT NULL,
-  updated_at       INTEGER NOT NULL
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol                 TEXT NOT NULL,        -- underlying
+  side                   TEXT NOT NULL CHECK(side IN ('call','put')),
+  kind                   TEXT NOT NULL DEFAULT 'single_leg', -- 'single_leg' | 'debit_spread'
+  contract_symbol        TEXT NOT NULL,        -- provider contract symbol (e.g. OCC code); long leg for a spread
+  strike                 REAL NOT NULL,        -- long leg's strike for a spread
+  short_contract_symbol  TEXT,                 -- short leg's contract symbol (debit spreads only)
+  short_strike           REAL,                 -- short leg's strike (debit spreads only)
+  expiration             TEXT NOT NULL,        -- YYYY-MM-DD
+  quantity               REAL NOT NULL,        -- contracts (spreads, for a debit_spread row)
+  entry_price            REAL NOT NULL,        -- premium per share at fill; long leg for a spread
+  short_entry_price      REAL,                 -- short leg's premium per share at fill (debit spreads only)
+  entry_at               INTEGER NOT NULL,     -- ms epoch (real time, not a backtest date)
+  risk_amount            REAL NOT NULL,        -- $ risked at entry (full premium for single_leg; net debit x 100 for a spread)
+  risk_profile           TEXT NOT NULL,
+  rationale              TEXT NOT NULL,
+  status                 TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+  exit_price             REAL,                 -- premium per share at exit; long leg for a spread
+  short_exit_price       REAL,                 -- short leg's premium per share at exit (debit spreads only)
+  exit_at                INTEGER,
+  exit_reason            TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL),
+  created_at             INTEGER NOT NULL,
+  updated_at             INTEGER NOT NULL
 );
 
 -- Durable cache of real-estate sector/industry classification results
@@ -475,6 +484,26 @@ function migrate(): void {
   rebuildOrderIntentsTable(db);
 
   rebuildAlertsTable(db);
+
+  // autotrade_options_paper_positions gained a debit-spread shape (Task #69):
+  // a kind discriminator plus the short leg's contract/strike/entry/exit.
+  const oppCols = db.prepare('PRAGMA table_info(autotrade_options_paper_positions)').all() as { name: string }[];
+  const hasOpp = (c: string) => oppCols.some((col) => col.name === c);
+  if (!hasOpp('kind')) {
+    db.exec("ALTER TABLE autotrade_options_paper_positions ADD COLUMN kind TEXT NOT NULL DEFAULT 'single_leg'");
+  }
+  if (!hasOpp('short_contract_symbol')) {
+    db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN short_contract_symbol TEXT');
+  }
+  if (!hasOpp('short_strike')) {
+    db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN short_strike REAL');
+  }
+  if (!hasOpp('short_entry_price')) {
+    db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN short_entry_price REAL');
+  }
+  if (!hasOpp('short_exit_price')) {
+    db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN short_exit_price REAL');
+  }
 }
 
 /**

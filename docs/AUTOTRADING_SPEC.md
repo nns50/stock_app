@@ -1042,15 +1042,28 @@ on its own timeline regardless of this options work.
     the shared `RiskCheckResult` equity's own risk-check returns) since a spread's sizing
     result is a `SpreadSizingResult`, not a `RiskSizingResult` — kept separate so equity's
     risk-check path never needs to narrow a union it can't produce.
-    **Still decision + risk-check only, mirroring exactly where phases 9→10 originally
+    **Was decision + risk-check only, mirroring exactly where phases 9→10 originally
     stopped**: a `'debit_spread'` signal that passes risk-check is risk-checked against the
-    same combined budget as a single leg, but `attemptOptionsPaperEntry()` skips it with a
-    clear logged reason at the final "open a position" step rather than opening one — the
-    `autotrade_options_paper_positions` schema is single-contract, with no shape yet for a
-    two-leg paper position. Options backtesting (phase 11) is unaffected and remains
-    single-leg only. Exposed as a new **Options strategy** selector on the Auto-Trade
-    page's config panel (single leg / debit spread), and the existing Options preview
-    column on the candidates table now renders whichever shape the signal is.
+    same combined budget as a single leg, but `attemptOptionsPaperEntry()` used to skip it
+    with a clear logged reason at the final "open a position" step rather than opening
+    one, since `autotrade_options_paper_positions` was single-contract, with no shape for a
+    two-leg paper position. Exposed as a new **Options strategy** selector on the
+    Auto-Trade page's config panel (single leg / debit spread), and the existing Options
+    preview column on the candidates table now renders whichever shape the signal is.
+    **Fixed (2026-07-04) — Task #69, paper execution.** `autotrade_options_paper_positions`
+    gained a `kind` column plus `short_contract_symbol`/`short_strike`/`short_entry_price`/
+    `short_exit_price` (additive `ALTER TABLE`s in `migrate()`, existing rows default to
+    `kind = 'single_leg'` with the short columns null — no migration of existing data
+    needed). A `'debit_spread'` signal now opens BOTH legs at freshly-fetched marks in
+    `attemptOptionsPaperEntry()` — atomically: either leg's quote failing, or the net debit
+    having vanished/inverted between screening and fill (stale quotes), rejects the whole
+    entry, never a partial spread. `checkOptionsPaperExits()`'s time-exit trigger closes
+    both legs together the same way. Realized/unrealized P&L for a spread nets the two
+    legs' values first — `(netValueAtExit − netDebitAtEntry) × spreads × 100` — rather than
+    reusing the single-leg `(exit − entry) × contracts × 100` formula; the Options paper
+    positions table shows a spread's strikes as `long/short` and its Entry/Current/Exit $
+    columns as that net value. **Options backtesting (phase 11) is unaffected and remains
+    single-leg only** — see the follow-up note after phase 11's writeup below.
 11. **Options backtesting — shipped.** Given the scope (a new contract-discovery data
     layer, deriving IV/Greeks from historical prices, and a day-by-day simulator reusing
     phases 9-10's real functions), this was built in four independently-mergeable steps,

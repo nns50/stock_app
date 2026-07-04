@@ -444,14 +444,36 @@ function PaperPositionsTable({ positions }: { positions: PaperPosition[] }) {
   );
 }
 
+/** The position's own $ value — entry cost, live mark, or exit value — as ONE
+ *  unit: the raw premium for single_leg, or long-minus-short for a debit
+ *  spread. Null when a needed leg's price isn't available. */
+function optionsPaperEntryValue(p: OptionsPaperPosition): number {
+  return p.kind === 'debit_spread' ? p.entryPrice - (p.shortEntryPrice ?? 0) : p.entryPrice;
+}
+function optionsPaperCurrentValue(p: OptionsPaperPosition): number | null {
+  if (p.status !== 'open' || p.currentPrice === null) return null;
+  if (p.kind === 'debit_spread') {
+    if (p.shortCurrentPrice === null) return null;
+    return p.currentPrice - p.shortCurrentPrice;
+  }
+  return p.currentPrice;
+}
+function optionsPaperExitValue(p: OptionsPaperPosition): number | null {
+  if (p.exitPrice === null) return null;
+  return p.kind === 'debit_spread' ? p.exitPrice - (p.shortExitPrice ?? 0) : p.exitPrice;
+}
+
 /** Realized P&L for a closed options paper position; unrealized for an open
- *  one, from the live contract mark the server resolved this request
- *  (server/src/routes/autotrade.ts's withLiveOptionMarks). No sign flip —
- *  every options paper position is long the contract itself. */
+ *  one, from the live contract mark(s) the server resolved this request
+ *  (server/src/routes/autotrade.ts's withLiveOptionMarks). No sign flip for
+ *  single_leg — every single-leg position is long the contract itself; a
+ *  debit spread nets its two legs' values first (optionsPaperExitValue/
+ *  optionsPaperEntryValue above). */
 function optionsPaperPnl(p: OptionsPaperPosition): number | null {
   if (p.status === 'open') return p.unrealizedPnl;
-  if (p.exitPrice === null) return null;
-  return (p.exitPrice - p.entryPrice) * p.quantity * 100;
+  const exitValue = optionsPaperExitValue(p);
+  if (exitValue === null) return null;
+  return (exitValue - optionsPaperEntryValue(p)) * p.quantity * 100;
 }
 
 function OptionsPaperPositionsTable({ positions }: { positions: OptionsPaperPosition[] }) {
@@ -486,6 +508,8 @@ function OptionsPaperPositionsTable({ positions }: { positions: OptionsPaperPosi
           {positions.map((p) => {
             const pnl = optionsPaperPnl(p);
             const rMultiple = pnl !== null && p.riskAmount > 0 ? pnl / p.riskAmount : null;
+            const currentValue = optionsPaperCurrentValue(p);
+            const exitValue = optionsPaperExitValue(p);
             return (
               <tr key={p.id} className="border-b border-ink-700/50">
                 <td className="td font-semibold" title={p.rationale}>
@@ -494,6 +518,7 @@ function OptionsPaperPositionsTable({ positions }: { positions: OptionsPaperPosi
                 <td className="td">
                   <Badge color={p.side === 'call' ? 'green' : 'red'}>
                     {p.side} {p.strike}
+                    {p.kind === 'debit_spread' ? `/${p.shortStrike}` : ''}
                   </Badge>{' '}
                   <span className="text-[11px] text-slate-500">{fmtDate(p.expiration)}</span>
                 </td>
@@ -501,12 +526,10 @@ function OptionsPaperPositionsTable({ positions }: { positions: OptionsPaperPosi
                   <Badge color={p.status === 'open' ? 'blue' : 'slate'}>{p.status}</Badge>
                 </td>
                 <td className="td text-slate-400">{ago(p.entryAt)}</td>
-                <td className="td text-right tabular-nums">{fmtUsd(p.entryPrice)}</td>
-                <td className="td text-right tabular-nums">
-                  {p.status === 'open' && p.currentPrice !== null ? fmtUsd(p.currentPrice) : '—'}
-                </td>
+                <td className="td text-right tabular-nums">{fmtUsd(optionsPaperEntryValue(p))}</td>
+                <td className="td text-right tabular-nums">{currentValue === null ? '—' : fmtUsd(currentValue)}</td>
                 <td className="td text-slate-400">{p.exitAt ? ago(p.exitAt) : '—'}</td>
-                <td className="td text-right tabular-nums">{p.exitPrice === null ? '—' : fmtUsd(p.exitPrice)}</td>
+                <td className="td text-right tabular-nums">{exitValue === null ? '—' : fmtUsd(exitValue)}</td>
                 <td className="td">
                   {p.exitReason ? (
                     <Badge color={p.exitReason === 'time_exit' ? 'blue' : 'slate'}>
@@ -2232,9 +2255,10 @@ export default function AutoTradePage() {
 
         <h4 className="font-medium text-sm mt-5 mb-3">Options paper positions</h4>
         <p className="text-xs text-slate-500 mb-3">
-          Single-leg long calls/puts only, gated by the same combined risk budget as equity above. Automated exit is
-          time-based only (close as expiration approaches, no roll) — take-profit/stop-loss/delta-drift stay
-          human-review-only on the Options page.
+          Long calls/puts or debit spreads (whichever the Options strategy setting above builds), gated by the same
+          combined risk budget as equity. A spread's Entry/Current/Exit $ show its net value (long leg minus short leg).
+          Automated exit is time-based only (close as expiration approaches, no roll) — take-profit/stop-loss/
+          delta-drift stay human-review-only on the Options page.
         </p>
         {optionsPaperPositions.loading ? (
           <Spinner />

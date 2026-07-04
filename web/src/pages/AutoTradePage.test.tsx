@@ -1095,22 +1095,28 @@ describe('AutoTradePage', () => {
       id: 1,
       symbol: 'AAPL',
       side: 'call',
+      kind: 'single_leg',
       contractSymbol: 'AAPL-fixture',
       strike: 100,
+      shortContractSymbol: null,
+      shortStrike: null,
       expiration: '2026-08-21',
       quantity: 2,
       entryPrice: 3,
+      shortEntryPrice: null,
       entryAt: Date.now(),
       riskAmount: 600,
       riskProfile: 'MODERATE',
       rationale: 'test fixture',
       status: 'open',
       exitPrice: null,
+      shortExitPrice: null,
       exitAt: null,
       exitReason: null,
       createdAt: Date.now(),
       updatedAt: Date.now(),
       currentPrice: null,
+      shortCurrentPrice: null,
       unrealizedPnl: null,
       ...overrides,
     };
@@ -1169,6 +1175,64 @@ describe('AutoTradePage', () => {
     expect(screen.getByText('$4.00')).toBeInTheDocument(); // Current $ column
     expect(screen.getAllByText('+$200.00').length).toBeGreaterThan(0);
     expect(screen.getByText('0.33R')).toBeInTheDocument(); // 200 / 600 risk
+  });
+
+  it("renders a closed debit spread's long/short strikes and nets its two legs for Entry/Exit $ and P&L", async () => {
+    vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({
+      positions: [
+        optionsPaperPosition({
+          id: 1,
+          symbol: 'SPRD',
+          kind: 'debit_spread',
+          strike: 100,
+          shortStrike: 110,
+          status: 'closed',
+          quantity: 1,
+          entryPrice: 3,
+          shortEntryPrice: 1, // net debit at entry: 2
+          exitPrice: 8,
+          shortExitPrice: 0.5, // net value at exit: 7.5
+          exitAt: Date.now(),
+          exitReason: 'time_exit',
+          riskAmount: 200,
+        }),
+      ],
+    });
+    renderPage();
+    expect(await screen.findByText('SPRD')).toBeInTheDocument();
+    expect(screen.getByText('call 100/110')).toBeInTheDocument();
+    expect(screen.getByText('$2.00')).toBeInTheDocument(); // Entry $ = net debit
+    expect(screen.getByText('$7.50')).toBeInTheDocument(); // Exit $ = net value at exit
+    // pnl = (7.5 - 2) * 1 * 100 = 550 — appears twice: the stat tile total and the trade's own row.
+    expect(screen.getAllByText('+$550.00').length).toBeGreaterThan(0);
+    expect(screen.getByText('2.75R')).toBeInTheDocument(); // 550 / 200
+  });
+
+  it("shows an OPEN debit spread's net current value from both legs' live marks", async () => {
+    vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({
+      positions: [
+        optionsPaperPosition({
+          id: 1,
+          symbol: 'SPRD',
+          kind: 'debit_spread',
+          strike: 100,
+          shortStrike: 110,
+          status: 'open',
+          quantity: 2,
+          entryPrice: 3,
+          shortEntryPrice: 1,
+          currentPrice: 5,
+          shortCurrentPrice: 2, // net current value: 3
+          riskAmount: 400,
+          unrealizedPnl: 200, // (3 - 2) * 2 * 100
+        }),
+      ],
+    });
+    renderPage();
+    expect(await screen.findByText('SPRD')).toBeInTheDocument();
+    expect(screen.getByText('$3.00')).toBeInTheDocument(); // Current $ = net value now
+    expect(screen.getAllByText('+$200.00').length).toBeGreaterThan(0);
+    expect(screen.getByText('0.50R')).toBeInTheDocument(); // 200 / 400
   });
 
   it('runs one loop cycle, shows the summary, and reloads positions', async () => {
