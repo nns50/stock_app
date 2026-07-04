@@ -492,14 +492,17 @@ starts.
    against the real `positions` journal in tests, plus verified live in a browser.
    Routed at `POST /api/autotrade/risk-check`; the Auto-Trade page's candidates table
    shows a Qty + pass/fail Risk-check column per candidate.
-   **Known gap, flagged during Phase 6's review, deferred to Phase 8:**
-   `getPortfolioSnapshot()`'s "today" bucketing (`new Date().toISOString().slice(0, 10)`)
-   is still UTC-based — the same bug class Phase 6's `execute.ts` was fixed for. Left
-   alone here because this function is only reachable from the manual, human-triggered
-   `POST /api/autotrade/risk-check` preview — never the 24/7 paper loop, which has its
-   own, already-ET-correct bucketing — so it's a live concern only once Phase 8 puts a
-   real order-placing path behind this same function on a schedule that isn't
-   "whenever a human happens to click a button."
+   **Fixed (2026-07-04), originally flagged during Phase 6's review, deferred through
+   Phase 8:** `getPortfolioSnapshot()`'s "today" bucketing was UTC-based
+   (`new Date().toISOString().slice(0, 10)`) for `dailyPnl`, plus a SEPARATE
+   server-local-time midnight (`setHours(0,0,0,0)`) for `tradesToday` — two different,
+   both-wrong bucketings in the same snapshot, the same bug class `execute.ts` was
+   already fixed for in Phase 6. Both now reuse the identical `etDateStr()`
+   (US/Eastern date-string) convention `execute.ts`/`optionsExecute.ts` already use —
+   duplicated locally (not imported) to avoid a circular import, since `execute.ts`
+   already imports from `riskCheck.ts`. Regression-tested by faking the system clock to
+   11:30pm ET (3:30am UTC the next day) and confirming an exit/order dated that instant
+   still buckets as "today," not "yesterday."
 5. **Backtesting & walk-forward harness — the validation gate — shipped.** Ingests
    Polygon/Massive daily bars into a local cache (`backtest_bars`, keyed by
    symbol/timeframe/time) and tracks which `[from, to]` ranges have already been
@@ -750,11 +753,16 @@ starts.
    generic error box; the button is now rendered from local state outside that
    error branch, so it can never be hidden by an unrelated reload failure. Each fix
    has a regression test verified by reverting the fix and confirming the test fails
-   against the old code. **Known, deferred, currently inert**: `stopAutotradeLoop()`
-   unconditionally resets the reentrancy flag, which would defeat the guard if ever
-   called while a tick is genuinely in flight — today only tests and process shutdown
-   call it, and neither races an in-flight tick, so this is safe as used; a future
-   caller (e.g. a "pause" route) would need real cancellation, not just this reset.
+   against the old code. **Fixed (2026-07-04), originally left deferred/inert**:
+   `stopAutotradeLoop()` used to unconditionally reset the reentrancy flag without
+   stopping a genuinely in-flight tick, which could still open a position after the
+   call returned. Now aborts an `AbortController` scoped to the in-flight tick;
+   `runAutotradeLoopTick()` checks it at the same "re-check right before executing"
+   point that already re-reads the enabled/kill-switch gates mid-cycle (screening +
+   deciding is network-bound and can take real wall-clock time), skipping execution
+   entirely if it fires. Not a hard interrupt — nothing here supports mid-await
+   cancellation — but this closes the specific, documented gap (a tick already past
+   that checkpoint when stopped completes normally, same as before).
 
    **Four bugs found live, immediately after the first production deploy, all fixed the
    same day**: `PUT /api/autotrade/config` rebuilt its patch as
