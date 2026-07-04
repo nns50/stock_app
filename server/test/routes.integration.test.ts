@@ -300,7 +300,12 @@ describe('trade (dry-run) routes (integration)', () => {
       body: JSON.stringify(body),
     });
 
-  beforeEach(() => db.exec('DELETE FROM order_events; DELETE FROM order_intents; DELETE FROM trading_config;'));
+  beforeEach(() =>
+    db.exec(
+      'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; ' +
+        'DELETE FROM order_events; DELETE FROM order_intents; DELETE FROM trading_config;',
+    ),
+  );
 
   const account = {
     buyingPowerUsd: 100_000,
@@ -680,6 +685,90 @@ describe('autotrade config routes (integration)', () => {
           liveTradingEnabled: false,
         });
       });
+    });
+  });
+
+  describe('Task #70: live options trading enable gate', () => {
+    it('rejects enabling live options trading while live trading itself is off', async () => {
+      const res = await put('/api/autotrade/config', { liveOptionsEnabled: true });
+      expect(res.status).toBe(400);
+      expect(await getJson('/api/autotrade/config')).toMatchObject({ liveOptionsEnabled: false });
+    });
+
+    it('accepts enabling live options trading once live trading is already on, with no separate confirmation phrase', async () => {
+      await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        confirmLiveTrading: 'ENABLE LIVE TRADING',
+      });
+      const res = await put('/api/autotrade/config', { liveOptionsEnabled: true });
+      expect(res.status).toBe(200);
+      expect((await res.json()) as { liveOptionsEnabled: boolean }).toMatchObject({ liveOptionsEnabled: true });
+    });
+
+    it('accepts enabling both live trading and live options trading in the SAME request', async () => {
+      const before = Date.now();
+      const res = await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        liveOptionsEnabled: true,
+        confirmLiveTrading: 'ENABLE LIVE TRADING',
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        liveTradingEnabled: boolean;
+        liveOptionsEnabled: boolean;
+        liveOptionsEnabledAt: number | null;
+      };
+      expect(body).toMatchObject({ liveTradingEnabled: true, liveOptionsEnabled: true });
+      expect(body.liveOptionsEnabledAt).not.toBeNull();
+      expect(body.liveOptionsEnabledAt as number).toBeGreaterThanOrEqual(before);
+    });
+
+    it('stamps liveOptionsEnabledAt independently of liveEnabledAt', async () => {
+      await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        confirmLiveTrading: 'ENABLE LIVE TRADING',
+      });
+      const afterMaster = (await getJson('/api/autotrade/config')) as { liveEnabledAt: number };
+      const res = await put('/api/autotrade/config', { liveOptionsEnabled: true });
+      const body = (await res.json()) as { liveEnabledAt: number; liveOptionsEnabledAt: number };
+      expect(body.liveEnabledAt).toBe(afterMaster.liveEnabledAt); // untouched by the options-only save
+      expect(body.liveOptionsEnabledAt).toBeGreaterThanOrEqual(afterMaster.liveEnabledAt);
+    });
+
+    it('does not require confirmation to turn live options trading back off', async () => {
+      await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        liveOptionsEnabled: true,
+        confirmLiveTrading: 'ENABLE LIVE TRADING',
+      });
+      const res = await put('/api/autotrade/config', { liveOptionsEnabled: false });
+      expect(res.status).toBe(200);
+      expect((await res.json()) as { liveOptionsEnabled: boolean }).toMatchObject({ liveOptionsEnabled: false });
+    });
+
+    it('an unrelated save does not reset liveOptionsEnabled or its dedicated caps to their defaults', async () => {
+      await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        liveOptionsEnabled: true,
+        confirmLiveTrading: 'ENABLE LIVE TRADING',
+      });
+      await put('/api/autotrade/config', { liveOptionsMaxOrderUsd: 650 });
+      const final = (await getJson('/api/autotrade/config')) as {
+        liveOptionsEnabled: boolean;
+        liveOptionsMaxOrderUsd: number;
+      };
+      expect(final.liveOptionsEnabled).toBe(true);
+      expect(final.liveOptionsMaxOrderUsd).toBe(650);
+    });
+
+    it('leaving live trading off while sending liveOptionsEnabled: false is a harmless no-op, not an error', async () => {
+      const res = await put('/api/autotrade/config', { liveOptionsEnabled: false });
+      expect(res.status).toBe(200);
     });
   });
 });

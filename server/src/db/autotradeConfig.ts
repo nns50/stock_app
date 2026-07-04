@@ -85,6 +85,40 @@ export interface AutotradeConfig {
   liveProbationTrades: number;
   liveProbationSizeMultiplier: number;
 
+  // --- Task #70: live options trading -----------------------------------
+
+  /** Options-specific opt-in nested UNDER liveTradingEnabled — the master
+   *  gate (and its typed confirmation phrase) already covers "real money is
+   *  now live"; this is a plain checkbox with no second confirmation, same
+   *  relationship optionsStrategyType already has to the paper loop's own
+   *  master `enabled` toggle. The loop only places live OPTIONS orders when
+   *  BOTH this and liveTradingEnabled are true. Reuses liveAccountId (already
+   *  asset-agnostic — Webull returns one account for both stock and option
+   *  orders) rather than a second account id field. */
+  liveOptionsEnabled: boolean;
+  /** Epoch ms of the most recent false -> true transition of
+   *  liveOptionsEnabled, or null if never enabled. Anchors the OPTIONS
+   *  probation window separately from liveEnabledAt: a user could enable live
+   *  EQUITY trading first and only turn on live OPTIONS weeks later, so the
+   *  options probation window should start when OPTIONS specifically went
+   *  live, not when the master flag did. */
+  liveOptionsEnabledAt: number | null;
+  /** Guardrail caps for autotrade's own LIVE OPTIONS orders — dedicated,
+   *  separate from the live EQUITY caps above (liveMaxOrderUsd etc.), mirroring
+   *  how paper trading already keeps the two books' risk separate-but-combined.
+   *  Options position sizing (premium-based, defined-risk by strike
+   *  construction) is a different shape than equity's share-count sizing, so
+   *  tuning these independently is deliberate, not an oversight. */
+  liveOptionsMaxOrderUsd: number;
+  liveOptionsMaxDailyLossUsd: number;
+  liveOptionsMaxOrdersPerDay: number;
+  liveOptionsFatFingerPct: number;
+  /** Mirrors liveProbationTrades/liveProbationSizeMultiplier, counted from
+   *  liveOptionsEnabledAt via countLiveOptionsOrdersSince() — a fully
+   *  separate probation window from equity's own. */
+  liveOptionsProbationTrades: number;
+  liveOptionsProbationSizeMultiplier: number;
+
   // --- Options strategy shape (docs/AUTOTRADING_SPEC.md — phase 9/10 follow-up) ---
 
   /** 'single_leg' (default) or 'debit_spread' — see OptionsStrategyType doc
@@ -126,6 +160,14 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveAllowNakedShort: false,
     liveProbationTrades: 20,
     liveProbationSizeMultiplier: 0.5,
+    liveOptionsEnabled: false,
+    liveOptionsEnabledAt: null,
+    liveOptionsMaxOrderUsd: 500,
+    liveOptionsMaxDailyLossUsd: 250,
+    liveOptionsMaxOrdersPerDay: DEFAULT_LIVE_MAX_ORDERS_PER_DAY,
+    liveOptionsFatFingerPct: 10,
+    liveOptionsProbationTrades: 20,
+    liveOptionsProbationSizeMultiplier: 0.5,
     optionsStrategyType: 'single_leg',
   };
 }
@@ -159,6 +201,10 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
         : d.liveAccountId;
   const enabledAt =
     typeof input.liveEnabledAt === 'number' && Number.isFinite(input.liveEnabledAt) ? input.liveEnabledAt : null;
+  const optionsEnabledAt =
+    typeof input.liveOptionsEnabledAt === 'number' && Number.isFinite(input.liveOptionsEnabledAt)
+      ? input.liveOptionsEnabledAt
+      : null;
   return {
     enabled: typeof input.enabled === 'boolean' ? input.enabled : d.enabled,
     killSwitch: typeof input.killSwitch === 'boolean' ? input.killSwitch : d.killSwitch,
@@ -178,6 +224,17 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     liveProbationSizeMultiplier: (() => {
       const n = Number(input.liveProbationSizeMultiplier);
       return Number.isFinite(n) && n > 0 && n <= 1 ? n : d.liveProbationSizeMultiplier;
+    })(),
+    liveOptionsEnabled: typeof input.liveOptionsEnabled === 'boolean' ? input.liveOptionsEnabled : d.liveOptionsEnabled,
+    liveOptionsEnabledAt: optionsEnabledAt,
+    liveOptionsMaxOrderUsd: nonNeg(input.liveOptionsMaxOrderUsd, d.liveOptionsMaxOrderUsd),
+    liveOptionsMaxDailyLossUsd: nonNeg(input.liveOptionsMaxDailyLossUsd, d.liveOptionsMaxDailyLossUsd),
+    liveOptionsMaxOrdersPerDay: posInt(input.liveOptionsMaxOrdersPerDay, d.liveOptionsMaxOrdersPerDay),
+    liveOptionsFatFingerPct: pct(input.liveOptionsFatFingerPct, d.liveOptionsFatFingerPct),
+    liveOptionsProbationTrades: posInt(input.liveOptionsProbationTrades, d.liveOptionsProbationTrades),
+    liveOptionsProbationSizeMultiplier: (() => {
+      const n = Number(input.liveOptionsProbationSizeMultiplier);
+      return Number.isFinite(n) && n > 0 && n <= 1 ? n : d.liveOptionsProbationSizeMultiplier;
     })(),
     optionsStrategyType:
       input.optionsStrategyType === 'debit_spread' || input.optionsStrategyType === 'single_leg'

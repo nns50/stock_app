@@ -11,7 +11,10 @@ const CID = 'cc404a3544f74577a20839cf42c5892e';
 
 beforeAll(() => initDb());
 beforeEach(() => {
-  db.exec('DELETE FROM order_events; DELETE FROM order_intents; DELETE FROM positions;');
+  db.exec(
+    'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; ' +
+      'DELETE FROM order_events; DELETE FROM order_intents; DELETE FROM positions;',
+  );
   Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
 });
 afterEach(() => {

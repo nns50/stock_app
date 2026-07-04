@@ -151,6 +151,67 @@ describe('autotrade config persistence', () => {
     });
   });
 
+  describe('Task #70: live options trading fields', () => {
+    it('default to off/unset, with conservative starting caps, mirroring the equity live fields', () => {
+      const d = defaultAutotradeConfig();
+      expect(d.liveOptionsEnabled).toBe(false);
+      expect(d.liveOptionsEnabledAt).toBeNull();
+      expect(d.liveOptionsMaxOrderUsd).toBeGreaterThan(0);
+      expect(d.liveOptionsMaxDailyLossUsd).toBeGreaterThan(0);
+      expect(d.liveOptionsMaxOrdersPerDay).toBeGreaterThan(0);
+      expect(d.liveOptionsProbationTrades).toBeGreaterThan(0);
+      expect(d.liveOptionsProbationSizeMultiplier).toBeGreaterThan(0);
+      expect(d.liveOptionsProbationSizeMultiplier).toBeLessThanOrEqual(1);
+    });
+
+    it('persists the live options cap fields, independent of the equity live caps', () => {
+      const cfg = setAutotradeConfig({
+        liveMaxOrderUsd: 2_000, // equity's own — must stay untouched
+        liveOptionsMaxOrderUsd: 750,
+        liveOptionsMaxDailyLossUsd: 300,
+        liveOptionsMaxOrdersPerDay: 3,
+        liveOptionsFatFingerPct: 12,
+        liveOptionsProbationTrades: 10,
+        liveOptionsProbationSizeMultiplier: 0.25,
+      });
+      expect(cfg).toMatchObject({
+        liveMaxOrderUsd: 2_000,
+        liveOptionsMaxOrderUsd: 750,
+        liveOptionsMaxDailyLossUsd: 300,
+        liveOptionsMaxOrdersPerDay: 3,
+        liveOptionsFatFingerPct: 12,
+        liveOptionsProbationTrades: 10,
+        liveOptionsProbationSizeMultiplier: 0.25,
+      });
+      expect(getAutotradeConfig()).toEqual(cfg);
+    });
+
+    it('rejects a live options probation multiplier outside (0, 1], failing closed to the default', () => {
+      // @ts-expect-error deliberately invalid input
+      const tooHigh = setAutotradeConfig({ liveOptionsProbationSizeMultiplier: 2 });
+      expect(tooHigh.liveOptionsProbationSizeMultiplier).toBe(
+        defaultAutotradeConfig().liveOptionsProbationSizeMultiplier,
+      );
+      // @ts-expect-error deliberately invalid input
+      const zero = setAutotradeConfig({ liveOptionsProbationSizeMultiplier: 0 });
+      expect(zero.liveOptionsProbationSizeMultiplier).toBe(defaultAutotradeConfig().liveOptionsProbationSizeMultiplier);
+    });
+
+    it('liveOptionsEnabled and liveOptionsEnabledAt round-trip independently of unrelated patches, including equity live-trading fields', () => {
+      const enabledAt = Date.now();
+      setAutotradeConfig({ liveTradingEnabled: true, liveEnabledAt: enabledAt - 1000 });
+      const optionsEnabledAt = Date.now();
+      setAutotradeConfig({ liveOptionsEnabled: true, liveOptionsEnabledAt: optionsEnabledAt });
+      const cfg = setAutotradeConfig({ liveOptionsMaxOrderUsd: 999 });
+      expect(cfg.liveOptionsEnabled).toBe(true);
+      expect(cfg.liveOptionsEnabledAt).toBe(optionsEnabledAt);
+      expect(cfg.liveOptionsMaxOrderUsd).toBe(999);
+      // The two enable timestamps are genuinely independent of each other.
+      expect(cfg.liveEnabledAt).toBe(enabledAt - 1000);
+      expect(cfg.liveEnabledAt).not.toBe(cfg.liveOptionsEnabledAt);
+    });
+  });
+
   describe('options strategy type', () => {
     it("defaults to 'single_leg'", () => {
       expect(defaultAutotradeConfig().optionsStrategyType).toBe('single_leg');

@@ -96,7 +96,8 @@ beforeAll(() => initDb());
 beforeEach(() => {
   db.exec(
     'DELETE FROM autotrade_config; DELETE FROM trading_config; DELETE FROM autotrade_events; ' +
-      'DELETE FROM autotrade_live_orders; DELETE FROM order_events; DELETE FROM order_intents; ' +
+      'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; ' +
+      'DELETE FROM order_events; DELETE FROM order_intents; ' +
       'DELETE FROM position_exits; DELETE FROM positions;',
   );
   setTradingConfig({ enabled: true, killSwitch: false });

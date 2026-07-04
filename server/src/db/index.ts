@@ -375,6 +375,53 @@ CREATE TABLE IF NOT EXISTS autotrade_live_orders (
   created_at    INTEGER NOT NULL
 );
 
+-- Task #70 (live options trading): the options counterpart to
+-- autotrade_live_orders/positions above, kept as its own parallel pair of
+-- tables rather than reusing positions -- a debit spread has no short-leg
+-- column there (same reasoning as autotrade_options_paper_positions's own
+-- header comment). Autotrade's options signals never carried a price-based
+-- stop/target to begin with (Phase 12's confirmed "close-only, time-based"
+-- exit design), so there is no bracket order here for either single-leg or
+-- spread entries -- an exit is a SEPARATE closing order this loop places
+-- itself when the time-exit trigger fires, tracked via the role column
+-- below rather than a bracket leg.
+CREATE TABLE IF NOT EXISTS autotrade_live_options_positions (
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol                 TEXT NOT NULL,        -- underlying
+  side                   TEXT NOT NULL CHECK(side IN ('call','put')),
+  kind                   TEXT NOT NULL DEFAULT 'single_leg', -- 'single_leg' | 'debit_spread'
+  contract_symbol        TEXT NOT NULL,        -- long leg for a spread
+  strike                 REAL NOT NULL,        -- long leg's strike for a spread
+  short_contract_symbol  TEXT,                 -- short leg's contract symbol (debit spreads only)
+  short_strike           REAL,                 -- short leg's strike (debit spreads only)
+  expiration             TEXT NOT NULL,        -- YYYY-MM-DD
+  quantity               REAL NOT NULL,        -- contracts (spreads, for a debit_spread row)
+  entry_price            REAL NOT NULL,        -- filled premium per share; long leg for a spread
+  short_entry_price      REAL,                 -- short leg's filled premium (debit spreads only)
+  entry_at               INTEGER NOT NULL,     -- ms epoch
+  risk_amount            REAL NOT NULL,        -- $ risked at entry (full premium for single_leg; net debit x 100 for a spread)
+  risk_profile           TEXT NOT NULL,
+  rationale              TEXT NOT NULL,
+  status                 TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+  exit_price             REAL,                 -- filled premium per share at exit; long leg for a spread
+  short_exit_price       REAL,                 -- short leg's filled premium at exit (debit spreads only)
+  exit_at                INTEGER,
+  exit_reason            TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL),
+  created_at             INTEGER NOT NULL,
+  updated_at             INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS autotrade_live_options_orders (
+  intent_id     INTEGER PRIMARY KEY REFERENCES order_intents(id),
+  symbol        TEXT NOT NULL,
+  role          TEXT NOT NULL CHECK(role IN ('entry','exit')),
+  kind          TEXT NOT NULL DEFAULT 'single_leg',
+  risk_amount   REAL,                 -- entry rows only (risk-checked $ amount); null for exit rows
+  risk_profile  TEXT NOT NULL,
+  position_id   INTEGER,              -- entry: set once the fill materializes a position; exit: known upfront (which position this closes)
+  created_at    INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_exits_position ON position_exits(position_id);
 CREATE INDEX IF NOT EXISTS idx_picks_snapshot ON screener_picks(snapshot_id);
@@ -386,6 +433,8 @@ CREATE INDEX IF NOT EXISTS idx_backtest_fetch_log_lookup ON backtest_fetch_log(s
 CREATE INDEX IF NOT EXISTS idx_autotrade_paper_positions_status ON autotrade_paper_positions(symbol, status);
 CREATE INDEX IF NOT EXISTS idx_autotrade_options_paper_positions_status ON autotrade_options_paper_positions(symbol, status);
 CREATE INDEX IF NOT EXISTS idx_autotrade_live_orders_symbol ON autotrade_live_orders(symbol);
+CREATE INDEX IF NOT EXISTS idx_autotrade_live_options_positions_status ON autotrade_live_options_positions(symbol, status);
+CREATE INDEX IF NOT EXISTS idx_autotrade_live_options_orders_symbol ON autotrade_live_options_orders(symbol);
 CREATE INDEX IF NOT EXISTS idx_backtest_option_contracts_lookup ON backtest_option_contracts(underlying, expiration);
 CREATE INDEX IF NOT EXISTS idx_backtest_option_contracts_fetch_log_lookup ON backtest_option_contracts_fetch_log(underlying);
 `;

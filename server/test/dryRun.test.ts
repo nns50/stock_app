@@ -6,7 +6,12 @@ import { getEvents } from '../src/db/orders';
 import type { AccountState, OrderIntent } from '../src/services/trading/guardrails';
 
 beforeAll(() => initDb());
-beforeEach(() => db.exec('DELETE FROM order_events; DELETE FROM order_intents; DELETE FROM trading_config;'));
+beforeEach(() =>
+  db.exec(
+    'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; ' +
+      'DELETE FROM order_events; DELETE FROM order_intents; DELETE FROM trading_config;',
+  ),
+);
 
 const account: AccountState = {
   buyingPowerUsd: 100_000,
