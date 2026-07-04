@@ -7,20 +7,24 @@ vi.mock('../src/providers/webull/accountState', () => ({
 }));
 vi.mock('../src/providers/webull/orders', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/providers/webull/orders')>();
-  return { ...actual, webullPlaceOrder: vi.fn() };
+  return { ...actual, webullPlaceOrder: vi.fn(), webullOrderStatus: vi.fn() };
 });
 
 import { config } from '../src/config';
 import { getProvider } from '../src/providers';
 import { webullAccountState, webullAccountType } from '../src/providers/webull/accountState';
-import { webullPlaceOrder } from '../src/providers/webull/orders';
+import { webullPlaceOrder, webullOrderStatus, WebullOrderStatus } from '../src/providers/webull/orders';
 import { initDb, db } from '../src/db';
 import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { listIntents } from '../src/db/orders';
-import { getLiveOptionsOrder } from '../src/db/autotradeLiveOptionsOrders';
-import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
+import { getLiveOptionsOrder, listPendingLiveOptionsOrders } from '../src/db/autotradeLiveOptionsOrders';
+import {
+  createLiveOptionsPosition,
+  getLiveOptionsPosition,
+  listOpenLiveOptionsPositions,
+} from '../src/db/autotradeLiveOptionsPositions';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from '../src/services/autotrading/optionsRiskCheck';
 import { RISK_PROFILES } from '../src/services/autotrading/riskProfiles';
 import { DebitSpreadOptionsSignal, SingleLegOptionsSignal } from '../src/services/autotrading/optionsDecide';
@@ -30,12 +34,15 @@ import {
   getOptionsProbationStatus,
   getLiveOptionsPortfolioSnapshot,
   runLiveOptionsExecution,
+  checkLiveOptionsExits,
+  reconcileLiveOptionsOrders,
 } from '../src/services/autotrading/liveOptionsExecute';
 
 const mockGetProvider = vi.mocked(getProvider);
 const mockAccountState = vi.mocked(webullAccountState);
 const mockAccountType = vi.mocked(webullAccountType);
 const mockPlaceOrder = vi.mocked(webullPlaceOrder);
+const mockOrderStatus = vi.mocked(webullOrderStatus);
 
 function optionSignal(overrides: Partial<SingleLegOptionsSignal> = {}): SingleLegOptionsSignal {
   return {
@@ -116,6 +123,15 @@ const okAccountState = {
   state: { buyingPowerUsd: 1_000_000, exposureUsd: 0, realizedPnlTodayUsd: 0, ordersToday: 0, currentPositionQty: 0 },
 };
 
+/** For a sell-to-close: the guardrails' naked_short check needs
+ *  currentPositionQty to reflect the ALREADY-HELD long being closed (see
+ *  tradingGuardrails.test.ts's own "does not flag a sell that merely reduces
+ *  a long" precedent) — 0 (okAccountState's default, correct for an ENTRY)
+ *  would make a close look like opening a naked short. */
+function holdingAccountState(qty: number) {
+  return { ...okAccountState, state: { ...okAccountState.state, currentPositionQty: qty } };
+}
+
 function liveConfig(overrides: Partial<AutotradeConfig> = {}): AutotradeConfig {
   return {
     ...defaultAutotradeConfig(),
@@ -163,6 +179,7 @@ beforeEach(() => {
   mockAccountState.mockReset();
   mockAccountType.mockReset();
   mockPlaceOrder.mockReset();
+  mockOrderStatus.mockReset();
 });
 afterEach(() => {
   config.trading.placeEnabled = origPlaceEnabled;
@@ -540,5 +557,226 @@ describe('runLiveOptionsExecution', () => {
     ]);
     expect(outcomes.map((o) => o.ok)).toEqual([true, true]);
     expect(mockPlaceOrder).toHaveBeenCalledTimes(2);
+  });
+});
+
+function openLivePosition(overrides: Partial<Parameters<typeof createLiveOptionsPosition>[0]> = {}) {
+  return createLiveOptionsPosition({
+    symbol: 'AAPL',
+    side: 'call',
+    contractSymbol: 'AAPL-fixture',
+    strike: 100,
+    expiration: '2030-01-18', // comfortably outside the exit window unless overridden
+    quantity: 2,
+    entryPrice: 3,
+    riskAmount: 600,
+    riskProfile: 'MODERATE',
+    rationale: 'fixture',
+    ...overrides,
+  });
+}
+
+describe('checkLiveOptionsExits', () => {
+  it('returns nothing when no liveAccountId is configured', async () => {
+    setAutotradeConfig({ liveAccountId: null });
+    expect(await checkLiveOptionsExits()).toEqual([]);
+    expect(mockGetProvider).not.toHaveBeenCalled();
+  });
+
+  it('returns nothing when no positions are open', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    expect(await checkLiveOptionsExits()).toEqual([]);
+  });
+
+  it('leaves a position open (no order) when comfortably outside the time-exit window', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    openLivePosition({ expiration: '2030-01-18' }); // far out
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes).toEqual([]);
+    expect(mockGetProvider).not.toHaveBeenCalled(); // no quote needed unless the trigger fires
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('places a real SELL-to-close order for a single-leg position past the trigger, and records the exit', async () => {
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({ expiration: '2024-06-05' }); // long past — triggers regardless of "today"
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 5 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-EXIT-1' });
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', requested: true });
+    expect(mockAccountType).not.toHaveBeenCalled(); // single-leg — no margin gate needed
+
+    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    expect(placedIntent.side).toBe('sell');
+    expect(placedIntent.openClose).toBe('close');
+    expect(placedIntent.limitPrice).toBe(4.75); // mark 5 - 5% marketable buffer (sell below mark)
+    expect(placedIntent.optionType).toBe('call');
+    expect(placedIntent.strike).toBe(100);
+
+    const meta = getLiveOptionsOrder(outcomes[0].intentId!);
+    expect(meta).toMatchObject({ role: 'exit', kind: 'single_leg', positionId: pos.id });
+
+    const events = listAutotradeEvents({});
+    expect(events.some((e) => e.action === 'live_options_exit_placed')).toBe(true);
+  });
+
+  it('places one VERTICAL closing combo (flipped legs) for a debit-spread position past the trigger', async () => {
+    setAutotradeConfig(liveConfig());
+    openLivePosition({
+      kind: 'debit_spread',
+      expiration: '2024-06-05',
+      contractSymbol: 'AAPL-long',
+      strike: 100,
+      shortContractSymbol: 'AAPL-short',
+      shortStrike: 110,
+      entryPrice: 2,
+      shortEntryPrice: 0,
+    });
+    mockGetProvider.mockReturnValue(
+      chainsFor({
+        AAPL: [
+          { side: 'call', strike: 100, mark: 4 },
+          { side: 'call', strike: 110, mark: 1 },
+        ],
+      }) as never,
+    );
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockAccountType.mockResolvedValue('INDIVIDUAL_MARGIN');
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-EXIT-2' });
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes[0].requested).toBe(true);
+    expect(mockAccountType).toHaveBeenCalledWith('ACC1');
+
+    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    expect(placedIntent.optionStrategy).toBe('VERTICAL');
+    expect(placedIntent.side).toBe('sell'); // net credit to close
+    expect(placedIntent.limitPrice).toBe(2.85); // net value (4-1=3) - 5% buffer
+    expect(placedIntent.optionLegs).toEqual([
+      { side: 'sell', optionType: 'call', strike: 100, expiration: '2024-06-05' }, // long -> now sold
+      { side: 'buy', optionType: 'call', strike: 110, expiration: '2024-06-05' }, // short -> now bought back
+    ]);
+  });
+
+  it('does not place a second closing order for a position that already has one pending', async () => {
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({ expiration: '2024-06-05' });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 5 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-EXIT-3' });
+
+    const first = await checkLiveOptionsExits();
+    expect(first[0].requested).toBe(true);
+    mockPlaceOrder.mockClear();
+
+    const second = await checkLiveOptionsExits();
+    expect(second).toEqual([]); // skipped entirely — still 'open' and an exit is already in flight
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(listOpenLiveOptionsPositions().map((p) => p.id)).toContain(pos.id);
+  });
+
+  it('reports the reason and leaves the position open when the quote fetch fails after the trigger fires', async () => {
+    setAutotradeConfig(liveConfig());
+    openLivePosition({ expiration: '2024-06-05' });
+    mockGetProvider.mockReturnValue({ getOptionsChain: vi.fn().mockRejectedValue(new Error('timeout')) } as never);
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes[0]).toMatchObject({ requested: false, reason: expect.stringMatching(/timeout/) });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+});
+
+describe('reconcileLiveOptionsOrders', () => {
+  it('returns nothing when no liveAccountId is configured', async () => {
+    setAutotradeConfig({ liveAccountId: null });
+    expect(await reconcileLiveOptionsOrders()).toEqual([]);
+    expect(mockOrderStatus).not.toHaveBeenCalled();
+  });
+
+  it('materializes a filled entry into a real live options position and links the metadata row', async () => {
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-R1' });
+
+    const sig = optionSignal();
+    await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+    const intentId = listIntents()[0].id;
+
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: 2,
+      filledPrice: 4.1,
+    } as WebullOrderStatus);
+
+    const outcomes = await reconcileLiveOptionsOrders();
+    expect(outcomes).toEqual([{ intentId, symbol: 'AAPL', changed: true, action: 'entry_filled' }]);
+
+    const positions = listOpenLiveOptionsPositions();
+    expect(positions).toHaveLength(1);
+    expect(positions[0]).toMatchObject({
+      symbol: 'AAPL',
+      kind: 'single_leg',
+      contractSymbol: 'AAPL-fixture',
+      strike: 100,
+      entryPrice: 4.1,
+      quantity: 2,
+    });
+    expect(getLiveOptionsOrder(intentId)?.positionId).toBe(positions[0].id);
+  });
+
+  it('materializes a filled exit by closing the referenced position, journaling the realized pnl', async () => {
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({ expiration: '2024-06-05', entryPrice: 3, quantity: 2 });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 5 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-R2' });
+    await checkLiveOptionsExits();
+    const exitIntentId = listPendingLiveOptionsOrders().find((o) => o.role === 'exit')!.intentId;
+
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: 2,
+      filledPrice: 4.75,
+    } as WebullOrderStatus);
+
+    const outcomes = await reconcileLiveOptionsOrders();
+    expect(outcomes).toEqual([{ intentId: exitIntentId, symbol: 'AAPL', changed: true, action: 'exit_filled' }]);
+    expect(getLiveOptionsPosition(pos.id)).toMatchObject({
+      status: 'closed',
+      exitPrice: 4.75,
+      exitReason: 'time_exit',
+    });
+
+    const closedEvent = listAutotradeEvents({}).find((e) => e.action === 'live_options_position_closed')!;
+    // (4.75 - 3) * 2 * 100 = 350
+    expect(JSON.parse(closedEvent.detail!)).toMatchObject({ exitPrice: 4.75, pnl: 350 });
+  });
+
+  it('reports no change when the broker status has not moved', async () => {
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-R3' });
+    const sig = optionSignal();
+    await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+
+    mockOrderStatus.mockResolvedValue({ ok: true, found: true, status: 'WORKING' } as WebullOrderStatus);
+    const outcomes = await reconcileLiveOptionsOrders();
+    expect(outcomes[0].changed).toBe(false);
+    expect(listOpenLiveOptionsPositions()).toEqual([]);
   });
 });
