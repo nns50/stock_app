@@ -13,6 +13,7 @@ import type {
   AutotradeRiskCheckResult,
   BacktestRunResponse,
   CombinedBacktestRunResponse,
+  LiveOptionsPosition,
   LoopTickSummary,
   OptionsBacktestRunResponse,
   OptionsPaperPosition,
@@ -48,6 +49,14 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     liveAllowNakedShort: false,
     liveProbationTrades: 20,
     liveProbationSizeMultiplier: 0.5,
+    liveOptionsEnabled: false,
+    liveOptionsEnabledAt: null,
+    liveOptionsMaxOrderUsd: 2_000,
+    liveOptionsMaxDailyLossUsd: 500,
+    liveOptionsMaxOrdersPerDay: 6,
+    liveOptionsFatFingerPct: 10,
+    liveOptionsProbationTrades: 20,
+    liveOptionsProbationSizeMultiplier: 0.5,
     optionsStrategyType: 'single_leg',
     ...overrides,
   };
@@ -83,6 +92,17 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     liveMaxDailyLossUsd: 3_000,
     liveMaxOrdersPerDay: 6,
     probation: { active: false, multiplier: 1, tradesPlaced: 0, tradesRemaining: 20 },
+    liveOptionsEnabled: false,
+    liveOptionsOpenPositions: [],
+    liveOptionsOpenPositionsCount: 0,
+    liveOptionsOpenRisk: 0,
+    liveOptionsDailyPnl: 0,
+    liveOptionsTradesToday: 0,
+    liveOptionsConsecutiveLosses: 0,
+    liveOptionsMaxOrderUsd: 2_000,
+    liveOptionsMaxDailyLossUsd: 500,
+    liveOptionsMaxOrdersPerDay: 6,
+    liveOptionsProbation: { active: false, multiplier: 1, tradesPlaced: 0, tradesRemaining: 20 },
     ...overrides,
   };
 }
@@ -96,6 +116,9 @@ function loopSummaryFixture(overrides: Partial<LoopTickSummary> = {}): LoopTickS
     optionsExitsClosed: 0,
     liveOrdersReconciled: 0,
     livePositionsClosed: 0,
+    liveOptionsOrdersReconciled: 0,
+    liveOptionsPositionsClosed: 0,
+    liveOptionsExitsRequested: 0,
     candidatesScreened: 0,
     candidatesPassedVolatility: 0,
     signalsGenerated: 0,
@@ -103,6 +126,7 @@ function loopSummaryFixture(overrides: Partial<LoopTickSummary> = {}): LoopTickS
     entriesOpened: 0,
     optionsEntriesOpened: 0,
     liveEntriesOpened: 0,
+    liveOptionsEntriesOpened: 0,
     ...overrides,
   };
 }
@@ -117,6 +141,7 @@ beforeEach(() => {
   vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({ positions: [] });
+  vi.spyOn(client, 'autotradeLiveOptionsPositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
 });
 
@@ -2004,6 +2029,132 @@ describe('AutoTradePage', () => {
       await screen.findByText('AAPL');
       expect(screen.getByText('$108.00')).toBeInTheDocument();
       expect(screen.getAllByText('+$80.00').length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Task #70: Live options trading', () => {
+    function liveOptionsPosition(overrides: Partial<LiveOptionsPosition> = {}): LiveOptionsPosition {
+      return {
+        id: 1,
+        symbol: 'AAPL',
+        side: 'call',
+        kind: 'single_leg',
+        contractSymbol: 'AAPL-fixture',
+        strike: 100,
+        shortContractSymbol: null,
+        shortStrike: null,
+        expiration: '2026-08-21',
+        quantity: 2,
+        entryPrice: 3,
+        shortEntryPrice: null,
+        entryAt: Date.now(),
+        riskAmount: 600,
+        riskProfile: 'MODERATE',
+        rationale: 'test fixture',
+        status: 'open',
+        exitPrice: null,
+        shortExitPrice: null,
+        exitAt: null,
+        exitReason: null,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        currentPrice: null,
+        shortCurrentPrice: null,
+        unrealizedPnl: null,
+        ...overrides,
+      };
+    }
+
+    it('does not show the live options checkbox/caps until live trading itself is enabled', async () => {
+      renderPage();
+      await screen.findByText('VNQ');
+      expect(screen.queryByText('Live options trading')).toBeNull();
+    });
+
+    it('shows the live options checkbox/caps once live trading is enabled', async () => {
+      vi.spyOn(client, 'autotradeConfig').mockResolvedValue(
+        configFixture({ liveTradingEnabled: true, liveAccountId: 'ACC1' }),
+      );
+      renderPage();
+      expect(await screen.findByText('Live options trading')).toBeInTheDocument();
+    });
+
+    it('saves liveOptionsEnabled and the options caps as one batch', async () => {
+      vi.spyOn(client, 'autotradeConfig').mockResolvedValue(
+        configFixture({ liveTradingEnabled: true, liveAccountId: 'ACC1' }),
+      );
+      const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+      renderPage();
+      await screen.findByText('Live options trading');
+
+      fireEvent.click(screen.getByLabelText('Live options trading'));
+      fireEvent.change(screen.getByPlaceholderText('e.g. 2000'), { target: { value: '3000' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save live options settings' }));
+
+      await waitFor(() =>
+        expect(setConfig).toHaveBeenCalledWith(
+          expect.objectContaining({
+            liveOptionsEnabled: true,
+            liveOptionsMaxOrderUsd: 3_000,
+            liveOptionsMaxDailyLossUsd: 500,
+            liveOptionsMaxOrdersPerDay: 6,
+          }),
+        ),
+      );
+    });
+
+    it('shows live options probation status when active', async () => {
+      vi.spyOn(client, 'autotradeConfig').mockResolvedValue(
+        configFixture({ liveTradingEnabled: true, liveAccountId: 'ACC1', liveOptionsEnabled: true }),
+      );
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          liveTradingEnabled: true,
+          liveAccountId: 'ACC1',
+          liveOptionsEnabled: true,
+          liveOptionsProbation: { active: true, multiplier: 0.5, tradesPlaced: 3, tradesRemaining: 17 },
+        }),
+      );
+      renderPage();
+      expect(
+        await screen.findByText(/Options probation active: 17 of 20 trades remaining at 0.5× size/),
+      ).toBeInTheDocument();
+    });
+
+    it('renders a debit-spread live options position with both strikes', async () => {
+      vi.spyOn(client, 'autotradeLiveOptionsPositions').mockResolvedValue({
+        positions: [
+          liveOptionsPosition({
+            kind: 'debit_spread',
+            contractSymbol: 'AAPL-long',
+            strike: 100,
+            shortContractSymbol: 'AAPL-short',
+            shortStrike: 110,
+            entryPrice: 3,
+            shortEntryPrice: 1,
+          }),
+        ],
+      });
+      renderPage();
+      expect(await screen.findByText('call 100/110')).toBeInTheDocument();
+    });
+
+    it('shows the empty state when no live options positions exist yet', async () => {
+      renderPage();
+      expect(await screen.findByText('No live options positions yet')).toBeInTheDocument();
+    });
+
+    it('shows the Live options section in the Monitoring dashboard', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          liveOptionsEnabled: true,
+          liveOptionsOpenPositionsCount: 1,
+          liveOptionsOpenRisk: 300,
+        }),
+      );
+      renderPage();
+      expect(await screen.findByText('● enabled')).toBeInTheDocument();
+      expect(screen.getByText('1 / 2')).toBeInTheDocument();
     });
   });
 });

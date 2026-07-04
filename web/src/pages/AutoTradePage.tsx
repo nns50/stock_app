@@ -31,6 +31,7 @@ import type {
   BacktestStats,
   CombinedBacktestRunResponse,
   CombinedWalkForwardResponse,
+  LiveOptionsPosition,
   LoopTickSummary,
   OptionsBacktestRunResponse,
   OptionsPaperPosition,
@@ -458,10 +459,28 @@ function PaperPositionsTable({ positions }: { positions: PaperPosition[] }) {
 /** The position's own $ value — entry cost, live mark, or exit value — as ONE
  *  unit: the raw premium for single_leg, or long-minus-short for a debit
  *  spread. Null when a needed leg's price isn't available. */
-function optionsPaperEntryValue(p: OptionsPaperPosition): number {
+/** Structural, not nominal — OptionsPaperPosition and LiveOptionsPosition
+ *  both satisfy this (same net-debit/net-value math regardless of paper vs
+ *  live), so these helpers work for either without a duplicate live copy —
+ *  matching the server's own computeOptionsPaperUnrealizedPnl(), which takes
+ *  the same kind of structural shape rather than a nominal paper-only type. */
+interface OptionsValueShape {
+  kind: 'single_leg' | 'debit_spread';
+  status: 'open' | 'closed';
+  entryPrice: number;
+  shortEntryPrice: number | null;
+  currentPrice: number | null;
+  shortCurrentPrice: number | null;
+  exitPrice: number | null;
+  shortExitPrice: number | null;
+  quantity: number;
+  unrealizedPnl: number | null;
+}
+
+function optionsPaperEntryValue(p: OptionsValueShape): number {
   return p.kind === 'debit_spread' ? p.entryPrice - (p.shortEntryPrice ?? 0) : p.entryPrice;
 }
-function optionsPaperCurrentValue(p: OptionsPaperPosition): number | null {
+function optionsPaperCurrentValue(p: OptionsValueShape): number | null {
   if (p.status !== 'open' || p.currentPrice === null) return null;
   if (p.kind === 'debit_spread') {
     if (p.shortCurrentPrice === null) return null;
@@ -469,18 +488,19 @@ function optionsPaperCurrentValue(p: OptionsPaperPosition): number | null {
   }
   return p.currentPrice;
 }
-function optionsPaperExitValue(p: OptionsPaperPosition): number | null {
+function optionsPaperExitValue(p: OptionsValueShape): number | null {
   if (p.exitPrice === null) return null;
   return p.kind === 'debit_spread' ? p.exitPrice - (p.shortExitPrice ?? 0) : p.exitPrice;
 }
 
-/** Realized P&L for a closed options paper position; unrealized for an open
- *  one, from the live contract mark(s) the server resolved this request
- *  (server/src/routes/autotrade.ts's withLiveOptionMarks). No sign flip for
- *  single_leg — every single-leg position is long the contract itself; a
- *  debit spread nets its two legs' values first (optionsPaperExitValue/
- *  optionsPaperEntryValue above). */
-function optionsPaperPnl(p: OptionsPaperPosition): number | null {
+/** Realized P&L for a closed options position; unrealized for an open one,
+ *  from the live contract mark(s) the server resolved this request
+ *  (server/src/routes/autotrade.ts's withLiveOptionMarks /
+ *  withLiveOptionsPositionMarks). No sign flip for single_leg — every
+ *  single-leg position is long the contract itself; a debit spread nets its
+ *  two legs' values first (optionsPaperExitValue/optionsPaperEntryValue
+ *  above). */
+function optionsPaperPnl(p: OptionsValueShape): number | null {
   if (p.status === 'open') return p.unrealizedPnl;
   const exitValue = optionsPaperExitValue(p);
   if (exitValue === null) return null;
@@ -493,6 +513,97 @@ function OptionsPaperPositionsTable({ positions }: { positions: OptionsPaperPosi
       <EmptyState
         title="No options paper trades yet"
         hint='Enable auto-trading above, or click "Run one cycle now" below, to see options paper fills here.'
+      />
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead className="border-b border-ink-600/60">
+          <tr>
+            <th className="th">Symbol</th>
+            <th className="th">Contract</th>
+            <th className="th">Status</th>
+            <th className="th">Entry</th>
+            <th className="th text-right">Entry $</th>
+            <th className="th text-right">Current $</th>
+            <th className="th">Exit</th>
+            <th className="th text-right">Exit $</th>
+            <th className="th">Reason</th>
+            <th className="th text-right">Qty</th>
+            <th className="th text-right">P&amp;L</th>
+            <th className="th text-right">R</th>
+          </tr>
+        </thead>
+        <tbody>
+          {positions.map((p) => {
+            const pnl = optionsPaperPnl(p);
+            const rMultiple = pnl !== null && p.riskAmount > 0 ? pnl / p.riskAmount : null;
+            const currentValue = optionsPaperCurrentValue(p);
+            const exitValue = optionsPaperExitValue(p);
+            return (
+              <tr key={p.id} className="border-b border-ink-700/50">
+                <td className="td font-semibold" title={p.rationale}>
+                  {p.symbol}
+                </td>
+                <td className="td">
+                  <Badge color={p.side === 'call' ? 'green' : 'red'}>
+                    {p.side} {p.strike}
+                    {p.kind === 'debit_spread' ? `/${p.shortStrike}` : ''}
+                  </Badge>{' '}
+                  <span className="text-[11px] text-slate-500">{fmtDate(p.expiration)}</span>
+                </td>
+                <td className="td">
+                  <Badge color={p.status === 'open' ? 'blue' : 'slate'}>{p.status}</Badge>
+                </td>
+                <td className="td text-slate-400">{ago(p.entryAt)}</td>
+                <td className="td text-right tabular-nums">{fmtUsd(optionsPaperEntryValue(p))}</td>
+                <td className="td text-right tabular-nums">{currentValue === null ? '—' : fmtUsd(currentValue)}</td>
+                <td className="td text-slate-400">{p.exitAt ? ago(p.exitAt) : '—'}</td>
+                <td className="td text-right tabular-nums">{exitValue === null ? '—' : fmtUsd(exitValue)}</td>
+                <td className="td">
+                  {p.exitReason ? (
+                    <Badge color={p.exitReason === 'time_exit' ? 'blue' : 'slate'}>
+                      {p.exitReason.replace('_', ' ')}
+                    </Badge>
+                  ) : (
+                    '—'
+                  )}
+                </td>
+                <td className="td text-right tabular-nums">{p.quantity}</td>
+                <td
+                  className={cx('td text-right tabular-nums', pnl === null ? '' : pnl >= 0 ? 'text-bull' : 'text-bear')}
+                >
+                  {pnl === null ? '—' : fmtSignedUsd(pnl)}
+                </td>
+                <td
+                  className={cx(
+                    'td text-right tabular-nums',
+                    rMultiple === null ? '' : rMultiple >= 0 ? 'text-bull' : 'text-bear',
+                  )}
+                >
+                  {rMultiple === null ? '—' : `${fmtNum(rMultiple)}R`}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** REAL, live-money OPTIONS positions the autotrade loop itself placed
+ *  (Task #70) — its own table (autotrade_live_options_positions), not the
+ *  shared `positions` row LivePositionsTable below reads, since a debit
+ *  spread has no column there for its second leg. Nothing here is
+ *  simulated — mirrors OptionsPaperPositionsTable's rendering exactly. */
+function LiveOptionsPositionsTable({ positions }: { positions: LiveOptionsPosition[] }) {
+  if (positions.length === 0) {
+    return (
+      <EmptyState
+        title="No live options positions yet"
+        hint="Once live options trading places a real order and it fills, it shows up here."
       />
     );
   }
@@ -717,6 +828,23 @@ interface LiveTradingSectionProps {
   onEnable: () => void;
   onDisable: () => void;
   dashboard: AutotradeDashboard | undefined;
+  // --- Task #70: live options, nested under liveTradingEnabled above ---
+  liveOptionsEnabledDraft: boolean;
+  setLiveOptionsEnabledDraft: (v: boolean) => void;
+  liveOptionsMaxOrderUsdDraft: number | undefined;
+  setLiveOptionsMaxOrderUsdDraft: (v: number | undefined) => void;
+  liveOptionsMaxDailyLossUsdDraft: number | undefined;
+  setLiveOptionsMaxDailyLossUsdDraft: (v: number | undefined) => void;
+  liveOptionsMaxOrdersPerDayDraft: number | undefined;
+  setLiveOptionsMaxOrdersPerDayDraft: (v: number | undefined) => void;
+  liveOptionsFatFingerPctDraft: number | undefined;
+  setLiveOptionsFatFingerPctDraft: (v: number | undefined) => void;
+  liveOptionsProbationTradesDraft: number | undefined;
+  setLiveOptionsProbationTradesDraft: (v: number | undefined) => void;
+  liveOptionsProbationSizeMultiplierDraft: number | undefined;
+  setLiveOptionsProbationSizeMultiplierDraft: (v: number | undefined) => void;
+  liveOptionsSaveBusy: boolean;
+  onSaveLiveOptionsCaps: () => void;
 }
 
 function LiveTradingSection(p: LiveTradingSectionProps) {
@@ -825,6 +953,77 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
               remaining at {p.dashboard.probation.multiplier}× size.
             </p>
           )}
+
+          <div className="rounded-lg border border-ink-600 bg-ink-800/60 p-3 space-y-3">
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <input
+                type="checkbox"
+                checked={p.liveOptionsEnabledDraft}
+                onChange={(e) => p.setLiveOptionsEnabledDraft(e.target.checked)}
+              />
+              Live options trading
+            </label>
+            <p className="text-[11px] text-slate-500">
+              Single-leg calls/puts and debit spreads, no second confirmation phrase — live trading itself already
+              covers that. Uses the same Webull account above; caps below are dedicated to options, separate from the
+              equity caps above.
+            </p>
+            <div className="grid sm:grid-cols-3 gap-3">
+              <Field label="Max order ($)">
+                <NumberInput
+                  value={p.liveOptionsMaxOrderUsdDraft}
+                  onChange={p.setLiveOptionsMaxOrderUsdDraft}
+                  placeholder="e.g. 2000"
+                />
+              </Field>
+              <Field label="Max daily loss ($)">
+                <NumberInput
+                  value={p.liveOptionsMaxDailyLossUsdDraft}
+                  onChange={p.setLiveOptionsMaxDailyLossUsdDraft}
+                  placeholder="e.g. 500"
+                />
+              </Field>
+              <Field label="Max orders/day">
+                <NumberInput
+                  value={p.liveOptionsMaxOrdersPerDayDraft}
+                  onChange={p.setLiveOptionsMaxOrdersPerDayDraft}
+                  placeholder="e.g. 6"
+                />
+              </Field>
+              <Field label="Fat-finger (%)" hint="Options bid/ask spreads run wider than equity's — size accordingly.">
+                <NumberInput
+                  value={p.liveOptionsFatFingerPctDraft}
+                  onChange={p.setLiveOptionsFatFingerPctDraft}
+                  placeholder="e.g. 10"
+                />
+              </Field>
+              <Field label="Probation trades" hint="Own window — can go live weeks after equity did.">
+                <NumberInput
+                  value={p.liveOptionsProbationTradesDraft}
+                  onChange={p.setLiveOptionsProbationTradesDraft}
+                  placeholder="e.g. 20"
+                />
+              </Field>
+              <Field label="Probation size multiplier">
+                <NumberInput
+                  value={p.liveOptionsProbationSizeMultiplierDraft}
+                  onChange={p.setLiveOptionsProbationSizeMultiplierDraft}
+                  placeholder="e.g. 0.5"
+                />
+              </Field>
+            </div>
+            {p.dashboard?.liveOptionsProbation.active && (
+              <p className="text-[11px] text-amber-400">
+                Options probation active: {p.dashboard.liveOptionsProbation.tradesRemaining} of{' '}
+                {p.config.liveOptionsProbationTrades} trades remaining at {p.dashboard.liveOptionsProbation.multiplier}×
+                size.
+              </p>
+            )}
+            <button className="btn-ghost" onClick={p.onSaveLiveOptionsCaps} disabled={p.liveOptionsSaveBusy}>
+              {p.liveOptionsSaveBusy ? 'Saving…' : 'Save live options settings'}
+            </button>
+          </div>
+
           <button className="btn-ghost" onClick={p.onDisable} disabled={p.liveEnableBusy}>
             {p.liveEnableBusy ? 'Disabling…' : 'Disable live trading'}
           </button>
@@ -883,6 +1082,15 @@ function MonitoringDashboard({ dash }: { dash: AutotradeDashboard }) {
   const liveTradesBusy = dash.liveTradesToday >= dash.maxTradesPerDay;
   const liveStepDownActive = dash.liveConsecutiveLosses >= dash.stepDownAfterLosses;
   const liveHaltActive = dash.dailyDrawdownHaltLevel < 0 && dash.liveDailyPnl <= dash.dailyDrawdownHaltLevel;
+
+  // Task #70: live options — its own pool nested under live, same reasoning
+  // as the live block above, just its own caps/probation (dashboard.ts's
+  // header comment).
+  const liveOptRiskBusy = dash.maxAggregateOpenRisk > 0 && dash.liveOptionsOpenRisk >= dash.maxAggregateOpenRisk;
+  const liveOptPositionsBusy = dash.liveOptionsOpenPositionsCount >= dash.maxConcurrentPositions;
+  const liveOptTradesBusy = dash.liveOptionsTradesToday >= dash.maxTradesPerDay;
+  const liveOptStepDownActive = dash.liveOptionsConsecutiveLosses >= dash.stepDownAfterLosses;
+  const liveOptHaltActive = dash.dailyDrawdownHaltLevel < 0 && dash.liveOptionsDailyPnl <= dash.dailyDrawdownHaltLevel;
 
   return (
     <div className="space-y-4">
@@ -1012,6 +1220,61 @@ function MonitoringDashboard({ dash }: { dash: AutotradeDashboard }) {
           />
         </div>
       </div>
+
+      <div>
+        <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-2">
+          Live options{' '}
+          {dash.liveOptionsEnabled ? (
+            <span className="text-bear normal-case">● enabled</span>
+          ) : (
+            <span className="normal-case">(disabled)</span>
+          )}
+        </h4>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          <StatTile
+            label="Open positions"
+            value={`${dash.liveOptionsOpenPositionsCount} / ${dash.maxConcurrentPositions}`}
+            valueClass={liveOptPositionsBusy ? 'text-bear' : undefined}
+          />
+          <StatTile
+            label="Aggregate open risk"
+            value={fmtUsd(dash.liveOptionsOpenRisk)}
+            sub={`of ${fmtUsd(dash.maxAggregateOpenRisk)} cap`}
+            valueClass={liveOptRiskBusy ? 'text-bear' : undefined}
+          />
+          <StatTile
+            label="Day P&L"
+            value={fmtSignedUsd(dash.liveOptionsDailyPnl)}
+            sub={
+              liveOptHaltActive ? (
+                <span className="text-bear font-semibold">HALT TRIGGERED</span>
+              ) : (
+                `halt at ${fmtUsd(dash.dailyDrawdownHaltLevel)}`
+              )
+            }
+            valueClass={dash.liveOptionsDailyPnl >= 0 ? 'text-bull' : 'text-bear'}
+          />
+          <StatTile
+            label="Trades today"
+            value={`${dash.liveOptionsTradesToday} / ${dash.maxTradesPerDay}`}
+            valueClass={liveOptTradesBusy ? 'text-bear' : undefined}
+          />
+          <StatTile
+            label="Consecutive losses"
+            value={dash.liveOptionsConsecutiveLosses}
+            sub={liveOptStepDownActive ? 'step-down active' : `of ${dash.stepDownAfterLosses} to step-down`}
+            valueClass={liveOptStepDownActive ? 'text-bear' : undefined}
+          />
+          <StatTile
+            label="Probation"
+            value={dash.liveOptionsProbation.active ? `${dash.liveOptionsProbation.multiplier}× size` : 'complete'}
+            sub={
+              dash.liveOptionsProbation.active ? `${dash.liveOptionsProbation.tradesRemaining} trades left` : undefined
+            }
+            valueClass={dash.liveOptionsProbation.active ? 'text-amber-400' : undefined}
+          />
+        </div>
+      </div>
     </div>
   );
 }
@@ -1047,6 +1310,7 @@ export default function AutoTradePage() {
   const paperPositions = useAsync(() => client.autotradePaperPositions({ limit: 100 }), []);
   const optionsPaperPositions = useAsync(() => client.autotradeOptionsPaperPositions({ limit: 100 }), []);
   const livePositions = useAsync(() => client.autotradeLivePositions({ limit: 100 }), []);
+  const liveOptionsPositions = useAsync(() => client.autotradeLiveOptionsPositions({ limit: 100 }), []);
   const dashboard = useAsync(() => client.autotradeDashboard(), []);
   const { toast } = useToast();
   const confirm = useConfirm();
@@ -1064,6 +1328,7 @@ export default function AutoTradePage() {
     paperPositions.reload();
     optionsPaperPositions.reload();
     livePositions.reload();
+    liveOptionsPositions.reload();
     events.reload();
   };
 
@@ -1080,6 +1345,15 @@ export default function AutoTradePage() {
   const [liveAllowNakedShortDraft, setLiveAllowNakedShortDraft] = useState(false);
   const [liveProbationTradesDraft, setLiveProbationTradesDraft] = useState<number | undefined>();
   const [liveProbationSizeMultiplierDraft, setLiveProbationSizeMultiplierDraft] = useState<number | undefined>();
+  const [liveOptionsEnabledDraft, setLiveOptionsEnabledDraft] = useState(false);
+  const [liveOptionsMaxOrderUsdDraft, setLiveOptionsMaxOrderUsdDraft] = useState<number | undefined>();
+  const [liveOptionsMaxDailyLossUsdDraft, setLiveOptionsMaxDailyLossUsdDraft] = useState<number | undefined>();
+  const [liveOptionsMaxOrdersPerDayDraft, setLiveOptionsMaxOrdersPerDayDraft] = useState<number | undefined>();
+  const [liveOptionsFatFingerPctDraft, setLiveOptionsFatFingerPctDraft] = useState<number | undefined>();
+  const [liveOptionsProbationTradesDraft, setLiveOptionsProbationTradesDraft] = useState<number | undefined>();
+  const [liveOptionsProbationSizeMultiplierDraft, setLiveOptionsProbationSizeMultiplierDraft] = useState<
+    number | undefined
+  >();
   useEffect(() => {
     if (!config.data) return;
     setEnabled(config.data.enabled);
@@ -1095,6 +1369,13 @@ export default function AutoTradePage() {
     setLiveAllowNakedShortDraft(config.data.liveAllowNakedShort);
     setLiveProbationTradesDraft(config.data.liveProbationTrades);
     setLiveProbationSizeMultiplierDraft(config.data.liveProbationSizeMultiplier);
+    setLiveOptionsEnabledDraft(config.data.liveOptionsEnabled);
+    setLiveOptionsMaxOrderUsdDraft(config.data.liveOptionsMaxOrderUsd);
+    setLiveOptionsMaxDailyLossUsdDraft(config.data.liveOptionsMaxDailyLossUsd);
+    setLiveOptionsMaxOrdersPerDayDraft(config.data.liveOptionsMaxOrdersPerDay);
+    setLiveOptionsFatFingerPctDraft(config.data.liveOptionsFatFingerPct);
+    setLiveOptionsProbationTradesDraft(config.data.liveOptionsProbationTrades);
+    setLiveOptionsProbationSizeMultiplierDraft(config.data.liveOptionsProbationSizeMultiplier);
   }, [config.data]);
 
   const saveConfig = async (patch: {
@@ -1174,6 +1455,7 @@ export default function AutoTradePage() {
   const [confirmLiveText, setConfirmLiveText] = useState('');
   const [liveCapsBusy, setLiveCapsBusy] = useState(false);
   const [liveEnableBusy, setLiveEnableBusy] = useState(false);
+  const [liveOptionsSaveBusy, setLiveOptionsSaveBusy] = useState(false);
 
   const saveLiveCaps = async () => {
     setLiveCapsBusy(true);
@@ -1195,6 +1477,33 @@ export default function AutoTradePage() {
       toast((e as Error).message || 'Could not save live-trading settings', { type: 'error' });
     } finally {
       setLiveCapsBusy(false);
+    }
+  };
+
+  // Bundles the liveOptionsEnabled checkbox with its caps in one save — unlike
+  // liveTradingEnabled, it needs no typed confirmation phrase (the master
+  // gate above already covers that), so there's no separate "Enable" action
+  // to keep in sync with a "Save caps" one the way LIVE_TRADING_CONFIRMATION_
+  // PHRASE requires.
+  const saveLiveOptionsCaps = async () => {
+    setLiveOptionsSaveBusy(true);
+    try {
+      await client.setAutotradeConfig({
+        liveOptionsEnabled: liveOptionsEnabledDraft,
+        liveOptionsMaxOrderUsd: liveOptionsMaxOrderUsdDraft,
+        liveOptionsMaxDailyLossUsd: liveOptionsMaxDailyLossUsdDraft,
+        liveOptionsMaxOrdersPerDay: liveOptionsMaxOrdersPerDayDraft,
+        liveOptionsFatFingerPct: liveOptionsFatFingerPctDraft,
+        liveOptionsProbationTrades: liveOptionsProbationTradesDraft,
+        liveOptionsProbationSizeMultiplier: liveOptionsProbationSizeMultiplierDraft,
+      });
+      config.reload();
+      refreshLiveData();
+      toast('Live options settings saved', { type: 'success' });
+    } catch (e) {
+      toast((e as Error).message || 'Could not save live options settings', { type: 'error' });
+    } finally {
+      setLiveOptionsSaveBusy(false);
     }
   };
 
@@ -1657,6 +1966,22 @@ export default function AutoTradePage() {
             onEnable={enableLiveTrading}
             onDisable={disableLiveTrading}
             dashboard={dashboard.data}
+            liveOptionsEnabledDraft={liveOptionsEnabledDraft}
+            setLiveOptionsEnabledDraft={setLiveOptionsEnabledDraft}
+            liveOptionsMaxOrderUsdDraft={liveOptionsMaxOrderUsdDraft}
+            setLiveOptionsMaxOrderUsdDraft={setLiveOptionsMaxOrderUsdDraft}
+            liveOptionsMaxDailyLossUsdDraft={liveOptionsMaxDailyLossUsdDraft}
+            setLiveOptionsMaxDailyLossUsdDraft={setLiveOptionsMaxDailyLossUsdDraft}
+            liveOptionsMaxOrdersPerDayDraft={liveOptionsMaxOrdersPerDayDraft}
+            setLiveOptionsMaxOrdersPerDayDraft={setLiveOptionsMaxOrdersPerDayDraft}
+            liveOptionsFatFingerPctDraft={liveOptionsFatFingerPctDraft}
+            setLiveOptionsFatFingerPctDraft={setLiveOptionsFatFingerPctDraft}
+            liveOptionsProbationTradesDraft={liveOptionsProbationTradesDraft}
+            setLiveOptionsProbationTradesDraft={setLiveOptionsProbationTradesDraft}
+            liveOptionsProbationSizeMultiplierDraft={liveOptionsProbationSizeMultiplierDraft}
+            setLiveOptionsProbationSizeMultiplierDraft={setLiveOptionsProbationSizeMultiplierDraft}
+            liveOptionsSaveBusy={liveOptionsSaveBusy}
+            onSaveLiveOptionsCaps={saveLiveOptionsCaps}
           />
         )}
 
@@ -1700,6 +2025,51 @@ export default function AutoTradePage() {
                   </div>
                 )}
                 <LivePositionsTable positions={rows} />
+              </>
+            );
+          })()
+        )}
+
+        <h4 className="font-medium text-sm mt-5 mb-3 text-bear">
+          Live options positions — real money, no per-order confirmation
+        </h4>
+        <p className="text-xs text-slate-500 mb-3">
+          The real options fills the loop has actually placed through Webull — its own ledger (
+          <code className="text-[11px]">autotrade_live_options_positions</code>), separate from the equity live
+          positions above since a debit spread needs a second leg&apos;s columns.
+        </p>
+        {liveOptionsPositions.loading ? (
+          <Spinner />
+        ) : liveOptionsPositions.error ? (
+          <ErrorState error={liveOptionsPositions.error} onRetry={liveOptionsPositions.reload} />
+        ) : (
+          (() => {
+            const rows = liveOptionsPositions.data?.positions ?? [];
+            const open = rows.filter((p) => p.status === 'open');
+            const closed = rows.filter((p) => p.status === 'closed');
+            const pnls = closed.map((p) => optionsPaperPnl(p)).filter((v): v is number => v !== null);
+            const totalRealized = pnls.reduce((s, v) => s + v, 0);
+            const unrealizedTotal = open.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0);
+            const unrealizedKnown = open.some((p) => p.unrealizedPnl !== null);
+            return (
+              <>
+                {rows.length > 0 && (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+                    <StatTile label="Open" value={open.length} />
+                    <StatTile label="Closed" value={closed.length} />
+                    <StatTile
+                      label="Realized P&L"
+                      value={fmtSignedUsd(totalRealized)}
+                      valueClass={totalRealized >= 0 ? 'text-bull' : 'text-bear'}
+                    />
+                    <StatTile
+                      label="Unrealized P&L"
+                      value={unrealizedKnown ? fmtSignedUsd(unrealizedTotal) : '—'}
+                      valueClass={unrealizedKnown ? (unrealizedTotal >= 0 ? 'text-bull' : 'text-bear') : undefined}
+                    />
+                  </div>
+                )}
+                <LiveOptionsPositionsTable positions={rows} />
               </>
             );
           })()

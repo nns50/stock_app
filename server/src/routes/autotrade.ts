@@ -22,6 +22,7 @@ import { runCombinedBacktest, runCombinedWalkForwardBacktest } from '../services
 import { listPaperPositions, PaperPosition } from '../db/autotradePaperPositions';
 import { listOptionsPaperPositions, OptionsPaperPosition } from '../db/autotradeOptionsPaperPositions';
 import { listAutotradeLivePositions, syncAccountEquityFromBroker } from '../services/autotrading/liveExecute';
+import { listLiveOptionsPositions, LiveOptionsPosition } from '../db/autotradeLiveOptionsPositions';
 import { Position } from '../db/positions';
 import { runAutotradeLoopTick } from '../services/autotrading/loop';
 import { getAutotradeDashboard } from '../services/autotrading/dashboard';
@@ -783,6 +784,85 @@ autotradeRouter.get(
   asyncHandler(async (req, res) => {
     const q = parseQuery(paperPositionsQuery, req);
     const positions = await withLiveOptionMarks(listOptionsPaperPositions(q));
+    res.json({ positions });
+  }),
+);
+
+export interface LiveOptionsPositionLive extends LiveOptionsPosition {
+  /** A live contract mark as of this request (long leg, for a spread) — null
+   *  for a closed position or if the chain fetch failed. */
+  currentPrice: number | null;
+  /** The short leg's live mark — null for single_leg, a closed position, or
+   *  a chain-fetch failure. */
+  shortCurrentPrice: number | null;
+  /** See computeOptionsPaperUnrealizedPnl — null for a closed position or
+   *  when a needed mark is unavailable. Reused as-is (not a live-options
+   *  variant): the formula is asset/book-agnostic, keyed structurally off
+   *  {status, kind, entryPrice, shortEntryPrice, quantity} — LiveOptionsPosition
+   *  and OptionsPaperPosition both satisfy it. */
+  unrealizedPnl: number | null;
+}
+
+/** Enrich open LIVE options positions with live contract mark(s) + unrealized
+ *  P&L — identical grouping/matching logic to withLiveOptionMarks() above,
+ *  just over autotrade_live_options_positions instead of the paper table.
+ *  Kept as its own function (not a generic shared one) since the two
+ *  position types, while structurally similar, are nominally distinct — same
+ *  "deliberately parallel, not shared" convention as the execution services
+ *  themselves. */
+async function withLiveOptionsPositionMarks(positions: LiveOptionsPosition[]): Promise<LiveOptionsPositionLive[]> {
+  const open = positions.filter((p) => p.status === 'open');
+  const marks = new Map<number, number | null>();
+  const shortMarks = new Map<number, number | null>();
+  if (open.length) {
+    const groups = new Map<string, LiveOptionsPosition[]>();
+    for (const p of open) {
+      const key = `${p.symbol}|${p.expiration}`;
+      (groups.get(key) ?? groups.set(key, []).get(key)!).push(p);
+    }
+    const provider = getProvider();
+    await Promise.all(
+      Array.from(groups.entries()).map(async ([key, members]) => {
+        const [symbol, expiration] = key.split('|');
+        try {
+          const chain = await provider.getOptionsChain(symbol, expiration);
+          const markFor = (strike: number, side: 'call' | 'put') => {
+            const pool = side === 'call' ? chain.calls : chain.puts;
+            const match = pool.find((c) => Math.abs(c.strike - strike) < 1e-6);
+            return match?.mark ?? match?.last ?? null;
+          };
+          for (const p of members) {
+            marks.set(p.id, markFor(p.strike, p.side));
+            if (p.kind === 'debit_spread' && p.shortStrike !== null) {
+              shortMarks.set(p.id, markFor(p.shortStrike, p.side));
+            }
+          }
+        } catch {
+          for (const p of members) {
+            marks.set(p.id, null);
+            if (p.kind === 'debit_spread') shortMarks.set(p.id, null);
+          }
+        }
+      }),
+    );
+  }
+  return positions.map((p) => {
+    const currentPrice = p.status === 'open' ? (marks.get(p.id) ?? null) : null;
+    const shortCurrentPrice = p.status === 'open' && p.kind === 'debit_spread' ? (shortMarks.get(p.id) ?? null) : null;
+    return {
+      ...p,
+      currentPrice,
+      shortCurrentPrice,
+      unrealizedPnl: computeOptionsPaperUnrealizedPnl(p, currentPrice, shortCurrentPrice),
+    };
+  });
+}
+
+autotradeRouter.get(
+  '/live-options-positions',
+  asyncHandler(async (req, res) => {
+    const q = parseQuery(paperPositionsQuery, req);
+    const positions = await withLiveOptionsPositionMarks(listLiveOptionsPositions(q));
     res.json({ positions });
   }),
 );

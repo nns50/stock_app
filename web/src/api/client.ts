@@ -94,6 +94,7 @@ import type {
   PaperPosition,
   OptionsPaperPosition,
   AutotradeLivePosition,
+  LiveOptionsPosition,
   AutotradeDashboard,
 } from './types';
 
@@ -431,6 +432,13 @@ export const client = {
     liveAllowNakedShort?: boolean;
     liveProbationTrades?: number;
     liveProbationSizeMultiplier?: number;
+    liveOptionsEnabled?: boolean;
+    liveOptionsMaxOrderUsd?: number;
+    liveOptionsMaxDailyLossUsd?: number;
+    liveOptionsMaxOrdersPerDay?: number;
+    liveOptionsFatFingerPct?: number;
+    liveOptionsProbationTrades?: number;
+    liveOptionsProbationSizeMultiplier?: number;
     optionsStrategyType?: AutotradeOptionsStrategyType;
   }) => api<AutotradeConfig>('/autotrade/config', { method: 'PUT', body: JSON.stringify(body) }),
   autotradeExclusions: () => api<{ exclusions: AutotradeExclusion[] }>('/autotrade/exclusions'),
@@ -476,6 +484,10 @@ export const client = {
   autotradeLivePositions: (params: { status?: 'open' | 'closed'; symbol?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams(params as Record<string, string>).toString();
     return api<{ positions: AutotradeLivePosition[] }>(`/autotrade/live-positions${qs ? `?${qs}` : ''}`);
+  },
+  autotradeLiveOptionsPositions: (params: { status?: 'open' | 'closed'; symbol?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams(params as Record<string, string>).toString();
+    return api<{ positions: LiveOptionsPosition[] }>(`/autotrade/live-options-positions${qs ? `?${qs}` : ''}`);
   },
   autotradeDashboard: () => api<AutotradeDashboard>('/autotrade/dashboard'),
   setAutotradeKillSwitch: (on: boolean) =>

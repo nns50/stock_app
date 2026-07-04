@@ -17,6 +17,11 @@ vi.mock('../src/services/autotrading/optionsExecute', () => ({
   optionsSeedForEquity: vi.fn(),
 }));
 vi.mock('../src/services/autotrading/liveExecute', () => ({ runLiveExecution: vi.fn(), reconcileLiveOrders: vi.fn() }));
+vi.mock('../src/services/autotrading/liveOptionsExecute', () => ({
+  runLiveOptionsExecution: vi.fn(),
+  checkLiveOptionsExits: vi.fn(),
+  reconcileLiveOptionsOrders: vi.fn(),
+}));
 vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/autotrading/executionGuards')>();
   return { ...actual, checkSessionWindow: vi.fn(), getMarketAtrPct: vi.fn() };
@@ -34,6 +39,11 @@ import {
   optionsSeedForEquity,
 } from '../src/services/autotrading/optionsExecute';
 import { runLiveExecution, reconcileLiveOrders } from '../src/services/autotrading/liveExecute';
+import {
+  runLiveOptionsExecution,
+  checkLiveOptionsExits,
+  reconcileLiveOptionsOrders,
+} from '../src/services/autotrading/liveOptionsExecute';
 import { checkSessionWindow, getMarketAtrPct } from '../src/services/autotrading/executionGuards';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { runAutotradeLoopTick, startAutotradeLoop, stopAutotradeLoop } from '../src/services/autotrading/loop';
@@ -55,6 +65,9 @@ const mockGetOptionsSnapshot = vi.mocked(getOptionsPaperPortfolioSnapshot);
 const mockOptionsSeed = vi.mocked(optionsSeedForEquity);
 const mockLiveExecute = vi.mocked(runLiveExecution);
 const mockReconcileLive = vi.mocked(reconcileLiveOrders);
+const mockLiveOptionsExecute = vi.mocked(runLiveOptionsExecution);
+const mockCheckLiveOptionsExits = vi.mocked(checkLiveOptionsExits);
+const mockReconcileLiveOptions = vi.mocked(reconcileLiveOptionsOrders);
 const mockSessionWindow = vi.mocked(checkSessionWindow);
 const mockMarketAtr = vi.mocked(getMarketAtrPct);
 const mockLogEvent = vi.mocked(logAutotradeEvent);
@@ -142,6 +155,9 @@ beforeEach(() => {
   mockOptionsSeed.mockReset().mockReturnValue(emptySeed);
   mockLiveExecute.mockReset();
   mockReconcileLive.mockReset().mockResolvedValue([]);
+  mockLiveOptionsExecute.mockReset();
+  mockCheckLiveOptionsExits.mockReset().mockResolvedValue([]);
+  mockReconcileLiveOptions.mockReset().mockResolvedValue([]);
   mockSessionWindow.mockReset().mockReturnValue({ ok: true });
   mockMarketAtr.mockReset().mockResolvedValue(2);
   mockLogEvent.mockReset();
@@ -149,14 +165,16 @@ beforeEach(() => {
   // hit the REAL db/autotradeConfig and db/trading, not a mock — default to
   // "paper armed, live untouched/off" so existing tests below still exercise
   // the paper entries path; the gating tests further down override
-  // explicitly. liveTradingEnabled/liveAccountId are reset every test (not
-  // just left to their previous test's value) since, unlike enabled/
-  // killSwitch, nothing else in this shared beforeEach was resetting them.
+  // explicitly. liveTradingEnabled/liveAccountId/liveOptionsEnabled are reset
+  // every test (not just left to their previous test's value) since, unlike
+  // enabled/killSwitch, nothing else in this shared beforeEach was resetting
+  // them.
   setAutotradeConfig({
     enabled: true,
     killSwitch: false,
     liveTradingEnabled: false,
     liveAccountId: null,
+    liveOptionsEnabled: false,
   });
   setTradingConfig({ enabled: false, killSwitch: false });
   config.trading.placeEnabled = true; // env master gate ON — see placeOrder.test.ts's own convention
@@ -598,6 +616,105 @@ describe('runAutotradeLoopTick', () => {
       expect(summary.ranEntries).toBe(true);
       expect(summary.entriesOpened).toBe(1);
       expect(summary.liveEntriesOpened).toBe(0);
+    });
+  });
+
+  describe('Task #70: live options is a checkbox nested under the live gate', () => {
+    function armLive() {
+      setAutotradeConfig({ enabled: false, liveTradingEnabled: true, liveAccountId: 'ACC1' });
+      setTradingConfig({ enabled: true, killSwitch: false });
+    }
+    function armScreenAndDecide() {
+      mockScreen.mockResolvedValue({
+        generatedAt: Date.now(),
+        candidates: [candidate('AAPL', 2)],
+        excluded: [],
+        skipped: [],
+        errors: [],
+        discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      });
+      mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+      mockOptionsDecide.mockResolvedValue({ signals: [optionSignal('AAPL')], skipped: [] });
+    }
+
+    it('always reconciles live options orders and checks live options exits, even when nothing is active', async () => {
+      setAutotradeConfig({ enabled: false }); // paper off, live never configured
+      mockReconcileLiveOptions.mockResolvedValue([
+        { intentId: 1, symbol: 'AAPL', changed: true, action: 'exit_filled' },
+        { intentId: 2, symbol: 'MSFT', changed: false },
+      ]);
+      mockCheckLiveOptionsExits.mockResolvedValue([{ symbol: 'AAPL', requested: true }]);
+
+      const summary = await runAutotradeLoopTick();
+
+      expect(mockReconcileLiveOptions).toHaveBeenCalledTimes(1);
+      expect(mockCheckLiveOptionsExits).toHaveBeenCalledTimes(1);
+      expect(summary.liveOptionsOrdersReconciled).toBe(2);
+      expect(summary.liveOptionsPositionsClosed).toBe(1);
+      expect(summary.liveOptionsExitsRequested).toBe(1);
+      expect(summary.ranEntries).toBe(false);
+    });
+
+    it('does NOT place live options entries just because liveTradingEnabled is true — liveOptionsEnabled must also be true', async () => {
+      armLive();
+      setAutotradeConfig({ liveOptionsEnabled: false }); // explicit, even though beforeEach already defaults this
+      armScreenAndDecide();
+      mockLiveExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+      const summary = await runAutotradeLoopTick();
+
+      expect(mockLiveExecute).toHaveBeenCalledTimes(1); // equity live still ran
+      expect(mockLiveOptionsExecute).not.toHaveBeenCalled(); // options live did not
+      expect(summary.liveEntriesOpened).toBe(1);
+      expect(summary.liveOptionsEntriesOpened).toBe(0);
+    });
+
+    it('places live options entries when liveOptionsEnabled is also true, alongside equity live', async () => {
+      armLive();
+      setAutotradeConfig({ liveOptionsEnabled: true });
+      armScreenAndDecide();
+      mockLiveExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+      mockLiveOptionsExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+      const summary = await runAutotradeLoopTick();
+
+      expect(mockLiveOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }]);
+      expect(summary.liveOptionsEntriesOpened).toBe(1);
+    });
+
+    it("does not activate live options when the human Trade page's own enabled is off, even with liveOptionsEnabled true", async () => {
+      setAutotradeConfig({ enabled: false, liveTradingEnabled: true, liveAccountId: 'ACC1', liveOptionsEnabled: true });
+      setTradingConfig({ enabled: false });
+      const summary = await runAutotradeLoopTick();
+      expect(summary.ranEntries).toBe(false);
+      expect(mockLiveOptionsExecute).not.toHaveBeenCalled();
+    });
+
+    it('aborts only live options if liveOptionsEnabled is disabled mid-cycle, while equity live — still active — proceeds', async () => {
+      armLive();
+      setAutotradeConfig({ liveOptionsEnabled: true });
+      mockScreen.mockImplementation(async () => {
+        setAutotradeConfig({ liveOptionsEnabled: false }); // options disabled mid-cycle
+        return {
+          generatedAt: Date.now(),
+          candidates: [candidate('AAPL', 2)],
+          excluded: [],
+          skipped: [],
+          errors: [],
+          discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+        };
+      });
+      mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+      mockOptionsDecide.mockResolvedValue({ signals: [optionSignal('AAPL')], skipped: [] });
+      mockLiveExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+      const summary = await runAutotradeLoopTick();
+
+      expect(mockLiveExecute).toHaveBeenCalledTimes(1); // equity live still ran
+      expect(mockLiveOptionsExecute).not.toHaveBeenCalled(); // options live did not
+      expect(summary.ranEntries).toBe(true);
+      expect(summary.liveEntriesOpened).toBe(1);
+      expect(summary.liveOptionsEntriesOpened).toBe(0);
     });
   });
 });

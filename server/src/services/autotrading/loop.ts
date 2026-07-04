@@ -13,6 +13,7 @@ import {
   optionsSeedForEquity,
 } from './optionsExecute';
 import { runLiveExecution, reconcileLiveOrders } from './liveExecute';
+import { runLiveOptionsExecution, checkLiveOptionsExits, reconcileLiveOptionsOrders } from './liveOptionsExecute';
 import { checkSessionWindow, checkVolatility, defaultVolatilityFilterConfig, getMarketAtrPct } from './executionGuards';
 
 // ---------------------------------------------------------------------------
@@ -62,6 +63,20 @@ export interface LoopTickSummary {
    *  toward the broker; materializes fills the broker already produced). */
   liveOrdersReconciled: number;
   livePositionsClosed: number;
+  /** Live OPTIONS order reconcile (Task #70 Step D) — same always-runs,
+   *  read-only-toward-the-broker posture as liveOrdersReconciled, over
+   *  autotrade_live_options_orders instead. */
+  liveOptionsOrdersReconciled: number;
+  liveOptionsPositionsClosed: number;
+  /** Live options closing orders newly PLACED this cycle (the time-exit
+   *  trigger firing) — always runs, like exitsChecked/optionsExitsChecked.
+   *  Unlike those, this counts orders actually REQUESTED, not every open
+   *  position considered: checkLiveOptionsExits() only reports a position it
+   *  actually attempted to close (already-in-flight and not-yet-triggered
+   *  positions are silently skipped, not reported as a checked-but-not-closed
+   *  outcome) — closing here is a broker round-trip, not instantaneous, so
+   *  "closed" isn't known until a LATER liveOptionsPositionsClosed. */
+  liveOptionsExitsRequested: number;
   candidatesScreened: number;
   candidatesPassedVolatility: number;
   signalsGenerated: number;
@@ -80,6 +95,9 @@ export interface LoopTickSummary {
   /** Live entries opened this cycle — 0 whenever live wasn't active (never
    *  attempted), not "zero of some attempted". */
   liveEntriesOpened: number;
+  /** Live OPTIONS entries opened this cycle (Task #70 Step D) — 0 whenever
+   *  live options wasn't active, mirroring liveEntriesOpened exactly. */
+  liveOptionsEntriesOpened: number;
 }
 
 /** Ticker-level volatility pre-filter, applied between Screen and Decision —
@@ -113,6 +131,9 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     optionsExitsClosed: 0,
     liveOrdersReconciled: 0,
     livePositionsClosed: 0,
+    liveOptionsOrdersReconciled: 0,
+    liveOptionsPositionsClosed: 0,
+    liveOptionsExitsRequested: 0,
     candidatesScreened: 0,
     candidatesPassedVolatility: 0,
     signalsGenerated: 0,
@@ -120,6 +141,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     entriesOpened: 0,
     optionsEntriesOpened: 0,
     liveEntriesOpened: 0,
+    liveOptionsEntriesOpened: 0,
   };
 }
 
@@ -144,6 +166,17 @@ function isLiveEntryActive(autotradeCfg: AutotradeConfig): boolean {
 
 function isPaperEntryActive(autotradeCfg: AutotradeConfig): boolean {
   return autotradeCfg.enabled && !autotradeCfg.killSwitch;
+}
+
+/** Whether autotrade's LIVE OPTIONS path is allowed to place NEW entries
+ *  right now — everything isLiveEntryActive() already requires, PLUS
+ *  liveOptionsEnabled: it's a checkbox nested UNDER the master live gate
+ *  (Task #70's confirmed design), not an independent toggle, so it can never
+ *  be active while the equity live gate itself isn't. Because of that, the
+ *  "should we even screen" checks below don't need a separate term for this —
+ *  liveOptionsActive implies liveActive by construction. */
+function isLiveOptionsEntryActive(autotradeCfg: AutotradeConfig): boolean {
+  return isLiveEntryActive(autotradeCfg) && autotradeCfg.liveOptionsEnabled;
 }
 
 /** True while a cycle is actively running. The self-rescheduling timer below
@@ -190,6 +223,13 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     const exitOutcomes = await checkPaperExits();
     const optionsExitOutcomes = await checkOptionsPaperExits();
     const liveReconcileOutcomes = await reconcileLiveOrders();
+    // Reconcile before checking for NEW triggers: catches up on anything an
+    // earlier cycle already placed (an entry that filled, an exit that
+    // filled) so a position closed by reconcile this same tick is already
+    // gone from listOpenLiveOptionsPositions() by the time checkLiveOptionsExits
+    // runs, rather than raising a question of re-triggering it in the same pass.
+    const liveOptionsReconcileOutcomes = await reconcileLiveOptionsOrders();
+    const liveOptionsExitOutcomes = await checkLiveOptionsExits();
     const summary: LoopTickSummary = {
       ...emptySummary(),
       exitsChecked: exitOutcomes.length,
@@ -198,6 +238,9 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       optionsExitsClosed: optionsExitOutcomes.filter((o) => o.closed).length,
       liveOrdersReconciled: liveReconcileOutcomes.length,
       livePositionsClosed: liveReconcileOutcomes.filter((o) => o.action === 'exit_filled').length,
+      liveOptionsOrdersReconciled: liveOptionsReconcileOutcomes.length,
+      liveOptionsPositionsClosed: liveOptionsReconcileOutcomes.filter((o) => o.action === 'exit_filled').length,
+      liveOptionsExitsRequested: liveOptionsExitOutcomes.filter((o) => o.requested).length,
     };
 
     const config = getAutotradeConfig();
@@ -260,6 +303,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     const recheck = getAutotradeConfig();
     const paperStillActive = isPaperEntryActive(recheck);
     const liveStillActive = isLiveEntryActive(recheck);
+    const liveOptionsStillActive = isLiveOptionsEntryActive(recheck);
     if (!paperStillActive && !liveStillActive) {
       summary.skippedReason = recheck.killSwitch
         ? 'Kill switch engaged mid-cycle — entries aborted before execution'
@@ -288,6 +332,10 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     if (liveStillActive) {
       const liveOutcomes = await runLiveExecution(decision.signals.map((signal) => ({ signal })));
       summary.liveEntriesOpened = liveOutcomes.filter((o) => o.ok).length;
+    }
+    if (liveOptionsStillActive) {
+      const liveOptionsOutcomes = await runLiveOptionsExecution(optionsDecision.signals.map((signal) => ({ signal })));
+      summary.liveOptionsEntriesOpened = liveOptionsOutcomes.filter((o) => o.ok).length;
     }
     summary.ranEntries = true;
     return summary;
