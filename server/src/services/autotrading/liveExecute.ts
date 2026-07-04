@@ -21,6 +21,7 @@ import { RiskCheckContext, RiskCheckResult, correlatedNotional, evaluateRiskChec
 import { RISK_PROFILES } from './riskProfiles';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { getProvider } from '../../providers';
+import { dispatchNotifications } from '../notifier';
 
 // ---------------------------------------------------------------------------
 // The LIVE counterpart to execute.ts's paper execution (Phase 8 — see
@@ -326,6 +327,19 @@ export async function attemptLiveEntry(
     },
     riskProfile,
   });
+  // Best-effort — a real order was already placed and journaled above
+  // regardless of whether anyone's actually configured a webhook to hear
+  // about it (dispatchNotifications() itself is a no-op with zero channels
+  // configured, and never throws). Reuses the SAME Slack/Discord/webhook
+  // infra the price-alert system already dispatches through, rather than a
+  // second notification path — this is the one live autotrade event a human
+  // most wants to know about without having the app open.
+  await dispatchNotifications([
+    {
+      title: symbol,
+      message: `Autotrade LIVE ${signal.side === 'buy' ? 'BUY' : 'SELL'}: ${quantity} ${symbol} @ ~$${limitPrice.toFixed(2)} (stop ${signal.stop.toFixed(2)}, target ${signal.target.toFixed(2)})`,
+    },
+  ]);
   return { symbol, ok: true, intentId: intentRec.id };
 }
 

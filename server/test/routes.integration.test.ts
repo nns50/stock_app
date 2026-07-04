@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import { app } from '../src/index';
 import { db } from '../src/db';
@@ -1259,6 +1259,35 @@ describe('autotrade monitoring dashboard + kill switch routes (integration)', ()
   it('POST /kill-switch rejects a non-boolean body', async () => {
     const res = await post('/api/autotrade/kill-switch', { on: 'yes' });
     expect(res.status).toBe(400);
+  });
+
+  it('POST /kill-switch dispatches a notification when engaging, but not when releasing', async () => {
+    const origNotifications = { ...config.notifications };
+    config.notifications.slackWebhookUrl = 'http://slack.test';
+    const realFetch = globalThis.fetch;
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+        if (typeof url === 'string' && url.startsWith('http://slack.test')) {
+          return { ok: true, status: 200 } as Response;
+        }
+        return realFetch(url as never, init);
+      });
+    try {
+      await post('/api/autotrade/kill-switch', { on: true });
+      expect(fetchSpy).toHaveBeenCalledTimes(2); // the route's own POST + the dispatched webhook
+      const webhookCall = fetchSpy.mock.calls.find(
+        (call) => typeof call[0] === 'string' && call[0].startsWith('http://slack.test'),
+      )!;
+      const body = JSON.parse(webhookCall[1]!.body as string) as { text: string };
+      expect(body.text).toMatch(/kill switch ENGAGED/i);
+
+      await post('/api/autotrade/kill-switch', { on: false });
+      expect(fetchSpy).toHaveBeenCalledTimes(3); // only the route's own POST — release doesn't notify
+    } finally {
+      Object.assign(config.notifications, origNotifications);
+      fetchSpy.mockRestore();
+    }
   });
 
   it('engaging the kill switch does not touch the enabled flag', async () => {

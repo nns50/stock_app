@@ -33,6 +33,7 @@ import {
   PositionPnl,
 } from '../services/pnl';
 import { getProvider } from '../providers';
+import { dispatchNotifications } from '../services/notifier';
 
 export const autotradeRouter = Router();
 
@@ -758,6 +759,16 @@ autotradeRouter.post(
       action: on ? 'kill_switch_engaged' : 'kill_switch_released',
       riskProfile: next.riskProfile,
     });
+    // Best-effort, same reasoning as liveExecute.ts's live-order notification
+    // — reuses the existing Slack/Discord/webhook infra rather than a new
+    // path. Only the ENGAGE direction notifies (a deliberate emergency-halt
+    // action worth knowing about away from the app); releasing it is the
+    // safe direction and doesn't need a push.
+    if (on) {
+      await dispatchNotifications([
+        { title: 'Autotrade', message: 'Autotrade kill switch ENGAGED — new entries halted.' },
+      ]);
+    }
     res.json(next);
   }),
 );

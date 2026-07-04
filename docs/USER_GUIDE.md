@@ -652,6 +652,15 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   details (strike/type/expiration) shown inline. This is the dedicated place to see your
   real autotrade fills at a glance; they also appear, unmarked, mixed in with your manual
   trades on the Positions/Journal pages and the Trade page's Orders panel.
+- **Alerts** — two loop events push a notification through whichever webhooks you've
+  configured in [Settings → Server-side watching](#server-side-watching-alerts-with-the-app-closed)
+  (Slack/Discord/generic) — the same destinations the price-alert poller uses, so
+  nothing new to set up. A **live order placed** notifies with the symbol, side,
+  quantity, and limit/stop/target; **engaging** the kill switch notifies too (releasing
+  it doesn't — that's the safe direction). Both are best-effort: with no webhook
+  configured, nothing is sent and nothing fails. Paper trading and a daily-drawdown halt
+  don't push a notification yet — paper carries no real financial exposure, and the halt
+  isn't currently tracked as a one-time state transition.
 - **Refresh** (top of the page, next to the title) — Monitoring, Paper trading, and
   Recent activity all reflect state the background loop can change on its own, every
   minute, with nothing clicked — unlike Configuration, the exclusion list, and the
