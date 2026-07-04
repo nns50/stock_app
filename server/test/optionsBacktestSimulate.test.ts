@@ -453,4 +453,286 @@ describe('simulateOptionsBacktest', () => {
       Object.assign(RISK_PROFILES.MODERATE, original);
     }
   });
+
+  describe('debit spreads', () => {
+    // K=102 -> delta ~0.44 (inside the long leg's [0.30,0.60] band); K=107 ->
+    // delta ~0.24 (inside SHORT_LEG_DELTA_BAND's [0.15,0.25]) at S=100,
+    // sigma=0.3, T=30d — confirmed numerically via bsGreeks() directly.
+    const LONG_STRIKE = 102;
+    const SHORT_STRIKE = 107;
+    const LONG_TICKER = 'O:TEST-LONG';
+    const SHORT_TICKER = 'O:TEST-SHORT';
+
+    function spreadConfig(overrides: Partial<OptionsBacktestConfig> = {}): OptionsBacktestConfig {
+      return baseConfig({ optionsDecisionConfig: { strategyType: 'debit_spread' }, ...overrides });
+    }
+
+    it("opens both legs at the NEXT day's own OPEN, sized by suggestedContracts", async () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, DTE_DAYS);
+      const T = yearsFor(DTE_DAYS);
+      const longSignalPremium = premiumFor('call', 100, LONG_STRIKE, T);
+      const shortSignalPremium = premiumFor('call', 100, SHORT_STRIKE, T);
+      const longEntryOpen = longSignalPremium + 0.3;
+      const shortEntryOpen = shortSignalPremium + 0.1;
+      mockContractBars({
+        [LONG_TICKER]: [
+          optionBar(signalDay, longSignalPremium),
+          optionBar(entryDay, longEntryOpen, { open: longEntryOpen }),
+        ],
+        [SHORT_TICKER]: [
+          optionBar(signalDay, shortSignalPremium),
+          optionBar(entryDay, shortEntryOpen, { open: shortEntryOpen }),
+        ],
+      });
+      const historyBySymbol = new Map([['TEST', [...warmupThrough(signalDay), equityBar(entryDay)]]]);
+      const contractsBySymbol = new Map([
+        [
+          'TEST',
+          [
+            contractRef(LONG_TICKER, 'call', LONG_STRIKE, expiration),
+            contractRef(SHORT_TICKER, 'call', SHORT_STRIKE, expiration),
+          ],
+        ],
+      ]);
+
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        spreadConfig({ from: signalDay, to: entryDay }),
+      );
+      expect(report.trades).toHaveLength(1); // force-closed at entryDay (also the last day)
+      const t = report.trades[0];
+      expect(t.kind).toBe('debit_spread');
+      expect(t.contractTicker).toBe(LONG_TICKER);
+      expect(t.strike).toBe(LONG_STRIKE);
+      expect(t.shortContractTicker).toBe(SHORT_TICKER);
+      expect(t.shortStrike).toBe(SHORT_STRIKE);
+      expect(t.entryPremium).toBe(longEntryOpen);
+      expect(t.shortEntryPremium).toBe(shortEntryOpen);
+      expect(t.contracts).toBeGreaterThan(0);
+    });
+
+    it('nets both legs for P&L at the time-exit trigger: (netCreditAtExit - netDebitAtEntry) x contracts x 100', async () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, 10);
+      const T = yearsFor(10);
+      // A shorter DTE than the main SHORT_STRIKE (107) was calibrated for —
+      // at only 10 days out, delta decays faster with distance, so K=104
+      // (not 107) is what lands in SHORT_LEG_DELTA_BAND's [0.15,0.25] here
+      // (confirmed numerically via bsGreeks at T=10/365).
+      const shortStrike10d = 104;
+      const longEntry = premiumFor('call', 100, LONG_STRIKE, T);
+      const shortEntry = premiumFor('call', 100, shortStrike10d, T);
+      const exitDay = d(signalDay, 4); // same DTE-crossing day as the single-leg time-exit test above
+      const longExit = longEntry + 2;
+      const shortExit = shortEntry + 0.5;
+      mockContractBars({
+        [LONG_TICKER]: [
+          optionBar(signalDay, longEntry),
+          optionBar(entryDay, longEntry, { open: longEntry }),
+          optionBar(d(signalDay, 2), longEntry),
+          optionBar(d(signalDay, 3), longEntry),
+          optionBar(exitDay, longExit),
+        ],
+        [SHORT_TICKER]: [
+          optionBar(signalDay, shortEntry),
+          optionBar(entryDay, shortEntry, { open: shortEntry }),
+          optionBar(d(signalDay, 2), shortEntry),
+          optionBar(d(signalDay, 3), shortEntry),
+          optionBar(exitDay, shortExit),
+        ],
+      });
+      const historyBySymbol = new Map([
+        [
+          'TEST',
+          [
+            ...warmupThrough(signalDay),
+            equityBar(entryDay),
+            equityBar(d(signalDay, 2)),
+            equityBar(d(signalDay, 3)),
+            equityBar(exitDay),
+          ],
+        ],
+      ]);
+      const contractsBySymbol = new Map([
+        [
+          'TEST',
+          [
+            contractRef(LONG_TICKER, 'call', LONG_STRIKE, expiration),
+            contractRef(SHORT_TICKER, 'call', shortStrike10d, expiration),
+          ],
+        ],
+      ]);
+
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        spreadConfig({ from: signalDay, to: exitDay }),
+      );
+      expect(report.trades).toHaveLength(1);
+      const t = report.trades[0];
+      expect(t.exitReason).toBe('time_exit');
+      expect(t.exitPremium).toBe(longExit);
+      expect(t.shortExitPremium).toBe(shortExit);
+      const netDebitAtEntry = longEntry - shortEntry;
+      const netCreditAtExit = longExit - shortExit;
+      expect(t.pnl).toBeCloseTo((netCreditAtExit - netDebitAtEntry) * t.contracts * 100, 5);
+    });
+
+    it('skips the candidate when no short-leg contract further OTM passes the delta band', async () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, DTE_DAYS);
+      const T = yearsFor(DTE_DAYS);
+      const longPremium = premiumFor('call', 100, LONG_STRIKE, T);
+      // Only the long-leg contract exists in this expiration — no candidate
+      // strike further OTM at all, so the short-leg scan finds nothing.
+      mockContractBars({ [LONG_TICKER]: [optionBar(signalDay, longPremium)] });
+      const historyBySymbol = new Map([['TEST', warmupThrough(signalDay)]]);
+      const contractsBySymbol = new Map([['TEST', [contractRef(LONG_TICKER, 'call', LONG_STRIKE, expiration)]]]);
+
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        spreadConfig({ from: signalDay, to: entryDay }),
+      );
+      expect(report.trades).toEqual([]);
+      expect(report.skipped.some((s) => s.reason.includes('short-leg'))).toBe(true);
+    });
+
+    it('skips the candidate when the short leg is not strictly further OTM (no net debit)', async () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, DTE_DAYS);
+      const T = yearsFor(DTE_DAYS);
+      // Each leg's implied vol is reverse-solved independently from its OWN
+      // historical price (real historical data can have genuinely different
+      // implied vols per strike/liquidity, unlike a single shared sigma) —
+      // long at a LOW vol (0.15) keeps its delta (~0.36) inside the long
+      // leg's [0.30,0.60] band at a LOW premium; short at a HIGHER vol (0.3)
+      // keeps its delta (~0.24) inside SHORT_LEG_DELTA_BAND's [0.15,0.25] but
+      // at a premium that happens to be HIGHER than the long leg's — a
+      // genuine "no net debit" data anomaly the guard must still catch, both
+      // confirmed numerically via bsPrice/bsGreeks.
+      const longPremium = premiumFor('call', 100, LONG_STRIKE, T, 0.15); // ~1.02
+      const shortPremium = premiumFor('call', 100, SHORT_STRIKE, T, 0.3); // ~1.17, >= longPremium
+      mockContractBars({
+        [LONG_TICKER]: [optionBar(signalDay, longPremium)],
+        [SHORT_TICKER]: [optionBar(signalDay, shortPremium)],
+      });
+      const historyBySymbol = new Map([['TEST', warmupThrough(signalDay)]]);
+      const contractsBySymbol = new Map([
+        [
+          'TEST',
+          [
+            contractRef(LONG_TICKER, 'call', LONG_STRIKE, expiration),
+            contractRef(SHORT_TICKER, 'call', SHORT_STRIKE, expiration),
+          ],
+        ],
+      ]);
+
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        spreadConfig({ from: signalDay, to: entryDay }),
+      );
+      expect(report.trades).toEqual([]);
+      expect(report.skipped.some((s) => s.reason.includes('net debit'))).toBe(true);
+    });
+
+    it('keeps a spread pending until BOTH legs land on the same fill day', async () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const laterDay = d(signalDay, 2);
+      const expiration = d(signalDay, DTE_DAYS);
+      const T = yearsFor(DTE_DAYS);
+      const longPremium = premiumFor('call', 100, LONG_STRIKE, T);
+      const shortPremium = premiumFor('call', 100, SHORT_STRIKE, T);
+      mockContractBars({
+        [LONG_TICKER]: [
+          optionBar(signalDay, longPremium),
+          optionBar(entryDay, longPremium, { open: longPremium }), // ready on entryDay
+          optionBar(laterDay, longPremium),
+        ],
+        [SHORT_TICKER]: [
+          optionBar(signalDay, shortPremium),
+          // no bar on entryDay at all -> short leg isn't ready yet
+          optionBar(laterDay, shortPremium, { open: shortPremium }),
+        ],
+      });
+      const historyBySymbol = new Map([
+        ['TEST', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(laterDay)]],
+      ]);
+      const contractsBySymbol = new Map([
+        [
+          'TEST',
+          [
+            contractRef(LONG_TICKER, 'call', LONG_STRIKE, expiration),
+            contractRef(SHORT_TICKER, 'call', SHORT_STRIKE, expiration),
+          ],
+        ],
+      ]);
+
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        spreadConfig({ from: signalDay, to: laterDay }),
+      );
+      expect(report.trades).toHaveLength(1);
+      // Filled on laterDay (the first day BOTH legs had a bar), not entryDay.
+      expect(report.trades[0].entryDate).toBe(laterDay);
+      expect(report.trades[0].entryPremium).toBe(longPremium);
+      expect(report.trades[0].shortEntryPremium).toBe(shortPremium);
+    });
+
+    it('force-closes both legs independently at period end', async () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const lastDay = d(signalDay, 2);
+      const expiration = d(signalDay, DTE_DAYS);
+      const T = yearsFor(DTE_DAYS);
+      const longEntry = premiumFor('call', 100, LONG_STRIKE, T);
+      const shortEntry = premiumFor('call', 100, SHORT_STRIKE, T);
+      const longLast = longEntry + 3;
+      const shortLast = shortEntry + 1;
+      mockContractBars({
+        [LONG_TICKER]: [
+          optionBar(signalDay, longEntry),
+          optionBar(entryDay, longEntry, { open: longEntry }),
+          optionBar(lastDay, longLast),
+        ],
+        [SHORT_TICKER]: [
+          optionBar(signalDay, shortEntry),
+          optionBar(entryDay, shortEntry, { open: shortEntry }),
+          optionBar(lastDay, shortLast),
+        ],
+      });
+      const historyBySymbol = new Map([
+        ['TEST', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(lastDay)]],
+      ]);
+      const contractsBySymbol = new Map([
+        [
+          'TEST',
+          [
+            contractRef(LONG_TICKER, 'call', LONG_STRIKE, expiration),
+            contractRef(SHORT_TICKER, 'call', SHORT_STRIKE, expiration),
+          ],
+        ],
+      ]);
+
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        spreadConfig({ from: signalDay, to: lastDay }),
+      );
+      expect(report.trades).toHaveLength(1);
+      const t = report.trades[0];
+      expect(t.exitReason).toBe('end_of_period');
+      expect(t.exitPremium).toBe(longLast);
+      expect(t.shortExitPremium).toBe(shortLast);
+    });
+  });
 });

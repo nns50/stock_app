@@ -81,8 +81,13 @@ export function defaultAutotradeEntryConfig(side: OptionsSignalSide): EntryStrat
  *  and max gain. Everything else (liquidity/spread/OI/volume/IV-rank gates)
  *  is inherited from the long leg's own resolved entryCfg (see
  *  generateOptionsSignal) so both legs are held to the identical
- *  contract-quality bar — only delta differs. */
-const SHORT_LEG_DELTA_BAND: Pick<EntryStrategyConfig, 'deltaMin' | 'deltaMax'> = { deltaMin: 0.15, deltaMax: 0.25 };
+ *  contract-quality bar — only delta differs. Exported for reuse by
+ *  optionsBacktest.ts's debit-spread simulation, so backtest and live never
+ *  drift on this threshold. */
+export const SHORT_LEG_DELTA_BAND: Pick<EntryStrategyConfig, 'deltaMin' | 'deltaMax'> = {
+  deltaMin: 0.15,
+  deltaMax: 0.25,
+};
 
 interface OptionsSignalBase {
   symbol: string;
