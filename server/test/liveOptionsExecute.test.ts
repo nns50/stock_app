@@ -1,0 +1,544 @@
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+
+vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
+vi.mock('../src/providers/webull/accountState', () => ({
+  webullAccountState: vi.fn(),
+  webullAccountType: vi.fn(),
+}));
+vi.mock('../src/providers/webull/orders', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/providers/webull/orders')>();
+  return { ...actual, webullPlaceOrder: vi.fn() };
+});
+
+import { config } from '../src/config';
+import { getProvider } from '../src/providers';
+import { webullAccountState, webullAccountType } from '../src/providers/webull/accountState';
+import { webullPlaceOrder } from '../src/providers/webull/orders';
+import { initDb, db } from '../src/db';
+import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
+import { setTradingConfig } from '../src/db/trading';
+import { listAutotradeEvents } from '../src/db/autotradeEvents';
+import { listIntents } from '../src/db/orders';
+import { getLiveOptionsOrder } from '../src/db/autotradeLiveOptionsOrders';
+import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
+import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from '../src/services/autotrading/optionsRiskCheck';
+import { RISK_PROFILES } from '../src/services/autotrading/riskProfiles';
+import { DebitSpreadOptionsSignal, SingleLegOptionsSignal } from '../src/services/autotrading/optionsDecide';
+import {
+  attemptLiveOptionsEntry,
+  buildLiveOptionsTradingConfig,
+  getOptionsProbationStatus,
+  getLiveOptionsPortfolioSnapshot,
+  runLiveOptionsExecution,
+} from '../src/services/autotrading/liveOptionsExecute';
+
+const mockGetProvider = vi.mocked(getProvider);
+const mockAccountState = vi.mocked(webullAccountState);
+const mockAccountType = vi.mocked(webullAccountType);
+const mockPlaceOrder = vi.mocked(webullPlaceOrder);
+
+function optionSignal(overrides: Partial<SingleLegOptionsSignal> = {}): SingleLegOptionsSignal {
+  return {
+    kind: 'single_leg',
+    symbol: 'AAPL',
+    side: 'call',
+    contractSymbol: 'AAPL-fixture',
+    strike: 100,
+    expiration: '2024-06-21',
+    dte: 21,
+    premium: 3,
+    delta: 0.45,
+    ivRank: 50,
+    maxLossPerContract: 300,
+    rationale: 'test fixture',
+    score: 70,
+    ...overrides,
+  };
+}
+
+function spreadSignal(overrides: Partial<DebitSpreadOptionsSignal> = {}): DebitSpreadOptionsSignal {
+  return {
+    kind: 'debit_spread',
+    symbol: 'AAPL',
+    side: 'call',
+    expiration: '2024-06-21',
+    dte: 21,
+    ivRank: 50,
+    longContractSymbol: 'AAPL-long',
+    longStrike: 100,
+    longPremium: 3,
+    longDelta: 0.45,
+    shortContractSymbol: 'AAPL-short',
+    shortStrike: 110,
+    shortPremium: 1,
+    shortDelta: 0.2,
+    width: 10,
+    netDebit: 2,
+    maxLossPerContract: 200,
+    maxProfitPerContract: 800,
+    rationale: 'test fixture',
+    score: 70,
+    ...overrides,
+  };
+}
+
+type ContractFixture = { side: 'call' | 'put'; strike: number; mark: number };
+
+function chainsFor(fixtures: Record<string, ContractFixture | ContractFixture[]>) {
+  return {
+    getOptionsChain: vi.fn(async (symbol: string, expiration: string) => {
+      const fx = fixtures[symbol];
+      if (!fx) throw new Error(`no mock chain for ${symbol}`);
+      const list = Array.isArray(fx) ? fx : [fx];
+      const contracts = list.map((f, i) => ({
+        symbol: `${symbol}-opt-${i}`,
+        underlying: symbol,
+        type: f.side,
+        strike: f.strike,
+        mark: f.mark,
+        expiration,
+      }));
+      return {
+        underlying: symbol,
+        expiration,
+        underlyingPrice: 100,
+        calls: contracts.filter((c) => c.type === 'call'),
+        puts: contracts.filter((c) => c.type === 'put'),
+      };
+    }),
+    getCandles: vi.fn(async () => []),
+  };
+}
+
+const okAccountState = {
+  ok: true,
+  accountId: 'ACC1',
+  state: { buyingPowerUsd: 1_000_000, exposureUsd: 0, realizedPnlTodayUsd: 0, ordersToday: 0, currentPositionQty: 0 },
+};
+
+function liveConfig(overrides: Partial<AutotradeConfig> = {}): AutotradeConfig {
+  return {
+    ...defaultAutotradeConfig(),
+    accountEquityUsd: 100_000,
+    liveAccountId: 'ACC1',
+    liveTradingEnabled: true,
+    liveEnabledAt: Date.now(),
+    liveOptionsEnabled: true,
+    liveOptionsEnabledAt: Date.now(),
+    liveOptionsMaxOrderUsd: 50_000,
+    liveOptionsMaxDailyLossUsd: 5_000,
+    liveOptionsMaxOrdersPerDay: 20,
+    ...overrides,
+  };
+}
+
+const okResult = (signal: SingleLegOptionsSignal | DebitSpreadOptionsSignal): OptionsRiskCheckResult =>
+  evaluateOptionsRiskCheck(
+    signal,
+    {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      correlatedNotional: 0,
+    },
+    RISK_PROFILES.MODERATE,
+  );
+
+const origPlaceEnabled = config.trading.placeEnabled;
+
+beforeAll(() => initDb());
+beforeEach(() => {
+  db.exec(
+    'DELETE FROM autotrade_config; DELETE FROM trading_config; DELETE FROM autotrade_events; ' +
+      'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; ' +
+      'DELETE FROM autotrade_live_options_positions; DELETE FROM order_events; DELETE FROM order_intents; ' +
+      'DELETE FROM position_exits; DELETE FROM positions;',
+  );
+  setTradingConfig({ enabled: true, killSwitch: false });
+  config.trading.placeEnabled = true;
+  mockGetProvider.mockReset();
+  mockAccountState.mockReset();
+  mockAccountType.mockReset();
+  mockPlaceOrder.mockReset();
+});
+afterEach(() => {
+  config.trading.placeEnabled = origPlaceEnabled;
+});
+
+describe('buildLiveOptionsTradingConfig', () => {
+  it('requires BOTH liveTradingEnabled and liveOptionsEnabled, ANDed with the human enabled toggle', () => {
+    setTradingConfig({ enabled: true });
+    expect(
+      buildLiveOptionsTradingConfig(liveConfig({ liveTradingEnabled: true, liveOptionsEnabled: true })).enabled,
+    ).toBe(true);
+    expect(
+      buildLiveOptionsTradingConfig(liveConfig({ liveTradingEnabled: false, liveOptionsEnabled: true })).enabled,
+    ).toBe(false);
+    expect(
+      buildLiveOptionsTradingConfig(liveConfig({ liveTradingEnabled: true, liveOptionsEnabled: false })).enabled,
+    ).toBe(false);
+    setTradingConfig({ enabled: false });
+    expect(
+      buildLiveOptionsTradingConfig(liveConfig({ liveTradingEnabled: true, liveOptionsEnabled: true })).enabled,
+    ).toBe(false);
+  });
+
+  it('combines both kill switches (OR)', () => {
+    setTradingConfig({ killSwitch: true });
+    expect(buildLiveOptionsTradingConfig(liveConfig({ killSwitch: false })).killSwitch).toBe(true);
+    setTradingConfig({ killSwitch: false });
+    expect(buildLiveOptionsTradingConfig(liveConfig({ killSwitch: true })).killSwitch).toBe(true);
+  });
+
+  it('maps the dedicated liveOptions* caps, not the equity live caps', () => {
+    const cfg = buildLiveOptionsTradingConfig(
+      liveConfig({ liveMaxOrderUsd: 111, liveOptionsMaxOrderUsd: 7_777, liveOptionsMaxDailyLossUsd: 333 }),
+    );
+    expect(cfg.maxOrderUsd).toBe(7_777);
+    expect(cfg.maxDailyLossUsd).toBe(333);
+  });
+
+  it('falls back maxExposureUsd to 0 when equity is unset, failing closed', () => {
+    expect(buildLiveOptionsTradingConfig(liveConfig({ accountEquityUsd: null })).maxExposureUsd).toBe(0);
+  });
+});
+
+describe('getOptionsProbationStatus', () => {
+  it('is inactive when liveOptionsEnabled has never been turned on', () => {
+    const status = getOptionsProbationStatus(liveConfig({ liveOptionsEnabledAt: null }));
+    expect(status.active).toBe(false);
+    expect(status.multiplier).toBe(1);
+  });
+
+  it('is active with the configured multiplier when under the trade threshold', () => {
+    const cfg = liveConfig({ liveOptionsProbationTrades: 5, liveOptionsProbationSizeMultiplier: 0.4 });
+    const status = getOptionsProbationStatus(cfg);
+    expect(status.active).toBe(true);
+    expect(status.multiplier).toBe(0.4);
+    expect(status.tradesRemaining).toBe(5);
+  });
+
+  it('counts only entry-role intents placed at/after liveOptionsEnabledAt', async () => {
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-1' });
+    const enabledAt = Date.now() - 1000;
+    const cfg = liveConfig({ liveOptionsEnabledAt: enabledAt, liveOptionsProbationTrades: 5 });
+    await attemptLiveOptionsEntry(optionSignal(), okResult(optionSignal()), 'MODERATE', cfg);
+
+    const status = getOptionsProbationStatus(cfg);
+    expect(status.tradesPlaced).toBe(1);
+    expect(status.tradesRemaining).toBe(4);
+  });
+});
+
+describe('attemptLiveOptionsEntry', () => {
+  it('refuses when TRADING_ENABLED is off — no intent, no broker call', async () => {
+    config.trading.placeEnabled = false;
+    const sig = optionSignal();
+    const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/TRADING_ENABLED/);
+    expect(listIntents()).toHaveLength(0);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('refuses with no liveAccountId configured', async () => {
+    const sig = optionSignal();
+    const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig({ liveAccountId: null }));
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/liveAccountId/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the underlying already has an open live options position', async () => {
+    createLiveOptionsPosition({
+      symbol: 'AAPL',
+      side: 'call',
+      contractSymbol: 'AAPL-existing',
+      strike: 95,
+      expiration: '2024-06-21',
+      quantity: 1,
+      entryPrice: 2,
+      riskAmount: 200,
+      riskProfile: 'MODERATE',
+      rationale: 'already open',
+    });
+    const sig = optionSignal();
+    const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/already has an open live options position/i);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('skips (no order) when the probation-adjusted quantity rounds to 0', async () => {
+    const sig = optionSignal();
+    const r = await attemptLiveOptionsEntry(
+      sig,
+      okResult(sig),
+      'MODERATE',
+      liveConfig({ liveOptionsProbationSizeMultiplier: 0.001 }),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/rounded to 0/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  describe('single_leg', () => {
+    it('fails closed on a quote-fetch failure — no intent, no broker call', async () => {
+      mockGetProvider.mockReturnValue(chainsFor({}) as never);
+      const sig = optionSignal();
+      const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+      expect(r.ok).toBe(false);
+      expect(r.reason).toMatch(/Quote fetch failed/);
+      expect(listIntents()).toHaveLength(0);
+    });
+
+    it('creates a rejected intent but never calls the broker when guardrails block', async () => {
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      const sig = optionSignal();
+      const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig({ killSwitch: true }));
+      expect(r.ok).toBe(false);
+      expect(r.reason).toMatch(/Guardrails blocked/);
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+      const intents = listIntents();
+      expect(intents).toHaveLength(1);
+      expect(intents[0].state).toBe('rejected');
+    });
+
+    it('fills at a freshly-fetched mark (with a marketable buffer), places a plain SINGLE order, and records the entry', async () => {
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-1' });
+
+      const sig = optionSignal();
+      const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+      expect(r.ok).toBe(true);
+      expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+      // Never fetches account type for a single-leg order (only spreads need it).
+      expect(mockAccountType).not.toHaveBeenCalled();
+
+      const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+      expect(placedIntent.assetKind).toBe('option');
+      expect(placedIntent.optionType).toBe('call');
+      expect(placedIntent.strike).toBe(100);
+      expect(placedIntent.expiration).toBe('2024-06-21');
+      expect(placedIntent.orderType).toBe('limit');
+      expect(placedIntent.limitPrice).toBe(4.2); // mark 4 + 5% marketable buffer
+      expect(placedIntent.optionStrategy).toBeUndefined(); // plain SINGLE, no VERTICAL legs
+
+      const intents = listIntents();
+      expect(intents).toHaveLength(1);
+      expect(intents[0].state).toBe('acknowledged');
+      expect(intents[0].brokerOrderId).toBe('WB-1');
+
+      const meta = getLiveOptionsOrder(intents[0].id);
+      expect(meta).toMatchObject({ symbol: 'AAPL', role: 'entry', kind: 'single_leg', positionId: null });
+
+      const events = listAutotradeEvents({});
+      expect(events.some((e) => e.action === 'live_options_order_placed')).toBe(true);
+    });
+
+    it('transitions to rejected and logs a failure event on broker rejection, with no order metadata recorded', async () => {
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: false, error: 'insufficient funds' });
+
+      const sig = optionSignal();
+      const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+      expect(r.ok).toBe(false);
+      expect(listIntents()[0].state).toBe('rejected');
+      expect(listAutotradeEvents({}).some((e) => e.action === 'live_options_entry_failed')).toBe(true);
+      expect(getLiveOptionsOrder(listIntents()[0].id)).toBeUndefined();
+    });
+
+    it('dispatches a notification when a channel is configured', async () => {
+      const origNotifications = { ...config.notifications };
+      config.notifications.slackWebhookUrl = 'http://slack.test';
+      try {
+        mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+        mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+        mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-1' });
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, status: 200 } as Response);
+
+        const sig = optionSignal();
+        await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+
+        expect(fetchSpy).toHaveBeenCalledWith('http://slack.test', expect.objectContaining({ method: 'POST' }));
+        const body = JSON.parse(fetchSpy.mock.calls[0][1]!.body as string) as { text: string };
+        expect(body.text).toMatch(/LIVE OPTIONS BUY.*AAPL/);
+      } finally {
+        Object.assign(config.notifications, origNotifications);
+        vi.restoreAllMocks();
+      }
+    });
+
+    it('sizes the entry down by the probation multiplier when active', async () => {
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-2' });
+
+      const sig = optionSignal();
+      await attemptLiveOptionsEntry(
+        sig,
+        okResult(sig),
+        'MODERATE',
+        liveConfig({ liveOptionsProbationSizeMultiplier: 0.5 }),
+      );
+      const halved = mockPlaceOrder.mock.calls[0][1].quantity;
+
+      mockPlaceOrder.mockClear();
+      await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig({ liveOptionsEnabledAt: null }));
+      const full = mockPlaceOrder.mock.calls[0][1].quantity;
+
+      expect(halved).toBe(Math.floor(full * 0.5));
+    });
+  });
+
+  describe('debit_spread', () => {
+    it('fails closed when either leg fails to quote — no intent, no broker call', async () => {
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3 } }) as never); // short strike (110) missing
+      const sig = spreadSignal();
+      const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+      expect(r.ok).toBe(false);
+      expect(r.reason).toMatch(/Quote fetch failed/);
+      expect(listIntents()).toHaveLength(0);
+    });
+
+    it('rejects when the net debit has vanished at fill (long <= short)', async () => {
+      mockGetProvider.mockReturnValue(
+        chainsFor({
+          AAPL: [
+            { side: 'call', strike: 100, mark: 1 }, // long, now cheaper than the short
+            { side: 'call', strike: 110, mark: 1.5 },
+          ],
+        }) as never,
+      );
+      const sig = spreadSignal();
+      const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+      expect(r.ok).toBe(false);
+      expect(r.reason).toMatch(/Net debit vanished/);
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+    });
+
+    it('fetches account type (spreads only) and blocks a non-margin account', async () => {
+      mockGetProvider.mockReturnValue(
+        chainsFor({
+          AAPL: [
+            { side: 'call', strike: 100, mark: 3 },
+            { side: 'call', strike: 110, mark: 1 },
+          ],
+        }) as never,
+      );
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockAccountType.mockResolvedValue('INDIVIDUAL_CASH');
+
+      const sig = spreadSignal();
+      const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+      expect(r.ok).toBe(false);
+      expect(r.reason).toMatch(/Guardrails blocked/);
+      expect(r.reason).toMatch(/margin/i);
+      expect(mockAccountType).toHaveBeenCalledWith('ACC1');
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+    });
+
+    it('places one VERTICAL combo order (long buy + short sell) sized at the net debit, and records the entry', async () => {
+      mockGetProvider.mockReturnValue(
+        chainsFor({
+          AAPL: [
+            { side: 'call', strike: 100, mark: 3 },
+            { side: 'call', strike: 110, mark: 1 },
+          ],
+        }) as never,
+      );
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockAccountType.mockResolvedValue('INDIVIDUAL_MARGIN');
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-3' });
+
+      const sig = spreadSignal();
+      const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+      expect(r.ok).toBe(true);
+      expect(mockAccountType).toHaveBeenCalledWith('ACC1');
+
+      const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+      expect(placedIntent.optionStrategy).toBe('VERTICAL');
+      expect(placedIntent.side).toBe('buy'); // net debit
+      expect(placedIntent.limitPrice).toBe(2.1); // net debit (3-1=2) + 5% buffer
+      expect(placedIntent.optionLegs).toEqual([
+        { side: 'buy', optionType: 'call', strike: 100, expiration: '2024-06-21' },
+        { side: 'sell', optionType: 'call', strike: 110, expiration: '2024-06-21' },
+      ]);
+
+      const intents = listIntents();
+      expect(intents[0].state).toBe('acknowledged');
+      const meta = getLiveOptionsOrder(intents[0].id);
+      expect(meta).toMatchObject({ symbol: 'AAPL', role: 'entry', kind: 'debit_spread' });
+    });
+  });
+});
+
+describe('getLiveOptionsPortfolioSnapshot', () => {
+  it('reflects open live options positions in openRisk/openPositionsCount', () => {
+    createLiveOptionsPosition({
+      symbol: 'AAPL',
+      side: 'call',
+      contractSymbol: 'AAPL-x',
+      strike: 100,
+      expiration: '2024-06-21',
+      quantity: 2,
+      entryPrice: 3,
+      riskAmount: 600,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    const snap = getLiveOptionsPortfolioSnapshot();
+    expect(snap.openPositionsCount).toBe(1);
+    expect(snap.openRisk).toBe(600);
+    expect(snap.dailyPnl).toBe(0); // nothing closed
+  });
+});
+
+describe('runLiveOptionsExecution', () => {
+  it('skips a candidate whose underlying already has an open live options position', async () => {
+    createLiveOptionsPosition({
+      symbol: 'AAPL',
+      side: 'call',
+      contractSymbol: 'AAPL-existing',
+      strike: 95,
+      expiration: '2024-06-21',
+      quantity: 1,
+      entryPrice: 2,
+      riskAmount: 200,
+      riskProfile: 'MODERATE',
+      rationale: 'already open',
+    });
+    setAutotradeConfig(liveConfig());
+    const outcomes = await runLiveOptionsExecution([{ signal: optionSignal() }]);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/already has an open/i) });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('risk-checks then places passing candidates, updating the running total across the batch', async () => {
+    mockGetProvider.mockReturnValue(
+      chainsFor({
+        AAPL: { side: 'call', strike: 100, mark: 4 },
+        MSFT: { side: 'call', strike: 300, mark: 5 },
+      }) as never,
+    );
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-9' });
+    setAutotradeConfig(liveConfig());
+
+    const outcomes = await runLiveOptionsExecution([
+      { signal: optionSignal({ symbol: 'AAPL' }) },
+      { signal: optionSignal({ symbol: 'MSFT', contractSymbol: 'MSFT-fixture', strike: 300 }) },
+    ]);
+    expect(outcomes.map((o) => o.ok)).toEqual([true, true]);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(2);
+  });
+});

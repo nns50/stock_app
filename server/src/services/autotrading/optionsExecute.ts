@@ -99,8 +99,15 @@ export interface OptionsExecutionOutcome {
 /** Fetch a fresh mark for one contract by re-fetching its chain and matching
  *  strike + side — the same (symbol, expiration) chain-fetch-then-match
  *  pattern services/quotes.ts's resolveOptionMarks uses for real positions,
- *  just keyed off an autotrade signal/position instead of a human Position. */
-async function fetchContractMark(
+ *  just keyed off an autotrade signal/position instead of a human Position.
+ *  Exported: services/autotrading/liveOptionsExecute.ts (Task #70) reuses this
+ *  exact provider-fetch primitive for live fills rather than a second
+ *  implementation — unlike the paper/live DECISION and EXECUTION logic
+ *  elsewhere in this codebase (deliberately kept parallel, never shared), a
+ *  chain-fetch-then-match has no reason to behave differently for a paper vs
+ *  a live fill, so sharing it carries no drift risk the parallel convention
+ *  is meant to avoid. */
+export async function fetchContractMark(
   symbol: string,
   expiration: string,
   strike: number,
@@ -127,7 +134,7 @@ function entryFailure(symbol: string, riskProfile: RiskProfileName, reason: stri
   return { symbol, ok: false, reason };
 }
 
-function validPremium(v: number): boolean {
+export function validPremium(v: number): boolean {
   return Number.isFinite(v) && v > 0;
 }
 
