@@ -12,6 +12,7 @@ import type {
   AutotradeLivePosition,
   AutotradeRiskCheckResult,
   BacktestRunResponse,
+  CombinedBacktestRunResponse,
   LoopTickSummary,
   OptionsBacktestRunResponse,
   OptionsPaperPosition,
@@ -849,6 +850,92 @@ describe('AutoTradePage', () => {
     expect(screen.getByText('call 210')).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument(); // contracts
     expect(screen.getAllByText('+$600.00').length).toBeGreaterThan(0); // expectancy stat + trade pnl
+  });
+
+  it('runs a combined backtest and renders ONE stats grid plus both an equity trade and an options trade', async () => {
+    const combinedResult: CombinedBacktestRunResponse = {
+      report: {
+        equityTrades: [
+          {
+            symbol: 'AAPL',
+            side: 'buy',
+            signalDate: '2024-01-01',
+            entryDate: '2024-01-02',
+            entryPrice: 200,
+            exitDate: '2024-01-05',
+            exitPrice: 220,
+            exitReason: 'target',
+            quantity: 10,
+            pnl: 200,
+            rMultiple: 2,
+          },
+        ],
+        optionsTrades: [
+          {
+            symbol: 'AAPL',
+            side: 'call',
+            contractTicker: 'O:AAPL240315C00210000',
+            strike: 210,
+            expiration: '2024-03-15',
+            signalDate: '2024-01-01',
+            entryDate: '2024-01-02',
+            entryPremium: 4,
+            exitDate: '2024-01-10',
+            exitPremium: 6,
+            exitReason: 'time_exit',
+            contracts: 3,
+            pnl: 600,
+            rMultiple: 0.5,
+          },
+        ],
+        equityCurve: [
+          { date: '2024-01-02', equity: 100_000 },
+          { date: '2024-01-10', equity: 100_800 },
+        ],
+        startingEquity: 100_000,
+        finalEquity: 100_800,
+        excludedSymbols: [],
+        errors: [],
+        optionsSkipped: [],
+      },
+      stats: {
+        totalTrades: 2,
+        wins: 2,
+        losses: 0,
+        winRate: 100,
+        avgWin: 400,
+        avgLoss: 0,
+        expectancy: 400,
+        profitFactor: null,
+        totalPnl: 800,
+        returnPct: 0.8,
+        avgR: 1.25,
+        bestR: 2,
+        worstR: 0.5,
+        maxDrawdown: 0,
+        longestWinStreak: 2,
+        longestLossStreak: 0,
+      },
+    };
+    const run = vi.spyOn(client, 'runCombinedBacktest').mockResolvedValue(combinedResult);
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Run combined backtest' }));
+
+    await waitFor(() =>
+      expect(run).toHaveBeenCalledWith(
+        expect.objectContaining({ symbols: ['AAPL'], riskProfile: 'MODERATE', startingEquity: 100_000 }),
+      ),
+    );
+    // One shared stats grid (2 total trades across both books, not two grids).
+    expect(await screen.findByText('2')).toBeInTheDocument(); // totalTrades stat
+    // The equity trade renders in its own table.
+    expect(screen.getByText('target')).toBeInTheDocument();
+    // The options trade renders in its own table alongside it.
+    expect(screen.getByText('time exit')).toBeInTheDocument();
+    expect(screen.getByText('call 210')).toBeInTheDocument();
   });
 
   function paperPosition(overrides: Partial<PaperPosition> = {}): PaperPosition {

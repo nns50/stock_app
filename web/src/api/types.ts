@@ -1323,6 +1323,49 @@ export interface OptionsWalkForwardRequest extends OptionsBacktestRequest {
   splitDate: string;
 }
 
+// --- Genuinely combined equity+options backtest (follow-up to phase 11's own
+// deferral: "an independent backtest, not combined with a concurrent equity
+// backtest's risk") ---
+
+export interface CombinedBacktestReport {
+  equityTrades: SimulatedTrade[];
+  optionsTrades: SimulatedOptionsTrade[];
+  /** ONE curve — the combined account value, not two separate ones. */
+  equityCurve: BacktestEquityPoint[];
+  startingEquity: number;
+  finalEquity: number;
+  excludedSymbols: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+  optionsSkipped: { symbol: string; date: string; reason: string }[];
+}
+
+// BacktestStats is reused as-is here too — the server computes it over BOTH
+// trade lists concatenated (equityTrades + optionsTrades), one risk-adjusted
+// read spanning the whole account, not two separate ones to add up by hand.
+export interface CombinedBacktestRunResponse {
+  report: CombinedBacktestReport;
+  stats: BacktestStats;
+}
+
+export interface CombinedWalkForwardResponse {
+  inSample: CombinedBacktestRunResponse;
+  outOfSample: CombinedBacktestRunResponse;
+  excludedSymbols: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+}
+
+export interface CombinedBacktestRequest {
+  symbols: string[];
+  from: string;
+  to: string;
+  riskProfile: AutotradeRiskProfile;
+  startingEquity: number;
+}
+
+export interface CombinedWalkForwardRequest extends CombinedBacktestRequest {
+  splitDate: string;
+}
+
 // --- Phase 6: paper execution loop ---
 
 export type PaperExitReason = 'stop' | 'target' | 'manual';

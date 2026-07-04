@@ -145,8 +145,9 @@ interface PendingOptionEntry {
  *  [minDte, maxDte] and whose type matches `side`. Null if none qualify —
  *  the SAME "no expiration in window" skip reason optionsDecide.ts reports
  *  live, just evaluated against pre-fetched reference data instead of a live
- *  chain lookup. */
-function pickReferenceContract(
+ *  chain lookup. Exported for reuse by combinedBacktest.ts, which needs the
+ *  identical contract-selection logic, not a reimplementation. */
+export function pickReferenceContract(
   contracts: OptionContractRef[],
   side: OptionsSignalSide,
   asOfDate: string,

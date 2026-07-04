@@ -18,6 +18,7 @@ import { runOptionsRiskCheck } from '../services/autotrading/optionsRiskCheck';
 import { ScreenerConfig } from '../indicators/screener';
 import { computeBacktestStats, runBacktest, runWalkForwardBacktest } from '../services/autotrading/backtest';
 import { runOptionsBacktest, runOptionsWalkForwardBacktest } from '../services/autotrading/optionsBacktest';
+import { runCombinedBacktest, runCombinedWalkForwardBacktest } from '../services/autotrading/combinedBacktest';
 import { listPaperPositions, PaperPosition } from '../db/autotradePaperPositions';
 import { listOptionsPaperPositions, OptionsPaperPosition } from '../db/autotradeOptionsPaperPositions';
 import { listAutotradeLivePositions } from '../services/autotrading/liveExecute';
@@ -492,6 +493,87 @@ autotradeRouter.post(
     res.json({
       inSample: { report: wf.inSample, stats: computeBacktestStats(wf.inSample) },
       outOfSample: { report: wf.outOfSample, stats: computeBacktestStats(wf.outOfSample) },
+      excludedSymbols: wf.excludedSymbols,
+      errors: wf.errors,
+    });
+  }),
+);
+
+/** A combined report's stats span BOTH books (equityTrades + optionsTrades)
+ *  against the ONE shared equity curve — the whole point of "genuinely
+ *  combined" is a single risk-adjusted performance read, not two separate
+ *  ones a human has to add up themselves. computeBacktestStats() needs no
+ *  changes for this — {pnl, rMultiple} is already satisfied by both trade shapes. */
+function combinedStats(report: {
+  equityTrades: { pnl: number; rMultiple: number }[];
+  optionsTrades: { pnl: number; rMultiple: number }[];
+  startingEquity: number;
+  finalEquity: number;
+}) {
+  return computeBacktestStats({
+    trades: [...report.equityTrades, ...report.optionsTrades],
+    startingEquity: report.startingEquity,
+    finalEquity: report.finalEquity,
+  });
+}
+
+const combinedBacktestBodyBase = z.object({
+  symbols: z.array(z.string().min(1)).min(1).max(50, 'At most 50 symbols per backtest run'),
+  from: dateStr,
+  to: dateStr,
+  riskProfile: z.enum(['MODERATE', 'AGGRESSIVE']),
+  startingEquity: z.number().positive(),
+  screenerConfig: z.record(z.string(), z.unknown()).optional(),
+  decisionConfig: z.record(z.string(), z.unknown()).optional(),
+  optionsDecisionConfig: z.record(z.string(), z.unknown()).optional(),
+});
+const combinedBacktestBody = combinedBacktestBodyBase.refine((b) => b.from <= b.to, {
+  message: 'from must be on or before to',
+  path: ['from'],
+});
+const combinedWalkForwardBody = combinedBacktestBodyBase
+  .extend({ splitDate: dateStr })
+  .refine((b) => b.from <= b.splitDate && b.splitDate < b.to, {
+    message: 'splitDate must fall between from and to, leaving a non-empty out-of-sample window',
+    path: ['splitDate'],
+  });
+
+autotradeRouter.post(
+  '/backtest-combined',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(combinedBacktestBody, req);
+    const report = await runCombinedBacktest({
+      symbols: body.symbols,
+      from: body.from,
+      to: body.to,
+      riskProfile: body.riskProfile,
+      startingEquity: body.startingEquity,
+      screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
+      decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
+      optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
+    });
+    res.json({ report, stats: combinedStats(report) });
+  }),
+);
+
+autotradeRouter.post(
+  '/backtest-combined/walk-forward',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(combinedWalkForwardBody, req);
+    const wf = await runCombinedWalkForwardBacktest({
+      symbols: body.symbols,
+      from: body.from,
+      to: body.to,
+      splitDate: body.splitDate,
+      riskProfile: body.riskProfile,
+      startingEquity: body.startingEquity,
+      screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
+      decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
+      optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
+    });
+    res.json({
+      inSample: { report: wf.inSample, stats: combinedStats(wf.inSample) },
+      outOfSample: { report: wf.outOfSample, stats: combinedStats(wf.outOfSample) },
       excludedSymbols: wf.excludedSymbols,
       errors: wf.errors,
     });
