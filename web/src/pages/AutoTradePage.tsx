@@ -29,6 +29,8 @@ import type {
   BacktestEquityPoint,
   BacktestRunResponse,
   BacktestStats,
+  CombinedBacktestRunResponse,
+  CombinedWalkForwardResponse,
   LoopTickSummary,
   OptionsBacktestRunResponse,
   OptionsPaperPosition,
@@ -305,6 +307,35 @@ function OptionsBacktestWindowResult({
       <BacktestStatsGrid stats={run.stats} />
       <BacktestEquityChart equityCurve={run.report.equityCurve} gradientId={gradientId} />
       <OptionsBacktestTradesTable trades={run.report.trades} />
+    </div>
+  );
+}
+
+/** Unlike the two independent overlays above, ONE stats grid/equity chart —
+ *  computed server-side over BOTH trade lists together — plus two trade
+ *  tables underneath it (equity's own shape and options' own shape are too
+ *  different to merge into one table without losing fields either side needs). */
+function CombinedBacktestWindowResult({
+  title,
+  hint,
+  run,
+  gradientId,
+}: {
+  title: string;
+  hint: string;
+  run: CombinedBacktestRunResponse;
+  gradientId: string;
+}) {
+  return (
+    <div className="space-y-3">
+      <div>
+        <h4 className="text-xs uppercase tracking-wide text-slate-400">{title}</h4>
+        <p className="text-[11px] text-slate-500">{hint}</p>
+      </div>
+      <BacktestStatsGrid stats={run.stats} />
+      <BacktestEquityChart equityCurve={run.report.equityCurve} gradientId={gradientId} />
+      <BacktestTradesTable trades={run.report.equityTrades} />
+      <OptionsBacktestTradesTable trades={run.report.optionsTrades} />
     </div>
   );
 }
@@ -1311,6 +1342,50 @@ export default function AutoTradePage() {
     }
   };
 
+  const [combinedBtBusy, setCombinedBtBusy] = useState(false);
+  const [combinedBtErr, setCombinedBtErr] = useState<string>();
+  const [combinedBtResult, setCombinedBtResult] = useState<CombinedBacktestRunResponse>();
+  const [combinedBtWfResult, setCombinedBtWfResult] = useState<CombinedWalkForwardResponse>();
+
+  // Same form fields as the two backtests above — additive, not a replacement:
+  // genuinely combines equity+options risk in ONE run, rather than the two
+  // independent overlays above, which each size against their OWN pool only.
+  const runCombinedBacktestClick = async () => {
+    const symbols = Array.from(
+      new Set(
+        btSymbols
+          .split(',')
+          .map((s) => s.trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    );
+    if (!symbols.length) {
+      setCombinedBtErr('Enter at least one symbol');
+      return;
+    }
+    if (!btFrom || !btTo || !btEquity) {
+      setCombinedBtErr('From, to, and starting equity are required');
+      return;
+    }
+    setCombinedBtBusy(true);
+    setCombinedBtErr(undefined);
+    setCombinedBtResult(undefined);
+    setCombinedBtWfResult(undefined);
+    setBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
+    try {
+      const body = { symbols, from: btFrom, to: btTo, riskProfile: btRiskProfile, startingEquity: btEquity };
+      if (btSplitDate) {
+        setCombinedBtWfResult(await client.runCombinedWalkForward({ ...body, splitDate: btSplitDate }));
+      } else {
+        setCombinedBtResult(await client.runCombinedBacktest(body));
+      }
+    } catch (e) {
+      setCombinedBtErr((e as Error).message || 'Combined backtest failed');
+    } finally {
+      setCombinedBtBusy(false);
+    }
+  };
+
   const [loopBusy, setLoopBusy] = useState(false);
   const [loopSummary, setLoopSummary] = useState<LoopTickSummary>();
   const [loopErr, setLoopErr] = useState<string>();
@@ -1846,7 +1921,10 @@ export default function AutoTradePage() {
           vs out-of-sample windows (a strategy that only performs in-sample should look weak or negative out-of-sample).
           &quot;Run options backtest&quot; replays the same window through the options overlay instead (single-leg long
           calls/puts only, gated by the same equity screen) — a separate, independent run, not combined with the equity
-          book above. Read-only — nothing here places an order.
+          book above. &quot;Run combined backtest&quot; replays the SAME window with both books sharing ONE risk budget
+          instead — an approved equity position&apos;s risk counts against an options candidate&apos;s cap that same
+          day, and vice versa, exactly like the live loop&apos;s paper execution already enforces. Read-only — nothing
+          here places an order.
         </p>
         <div className="grid sm:grid-cols-3 gap-3 items-end mb-3">
           <div className="sm:col-span-3">
@@ -1881,7 +1959,7 @@ export default function AutoTradePage() {
           <Field label="Starting equity ($)">
             <NumberInput value={btEquity} onChange={setBtEquity} placeholder="e.g. 100000" />
           </Field>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <button className="btn-primary" onClick={runBacktest} disabled={btBusy}>
               {btBusy ? 'Running…' : btSplitDate ? 'Run walk-forward' : 'Run backtest'}
             </button>
@@ -1892,6 +1970,14 @@ export default function AutoTradePage() {
               title="Replays the same window through the options overlay (phases 9-11) instead of the equity strategy."
             >
               {optBtBusy ? 'Running…' : btSplitDate ? 'Run options walk-forward' : 'Run options backtest'}
+            </button>
+            <button
+              className="btn-ghost"
+              onClick={runCombinedBacktestClick}
+              disabled={combinedBtBusy}
+              title="Replays the same window with equity and options sharing ONE combined risk budget, instead of the two independent overlays above."
+            >
+              {combinedBtBusy ? 'Running…' : btSplitDate ? 'Run combined walk-forward' : 'Run combined backtest'}
             </button>
           </div>
         </div>
@@ -1986,6 +2072,55 @@ export default function AutoTradePage() {
               hint="Unseen data — this is the number that matters for the validation gate."
               run={optBtWfResult.outOfSample}
               gradientId="optBtEquityOut"
+            />
+          </div>
+        )}
+        {combinedBtErr && <div className="text-bear text-sm mb-2">{combinedBtErr}</div>}
+        {combinedBtResult && (
+          <div className="space-y-3">
+            <h4 className="text-xs uppercase tracking-wide text-slate-400">Combined (one shared risk budget)</h4>
+            {combinedBtResult.report.excludedSymbols.length > 0 && (
+              <p className="text-[11px] text-slate-500">
+                Excluded (real estate): {combinedBtResult.report.excludedSymbols.map((e) => e.symbol).join(', ')}
+              </p>
+            )}
+            {combinedBtResult.report.errors.length > 0 && (
+              <p className="text-[11px] text-bear">
+                Couldn&apos;t fetch data — excluded from this run:{' '}
+                {combinedBtResult.report.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
+              </p>
+            )}
+            <BacktestStatsGrid stats={combinedBtResult.stats} />
+            <BacktestEquityChart equityCurve={combinedBtResult.report.equityCurve} gradientId="combinedBtEquityPlain" />
+            <BacktestTradesTable trades={combinedBtResult.report.equityTrades} />
+            <OptionsBacktestTradesTable trades={combinedBtResult.report.optionsTrades} />
+          </div>
+        )}
+        {combinedBtWfResult && btSubmitted && (
+          <div className="space-y-5">
+            <h4 className="text-xs uppercase tracking-wide text-slate-400">Combined (one shared risk budget)</h4>
+            {combinedBtWfResult.excludedSymbols.length > 0 && (
+              <p className="text-[11px] text-slate-500">
+                Excluded (real estate): {combinedBtWfResult.excludedSymbols.map((e) => e.symbol).join(', ')}
+              </p>
+            )}
+            {combinedBtWfResult.errors.length > 0 && (
+              <p className="text-[11px] text-bear">
+                Couldn&apos;t fetch data — excluded from this run:{' '}
+                {combinedBtWfResult.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
+              </p>
+            )}
+            <CombinedBacktestWindowResult
+              title={`In-sample (${btSubmitted.from} → ${btSubmitted.splitDate})`}
+              hint="The tuning window — strong performance here alone proves nothing."
+              run={combinedBtWfResult.inSample}
+              gradientId="combinedBtEquityIn"
+            />
+            <CombinedBacktestWindowResult
+              title={`Out-of-sample (${btSubmitted.splitDate} → ${btSubmitted.to})`}
+              hint="Unseen data — this is the number that matters for the validation gate."
+              run={combinedBtWfResult.outOfSample}
+              gradientId="combinedBtEquityOut"
             />
           </div>
         )}

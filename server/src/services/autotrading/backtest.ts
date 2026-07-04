@@ -134,8 +134,13 @@ export function indexAsOf(candles: Candle[], asOfMs: number): number {
  *  Takes the same lightweight `{symbol, notional}[]` shape riskCheck.ts's
  *  runningPositions uses, not the full OpenPosition[], so callers can pass a
  *  running (open + already-approved-this-batch) list, not just currently-open
- *  positions. */
-function backtestCorrelatedNotional(
+ *  positions. Exported for reuse by combinedBacktest.ts — the math is already
+ *  100% asset-type-blind (options' own optionsBacktestCorrelatedNotional in
+ *  optionsBacktest.ts is a byte-for-byte duplicate of this same function), so
+ *  a combined simulation correlating EITHER instrument type's candidate
+ *  against a running list mixing both reuses this one implementation rather
+ *  than a third copy. */
+export function backtestCorrelatedNotional(
   candidateSymbol: string,
   asOfMs: number,
   positions: { symbol: string; notional: number }[],

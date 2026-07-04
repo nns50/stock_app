@@ -760,7 +760,15 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   falls back to the same realized-volatility estimate the human Options page already
   uses, and open interest/bid-ask spread can't be backtested at all (no historical feed
   exists at any data tier) — both are still fully enforced once a real order is ever on
-  the table, just not checkable against history.
+  the table, just not checkable against history. **Run combined backtest** / **Run
+  combined walk-forward** replays the same window a third way: equity and options share
+  ONE risk budget for real, the same way the live paper-execution loop already combines
+  them — an approved equity position's risk counts against an options candidate's cap
+  that same day, and vice versa, so a correlated pair of trades that would jointly
+  breach a cap gets caught here too, not just independently underestimated by the two
+  overlays above. Shows one stat grid and equity curve for the whole account, with the
+  equity and options trade lists underneath it. Additive — the two independent overlays
+  above are unchanged and still available side by side.
 - **Paper trading** — the execution loop itself. When **Auto-trading enabled** is checked
   above, the server runs Screen → Decision → Risk Check → Execution on its own every
   minute; **Run one cycle now** runs the exact same cycle immediately, so you can watch

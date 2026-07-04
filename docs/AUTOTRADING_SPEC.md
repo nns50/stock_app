@@ -1072,6 +1072,43 @@ on its own timeline regardless of this options work.
     default (which is for manual review, not automation); (6) delta is recomputed via
     Black-Scholes directly, not `entryRules.ts`'s `evaluateContract()`, for the same
     reason as (2).
+
+    **Follow-up — genuinely combined equity+options backtest (2026-07-04), resolving
+    scope reduction (1) above:** `services/autotrading/combinedBacktest.ts` is a new,
+    THIRD simulation engine — not a modification of `simulateBacktest()` or
+    `simulateOptionsBacktest()`, both of which are each a single, self-contained loop
+    over the whole date range with no seam to pause one mid-run and let the other catch
+    up without restructuring either (13+ and 20+ existing tests apiece). Its day-by-day
+    loop reuses every pure building block both existing engines already reuse
+    (`scoreSymbol`, `generateSignal`, `evaluateRiskCheck`, `evaluateOptionsRiskCheck`,
+    `pickReferenceContract`, the Black-Scholes helpers, `backtestCorrelatedNotional` —
+    the last two newly `export`ed from `optionsBacktest.ts`/`backtest.ts` for this reuse,
+    zero behavior change to either), but shares ONE running risk/count/position ledger
+    across both instrument types within each simulated day — exactly the property
+    `evaluateOptionsRiskCheck()` (phase 10) was already built to support (it takes the
+    running totals as a plain, source-agnostic `RiskCheckContext`) and exactly what the
+    live loop (phase 12) already does for real, unattended paper-execution risk-checks.
+    Ordering mirrors the live loop's own: each day, ALL equity candidates are
+    decided/risk-checked FIRST — seeded with options' own pre-existing open risk,
+    mirroring `optionsSeedForEquity()` — then ALL options candidates are
+    decided/risk-checked SECOND, continuing the same running ledger equity's own batch
+    just left off at. "Already open" exclusion stays PER INSTRUMENT TYPE (a symbol can
+    carry an open equity position AND an open options position at once, matching the
+    live system's own separate tables); only the risk BUDGET combines.
+    `consecutiveLosses` combines by MAX across the two books' own closed-trade streaks,
+    the same "erring toward the more conservative streak" reasoning phase 12's
+    combined-budget-for-real work and phase 13's dashboard already use verbatim, kept
+    consistent here rather than a fourth definition. Reports `equityTrades` and
+    `optionsTrades` as two separate lists (too structurally different to merge) against
+    ONE shared equity curve; `computeBacktestStats()` needed no changes — it's computed
+    server-side over both lists concatenated, one risk-adjusted read spanning the whole
+    account. Exposed as a third, additive "Run combined backtest" / "Run combined
+    walk-forward" button on the existing Backtest & walk-forward card (same
+    symbols/dates/profile/equity form) and `POST /api/autotrade/backtest-combined`
+    (+`/walk-forward`) — the two existing independent backtests are unchanged and still
+    available side by side. Single-leg options only, matching
+    `simulateOptionsBacktest()`'s own current scope — the debit-spread signal shape
+    (phase 9/10's other follow-up) hasn't been extended to either backtest engine.
 12. **Options paper execution & expiration management — shipped.** Cleared for
     implementation after the user confirmed (2026-07-03) they had reviewed phase 11's
     options backtest/walk-forward against real data and judged the results sound enough
