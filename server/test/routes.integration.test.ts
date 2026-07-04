@@ -531,6 +531,28 @@ describe('autotrade config routes (integration)', () => {
     });
   });
 
+  it('POST /sync-equity fails cleanly with no liveAccountId configured', async () => {
+    const out = (await (await post('/api/autotrade/sync-equity', {})).json()) as { ok: boolean; error?: string };
+    expect(out.ok).toBe(false);
+    expect(out.error).toMatch(/liveAccountId/i);
+  });
+
+  it('POST /sync-equity is read-only and guarded when Webull is unconfigured, even with liveAccountId set', async () => {
+    await put('/api/autotrade/config', { liveAccountId: 'ACC1' });
+    const out = (await (await post('/api/autotrade/sync-equity', {})).json()) as {
+      ok: boolean;
+      accountId?: string;
+      error?: string;
+    };
+    expect(out.ok).toBe(false);
+    expect(out.accountId).toBe('ACC1');
+    expect(out.error).toMatch(/not configured/i);
+    // Unchanged — a failed sync never touches the persisted config.
+    expect((await getJson('/api/autotrade/config')) as { accountEquityUsd: number | null }).toMatchObject({
+      accountEquityUsd: null,
+    });
+  });
+
   describe('Phase 8: live-trading enable gate', () => {
     it('rejects enabling live trading with no confirmation phrase at all', async () => {
       const res = await put('/api/autotrade/config', { liveAccountId: 'ACC1', liveTradingEnabled: true });

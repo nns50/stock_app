@@ -12,7 +12,12 @@ import { getProvider } from '../src/providers';
 import { webullAccountState } from '../src/providers/webull/accountState';
 import { webullPlaceOrder, webullOrderStatus, WebullOrderStatus } from '../src/providers/webull/orders';
 import { initDb, db } from '../src/db';
-import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
+import {
+  setAutotradeConfig,
+  getAutotradeConfig,
+  defaultAutotradeConfig,
+  AutotradeConfig,
+} from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { listPositions } from '../src/db/positions';
@@ -29,6 +34,7 @@ import {
   listAutotradeLivePositions,
   reconcileLiveOrders,
   runLiveExecution,
+  syncAccountEquityFromBroker,
 } from '../src/services/autotrading/liveExecute';
 
 const mockGetProvider = vi.mocked(getProvider);
@@ -187,6 +193,59 @@ describe('getProbationStatus', () => {
     expect(status.tradesPlaced).toBe(0);
     expect(status.active).toBe(true);
     expect(status.tradesRemaining).toBe(5);
+  });
+});
+
+describe('syncAccountEquityFromBroker', () => {
+  it('fails cleanly, without calling the broker, when no liveAccountId is configured', async () => {
+    setAutotradeConfig({ liveAccountId: null });
+    const result = await syncAccountEquityFromBroker();
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/liveAccountId/i) });
+    expect(mockAccountState).not.toHaveBeenCalled();
+  });
+
+  it('passes through a broker error without touching accountEquityUsd', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1', accountEquityUsd: 50_000 });
+    mockAccountState.mockResolvedValue({ ok: false, accountId: 'ACC1', error: 'Webull request failed (500)' });
+    const result = await syncAccountEquityFromBroker();
+    expect(result).toMatchObject({ ok: false, accountId: 'ACC1', error: 'Webull request failed (500)' });
+    expect(getAutotradeConfig().accountEquityUsd).toBe(50_000);
+  });
+
+  it('fails cleanly when Webull returns no usable net liquidation value', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1', accountEquityUsd: 50_000 });
+    mockAccountState.mockResolvedValue({ ...okAccountState, netLiquidationUsd: 0 });
+    const result = await syncAccountEquityFromBroker();
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/net liquidation/i);
+    expect(getAutotradeConfig().accountEquityUsd).toBe(50_000); // unchanged, not silently zeroed
+  });
+
+  it('syncs accountEquityUsd from netLiquidationUsd and journals the change', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1', accountEquityUsd: 50_000 });
+    mockAccountState.mockResolvedValue({ ...okAccountState, netLiquidationUsd: 74_123.45 });
+    const result = await syncAccountEquityFromBroker();
+    expect(result).toMatchObject({
+      ok: true,
+      accountId: 'ACC1',
+      previousEquityUsd: 50_000,
+      netLiquidationUsd: 74_123.45,
+      buyingPowerUsd: okAccountState.state.buyingPowerUsd,
+    });
+    expect(getAutotradeConfig().accountEquityUsd).toBe(74_123.45);
+
+    const events = listAutotradeEvents({ stage: 'config' });
+    const synced = events.find((e) => e.action === 'equity_synced');
+    expect(JSON.parse(synced?.detail ?? '{}')).toMatchObject({ from: 50_000, to: 74_123.45, accountId: 'ACC1' });
+  });
+
+  it('does not journal an event when the synced value equals the current one', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1', accountEquityUsd: 50_000 });
+    mockAccountState.mockResolvedValue({ ...okAccountState, netLiquidationUsd: 50_000 });
+    const result = await syncAccountEquityFromBroker();
+    expect(result.ok).toBe(true);
+    const events = listAutotradeEvents({ stage: 'config' });
+    expect(events.find((e) => e.action === 'equity_synced')).toBeUndefined();
   });
 });
 

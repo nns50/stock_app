@@ -1,5 +1,5 @@
 import { config } from '../../config';
-import { AutotradeConfig, getAutotradeConfig } from '../../db/autotradeConfig';
+import { AutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../../db/autotradeConfig';
 import { getTradingConfig } from '../../db/trading';
 import { AccountState, evaluateGuardrails, OrderIntent, blockingFailures, TradingConfig } from '../trading/guardrails';
 import { marketOpenContext } from '../trading/marketHours';
@@ -192,6 +192,62 @@ export function listAutotradeLivePositions(filter: ListAutotradeLivePositionsFil
   const all = listPositions({ status: filter.status, symbol: filter.symbol }).filter(isAutotradePosition);
   const limit = Math.min(Math.max(filter.limit ?? 200, 1), 1000);
   return all.slice(0, limit);
+}
+
+export interface EquitySyncResult {
+  ok: boolean;
+  accountId?: string;
+  previousEquityUsd?: number | null;
+  netLiquidationUsd?: number;
+  buyingPowerUsd?: number;
+  config?: AutotradeConfig;
+  error?: string;
+}
+
+/**
+ * Pull the live net liquidation value from Webull for the configured
+ * liveAccountId and use it to set accountEquityUsd — closes the "manually-set
+ * number, no broker sync" gap (docs/AUTOTRADING_SPEC.md's Phase 4 writeup).
+ * Net liquidation value, not buying power, is the correct broker figure for
+ * "equity": buying power reflects available leverage (can be a multiple of
+ * equity on margin, or less once positions are open), while every %-of-equity
+ * risk cap downstream assumes the account's actual value. Read-only against
+ * the broker (webullAccountState() places nothing) and independent of
+ * liveTradingEnabled/either kill switch — those gate order placement, not
+ * reading a balance, so equity can be synced and reviewed before ever going
+ * live.
+ */
+export async function syncAccountEquityFromBroker(): Promise<EquitySyncResult> {
+  const cfg = getAutotradeConfig();
+  const accountId = cfg.liveAccountId;
+  if (!accountId) {
+    return { ok: false, error: 'No liveAccountId configured — set one under Live trading first.' };
+  }
+
+  const acct = await webullAccountState(accountId);
+  if (!acct.ok) return { ok: false, accountId, error: acct.error ?? 'Could not load account state' };
+  if (!acct.netLiquidationUsd || acct.netLiquidationUsd <= 0) {
+    return { ok: false, accountId, error: 'Webull did not return a usable net liquidation value' };
+  }
+
+  const previousEquityUsd = cfg.accountEquityUsd;
+  const next = setAutotradeConfig({ accountEquityUsd: acct.netLiquidationUsd });
+  if (next.accountEquityUsd !== previousEquityUsd) {
+    logAutotradeEvent({
+      stage: 'config',
+      action: 'equity_synced',
+      detail: { from: previousEquityUsd, to: next.accountEquityUsd, accountId },
+      riskProfile: next.riskProfile,
+    });
+  }
+  return {
+    ok: true,
+    accountId,
+    previousEquityUsd,
+    netLiquidationUsd: acct.netLiquidationUsd,
+    buyingPowerUsd: acct.state?.buyingPowerUsd,
+    config: next,
+  };
 }
 
 export interface LiveExecutionOutcome {

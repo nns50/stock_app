@@ -616,8 +616,12 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   upside, the default — or `Debit spread` — the same long leg plus a further
   out-of-the-money short leg that caps both max loss and max gain; switch anytime, no
   confirmation needed, unlike the risk-profile change above), and **account equity ($)**
-  — what the risk engine sizes trades and computes its % caps against. No live broker balance is wired in yet, so set this manually; until you
-  do, the risk engine blocks every trade (fails closed rather than guessing). The
+  — what the risk engine sizes trades and computes its % caps against. Type it in
+  manually, or click **Sync from Webull** to pull your live account's net liquidation
+  value instead (needs a Webull account ID set under **Live trading** below first — the
+  sync itself doesn't require live trading to be enabled). Until equity is set one way
+  or the other, the risk engine blocks every trade (fails closed rather than guessing).
+  Syncing is on-demand only — there's no automatic background refresh yet. The
   **kill switch** button above these settings is a separate, sticky emergency halt —
   engaging it (one click, no confirmation needed, mirroring the same button on the
   **Trade** page) blocks all new entries immediately, regardless of the enabled toggle

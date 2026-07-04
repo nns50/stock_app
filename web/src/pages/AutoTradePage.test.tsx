@@ -153,6 +153,60 @@ describe('AutoTradePage', () => {
     );
   });
 
+  it('disables "Sync from Webull" until a liveAccountId is on file', async () => {
+    renderPage(); // default fixture has liveAccountId: null
+    await screen.findByText('VNQ');
+    expect(screen.getByRole('button', { name: /Sync from Webull/ })).toBeDisabled();
+  });
+
+  it('enables "Sync from Webull" once a liveAccountId is configured', async () => {
+    vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture({ liveAccountId: 'ACC1' }));
+    renderPage();
+    await screen.findByText('VNQ');
+    expect(screen.getByRole('button', { name: /Sync from Webull/ })).not.toBeDisabled();
+  });
+
+  it('syncing from Webull updates the equity field with the returned net liquidation value', async () => {
+    vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture({ liveAccountId: 'ACC1' }));
+    const sync = vi.spyOn(client, 'syncAutotradeEquity').mockResolvedValue({
+      ok: true,
+      accountId: 'ACC1',
+      previousEquityUsd: 100_000,
+      netLiquidationUsd: 123_456.78,
+      buyingPowerUsd: 200_000,
+      config: configFixture({ liveAccountId: 'ACC1', accountEquityUsd: 123_456.78 }),
+    });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('button', { name: /Sync from Webull/ }));
+    await waitFor(() => expect(sync).toHaveBeenCalled());
+
+    const equityInput = (await screen.findByPlaceholderText('e.g. 25000')) as HTMLInputElement;
+    await waitFor(() => expect(equityInput.value).toBe('123456.78'));
+  });
+
+  it('a failed sync reports the error and leaves the equity field untouched', async () => {
+    vi.spyOn(client, 'autotradeConfig').mockResolvedValue(
+      configFixture({ liveAccountId: 'ACC1', accountEquityUsd: 100_000 }),
+    );
+    const sync = vi
+      .spyOn(client, 'syncAutotradeEquity')
+      .mockResolvedValue({
+        ok: false,
+        accountId: 'ACC1',
+        error: 'Webull did not return a usable net liquidation value',
+      });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const equityInput = screen.getByPlaceholderText('e.g. 25000') as HTMLInputElement;
+    fireEvent.click(screen.getByRole('button', { name: /Sync from Webull/ }));
+    await waitFor(() => expect(sync).toHaveBeenCalled());
+
+    expect(equityInput.value).toBe('100000');
+  });
+
   it('requires confirmation before switching to AGGRESSIVE, and does not save on cancel', async () => {
     const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue({
       enabled: false,
