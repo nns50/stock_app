@@ -11,20 +11,29 @@ import {
 } from '../trading/guardrails';
 import { marketOpenContext } from '../trading/marketHours';
 import { webullAccountState, webullAccountType } from '../../providers/webull/accountState';
-import { newClientOrderId, webullPlaceOrder } from '../../providers/webull/orders';
-import { createIntent, transitionIntent, countTodaysOrders } from '../../db/orders';
+import { newClientOrderId, webullPlaceOrder, webullOrderStatus } from '../../providers/webull/orders';
+import { createIntent, transitionIntent, countTodaysOrders, getIntent, OrderIntentRecord } from '../../db/orders';
+import { canTransition, isTerminal } from '../trading/orderLifecycle';
+import { mapWebullStatus } from '../trading/reconcile';
 import {
   recordLiveOptionsEntryOrder,
-  LiveOptionsOrderKind,
+  recordLiveOptionsExitOrder,
+  setLiveOptionsOrderPositionId,
+  listPendingLiveOptionsOrders,
   countLiveOptionsOrdersSince,
+  LiveOptionsOrderKind,
+  LiveOptionsOrderMeta,
 } from '../../db/autotradeLiveOptionsOrders';
 import {
   hasOpenLiveOptionsPosition,
   listOpenLiveOptionsPositions,
   listLiveOptionsPositions,
+  createLiveOptionsPosition,
+  closeLiveOptionsPosition,
   LiveOptionsPosition,
 } from '../../db/autotradeLiveOptionsPositions';
 import { computeStreaksAndDrawdown } from '../pnl';
+import { defaultExitConfig, evaluateExit } from '../../options/exitRules';
 import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskCheck';
 import { correlatedNotional, RiskCheckContext } from './riskCheck';
@@ -35,41 +44,55 @@ import { fetchContractMark, validPremium } from './optionsExecute';
 import { getLivePortfolioSnapshot, ProbationStatus } from './liveExecute';
 
 // ---------------------------------------------------------------------------
-// Task #70 Step B: the LIVE counterpart to optionsExecute.ts's paper options
-// execution — every order here IS submitted to the real Webull account.
+// Task #70: the LIVE counterpart to optionsExecute.ts's paper options
+// execution -- every order here IS submitted to the real Webull account.
 // Also the OPTIONS counterpart to liveExecute.ts's live equity execution:
 // reuses the same lower-level pieces (guardrails, webullPlaceOrder, the order
-// lifecycle) but keeps its own entry function, since options fills are
+// lifecycle) but keeps its own entry/exit functions, since options fills are
 // per-CONTRACT (or per-spread) marks resolved from a chain, not a single
 // getQuote() the way a stock is.
 //
 // No bracket, ever: autotrade's options signals never carried a price-based
 // stop/target (Phase 12's confirmed close-only, time-based exit design), and
 // buildOrderRequest() only attaches a bracket to a stock or a SINGLE-strategy
-// option anyway (never a VERTICAL) — so a live options entry is always a
-// plain order, mirroring paper's own shape. An exit will be a separate
-// closing order Step C places itself when the time-exit trigger fires.
+// option anyway (never a VERTICAL) -- so both an entry and an exit here are
+// always plain orders. An exit (Step C) is a SEPARATE closing order this
+// loop places itself when the time-exit trigger fires, tracked via the
+// entry/exit `role` split (db/autotradeLiveOptionsOrders.ts) rather than a
+// bracket child leg -- there's no existing "close a spread" precedent
+// anywhere in this codebase (the human Trade page only ever builds fresh
+// OPEN intents; closing a VERTICAL as one combo has never been built), so
+// the closing intent below mirrors providers/webull/orders.ts's own
+// optionBracketExit() flip rule (side === 'buy' ? 'SELL' : 'BUY') applied
+// per-leg, the closest existing "flip an entry to close it" convention.
 //
 // Combined live budget (one-way for now): this file folds live EQUITY's own
 // running risk/count/positions (getLivePortfolioSnapshot(), liveExecute.ts)
 // into every live options risk-check, same "one real account, one combined
 // budget" reasoning as optionsExecute.ts folding in equity's PAPER snapshot.
 // The reverse (equity's own runLiveExecution seeing live options' book) is
-// deferred to Step D, when loop.ts actually threads a seed both ways — this
+// deferred to Step D, when loop.ts actually threads a seed both ways -- this
 // mirrors how paper's own bidirectional seeding was completed at the loop
 // level, not when options paper execution was first built.
 // ---------------------------------------------------------------------------
 
-/** Options bid/ask spreads run far wider, as a % of premium, than a stock's —
+/** Options bid/ask spreads run far wider, as a % of premium, than a stock's --
  *  a low-dollar OTM contract can have a spread that's already 5-10% of its
  *  own mark. Equity's own live path (MARKETABLE_LIMIT_BUFFER_PCT, 0.5%) would
- *  routinely miss a fill here, so this is 10x more generous — while still
+ *  routinely miss a fill here, so this is 10x more generous -- while still
  *  comfortably under the default liveOptionsFatFingerPct (10%) so a fresh
- *  quote doesn't trip the guardrail that's meant to catch a STALE one. */
+ *  quote doesn't trip the guardrail that's meant to catch a STALE one. Used
+ *  for BOTH entries (price above the mark to guarantee a buy) and exits
+ *  (price below the mark to guarantee a sell). */
 const OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT = 5;
 
+/** The only exit rule this phase automates -- mirrors optionsExecute.ts's own
+ *  AUTOTRADE_TIME_EXIT_DAYS constant exactly (duplicated per this codebase's
+ *  established paper/live parallel-implementation convention). */
+const AUTOTRADE_TIME_EXIT_DAYS = defaultExitConfig().timeExitDaysBeforeExpiry ?? 7;
+
 /** Combine the autotrade-specific LIVE OPTIONS caps with BOTH kill switches
- *  and liveOptionsEnabled — mirrors liveExecute.ts's buildLiveTradingConfig()
+ *  and liveOptionsEnabled -- mirrors liveExecute.ts's buildLiveTradingConfig()
  *  exactly, over the dedicated liveOptions* cap fields instead of equity's. */
 export function buildLiveOptionsTradingConfig(autotradeCfg: AutotradeConfig): TradingConfig {
   const humanCfg = getTradingConfig();
@@ -82,16 +105,16 @@ export function buildLiveOptionsTradingConfig(autotradeCfg: AutotradeConfig): Tr
     // raw contract-count cap per symbol doesn't scale sensibly the way
     // maxOrderUsd's notional cap already does.
     maxSymbolPositionQty: Number.MAX_SAFE_INTEGER,
-    // Same real cash account as equity — 100% of configured equity, shared.
+    // Same real cash account as equity -- 100% of configured equity, shared.
     maxExposureUsd: autotradeCfg.accountEquityUsd ?? 0,
     maxOrdersPerDay: autotradeCfg.liveOptionsMaxOrdersPerDay,
     maxDailyLossUsd: autotradeCfg.liveOptionsMaxDailyLossUsd,
     fatFingerPct: autotradeCfg.liveOptionsFatFingerPct,
-    // This system only ever BUYS options (long calls/puts, or a net-debit
-    // spread) — guardrails.ts's naked_short check can't actually trigger for
-    // an order that only ever adds to a position, so which value this holds
-    // is inert here; reusing equity's flag avoids a config field with no
-    // observable effect.
+    // This system only ever BUYS options to open (long calls/puts, or a
+    // net-debit spread) -- guardrails.ts's naked_short check can't actually
+    // trigger for an order that only ever adds to a position, so which value
+    // this holds is inert here; reusing equity's flag avoids a config field
+    // with no observable effect.
     allowNakedShort: autotradeCfg.liveAllowNakedShort,
   };
 }
@@ -99,7 +122,7 @@ export function buildLiveOptionsTradingConfig(autotradeCfg: AutotradeConfig): Tr
 /** Whether autotrade is still within its post-liveOptionsEnabled probation
  *  window, and the size cut to apply if so. Mirrors liveExecute.ts's
  *  getProbationStatus() exactly, anchored to liveOptionsEnabledAt/
- *  liveOptionsProbationTrades instead of equity's own fields — a fully
+ *  liveOptionsProbationTrades instead of equity's own fields -- a fully
  *  separate window, since options can go live weeks after equity. */
 export function getOptionsProbationStatus(cfg: AutotradeConfig): ProbationStatus {
   if (!cfg.liveOptionsEnabledAt)
@@ -125,7 +148,7 @@ function etDateStr(ms: number = Date.now()): string {
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
-/** Realized P&L for a CLOSED live options position — identical formula to
+/** Realized P&L for a CLOSED live options position -- identical formula to
  *  optionsExecute.ts's own optionsPnl(), duplicated rather than imported
  *  since it's keyed off LiveOptionsPosition, a distinct (if structurally
  *  similar) type from OptionsPaperPosition. */
@@ -152,10 +175,10 @@ export interface LiveOptionsPortfolioSnapshot {
   tradesToday: number;
 }
 
-/** Current live options portfolio state — mirrors optionsExecute.ts's
+/** Current live options portfolio state -- mirrors optionsExecute.ts's
  *  getOptionsPaperPortfolioSnapshot() exactly, over
  *  autotrade_live_options_positions instead. Consumed by
- *  runLiveOptionsExecution()'s own batch below, and (from Step C onward) by
+ *  runLiveOptionsExecution()'s own batch below, and (from Step D onward) by
  *  the monitoring dashboard. */
 export function getLiveOptionsPortfolioSnapshot(): LiveOptionsPortfolioSnapshot {
   const today = etDateStr();
@@ -182,26 +205,29 @@ export function getLiveOptionsPortfolioSnapshot(): LiveOptionsPortfolioSnapshot 
   };
 }
 
-export interface LiveOptionsExecutionOutcome {
-  symbol: string;
+interface BrokerPlacementResult {
+  intentId: number;
   ok: boolean;
   reason?: string;
-  intentId?: number;
+  brokerOrderId?: string;
 }
 
-/** Shared tail once an OrderIntent + its guardrail report are built: create
- *  the intent, reject on a guardrail block, otherwise walk it through the
- *  lifecycle and place it for real. Identical for single-leg and
- *  debit-spread — only the intent shape differs upstream. */
-async function placeLiveOptionsIntent(
+/** Create the intent, check it against the guardrails, and either reject or
+ *  walk it through validated -> confirmed -> submitted -> acknowledged/rejected,
+ *  calling the broker for real. Shared by both the entry (below) and exit
+ *  (Step C) paths -- what happens AFTER a successful placement (which table
+ *  gets a row, which notification fires) differs meaningfully by role, so
+ *  only this mechanical "walk the lifecycle, call the broker" core is
+ *  factored out. */
+async function placeLiveOptionsOrder(
   intent: OrderIntent,
   guardrails: GuardrailReport,
   accountId: string,
   symbol: string,
-  kind: LiveOptionsOrderKind,
-  riskAmount: number,
-  riskProfile: RiskProfileName,
-): Promise<LiveOptionsExecutionOutcome> {
+  blockedAction: string,
+  failedAction: string,
+  riskProfile: string,
+): Promise<BrokerPlacementResult> {
   const clientOrderId = newClientOrderId();
   const intentRec = createIntent(intent, clientOrderId);
 
@@ -210,14 +236,8 @@ async function placeLiveOptionsIntent(
       .map((c) => `${c.rule}: ${c.detail}`)
       .join('; ');
     transitionIntent(intentRec.id, 'rejected', { detail: `blocked: ${reasons}` });
-    logAutotradeEvent({
-      symbol,
-      stage: 'execution',
-      action: 'live_options_entry_blocked',
-      detail: { reasons, kind },
-      riskProfile,
-    });
-    return { symbol, ok: false, reason: `Guardrails blocked: ${reasons}`, intentId: intentRec.id };
+    logAutotradeEvent({ symbol, stage: 'execution', action: blockedAction, detail: { reasons }, riskProfile });
+    return { intentId: intentRec.id, ok: false, reason: `Guardrails blocked: ${reasons}` };
   }
 
   transitionIntent(intentRec.id, 'validated', { detail: 'guardrails passed (live options)' });
@@ -232,41 +252,46 @@ async function placeLiveOptionsIntent(
     logAutotradeEvent({
       symbol,
       stage: 'execution',
-      action: 'live_options_entry_failed',
-      detail: { reason: broker.error, kind },
+      action: failedAction,
+      detail: { reason: broker.error },
       riskProfile,
     });
-    return { symbol, ok: false, reason: `Broker rejected: ${broker.error}`, intentId: intentRec.id };
+    return { intentId: intentRec.id, ok: false, reason: `Broker rejected: ${broker.error}` };
   }
 
   transitionIntent(intentRec.id, 'acknowledged', {
     brokerOrderId: broker.orderId,
     detail: `broker accepted${broker.orderId ? ` (order ${broker.orderId})` : ''}`,
   });
-  recordLiveOptionsEntryOrder({ intentId: intentRec.id, symbol, kind, riskAmount, riskProfile });
-  logAutotradeEvent({
-    symbol,
-    stage: 'execution',
-    action: 'live_options_order_placed',
-    detail: {
-      kind,
-      side: intent.side,
-      quantity: intent.quantity,
-      limitPrice: intent.limitPrice,
-      orderId: broker.orderId,
-    },
-    riskProfile,
-  });
-  await dispatchNotifications([
-    {
-      title: symbol,
-      message:
-        kind === 'debit_spread'
-          ? `Autotrade LIVE OPTIONS debit spread: ${intent.quantity} ${symbol} @ ~$${intent.limitPrice!.toFixed(2)} net`
-          : `Autotrade LIVE OPTIONS BUY: ${intent.quantity} ${symbol} @ ~$${intent.limitPrice!.toFixed(2)}`,
-    },
-  ]);
-  return { symbol, ok: true, intentId: intentRec.id };
+  return { intentId: intentRec.id, ok: true, brokerOrderId: broker.orderId };
+}
+
+/** Fetch account state + (spreads only) account type, and run the guardrails
+ *  for an about-to-be-placed intent. Shared by entry and exit. */
+async function loadAccountAndGuardrails(
+  intent: OrderIntent,
+  accountId: string,
+  symbol: string,
+  liveCfg: TradingConfig,
+  isSpread: boolean,
+): Promise<{ ok: true; guardrails: GuardrailReport } | { ok: false; reason: string }> {
+  const acct = await webullAccountState(accountId, symbol);
+  if (!acct.ok || !acct.state) {
+    return { ok: false, reason: acct.error ?? 'Could not load account state' };
+  }
+  // Account type gates spreads (margin only) -- fetch it only for a spread,
+  // same convention as livePreview.ts / placeOrder.ts.
+  const accountType = isSpread ? await webullAccountType(accountId) : undefined;
+  const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders(), accountType };
+  const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
+  return { ok: true, guardrails };
+}
+
+export interface LiveOptionsExecutionOutcome {
+  symbol: string;
+  ok: boolean;
+  reason?: string;
+  intentId?: number;
 }
 
 /**
@@ -276,7 +301,7 @@ async function placeLiveOptionsIntent(
  * Sizing is the risk-checked quantity cut by the probation multiplier (if
  * still active), rounding DOWN and skipping entirely if that rounds to zero.
  *
- * A debit spread fills as ONE combo order (VERTICAL) or not at all — if
+ * A debit spread fills as ONE combo order (VERTICAL) or not at all -- if
  * either leg's quote fetch fails, or the net debit has vanished/inverted
  * between screening and this attempt (stale quotes), the whole entry is
  * rejected before an intent is even created, same as paper's own guard.
@@ -353,24 +378,34 @@ export async function attemptLiveOptionsEntry(
       ],
     };
 
-    const acct = await webullAccountState(accountId, symbol);
-    if (!acct.ok || !acct.state) {
-      return { symbol, ok: false, reason: acct.error ?? 'Could not load account state' };
-    }
-    // Account type gates spreads (margin only) — fetch it only for a spread,
-    // same convention as livePreview.ts / placeOrder.ts.
-    const accountType = await webullAccountType(accountId);
-    const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders(), accountType };
-    const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
-    return placeLiveOptionsIntent(
+    const loaded = await loadAccountAndGuardrails(intent, accountId, symbol, liveCfg, true);
+    if (!loaded.ok) return { symbol, ok: false, reason: loaded.reason };
+
+    const placed = await placeLiveOptionsOrder(
       intent,
-      guardrails,
+      loaded.guardrails,
       accountId,
       symbol,
-      'debit_spread',
-      riskResult.approvedRiskAmount,
+      'live_options_entry_blocked',
+      'live_options_entry_failed',
       riskProfile,
     );
+    if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId };
+
+    recordLiveOptionsEntryOrder({
+      intentId: placed.intentId,
+      symbol,
+      kind: 'debit_spread',
+      side: signal.side,
+      contractSymbol: signal.longContractSymbol,
+      strike: signal.longStrike,
+      shortContractSymbol: signal.shortContractSymbol,
+      shortStrike: signal.shortStrike,
+      expiration: signal.expiration,
+      riskAmount: riskResult.approvedRiskAmount,
+      riskProfile,
+    });
+    return finishEntryPlacement(symbol, intent, 'debit_spread', placed, riskProfile);
   }
 
   let fillPremium: number;
@@ -398,28 +433,73 @@ export async function attemptLiveOptionsEntry(
     expiration: signal.expiration,
   };
 
-  const acct = await webullAccountState(accountId, symbol);
-  if (!acct.ok || !acct.state) {
-    return { symbol, ok: false, reason: acct.error ?? 'Could not load account state' };
-  }
-  const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
-  const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
-  return placeLiveOptionsIntent(
+  const loaded = await loadAccountAndGuardrails(intent, accountId, symbol, liveCfg, false);
+  if (!loaded.ok) return { symbol, ok: false, reason: loaded.reason };
+
+  const placed = await placeLiveOptionsOrder(
     intent,
-    guardrails,
+    loaded.guardrails,
     accountId,
     symbol,
-    'single_leg',
-    riskResult.approvedRiskAmount,
+    'live_options_entry_blocked',
+    'live_options_entry_failed',
     riskProfile,
   );
+  if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId };
+
+  recordLiveOptionsEntryOrder({
+    intentId: placed.intentId,
+    symbol,
+    kind: 'single_leg',
+    side: signal.side,
+    contractSymbol: signal.contractSymbol,
+    strike: signal.strike,
+    expiration: signal.expiration,
+    riskAmount: riskResult.approvedRiskAmount,
+    riskProfile,
+  });
+  return finishEntryPlacement(symbol, intent, 'single_leg', placed, riskProfile);
+}
+
+/** Journal + notify once an entry order has been placed AND recorded — shared
+ *  tail for both the single-leg and debit-spread branches above. */
+async function finishEntryPlacement(
+  symbol: string,
+  intent: OrderIntent,
+  kind: LiveOptionsOrderKind,
+  placed: { intentId: number; brokerOrderId?: string },
+  riskProfile: string,
+): Promise<LiveOptionsExecutionOutcome> {
+  logAutotradeEvent({
+    symbol,
+    stage: 'execution',
+    action: 'live_options_order_placed',
+    detail: {
+      kind,
+      side: intent.side,
+      quantity: intent.quantity,
+      limitPrice: intent.limitPrice,
+      orderId: placed.brokerOrderId,
+    },
+    riskProfile,
+  });
+  await dispatchNotifications([
+    {
+      title: symbol,
+      message:
+        kind === 'debit_spread'
+          ? `Autotrade LIVE OPTIONS debit spread: ${intent.quantity} ${symbol} @ ~$${intent.limitPrice!.toFixed(2)} net`
+          : `Autotrade LIVE OPTIONS BUY: ${intent.quantity} ${symbol} @ ~$${intent.limitPrice!.toFixed(2)}`,
+    },
+  ]);
+  return { symbol, ok: true, intentId: placed.intentId };
 }
 
 /**
  * Risk-check, then attempt to place, a batch of already-decided options
- * signals — sequentially against a RUNNING total combining THIS book's own
+ * signals -- sequentially against a RUNNING total combining THIS book's own
  * open live options positions with live EQUITY's CURRENT book
- * (getLivePortfolioSnapshot(), liveExecute.ts) — the real-money combined
+ * (getLivePortfolioSnapshot(), liveExecute.ts) -- the real-money combined
  * budget, mirroring optionsExecute.ts's runOptionsPaperExecution() batch
  * pattern exactly, over live snapshots instead of paper ones.
  */
@@ -468,7 +548,7 @@ export async function runLiveOptionsExecution(
     }
 
     // Re-fetch fresh config for the actual placement attempt, same reasoning
-    // as liveExecute.ts's runLiveExecution() — this loop awaits real broker
+    // as liveExecute.ts's runLiveExecution() -- this loop awaits real broker
     // round-trips between candidates, and a kill switch engaged mid-batch
     // must stop the NEXT candidate immediately, not just the next cycle.
     const freshCfg = getAutotradeConfig();
@@ -482,4 +562,308 @@ export async function runLiveOptionsExecution(
     }
   }
   return outcomes;
+}
+
+export interface LiveOptionsExitCheckOutcome {
+  symbol: string;
+  requested: boolean;
+  reason?: string;
+  intentId?: number;
+}
+
+/** Build + place the real closing order for one triggered position, sharing
+ *  the same account/guardrail/lifecycle pipeline as an entry. Mirrors
+ *  providers/webull/orders.ts's optionBracketExit() flip rule (side flips to
+ *  close) applied per-leg for a spread — there's no existing "close a
+ *  VERTICAL" precedent anywhere else in this codebase to instead mirror.
+ *
+ * A single-leg SELL-to-close relies on evaluateGuardrails()'s naked_short
+ * check NOT blocking it — which in turn depends on webullAccountState()'s
+ * currentPositionQty correctly reflecting the ALREADY-HELD long contract(s)
+ * (see tradingGuardrails.test.ts's "does not flag a sell that merely reduces
+ * a long"). That readback sums Webull positions by underlying symbol
+ * (providers/webull/positions.ts's mapWebullPosition) without confirmed
+ * evidence it correctly reports OPTION holdings the same way it does stock —
+ * UNVERIFIED against a real account, per this codebase's design principle #9.
+ * If it doesn't, this fails CLOSED (the exit is blocked, not mis-placed) —
+ * but confirm with a live account before relying on automated exits firing. */
+async function placeLiveOptionsExit(
+  pos: LiveOptionsPosition,
+  accountId: string,
+  cfg: AutotradeConfig,
+): Promise<LiveOptionsExitCheckOutcome> {
+  const symbol = pos.symbol;
+  // Selling to close -- price BELOW the mark to guarantee a fill (the mirror
+  // image of an entry's "pay slightly more to guarantee a buy").
+  const buffer = 1 - OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT / 100;
+  const liveCfg = buildLiveOptionsTradingConfig(cfg);
+
+  let intent: OrderIntent;
+  if (pos.kind === 'debit_spread') {
+    let longMark: number;
+    let shortMark: number;
+    try {
+      [longMark, shortMark] = await Promise.all([
+        fetchContractMark(symbol, pos.expiration, pos.strike, pos.side),
+        fetchContractMark(symbol, pos.expiration, pos.shortStrike!, pos.side),
+      ]);
+    } catch (err) {
+      return { symbol, requested: false, reason: `Quote fetch failed: ${(err as Error).message}` };
+    }
+    const netValue = longMark - shortMark;
+    const limitPrice = Math.round(netValue * buffer * 100) / 100;
+    intent = {
+      symbol,
+      assetKind: 'option',
+      side: 'sell', // selling the spread to close — net credit
+      openClose: 'close',
+      quantity: pos.quantity,
+      orderType: 'limit',
+      limitPrice,
+      referencePrice: netValue,
+      optionStrategy: 'VERTICAL',
+      optionLegs: [
+        { side: 'sell', optionType: pos.side, strike: pos.strike, expiration: pos.expiration }, // was bought — now sold
+        { side: 'buy', optionType: pos.side, strike: pos.shortStrike!, expiration: pos.expiration }, // was sold — now bought back
+      ],
+    };
+  } else {
+    let mark: number;
+    try {
+      mark = await fetchContractMark(symbol, pos.expiration, pos.strike, pos.side);
+    } catch (err) {
+      return { symbol, requested: false, reason: `Quote fetch failed: ${(err as Error).message}` };
+    }
+    const limitPrice = Math.round(mark * buffer * 100) / 100;
+    intent = {
+      symbol,
+      assetKind: 'option',
+      side: 'sell',
+      openClose: 'close',
+      quantity: pos.quantity,
+      orderType: 'limit',
+      limitPrice,
+      referencePrice: mark,
+      optionType: pos.side,
+      strike: pos.strike,
+      expiration: pos.expiration,
+    };
+  }
+
+  const loaded = await loadAccountAndGuardrails(intent, accountId, symbol, liveCfg, pos.kind === 'debit_spread');
+  if (!loaded.ok) return { symbol, requested: false, reason: loaded.reason };
+
+  const placed = await placeLiveOptionsOrder(
+    intent,
+    loaded.guardrails,
+    accountId,
+    symbol,
+    'live_options_exit_blocked',
+    'live_options_exit_failed',
+    pos.riskProfile,
+  );
+  if (!placed.ok) return { symbol, requested: false, reason: placed.reason, intentId: placed.intentId };
+
+  recordLiveOptionsExitOrder({
+    intentId: placed.intentId,
+    symbol,
+    kind: pos.kind,
+    riskProfile: pos.riskProfile,
+    positionId: pos.id,
+  });
+  logAutotradeEvent({
+    symbol,
+    stage: 'execution',
+    action: 'live_options_exit_placed',
+    detail: {
+      kind: pos.kind,
+      quantity: intent.quantity,
+      limitPrice: intent.limitPrice,
+      orderId: placed.brokerOrderId,
+      positionId: pos.id,
+    },
+    riskProfile: pos.riskProfile,
+  });
+  await dispatchNotifications([
+    {
+      title: symbol,
+      message: `Autotrade LIVE OPTIONS closing ${pos.kind === 'debit_spread' ? 'spread' : 'position'}: ${symbol} (time-exit)`,
+    },
+  ]);
+  return { symbol, requested: true, intentId: placed.intentId };
+}
+
+/**
+ * Check every open live options position for the time-exit trigger
+ * (days-to-expiration <= AUTOTRADE_TIME_EXIT_DAYS) and PLACE a real closing
+ * order for whichever fires -- the live counterpart to optionsExecute.ts's
+ * checkOptionsPaperExits(), which just records a paper close. A position with
+ * an exit order ALREADY in flight (pending, per listPendingLiveOptionsOrders())
+ * is skipped -- the trigger condition doesn't change within the same day, so
+ * without this guard every tick would submit ANOTHER closing order for the
+ * same still-open (fill pending) position.
+ */
+export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutcome[]> {
+  const cfg = getAutotradeConfig();
+  const accountId = cfg.liveAccountId;
+  if (!accountId) return [];
+
+  const open = listOpenLiveOptionsPositions();
+  if (open.length === 0) return [];
+
+  const pendingExitPositionIds = new Set(
+    listPendingLiveOptionsOrders()
+      .filter((o) => o.role === 'exit' && o.positionId !== null)
+      .map((o) => o.positionId!),
+  );
+
+  const outcomes: LiveOptionsExitCheckOutcome[] = [];
+  for (const pos of open) {
+    if (pendingExitPositionIds.has(pos.id)) continue;
+
+    const ev = evaluateExit(
+      { entryPrice: pos.entryPrice, currentPrice: null, side: 'long', expiration: pos.expiration },
+      { timeExitDaysBeforeExpiry: AUTOTRADE_TIME_EXIT_DAYS },
+    );
+    if (!ev.triggered) continue;
+
+    outcomes.push(await placeLiveOptionsExit(pos, accountId, cfg));
+  }
+  return outcomes;
+}
+
+export interface LiveOptionsReconcileOutcome {
+  intentId: number;
+  symbol: string;
+  changed: boolean;
+  /** Set when this reconcile materialized a fill into a real
+   *  autotrade_live_options_positions row (entry) or closed one (exit). */
+  action?: 'entry_filled' | 'exit_filled';
+  error?: string;
+}
+
+/**
+ * Poll every non-terminal (or filled-but-not-yet-materialized) autotrade
+ * LIVE OPTIONS intent for a status change, and materialize the result: an
+ * ENTRY fill creates a live options position; an EXIT fill closes the one it
+ * references. Runs every cycle regardless of either kill switch -- this only
+ * detects and records what the broker already did, same read-only-toward-
+ * the-broker posture as liveExecute.ts's own reconcileLiveOrders().
+ */
+export async function reconcileLiveOptionsOrders(): Promise<LiveOptionsReconcileOutcome[]> {
+  const cfg = getAutotradeConfig();
+  const accountId = cfg.liveAccountId;
+  if (!accountId) return [];
+
+  const pending = listPendingLiveOptionsOrders();
+  const outcomes: LiveOptionsReconcileOutcome[] = [];
+  for (const meta of pending) {
+    const intent = getIntent(meta.intentId);
+    if (!intent) continue;
+    const broker = await webullOrderStatus(accountId, intent.idempotencyKey);
+    if (!broker.ok || !broker.found) {
+      outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: false, error: broker.error });
+      continue;
+    }
+
+    const target = broker.status ? mapWebullStatus(broker.status) : undefined;
+    if (!target || isTerminal(intent.state) || target === intent.state || !canTransition(intent.state, target)) {
+      outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: false });
+      continue;
+    }
+    transitionIntent(intent.id, target, {
+      detail: `broker ${broker.status?.toLowerCase()}`,
+      brokerOrderId: broker.brokerOrderId,
+    });
+    if (target !== 'filled') {
+      outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: true });
+      continue;
+    }
+
+    const filledQty = broker.filledQty ?? intent.quantity;
+    const filledPrice = broker.filledPrice ?? intent.limitPrice ?? 0;
+    try {
+      const action =
+        meta.role === 'entry'
+          ? materializeOptionsEntryFill(intent, meta, filledQty, filledPrice)
+          : materializeOptionsExitFill(intent, meta, filledPrice);
+      outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: true, action });
+    } catch (err) {
+      const message = (err as Error).message;
+      logAutotradeEvent({
+        symbol: intent.symbol,
+        stage: 'execution',
+        action: 'live_options_materialization_failed',
+        detail: { intentId: intent.id, role: meta.role, error: message },
+        riskProfile: meta.riskProfile,
+      });
+      outcomes.push({
+        intentId: intent.id,
+        symbol: meta.symbol,
+        changed: true,
+        error: `Broker fill recorded but failed to materialize: ${message}`,
+      });
+    }
+  }
+  return outcomes;
+}
+
+function materializeOptionsEntryFill(
+  intent: OrderIntentRecord,
+  meta: LiveOptionsOrderMeta,
+  filledQty: number,
+  filledPrice: number,
+): 'entry_filled' {
+  const position = createLiveOptionsPosition({
+    symbol: intent.symbol,
+    side: meta.side!,
+    kind: meta.kind,
+    contractSymbol: meta.contractSymbol!,
+    strike: meta.strike!,
+    shortContractSymbol: meta.shortContractSymbol ?? undefined,
+    shortStrike: meta.shortStrike ?? undefined,
+    expiration: meta.expiration!,
+    quantity: filledQty,
+    entryPrice: filledPrice,
+    riskAmount: meta.riskAmount ?? 0,
+    riskProfile: meta.riskProfile,
+    // Live combo fills report one NET price, not a per-leg breakdown (see
+    // this file's header comment on WebullOrderLeg) -- no original signal
+    // rationale is available at reconcile time either, so this mirrors
+    // liveExecute.ts's own materializeEntryFill() generated note exactly,
+    // rather than inventing a synthetic per-leg split.
+    rationale: `Auto-placed by autotrade — order #${intent.id}${intent.brokerOrderId ? ` (broker ${intent.brokerOrderId})` : ''}`,
+  });
+  setLiveOptionsOrderPositionId(intent.id, position.id);
+  logAutotradeEvent({
+    symbol: intent.symbol,
+    stage: 'execution',
+    action: 'live_options_position_opened',
+    detail: { kind: meta.kind, quantity: filledQty, entryPrice: filledPrice, riskAmount: meta.riskAmount },
+    riskProfile: meta.riskProfile,
+  });
+  return 'entry_filled';
+}
+
+/** Materialize a confirmed exit fill against the position this intent's
+ *  positionId references. A live combo fill reports one NET price (see
+ *  header comment) -- stored as exitPrice with shortExitPrice left at its
+ *  default (null), same "whole spread as one number" convention
+ *  materializeOptionsEntryFill() uses for entryPrice/shortEntryPrice. */
+function materializeOptionsExitFill(
+  intent: OrderIntentRecord,
+  meta: LiveOptionsOrderMeta,
+  filledPrice: number,
+): 'exit_filled' | undefined {
+  if (meta.positionId === null) return undefined;
+  const closed = closeLiveOptionsPosition(meta.positionId, { exitPrice: filledPrice, exitReason: 'time_exit' });
+  if (!closed) return undefined;
+  logAutotradeEvent({
+    symbol: intent.symbol,
+    stage: 'execution',
+    action: 'live_options_position_closed',
+    detail: { exitPrice: filledPrice, pnl: liveOptionsPnl(closed, filledPrice) },
+    riskProfile: meta.riskProfile,
+  });
+  return 'exit_filled';
 }

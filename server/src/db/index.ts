@@ -412,10 +412,22 @@ CREATE TABLE IF NOT EXISTS autotrade_live_options_positions (
 );
 
 CREATE TABLE IF NOT EXISTS autotrade_live_options_orders (
-  intent_id     INTEGER PRIMARY KEY REFERENCES order_intents(id),
-  symbol        TEXT NOT NULL,
-  role          TEXT NOT NULL CHECK(role IN ('entry','exit')),
-  kind          TEXT NOT NULL DEFAULT 'single_leg',
+  intent_id             INTEGER PRIMARY KEY REFERENCES order_intents(id),
+  symbol                TEXT NOT NULL,
+  role                  TEXT NOT NULL CHECK(role IN ('entry','exit')),
+  kind                  TEXT NOT NULL DEFAULT 'single_leg',
+  -- Entry rows only: contract detail needed to materialize a position once
+  -- the fill is later observed (a separate reconcile pass, not the same call
+  -- that placed the order) -- order_intents has no column for a spread's
+  -- SECOND leg, and never stores the provider's own contract symbol at all.
+  -- Exit rows leave these null; an exit already knows everything it needs to
+  -- close from the open position it references via position_id.
+  side                  TEXT CHECK(side IN ('call','put') OR side IS NULL),
+  contract_symbol       TEXT,
+  strike                REAL,
+  short_contract_symbol TEXT,
+  short_strike          REAL,
+  expiration            TEXT,
   risk_amount   REAL,                 -- entry rows only (risk-checked $ amount); null for exit rows
   risk_profile  TEXT NOT NULL,
   position_id   INTEGER,              -- entry: set once the fill materializes a position; exit: known upfront (which position this closes)
@@ -553,6 +565,21 @@ function migrate(): void {
   if (!hasOpp('short_exit_price')) {
     db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN short_exit_price REAL');
   }
+
+  // autotrade_live_options_orders gained contract detail (Task #70 Step C):
+  // an entry row needs enough to materialize a position from a LATER reconcile
+  // pass, which order_intents can't supply (no second-leg column, no
+  // provider contract symbol at all).
+  const aloCols = db.prepare('PRAGMA table_info(autotrade_live_options_orders)').all() as { name: string }[];
+  const hasAlo = (c: string) => aloCols.some((col) => col.name === c);
+  if (!hasAlo('side')) db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN side TEXT');
+  if (!hasAlo('contract_symbol')) db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN contract_symbol TEXT');
+  if (!hasAlo('strike')) db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN strike REAL');
+  if (!hasAlo('short_contract_symbol')) {
+    db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN short_contract_symbol TEXT');
+  }
+  if (!hasAlo('short_strike')) db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN short_strike REAL');
+  if (!hasAlo('expiration')) db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN expiration TEXT');
 }
 
 /**
