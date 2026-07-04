@@ -6,6 +6,8 @@ import { RISK_PROFILES } from './riskProfiles';
 import { getPaperPortfolioSnapshot } from './execute';
 import { getOptionsPaperPortfolioSnapshot } from './optionsExecute';
 import { getLivePortfolioSnapshot, getProbationStatus, ProbationStatus } from './liveExecute';
+import { LiveOptionsPosition } from '../../db/autotradeLiveOptionsPositions';
+import { getLiveOptionsPortfolioSnapshot, getOptionsProbationStatus } from './liveOptionsExecute';
 import { daysToExpiration } from '../../options/blackScholes';
 
 // ---------------------------------------------------------------------------
@@ -97,6 +99,22 @@ export interface AutotradeDashboard {
   liveMaxDailyLossUsd: number;
   liveMaxOrdersPerDay: number;
   probation: ProbationStatus;
+
+  // --- Task #70: live options — own pool, nested under the live gate above,
+  // shared caps for the CONCURRENT-POSITIONS/aggregate-risk/etc. numbers
+  // (same active risk profile), but its own $ caps and probation window,
+  // mirroring the "Phase 8: live trading" section's own reasoning exactly. ---
+  liveOptionsEnabled: boolean;
+  liveOptionsOpenPositions: LiveOptionsPosition[];
+  liveOptionsOpenPositionsCount: number;
+  liveOptionsOpenRisk: number;
+  liveOptionsDailyPnl: number;
+  liveOptionsTradesToday: number;
+  liveOptionsConsecutiveLosses: number;
+  liveOptionsMaxOrderUsd: number;
+  liveOptionsMaxDailyLossUsd: number;
+  liveOptionsMaxOrdersPerDay: number;
+  liveOptionsProbation: ProbationStatus;
 }
 
 export function getAutotradeDashboard(): AutotradeDashboard {
@@ -106,6 +124,7 @@ export function getAutotradeDashboard(): AutotradeDashboard {
   const snapshot = getPaperPortfolioSnapshot();
   const optionsSnapshot = getOptionsPaperPortfolioSnapshot();
   const liveSnapshot = getLivePortfolioSnapshot();
+  const liveOptionsSnapshot = getLiveOptionsPortfolioSnapshot();
   const now = new Date();
 
   return {
@@ -147,5 +166,17 @@ export function getAutotradeDashboard(): AutotradeDashboard {
     liveMaxDailyLossUsd: config.liveMaxDailyLossUsd,
     liveMaxOrdersPerDay: config.liveMaxOrdersPerDay,
     probation: getProbationStatus(config),
+
+    liveOptionsEnabled: config.liveOptionsEnabled,
+    liveOptionsOpenPositions: liveOptionsSnapshot.openPositions,
+    liveOptionsOpenPositionsCount: liveOptionsSnapshot.openPositionsCount,
+    liveOptionsOpenRisk: liveOptionsSnapshot.openRisk,
+    liveOptionsDailyPnl: liveOptionsSnapshot.dailyPnl,
+    liveOptionsTradesToday: liveOptionsSnapshot.tradesToday,
+    liveOptionsConsecutiveLosses: liveOptionsSnapshot.consecutiveLosses,
+    liveOptionsMaxOrderUsd: config.liveOptionsMaxOrderUsd,
+    liveOptionsMaxDailyLossUsd: config.liveOptionsMaxDailyLossUsd,
+    liveOptionsMaxOrdersPerDay: config.liveOptionsMaxOrdersPerDay,
+    liveOptionsProbation: getOptionsProbationStatus(config),
   };
 }

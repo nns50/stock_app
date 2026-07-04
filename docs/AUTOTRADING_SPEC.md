@@ -1248,9 +1248,73 @@ on its own timeline regardless of this options work.
     human sees an upcoming expiration, and the automated close that's coming for it,
     before it happens.
 
-    No separate options live-trading-gate phase — options rides the same phase 8 flag
-    equities uses once its own paper track record exists, since paper-vs-live is one
-    system-wide switch already, not one per asset class.
+    (Superseded below — see item 14: options ended up with its own dedicated live gate,
+    caps, and probation window after all, not the same phase 8 flag as originally
+    expected here.)
+
+14. **Live options trading gate — shipped (adversarial review pending).** The phase 8
+    equivalent for options: a manual flag flip that lets the loop place REAL options
+    orders (single-leg AND debit-spread) through Webull, once the user's explicit
+    go-ahead confirmed three open questions: the enable gate is a checkbox
+    (`liveOptionsEnabled`) nested UNDER `liveTradingEnabled` with NO second typed
+    confirmation (the master phrase already covers "real money is now live"); the
+    guardrail caps are DEDICATED (`liveOptions*`, separate from equity's own live caps,
+    since options size risk-based on premium rather than share count); and BOTH
+    single-leg and debit-spread signals are live-eligible from day one, not
+    single-leg-first as originally recommended. Broken into independently-mergeable
+    steps, mirroring phase 8's own:
+    - **Step A — config & schema.** `liveOptionsEnabled`, `liveOptionsEnabledAt`
+      (anchors its OWN probation window, separate from equity's `liveEnabledAt` —
+      options can go live weeks after equity), the dedicated cap set
+      (`liveOptionsMaxOrderUsd`, `liveOptionsMaxDailyLossUsd`,
+      `liveOptionsMaxOrdersPerDay`, `liveOptionsFatFingerPct`), and its own probation
+      fields (`liveOptionsProbationTrades`, `liveOptionsProbationSizeMultiplier`).
+      Setting `liveOptionsEnabled: true` fails closed unless `liveTradingEnabled` is
+      already (or concurrently, in the same request) true. Two new tables, parallel
+      to the paper options shape rather than reusing `positions` (which has no
+      column for a debit spread's second leg): `autotrade_live_options_positions`
+      and `autotrade_live_options_orders` — the latter tracks entry/exit intents via
+      a `role` column instead of a bracket child leg, since autotrade's options
+      signals never carried a price-based stop/target to begin with (phase 12's
+      close-only, time-based exit design), so there's no broker bracket to poll for
+      here.
+    - **Step B — live execution service (entry).**
+      `services/autotrading/liveOptionsExecute.ts`'s `attemptLiveOptionsEntry()` for
+      both single-leg (a marketable LIMIT above the fresh mark) and debit-spread (one
+      VERTICAL combo order, both legs priced and submitted atomically) signals.
+      Guardrails run against the dedicated caps; probation is tracked independently
+      via `liveOptionsEnabledAt`. `runLiveOptionsExecution()` batches candidates
+      against a running total that folds in live EQUITY's current book
+      (`getLivePortfolioSnapshot()`) — the same one-real-account combined-budget
+      reasoning already applied to the paper books, one-way for now (the reverse —
+      equity's own batch seeing live options' book — is Step D's job, mirroring how
+      paper's own bidirectional seeding was completed at the loop level).
+    - **Step C — exit + reconciliation.** `checkLiveOptionsExits()` mirrors the paper
+      options time-exit trigger but PLACES a real closing order instead of recording
+      a paper close — a single-leg sells to close; a debit spread closes both legs
+      together as one VERTICAL combo (long leg flipped to sell, short leg flipped to
+      buy back), mirroring `providers/webull/orders.ts`'s `optionBracketExit()`
+      side-flip rule — the closest existing "flip an entry to close it" precedent,
+      since no code anywhere in this app had closed a spread via a real order
+      before, human or automated. `reconcileLiveOptionsOrders()` polls every pending
+      entry/exit intent and materializes the result (opens or closes a live options
+      position). A live combo fill reports one NET price, not a per-leg breakdown,
+      so a spread's stored entry/exit price carries the whole net debit/credit
+      rather than paper's true per-leg fidelity — mathematically equivalent for P&L
+      (the formula already treats a missing short-leg price as a zero contribution).
+      Surfaced, not fixed, here: a single-leg sell-to-close depends on
+      `evaluateGuardrails()`'s naked-short check seeing the already-held long via
+      the broker's own reported position — unconfirmed against a real account
+      whether that reporting correctly covers OPTION holdings the same way it does
+      stock. Fails closed if not (the exit gets blocked, not mis-placed).
+    - **Step D — wire into the loop + UI.** `runAutotradeLoopTick()` gates live
+      options entries behind everything phase 8's own live gate requires PLUS
+      `liveOptionsEnabled` specifically. A "Live options trading" checkbox and its
+      own caps editor nested inside the existing "Live trading" section (shown only
+      once live trading itself is enabled, matching the gate's own nesting), its own
+      probation status, a **Live options positions** table, and a **Live options**
+      block in the Monitoring dashboard — mirroring phase 8 Step D's own additions.
+    - **Adversarial review — pending** (Task #75).
 
 ---
 

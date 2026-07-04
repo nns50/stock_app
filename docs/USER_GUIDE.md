@@ -656,6 +656,22 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   details (strike/type/expiration) shown inline. This is the dedicated place to see your
   real autotrade fills at a glance; they also appear, unmarked, mixed in with your manual
   trades on the Positions/Journal pages and the Trade page's Orders panel.
+- **Live options trading** — a checkbox nested under **Live trading** above (only shown
+  once live trading itself is enabled) that lets the loop place real **single-leg**
+  (long call/put) and **debit-spread** options orders through Webull — no second
+  confirmation phrase; the live-trading phrase above already covers "real money is now
+  live." Its own dedicated **guardrail caps** (max order, max daily loss, max
+  orders/day, fat-finger %) and **probation** window, separate from the equity live
+  caps above, since options can go live weeks after equity and size differently
+  (premium-based, not share-count-based). A single-leg entry places a plain limit
+  order; a debit spread places **one** combo order for both legs together, never two
+  separate orders. The automated exit is the same close-only, time-based rule paper
+  options trading already uses (no price-based stop/target) — but here it places a
+  **real** closing order (a single-leg sell, or both spread legs together as one combo)
+  instead of just recording a paper close. A **Live options positions** table below
+  the equity Live positions table shows every real options position the loop has
+  placed, with the same side/strike badges (and both strikes for a spread) as the
+  options paper table.
 - **Alerts** — two loop events push a notification through whichever webhooks you've
   configured in [Settings → Server-side watching](#server-side-watching-alerts-with-the-app-closed)
   (Slack/Discord/generic) — the same destinations the price-alert poller uses, so
@@ -694,7 +710,10 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   section right below shows the exact same figures for your live (equity) positions —
   its **own** pool, never combined with paper's counts or risk (they're risk-checked
   completely independently, matching how the loop actually enforces the caps), plus a
-  **Probation** tile showing the size cut and trades remaining while it's active.
+  **Probation** tile showing the size cut and trades remaining while it's active. A
+  third **Live options** section mirrors it for your live options positions — its own
+  pool nested under the live gate, with its own $ caps and probation tile, same
+  reasoning as the equity Live section just above it.
 - **Real-estate exclusion list** — real estate is a hard, permanent exclusion for this
   strategy. A starter list of well-known real-estate ETFs ships seeded in; add or remove
   symbols freely. This list is a backstop, not the only check — the screen below also

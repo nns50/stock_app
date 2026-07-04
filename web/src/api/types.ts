@@ -1047,6 +1047,16 @@ export interface AutotradeConfig {
   liveProbationTrades: number;
   liveProbationSizeMultiplier: number;
 
+  // --- Task #70: live options trading (nested under liveTradingEnabled) ---
+  liveOptionsEnabled: boolean;
+  liveOptionsEnabledAt: number | null;
+  liveOptionsMaxOrderUsd: number;
+  liveOptionsMaxDailyLossUsd: number;
+  liveOptionsMaxOrdersPerDay: number;
+  liveOptionsFatFingerPct: number;
+  liveOptionsProbationTrades: number;
+  liveOptionsProbationSizeMultiplier: number;
+
   // --- Options strategy shape ---
   optionsStrategyType: AutotradeOptionsStrategyType;
 }
@@ -1493,6 +1503,50 @@ export interface AutotradeProbationStatus {
   tradesRemaining: number;
 }
 
+export type LiveOptionsExitReason = 'time_exit' | 'manual';
+
+/** A REAL, live-money options position the autotrade loop itself placed
+ *  (Task #70) — the options counterpart to AutotradeLivePosition, over its
+ *  own autotrade_live_options_positions row (not the shared `positions`
+ *  table, which has no column for a debit spread's second leg). For GET
+ *  /api/autotrade/live-options-positions. */
+export interface LiveOptionsPosition {
+  id: number;
+  symbol: string;
+  side: AutotradeOptionsSignalSide;
+  kind: OptionsPaperKind;
+  /** The long leg's contract for a debit spread. */
+  contractSymbol: string;
+  /** The long leg's strike for a debit spread. */
+  strike: number;
+  shortContractSymbol: string | null;
+  shortStrike: number | null;
+  expiration: string;
+  quantity: number;
+  /** The long leg's filled premium for a debit spread — for a live combo
+   *  fill this carries the WHOLE net debit (no per-leg breakdown is
+   *  available from a single combo order), unlike paper's true per-leg
+   *  fidelity. */
+  entryPrice: number;
+  shortEntryPrice: number | null;
+  entryAt: number;
+  riskAmount: number;
+  riskProfile: string;
+  rationale: string;
+  status: 'open' | 'closed';
+  exitPrice: number | null;
+  shortExitPrice: number | null;
+  exitAt: number | null;
+  exitReason: LiveOptionsExitReason | null;
+  createdAt: number;
+  updatedAt: number;
+  /** A live contract mark as of the request (long leg, for a spread) — null
+   *  for a closed position or if the chain fetch failed. */
+  currentPrice: number | null;
+  shortCurrentPrice: number | null;
+  unrealizedPnl: number | null;
+}
+
 export interface AutotradeDashboard {
   enabled: boolean;
   killSwitch: boolean;
@@ -1536,6 +1590,20 @@ export interface AutotradeDashboard {
   liveMaxDailyLossUsd: number;
   liveMaxOrdersPerDay: number;
   probation: AutotradeProbationStatus;
+
+  // --- Task #70: live options — own pool nested under the live gate above,
+  // own $ caps and probation window (see server dashboard.ts's header). ---
+  liveOptionsEnabled: boolean;
+  liveOptionsOpenPositions: LiveOptionsPosition[];
+  liveOptionsOpenPositionsCount: number;
+  liveOptionsOpenRisk: number;
+  liveOptionsDailyPnl: number;
+  liveOptionsTradesToday: number;
+  liveOptionsConsecutiveLosses: number;
+  liveOptionsMaxOrderUsd: number;
+  liveOptionsMaxDailyLossUsd: number;
+  liveOptionsMaxOrdersPerDay: number;
+  liveOptionsProbation: AutotradeProbationStatus;
 }
 
 /** A real, live-money position the autotrade loop itself placed — the SAME
