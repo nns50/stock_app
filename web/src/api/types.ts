@@ -1433,30 +1433,46 @@ export interface LoopTickSummary {
 
 export type OptionsPaperExitReason = 'time_exit' | 'manual';
 
+export type OptionsPaperKind = 'single_leg' | 'debit_spread';
+
 export interface OptionsPaperPosition {
   id: number;
   symbol: string;
   side: AutotradeOptionsSignalSide;
+  kind: OptionsPaperKind;
+  /** The long leg's contract for a debit spread. */
   contractSymbol: string;
+  /** The long leg's strike for a debit spread. */
   strike: number;
+  shortContractSymbol: string | null;
+  shortStrike: number | null;
   expiration: string;
+  /** Contracts (single_leg) or spreads (debit_spread). */
   quantity: number;
+  /** The long leg's fill premium for a debit spread. */
   entryPrice: number;
+  shortEntryPrice: number | null;
   entryAt: number;
   riskAmount: number;
   riskProfile: string;
   rationale: string;
   status: 'open' | 'closed';
+  /** The long leg's exit premium for a debit spread. */
   exitPrice: number | null;
+  shortExitPrice: number | null;
   exitAt: number | null;
   exitReason: OptionsPaperExitReason | null;
   createdAt: number;
   updatedAt: number;
-  /** A live contract mark as of the request — null for a closed position or
-   *  if the chain fetch failed. */
+  /** A live contract mark as of the request (long leg, for a spread) — null
+   *  for a closed position or if the chain fetch failed. */
   currentPrice: number | null;
-  /** (currentPrice - entryPrice) * quantity * 100 — null for a closed
-   *  position or when currentPrice is unavailable. */
+  /** The short leg's live mark — null for single_leg, a closed position, or
+   *  a chain-fetch failure. */
+  shortCurrentPrice: number | null;
+  /** Single-leg: (currentPrice - entryPrice) * quantity * 100. Debit spread:
+   *  net-value-now minus net-debit-at-entry, x quantity x 100. Null for a
+   *  closed position or when a needed mark is unavailable. */
   unrealizedPnl: number | null;
 }
 

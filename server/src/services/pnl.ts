@@ -116,15 +116,32 @@ export function computePaperUnrealizedPnl(
 
 /**
  * Unrealized P&L for an OPEN options autotrade paper position (Phase 12).
- * No sign flip like the stock version — every options paper position is
- * long the contract itself (call or put), matching optionsRiskCheck.ts's
- * sizing convention — and the 100x contract multiplier applies.
+ * Single-leg: no sign flip — every single-leg position is long the contract
+ * itself (call or put), matching optionsRiskCheck.ts's sizing convention —
+ * and the 100x contract multiplier applies. Debit spread (Task #69): the
+ * spread's "price" is long mark minus short mark, so unrealized P&L is
+ * (currentNetValue - netDebitAtEntry) x spreads x 100; null (unknown, not
+ * zero) if the short leg's mark couldn't be resolved even though the long
+ * leg's could.
  */
 export function computeOptionsPaperUnrealizedPnl(
-  p: { status: 'open' | 'closed'; entryPrice: number; quantity: number },
+  p: {
+    status: 'open' | 'closed';
+    kind?: 'single_leg' | 'debit_spread';
+    entryPrice: number;
+    shortEntryPrice?: number | null;
+    quantity: number;
+  },
   currentPrice: number | null,
+  shortCurrentPrice: number | null = null,
 ): number | null {
   if (p.status !== 'open' || currentPrice === null) return null;
+  if (p.kind === 'debit_spread') {
+    if (shortCurrentPrice === null) return null;
+    const netDebitAtEntry = p.entryPrice - (p.shortEntryPrice ?? 0);
+    const netValueNow = currentPrice - shortCurrentPrice;
+    return round2((netValueNow - netDebitAtEntry) * p.quantity * 100);
+  }
   return round2((currentPrice - p.entryPrice) * p.quantity * 100);
 }
 

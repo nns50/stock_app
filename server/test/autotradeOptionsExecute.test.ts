@@ -71,28 +71,32 @@ function spreadSignal(overrides: Partial<DebitSpreadOptionsSignal> = {}): DebitS
   };
 }
 
-/** Mock provider serving one chain per underlying symbol, with a single
- *  contract at the given strike/side/mark — enough for every test here,
- *  which never needs more than one qualifying contract per underlying. */
-function chainsFor(fixtures: Record<string, { side: 'call' | 'put'; strike: number; mark: number }>) {
+type ContractFixture = { side: 'call' | 'put'; strike: number; mark: number };
+
+/** Mock provider serving one chain per underlying symbol. Each symbol maps to
+ *  either a single contract fixture (the common case) or an array of them
+ *  (for a debit spread's long + short strike in the SAME chain) — enough for
+ *  every test here. */
+function chainsFor(fixtures: Record<string, ContractFixture | ContractFixture[]>) {
   return {
     getOptionsChain: vi.fn(async (symbol: string, expiration: string) => {
       const fx = fixtures[symbol];
       if (!fx) throw new Error(`no mock chain for ${symbol}`);
-      const contract = {
-        symbol: `${symbol}-opt`,
+      const list = Array.isArray(fx) ? fx : [fx];
+      const contracts = list.map((f, i) => ({
+        symbol: `${symbol}-opt-${i}`,
         underlying: symbol,
-        type: fx.side,
-        strike: fx.strike,
-        mark: fx.mark,
+        type: f.side,
+        strike: f.strike,
+        mark: f.mark,
         expiration,
-      };
+      }));
       return {
         underlying: symbol,
         expiration,
         underlyingPrice: 100,
-        calls: fx.side === 'call' ? [contract] : [],
-        puts: fx.side === 'put' ? [contract] : [],
+        calls: contracts.filter((c) => c.type === 'call'),
+        puts: contracts.filter((c) => c.type === 'put'),
       };
     }),
     getCandles: vi.fn(async () => []), // no pre-existing correlated positions in most tests -> never called
@@ -189,7 +193,7 @@ describe('attemptOptionsPaperEntry', () => {
     expect(events[0].riskProfile).toBe('MODERATE');
   });
 
-  it('skips a debit-spread signal even when its risk check passed — no paper-execution path for spreads yet', async () => {
+  describe('debit spreads', () => {
     const spreadOkResult: OptionsRiskCheckResult = evaluateOptionsRiskCheck(
       spreadSignal(),
       {
@@ -203,12 +207,72 @@ describe('attemptOptionsPaperEntry', () => {
       },
       RISK_PROFILES.MODERATE,
     );
-    expect(spreadOkResult.ok).toBe(true); // risk check itself passes fine
-    const outcome = await attemptOptionsPaperEntry(spreadSignal(), spreadOkResult, 'MODERATE');
-    expect(outcome.ok).toBe(false);
-    expect(outcome.reason).toMatch(/not supported yet/i);
-    expect(mockGetProvider).not.toHaveBeenCalled(); // never even attempts a quote fetch
-    expect(hasOpenOptionsPaperPosition('AAPL')).toBe(false);
+
+    it('opens both legs at freshly-fetched marks, not the signal premiums', async () => {
+      expect(spreadOkResult.ok).toBe(true);
+      mockGetProvider.mockReturnValue(
+        chainsFor({
+          AAPL: [
+            { side: 'call', strike: 100, mark: 3.5 }, // long leg — NOT signal.longPremium (3)
+            { side: 'call', strike: 110, mark: 1.25 }, // short leg — NOT signal.shortPremium (1)
+          ],
+        }) as never,
+      );
+      const outcome = await attemptOptionsPaperEntry(spreadSignal(), spreadOkResult, 'MODERATE');
+      expect(outcome.ok).toBe(true);
+      expect(outcome.position).toMatchObject({
+        kind: 'debit_spread',
+        contractSymbol: 'AAPL-long',
+        strike: 100,
+        entryPrice: 3.5,
+        shortContractSymbol: 'AAPL-short',
+        shortStrike: 110,
+        shortEntryPrice: 1.25,
+      });
+      const events = listAutotradeEvents({ stage: 'execution', symbol: 'AAPL' });
+      expect(events[0]).toMatchObject({ action: 'options_paper_order_placed' });
+      expect(JSON.parse(events[0].detail!)).toMatchObject({ kind: 'debit_spread', netDebit: 2.25 });
+    });
+
+    it('sizes by suggestedContracts (spreads), not suggestedQuantity', async () => {
+      mockGetProvider.mockReturnValue(
+        chainsFor({
+          AAPL: [
+            { side: 'call', strike: 100, mark: 3 },
+            { side: 'call', strike: 110, mark: 1 },
+          ],
+        }) as never,
+      );
+      const outcome = await attemptOptionsPaperEntry(spreadSignal(), spreadOkResult, 'MODERATE');
+      expect(outcome.position!.quantity).toBe(
+        'suggestedContracts' in spreadOkResult.sizing ? spreadOkResult.sizing.suggestedContracts : NaN,
+      );
+      expect(outcome.position!.quantity).toBeGreaterThan(0);
+    });
+
+    it('rejects the whole entry — no position opened — when only the short leg fails to quote', async () => {
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3 } }) as never); // no strike 110
+      const outcome = await attemptOptionsPaperEntry(spreadSignal(), spreadOkResult, 'MODERATE');
+      expect(outcome.ok).toBe(false);
+      expect(outcome.reason).toMatch(/no current quote/i);
+      expect(hasOpenOptionsPaperPosition('AAPL')).toBe(false);
+    });
+
+    it('rejects the entry when the net debit has vanished/inverted between screening and fill', async () => {
+      mockGetProvider.mockReturnValue(
+        // Short leg now marks HIGHER than long — net debit would be negative.
+        chainsFor({
+          AAPL: [
+            { side: 'call', strike: 100, mark: 1 },
+            { side: 'call', strike: 110, mark: 1.5 },
+          ],
+        }) as never,
+      );
+      const outcome = await attemptOptionsPaperEntry(spreadSignal(), spreadOkResult, 'MODERATE');
+      expect(outcome.ok).toBe(false);
+      expect(outcome.reason).toMatch(/net debit/i);
+      expect(hasOpenOptionsPaperPosition('AAPL')).toBe(false);
+    });
   });
 });
 
@@ -351,17 +415,24 @@ describe('runOptionsPaperExecution', () => {
     }
   });
 
-  it('risk-checks a debit-spread candidate but never opens a paper position for it, and its un-opened risk does not carry into the next candidate', async () => {
-    // No mock chain registered for the spread's own symbol at all — proves
-    // attemptOptionsPaperEntry skips it BEFORE ever fetching a quote.
-    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3 } }) as never);
+  it('opens a debit-spread candidate alongside a single-leg one, and its risk carries into the running total', async () => {
+    mockGetProvider.mockReturnValue(
+      chainsFor({
+        SPRD: [
+          { side: 'call', strike: 100, mark: 3 },
+          { side: 'call', strike: 110, mark: 1 },
+        ],
+        AAPL: { side: 'call', strike: 100, mark: 3 },
+      }) as never,
+    );
     const outcomes = await runOptionsPaperExecution([
-      { signal: spreadSignal({ symbol: 'SPRD' }) },
+      { signal: spreadSignal({ symbol: 'SPRD', longContractSymbol: 'SPRD-long', shortContractSymbol: 'SPRD-short' }) },
       { signal: optionSignal({ symbol: 'AAPL' }) },
     ]);
-    expect(outcomes[0].ok).toBe(false);
-    expect(outcomes[0].reason).toMatch(/not supported yet/i);
-    expect(hasOpenOptionsPaperPosition('SPRD')).toBe(false);
+    expect(outcomes[0].ok).toBe(true);
+    expect(hasOpenOptionsPaperPosition('SPRD')).toBe(true);
+    const [sprd] = listOptionsPaperPositions({ symbol: 'SPRD' });
+    expect(sprd).toMatchObject({ kind: 'debit_spread', riskAmount: sprd.quantity * 2 * 100 }); // net debit $2 x contracts x 100
     expect(outcomes[1].ok).toBe(true);
     expect(hasOpenOptionsPaperPosition('AAPL')).toBe(true);
   });
@@ -439,6 +510,69 @@ describe('checkOptionsPaperExits', () => {
     expect(await checkOptionsPaperExits()).toEqual([]);
     expect(mockGetProvider).not.toHaveBeenCalled();
   });
+
+  describe('debit spreads', () => {
+    function openSpreadPos(overrides: Partial<Parameters<typeof openOptionsPaperPosition>[0]> = {}) {
+      return openOptionsPaperPosition({
+        symbol: 'AAPL',
+        side: 'call',
+        kind: 'debit_spread',
+        contractSymbol: 'AAPL-long',
+        strike: 100,
+        shortContractSymbol: 'AAPL-short',
+        shortStrike: 110,
+        shortEntryPrice: 1,
+        expiration: '2024-06-21',
+        quantity: 2,
+        entryPrice: 3, // net debit at entry: 3 - 1 = 2
+        riskAmount: 400, // 2 spreads x $2 net debit x 100
+        riskProfile: 'MODERATE',
+        rationale: 'fixture',
+        ...overrides,
+      });
+    }
+
+    it('closes both legs together at freshly-fetched marks once the trigger fires', async () => {
+      openSpreadPos({ expiration: '2024-06-05' });
+      mockGetProvider.mockReturnValue(
+        chainsFor({
+          AAPL: [
+            { side: 'call', strike: 100, mark: 8 },
+            { side: 'call', strike: 110, mark: 0.5 },
+          ],
+        }) as never,
+      );
+      const outcomes = await checkOptionsPaperExits();
+      expect(outcomes[0].closed).toBe(true);
+      expect(outcomes[0].position).toMatchObject({ exitReason: 'time_exit', exitPrice: 8, shortExitPrice: 0.5 });
+    });
+
+    it('journals the correct net-debit-based pnl for a closed spread', async () => {
+      openSpreadPos({ expiration: '2024-06-05', quantity: 2, entryPrice: 3, shortEntryPrice: 1 });
+      // net credit at exit: 8 - 0.5 = 7.5; net debit at entry: 3 - 1 = 2
+      // pnl = (7.5 - 2) * 2 * 100 = 1100
+      mockGetProvider.mockReturnValue(
+        chainsFor({
+          AAPL: [
+            { side: 'call', strike: 100, mark: 8 },
+            { side: 'call', strike: 110, mark: 0.5 },
+          ],
+        }) as never,
+      );
+      await checkOptionsPaperExits();
+      const events = listAutotradeEvents({ stage: 'execution', symbol: 'AAPL' });
+      const closedEvent = events.find((e) => e.action === 'options_paper_position_closed')!;
+      expect(JSON.parse(closedEvent.detail!)).toMatchObject({ pnl: 1100 });
+    });
+
+    it('leaves the whole spread open when only the short leg fails to quote at the trigger', async () => {
+      openSpreadPos({ expiration: '2024-06-05' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 8 } }) as never); // no strike 110
+      const outcomes = await checkOptionsPaperExits();
+      expect(outcomes[0].closed).toBe(false);
+      expect(hasOpenOptionsPaperPosition('AAPL')).toBe(true);
+    });
+  });
 });
 
 describe('getOptionsPaperPortfolioSnapshot / optionsSeedForEquity', () => {
@@ -472,5 +606,54 @@ describe('getOptionsPaperPortfolioSnapshot / optionsSeedForEquity', () => {
     expect(snapshot.consecutiveLosses).toBe(0);
     expect(snapshot.tradesToday).toBe(0);
     expect(optionsSeedForEquity(snapshot).positions).toEqual([]);
+  });
+
+  it("sums an open debit spread's riskAmount (net debit x contracts x 100) like any other position", () => {
+    openOptionsPaperPosition({
+      symbol: 'SPRD',
+      side: 'call',
+      kind: 'debit_spread',
+      contractSymbol: 'SPRD-long',
+      strike: 100,
+      shortContractSymbol: 'SPRD-short',
+      shortStrike: 110,
+      shortEntryPrice: 1,
+      expiration: '2024-06-21',
+      quantity: 2,
+      entryPrice: 3,
+      riskAmount: 400,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    const snapshot = getOptionsPaperPortfolioSnapshot();
+    expect(snapshot.openRisk).toBe(400);
+    expect(optionsSeedForEquity(snapshot).positions).toEqual([{ symbol: 'SPRD', notional: 400 }]);
+  });
+
+  it("folds a closed debit spread's net-debit-based pnl into dailyPnl, reading its OWN persisted shortExitPrice", () => {
+    const pos = openOptionsPaperPosition({
+      symbol: 'SPRD',
+      side: 'call',
+      kind: 'debit_spread',
+      contractSymbol: 'SPRD-long',
+      strike: 100,
+      shortContractSymbol: 'SPRD-short',
+      shortStrike: 110,
+      shortEntryPrice: 1,
+      expiration: '2024-06-21',
+      quantity: 1,
+      entryPrice: 3, // net debit 2
+      riskAmount: 200,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    optionsPaperPositionsDb.closeOptionsPaperPosition(pos.id, {
+      exitPrice: 6,
+      shortExitPrice: 1,
+      exitReason: 'time_exit',
+    });
+    // net credit at exit: 6 - 1 = 5; net debit at entry: 2 -> pnl = (5 - 2) * 1 * 100 = 300
+    const snapshot = getOptionsPaperPortfolioSnapshot();
+    expect(snapshot.dailyPnl).toBe(300);
   });
 });

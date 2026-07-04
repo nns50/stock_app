@@ -661,23 +661,29 @@ autotradeRouter.get(
 );
 
 export interface OptionsPaperPositionLive extends OptionsPaperPosition {
-  /** A live contract mark as of this request — null for a closed position or
-   *  if the chain fetch failed. */
+  /** A live contract mark as of this request (long leg, for a spread) — null
+   *  for a closed position or if the chain fetch failed. */
   currentPrice: number | null;
-  /** (currentPrice - entryPrice) * quantity * 100 — null for a closed
-   *  position or when currentPrice is unavailable. */
+  /** The short leg's live mark — null for single_leg, a closed position, or
+   *  a chain-fetch failure. */
+  shortCurrentPrice: number | null;
+  /** See computeOptionsPaperUnrealizedPnl — null for a closed position or
+   *  when a needed mark is unavailable. */
   unrealizedPnl: number | null;
 }
 
-/** Enrich open options paper positions with a live contract mark + unrealized
+/** Enrich open options paper positions with live contract mark(s) + unrealized
  *  P&L. Fetches one chain per distinct (symbol, expiration) among the open
  *  positions (mirrors services/quotes.ts's resolveOptionMarks grouping, just
  *  keyed off this table's own shape instead of the human Position type) and
- *  matches strike + side within it. A chain-fetch failure degrades that
- *  group to null marks, never fails the whole request. */
+ *  matches strike + side within it — for a debit spread, both the long and
+ *  short strike are matched from that SAME chain fetch, no extra network
+ *  call. A chain-fetch failure degrades that group to null marks, never
+ *  fails the whole request. */
 async function withLiveOptionMarks(positions: OptionsPaperPosition[]): Promise<OptionsPaperPositionLive[]> {
   const open = positions.filter((p) => p.status === 'open');
   const marks = new Map<number, number | null>();
+  const shortMarks = new Map<number, number | null>();
   if (open.length) {
     const groups = new Map<string, OptionsPaperPosition[]>();
     for (const p of open) {
@@ -690,20 +696,35 @@ async function withLiveOptionMarks(positions: OptionsPaperPosition[]): Promise<O
         const [symbol, expiration] = key.split('|');
         try {
           const chain = await provider.getOptionsChain(symbol, expiration);
+          const markFor = (strike: number, side: 'call' | 'put') => {
+            const pool = side === 'call' ? chain.calls : chain.puts;
+            const match = pool.find((c) => Math.abs(c.strike - strike) < 1e-6);
+            return match?.mark ?? match?.last ?? null;
+          };
           for (const p of members) {
-            const pool = p.side === 'call' ? chain.calls : chain.puts;
-            const match = pool.find((c) => Math.abs(c.strike - p.strike) < 1e-6);
-            marks.set(p.id, match?.mark ?? match?.last ?? null);
+            marks.set(p.id, markFor(p.strike, p.side));
+            if (p.kind === 'debit_spread' && p.shortStrike !== null) {
+              shortMarks.set(p.id, markFor(p.shortStrike, p.side));
+            }
           }
         } catch {
-          for (const p of members) marks.set(p.id, null);
+          for (const p of members) {
+            marks.set(p.id, null);
+            if (p.kind === 'debit_spread') shortMarks.set(p.id, null);
+          }
         }
       }),
     );
   }
   return positions.map((p) => {
     const currentPrice = p.status === 'open' ? (marks.get(p.id) ?? null) : null;
-    return { ...p, currentPrice, unrealizedPnl: computeOptionsPaperUnrealizedPnl(p, currentPrice) };
+    const shortCurrentPrice = p.status === 'open' && p.kind === 'debit_spread' ? (shortMarks.get(p.id) ?? null) : null;
+    return {
+      ...p,
+      currentPrice,
+      shortCurrentPrice,
+      unrealizedPnl: computeOptionsPaperUnrealizedPnl(p, currentPrice, shortCurrentPrice),
+    };
   });
 }
 

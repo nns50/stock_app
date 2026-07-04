@@ -743,13 +743,12 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   trade's risk counts against an options candidate's cap in the same screen, and vice
   versa. This manual preview never places an order, for either instrument type — that's
   true of **Run screen** generally, not specific to options. The automated background
-  loop is the separate path that can act on an approved **single-leg** options signal
-  (paper only — see **Paper trading** below); a debit-spread signal is decided and
-  risk-checked exactly like a single leg, including counting against the same combined
-  budget, but the loop doesn't yet open a paper position for one — that's preview/decision
-  support only for now. Running a screen here also accrues IV history in the
-  background, a day at a time, for whatever gets screened, regardless of whether the loop
-  itself is enabled.
+  loop is the separate path that can act on an approved options signal (paper only — see
+  **Paper trading** below) — single leg or debit spread, whichever the **Options
+  strategy** setting below builds; both are decided and risk-checked against the same
+  combined budget and, once approved, opened as a paper position the same way. Running a
+  screen here also accrues IV history in the background, a day at a time, for whatever
+  gets screened, regardless of whether the loop itself is enabled.
 - **Backtest & walk-forward** — the validation gate every strategy configuration has to
   clear before it's allowed anywhere near a paper or live order. Give it a symbol list,
   a date range, a starting equity, and (independently of the Configuration card above)
@@ -799,15 +798,19 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   pages — paper trades carry no real financial exposure, so they're evaluated
   independently, the same way a real paper-trading account would be.
   **Options paper positions**, right below, mirrors the same idea for the options
-  overlay — single-leg long calls/puts only, sized and risk-checked against the exact
-  same combined budget as equity above: an approved equity fill counts against the next
-  options candidate's cap, and vice versa, for the real running loop now, not just the
-  preview risk-check. The only automated exit here is time-based — closing a position as
-  expiration approaches, matching "never hold an option through expiration" — take-profit,
-  stop-loss, and delta-drift stay human-review-only on the Options page. Shows the same
-  open/closed counts, realized/unrealized P&L, and full trade history (contract,
-  strike/expiration, entry, a live **Current $** for open positions from a fresh contract
-  quote, exit, reason, contracts, P&L, R) as equity's own paper trading above.
+  overlay — long calls/puts or debit spreads (whichever the **Options strategy** setting
+  is building), sized and risk-checked against the exact same combined budget as equity
+  above: an approved equity fill counts against the next options candidate's cap, and
+  vice versa, for the real running loop now, not just the preview risk-check. A spread
+  fills and closes both legs together — its Contract column shows both strikes
+  (`long/short`), and Entry/Current/Exit $ show the spread's net value (long leg minus
+  short leg), not a single premium. The only automated exit here is time-based — closing
+  a position as expiration approaches, matching "never hold an option through
+  expiration" — take-profit, stop-loss, and delta-drift stay human-review-only on the
+  Options page. Shows the same open/closed counts, realized/unrealized P&L, and full
+  trade history (contract, strike/expiration, entry, a live **Current $** for open
+  positions from a fresh contract quote, exit, reason, contracts, P&L, R) as equity's own
+  paper trading above.
 - **Recent activity** — a journal of what the screen, decision, and risk-check stages
   did and why (candidate found, excluded, signal generated, passed/blocked, a paper
   order placed or closed, a setting changed) — the same feed the execution loop above
