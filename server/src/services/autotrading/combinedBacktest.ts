@@ -5,7 +5,7 @@ import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
 import { evaluateOptionsRiskCheck } from './optionsRiskCheck';
 import { defaultAutotradeEntryConfig, OptionsDecisionConfig, OptionsSignalSide } from './optionsDecide';
 import { RISK_PROFILES, RiskProfileParams } from './riskProfiles';
-import { RiskProfileName } from '../../db/autotradeConfig';
+import { RiskProfileName, OptionsStrategyType } from '../../db/autotradeConfig';
 import { defaultAutotradeScreenerConfig } from './screen';
 import { getHistoricalBars } from './historicalData';
 import { getHistoricalOptionContracts } from './optionsHistoricalData';
@@ -23,7 +23,13 @@ import {
   toISO,
   WARMUP_PADDING_DAYS,
 } from './backtest';
-import { pickReferenceContract, SimulatedOptionsTrade } from './optionsBacktest';
+import {
+  pickReferenceContract,
+  pickShortLegReferenceContract,
+  simulatedOptionsPnl,
+  ShortLegReference,
+  SimulatedOptionsTrade,
+} from './optionsBacktest';
 
 // ---------------------------------------------------------------------------
 // A genuinely combined equity+options backtest (docs/AUTOTRADING_SPEC.md —
@@ -71,10 +77,11 @@ import { pickReferenceContract, SimulatedOptionsTrade } from './optionsBacktest'
 // scope reductions unchanged (single reference contract per underlying per
 // day, no OI/bid-ask, hv-estimate IV-rank fallback, time-based exit only) —
 // this file only changes HOW the two risk budgets combine, not what either
-// side's entry/exit rules already are. Single-leg options only, matching
-// optionsBacktest.ts's own current scope (the debit-spread signal shape is a
-// separate, decision/risk-check-only addition that hasn't been extended to
-// either backtest engine).
+// side's entry/exit rules already are. Single leg or debit spread, matching
+// whichever cfg.optionsDecisionConfig?.strategyType the equity/options
+// backtest route was given — reuses optionsBacktest.ts's own
+// pickShortLegReferenceContract()/simulatedOptionsPnl() for the short leg's
+// selection and P&L, not a reimplementation (Task #69).
 // ---------------------------------------------------------------------------
 
 const RISK_FREE_RATE = 0.04;
@@ -128,12 +135,16 @@ interface PendingEquityEntry {
 interface OpenOptionPosition {
   symbol: string;
   side: OptionsSignalSide;
+  kind: OptionsStrategyType;
   contractTicker: string;
   strike: number;
+  shortContractTicker?: string;
+  shortStrike?: number;
   expiration: string;
   signalDate: string;
   entryDate: string;
   entryPremium: number;
+  shortEntryPremium?: number;
   contracts: number;
   riskAmount: number;
   notional: number;
@@ -142,8 +153,11 @@ interface OpenOptionPosition {
 interface PendingOptionEntry {
   symbol: string;
   side: OptionsSignalSide;
+  kind: OptionsStrategyType;
   contractTicker: string;
   strike: number;
+  shortContractTicker?: string;
+  shortStrike?: number;
   expiration: string;
   signalDate: string;
   contracts: number;
@@ -171,6 +185,7 @@ export async function simulateCombinedBacktest(
     ...cfg.optionsDecisionConfig?.entryConfig,
     side: optSide,
   };
+  const optStrategyType: OptionsStrategyType = cfg.optionsDecisionConfig?.strategyType ?? 'single_leg';
 
   const fromMs = Date.parse(`${cfg.from}T00:00:00Z`);
   const toMs = Date.parse(`${cfg.to}T00:00:00Z`);
@@ -275,33 +290,51 @@ export async function simulateCombinedBacktest(
     openEquity = stillOpenEquity;
 
     // 3) Fill yesterday's approved OPTIONS entries at today's contract open.
+    // A debit spread fills BOTH legs together or not at all (see
+    // optionsExecute.ts's own paper-execution atomicity).
     let optionsFilledToday = 0;
     const stillPendingOptions: PendingOptionEntry[] = [];
     for (const p of pendingOptions) {
       const bars = await getContractBars(p.contractTicker);
       const idx = indexAsOf(bars, dayMs);
-      if (idx >= 0 && bars[idx].time === dayMs) {
+      const longBar = idx >= 0 && bars[idx].time === dayMs ? bars[idx] : null;
+
+      let shortBar: Candle | null = null;
+      if (p.kind === 'debit_spread') {
+        const shortBars = await getContractBars(p.shortContractTicker!);
+        const shortIdx = indexAsOf(shortBars, dayMs);
+        shortBar = shortIdx >= 0 && shortBars[shortIdx].time === dayMs ? shortBars[shortIdx] : null;
+      }
+
+      const ready = p.kind === 'debit_spread' ? longBar && shortBar : longBar;
+      if (ready) {
         openOptions.push({
           symbol: p.symbol,
           side: p.side,
+          kind: p.kind,
           contractTicker: p.contractTicker,
           strike: p.strike,
+          shortContractTicker: p.shortContractTicker,
+          shortStrike: p.shortStrike,
           expiration: p.expiration,
           signalDate: p.signalDate,
           entryDate: day,
-          entryPremium: bars[idx].open,
+          entryPremium: longBar!.open,
+          shortEntryPremium: shortBar?.open,
           contracts: p.contracts,
           riskAmount: p.riskAmount,
           notional: p.notional,
         });
         optionsFilledToday += 1;
-      } else if (idx < 0 || bars[idx].time < dayMs) {
+      } else {
         stillPendingOptions.push(p);
       }
     }
     pendingOptions = stillPendingOptions;
 
-    // 4) Check open OPTIONS positions for the time-exit trigger.
+    // 4) Check open OPTIONS positions for the time-exit trigger. A spread
+    // closes BOTH legs together — the short leg's bar missing that day
+    // leaves the whole position open, same as the long leg's own.
     let dailyOptionsPnl = 0;
     const stillOpenOptions: OpenOptionPosition[] = [];
     for (const pos of openOptions) {
@@ -316,21 +349,44 @@ export async function simulateCombinedBacktest(
         stillOpenOptions.push(pos);
         continue;
       }
+      let shortBar: Candle | null = null;
+      if (pos.kind === 'debit_spread') {
+        const shortBars = await getContractBars(pos.shortContractTicker!);
+        const shortIdx = indexAsOf(shortBars, dayMs);
+        shortBar = shortIdx >= 0 && shortBars[shortIdx].time === dayMs ? shortBars[shortIdx] : null;
+        if (!shortBar) {
+          stillOpenOptions.push(pos);
+          continue;
+        }
+      }
       const dte = daysToExpiration(pos.expiration, new Date(dayMs));
       if (dte <= (entryCfg.minDaysToExpiration ?? 7) || dte <= 0) {
         const exitPremium = bar.close;
-        const pnl = (exitPremium - pos.entryPremium) * pos.contracts * 100;
+        const shortExitPremium = shortBar?.close;
+        const pnl = simulatedOptionsPnl(
+          pos.kind,
+          pos.entryPremium,
+          exitPremium,
+          pos.shortEntryPremium,
+          shortExitPremium,
+          pos.contracts,
+        );
         optionsTrades.push({
           symbol: pos.symbol,
           side: pos.side,
+          kind: pos.kind,
           contractTicker: pos.contractTicker,
           strike: pos.strike,
+          shortContractTicker: pos.shortContractTicker,
+          shortStrike: pos.shortStrike,
           expiration: pos.expiration,
           signalDate: pos.signalDate,
           entryDate: pos.entryDate,
           entryPremium: pos.entryPremium,
+          shortEntryPremium: pos.shortEntryPremium,
           exitDate: day,
           exitPremium,
+          shortExitPremium,
           exitReason: dte <= 0 ? 'expiration' : 'time_exit',
           contracts: pos.contracts,
           pnl,
@@ -515,6 +571,35 @@ export async function simulateCombinedBacktest(
         continue;
       }
 
+      let shortRef: ShortLegReference | null = null;
+      if (optStrategyType === 'debit_spread') {
+        shortRef = await pickShortLegReferenceContract(
+          contracts,
+          optSide,
+          ref.strike,
+          ref.expiration,
+          day,
+          candidate.underlyingClose,
+          getContractBars,
+        );
+        if (!shortRef) {
+          optionsSkipped.push({
+            symbol: candidate.symbol,
+            date: day,
+            reason: 'No short-leg contract further out-of-the-money passed the delta band',
+          });
+          continue;
+        }
+        if (shortRef.premium >= bar.close) {
+          optionsSkipped.push({
+            symbol: candidate.symbol,
+            date: day,
+            reason: 'Short leg premium >= long leg premium — not a net debit, skipped',
+          });
+          continue;
+        }
+      }
+
       const correlated = backtestCorrelatedNotional(candidate.symbol, dayMs, runningPositions, historyBySymbol);
       const ctx: RiskCheckContext = {
         equity,
@@ -526,21 +611,45 @@ export async function simulateCombinedBacktest(
         correlatedNotional: correlated,
       };
       const result = evaluateOptionsRiskCheck(
-        {
-          kind: 'single_leg',
-          symbol: candidate.symbol,
-          side: optSide,
-          contractSymbol: ref.ticker,
-          strike: ref.strike,
-          expiration: ref.expiration,
-          dte: T * 365,
-          premium: bar.close,
-          delta,
-          ivRank: ivContext.ivRank,
-          maxLossPerContract: bar.close * 100,
-          rationale: `Combined backtest reference contract ${ref.ticker}`,
-          score: candidate.total,
-        },
+        shortRef
+          ? {
+              kind: 'debit_spread',
+              symbol: candidate.symbol,
+              side: optSide,
+              expiration: ref.expiration,
+              dte: T * 365,
+              ivRank: ivContext.ivRank,
+              longContractSymbol: ref.ticker,
+              longStrike: ref.strike,
+              longPremium: bar.close,
+              longDelta: delta,
+              shortContractSymbol: shortRef.contract.ticker,
+              shortStrike: shortRef.contract.strike,
+              shortPremium: shortRef.premium,
+              shortDelta: shortRef.delta,
+              width: Math.abs(shortRef.contract.strike - ref.strike),
+              netDebit: bar.close - shortRef.premium,
+              maxLossPerContract: (bar.close - shortRef.premium) * 100,
+              maxProfitPerContract:
+                (Math.abs(shortRef.contract.strike - ref.strike) - (bar.close - shortRef.premium)) * 100,
+              rationale: `Combined backtest debit spread ${ref.ticker}/${shortRef.contract.ticker}`,
+              score: candidate.total,
+            }
+          : {
+              kind: 'single_leg',
+              symbol: candidate.symbol,
+              side: optSide,
+              contractSymbol: ref.ticker,
+              strike: ref.strike,
+              expiration: ref.expiration,
+              dte: T * 365,
+              premium: bar.close,
+              delta,
+              ivRank: ivContext.ivRank,
+              maxLossPerContract: bar.close * 100,
+              rationale: `Combined backtest reference contract ${ref.ticker}`,
+              score: candidate.total,
+            },
         ctx,
         profile,
       );
@@ -553,14 +662,22 @@ export async function simulateCombinedBacktest(
         continue;
       }
 
-      // Single-leg only (see file header) — result.sizing is always a
-      // RiskSizingResult; the 'in' check just satisfies the wider return type.
-      const quantity = 'suggestedQuantity' in result.sizing ? result.sizing.suggestedQuantity : 0;
+      // 'suggestedContracts' for a debit spread, 'suggestedQuantity' for a
+      // single leg — matches whichever kind was just built above.
+      const quantity =
+        'suggestedContracts' in result.sizing
+          ? result.sizing.suggestedContracts
+          : 'suggestedQuantity' in result.sizing
+            ? result.sizing.suggestedQuantity
+            : 0;
       pendingOptions.push({
         symbol: candidate.symbol,
         side: optSide,
+        kind: optStrategyType,
         contractTicker: ref.ticker,
         strike: ref.strike,
+        shortContractTicker: shortRef?.contract.ticker,
+        shortStrike: shortRef?.contract.strike,
         expiration: ref.expiration,
         signalDate: day,
         contracts: quantity,
@@ -601,18 +718,38 @@ export async function simulateCombinedBacktest(
     const bars = await getContractBars(pos.contractTicker);
     const last = bars.length ? bars[bars.length - 1] : null;
     const exitPremium = last?.close ?? pos.entryPremium;
-    const pnl = (exitPremium - pos.entryPremium) * pos.contracts * 100;
+
+    let shortExitPremium: number | undefined;
+    if (pos.kind === 'debit_spread') {
+      const shortBars = await getContractBars(pos.shortContractTicker!);
+      const shortLast = shortBars.length ? shortBars[shortBars.length - 1] : null;
+      shortExitPremium = shortLast?.close ?? pos.shortEntryPremium;
+    }
+
+    const pnl = simulatedOptionsPnl(
+      pos.kind,
+      pos.entryPremium,
+      exitPremium,
+      pos.shortEntryPremium,
+      shortExitPremium,
+      pos.contracts,
+    );
     optionsTrades.push({
       symbol: pos.symbol,
       side: pos.side,
+      kind: pos.kind,
       contractTicker: pos.contractTicker,
       strike: pos.strike,
+      shortContractTicker: pos.shortContractTicker,
+      shortStrike: pos.shortStrike,
       expiration: pos.expiration,
       signalDate: pos.signalDate,
       entryDate: pos.entryDate,
       entryPremium: pos.entryPremium,
+      shortEntryPremium: pos.shortEntryPremium,
       exitDate: cfg.to,
       exitPremium,
+      shortExitPremium,
       exitReason: 'end_of_period',
       contracts: pos.contracts,
       pnl,

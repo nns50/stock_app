@@ -234,6 +234,16 @@ function BacktestTradesTable({ trades }: { trades: SimulatedTrade[] }) {
   );
 }
 
+/** A backtest trade's own $ value as ONE unit — the raw premium for
+ *  single_leg, or long-minus-short for a debit spread (matches
+ *  optionsPaperEntryValue/optionsPaperExitValue's convention above). */
+function backtestEntryValue(t: SimulatedOptionsTrade): number {
+  return t.kind === 'debit_spread' ? t.entryPremium - (t.shortEntryPremium ?? 0) : t.entryPremium;
+}
+function backtestExitValue(t: SimulatedOptionsTrade): number {
+  return t.kind === 'debit_spread' ? t.exitPremium - (t.shortExitPremium ?? 0) : t.exitPremium;
+}
+
 function OptionsBacktestTradesTable({ trades }: { trades: SimulatedOptionsTrade[] }) {
   if (trades.length === 0) return <p className="text-xs text-slate-500">No trades in this window.</p>;
   return (
@@ -260,13 +270,14 @@ function OptionsBacktestTradesTable({ trades }: { trades: SimulatedOptionsTrade[
               <td className="td">
                 <Badge color={t.side === 'call' ? 'green' : 'red'}>
                   {t.side} {t.strike}
+                  {t.kind === 'debit_spread' ? `/${t.shortStrike}` : ''}
                 </Badge>{' '}
                 <span className="text-[11px] text-slate-500">{fmtDate(t.expiration)}</span>
               </td>
               <td className="td text-slate-400">{fmtDate(t.entryDate)}</td>
-              <td className="td text-right tabular-nums">{fmtUsd(t.entryPremium)}</td>
+              <td className="td text-right tabular-nums">{fmtUsd(backtestEntryValue(t))}</td>
               <td className="td text-slate-400">{fmtDate(t.exitDate)}</td>
-              <td className="td text-right tabular-nums">{fmtUsd(t.exitPremium)}</td>
+              <td className="td text-right tabular-nums">{fmtUsd(backtestExitValue(t))}</td>
               <td className="td">
                 <Badge color={t.exitReason === 'end_of_period' ? 'slate' : 'blue'}>
                   {t.exitReason.replace('_', ' ')}
@@ -1376,7 +1387,17 @@ export default function AutoTradePage() {
     setOptBtWfResult(undefined);
     setBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
     try {
-      const body = { symbols, from: btFrom, to: btTo, riskProfile: btRiskProfile, startingEquity: btEquity };
+      const body = {
+        symbols,
+        from: btFrom,
+        to: btTo,
+        riskProfile: btRiskProfile,
+        startingEquity: btEquity,
+        // Same Options strategy setting the Configuration card + paper loop
+        // use above — a human backtesting wants the SAME shape they've
+        // configured live, not a hidden separate default.
+        optionsDecisionConfig: { strategyType: optionsStrategyType },
+      };
       if (btSplitDate) {
         setOptBtWfResult(await client.runOptionsWalkForward({ ...body, splitDate: btSplitDate }));
       } else {
@@ -1420,7 +1441,14 @@ export default function AutoTradePage() {
     setCombinedBtWfResult(undefined);
     setBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
     try {
-      const body = { symbols, from: btFrom, to: btTo, riskProfile: btRiskProfile, startingEquity: btEquity };
+      const body = {
+        symbols,
+        from: btFrom,
+        to: btTo,
+        riskProfile: btRiskProfile,
+        startingEquity: btEquity,
+        optionsDecisionConfig: { strategyType: optionsStrategyType },
+      };
       if (btSplitDate) {
         setCombinedBtWfResult(await client.runCombinedWalkForward({ ...body, splitDate: btSplitDate }));
       } else {
@@ -1980,12 +2008,12 @@ export default function AutoTradePage() {
           live loop uses — the validation gate docs/AUTOTRADING_SPEC.md requires before any paper or live trading. Leave
           &quot;Out-of-sample split&quot; blank for a single-window backtest, or set it to split the run into in-sample
           vs out-of-sample windows (a strategy that only performs in-sample should look weak or negative out-of-sample).
-          &quot;Run options backtest&quot; replays the same window through the options overlay instead (single-leg long
-          calls/puts only, gated by the same equity screen) — a separate, independent run, not combined with the equity
-          book above. &quot;Run combined backtest&quot; replays the SAME window with both books sharing ONE risk budget
-          instead — an approved equity position&apos;s risk counts against an options candidate&apos;s cap that same
-          day, and vice versa, exactly like the live loop&apos;s paper execution already enforces. Read-only — nothing
-          here places an order.
+          &quot;Run options backtest&quot; replays the same window through the options overlay instead — single leg or
+          debit spread, whichever the Options strategy setting above is set to, gated by the same equity screen — a
+          separate, independent run, not combined with the equity book above. &quot;Run combined backtest&quot; replays
+          the SAME window with both books sharing ONE risk budget instead — an approved equity position&apos;s risk
+          counts against an options candidate&apos;s cap that same day, and vice versa, exactly like the live
+          loop&apos;s paper execution already enforces. Read-only — nothing here places an order.
         </p>
         <div className="grid sm:grid-cols-3 gap-3 items-end mb-3">
           <div className="sm:col-span-3">

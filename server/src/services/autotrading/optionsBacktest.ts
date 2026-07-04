@@ -3,11 +3,16 @@ import { ScreenerConfig, scoreSymbol } from '../../indicators/screener';
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { defaultAutotradeScreenerConfig } from './screen';
 import { addDays, indexAsOf, loadBacktestHistory, toISO, WARMUP_PADDING_DAYS, EquityPoint } from './backtest';
-import { defaultAutotradeEntryConfig, OptionsDecisionConfig, OptionsSignalSide } from './optionsDecide';
+import {
+  defaultAutotradeEntryConfig,
+  OptionsDecisionConfig,
+  OptionsSignalSide,
+  SHORT_LEG_DELTA_BAND,
+} from './optionsDecide';
 import { evaluateOptionsRiskCheck } from './optionsRiskCheck';
 import { RiskCheckContext } from './riskCheck';
 import { CORRELATION_LOOKBACK_DAYS, CORRELATION_THRESHOLD, RISK_PROFILES, RiskProfileParams } from './riskProfiles';
-import { RiskProfileName } from '../../db/autotradeConfig';
+import { RiskProfileName, OptionsStrategyType } from '../../db/autotradeConfig';
 import { getHistoricalOptionContracts } from './optionsHistoricalData';
 import { getHistoricalBars } from './historicalData';
 import { OptionContractRef } from './polygonOptionsClient';
@@ -88,14 +93,25 @@ export interface OptionsBacktestConfig {
 export interface SimulatedOptionsTrade {
   symbol: string; // underlying
   side: OptionsSignalSide;
+  /** 'single_leg' (default shape, unchanged) or 'debit_spread' — a spread
+   *  reuses contractTicker/strike/entryPremium/exitPremium for the LONG leg
+   *  and adds the short* fields below for the short leg. */
+  kind: OptionsStrategyType;
   contractTicker: string;
   strike: number;
+  /** Debit spreads only. */
+  shortContractTicker?: string;
+  shortStrike?: number;
   expiration: string;
   signalDate: string;
   entryDate: string;
   entryPremium: number;
+  /** The short leg's fill premium — debit spreads only. */
+  shortEntryPremium?: number;
   exitDate: string;
   exitPremium: number;
+  /** The short leg's exit premium — debit spreads only. */
+  shortExitPremium?: number;
   exitReason: 'time_exit' | 'expiration' | 'end_of_period';
   contracts: number;
   pnl: number;
@@ -117,12 +133,16 @@ export interface OptionsBacktestReport {
 interface OpenOptionPosition {
   symbol: string;
   side: OptionsSignalSide;
+  kind: OptionsStrategyType;
   contractTicker: string;
   strike: number;
+  shortContractTicker?: string;
+  shortStrike?: number;
   expiration: string;
   signalDate: string;
   entryDate: string;
   entryPremium: number;
+  shortEntryPremium?: number;
   contracts: number;
   riskAmount: number;
   notional: number;
@@ -131,8 +151,11 @@ interface OpenOptionPosition {
 interface PendingOptionEntry {
   symbol: string;
   side: OptionsSignalSide;
+  kind: OptionsStrategyType;
   contractTicker: string;
   strike: number;
+  shortContractTicker?: string;
+  shortStrike?: number;
   expiration: string;
   signalDate: string;
   contracts: number;
@@ -164,6 +187,92 @@ export function pickReferenceContract(
     if (!best || Math.abs(c.strike - underlyingClose) < Math.abs(best.strike - underlyingClose)) best = c;
   }
   return best;
+}
+
+export interface ShortLegReference {
+  contract: OptionContractRef;
+  /** The short leg's OWN historical closing price that day — screening-time
+   *  premium, not a fill price (mirrors the long leg's own bar.close use). */
+  premium: number;
+  iv: number;
+  delta: number;
+}
+
+/**
+ * The short leg for a debit spread: the NEAREST contract, strictly further
+ * out-of-the-money than `longStrike`, in the SAME expiration as the long leg,
+ * whose delta falls within SHORT_LEG_DELTA_BAND — mirroring optionsDecide.ts's
+ * live search (reuses the SAME exported band, not a re-guessed number),
+ * simplified the same way pickReferenceContract() simplifies the long leg
+ * (scope reduction #2/#6 above): no bid/ask/OI scan, delta recomputed
+ * directly via Black-Scholes from that day's historical price. Scans
+ * outward from the long strike, nearest first, and returns the FIRST
+ * contract whose delta qualifies — same "first that passes" semantics as
+ * the live scanEntries() search, not a best-of-all-candidates pick. Null if
+ * none qualify (no historical price that day, IV unsolvable, or no
+ * contract's delta lands in the band) — the spread is skipped for this
+ * candidate/day, exactly like a live "no short-leg contract passed entry
+ * rules" skip. Exported for reuse by combinedBacktest.ts.
+ */
+export async function pickShortLegReferenceContract(
+  contracts: OptionContractRef[],
+  side: OptionsSignalSide,
+  longStrike: number,
+  longExpiration: string,
+  asOfDate: string,
+  underlyingClose: number,
+  getContractBars: (ticker: string) => Promise<Candle[]>,
+): Promise<ShortLegReference | null> {
+  const dayMs = Date.parse(`${asOfDate}T00:00:00Z`);
+  const candidates = contracts
+    .filter((c) => c.contractType === side && c.expiration === longExpiration)
+    .filter((c) => (side === 'call' ? c.strike > longStrike : c.strike < longStrike))
+    .sort((a, b) => (side === 'call' ? a.strike - b.strike : b.strike - a.strike));
+
+  for (const c of candidates) {
+    const bars = await getContractBars(c.ticker);
+    const idx = indexAsOf(bars, dayMs);
+    const bar = idx >= 0 && bars[idx].time === dayMs ? bars[idx] : null;
+    if (!bar) continue;
+    const T = yearsToExpiration(c.expiration, new Date(dayMs));
+    const iv = impliedVol({
+      type: side,
+      marketPrice: bar.close,
+      S: underlyingClose,
+      K: c.strike,
+      T,
+      r: RISK_FREE_RATE,
+    });
+    if (iv === undefined) continue;
+    const delta = bsGreeks({ type: side, S: underlyingClose, K: c.strike, T, r: RISK_FREE_RATE, sigma: iv }).delta;
+    const absDelta = Math.abs(delta);
+    if (absDelta < SHORT_LEG_DELTA_BAND.deltaMin || absDelta > SHORT_LEG_DELTA_BAND.deltaMax) continue;
+    return { contract: c, premium: bar.close, iv, delta };
+  }
+  return null;
+}
+
+/** Realized P&L for a closed simulated options trade — single-leg: (exit -
+ *  entry) x contracts x 100 (long the contract, no sign flip). Debit spread:
+ *  the spread is one unit priced at long-minus-short, so P&L is
+ *  (netValueAtExit - netDebitAtEntry) x contracts x 100 — the exact same
+ *  formula optionsExecute.ts's paper-execution engine uses. Exported for
+ *  reuse by combinedBacktest.ts, which builds the identical SimulatedOptionsTrade
+ *  shape for its own options-side day-loop. */
+export function simulatedOptionsPnl(
+  kind: OptionsStrategyType,
+  entryPremium: number,
+  exitPremium: number,
+  shortEntryPremium: number | undefined,
+  shortExitPremium: number | undefined,
+  contracts: number,
+): number {
+  if (kind === 'debit_spread') {
+    const netDebitAtEntry = entryPremium - (shortEntryPremium ?? 0);
+    const netValueAtExit = exitPremium - (shortExitPremium ?? 0);
+    return (netValueAtExit - netDebitAtEntry) * contracts * 100;
+  }
+  return (exitPremium - entryPremium) * contracts * 100;
 }
 
 /** The backtest analog of riskCheck.ts's correlatedNotional / backtest.ts's
@@ -223,6 +332,7 @@ export async function simulateOptionsBacktest(
   const direction = cfg.optionsDecisionConfig?.direction ?? 'long';
   const side: OptionsSignalSide = direction === 'long' ? 'call' : 'put';
   const entryCfg = { ...defaultAutotradeEntryConfig(side), ...cfg.optionsDecisionConfig?.entryConfig, side };
+  const strategyType: OptionsStrategyType = cfg.optionsDecisionConfig?.strategyType ?? 'single_leg';
 
   const fromMs = Date.parse(`${cfg.from}T00:00:00Z`);
   const toMs = Date.parse(`${cfg.to}T00:00:00Z`);
@@ -256,31 +366,47 @@ export async function simulateOptionsBacktest(
     const dayMs = Date.parse(`${day}T00:00:00Z`);
     let dailyPnl = 0;
 
-    // 1) Fill yesterday's approved signals at today's contract OPEN.
+    // 1) Fill yesterday's approved signals at today's contract OPEN. A debit
+    // spread fills BOTH legs together or not at all — if either leg's bar
+    // hasn't landed on `day` yet, the whole entry stays pending for the next
+    // day (mirrors optionsExecute.ts's paper-execution atomicity).
     let filledToday = 0;
     const stillPending: PendingOptionEntry[] = [];
     for (const p of pendingEntries) {
       const bars = await getContractBars(p.contractTicker);
       const idx = indexAsOf(bars, dayMs);
-      if (idx >= 0 && bars[idx].time === dayMs) {
+      const longBar = idx >= 0 && bars[idx].time === dayMs ? bars[idx] : null;
+
+      let shortBar: Candle | null = null;
+      if (p.kind === 'debit_spread') {
+        const shortBars = await getContractBars(p.shortContractTicker!);
+        const shortIdx = indexAsOf(shortBars, dayMs);
+        shortBar = shortIdx >= 0 && shortBars[shortIdx].time === dayMs ? shortBars[shortIdx] : null;
+      }
+
+      const ready = p.kind === 'debit_spread' ? longBar && shortBar : longBar;
+      if (ready) {
         openPositions.push({
           symbol: p.symbol,
           side: p.side,
+          kind: p.kind,
           contractTicker: p.contractTicker,
           strike: p.strike,
+          shortContractTicker: p.shortContractTicker,
+          shortStrike: p.shortStrike,
           expiration: p.expiration,
           signalDate: p.signalDate,
           entryDate: day,
-          entryPremium: bars[idx].open,
+          entryPremium: longBar!.open,
+          shortEntryPremium: shortBar?.open,
           contracts: p.contracts,
           riskAmount: p.riskAmount,
           notional: p.notional,
         });
         filledToday += 1;
-      } else if (idx < 0 || bars[idx].time < dayMs) {
+      } else {
         stillPending.push(p);
       }
-      // else: a later bar already passed this date without landing on it exactly — drop (stale).
     }
     pendingEntries = stillPending;
 
@@ -304,21 +430,46 @@ export async function simulateOptionsBacktest(
         stillOpen.push(pos);
         continue;
       }
+      // A spread closes BOTH legs together — the short leg's bar missing
+      // that day leaves the whole position open, same as the long leg's own.
+      let shortBar: Candle | null = null;
+      if (pos.kind === 'debit_spread') {
+        const shortBars = await getContractBars(pos.shortContractTicker!);
+        const shortIdx = indexAsOf(shortBars, dayMs);
+        shortBar = shortIdx >= 0 && shortBars[shortIdx].time === dayMs ? shortBars[shortIdx] : null;
+        if (!shortBar) {
+          stillOpen.push(pos);
+          continue;
+        }
+      }
       const dte = daysToExpiration(pos.expiration, new Date(dayMs));
       if (dte <= (entryCfg.minDaysToExpiration ?? 7) || dte <= 0) {
         const exitPremium = bar.close;
-        const pnl = (exitPremium - pos.entryPremium) * pos.contracts * 100;
+        const shortExitPremium = shortBar?.close;
+        const pnl = simulatedOptionsPnl(
+          pos.kind,
+          pos.entryPremium,
+          exitPremium,
+          pos.shortEntryPremium,
+          shortExitPremium,
+          pos.contracts,
+        );
         trades.push({
           symbol: pos.symbol,
           side: pos.side,
+          kind: pos.kind,
           contractTicker: pos.contractTicker,
           strike: pos.strike,
+          shortContractTicker: pos.shortContractTicker,
+          shortStrike: pos.shortStrike,
           expiration: pos.expiration,
           signalDate: pos.signalDate,
           entryDate: pos.entryDate,
           entryPremium: pos.entryPremium,
+          shortEntryPremium: pos.shortEntryPremium,
           exitDate: day,
           exitPremium,
+          shortExitPremium,
           exitReason: dte <= 0 ? 'expiration' : 'time_exit',
           contracts: pos.contracts,
           pnl,
@@ -449,6 +600,35 @@ export async function simulateOptionsBacktest(
         continue;
       }
 
+      let shortRef: ShortLegReference | null = null;
+      if (strategyType === 'debit_spread') {
+        shortRef = await pickShortLegReferenceContract(
+          contracts,
+          side,
+          ref.strike,
+          ref.expiration,
+          day,
+          candidate.underlyingClose,
+          getContractBars,
+        );
+        if (!shortRef) {
+          skipped.push({
+            symbol: candidate.symbol,
+            date: day,
+            reason: 'No short-leg contract further out-of-the-money passed the delta band',
+          });
+          continue;
+        }
+        if (shortRef.premium >= bar.close) {
+          skipped.push({
+            symbol: candidate.symbol,
+            date: day,
+            reason: 'Short leg premium >= long leg premium — not a net debit, skipped',
+          });
+          continue;
+        }
+      }
+
       const correlated = optionsBacktestCorrelatedNotional(candidate.symbol, dayMs, runningPositions, historyBySymbol);
       const ctx: RiskCheckContext = {
         equity,
@@ -460,21 +640,45 @@ export async function simulateOptionsBacktest(
         correlatedNotional: correlated,
       };
       const result = evaluateOptionsRiskCheck(
-        {
-          kind: 'single_leg',
-          symbol: candidate.symbol,
-          side,
-          contractSymbol: ref.ticker,
-          strike: ref.strike,
-          expiration: ref.expiration,
-          dte: T * 365,
-          premium: bar.close,
-          delta,
-          ivRank: ivContext.ivRank,
-          maxLossPerContract: bar.close * 100,
-          rationale: `Backtest reference contract ${ref.ticker}`,
-          score: candidate.total,
-        },
+        shortRef
+          ? {
+              kind: 'debit_spread',
+              symbol: candidate.symbol,
+              side,
+              expiration: ref.expiration,
+              dte: T * 365,
+              ivRank: ivContext.ivRank,
+              longContractSymbol: ref.ticker,
+              longStrike: ref.strike,
+              longPremium: bar.close,
+              longDelta: delta,
+              shortContractSymbol: shortRef.contract.ticker,
+              shortStrike: shortRef.contract.strike,
+              shortPremium: shortRef.premium,
+              shortDelta: shortRef.delta,
+              width: Math.abs(shortRef.contract.strike - ref.strike),
+              netDebit: bar.close - shortRef.premium,
+              maxLossPerContract: (bar.close - shortRef.premium) * 100,
+              maxProfitPerContract:
+                (Math.abs(shortRef.contract.strike - ref.strike) - (bar.close - shortRef.premium)) * 100,
+              rationale: `Backtest debit spread ${ref.ticker}/${shortRef.contract.ticker}`,
+              score: candidate.total,
+            }
+          : {
+              kind: 'single_leg',
+              symbol: candidate.symbol,
+              side,
+              contractSymbol: ref.ticker,
+              strike: ref.strike,
+              expiration: ref.expiration,
+              dte: T * 365,
+              premium: bar.close,
+              delta,
+              ivRank: ivContext.ivRank,
+              maxLossPerContract: bar.close * 100,
+              rationale: `Backtest reference contract ${ref.ticker}`,
+              score: candidate.total,
+            },
         ctx,
         profile,
       );
@@ -487,15 +691,22 @@ export async function simulateOptionsBacktest(
         continue;
       }
 
-      // This backtest only ever builds 'single_leg' signals (see file header,
-      // scope reduction #1), so result.sizing is always a RiskSizingResult —
-      // the 'in' check just satisfies the (necessarily wider) return type.
-      const quantity = 'suggestedQuantity' in result.sizing ? result.sizing.suggestedQuantity : 0;
+      // 'suggestedContracts' for a debit spread, 'suggestedQuantity' for a
+      // single leg — matches whichever kind was just built above.
+      const quantity =
+        'suggestedContracts' in result.sizing
+          ? result.sizing.suggestedContracts
+          : 'suggestedQuantity' in result.sizing
+            ? result.sizing.suggestedQuantity
+            : 0;
       pendingEntries.push({
         symbol: candidate.symbol,
         side,
+        kind: strategyType,
         contractTicker: ref.ticker,
         strike: ref.strike,
+        shortContractTicker: shortRef?.contract.ticker,
+        shortStrike: shortRef?.contract.strike,
         expiration: ref.expiration,
         signalDate: day,
         contracts: quantity,
@@ -510,23 +721,46 @@ export async function simulateOptionsBacktest(
     equityCurve.push({ date: day, equity });
   }
 
-  // Force-close anything still open at period end.
+  // Force-close anything still open at period end. Each leg force-closes at
+  // its OWN last available bar independently (they can have slightly
+  // different bar coverage), matching how the exit-check above always reads
+  // each leg's own bars separately.
   for (const pos of openPositions) {
     const bars = await getContractBars(pos.contractTicker);
     const last = bars.length ? bars[bars.length - 1] : null;
     const exitPremium = last?.close ?? pos.entryPremium;
-    const pnl = (exitPremium - pos.entryPremium) * pos.contracts * 100;
+
+    let shortExitPremium: number | undefined;
+    if (pos.kind === 'debit_spread') {
+      const shortBars = await getContractBars(pos.shortContractTicker!);
+      const shortLast = shortBars.length ? shortBars[shortBars.length - 1] : null;
+      shortExitPremium = shortLast?.close ?? pos.shortEntryPremium;
+    }
+
+    const pnl = simulatedOptionsPnl(
+      pos.kind,
+      pos.entryPremium,
+      exitPremium,
+      pos.shortEntryPremium,
+      shortExitPremium,
+      pos.contracts,
+    );
     trades.push({
       symbol: pos.symbol,
       side: pos.side,
+      kind: pos.kind,
       contractTicker: pos.contractTicker,
       strike: pos.strike,
+      shortContractTicker: pos.shortContractTicker,
+      shortStrike: pos.shortStrike,
       expiration: pos.expiration,
       signalDate: pos.signalDate,
       entryDate: pos.entryDate,
       entryPremium: pos.entryPremium,
+      shortEntryPremium: pos.shortEntryPremium,
       exitDate: cfg.to,
       exitPremium,
+      shortExitPremium,
       exitReason: 'end_of_period',
       contracts: pos.contracts,
       pnl,

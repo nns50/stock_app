@@ -843,6 +843,7 @@ describe('AutoTradePage', () => {
           {
             symbol: 'AAPL',
             side: 'call',
+            kind: 'single_leg',
             contractTicker: 'O:AAPL240315C00210000',
             strike: 210,
             expiration: '2024-03-15',
@@ -904,6 +905,118 @@ describe('AutoTradePage', () => {
     expect(screen.getAllByText('+$600.00').length).toBeGreaterThan(0); // expectancy stat + trade pnl
   });
 
+  it('threads the configured Options strategy into the options backtest request', async () => {
+    vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture({ optionsStrategyType: 'debit_spread' }));
+    const run = vi.spyOn(client, 'runOptionsBacktest').mockResolvedValue({
+      report: {
+        trades: [],
+        equityCurve: [],
+        startingEquity: 100_000,
+        finalEquity: 100_000,
+        excludedSymbols: [],
+        errors: [],
+        skipped: [],
+      },
+      stats: {
+        totalTrades: 0,
+        wins: 0,
+        losses: 0,
+        winRate: 0,
+        avgWin: 0,
+        avgLoss: 0,
+        expectancy: 0,
+        profitFactor: null,
+        totalPnl: 0,
+        returnPct: 0,
+        avgR: 0,
+        bestR: 0,
+        worstR: 0,
+        maxDrawdown: 0,
+        longestWinStreak: 0,
+        longestLossStreak: 0,
+      },
+    });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Run options backtest' }));
+
+    await waitFor(() =>
+      expect(run).toHaveBeenCalledWith(
+        expect.objectContaining({ optionsDecisionConfig: { strategyType: 'debit_spread' } }),
+      ),
+    );
+  });
+
+  it("renders a debit spread's long/short strikes and nets Entry/Exit $ in the options backtest trades table", async () => {
+    const optResult: OptionsBacktestRunResponse = {
+      report: {
+        trades: [
+          {
+            symbol: 'AAPL',
+            side: 'call',
+            kind: 'debit_spread',
+            contractTicker: 'O:AAPL240315C00200000',
+            strike: 200,
+            shortContractTicker: 'O:AAPL240315C00210000',
+            shortStrike: 210,
+            expiration: '2024-03-15',
+            signalDate: '2024-01-01',
+            entryDate: '2024-01-02',
+            entryPremium: 5,
+            shortEntryPremium: 2,
+            exitDate: '2024-01-10',
+            exitPremium: 8,
+            shortExitPremium: 1,
+            exitReason: 'time_exit',
+            contracts: 2,
+            pnl: 800, // ((8-1) - (5-2)) * 2 * 100
+            rMultiple: 1.5,
+          },
+        ],
+        equityCurve: [
+          { date: '2024-01-02', equity: 100_000 },
+          { date: '2024-01-10', equity: 100_800 },
+        ],
+        startingEquity: 100_000,
+        finalEquity: 100_800,
+        excludedSymbols: [],
+        errors: [],
+        skipped: [],
+      },
+      stats: {
+        totalTrades: 1,
+        wins: 1,
+        losses: 0,
+        winRate: 100,
+        avgWin: 800,
+        avgLoss: 0,
+        expectancy: 800,
+        profitFactor: null,
+        totalPnl: 800,
+        returnPct: 0.8,
+        avgR: 1.5,
+        bestR: 1.5,
+        worstR: 1.5,
+        maxDrawdown: 0,
+        longestWinStreak: 1,
+        longestLossStreak: 0,
+      },
+    };
+    vi.spyOn(client, 'runOptionsBacktest').mockResolvedValue(optResult);
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Run options backtest' }));
+
+    expect(await screen.findByText('call 200/210')).toBeInTheDocument();
+    expect(screen.getByText('$3.00')).toBeInTheDocument(); // Entry $ = 5 - 2
+    expect(screen.getByText('$7.00')).toBeInTheDocument(); // Exit $ = 8 - 1
+    expect(screen.getAllByText('+$800.00').length).toBeGreaterThan(0);
+  });
+
   it('runs a combined backtest and renders ONE stats grid plus both an equity trade and an options trade', async () => {
     const combinedResult: CombinedBacktestRunResponse = {
       report: {
@@ -926,6 +1039,7 @@ describe('AutoTradePage', () => {
           {
             symbol: 'AAPL',
             side: 'call',
+            kind: 'single_leg',
             contractTicker: 'O:AAPL240315C00210000',
             strike: 210,
             expiration: '2024-03-15',

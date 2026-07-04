@@ -1280,14 +1280,22 @@ export interface WalkForwardRequest extends BacktestRequest {
 export interface SimulatedOptionsTrade {
   symbol: string; // underlying
   side: AutotradeOptionsSignalSide;
+  /** 'single_leg' (default shape) or 'debit_spread' — a spread reuses
+   *  contractTicker/strike/entryPremium/exitPremium for the LONG leg and
+   *  adds the short* fields below for the short leg. */
+  kind: AutotradeOptionsStrategyType;
   contractTicker: string;
   strike: number;
+  shortContractTicker?: string;
+  shortStrike?: number;
   expiration: string;
   signalDate: string;
   entryDate: string;
   entryPremium: number;
+  shortEntryPremium?: number;
   exitDate: string;
   exitPremium: number;
+  shortExitPremium?: number;
   exitReason: 'time_exit' | 'expiration' | 'end_of_period';
   contracts: number;
   pnl: number;
@@ -1327,6 +1335,7 @@ export interface OptionsBacktestRequest {
   to: string;
   riskProfile: AutotradeRiskProfile;
   startingEquity: number;
+  optionsDecisionConfig?: { strategyType?: AutotradeOptionsStrategyType };
 }
 
 export interface OptionsWalkForwardRequest extends OptionsBacktestRequest {
@@ -1370,6 +1379,7 @@ export interface CombinedBacktestRequest {
   to: string;
   riskProfile: AutotradeRiskProfile;
   startingEquity: number;
+  optionsDecisionConfig?: { strategyType?: AutotradeOptionsStrategyType };
 }
 
 export interface CombinedWalkForwardRequest extends CombinedBacktestRequest {

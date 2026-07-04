@@ -306,4 +306,136 @@ describe('simulateCombinedBacktest', () => {
     expect(report.equityCurve[report.equityCurve.length - 1].equity).toBe(report.finalEquity);
     expect(report.finalEquity).toBeGreaterThan(report.startingEquity);
   });
+
+  describe('debit spreads (Task #69) — the shared optionsBacktest.ts helpers wired into the combined engine', () => {
+    // K=102 -> delta ~0.44 (long leg's [0.30,0.60] band); K=107 -> delta
+    // ~0.24 (SHORT_LEG_DELTA_BAND's [0.15,0.25]) at S=100, sigma=0.3, 30d DTE
+    // — same values already confirmed numerically in optionsBacktestSimulate.test.ts.
+    const LONG_STRIKE = 102;
+    const SHORT_STRIKE = 107;
+    const LONG_TICKER = 'O:BBB-LONG';
+    const SHORT_TICKER = 'O:BBB-SHORT';
+
+    /** Perfectly flat underlying bars so BBB's OWN equity signal never fires
+     *  (see the "already-open OPTIONS position" test above for the same
+     *  isolation trick) — isolates this test to the options side alone. */
+    function flatBar(day: string): Candle {
+      return { time: Date.parse(`${day}T00:00:00Z`), open: 100, high: 100, low: 100, close: 100, volume: 500_000 };
+    }
+    function flatHistory(signalDay: string, extraDays: string[]): Candle[] {
+      const days: Candle[] = [];
+      for (let i = 60; i >= 1; i--) days.push(flatBar(d(signalDay, -i)));
+      days.push(flatBar(signalDay), ...extraDays.map(flatBar));
+      return days;
+    }
+
+    it('opens a debit spread through the combined engine, netting both legs at fill', async () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, DTE_DAYS);
+      const T = yearsFor(DTE_DAYS);
+      const longEntry = premiumFor(100, LONG_STRIKE, T);
+      const shortEntry = premiumFor(100, SHORT_STRIKE, T);
+      mockContractBars({
+        [LONG_TICKER]: [optionBar(signalDay, longEntry), optionBar(entryDay, longEntry, { open: longEntry })],
+        [SHORT_TICKER]: [optionBar(signalDay, shortEntry), optionBar(entryDay, shortEntry, { open: shortEntry })],
+      });
+      const historyBySymbol = new Map([['BBB', flatHistory(signalDay, [entryDay])]]);
+      const contractsBySymbol = new Map([
+        [
+          'BBB',
+          [contractRef(LONG_TICKER, LONG_STRIKE, expiration), contractRef(SHORT_TICKER, SHORT_STRIKE, expiration)],
+        ],
+      ]);
+
+      const report = await simulateCombinedBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        baseConfig({
+          symbols: ['BBB'],
+          from: signalDay,
+          to: entryDay,
+          optionsDecisionConfig: { strategyType: 'debit_spread' },
+        }),
+      );
+      expect(report.equityTrades).toEqual([]); // flat bars -> no equity signal for BBB
+      expect(report.optionsTrades).toHaveLength(1);
+      const t = report.optionsTrades[0];
+      expect(t.kind).toBe('debit_spread');
+      expect(t.contractTicker).toBe(LONG_TICKER);
+      expect(t.strike).toBe(LONG_STRIKE);
+      expect(t.shortContractTicker).toBe(SHORT_TICKER);
+      expect(t.shortStrike).toBe(SHORT_STRIKE);
+      expect(t.entryPremium).toBe(longEntry);
+      expect(t.shortEntryPremium).toBe(shortEntry);
+      // Force-closed at period end (entryDay is also the last day) at the
+      // SAME premiums it entered at -> net value unchanged -> zero P&L.
+      expect(t.pnl).toBeCloseTo(0, 5);
+    });
+
+    it("a debit spread's net-debit riskAmount feeds the SAME shared ledger equity positions use", async () => {
+      const original = { ...RISK_PROFILES.MODERATE };
+      // Generous on every other cap so max_aggregate_open_risk is
+      // unambiguously the one doing the blocking (same convention as the
+      // "CRITICAL" describe block above).
+      Object.assign(RISK_PROFILES.MODERATE, {
+        maxConcurrentPositions: 100,
+        maxCorrelatedExposurePct: 100,
+        maxDailyDrawdownPct: 100,
+        maxTradesPerDay: 100,
+        maxAggregateOpenRiskPct: 1.5,
+      });
+      try {
+        const day0 = '2024-03-01';
+        const day1 = d(day0, 1);
+        // AAA: an ordinary equity long already at ~1% of equity risk.
+        const aaaHistory = [...warmupThrough(day0), equityBar(day1)];
+        // BBB: flat (isolates to its options side only), same day as AAA.
+        const bbbHistory = flatHistory(day0, [day1]);
+        const historyBySymbol = new Map([
+          ['AAA', aaaHistory],
+          ['BBB', bbbHistory],
+        ]);
+        const expiration = d(day0, DTE_DAYS);
+        const T = yearsFor(DTE_DAYS);
+        // Natural, self-consistent BS pricing for both legs (same sigma
+        // already confirmed to land each leg's delta in its own band, see
+        // optionsBacktestSimulate.test.ts) sizes to several contracts at
+        // ~$913 total risk — stacked on AAA's already-open ~1%/$1000 equity
+        // risk, the running total exceeds the 1.5%/$1500 cap, proving the
+        // spread's riskAmount (net debit x contracts x 100), not some other
+        // figure, is what the shared ledger actually sees.
+        const longEntry = premiumFor(100, LONG_STRIKE, T);
+        const shortEntry = premiumFor(100, SHORT_STRIKE, T);
+        mockContractBars({
+          [LONG_TICKER]: [optionBar(day0, longEntry), optionBar(day1, longEntry, { open: longEntry })],
+          [SHORT_TICKER]: [optionBar(day0, shortEntry), optionBar(day1, shortEntry, { open: shortEntry })],
+        });
+        const contractsBySymbol = new Map([
+          [
+            'BBB',
+            [contractRef(LONG_TICKER, LONG_STRIKE, expiration), contractRef(SHORT_TICKER, SHORT_STRIKE, expiration)],
+          ],
+        ]);
+
+        const report = await simulateCombinedBacktest(
+          historyBySymbol,
+          contractsBySymbol,
+          baseConfig({
+            symbols: ['AAA', 'BBB'],
+            from: day0,
+            to: day1,
+            optionsDecisionConfig: { strategyType: 'debit_spread' },
+          }),
+        );
+        expect(report.equityTrades.some((t) => t.symbol === 'AAA')).toBe(true); // AAA's own ~1% fits alone
+        expect(report.optionsTrades).toEqual([]); // BBB's spread risk on top of AAA's exceeds the 1.5% cap
+        expect(report.optionsSkipped.some((s) => s.symbol === 'BBB' && s.reason.includes('Risk check blocked'))).toBe(
+          true,
+        );
+      } finally {
+        Object.assign(RISK_PROFILES.MODERATE, original);
+      }
+    });
+  });
 });

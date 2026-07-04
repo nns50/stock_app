@@ -1157,9 +1157,29 @@ on its own timeline regardless of this options work.
     walk-forward" button on the existing Backtest & walk-forward card (same
     symbols/dates/profile/equity form) and `POST /api/autotrade/backtest-combined`
     (+`/walk-forward`) — the two existing independent backtests are unchanged and still
-    available side by side. Single-leg options only, matching
-    `simulateOptionsBacktest()`'s own current scope — the debit-spread signal shape
-    (phase 9/10's other follow-up) hasn't been extended to either backtest engine.
+    available side by side. Was single-leg options only, matching
+    `simulateOptionsBacktest()`'s own scope at the time — the debit-spread signal shape
+    (phase 9/10's other follow-up) hadn't been extended to either backtest engine.
+    **Fixed (2026-07-04) — Task #69, backtesting.** Both `simulateOptionsBacktest()` and
+    `simulateCombinedBacktest()` now simulate a `'debit_spread'` run when
+    `optionsDecisionConfig.strategyType` says so (same field the live loop already reads;
+    the Auto-Trade page's backtest buttons now thread the SAME **Options strategy**
+    setting shown in Configuration, rather than silently always backtesting single-leg).
+    A new `pickShortLegReferenceContract()` (exported from `optionsBacktest.ts`, reused
+    unchanged by `combinedBacktest.ts`) finds the short leg the same way the live decision
+    engine does: nearest contract strictly further OTM than the long leg, in the SAME
+    expiration, whose delta (recomputed via Black-Scholes from that day's historical
+    price, matching the long leg's own existing simplification) falls within the exact
+    same exported `SHORT_LEG_DELTA_BAND` `optionsDecide.ts` uses live — reused, not
+    re-guessed, so backtest and live can never drift on this threshold. A spread fills
+    and closes BOTH legs together or not at all (mirrors `optionsExecute.ts`'s paper-
+    execution atomicity), and its P&L nets both legs' premiums first —
+    `(netValueAtExit − netDebitAtEntry) × contracts × 100`, via a shared
+    `simulatedOptionsPnl()` helper — rather than the single-leg `(exit − entry) ×
+    contracts × 100` formula. `SimulatedOptionsTrade` gained a `kind` discriminator plus
+    `short*` fields (mirroring the paper-position schema's own long/short split); the
+    options and combined backtest trade tables render a spread's strikes as `long/short`
+    and net its Entry/Exit $ columns the same way the Options paper positions table does.
 12. **Options paper execution & expiration management — shipped.** Cleared for
     implementation after the user confirmed (2026-07-03) they had reviewed phase 11's
     options backtest/walk-forward against real data and judged the results sound enough
