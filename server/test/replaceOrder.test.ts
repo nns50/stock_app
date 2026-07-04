@@ -12,7 +12,10 @@ const CID = 'replace-cid-1';
 
 beforeAll(() => initDb());
 beforeEach(() => {
-  db.exec('DELETE FROM order_events; DELETE FROM order_intents; DELETE FROM trading_config;');
+  db.exec(
+    'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; ' +
+      'DELETE FROM order_events; DELETE FROM order_intents; DELETE FROM trading_config;',
+  );
   config.trading.placeEnabled = true;
   Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
   setTradingConfig({ enabled: true });

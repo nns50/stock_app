@@ -68,6 +68,17 @@ const configBody = z.object({
   liveAllowNakedShort: z.boolean().optional(),
   liveProbationTrades: z.number().int().nonnegative().optional(),
   liveProbationSizeMultiplier: z.number().positive().max(1).optional(),
+  // --- Task #70: live options trading ----------------------------------------
+  /** Nested under liveTradingEnabled — no separate typed confirmation (the
+   *  master phrase already covers "real money is now live"); see route
+   *  handler for the fails-closed "master must be on" gate. */
+  liveOptionsEnabled: z.boolean().optional(),
+  liveOptionsMaxOrderUsd: z.number().nonnegative().optional(),
+  liveOptionsMaxDailyLossUsd: z.number().nonnegative().optional(),
+  liveOptionsMaxOrdersPerDay: z.number().int().nonnegative().optional(),
+  liveOptionsFatFingerPct: z.number().min(0).max(100).optional(),
+  liveOptionsProbationTrades: z.number().int().nonnegative().optional(),
+  liveOptionsProbationSizeMultiplier: z.number().positive().max(1).optional(),
   // --- Options strategy shape -------------------------------------------------
   optionsStrategyType: z.enum(['single_leg', 'debit_spread']).optional(),
 });
@@ -100,6 +111,20 @@ autotradeRouter.put(
     if (body.liveProbationTrades !== undefined) patch.liveProbationTrades = body.liveProbationTrades;
     if (body.liveProbationSizeMultiplier !== undefined) {
       patch.liveProbationSizeMultiplier = body.liveProbationSizeMultiplier;
+    }
+    if (body.liveOptionsMaxOrderUsd !== undefined) patch.liveOptionsMaxOrderUsd = body.liveOptionsMaxOrderUsd;
+    if (body.liveOptionsMaxDailyLossUsd !== undefined) {
+      patch.liveOptionsMaxDailyLossUsd = body.liveOptionsMaxDailyLossUsd;
+    }
+    if (body.liveOptionsMaxOrdersPerDay !== undefined) {
+      patch.liveOptionsMaxOrdersPerDay = body.liveOptionsMaxOrdersPerDay;
+    }
+    if (body.liveOptionsFatFingerPct !== undefined) patch.liveOptionsFatFingerPct = body.liveOptionsFatFingerPct;
+    if (body.liveOptionsProbationTrades !== undefined) {
+      patch.liveOptionsProbationTrades = body.liveOptionsProbationTrades;
+    }
+    if (body.liveOptionsProbationSizeMultiplier !== undefined) {
+      patch.liveOptionsProbationSizeMultiplier = body.liveOptionsProbationSizeMultiplier;
     }
     if (body.optionsStrategyType !== undefined) patch.optionsStrategyType = body.optionsStrategyType;
 
@@ -149,6 +174,24 @@ autotradeRouter.put(
       patch.liveTradingEnabled = body.liveTradingEnabled;
     }
 
+    // liveOptionsEnabled needs no typed confirmation of its own (the master
+    // phrase above already covers "real money is now live"), but fails
+    // closed if requested while the master isn't (and isn't concurrently
+    // becoming) enabled — a plain checkbox nested under a gate that isn't on
+    // yet would otherwise silently sit inert with no feedback. Turning it
+    // OFF, or an unrelated save that doesn't touch it, always passes through.
+    const masterWillBeEnabled = enablingNow || before.liveTradingEnabled;
+    if (body.liveOptionsEnabled === true && !masterWillBeEnabled) {
+      throw new HttpError(400, 'Enabling live options trading requires live trading to be enabled first');
+    }
+    const enablingOptionsNow = body.liveOptionsEnabled === true && !before.liveOptionsEnabled;
+    if (enablingOptionsNow) {
+      patch.liveOptionsEnabled = true;
+      patch.liveOptionsEnabledAt = Date.now();
+    } else if (body.liveOptionsEnabled !== undefined) {
+      patch.liveOptionsEnabled = body.liveOptionsEnabled;
+    }
+
     const next = setAutotradeConfig(patch);
     if (next.riskProfile !== before.riskProfile) {
       logAutotradeEvent({
@@ -177,6 +220,13 @@ autotradeRouter.put(
       logAutotradeEvent({
         stage: 'config',
         action: next.liveTradingEnabled ? 'live_trading_enabled' : 'live_trading_disabled',
+        riskProfile: next.riskProfile,
+      });
+    }
+    if (next.liveOptionsEnabled !== before.liveOptionsEnabled) {
+      logAutotradeEvent({
+        stage: 'config',
+        action: next.liveOptionsEnabled ? 'live_options_trading_enabled' : 'live_options_trading_disabled',
         riskProfile: next.riskProfile,
       });
     }

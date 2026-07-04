@@ -16,7 +16,8 @@ beforeEach(() => {
   db.exec(
     'DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_options_paper_positions; ' +
       'DELETE FROM autotrade_config; DELETE FROM autotrade_events; ' +
-      'DELETE FROM position_exits; DELETE FROM positions; DELETE FROM autotrade_live_orders; DELETE FROM order_events; DELETE FROM order_intents;',
+      'DELETE FROM position_exits; DELETE FROM positions; DELETE FROM autotrade_live_orders; ' +
+      'DELETE FROM autotrade_live_options_orders; DELETE FROM order_events; DELETE FROM order_intents;',
   );
 });
 
