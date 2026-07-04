@@ -286,6 +286,38 @@ describe('attemptLiveEntry', () => {
     expect(events.some((e) => e.action === 'live_order_placed')).toBe(true);
   });
 
+  it('dispatches a notification (Slack/Discord/webhook) on a placed live order, when a channel is configured', async () => {
+    const origNotifications = { ...config.notifications };
+    config.notifications.slackWebhookUrl = 'http://slack.test';
+    try {
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-1' });
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, status: 200 } as Response);
+
+      await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
+
+      expect(fetchSpy).toHaveBeenCalledWith('http://slack.test', expect.objectContaining({ method: 'POST' }));
+      const body = JSON.parse(fetchSpy.mock.calls[0][1]!.body as string) as { text: string };
+      expect(body.text).toMatch(/LIVE BUY.*AAPL/);
+    } finally {
+      Object.assign(config.notifications, origNotifications);
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('never calls fetch when no notification channel is configured', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-1' });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
   it('transitions to rejected and logs a failure event on broker rejection', async () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);

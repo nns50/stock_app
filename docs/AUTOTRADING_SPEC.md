@@ -888,6 +888,23 @@ starts.
      `routes/positions.ts` into `services/quotes.ts` so both routes share one
      stock/option price-resolution implementation instead of two.
 
+     **Follow-up, added 2026-07-04 — autotrade-specific alerting.** Before this, the
+     only way to learn a live order had fired, or that the kill switch had engaged,
+     was to have the Auto-Trade page open. Both events now push a best-effort
+     notification through `services/notifier.ts` — the same Slack/Discord/generic
+     webhook dispatcher the price-alert system already uses (`dispatchNotifications()`
+     is a no-op with zero channels configured, and never throws, so this adds no new
+     failure mode to either path). `attemptLiveEntry()` fires one on every successful
+     live order placement (symbol, side, quantity, limit, stop, target), right after
+     the existing `live_order_placed` journal entry. `POST /api/autotrade/kill-switch`
+     fires one only on the *engage* direction — a deliberate emergency halt worth
+     knowing about away from the app — not on release, which is the safe direction and
+     needs no push. Deliberately scoped narrow for this first cut: no notification yet
+     for a daily-drawdown halt triggering (that would need day-over-day state-transition
+     tracking to fire once rather than once per blocked candidate) or for paper-trading
+     events (paper carries no real financial exposure, so there's nothing time-sensitive
+     to page a human about).
+
 ### Options trading addition — phases 9-13, approved (2026-07-03)
 
 The data-source question and the three design defaults flagged below (IV-rank ceiling,
