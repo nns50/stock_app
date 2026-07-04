@@ -45,10 +45,28 @@ function usd(n: number): string {
   return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function startOfTodayMs(now = Date.now()): number {
-  const d = new Date(now);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
+/** Today's date (YYYY-MM-DD) in US/Eastern, NOT UTC or server-local — the
+ *  same "trading day" convention execute.ts's own etDateStr() (and its
+ *  options counterpart) already bucket by. Fixes a known gap flagged during
+ *  Phase 6's review: this function's "today" was previously UTC-based
+ *  (`toISOString()`) with a SEPARATE server-local-time boundary for
+ *  tradesToday (`setHours(0,0,0,0)`) — two different, both-wrong bucketings
+ *  in the same snapshot. UTC midnight falls at 7-8pm ET (squarely inside
+ *  typical after-hours activity), so either one could split the same ET
+ *  evening's trades/exits across two different "days." Duplicated here
+ *  rather than imported from execute.ts to avoid a circular import
+ *  (execute.ts already imports FROM riskCheck.ts) — the same small-pure-
+ *  helper-duplication convention already used between execute.ts and
+ *  optionsExecute.ts. */
+function etDateStr(ms: number = Date.now()): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(ms);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
 const lastExitDate = (p: Position): string =>
@@ -84,7 +102,7 @@ export interface PortfolioSnapshot {
 export function getPortfolioSnapshot(): PortfolioSnapshot {
   const equity = getAutotradeConfig().accountEquityUsd;
 
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = etDateStr();
   const closedTrades = listPositions({ status: 'closed' })
     .map((p) => ({ date: lastExitDate(p), pnl: realizedPnlOf(p) }))
     .sort((a, b) => a.date.localeCompare(b.date));
@@ -92,9 +110,8 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
   const streak = computeStreaksAndDrawdown(closedTrades.map((t) => t.pnl)).currentStreak;
   const consecutiveLosses = streak.type === 'loss' ? streak.count : 0;
 
-  const start = startOfTodayMs();
   const tradesToday = listAutotradeEvents({ stage: 'execution', limit: 1000 }).filter(
-    (e) => e.action === 'order_placed' && e.createdAt >= start,
+    (e) => e.action === 'order_placed' && etDateStr(e.createdAt) === todayStr,
   ).length;
 
   const openPositions: OpenRiskItem[] = listPositions({ status: 'open' }).map((p) => ({

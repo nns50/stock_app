@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { initDb, db } from '../src/db';
 import { createPosition } from '../src/db/positions';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
-import { listAutotradeEvents } from '../src/db/autotradeEvents';
+import { listAutotradeEvents, logAutotradeEvent } from '../src/db/autotradeEvents';
 import { evaluateRiskCheck, RiskCheckContext, runAutotradeRiskCheck } from '../src/services/autotrading/riskCheck';
 import { RISK_PROFILES } from '../src/services/autotrading/riskProfiles';
 import { TradeSignal } from '../src/services/autotrading/decide';
@@ -38,6 +38,21 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
 
 const findCheck = (result: ReturnType<typeof evaluateRiskCheck>, rule: string) =>
   result.checks.find((c) => c.rule === rule)!;
+
+/** Mirrors riskCheck.ts's own (private) etDateStr() — getPortfolioSnapshot()
+ *  buckets "today" in US/Eastern, not UTC, so a fixture built with
+ *  toISOString() would be off by a day whenever this test happens to run
+ *  between 8pm-midnight ET (already the next UTC calendar day). */
+function etDateStr(ms: number = Date.now()): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(ms);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
 
 describe('evaluateRiskCheck — pure evaluator', () => {
   it('passes a clean signal with no competing exposure', () => {
@@ -288,7 +303,7 @@ describe('runAutotradeRiskCheck — batch orchestration', () => {
       entryDate: '2026-01-01',
     });
     db.prepare("UPDATE positions SET status = 'closed' WHERE id = ?").run(p1.id);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = etDateStr();
     db.prepare(
       'INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, created_at) VALUES (?,?,?,?,0,?)',
     ).run(p1.id, 10, 90, today, Date.now()); // -$100 realized loss today
@@ -309,5 +324,38 @@ describe('runAutotradeRiskCheck — batch orchestration', () => {
     const results = await runAutotradeRiskCheck([signal({ symbol: 'AAPL' })]);
     // 2 consecutive losses hits MODERATE's step-down trigger (2).
     expect(results[0].stepDownActive).toBe(true);
+  });
+
+  it('buckets dailyPnl and tradesToday by US/Eastern, not UTC, across the UTC-midnight boundary', async () => {
+    // 11:30pm ET on Jul 3 is 3:30am UTC on Jul 4 (EDT = UTC-4) — a UTC-based
+    // "today" would wrongly call this exit/order "yesterday." Regression for
+    // a known gap (flagged during Phase 6's review): getPortfolioSnapshot()
+    // used to bucket via toISOString() (UTC) for dailyPnl and a separate
+    // server-local-time midnight for tradesToday — both wrong the same way.
+    vi.useFakeTimers();
+    const eveningEt = new Date('2026-07-03T23:30:00-04:00').getTime();
+    vi.setSystemTime(eveningEt);
+    try {
+      const p1 = createPosition({
+        assetType: 'stock',
+        symbol: 'LATE1',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        entryDate: '2026-07-01',
+      });
+      db.prepare("UPDATE positions SET status = 'closed' WHERE id = ?").run(p1.id);
+      db.prepare(
+        'INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, created_at) VALUES (?,?,?,?,0,?)',
+      ).run(p1.id, 10, 90, etDateStr(), Date.now()); // -$100, dated "today" in ET
+      logAutotradeEvent({ symbol: 'LATE1', stage: 'execution', action: 'order_placed' });
+
+      const results = await runAutotradeRiskCheck([signal({ symbol: 'AAPL' })]);
+      const dailyHaltLevel = findCheck(results[0], 'daily_drawdown_halt').detail;
+      expect(dailyHaltLevel).toMatch(/\$-100\.00/); // dailyPnl picked up the late exit (usd() formats as $-100.00)
+      expect(findCheck(results[0], 'max_trades_per_day').detail).toMatch(/^1 placed/); // tradesToday picked up the late order
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

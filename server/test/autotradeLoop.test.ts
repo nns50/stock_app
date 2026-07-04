@@ -615,4 +615,33 @@ describe('startAutotradeLoop / stopAutotradeLoop', () => {
     stopAutotradeLoop();
     expect(() => startAutotradeLoop()).not.toThrow();
   });
+
+  it('real cancellation: stopping the loop while a tick is mid-screen aborts that tick before it opens any entries', async () => {
+    // Regression for a previously-documented gap: stopAutotradeLoop() used to
+    // only reset the tickInFlight flag, which didn't stop a tick already in
+    // flight from placing entries anyway. Simulates a stop call landing
+    // during the network-bound screen step, mirroring this file's own
+    // "gate changing mid-cycle" tests above (mockScreen mutating state from
+    // within the mock, not after runAutotradeLoopTick() returns).
+    mockScreen.mockImplementation(async () => {
+      stopAutotradeLoop();
+      return {
+        generatedAt: Date.now(),
+        candidates: [candidate('AAPL', 2)],
+        excluded: [],
+        skipped: [],
+        errors: [],
+        discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      };
+    });
+    mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(summary.ranEntries).toBe(false);
+    expect(summary.skippedReason).toMatch(/loop stopped mid-cycle/i);
+    expect(mockExecute).not.toHaveBeenCalled();
+    expect(summary.entriesOpened).toBe(0);
+  });
 });

@@ -157,6 +157,15 @@ function isPaperEntryActive(autotradeCfg: AutotradeConfig): boolean {
  *  found in the backtest engine, reintroduced via inter-call concurrency. */
 let tickInFlight = false;
 
+/** Set for the lifetime of one in-flight tick; aborted by stopAutotradeLoop()
+ *  so a tick genuinely in progress stops short of placing new entries instead
+ *  of just having tickInFlight reset out from under it (see stopAutotradeLoop's
+ *  own comment — this is what closes that previously-documented gap). Not a
+ *  hard interrupt (nothing here supports mid-await cancellation), just a flag
+ *  checked at the one point between the network-bound screen/decide work and
+ *  the execution calls that actually place risk. */
+let tickAbortController: AbortController | null = null;
+
 /**
  * One full cycle. Exits and the live-order reconcile are checked regardless
  * of the session window or either gate (a closed/near-the-bell market — or a
@@ -175,6 +184,8 @@ let tickInFlight = false;
 export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
   if (tickInFlight) return emptySummary('A cycle is already running');
   tickInFlight = true;
+  const abortController = new AbortController();
+  tickAbortController = abortController;
   try {
     const exitOutcomes = await checkPaperExits();
     const optionsExitOutcomes = await checkOptionsPaperExits();
@@ -235,6 +246,17 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // starts. Each path is re-checked independently, not as a combined
     // all-or-nothing recheck: paper going inactive mid-cycle must not also
     // cancel an otherwise-still-active live cycle, and vice versa.
+    //
+    // Also where stopAutotradeLoop()'s abort signal is honored — the SAME
+    // network-bound window means a stop call can land after this tick already
+    // started but before it's reached the point of actually placing anything.
+    // This is real cancellation (not just stopAutotradeLoop() resetting
+    // tickInFlight out from under an in-flight tick), closing the gap flagged
+    // in that function's own comment.
+    if (abortController.signal.aborted) {
+      summary.skippedReason = 'Loop stopped mid-cycle — entries aborted before execution';
+      return summary;
+    }
     const recheck = getAutotradeConfig();
     const paperStillActive = isPaperEntryActive(recheck);
     const liveStillActive = isLiveEntryActive(recheck);
@@ -271,6 +293,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     return summary;
   } finally {
     tickInFlight = false;
+    if (tickAbortController === abortController) tickAbortController = null;
   }
 }
 
@@ -295,23 +318,26 @@ export function startAutotradeLoop(): void {
   timer.unref?.();
 }
 
-/** Stop the loop (tests / shutdown). */
+/** Stop the loop (tests / shutdown). Real cancellation, not just a flag
+ *  reset: aborts a genuinely in-flight tick's own abort controller, so it
+ *  stops short of placing new entries at the next checkpoint
+ *  (runAutotradeLoopTick's own re-check-right-before-executing point) instead
+ *  of racing ahead unaware this was called. Fixes a previously-documented gap
+ *  where resetting tickInFlight here didn't stop an in-flight tick, so it
+ *  could still open a position concurrently with whatever runs next
+ *  re-entering the reentrancy guard as if it were clear. Not an instant
+ *  interrupt — nothing here supports mid-await cancellation — but a tick
+ *  already screening/deciding when this is called will now correctly skip
+ *  its own execution step rather than run it anyway. */
 export function stopAutotradeLoop(): void {
   if (timer) clearTimeout(timer);
   timer = null;
   started = false;
-  // Defensive: a tick genuinely in flight keeps running regardless (clearing
-  // the timer doesn't cancel an in-progress await chain) — but resetting
-  // this here means a test/shutdown path can never leave a stuck `true`
-  // (e.g. from a failed assertion skipping a test's own cleanup) wedged
-  // across whatever runs next. Today only tests and process shutdown call
-  // this, and neither races a genuinely in-flight tick, so this is safe as
-  // used. KNOWN GAP if that ever changes (e.g. a future "pause" route calling
-  // this at an arbitrary moment): resetting the flag here doesn't stop the
-  // in-flight tick itself, so it could still open a paper position after this
-  // returns, concurrently with whatever runs next re-entering the guard as if
-  // it were clear. Would need real cancellation (an AbortSignal threaded
-  // through the tick) to close, not just this reset — deferred until there's
-  // an actual caller that needs it.
+  tickAbortController?.abort();
+  // Resetting this eagerly (not waiting for an in-flight tick's own `finally`)
+  // means a test/shutdown path can never leave a stuck `true` (e.g. from a
+  // failed assertion skipping a test's own cleanup) wedged across whatever
+  // runs next — the abort signal above is what keeps that tick from placing
+  // anything, this is just so the reentrancy guard itself doesn't stay stuck.
   tickInFlight = false;
 }
