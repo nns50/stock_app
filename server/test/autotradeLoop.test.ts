@@ -165,16 +165,24 @@ beforeEach(() => {
   // hit the REAL db/autotradeConfig and db/trading, not a mock — default to
   // "paper armed, live untouched/off" so existing tests below still exercise
   // the paper entries path; the gating tests further down override
-  // explicitly. liveTradingEnabled/liveAccountId/liveOptionsEnabled are reset
-  // every test (not just left to their previous test's value) since, unlike
-  // enabled/killSwitch, nothing else in this shared beforeEach was resetting
-  // them.
+  // explicitly. liveTradingEnabled/liveAccountId/liveOptionsEnabled/
+  // optionsStrategyType are reset every test (not just left to their previous
+  // test's value) since, unlike enabled/killSwitch, nothing else in this
+  // shared beforeEach was resetting them — optionsStrategyType specifically
+  // was a confirmed, reproduced flake: setAutotradeConfig() only PATCHES the
+  // fields given, so a DIFFERENT test file (dbAutotradeConfig.test.ts,
+  // routes.integration.test.ts) setting optionsStrategyType: 'debit_spread'
+  // and never resetting it back leaks into whichever test here runs next in
+  // the shared on-disk SQLite file, depending on vitest's file execution
+  // order (confirmed non-alphabetical, not something to rely on staying
+  // "before" this file).
   setAutotradeConfig({
     enabled: true,
     killSwitch: false,
     liveTradingEnabled: false,
     liveAccountId: null,
     liveOptionsEnabled: false,
+    optionsStrategyType: 'single_leg',
   });
   setTradingConfig({ enabled: false, killSwitch: false });
   config.trading.placeEnabled = true; // env master gate ON — see placeOrder.test.ts's own convention
