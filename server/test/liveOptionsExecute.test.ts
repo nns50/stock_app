@@ -577,6 +577,21 @@ function openLivePosition(overrides: Partial<Parameters<typeof createLiveOptions
 }
 
 describe('checkLiveOptionsExits', () => {
+  it('places no order when TRADING_ENABLED is off, even for an already-triggered position', async () => {
+    // Regression: unlike equity (whose exits are 100% broker-bracket-driven —
+    // reconcileLiveOrders() only ever observes a fill, never places one), this
+    // function places a brand-new real closing order — it needs the SAME
+    // deploy-level env check attemptLiveOptionsEntry() already has, or a deploy
+    // with TRADING_ENABLED unset would still let a triggered position's close
+    // reach the broker.
+    config.trading.placeEnabled = false;
+    setAutotradeConfig(liveConfig());
+    openLivePosition({ expiration: '2024-06-05' }); // long past — triggers regardless of "today"
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
   it('returns nothing when no liveAccountId is configured', async () => {
     setAutotradeConfig({ liveAccountId: null });
     expect(await checkLiveOptionsExits()).toEqual([]);
@@ -623,6 +638,29 @@ describe('checkLiveOptionsExits', () => {
 
     const events = listAutotradeEvents({});
     expect(events.some((e) => e.action === 'live_options_exit_placed')).toBe(true);
+  });
+
+  it('closes a single-leg position even when the broker-reported currentPositionQty is contaminated by an unrelated holding', async () => {
+    // Regression: an adversarial review found webullAccountState()'s
+    // currentPositionQty sums ALL same-symbol positions (stock and every
+    // option contract alike, no asset-type/strike/expiration filter) — so
+    // trusting it directly for the naked_short check can fail OPEN (an
+    // unrelated stock position masking a real desync) as easily as it can
+    // fail closed. okAccountState's currentPositionQty is 0 here — if the
+    // fix (feeding the guardrail our OWN ledger quantity, not the broker's
+    // aggregate) weren't in place, a sell of pos.quantity contracts against
+    // a reported 0 would compute a NEGATIVE resultingQty and get wrongly
+    // blocked as a naked short.
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({ expiration: '2024-06-05' });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 5 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-EXIT-CONTAM' });
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', requested: true });
+    expect(getLiveOptionsOrder(outcomes[0].intentId!)).toMatchObject({ positionId: pos.id });
   });
 
   it('places one VERTICAL closing combo (flipped legs) for a debit-spread position past the trigger', async () => {
@@ -690,6 +728,40 @@ describe('checkLiveOptionsExits', () => {
     const outcomes = await checkLiveOptionsExits();
     expect(outcomes[0]).toMatchObject({ requested: false, reason: expect.stringMatching(/timeout/) });
     expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it("re-checks autotrade's own config fresh for EACH triggered position — engaging the kill switch mid-loop stops the next one, not just the next cycle", async () => {
+    // Regression: an adversarial review found this function reused ONE stale
+    // config snapshot across its whole per-tick loop, unlike
+    // runLiveOptionsExecution() (entries), which already re-fetches fresh
+    // config per-candidate — the same bug class liveExecute.ts's own
+    // runLiveExecution() was fixed for on the equity entry side.
+    setAutotradeConfig(liveConfig());
+    openLivePosition({ symbol: 'AAPL', expiration: '2024-06-05' });
+    openLivePosition({ symbol: 'MSFT', contractSymbol: 'MSFT-fixture', expiration: '2024-06-05' });
+    mockGetProvider.mockReturnValue(
+      chainsFor({
+        AAPL: { side: 'call', strike: 100, mark: 5 },
+        MSFT: { side: 'call', strike: 100, mark: 5 },
+      }) as never,
+    );
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockImplementationOnce(async () => {
+      // Simulate the user engaging the kill switch while the FIRST position's
+      // closing order is still in flight (the same real-world timing this
+      // loop awaits real broker round-trips between positions for).
+      setAutotradeConfig({ killSwitch: true });
+      return { ok: true, orderId: 'WB-EXIT-A' };
+    });
+
+    const outcomes = await checkLiveOptionsExits();
+
+    expect(outcomes).toHaveLength(2);
+    expect(outcomes.find((o) => o.symbol === 'AAPL')?.requested).toBe(true); // placed before the kill switch was engaged
+    const msft = outcomes.find((o) => o.symbol === 'MSFT');
+    expect(msft?.requested).toBe(false); // blocked, not placed after the kill switch was engaged
+    expect(msft?.reason).toMatch(/kill_switch/);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1); // MSFT never reached the broker at all
   });
 });
 

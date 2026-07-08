@@ -1252,7 +1252,7 @@ on its own timeline regardless of this options work.
     caps, and probation window after all, not the same phase 8 flag as originally
     expected here.)
 
-14. **Live options trading gate — shipped (adversarial review pending).** The phase 8
+14. **Live options trading gate — shipped, adversarial review done.** The phase 8
     equivalent for options: a manual flag flip that lets the loop place REAL options
     orders (single-leg AND debit-spread) through Webull, once the user's explicit
     go-ahead confirmed three open questions: the enable gate is a checkbox
@@ -1314,7 +1314,38 @@ on its own timeline regardless of this options work.
       once live trading itself is enabled, matching the gate's own nesting), its own
       probation status, a **Live options positions** table, and a **Live options**
       block in the Monitoring dashboard — mirroring phase 8 Step D's own additions.
-    - **Adversarial review — pending** (Task #75).
+    - **Adversarial review — done, two reviewers, matching phase 8's own
+      precedent** (real money rather than paper). Reviewer 1 (gating/safety
+      invariants) found two real gaps, both fixed: `checkLiveOptionsExits()` —
+      unlike equity, whose exits are 100% broker-bracket-driven and never
+      place a new order — never checked the deploy-level `TRADING_ENABLED`
+      env gate before placing a real closing order; and that same function
+      reused ONE stale config snapshot across its whole per-tick loop over
+      multiple triggered positions, so a kill switch engaged mid-loop
+      wouldn't stop the next position's close until the next cycle (the same
+      bug class already fixed for entries). Reviewer 1 also found that the
+      naked_short guardrail on a single-leg close trusted
+      `webullAccountState()`'s account-wide position aggregate, which sums
+      ALL same-symbol positions (stock and every option contract alike) with
+      no asset-type/strike/expiration filter — confirmed this can fail OPEN
+      (wrongly allow a sell), not just closed as an earlier version of this
+      code assumed; fixed by feeding the guardrail this system's own ledger
+      quantity for the position being closed instead of the broker's
+      aggregate. Reviewer 2 (reconcile/probation/data-integrity) was cut off
+      by a session limit mid-review; the remaining checklist (double-
+      materialization safety, the pending-orders query, error isolation
+      during materialization, probation counting, the combined-budget batch
+      math, and order-submission idempotency) was independently completed by
+      re-reading the code directly — all confirmed correct or consistent with
+      an already-accepted phase-8 precedent (a materialization failure is
+      journaled loudly and the row stays visibly stuck for a human to notice,
+      not silently retried — the same known tradeoff phase 8 itself accepted).
+      Verification also caught and fixed a pre-existing, unrelated test-
+      isolation flake in `autotradeLoop.test.ts` (a shared-config field left
+      set by a different, older test file could leak into a later test
+      depending on vitest's non-alphabetical file execution order) —
+      reproduced directly, fixed, and confirmed clean across ten consecutive
+      full-suite runs.
 
 ---
 

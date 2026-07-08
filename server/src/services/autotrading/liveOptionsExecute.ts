@@ -267,13 +267,27 @@ async function placeLiveOptionsOrder(
 }
 
 /** Fetch account state + (spreads only) account type, and run the guardrails
- *  for an about-to-be-placed intent. Shared by entry and exit. */
+ *  for an about-to-be-placed intent. Shared by entry and exit.
+ *
+ * `currentPositionQtyOverride` (exit only): webullAccountState()'s currentPositionQty
+ * aggregates ALL positions matching the underlying symbol -- stock and option alike,
+ * with no filter on asset type, strike, or expiration (providers/webull/accountState.ts's
+ * summing loop discards those fields even though mapWebullPosition parses them). For a
+ * single-leg CLOSE, that means the naked_short check could be fed a number contaminated
+ * by an unrelated stock position (this file's own combined-budget book holds live EQUITY
+ * positions on the same account) or a different option contract on the same underlying --
+ * an adversarial review confirmed this can fail OPEN (wrongly ALLOW a sell), not just
+ * closed, contradicting an earlier version of this comment. Passing our own
+ * authoritative ledger quantity (the position being closed, not the broker's aggregate)
+ * makes the check depend only on what we ourselves recorded opening -- immune to
+ * contamination from anything else on the account. */
 async function loadAccountAndGuardrails(
   intent: OrderIntent,
   accountId: string,
   symbol: string,
   liveCfg: TradingConfig,
   isSpread: boolean,
+  currentPositionQtyOverride?: number,
 ): Promise<{ ok: true; guardrails: GuardrailReport } | { ok: false; reason: string }> {
   const acct = await webullAccountState(accountId, symbol);
   if (!acct.ok || !acct.state) {
@@ -282,7 +296,12 @@ async function loadAccountAndGuardrails(
   // Account type gates spreads (margin only) -- fetch it only for a spread,
   // same convention as livePreview.ts / placeOrder.ts.
   const accountType = isSpread ? await webullAccountType(accountId) : undefined;
-  const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders(), accountType };
+  const accountState: AccountState = {
+    ...acct.state,
+    ordersToday: countTodaysOrders(),
+    accountType,
+    ...(currentPositionQtyOverride !== undefined ? { currentPositionQty: currentPositionQtyOverride } : {}),
+  };
   const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
   return { ok: true, guardrails };
 }
@@ -577,16 +596,13 @@ export interface LiveOptionsExitCheckOutcome {
  *  close) applied per-leg for a spread — there's no existing "close a
  *  VERTICAL" precedent anywhere else in this codebase to instead mirror.
  *
- * A single-leg SELL-to-close relies on evaluateGuardrails()'s naked_short
- * check NOT blocking it — which in turn depends on webullAccountState()'s
- * currentPositionQty correctly reflecting the ALREADY-HELD long contract(s)
- * (see tradingGuardrails.test.ts's "does not flag a sell that merely reduces
- * a long"). That readback sums Webull positions by underlying symbol
- * (providers/webull/positions.ts's mapWebullPosition) without confirmed
- * evidence it correctly reports OPTION holdings the same way it does stock —
- * UNVERIFIED against a real account, per this codebase's design principle #9.
- * If it doesn't, this fails CLOSED (the exit is blocked, not mis-placed) —
- * but confirm with a live account before relying on automated exits firing. */
+ * A single-leg SELL-to-close feeds the naked_short guardrail our OWN ledger
+ * quantity (loadAccountAndGuardrails' currentPositionQtyOverride), not
+ * webullAccountState()'s account-wide aggregate — an adversarial review found
+ * that aggregate sums ALL same-symbol positions (stock and every option
+ * contract alike) with no asset-type/strike/expiration filter, so trusting it
+ * directly could let a sell reach the broker for contracts not actually held
+ * (fails OPEN), not just incorrectly block a legitimate one (fails closed). */
 async function placeLiveOptionsExit(
   pos: LiveOptionsPosition,
   accountId: string,
@@ -650,7 +666,17 @@ async function placeLiveOptionsExit(
     };
   }
 
-  const loaded = await loadAccountAndGuardrails(intent, accountId, symbol, liveCfg, pos.kind === 'debit_spread');
+  const loaded = await loadAccountAndGuardrails(
+    intent,
+    accountId,
+    symbol,
+    liveCfg,
+    pos.kind === 'debit_spread',
+    // Multi-leg spreads skip the naked_short check entirely (isMultiLeg in
+    // guardrails.ts), so the override only matters -- and is only passed --
+    // for a single-leg close.
+    pos.kind === 'debit_spread' ? undefined : pos.quantity,
+  );
   if (!loaded.ok) return { symbol, requested: false, reason: loaded.reason };
 
   const placed = await placeLiveOptionsOrder(
@@ -704,9 +730,14 @@ async function placeLiveOptionsExit(
  * same still-open (fill pending) position.
  */
 export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutcome[]> {
-  const cfg = getAutotradeConfig();
-  const accountId = cfg.liveAccountId;
-  if (!accountId) return [];
+  // The deploy-level master gate, checked FIRST -- mirrors attemptLiveOptionsEntry()'s
+  // own ordering exactly. Unlike equity (whose exits are 100% broker-bracket-driven --
+  // reconcileLiveOrders() only ever OBSERVES a fill, never places one), this function
+  // places a brand-new real closing order, so it needs the SAME deploy-level check an
+  // entry gets -- without it, a deploy with TRADING_ENABLED unset would still let a
+  // triggered position's close reach the broker.
+  if (!config.trading.placeEnabled) return [];
+  if (!getAutotradeConfig().liveAccountId) return [];
 
   const open = listOpenLiveOptionsPositions();
   if (open.length === 0) return [];
@@ -727,7 +758,16 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
     );
     if (!ev.triggered) continue;
 
-    outcomes.push(await placeLiveOptionsExit(pos, accountId, cfg));
+    // Re-fetch fresh config for EACH triggered position, same reasoning as
+    // runLiveOptionsExecution()'s own per-candidate refresh (an adversarial
+    // review caught this file reusing one stale snapshot here) -- this loop
+    // awaits real broker round-trips between positions, and a kill switch
+    // engaged mid-loop must stop the NEXT position's close immediately, not
+    // just the next cycle.
+    const freshCfg = getAutotradeConfig();
+    const accountId = freshCfg.liveAccountId;
+    if (!accountId) continue; // account cleared mid-loop -- don't use a stale id
+    outcomes.push(await placeLiveOptionsExit(pos, accountId, freshCfg));
   }
   return outcomes;
 }
