@@ -13,7 +13,13 @@ import {
   setLiveOrderPositionId,
   listPendingLiveOrders,
   countLiveOrdersSince,
+  pendingLiveOrdersRisk,
 } from '../../db/autotradeLiveOrders';
+// DB-layer reads only (NOT the options execution service) -- so the combined
+// live budget can fold in the options book without a liveExecute <-> options
+// service import cycle.
+import { pendingLiveOptionsOrdersRisk } from '../../db/autotradeLiveOptionsOrders';
+import { listOpenLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
 import { createPosition, listPositions, addExit, Position } from '../../db/positions';
 import { realizedPnlOf, initialRiskOf, computeStreaksAndDrawdown } from '../pnl';
 import { TradeSignal } from './decide';
@@ -170,6 +176,34 @@ export function getLivePortfolioSnapshot(): LivePortfolioSnapshot {
     dailyPnl,
     consecutiveLosses,
     tradesToday,
+  };
+}
+
+/**
+ * The COMBINED live open risk + position count across BOTH the equity and
+ * options books, counting every materialized open position PLUS every
+ * placed-but-not-yet-materialized order (working, or filled-not-yet-reconciled).
+ *
+ * "One real account, one combined budget" — and critically, a live fill only
+ * becomes a position row on a LATER reconcile tick, so an order placed earlier
+ * in THIS tick has no position row yet. The two execution batches run
+ * sequentially within one tick (equity then options, loop.ts); seeding each
+ * batch's running risk/count from this figure — instead of a position-only
+ * snapshot — stops the second batch from re-spending headroom the first already
+ * committed (which let combined open risk reach ~2× maxAggregateOpenRiskPct and
+ * 2× maxConcurrentPositions). Position rows and pending-order rows never
+ * overlap (a pending row's position_id is NULL until it materializes, at which
+ * point it's counted as a position instead), so there's no double-count.
+ */
+export function combinedLiveOpenRisk(): { risk: number; count: number } {
+  const eq = getLivePortfolioSnapshot(); // open equity positions
+  const optPositions = listOpenLiveOptionsPositions();
+  const pendingEq = pendingLiveOrdersRisk();
+  const pendingOpt = pendingLiveOptionsOrdersRisk();
+  const optPositionsRisk = optPositions.reduce((s, p) => s + p.riskAmount, 0);
+  return {
+    risk: eq.openRisk + optPositionsRisk + pendingEq.risk + pendingOpt.risk,
+    count: eq.openPositionsCount + optPositions.length + pendingEq.count + pendingOpt.count,
   };
 }
 
@@ -425,8 +459,13 @@ export async function runLiveExecution(candidates: { signal: TradeSignal }[]): P
 
   const snapshot = getLivePortfolioSnapshot();
   const { dailyPnl, consecutiveLosses, tradesToday } = snapshot;
-  let runningRisk = snapshot.openRisk;
-  let runningCount = snapshot.openPositionsCount;
+  // Seed the running risk/count from the COMBINED live book (both equity and
+  // options, positions AND placed-but-unmaterialized orders) -- not this book's
+  // position-only snapshot -- so equity and options entries in the same tick
+  // can't jointly exceed the aggregate-risk / concurrent-position caps.
+  const combined = combinedLiveOpenRisk();
+  let runningRisk = combined.risk;
+  let runningCount = combined.count;
   const runningPositions: { symbol: string; notional: number }[] = snapshot.openPositions.map((p) => ({
     symbol: p.symbol,
     notional: p.entryPrice * p.quantity,
