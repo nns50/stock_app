@@ -39,6 +39,9 @@ export interface LogEventInput {
 export interface ListEventsFilter {
   stage?: AutotradeStage;
   symbol?: string;
+  /** Restrict to these action strings (e.g. the live-order outcome vocabulary).
+   *  An empty array matches nothing. */
+  actions?: string[];
   /** Max rows to return (default 200, capped at 1000). */
   limit?: number;
 }
@@ -101,6 +104,11 @@ export function listAutotradeEvents(filter: ListEventsFilter = {}): AutotradeEve
   if (filter.symbol) {
     clauses.push('symbol = ?');
     params.push(filter.symbol.toUpperCase());
+  }
+  if (filter.actions) {
+    if (filter.actions.length === 0) return [];
+    clauses.push(`action IN (${filter.actions.map(() => '?').join(',')})`);
+    params.push(...filter.actions);
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const limit = Math.min(Math.max(filter.limit ?? 200, 1), 1000);

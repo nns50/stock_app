@@ -26,7 +26,12 @@ vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) =>
   const actual = await importOriginal<typeof import('../src/services/autotrading/executionGuards')>();
   return { ...actual, checkSessionWindow: vi.fn(), getMarketAtrPct: vi.fn() };
 });
-vi.mock('../src/db/autotradeEvents', () => ({ logAutotradeEvent: vi.fn() }));
+vi.mock('../src/db/autotradeEvents', () => ({
+  logAutotradeEvent: vi.fn(),
+  // maybeAlertLiveOrderFailures (called in the loop tick's finally) reads the
+  // journal; no live failures in these tests -> empty -> no alert.
+  listAutotradeEvents: vi.fn(() => []),
+}));
 
 import { runAutotradeScreen } from '../src/services/autotrading/screen';
 import { runAutotradeDecision } from '../src/services/autotrading/decide';
