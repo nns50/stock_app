@@ -52,6 +52,7 @@ const symbolOrder = () =>
 beforeEach(() => {
   vi.restoreAllMocks();
   sessionStorage.clear();
+  localStorage.clear();
   vi.spyOn(client, 'runScreener').mockResolvedValue(mockResult() as never);
 });
 

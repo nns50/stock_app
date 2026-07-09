@@ -99,6 +99,11 @@ If the app ever looks out of date, check that the footer build matches the lates
 
 Your at-a-glance morning screen.
 
+- **Collapsible tiles:** click a tile's header (the ▾/▸ chevron) to collapse or expand
+  it — handy for hiding sections you don't check every day. Each tile remembers its own
+  collapsed/expanded state in your browser, so it stays that way next time you load the
+  page. Applies to **Today's setups**, **Market movers**, **Needs attention**,
+  **Watchlist**, **Upcoming expirations**, and **Latest screener snapshot**.
 - **Stat tiles:** Open P&L, Unrealized, Open positions, Gross exposure, and **Needs
   attention** (a count that turns amber when something wants a decision).
 - **Today's setups** — a morning shortlist that **auto-scans once** when you first land
