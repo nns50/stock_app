@@ -601,7 +601,16 @@ export async function runLiveOptionsExecution(
     // round-trips between candidates, and a kill switch engaged mid-batch
     // must stop the NEXT candidate immediately, not just the next cycle.
     const freshCfg = getAutotradeConfig();
-    const outcome = await attemptLiveOptionsEntry(signal, result, freshCfg.riskProfile, freshCfg);
+    // Isolate each candidate (see runLiveExecution): a rare unexpected throw
+    // must not abort the rest of the batch.
+    let outcome: LiveOptionsExecutionOutcome;
+    try {
+      outcome = await attemptLiveOptionsEntry(signal, result, freshCfg.riskProfile, freshCfg);
+    } catch (err) {
+      const reason = `Unexpected error placing order: ${(err as Error).message}`;
+      logAutotradeEvent({ symbol, stage: 'execution', action: 'live_options_entry_failed', detail: { reason } });
+      outcome = { symbol, ok: false, reason };
+    }
     outcomes.push(outcome);
     if (outcome.ok) {
       runningRisk += result.approvedRiskAmount;

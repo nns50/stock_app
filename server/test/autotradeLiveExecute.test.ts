@@ -470,6 +470,40 @@ describe('runLiveExecution', () => {
     expect(outcomes[1].reason).toMatch(/kill_switch/);
     expect(mockPlaceOrder).toHaveBeenCalledTimes(1); // MSFT never reached the broker at all
   });
+
+  it('isolates a throwing candidate — one attempt throwing does not abort the rest of the batch', async () => {
+    // Backstop (hardening audit): attemptLiveEntry normally returns an outcome,
+    // but a rare unexpected throw (e.g. a DB write error mid-placement) must not
+    // abort the remaining candidates. Here the FIRST candidate's placement
+    // throws; the SECOND must still be attempted.
+    setAutotradeConfig({
+      accountEquityUsd: 100_000,
+      riskProfile: 'MODERATE',
+      liveAccountId: 'ACC1',
+      liveTradingEnabled: true,
+      liveEnabledAt: Date.now(),
+      liveMaxOrderUsd: 50_000,
+      liveMaxDailyLossUsd: 5_000,
+      liveMaxOrdersPerDay: 20,
+      killSwitch: false,
+    });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100, MSFT: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder
+      .mockRejectedValueOnce(new Error('disk I/O error')) // AAPL: unexpected throw
+      .mockResolvedValue({ ok: true, orderId: 'WB-2' }); // MSFT: succeeds
+
+    const outcomes = await runLiveExecution([
+      { signal: signal({ symbol: 'AAPL' }) },
+      { signal: signal({ symbol: 'MSFT' }) },
+    ]);
+
+    expect(outcomes).toHaveLength(2);
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', ok: false });
+    expect(outcomes[0].reason).toMatch(/unexpected error/i);
+    expect(outcomes[1]).toMatchObject({ symbol: 'MSFT', ok: true }); // NOT aborted by AAPL's throw
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('getLivePortfolioSnapshot', () => {

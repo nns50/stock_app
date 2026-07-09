@@ -101,4 +101,29 @@ describe('WebullClient', () => {
     expect(r.status).toBe(429);
     expect(f).toHaveBeenCalledTimes(3); // initial + 2 retries
   });
+
+  it('retries a network error (fetch rejection) then returns the success — never throws', async () => {
+    const f = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValueOnce(new Error('ECONNRESET'))
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) } as Response);
+    const r = await client.call('GET', '/openapi/market-data/stock/snapshot', { query: { symbols: 'AAPL' } });
+    expect(r).toMatchObject({ ok: true, status: 200 });
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns a clean failure (never throws) on a persistent network error / timeout abort', async () => {
+    // Regression (hardening audit): call() promises "never throws" and
+    // webullPlaceOrder relies on it — a throw would unwind before the intent is
+    // recorded, orphaning an order that may have reached the broker.
+    const limited = new WebullClient({ appKey: 'k', appSecret: 's', region: 'us', maxRetries: 1 });
+    const f = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }));
+    const r = await limited.call('POST', '/openapi/trade/order/place', { surface: 'trade', body: { x: 1 } });
+    expect(r.ok).toBe(false);
+    expect(r.status).toBe(0);
+    expect((r.data as { error?: string })?.error).toMatch(/timed out|abort/i);
+    expect(f).toHaveBeenCalledTimes(2); // initial + 1 retry
+  });
 });

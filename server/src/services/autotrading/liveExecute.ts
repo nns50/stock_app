@@ -517,7 +517,18 @@ export async function runLiveExecution(candidates: { signal: TradeSignal }[]): P
     // review caught this — the human config was already re-fetched fresh
     // inside buildLiveTradingConfig(), but autotrade's own config wasn't).
     const freshCfg = getAutotradeConfig();
-    const outcome = await attemptLiveEntry(signal, result, freshCfg.riskProfile, freshCfg);
+    // Isolate each candidate: a rare unexpected throw (e.g. a better-sqlite3
+    // write error while recording the order) must not abort the REST of the
+    // batch's candidates. attemptLiveEntry normally returns an outcome rather
+    // than throwing (the broker client never throws), so this is a backstop.
+    let outcome: LiveExecutionOutcome;
+    try {
+      outcome = await attemptLiveEntry(signal, result, freshCfg.riskProfile, freshCfg);
+    } catch (err) {
+      const reason = `Unexpected error placing order: ${(err as Error).message}`;
+      logAutotradeEvent({ symbol, stage: 'execution', action: 'live_entry_failed', detail: { reason } });
+      outcome = { symbol, ok: false, reason };
+    }
     outcomes.push(outcome);
     if (outcome.ok) {
       runningRisk += result.approvedRiskAmount;
