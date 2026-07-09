@@ -14,6 +14,7 @@ import {
 } from './optionsExecute';
 import { runLiveExecution, reconcileLiveOrders } from './liveExecute';
 import { runLiveOptionsExecution, checkLiveOptionsExits, reconcileLiveOptionsOrders } from './liveOptionsExecute';
+import { maybeAlertLiveOrderFailures } from './liveFailureAlert';
 import { checkSessionWindow, checkVolatility, defaultVolatilityFilterConfig, getMarketAtrPct } from './executionGuards';
 
 // ---------------------------------------------------------------------------
@@ -342,6 +343,12 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
   } finally {
     tickInFlight = false;
     if (tickAbortController === abortController) tickAbortController = null;
+    // Post-tick: surface a SYSTEMIC run of live-order rejections through the
+    // notifier. In `finally` so it runs no matter which return path the tick
+    // took — live-order failures are journaled by BOTH the exit/reconcile
+    // stages (which run before every early return) and the entry stages.
+    // Best-effort, throttled, and never throws.
+    await maybeAlertLiveOrderFailures();
   }
 }
 

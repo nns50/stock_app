@@ -672,15 +672,19 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   the equity Live positions table shows every real options position the loop has
   placed, with the same side/strike badges (and both strikes for a spread) as the
   options paper table.
-- **Alerts** — two loop events push a notification through whichever webhooks you've
+- **Alerts** — a few loop events push a notification through whichever webhooks you've
   configured in [Settings → Server-side watching](#server-side-watching-alerts-with-the-app-closed)
   (Slack/Discord/generic) — the same destinations the price-alert poller uses, so
   nothing new to set up. A **live order placed** notifies with the symbol, side,
   quantity, and limit/stop/target; **engaging** the kill switch notifies too (releasing
-  it doesn't — that's the safe direction). Both are best-effort: with no webhook
-  configured, nothing is sent and nothing fails. Paper trading and a daily-drawdown halt
-  don't push a notification yet — paper carries no real financial exposure, and the halt
-  isn't currently tracked as a one-time state transition.
+  it doesn't — that's the safe direction); and if **live orders keep getting rejected**
+  (three in a row — a bad price, a broker/account problem, a config error, so no live
+  trades are getting through), you get one alert naming the count and the latest reason,
+  then at most one reminder an hour while it persists, reset the moment an order gets
+  through. All are best-effort: with no webhook configured, nothing is sent and nothing
+  fails. Paper trading and a daily-drawdown halt don't push a notification yet — paper
+  carries no real financial exposure, and the halt isn't currently tracked as a one-time
+  state transition.
 - **Refresh** (top of the page, next to the title) — Monitoring, Paper trading, and
   Recent activity all reflect state the background loop can change on its own, every
   minute, with nothing clicked — unlike Configuration, the exclusion list, and the

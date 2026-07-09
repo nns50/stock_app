@@ -918,6 +918,26 @@ starts.
      events (paper carries no real financial exposure, so there's nothing time-sensitive
      to page a human about).
 
+     **Follow-up, added 2026-07-09 — repeated live-order-rejection alerting.** The
+     sub-penny bracket bug (below) rejected 2000+ live entries before anyone noticed,
+     precisely because the alerting above only fires on SUCCESS (a placement) and on the
+     kill-switch engage — a systemic run of REJECTIONS pushed nothing. Closed by
+     `services/autotrading/liveFailureAlert.ts`'s `maybeAlertLiveOrderFailures()`, called
+     once per tick from `runAutotradeLoopTick`'s `finally` (so it runs regardless of
+     which return path the tick took — failures are journaled by both the exit/reconcile
+     and the entry stages). It derives entirely from the append-only journal
+     (restart-safe, no separate counter to drift): it counts consecutive broker/quote
+     rejections (`live_entry_failed` / `live_options_entry_failed` /
+     `live_options_exit_failed`) since the last successful placement
+     (`live_order_placed` / `live_options_order_placed`), and when that count reaches the
+     threshold (3) fires ONE alert naming the count and the latest symbol/reason, then
+     re-reminds at most hourly while the streak persists, resetting the moment an order
+     gets through. Scoped to the broker-REJECTION class only, NOT guardrail `*_blocked`
+     events (a kill switch or a cap is the system correctly refusing — expected, and the
+     kill-switch engage already alerts). A `live_failure_alerted` marker event is
+     journaled so the throttle survives a restart. Best-effort like the rest, through the
+     same `dispatchNotifications()` path.
+
      **Follow-up, added 2026-07-09 — sub-penny bracket price rejected every live
      order.** Confirmed in production: every live entry attempt failed with Webull's
      `Price increment should be 0.01 when price is equal to or greater than 0.9999`
