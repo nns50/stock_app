@@ -118,6 +118,18 @@ export async function replaceIntent(id: number, accountId: string, patch: Replac
       error: acct.error ?? 'Could not load account state.',
     };
   }
+  // Fail CLOSED if positions couldn't be read (see placeOrder.ts) — a
+  // fabricated 0 would under-count a real holding for position_size.
+  if (acct.positionsUnavailable) {
+    return {
+      ok: true,
+      replaced: false,
+      reason: 'account_error',
+      intent: rec,
+      error:
+        'Could not verify current positions with the broker — modify blocked rather than sized against an unknown position.',
+    };
+  }
   const modified = modifiedIntent(rec, patch);
   const guardrails = evaluateGuardrails(
     modified,

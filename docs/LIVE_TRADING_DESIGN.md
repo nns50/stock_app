@@ -167,6 +167,13 @@ A phase doesn't start until the previous one is merged and you've used it.
     `replaceOrder` pass the order's own contract. The autotrade loop was already clear
     (long-only equity entries; the single-leg options close feeds its own ledger
     quantity via `currentPositionQtyOverride`; equity has no live sell path).
+  - **Fixed (2026-07-09), account-state positions fail-open.** `webullAccountState`
+    returned `ok:true` with `currentPositionQty:0` when the balance call succeeded but
+    the positions call failed — a fabricated 0 that under-counts a real holding for the
+    `position_size` cap. It now sets `positionsUnavailable`, and `placeOrder` /
+    `replaceOrder` fail CLOSED on it (block rather than size against an unknown
+    position). Autotrade is unaffected (it doesn't consult the flag: long-only entries,
+    or a close that supplies its own ledger quantity).
 - The submit path is **never** exercised against the live broker in tests — `fetch` is
   mocked, exactly as the existing Webull tests do.
 - A "panic" test: kill switch on ⇒ every submit refuses.

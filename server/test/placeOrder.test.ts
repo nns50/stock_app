@@ -101,6 +101,21 @@ describe('place order (live)', () => {
     expect(getEvents(r.intent!.id).map((e) => e.state)).toEqual(['draft', 'rejected']);
   });
 
+  it('fails closed (account_error, no broker call) when the positions call fails — never sizes against an unknown position', async () => {
+    // Regression (hardening audit): balance OK but positions FAILED must not be
+    // treated as a flat account — a fabricated 0 would under-count a real
+    // holding for the position_size cap.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE)) // balance OK
+      .mockResolvedValueOnce({ ok: false, status: 500, text: async () => JSON.stringify({ msg: 'down' }) } as Response); // positions FAIL
+
+    const r = await placeOrder(intent(), 'ACC1', ok());
+    expect(r).toMatchObject({ placed: false, reason: 'account_error' });
+    expect(r.error).toMatch(/verify current positions/i);
+    expect(fetchSpy).toHaveBeenCalledTimes(2); // balance + positions, then STOP — no /place
+  });
+
   it('places a live order when all gates pass, recording the broker order id + full audit trail', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
