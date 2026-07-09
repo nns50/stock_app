@@ -156,6 +156,17 @@ A phase doesn't start until the previous one is merged and you've used it.
 
 - Every guardrail gets a unit test (cap boundaries, kill switch, daily-loss halt,
   idempotency double-submit, fat-finger, naked-short block).
+  - **Fixed (2026-07-09), naked-short fail-open on the human place/replace path.** A
+    hardening audit found the `naked_short` (and `position_size`) check read
+    `webullAccountState`'s per-**underlying** aggregate, which sums stock AND every
+    option contract on a symbol. So being long 100 shares of a name let a single-leg
+    option SELL-to-open on that name pass even with `allowNakedShort=false` — long
+    stock does not cover a short option, and a different strike/expiry is a different
+    instrument. `webullAccountState` now takes an optional `instrument` and counts only
+    the matching instrument (this exact option contract, or stock); `placeOrder` /
+    `replaceOrder` pass the order's own contract. The autotrade loop was already clear
+    (long-only equity entries; the single-leg options close feeds its own ledger
+    quantity via `currentPositionQtyOverride`; equity has no live sell path).
 - The submit path is **never** exercised against the live broker in tests — `fetch` is
   mocked, exactly as the existing Webull tests do.
 - A "panic" test: kill switch on ⇒ every submit refuses.

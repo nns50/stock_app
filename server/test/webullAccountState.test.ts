@@ -69,6 +69,66 @@ describe('webull account state', () => {
     expect(String(fetchSpy.mock.calls[1][0])).toContain('/openapi/assets/positions');
   });
 
+  it('counts ONLY the matching option contract for an option instrument (long stock does NOT count)', async () => {
+    // Regression (hardening audit, HIGH): the old per-underlying sum let a long
+    // STOCK position (or a different option contract) inflate currentPositionQty
+    // for a single-leg option order — silently defeating allowNakedShort=false
+    // for a SELL-to-open, since long stock does not cover a short option.
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const positions = [
+      { symbol: 'AAPL', quantity: '100', position_side: 'LONG', asset_type: 'STOCK', cost_price: '150' },
+      {
+        symbol: 'AAPL',
+        quantity: '2',
+        position_side: 'LONG',
+        asset_type: 'OPTION',
+        option_type: 'CALL',
+        strike_price: '150',
+        option_expire_date: '2030-01-17',
+        cost_price: '5',
+      },
+      {
+        symbol: 'AAPL',
+        quantity: '3',
+        position_side: 'LONG',
+        asset_type: 'OPTION',
+        option_type: 'PUT',
+        strike_price: '140',
+        option_expire_date: '2030-01-17',
+        cost_price: '2',
+      },
+    ];
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(okResp(BALANCE)).mockResolvedValueOnce(okResp(positions));
+    const r = await webullAccountState('ACC1', 'AAPL', {
+      assetKind: 'option',
+      strike: 150,
+      expiration: '2030-01-17',
+      optionType: 'call',
+    });
+    // ONLY the matching 150 call (2) — not the 100 shares, not the 140 put.
+    expect(r.state?.currentPositionQty).toBe(2);
+  });
+
+  it('counts ONLY stock for a stock instrument (option contracts do NOT count)', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const positions = [
+      { symbol: 'AAPL', quantity: '100', position_side: 'LONG', asset_type: 'STOCK', cost_price: '150' },
+      {
+        symbol: 'AAPL',
+        quantity: '2',
+        position_side: 'SHORT',
+        asset_type: 'OPTION',
+        option_type: 'CALL',
+        strike_price: '150',
+        option_expire_date: '2030-01-17',
+        cost_price: '5',
+      },
+    ];
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(okResp(BALANCE)).mockResolvedValueOnce(okResp(positions));
+    const r = await webullAccountState('ACC1', 'AAPL', { assetKind: 'stock' });
+    expect(r.state?.currentPositionQty).toBe(100); // ONLY the shares — not the short call
+  });
+
   it('surfaces a balance error cleanly', async () => {
     Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue({

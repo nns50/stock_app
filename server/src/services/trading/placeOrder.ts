@@ -63,8 +63,16 @@ export async function placeOrder(intent: OrderIntent, accountId: string, confirm
   }
 
   // Fresh, authoritative account state (never client-supplied), with today's real
-  // order count folded in for the max-orders/day rule.
-  const acct = await webullAccountState(accountId, intent.symbol);
+  // order count folded in for the max-orders/day rule. Pass the order's own
+  // instrument so the naked_short / position_size checks see the quantity of
+  // THAT instrument (this exact option contract, or stock), not a cross-asset
+  // per-underlying sum — long stock must not silently cover a short option.
+  const acct = await webullAccountState(accountId, intent.symbol, {
+    assetKind: intent.assetKind,
+    strike: intent.strike,
+    expiration: intent.expiration,
+    optionType: intent.optionType,
+  });
   if (!acct.ok || !acct.state) {
     return { ok: true, placed: false, reason: 'account_error', error: acct.error ?? 'Could not load account state.' };
   }
