@@ -2608,7 +2608,9 @@ export default function AutoTradePage() {
               <>
                 Screened {loopSummary.candidatesScreened}, {loopSummary.candidatesPassedVolatility} passed the
                 volatility filter, {loopSummary.signalsGenerated} signal(s) generated, {loopSummary.entriesOpened}{' '}
-                opened ({loopSummary.optionsEntriesOpened} options).{' '}
+                opened ({loopSummary.optionsEntriesOpened} options). Options decision considered{' '}
+                {loopSummary.optionsCandidatesConsidered} candidate(s) (universe-sourced only — movers can't accumulate
+                real IV-rank history) and generated {loopSummary.optionsSignalsGenerated} signal(s).{' '}
               </>
             )}
             Exits checked: {loopSummary.exitsChecked} ({loopSummary.exitsClosed} closed) — options:{' '}

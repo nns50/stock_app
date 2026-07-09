@@ -86,6 +86,13 @@ export interface LoopTickSummary {
    *  the configured provider doesn't support options, not just when none
    *  qualified. */
   optionsSignalsGenerated: number;
+  /** Candidates actually passed to the options decision this cycle — a
+   *  subset of candidatesPassedVolatility, restricted to discoverySource
+   *  'universe' (see the note above the options decision call). Lets the
+   *  Monitoring dashboard distinguish "0 options signals because nothing
+   *  passed volatility" from "0 because every passing candidate was
+   *  movers-sourced and never reached the options decision at all". */
+  optionsCandidatesConsidered: number;
   /** Paper entries opened this cycle — 0 whenever paper wasn't active, same
    *  as always (unchanged from pre-Phase-8 behavior). */
   entriesOpened: number;
@@ -139,6 +146,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     candidatesPassedVolatility: 0,
     signalsGenerated: 0,
     optionsSignalsGenerated: 0,
+    optionsCandidatesConsidered: 0,
     entriesOpened: 0,
     optionsEntriesOpened: 0,
     liveEntriesOpened: 0,
@@ -271,15 +279,23 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     const decision = runAutotradeDecision(passedVolatility);
     summary.signalsGenerated = decision.signals.length;
 
-    // Options decide (Phase 9) — same already-screened/volatility-filtered
-    // candidates, run unconditionally alongside the equity decision (no
-    // separate enable toggle yet, mirroring how equity decide itself has
-    // none — Phase 10+ is where a risk-checked/executable options path, and
-    // therefore something worth gating, will actually exist). This is also
-    // how real IV-rank history accrues over time for anything the loop
-    // screens, per the spec's own stated goal — skipping this call would
-    // leave that coverage permanently bootstrapped.
-    const optionsDecision = await runOptionsDecision(passedVolatility, { strategyType: config.optionsStrategyType });
+    // Options decide (Phase 9) — run unconditionally alongside the equity
+    // decision (no separate enable toggle yet, mirroring how equity decide
+    // itself has none). UNLIKE equity, restricted to discoverySource
+    // 'universe' — Webull's premarket movers/gainers are a essentially a
+    // different set of speculative small-caps every day, so a mover-sourced
+    // symbol almost never gets screened again; since real IV-rank history
+    // (services/ivRank.ts) accrues one sample per CALENDAR DAY a symbol is
+    // screened, a mover that never reappears can never accumulate the
+    // history the options decision wants — a permanent, not temporary,
+    // block. Confirmed 2026-07-09 against a real run where every rejected
+    // candidate was mover-shaped. The persistent universe list IS screened
+    // every cycle, so it's exactly where that history can actually compound
+    // over time — equity autotrading keeps using movers for momentum/
+    // breakout, unaffected.
+    const universeOnly = passedVolatility.filter((c) => c.discoverySource === 'universe');
+    summary.optionsCandidatesConsidered = universeOnly.length;
+    const optionsDecision = await runOptionsDecision(universeOnly, { strategyType: config.optionsStrategyType });
     summary.optionsSignalsGenerated = optionsDecision.signals.length;
 
     // Re-check right before executing: screening + deciding above is
