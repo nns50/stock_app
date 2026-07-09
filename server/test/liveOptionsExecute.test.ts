@@ -730,6 +730,58 @@ describe('checkLiveOptionsExits', () => {
     expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 
+  it('does not place a single-leg close when the contract marks at 0 (worthless/unquoted), leaving it open with a reason', async () => {
+    // Regression (hardening audit): the exit path built its limit from a raw
+    // mark with no validity guard, unlike the entry path. A near-worthless or
+    // unquoted contract marks at 0 -> limitPrice 0 -> the limit_price>0
+    // guardrail rejects the close EVERY cycle, so the position never
+    // auto-closes and drifts to expiration -- the very thing the time-exit
+    // exists to prevent. It must skip with a precise reason instead.
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({ expiration: '2024-06-05' });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes[0]).toMatchObject({ requested: false, reason: expect.stringMatching(/No usable exit quote/) });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    // Still open — skipped this cycle, not stranded on an unplaceable $0 order.
+    expect(listOpenLiveOptionsPositions().map((p) => p.id)).toContain(pos.id);
+  });
+
+  it('does not place a spread close when the quote is crossed (net value <= 0)', async () => {
+    // Companion to the single-leg guard: a crossed/stale spread quote (short
+    // leg marks >= long leg) makes netValue <= 0 -> limitPrice <= 0 -> rejected
+    // every cycle. Skip with a reason instead of stranding the spread.
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({
+      kind: 'debit_spread',
+      expiration: '2024-06-05',
+      contractSymbol: 'AAPL-long',
+      strike: 100,
+      shortContractSymbol: 'AAPL-short',
+      shortStrike: 110,
+      entryPrice: 2,
+      shortEntryPrice: 0,
+    });
+    mockGetProvider.mockReturnValue(
+      chainsFor({
+        AAPL: [
+          { side: 'call', strike: 100, mark: 1 }, // long leg now worth LESS...
+          { side: 'call', strike: 110, mark: 1.5 }, // ...than the short leg -> net <= 0
+        ],
+      }) as never,
+    );
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes[0]).toMatchObject({ requested: false, reason: expect.stringMatching(/No usable exit quote/) });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(listOpenLiveOptionsPositions().map((p) => p.id)).toContain(pos.id);
+  });
+
   it("re-checks autotrade's own config fresh for EACH triggered position — engaging the kill switch mid-loop stops the next one, not just the next cycle", async () => {
     // Regression: an adversarial review found this function reused ONE stale
     // config snapshot across its whole per-tick loop, unlike

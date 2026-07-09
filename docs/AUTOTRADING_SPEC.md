@@ -1363,6 +1363,33 @@ on its own timeline regardless of this options work.
       depending on vitest's non-alphabetical file execution order) —
       reproduced directly, fixed, and confirmed clean across ten consecutive
       full-suite runs.
+    - **Follow-up, hardening deep-dive (2026-07-09).** After the live equity
+      sub-penny bracket bug (item 8's own 2026-07-09 follow-up), a broader
+      broker-boundary audit of the live options path found the EXIT side built
+      its closing limit from a raw mark with no validity guard, unlike the
+      entry side (`attemptLiveOptionsEntry`'s `validPremium`/`netDebit > 0`
+      checks). A near-worthless or unquoted contract marks at 0 — or a
+      crossed/stale spread quote gives `netValue <= 0`, or a value tiny enough
+      that the sell-side marketable buffer rounds it to 0 — so the close's
+      `limitPrice` would be `<= 0`, the `limit_price > 0` guardrail would reject
+      it EVERY cycle, and the position would never auto-close (drifting to
+      expiration, the exact outcome the time-exit exists to prevent).
+      `placeLiveOptionsExit()` now guards the computed `limitPrice` with
+      `validPremium()` on both the single-leg and spread branches, skipping that
+      cycle with a precise, journaled reason instead of spinning on an
+      unplaceable order; regression-tested (single-leg mark 0, crossed spread)
+      and revert-verified. Two related broker-boundary items were characterized
+      but deliberately NOT changed, as a blind fix would do more harm than good:
+      (1) option prices are rounded to the cent but not to a $0.05 tick, which
+      non-penny-pilot classes require at premium >= $3 — but blindly rounding to
+      nickels would corrupt the many liquid penny-pilot names that legitimately
+      trade in cents, so the correct fix must key off real per-symbol tick data
+      or a live preview, driven by an actual observed options rejection rather
+      than speculation; (2) strikes serialize via bare `String(strike)` (`"100"`
+      not `"100.0"`) — but that matches the format `orders.ts` was originally
+      built against and that real orders have used, so changing it speculatively
+      risks breaking working orders. Both are flagged for confirmation against a
+      live option preview.
 
 ---
 

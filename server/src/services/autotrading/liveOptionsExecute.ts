@@ -628,6 +628,20 @@ async function placeLiveOptionsExit(
     }
     const netValue = longMark - shortMark;
     const limitPrice = Math.round(netValue * buffer * 100) / 100;
+    // Same guard as the single-leg branch below: a crossed/stale spread quote
+    // (short mark >= long mark), or a net value tiny enough that the sell-side
+    // buffer rounds it to 0, makes limitPrice <= 0. The limit_price>0 guardrail
+    // then rejects the close EVERY cycle, so the spread never auto-closes and
+    // drifts to expiration -- the exact outcome the time-exit exists to prevent.
+    // Skip this cycle with a precise, journaled reason instead of spinning on an
+    // unplaceable order (mirrors attemptLiveOptionsEntry's premium guard).
+    if (!validPremium(limitPrice)) {
+      return {
+        symbol,
+        requested: false,
+        reason: `No usable exit quote (net ${netValue}: long ${longMark}, short ${shortMark})`,
+      };
+    }
     intent = {
       symbol,
       assetKind: 'option',
@@ -651,6 +665,16 @@ async function placeLiveOptionsExit(
       return { symbol, requested: false, reason: `Quote fetch failed: ${(err as Error).message}` };
     }
     const limitPrice = Math.round(mark * buffer * 100) / 100;
+    // Mirror the entry-side premium guard (attemptLiveOptionsEntry). A
+    // near-worthless or unquoted contract marks at 0 -- or a value tiny enough
+    // that the sell-side marketable buffer rounds it to 0 -- so limitPrice
+    // would be <= 0 and the limit_price>0 guardrail would reject the close
+    // every cycle. The position then never auto-closes and drifts to
+    // expiration, the exact outcome the time-exit exists to prevent. Skip with
+    // a precise, journaled reason instead of spinning on an unplaceable order.
+    if (!validPremium(limitPrice)) {
+      return { symbol, requested: false, reason: `No usable exit quote (mark ${mark})` };
+    }
     intent = {
       symbol,
       assetKind: 'option',
