@@ -174,6 +174,17 @@ A phase doesn't start until the previous one is merged and you've used it.
     `replaceOrder` fail CLOSED on it (block rather than size against an unknown
     position). Autotrade is unaffected (it doesn't consult the flag: long-only entries,
     or a close that supplies its own ledger quantity).
+  - **Fixed (2026-07-09), fat-finger client-weakenable + missing for stop-limits.**
+    `referencePrice` was a client field, so a hand-crafted request could omit it
+    (downgrading `fat_finger` to a warning) or set it equal to an absurd limit
+    (deviation 0). `placeOrder` now re-derives the reference SERVER-side from a fresh
+    stock quote (cache-resilient; a market-data miss falls back to the client value) and
+    overrides it before the guardrails — options keep the client mark for now (a
+    per-contract chain fetch on the place path is heavier; the confirmed case was stock).
+    Separately, `stop_loss_limit` had NO fat-finger check; the guardrail now checks a
+    stop-limit's limit against its OWN stop (not the market, which the stop is
+    deliberately away from). Autotrade already sets `referencePrice` server-side, so it's
+    unaffected.
 - The submit path is **never** exercised against the live broker in tests — `fetch` is
   mocked, exactly as the existing Webull tests do.
 - A "panic" test: kill switch on ⇒ every submit refuses.

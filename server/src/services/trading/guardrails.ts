@@ -408,7 +408,9 @@ export function evaluateGuardrails(
     `${account.ordersToday} placed vs ${config.maxOrdersPerDay}/day`,
   );
 
-  // --- fat-finger (limit orders only) ------------------------------------
+  // --- fat-finger --------------------------------------------------------
+  // A plain LIMIT is sanity-checked against the market reference (re-derived
+  // server-side in placeOrder, so it can't be omitted/spoofed by the client).
   if (intent.orderType === 'limit' && intent.limitPrice !== undefined && intent.limitPrice > 0) {
     if (intent.referencePrice !== undefined && intent.referencePrice > 0) {
       const devPct = (Math.abs(intent.limitPrice - intent.referencePrice) / intent.referencePrice) * 100;
@@ -420,6 +422,24 @@ export function evaluateGuardrails(
     } else {
       warn('fat_finger', true, 'no reference price to sanity-check the limit');
     }
+  }
+  // A STOP-LIMIT's limit is checked against its OWN stop, not the market: the
+  // stop is deliberately away from the current price, but the limit should sit
+  // just past the trigger (an absurd limit is the fat-finger risk here). This
+  // order type had NO fat-finger check at all before.
+  if (
+    intent.orderType === 'stop_loss_limit' &&
+    intent.limitPrice !== undefined &&
+    intent.limitPrice > 0 &&
+    intent.stopPrice !== undefined &&
+    intent.stopPrice > 0
+  ) {
+    const devPct = (Math.abs(intent.limitPrice - intent.stopPrice) / intent.stopPrice) * 100;
+    block(
+      'fat_finger',
+      devPct <= config.fatFingerPct,
+      `stop-limit price is ${devPct.toFixed(1)}% from its stop (max ${config.fatFingerPct}%)`,
+    );
   }
 
   // --- naked short -------------------------------------------------------

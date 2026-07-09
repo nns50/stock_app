@@ -5,6 +5,7 @@ import { OrderIntentRecord, countTodaysOrders, createIntent, transitionIntent } 
 import { webullAccountState, webullAccountType } from '../../providers/webull/accountState';
 import { marketOpenContext } from './marketHours';
 import { WebullPlaceResult, newClientOrderId, webullPlaceOrder } from '../../providers/webull/orders';
+import { resolveStockPrices } from '../quotes';
 
 // ---------------------------------------------------------------------------
 // Place a single live order (stock or single-leg option) — the ONLY path that
@@ -45,6 +46,27 @@ export interface PlaceResult {
 /** The exact phrase the client must echo to arm a place (type-to-confirm). */
 export function placeConfirmation(intent: OrderIntent): string {
   return `${intent.side.toUpperCase()} ${intent.quantity} ${intent.symbol.toUpperCase()}`;
+}
+
+/** Re-derive the fat-finger reference SERVER-side for a STOCK LIMIT order,
+ *  overriding whatever the client sent — a client can otherwise omit
+ *  `referencePrice` (downgrading fat_finger to a warning) or set it equal to an
+ *  absurd limit (making the deviation 0). Uses a fresh quote (cache-resilient
+ *  via resolveStockPrices); a market-data miss falls back to the client value
+ *  (no worse than before). `referencePrice` is guardrail-only — never sent to
+ *  the broker — so overriding it is safe. Options keep the client's mark for now
+ *  (a per-contract chain fetch on the place path is heavier; the confirmed
+ *  weakening was on the stock path). */
+async function withServerReference(intent: OrderIntent): Promise<OrderIntent> {
+  if (intent.orderType !== 'limit' || intent.assetKind !== 'stock') return intent;
+  let ref: number | undefined;
+  try {
+    const px = (await resolveStockPrices([intent.symbol])).get(intent.symbol.toUpperCase())?.price;
+    if (typeof px === 'number' && Number.isFinite(px) && px > 0) ref = px;
+  } catch {
+    // market-data miss — fall back to the client value below
+  }
+  return ref !== undefined ? { ...intent, referencePrice: ref } : intent;
 }
 
 export async function placeOrder(intent: OrderIntent, accountId: string, confirmation: string): Promise<PlaceResult> {
@@ -93,12 +115,16 @@ export async function placeOrder(intent: OrderIntent, accountId: string, confirm
       : undefined;
   const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders(), accountType };
 
+  // Re-derive the fat-finger reference from fresh market data (never the
+  // client's) so the guardrail can't be omitted or spoofed away.
+  const priced = await withServerReference(intent);
+
   // 3) Re-run the guardrails server-side.
   const cfg = getTradingConfig();
-  const guardrails = evaluateGuardrails(intent, accountState, cfg, { marketOpen: marketOpenContext(intent) });
+  const guardrails = evaluateGuardrails(priced, accountState, cfg, { marketOpen: marketOpenContext(priced) });
 
   const clientOrderId = newClientOrderId();
-  const intentRec = createIntent(intent, clientOrderId); // draft (audited)
+  const intentRec = createIntent(priced, clientOrderId); // draft (audited)
 
   if (!guardrails.ok) {
     const reasons = blockingFailures(guardrails)

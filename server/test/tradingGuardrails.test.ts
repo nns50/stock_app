@@ -338,6 +338,19 @@ describe('trading guardrails', () => {
     expect(check(r, 'fat_finger').passed).toBe(true);
   });
 
+  it('blocks a fat-finger STOP-LIMIT whose limit is far from its own stop', () => {
+    // Regression (hardening audit): stop_loss_limit had NO fat-finger check. The
+    // limit is checked against the STOP (9 -> 13 = 44% > 20%), not the market —
+    // the stop is deliberately away from the current price.
+    const r = evaluateGuardrails(order({ orderType: 'stop_loss_limit', stopPrice: 9, limitPrice: 13 }), acct(), cfg());
+    expect(failed(r)).toContain('fat_finger');
+  });
+
+  it('allows a stop-limit whose limit sits just past its stop', () => {
+    const r = evaluateGuardrails(order({ orderType: 'stop_loss_limit', stopPrice: 9, limitPrice: 8.9 }), acct(), cfg()); // 1.1% <= 20%
+    expect(check(r, 'fat_finger').passed).toBe(true);
+  });
+
   it('blocks an order that would open a net-short position', () => {
     const r = evaluateGuardrails(order({ side: 'sell', openClose: 'open' }), acct({ currentPositionQty: 0 }), cfg());
     expect(r.ok).toBe(false);
