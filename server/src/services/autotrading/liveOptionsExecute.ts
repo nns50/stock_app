@@ -851,45 +851,80 @@ export async function reconcileLiveOptionsOrders(): Promise<LiveOptionsReconcile
     }
 
     const target = broker.status ? mapWebullStatus(broker.status) : undefined;
-    if (!target || isTerminal(intent.state) || target === intent.state || !canTransition(intent.state, target)) {
-      outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: false });
-      continue;
-    }
-    transitionIntent(intent.id, target, {
-      detail: `broker ${broker.status?.toLowerCase()}`,
-      brokerOrderId: broker.brokerOrderId,
-    });
-    if (target !== 'filled') {
-      outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: true });
+
+    // Forward-transition the intent if the broker moved it, and materialize a
+    // fresh fill in the same pass.
+    if (target && !isTerminal(intent.state) && target !== intent.state && canTransition(intent.state, target)) {
+      transitionIntent(intent.id, target, {
+        detail: `broker ${broker.status?.toLowerCase()}`,
+        brokerOrderId: broker.brokerOrderId,
+      });
+      if (target !== 'filled') {
+        outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: true });
+        continue;
+      }
+      outcomes.push(materializeLiveOptionsFill(intent, meta, broker));
       continue;
     }
 
-    const filledQty = broker.filledQty ?? intent.quantity;
-    const filledPrice = broker.filledPrice ?? intent.limitPrice ?? 0;
-    try {
-      const action =
-        meta.role === 'entry'
-          ? materializeOptionsEntryFill(intent, meta, filledQty, filledPrice)
-          : materializeOptionsExitFill(intent, meta, filledPrice);
-      outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: true, action });
-    } catch (err) {
-      const message = (err as Error).message;
-      logAutotradeEvent({
-        symbol: intent.symbol,
-        stage: 'execution',
-        action: 'live_options_materialization_failed',
-        detail: { intentId: intent.id, role: meta.role, error: message },
-        riskProfile: meta.riskProfile,
-      });
-      outcomes.push({
-        intentId: intent.id,
-        symbol: meta.symbol,
-        changed: true,
-        error: `Broker fill recorded but failed to materialize: ${message}`,
-      });
+    // Retry path: an EXIT that already transitioned to 'filled' on an earlier
+    // pass but whose close never materialized -- the ONLY reason it's still in
+    // the pending set (its position is still 'open'). Without this, the
+    // isTerminal short-circuit in the block above would skip it forever,
+    // permanently stranding the position 'open' in our ledger while it's flat
+    // at the broker (polluting open-risk / the combined budget and blocking any
+    // new position on that symbol via hasOpenLiveOptionsPosition). Equity's
+    // exit detection already re-runs every tick this way; options' single
+    // post-transition materialize did not. closeLiveOptionsPosition() is
+    // idempotent (a no-op once the position is closed), so re-attempting is
+    // safe. ENTRY rows are deliberately NOT retried -- re-creating a position
+    // isn't idempotent (a create-then-link that threw AFTER the create would
+    // double-open), matching equity's own accepted one-shot entry precedent; a
+    // failed entry-materialize stays loudly journaled for a human to notice.
+    if (intent.state === 'filled' && meta.role === 'exit') {
+      outcomes.push(materializeLiveOptionsFill(intent, meta, broker));
+      continue;
     }
+
+    outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: false });
   }
   return outcomes;
+}
+
+/** Materialize a confirmed fill (entry -> open a position; exit -> close the
+ *  referenced one), isolating any persistence error so one stuck row can't
+ *  crash the reconcile batch, and journaling it loudly (nothing watches this
+ *  path in real time). Extracted so both the first-pass and the exit-retry
+ *  path share identical behavior. */
+function materializeLiveOptionsFill(
+  intent: OrderIntentRecord,
+  meta: LiveOptionsOrderMeta,
+  broker: Awaited<ReturnType<typeof webullOrderStatus>>,
+): LiveOptionsReconcileOutcome {
+  const filledQty = broker.filledQty ?? intent.quantity;
+  const filledPrice = broker.filledPrice ?? intent.limitPrice ?? 0;
+  try {
+    const action =
+      meta.role === 'entry'
+        ? materializeOptionsEntryFill(intent, meta, filledQty, filledPrice)
+        : materializeOptionsExitFill(intent, meta, filledPrice);
+    return { intentId: intent.id, symbol: meta.symbol, changed: true, action };
+  } catch (err) {
+    const message = (err as Error).message;
+    logAutotradeEvent({
+      symbol: intent.symbol,
+      stage: 'execution',
+      action: 'live_options_materialization_failed',
+      detail: { intentId: intent.id, role: meta.role, error: message },
+      riskProfile: meta.riskProfile,
+    });
+    return {
+      intentId: intent.id,
+      symbol: meta.symbol,
+      changed: true,
+      error: `Broker fill recorded but failed to materialize: ${message}`,
+    };
+  }
 }
 
 function materializeOptionsEntryFill(

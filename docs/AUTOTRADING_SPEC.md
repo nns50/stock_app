@@ -1428,14 +1428,30 @@ on its own timeline regardless of this options work.
       dup isn't even risk-checked. Regression-tested on both paths and
       revert-verified. The loop tick itself was confirmed non-reentrant
       (`tickInFlight` is set with no `await` between check and set), so this was
-      a sequential-tick, not an overlap, bug. Lower-severity error-isolation
-      gaps found in the same audits — options-exit materialization never
-      retries after a rare DB-write throw (unlike equity's retrying exit); a
-      broker-accepted order whose tracking row fails to write becomes
-      reconcile-invisible; a place-timeout can throw despite the "never throws"
-      contract — are tracked for follow-up PRs (all require a rare
-      better-sqlite3 write or network throw; the broker layer itself never
-      throws).
+      a sequential-tick, not an overlap, bug.
+    - **Follow-up, hardening deep-dive — options-exit materialization now
+      retries (2026-07-09).** The error-isolation audit found `reconcileLive-
+      OptionsOrders` transitioned an exit intent to the terminal `filled` state
+      and materialized the close in the SAME pass; if `closeLiveOptionsPosition`
+      threw after that transition committed, the `isTerminal` short-circuit
+      skipped the row on every later pass — the position stayed `open` in our
+      ledger forever while flat at the broker (polluting open-risk / the
+      combined budget and blocking any new position on that symbol). Unlike
+      equity, whose exit detection is a separate `state === 'filled'` block that
+      re-runs every tick and so self-heals. Fixed by adding a retry branch: an
+      already-`filled` EXIT that's still pending (its position still open)
+      re-attempts the (idempotent) close each tick until it succeeds; the shared
+      materialize+isolate logic was extracted into `materializeLiveOptionsFill`.
+      ENTRY rows are deliberately left one-shot (re-creating a position isn't
+      idempotent — a create-then-link that threw after the create would
+      double-open), matching equity's own accepted entry precedent; a failed
+      entry-materialize stays loudly journaled. Regression-tested (close throws
+      on pass 1, succeeds on the retry) and revert-verified. The two remaining
+      lower-severity error-isolation gaps — a broker-accepted order whose
+      tracking row fails to write becomes reconcile-invisible, and a
+      place-timeout can throw despite the "never throws" contract — remain
+      tracked for follow-up (both require a rare better-sqlite3 write or network
+      throw; the broker layer itself never throws).
 
 ---
 
