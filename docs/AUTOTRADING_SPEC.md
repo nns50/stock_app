@@ -1390,6 +1390,32 @@ on its own timeline regardless of this options work.
       built against and that real orders have used, so changing it speculatively
       risks breaking working orders. Both are flagged for confirmation against a
       live option preview.
+    - **Follow-up, hardening deep-dive — CRITICAL cross-tick double-open
+      (2026-07-09).** Two independent audits (idempotency and error-isolation)
+      both confirmed the same critical bug: the live entry paths deduped only
+      against an OPEN POSITION, but a live position materializes only when a
+      FULL fill reconciles, so an entry order still working / partially filled /
+      not-yet-materialized across a loop-tick boundary was invisible — the next
+      tick re-emitted the same signal (the decision stage is a stateless pure
+      transform) and placed a SECOND real order for that symbol (double size,
+      two OCO bracket pairs for equity). The exit path already deduped against
+      pending orders (`listPendingLive(Options)Orders`); the entry path never
+      did. Fixed on BOTH asset classes: `attemptLiveEntry` /
+      `attemptLiveOptionsEntry` now refuse when any pending (working /
+      filled-unmaterialized / open) autotrade order exists for the symbol — the
+      authoritative choke-point guard — and `runLiveExecution` /
+      `runLiveOptionsExecution` fold those symbols into `skipSymbols` so a known
+      dup isn't even risk-checked. Regression-tested on both paths and
+      revert-verified. The loop tick itself was confirmed non-reentrant
+      (`tickInFlight` is set with no `await` between check and set), so this was
+      a sequential-tick, not an overlap, bug. Lower-severity error-isolation
+      gaps found in the same audits — options-exit materialization never
+      retries after a rare DB-write throw (unlike equity's retrying exit); a
+      broker-accepted order whose tracking row fails to write becomes
+      reconcile-invisible; a place-timeout can throw despite the "never throws"
+      contract — are tracked for follow-up PRs (all require a rare
+      better-sqlite3 write or network throw; the broker layer itself never
+      throws).
 
 ---
 

@@ -346,6 +346,27 @@ describe('attemptLiveEntry', () => {
     expect(events.some((e) => e.action === 'live_order_placed')).toBe(true);
   });
 
+  it('does NOT place a second live order for a symbol that already has a working (unfilled) order — cross-tick double-open guard', async () => {
+    // Regression (hardening audit, CRITICAL): a live position materializes only
+    // when a FULL fill reconciles, so an entry still working across a loop-tick
+    // boundary was invisible to the old open-positions-only dedup — the next
+    // tick re-emitted the same signal and placed a SECOND real order (double
+    // size, two OCO bracket pairs). attemptLiveEntry now blocks on ANY pending
+    // (working / filled-unmaterialized / open) autotrade order for the symbol.
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-1' });
+
+    const first = await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
+    expect(first.ok).toBe(true); // placed; intent 'acknowledged', no position row yet
+
+    const second = await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
+    expect(second.ok).toBe(false);
+    expect(second.reason).toMatch(/already in flight/);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1); // never reached the broker a second time
+    expect(listIntents()).toHaveLength(1); // and no second intent was created
+  });
+
   it('dispatches a notification (Slack/Discord/webhook) on a placed live order, when a channel is configured', async () => {
     const origNotifications = { ...config.notifications };
     config.notifications.slackWebhookUrl = 'http://slack.test';
@@ -398,6 +419,11 @@ describe('attemptLiveEntry', () => {
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig({ liveProbationSizeMultiplier: 0.5 }));
     const halved = mockPlaceOrder.mock.calls[0][1].quantity;
 
+    // Two INDEPENDENT sizing measurements on the same symbol: clear the first
+    // order so the cross-tick double-open guard (which now blocks a second
+    // entry while the first is still working/unmaterialized) doesn't skip the
+    // second measurement.
+    db.exec('DELETE FROM autotrade_live_orders; DELETE FROM order_events; DELETE FROM order_intents;');
     mockPlaceOrder.mockClear();
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig({ liveEnabledAt: null })); // not in probation
     const full = mockPlaceOrder.mock.calls[0][1].quantity;
