@@ -285,6 +285,19 @@ export async function attemptLiveEntry(
   const accountId = autotradeCfg.liveAccountId;
   if (!accountId) return { symbol, ok: false, reason: 'No liveAccountId configured' };
 
+  // Idempotency guard (authoritative — this function is the single choke point
+  // before a real order is placed). Never place a second live entry for a
+  // symbol that already has an autotrade order in flight (working, or filled-
+  // but-not-yet-materialized) or an open position. A live position row is
+  // created ONLY when a full fill reconciles, so an order still resting or
+  // partially filled across a loop-tick boundary is invisible to an
+  // open-positions check alone — the next tick re-emits the same signal and
+  // places a SECOND real order (double size, two OCO bracket pairs). The exit
+  // path already dedups against pending orders this way; the entry path didn't.
+  if (listPendingLiveOrders().some((o) => o.symbol === symbol)) {
+    return { symbol, ok: false, reason: 'A live order or open position for this symbol is already in flight' };
+  }
+
   const probation = getProbationStatus(autotradeCfg);
   const quantity = Math.floor(riskResult.sizing.suggestedQuantity * probation.multiplier);
   if (quantity <= 0) {
@@ -418,7 +431,18 @@ export async function runLiveExecution(candidates: { signal: TradeSignal }[]): P
     symbol: p.symbol,
     notional: p.entryPrice * p.quantity,
   }));
-  const skipSymbols = new Set(snapshot.openPositions.map((p) => p.symbol));
+  // Skip a symbol that has an open position OR a still-working / not-yet-
+  // materialized live order. A position row is created ONLY when a full fill
+  // reconciles, so open positions alone miss an entry still resting or
+  // partially filled across a loop-tick boundary -- the next tick would re-emit
+  // the same signal and place a SECOND real order (double size + two bracket
+  // pairs). listPendingLiveOrders() covers all three states (its row persists
+  // until the position both materializes and closes). attemptLiveEntry()
+  // re-checks this authoritatively; this just avoids risk-checking a known dup.
+  const skipSymbols = new Set([
+    ...snapshot.openPositions.map((p) => p.symbol),
+    ...listPendingLiveOrders().map((o) => o.symbol),
+  ]);
 
   const outcomes: LiveExecutionOutcome[] = [];
   for (const { signal } of candidates) {

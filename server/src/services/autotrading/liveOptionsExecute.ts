@@ -343,6 +343,16 @@ export async function attemptLiveOptionsEntry(
   if (hasOpenLiveOptionsPosition(signal.symbol)) {
     return { symbol, ok: false, reason: 'Already has an open live options position' };
   }
+  // Idempotency: also block a second entry while a prior ENTRY order for this
+  // symbol is still working / not yet materialized into a position. A live
+  // options position is created ONLY when a full fill reconciles, so
+  // hasOpenLiveOptionsPosition() alone misses an entry order resting across a
+  // loop-tick boundary — the next tick re-emits the same signal and places a
+  // SECOND real order. Mirrors the exit path, which already dedups against
+  // pending exit orders (checkLiveOptionsExits' pendingExitPositionIds).
+  if (listPendingLiveOptionsOrders().some((o) => o.role === 'entry' && o.symbol === symbol)) {
+    return { symbol, ok: false, reason: 'A live options entry order for this symbol is already in flight' };
+  }
 
   const probation = getOptionsProbationStatus(autotradeCfg);
   const rawQuantity =
@@ -541,7 +551,17 @@ export async function runLiveOptionsExecution(
     ...optSnapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.riskAmount })),
     ...eqSnapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.entryPrice * p.quantity })),
   ];
-  const skipSymbols = new Set(optSnapshot.openPositions.map((p) => p.symbol));
+  // Skip a symbol with an open position OR a still-working / not-yet-
+  // materialized ENTRY order — see attemptLiveOptionsEntry's idempotency guard
+  // (a position materializes only on a full-fill reconcile, so open positions
+  // alone miss an order resting across a tick boundary). attemptLiveOptionsEntry
+  // re-checks authoritatively; this just avoids risk-checking a known dup.
+  const skipSymbols = new Set([
+    ...optSnapshot.openPositions.map((p) => p.symbol),
+    ...listPendingLiveOptionsOrders()
+      .filter((o) => o.role === 'entry')
+      .map((o) => o.symbol),
+  ]);
 
   const outcomes: LiveOptionsExecutionOutcome[] = [];
   for (const { signal } of candidates) {
