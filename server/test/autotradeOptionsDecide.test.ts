@@ -13,7 +13,7 @@ import {
   generateOptionsSignal,
   runOptionsDecision,
 } from '../src/services/autotrading/optionsDecide';
-import { OptionsChain } from '../src/providers/types';
+import { Candle, OptionsChain } from '../src/providers/types';
 
 const mockGetProvider = vi.mocked(getProvider);
 const mockGetProviderStatus = vi.mocked(getProviderStatus);
@@ -138,6 +138,34 @@ function expirationDaysOut(days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** `count` daily candles ending "today", with a GROWING daily oscillation
+ *  (not constant — a fixed swing produces a nearly-flat realizedVolSeries
+ *  where min/max differ only by float noise, and rankFrom()'s ratio blows up
+ *  to +-Infinity instead of its intended min===max => rank=50 fallback).
+ *  Tuned so the resulting realized-vol range straddles chainFor()'s fixed
+ *  0.4 IV around its 25th-30th percentile — comfortably under the confirmed
+ *  ivRankMax: 70 ceiling. Needs count >= 35 for realizedVolSeries' 20-day
+ *  rolling window to produce the 15 points computeIvContext's hv-estimate
+ *  fallback requires. */
+function candlesFor(count: number, basePrice = 100): Candle[] {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const out: Candle[] = [];
+  let price = basePrice;
+  for (let i = 0; i < count; i++) {
+    const amplitude = 0.006 + 0.045 * (i / count); // 0.6% swings growing to 5.1%
+    price *= 1 + amplitude * (i % 2 === 0 ? 1 : -1);
+    out.push({
+      time: Date.now() - (count - i) * dayMs,
+      open: price,
+      high: price * 1.01,
+      low: price * 0.99,
+      close: price,
+      volume: 1_000_000,
+    });
+  }
+  return out;
+}
+
 /** Backfills a RANGE of historical IV samples (not a flat value — computeIvContext's
  *  rankFrom() falls back to rank=50 whenever min===max, which would make every
  *  test pass the ivRankMax check regardless of the "current" chain IV). */
@@ -158,17 +186,49 @@ beforeEach(() => {
 });
 
 describe('generateOptionsSignal', () => {
-  it('fails closed when fewer than 15 real IV-history samples exist, even though ATM IV is computable', async () => {
+  it('fails closed when both real IV history AND a realized-vol estimate are too short', async () => {
     fillIvHistory('AAPL', 5); // below the 15-sample 'history' threshold
     const expiration = expirationDaysOut(21);
     mockGetProvider.mockReturnValue({
       getOptionsExpirations: vi.fn(async () => [expiration]),
       getOptionsChain: vi.fn(async () => chainFor(expiration)),
+      getCandles: vi.fn(async () => candlesFor(10)), // too few for a 15-point hv-estimate either
     } as unknown as ReturnType<typeof getProvider>);
 
     const result = await generateOptionsSignal(candidate());
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toMatch(/insufficient real iv-rank history/i);
+    if (!result.ok) expect(result.reason).toMatch(/insufficient iv data/i);
+  });
+
+  it('falls back to a realized-vol estimate when real history is short but price history exists, and labels it as such', async () => {
+    fillIvHistory('AAPL', 5); // below the 15-sample 'history' threshold
+    const expiration = expirationDaysOut(21);
+    mockGetProvider.mockReturnValue({
+      getOptionsExpirations: vi.fn(async () => [expiration]),
+      getOptionsChain: vi.fn(async () => chainFor(expiration, { mark: 3 })),
+      getCandles: vi.fn(async () => candlesFor(40)),
+    } as unknown as ReturnType<typeof getProvider>);
+
+    const result = await generateOptionsSignal(candidate());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.signal.rationale).toMatch(/estimated from realized volatility/i);
+  });
+
+  it('does not bother fetching candles once real history already has 15+ samples', async () => {
+    fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 });
+    const expiration = expirationDaysOut(21);
+    const getCandles = vi.fn(async () => candlesFor(40));
+    mockGetProvider.mockReturnValue({
+      getOptionsExpirations: vi.fn(async () => [expiration]),
+      getOptionsChain: vi.fn(async () => chainFor(expiration, { mark: 3 })),
+      getCandles,
+    } as unknown as ReturnType<typeof getProvider>);
+
+    const result = await generateOptionsSignal(candidate());
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.signal.rationale).not.toMatch(/estimated from realized volatility/i);
+    expect(getCandles).not.toHaveBeenCalled();
   });
 
   it("still records today's ATM IV even when the candidate is skipped for insufficient history", async () => {
@@ -177,6 +237,7 @@ describe('generateOptionsSignal', () => {
     mockGetProvider.mockReturnValue({
       getOptionsExpirations: vi.fn(async () => [expiration]),
       getOptionsChain: vi.fn(async () => chainFor(expiration)),
+      getCandles: vi.fn(async () => []),
     } as unknown as ReturnType<typeof getProvider>);
 
     await generateOptionsSignal(candidate());

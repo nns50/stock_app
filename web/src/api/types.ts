@@ -1466,6 +1466,11 @@ export interface LoopTickSummary {
   candidatesPassedVolatility: number;
   signalsGenerated: number;
   optionsSignalsGenerated: number;
+  /** Candidates actually passed to the options decision — a subset of
+   *  candidatesPassedVolatility restricted to universe-sourced candidates
+   *  (Webull movers can't accumulate the real IV-rank history the options
+   *  decision needs, so they never reach it). */
+  optionsCandidatesConsidered: number;
   entriesOpened: number;
   optionsEntriesOpened: number;
   liveEntriesOpened: number;

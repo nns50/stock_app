@@ -9,6 +9,7 @@ import { OptionsStrategyType } from '../../db/autotradeConfig';
 import { mapPool } from '../../util/async';
 import { Direction } from '../../indicators/screener';
 import { ScreenCandidate } from './screen';
+import { Candle } from '../../providers/types';
 
 // ---------------------------------------------------------------------------
 // The options counterpart to decide.ts (docs/AUTOTRADING_SPEC.md, phase 9).
@@ -156,10 +157,13 @@ export type OptionsSignalResult = { ok: true; signal: OptionsTradeSignal } | { o
 /**
  * Build an options-shaped signal for one already-screened candidate, or a
  * reason it was skipped. Fails closed at every stage — no expiration in the
- * configured DTE window, a chain fetch failure, insufficient REAL (not
- * hv-estimate) IV-rank history, no contract passing entryRules.ts's rules, or
- * a structural defined-risk failure all skip the candidate rather than
- * approximate an answer.
+ * configured DTE window, a chain fetch failure, an IV rank that's neither
+ * real history nor a realized-vol estimate (both insufficient), no contract
+ * passing entryRules.ts's rules, or a structural defined-risk failure all
+ * skip the candidate rather than approximate an answer. IV rank itself DOES
+ * accept the realized-vol estimate as a fallback (2026-07-09, by request —
+ * see the comment above computeIvContext's call site) when real history is
+ * still short; a signal built from that fallback says so in its rationale.
  */
 export async function generateOptionsSignal(
   candidate: ScreenCandidate,
@@ -207,19 +211,30 @@ export async function generateOptionsSignal(
   const atmIv = atmIvOfChain(chain);
   if (atmIv !== undefined) recordAtmIv(chain.underlying, atmIv);
   const history = getIvHistory(chain.underlying);
-  // No candles fetched for an hv-estimate fallback here (unlike the human
-  // page's ivContextFor) — deliberately: the fail-closed policy below never
-  // uses that proxy, so fetching candles for it would just be a wasted call.
-  const ivContext = computeIvContext(atmIv, history, []);
-  if (ivContext.method !== 'history' || ivContext.ivRank === null) {
+  // Same hv-estimate fallback the human Options page already uses (routes/
+  // options.ts's ivContextFor), now wired into autotrade too (2026-07-09,
+  // by request — real IV-rank history takes 15 CALENDAR DAYS to accumulate
+  // one sample at a time, which was blocking every candidate; realized vol
+  // is computed from historical candles that already exist, so it doesn't
+  // have that ramp-up). Only fetched when real history is short, same
+  // lazy-only-when-needed condition as the human path. Still clearly a
+  // labeled proxy (ivContext.method), never silently presented as real
+  // history — see the rationale string below.
+  let candles: Candle[] = [];
+  if (history.length < 15 && atmIv !== undefined) {
+    candles = await provider.getCandles(symbol, 'daily', { limit: 260 }).catch(() => []);
+  }
+  const ivContext = computeIvContext(atmIv, history, candles);
+  if (ivContext.ivRank === null) {
     return {
       ok: false,
       reason:
-        `Insufficient real IV-rank history for ${chain.underlying} ` +
-        `(${ivContext.samples} sample${ivContext.samples === 1 ? '' : 's'}, need 15) — ` +
-        `skipped rather than scored on a cruder proxy`,
+        `Insufficient IV data for ${chain.underlying} — ${ivContext.samples} real IV-rank sample` +
+        `${ivContext.samples === 1 ? '' : 's'} (need 15) and not enough price history for a realized-` +
+        `volatility estimate either — skipped rather than guessed`,
     };
   }
+  const ivRankNote = ivContext.method === 'hv-estimate' ? ' (estimated from realized volatility)' : '';
 
   const entries = scanEntries(chain, entryCfg, now, ivContext.ivRank);
   const best = entries.find((e) => e.passed);
@@ -257,7 +272,8 @@ export async function generateOptionsSignal(
     const rationale =
       `Long ${side} on ${symbol}: strike ${best.contract.strike}, exp ${best.contract.expiration} ` +
       `(${best.metrics.dte.toFixed(0)}d), premium ${premium.toFixed(2)}, ` +
-      `Δ ${best.metrics.delta === null ? 'n/a' : best.metrics.delta.toFixed(2)}, IV rank ${ivContext.ivRank.toFixed(0)}`;
+      `Δ ${best.metrics.delta === null ? 'n/a' : best.metrics.delta.toFixed(2)}, ` +
+      `IV rank ${ivContext.ivRank.toFixed(0)}${ivRankNote}`;
 
     return {
       ok: true,
@@ -345,7 +361,7 @@ export async function generateOptionsSignal(
   const rationale =
     `${side === 'call' ? 'Call' : 'Put'} debit spread on ${symbol}: long ${longStrike}/short ${bestShort.contract.strike}, ` +
     `exp ${best.contract.expiration} (${best.metrics.dte.toFixed(0)}d), net debit ${netDebit.toFixed(2)}, ` +
-    `width ${width}, IV rank ${ivContext.ivRank.toFixed(0)}`;
+    `width ${width}, IV rank ${ivContext.ivRank.toFixed(0)}${ivRankNote}`;
 
   return {
     ok: true,

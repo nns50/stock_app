@@ -123,6 +123,7 @@ function loopSummaryFixture(overrides: Partial<LoopTickSummary> = {}): LoopTickS
     candidatesPassedVolatility: 0,
     signalsGenerated: 0,
     optionsSignalsGenerated: 0,
+    optionsCandidatesConsidered: 0,
     entriesOpened: 0,
     optionsEntriesOpened: 0,
     liveEntriesOpened: 0,

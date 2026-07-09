@@ -753,10 +753,15 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   never places an order. An **Options** column shows a matching options trade alongside
   the equity one — a long call (or, if the loop is configured for short equity signals, a
   long put) on the same underlying, picked from its option chain's nearest expiration
-  7–60 days out. A candidate only gets an options signal once the app has accumulated at
-  least 15 real days of that symbol's own implied-vol history — until then it's skipped
-  rather than scored on a cruder proxy, and its reason shows in a **No options signal**
-  list below the table. When the **options strategy** (Configuration, above) is set to
+  7–60 days out. Only candidates from your **universe list** are considered for options
+  (not Webull's premarket movers/gainers, which surface a different set of small-caps most
+  days and so can't build the real IV-rank history below) — equity signals still cover the
+  full candidate set either way. A candidate needs 15 real days of its own implied-vol
+  history to be ranked against that real history; short of that, it falls back to a
+  realized-volatility estimate (labeled as such in the signal's rationale) — the same
+  proxy the Options page's own IV panel already uses — and only skips entirely, into the
+  **No options signal** list below the table, if neither is available yet. When the
+  **options strategy** (Configuration, above) is set to
   `Debit spread` instead of the default `Single leg`, the column shows both strikes
   (long/short) and the net debit paid instead of a single strike and premium — the short
   leg is picked from the same chain, further out-of-the-money than the long leg, so the

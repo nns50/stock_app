@@ -989,7 +989,8 @@ on its own timeline regardless of this options work.
    closed) rather than scored on the `computeIvContext()` fallback proxy (realized
    volatility) that the human page's own IV panel is willing to use — a deliberately
    stricter policy than that page, since this system acts on the number rather than just
-   displaying it.
+   displaying it. *(Revised 2026-07-09 — see the follow-up after this item: the
+   fallback is now used here too, by explicit request.)*
    A new options-shaped signal (`OptionsTradeSignal`) replaces the stock-only
    `TradeSignal` for this path, structurally defined-risk by construction and confirmed
    via `analyzeStrategy()` as a code-level backstop (never approves anything reporting
@@ -1009,13 +1010,46 @@ on its own timeline regardless of this options work.
    follow-up note after phase 10.
    Read-only, like equities' phase 3 — no risk-check, no orders — but wired into the
    real, unconditional loop tick (`runAutotradeLoopTick()`) right alongside the equity
-   decision, on the exact same already-screened/volatility-filtered candidates, since
-   IV-history accrual only happens by actually running this every cycle. Exposed in the
-   UI as a new **Options** column on the existing candidates table (Auto-Trade page) plus
-   a **No options signal** list mirroring the equity "no signal" section, and in the API
-   as a third `optionsDecision` field alongside `screen`/`decision` on the existing
-   `POST /api/autotrade/decide` response — not a separate endpoint, since it consumes the
-   exact same screened candidates in the same preview round-trip.
+   decision, on the same already-screened/volatility-filtered candidates *(narrowed
+   2026-07-09 — see the follow-up below)*, since IV-history accrual only happens by
+   actually running this every cycle. Exposed in the UI as a new **Options** column on
+   the existing candidates table (Auto-Trade page) plus a **No options signal** list
+   mirroring the equity "no signal" section, and in the API as a third `optionsDecision`
+   field alongside `screen`/`decision` on the existing `POST /api/autotrade/decide`
+   response — not a separate endpoint, since it consumes the exact same screened
+   candidates in the same preview round-trip.
+
+   **Follow-up (2026-07-09) — mover-sourced candidates could never clear the IV-rank
+   gate; loosened the gate itself, by explicit request.** Reported as "every options
+   candidate blocked, every cycle" — confirmed against a real run where all seven
+   rejections were either the DTE-window check (a genuine "no listed expiration in
+   [7,60]d today" fact for thin/small-cap chains, not a bug) or exactly this IV-rank gate,
+   every one showing 1 real sample. Root cause: `db/ivHistory.ts` records one ATM-IV
+   sample per **calendar day** a symbol is screened, and `discoverSymbols()`
+   (`screen.ts`) draws candidates from the persistent universe list **plus** Webull's
+   premarket gainers/unusual-volume movers — an essentially different set of speculative
+   small-caps every day. A mover-sourced symbol almost never gets screened again, so it
+   can never accumulate the 15 days of history phase 9 requires — not a temporary
+   bootstrapping gap for it, a permanent dead end. Two changes, both to
+   `services/autotrading/loop.ts`/`optionsDecide.ts`:
+   1. **Options decision now only sees `discoverySource: 'universe'` candidates** —
+      `runAutotradeLoopTick()` filters `passedVolatility` before calling
+      `runOptionsDecision()` (new `optionsCandidatesConsidered` on `LoopTickSummary` for
+      visibility). Equity autotrading is unaffected — it still gets movers for momentum/
+      breakout. The universe list is screened every cycle, so it's where 15-day history
+      can actually compound.
+   2. **The `computeIvContext()` hv-estimate fallback is now used here too** — the exact
+      mechanism `routes/options.ts`'s `ivContextFor` already uses for the human page
+      (candles fetched only when real history is short, same lazy condition), reversing
+      phase 9's original "deliberately stricter" choice above. Realized volatility is
+      computed from historical price candles that already exist in bulk, so unlike
+      forward-accumulating IV history it has no ramp-up at all. Still fails closed if
+      *neither* real history *nor* enough price history exists; a signal built from the
+      fallback says so in its `rationale` (`ivContext.method` is never silently presented
+      as real history). This was a deliberate, requested loosening of a documented
+      quality bar, not a bug fix — the user explicitly asked for it after weighing the
+      trade-off (start testing sooner vs. slightly lower-confidence IV data on some
+      signals).
 10. **Options risk engine, sizing & combined budget — shipped.** A new
     `services/autotrading/optionsRiskCheck.ts` — a deliberate PARALLEL implementation of
     `riskCheck.ts`, not a shared/refactored core, mirroring this codebase's established

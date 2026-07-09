@@ -345,6 +345,38 @@ describe('runAutotradeLoopTick', () => {
     expect(summary.optionsSignalsGenerated).toBe(1);
   });
 
+  it('excludes movers-sourced candidates from the options decision, but not from the equity one', async () => {
+    // Webull's premarket movers are essentially a different set of small-caps
+    // every day, so a mover-sourced symbol almost never gets screened again —
+    // real IV-rank history (one sample per calendar day screened) can never
+    // reach the 15 samples the options decision wants for it. Confirmed
+    // 2026-07-09 against a real run where every options rejection was
+    // mover-shaped. Scoping options to the persistent universe list is where
+    // that history can actually compound over time; equity autotrading keeps
+    // using movers for momentum/breakout, unaffected.
+    const universeCandidate = candidate('AAPL', 2);
+    const moverCandidate = { ...candidate('GME', 2), discoverySource: 'movers' as const };
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [universeCandidate, moverCandidate],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 1, moversCount: 1, scannedCount: 2 },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('AAPL'), signal('GME')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+    mockOptionsDecide.mockResolvedValue({ signals: [], skipped: [] });
+
+    const summary = await runAutotradeLoopTick();
+
+    // Equity decision still sees BOTH candidates — movers are unaffected there.
+    expect(mockDecide).toHaveBeenCalledWith([universeCandidate, moverCandidate]);
+    // Options decision sees ONLY the universe-sourced one.
+    expect(mockOptionsDecide).toHaveBeenCalledWith([universeCandidate], { strategyType: 'single_leg' });
+    expect(summary.optionsCandidatesConsidered).toBe(1);
+  });
+
   it('filters out a high-ATR candidate before Decision ever sees it', async () => {
     mockScreen.mockResolvedValue({
       generatedAt: Date.now(),
