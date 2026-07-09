@@ -141,6 +141,24 @@ export class WebullClient {
       let res: Response;
       try {
         res = await fetch(url, { method, headers, body, signal: controller.signal });
+      } catch (err) {
+        // A network error or the timeout abort — fetch rejects here. This
+        // method's contract is "never throws", and a caller like
+        // webullPlaceOrder relies on it (a throw would unwind BEFORE the intent
+        // is recorded, orphaning an order that may have reached the broker).
+        // Retry transient failures (the client_order_id is built once outside
+        // this loop, so a retried POST is idempotent at the broker — same as
+        // the 429 path); otherwise return a clean non-throwing failure.
+        clearTimeout(timer);
+        if (attempt < this.maxRetries) {
+          await sleep(250 * 2 ** attempt + Math.random() * 100);
+          continue;
+        }
+        const aborted = (err as Error)?.name === 'AbortError';
+        const detail = aborted
+          ? `Request timed out after ${this.timeoutMs}ms`
+          : (err as Error)?.message || 'network error';
+        return { url, status: 0, ok: false, data: { error: detail } };
       } finally {
         clearTimeout(timer);
       }

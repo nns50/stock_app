@@ -1472,6 +1472,29 @@ on its own timeline regardless of this options work.
       full suite green across repeated runs. The audit CLEARED probation
       counting, cap 0/negative handling (all fail closed), the options ×100
       multiplier, and sizing-vs-cap consistency.
+    - **Follow-up, hardening deep-dive — error-isolation backstops (2026-07-09).**
+      Two low-probability gaps from the error-isolation audit (both need a rare
+      network/DB throw; the trigger was never observed): (1) `webull/client.ts`'s
+      `call()` promised "never throws" but a `fetch` rejection (network error or
+      the timeout abort) propagated out — and `webullPlaceOrder` relies on the
+      contract, since a throw would unwind BEFORE the intent is recorded,
+      orphaning an order that may have reached the broker. `call()` now catches
+      the rejection and retries (idempotent — the `client_order_id` is built once
+      outside the retry loop, same as the 429 path) or returns a clean
+      `{ok:false,status:0}`. (2) `runLiveExecution` / `runLiveOptionsExecution`
+      awaited each candidate's `attemptLive*Entry` with no `try/catch`, so a rare
+      throw aborted the rest of the batch; each candidate is now isolated (a
+      throw becomes that candidate's failure outcome, the batch continues).
+      Regression-tested and revert-verified. Two residuals remain DOCUMENTED, not
+      fixed (both need a rare better-sqlite3 write to throw in a narrow window,
+      and both are self-limiting): a broker-accepted order whose tracking-row
+      INSERT then throws is reconcile-invisible until a human notices (a full fix
+      needs a write-ahead of the tracking row before the broker ack — a larger
+      change than the risk warrants); and a `transitionIntent` throw inside a
+      reconcile loop aborts that tick's remaining reconciles but self-heals on
+      the next tick (the rows stay pending). This completes the live-trading
+      hardening deep-dive — every CONFIRMED audit finding is fixed, and the
+      remaining items are documented tail-risk.
 
 ---
 
