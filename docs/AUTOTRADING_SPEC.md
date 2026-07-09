@@ -918,6 +918,23 @@ starts.
      events (paper carries no real financial exposure, so there's nothing time-sensitive
      to page a human about).
 
+     **Follow-up, added 2026-07-09 — sub-penny bracket price rejected every live
+     order.** Confirmed in production: every live entry attempt failed with Webull's
+     `Price increment should be 0.01 when price is equal to or greater than 0.9999`
+     (2,000+ blocked attempts). Root cause: `generateSignal()` computed `stop`/`target`
+     as pure ATR-multiple arithmetic (`entry ± stopAtrMultiple × atr`, then a further
+     R-multiple for the target) with no rounding, and `attemptLiveEntry()` passes them
+     straight through as a live bracket order's `bracket.stopLossPrice`/`takeProfitPrice`
+     — an ATR-derived distance is essentially never an exact cent, so **every** live
+     bracket order carried a sub-penny stop/target leg, and Webull rejects the whole
+     bracket (all three legs) if any one leg isn't a clean $0.01 increment. Fixed at the
+     source (`decide.ts` now rounds `entry`/`stop`/`target` to the cent) and defensively
+     at the broker boundary (`providers/webull/orders.ts`'s `priceStr()` now rounds
+     every price it stringifies — limit/stop fields, bracket exit legs, spread net
+     debit/credit, and replace patches — so no other caller, present or future, can
+     reintroduce the same failure mode). Regression tests for both layers, each
+     verified by reverting the fix and confirming it fails against the old code.
+
 ### Options trading addition — phases 9-13, approved (2026-07-03)
 
 The data-source question and the three design defaults flagged below (IV-rank ceiling,
