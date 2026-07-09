@@ -129,6 +129,37 @@ describe('webull account state', () => {
     expect(r.state?.currentPositionQty).toBe(100); // ONLY the shares — not the short call
   });
 
+  it('flags positionsUnavailable (not a fabricated 0) when the positions call fails but balance succeeds', async () => {
+    // Regression (hardening audit): balance OK + positions FAILED must not look
+    // like a flat account. currentPositionQty stays 0 by default, but the flag
+    // lets the human place/replace path fail closed instead of under-counting a
+    // real holding for the position_size cap.
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE)) // balance OK
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: async () => JSON.stringify({ msg: 'positions down' }),
+      } as Response);
+    const r = await webullAccountState('ACC1', 'AAPL');
+    expect(r.ok).toBe(true); // balance is usable
+    expect(r.positionsUnavailable).toBe(true);
+    expect(r.state?.currentPositionQty).toBe(0); // default, NOT a confirmed-flat 0
+  });
+
+  it('leaves positionsUnavailable falsy on the happy path', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE))
+      .mockResolvedValueOnce(
+        okResp([{ symbol: 'AAPL', quantity: '5', position_side: 'LONG', asset_type: 'STOCK', cost_price: '10' }]),
+      );
+    const r = await webullAccountState('ACC1', 'AAPL');
+    expect(r.positionsUnavailable).toBeFalsy();
+    expect(r.state?.currentPositionQty).toBe(5);
+  });
+
   it('surfaces a balance error cleanly', async () => {
     Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue({

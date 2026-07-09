@@ -69,6 +69,14 @@ export interface WebullAccountStateResult {
   optionBuyingPowerUsd?: number;
   /** Net liquidation value, for display. */
   netLiquidationUsd?: number;
+  /** True when a symbol/instrument was requested but the positions call FAILED
+   *  — so `currentPositionQty` is 0 by DEFAULT, not because the account holds
+   *  nothing. A safety-critical caller (the human place/replace path) must fail
+   *  CLOSED on this rather than trust a fabricated 0 (which would under-count a
+   *  real holding for the position_size check). Autotrade callers that don't
+   *  need it — long-only entries, or a close that supplies its own ledger
+   *  quantity via an override — can ignore it. */
+  positionsUnavailable?: boolean;
   raw?: unknown;
   error?: string;
 }
@@ -112,6 +120,7 @@ export async function webullAccountState(
 
   // Signed position in the order's symbol (long +, short −), if requested.
   let currentPositionQty = 0;
+  let positionsUnavailable = false;
   if (symbol) {
     const want = symbol.toUpperCase();
     const p = await c.call('GET', '/openapi/assets/positions', {
@@ -125,6 +134,11 @@ export async function webullAccountState(
           currentPositionQty += (mapped.side === 'short' ? -1 : 1) * mapped.quantity;
         }
       }
+    } else {
+      // Balance succeeded but positions didn't. Do NOT report a fabricated 0 as
+      // if the account is flat — flag it so a safety-critical caller can fail
+      // closed (a 0 here would under-count a real holding for position_size).
+      positionsUnavailable = true;
     }
   }
 
@@ -134,6 +148,7 @@ export async function webullAccountState(
     state: { buyingPowerUsd, exposureUsd, realizedPnlTodayUsd, ordersToday: 0, currentPositionQty },
     optionBuyingPowerUsd,
     netLiquidationUsd,
+    positionsUnavailable,
     raw: bal,
   };
 }

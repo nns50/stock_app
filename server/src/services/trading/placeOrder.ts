@@ -76,6 +76,17 @@ export async function placeOrder(intent: OrderIntent, accountId: string, confirm
   if (!acct.ok || !acct.state) {
     return { ok: true, placed: false, reason: 'account_error', error: acct.error ?? 'Could not load account state.' };
   }
+  // Fail CLOSED if the broker's positions couldn't be read: a fabricated 0
+  // would under-count a real holding and let the position_size cap be breached.
+  if (acct.positionsUnavailable) {
+    return {
+      ok: true,
+      placed: false,
+      reason: 'account_error',
+      error:
+        'Could not verify current positions with the broker — order blocked rather than sized against an unknown position.',
+    };
+  }
   const accountType =
     intent.optionStrategy === 'VERTICAL' || intent.optionStrategy === 'IRON_CONDOR'
       ? await webullAccountType(accountId)
