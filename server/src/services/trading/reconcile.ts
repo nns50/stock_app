@@ -53,15 +53,61 @@ export interface ReconcileResult {
   error?: string;
 }
 
+/** True when `intent`'s own entry fill produced a position that's still open —
+ *  i.e. a filled bracket whose stop-loss/take-profit exit leg hasn't (yet)
+ *  closed it. */
+function hasOpenPositionForIntent(intent: OrderIntentRecord): boolean {
+  return listPositions({ status: 'open', symbol: intent.symbol }).some((p) => p.sourceIntentId === intent.id);
+}
+
 export async function reconcileIntent(id: number, accountId: string): Promise<ReconcileResult> {
   const intent = getIntent(id);
   if (!intent) return { ok: false, changed: false, error: `No order intent ${id}.` };
-  // Nothing to do once an order is in a terminal state.
-  if (isTerminal(intent.state)) return { ok: true, changed: false, intent };
+
+  // A bracket's own `state` only ever reflects its MASTER (entry) leg — the
+  // instant that fills it reads 'filled' and, since 'filled' is terminal,
+  // never moves again, EVEN THOUGH a linked STOP_LOSS/STOP_PROFIT exit leg can
+  // still be sitting at the broker, working. Without this, a human-placed
+  // bracket's exit is NEVER picked up here no matter how many times "Refresh
+  // all" is clicked — confirmed as the cause of two real symbols staying
+  // "open" long after their stop/target actually filled. Mirrors
+  // autotrading/liveExecute.ts's identical bracket-exit handling
+  // (reconcileOneLiveOrder / listPendingLiveOrders) for the autotrade path.
+  const watchingBracketExit = intent.isBracket && intent.state === 'filled' && hasOpenPositionForIntent(intent);
+  if (isTerminal(intent.state) && !watchingBracketExit) return { ok: true, changed: false, intent };
 
   const broker = await webullOrderStatus(accountId, intent.idempotencyKey);
   if (!broker.ok) return { ok: false, changed: false, intent, broker, error: broker.error };
-  if (!broker.found || !broker.status) return { ok: true, changed: false, intent, broker };
+  if (!broker.found) return { ok: true, changed: false, intent, broker };
+
+  if (watchingBracketExit) {
+    // Same fails-closed posture as the autotrade path: only act on a leg
+    // unambiguously identified as non-MASTER AND FILLED; zero (still working)
+    // or two-or-more (shouldn't happen under normal OCO semantics, but not
+    // ruled out) both leave the position open rather than guessing.
+    const filledExitLegs = (broker.legs ?? []).filter(
+      (l) => l.comboType && l.comboType !== 'MASTER' && l.status === 'FILLED',
+    );
+    if (filledExitLegs.length === 1) {
+      const leg = filledExitLegs[0];
+      // recordCloseAsExit infers which position side to reduce from the
+      // INTENT's own `side` ('sell' closes a long) — correct for a genuinely
+      // separate close order, but a bracket's exit leg is still THIS entry
+      // intent (side/openClose never changed from 'buy'/'open'). Flip them so
+      // the inference lands on the side the entry itself opened, not its
+      // opposite.
+      const asClose: OrderIntentRecord = {
+        ...intent,
+        side: intent.side === 'buy' ? 'sell' : 'buy',
+        openClose: 'close',
+      };
+      recordCloseAsExit(asClose, { ...broker, filledQty: leg.filledQty, filledPrice: leg.filledPrice });
+      return { ok: true, changed: true, intent, broker };
+    }
+    return { ok: true, changed: false, intent, broker };
+  }
+
+  if (!broker.status) return { ok: true, changed: false, intent, broker };
 
   const target = mapWebullStatus(broker.status);
   // Only move when the broker reports a genuinely new, legal next state.
@@ -170,11 +216,16 @@ export interface ReconcileAllResult {
  * Reconcile every still-working order in one pass — the "Refresh all" action, so
  * the live-order panel can be brought up to date without tapping each order. A
  * "working" order is non-terminal AND known to the broker (has a broker order id;
- * drafts / guardrail-rejected intents never reached the broker). Sequential on
+ * drafts / guardrail-rejected intents never reached the broker) — PLUS a filled
+ * bracket whose position is still open, so its still-working exit leg keeps
+ * getting checked (see reconcileIntent's watchingBracketExit). Sequential on
  * purpose — one broker status pull at a time, never a burst.
  */
 export async function reconcileAllWorking(accountId: string): Promise<ReconcileAllResult> {
-  const working = listIntents().filter((i) => !isTerminal(i.state) && i.brokerOrderId);
+  const working = listIntents().filter(
+    (i) =>
+      i.brokerOrderId && (!isTerminal(i.state) || (i.isBracket && i.state === 'filled' && hasOpenPositionForIntent(i))),
+  );
   const results: ReconcileAllResult['results'] = [];
   let changed = 0;
   for (const intent of working) {

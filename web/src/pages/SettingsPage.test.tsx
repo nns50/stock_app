@@ -98,7 +98,7 @@ describe('SettingsPage', () => {
     expect(setScheduler).toHaveBeenCalledWith({ enabled: false, accountId: undefined });
   });
 
-  it('"Sync now" reports what changed, including closed positions', async () => {
+  it('"Sync now" reports what changed, including reconciled orders and closed positions', async () => {
     vi.spyOn(client, 'webullStatus').mockResolvedValue({
       configured: true,
       region: 'us',
@@ -107,6 +107,8 @@ describe('SettingsPage', () => {
     const sync = vi.spyOn(client, 'webullPositionsSync').mockResolvedValue({
       ok: true,
       accountId: 'ACC1',
+      ordersReconciled: 3,
+      ordersChanged: 1,
       closed: 2,
       closedSymbols: ['VRAX', 'WRAP'],
       imported: 1,
@@ -116,7 +118,8 @@ describe('SettingsPage', () => {
     renderPage();
     fireEvent.change(await screen.findByPlaceholderText('account_id'), { target: { value: 'ACC1' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sync now' }));
-    expect(await screen.findByText(/closed 2 \(VRAX, WRAP\)/)).toBeInTheDocument();
+    expect(await screen.findByText(/1 order updated/)).toBeInTheDocument();
+    expect(screen.getByText(/closed 2 \(VRAX, WRAP\)/)).toBeInTheDocument();
     expect(screen.getByText(/imported 1/)).toBeInTheDocument();
     expect(sync).toHaveBeenCalledWith('ACC1');
   });

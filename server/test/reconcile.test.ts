@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vite
 import { initDb, db } from '../src/db';
 import { config } from '../src/config';
 import { createIntent, getIntent, transitionIntent } from '../src/db/orders';
-import { createPosition, listPositions } from '../src/db/positions';
+import { addExit, createPosition, listPositions } from '../src/db/positions';
 import { mapWebullStatus, reconcileAllWorking, reconcileIntent } from '../src/services/trading/reconcile';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
@@ -225,6 +225,138 @@ describe('reconcileIntent', () => {
 
     await reconcileIntent(id, 'ACC1');
     expect(listPositions({ symbol: 'AMC' }).find((p) => p.id === short.id)!.exits).toHaveLength(0);
+  });
+});
+
+describe('reconcileIntent — bracket exit leg (human-placed bracket)', () => {
+  // Entry already filled and materialized into an open Position (mirrors what
+  // an earlier reconcileIntent call would have produced) — awaiting its
+  // STOP_LOSS/STOP_PROFIT exit leg.
+  function bracketFilledWithOpenPosition(): { id: number; positionId: number } {
+    const rec = createIntent(intent({ bracket: { takeProfitPrice: 2.5, stopLossPrice: 1.5 } }), CID);
+    transitionIntent(rec.id, 'validated');
+    transitionIntent(rec.id, 'confirmed');
+    transitionIntent(rec.id, 'submitted');
+    transitionIntent(rec.id, 'acknowledged', { brokerOrderId: 'MASTER-1' });
+    transitionIntent(rec.id, 'filled', { detail: 'entry filled' });
+    const pos = createPosition({
+      assetType: 'stock',
+      symbol: 'AMC',
+      side: 'long',
+      quantity: 1,
+      entryPrice: 1.89,
+      entryDate: '2026-06-01',
+      sourceIntentId: rec.id,
+    });
+    return { id: rec.id, positionId: pos.id };
+  }
+
+  const masterLeg = {
+    combo_type: 'MASTER',
+    status: 'FILLED',
+    client_order_id: CID,
+    order_id: 'MASTER-1',
+    filled_quantity: '1',
+    filled_price: '1.89', // the ENTRY's fill price — must NOT leak into the exit
+  };
+  const bracketWorkingEnvelope = {
+    client_order_id: CID,
+    combo_order_id: 'MASTER-1',
+    orders: [
+      masterLeg,
+      { combo_type: 'STOP_LOSS', status: 'WORKING', order_id: 'SL-1' },
+      { combo_type: 'STOP_PROFIT', status: 'WORKING', order_id: 'TP-1' },
+    ],
+  };
+  const bracketStopFilledEnvelope = {
+    client_order_id: CID,
+    combo_order_id: 'MASTER-1',
+    orders: [
+      masterLeg,
+      { combo_type: 'STOP_LOSS', status: 'FILLED', order_id: 'SL-1', filled_quantity: '1', filled_price: '1.75' },
+      { combo_type: 'STOP_PROFIT', status: 'CANCELLED', order_id: 'TP-1' },
+    ],
+  };
+  const bracketBothFilledEnvelope = {
+    client_order_id: CID,
+    combo_order_id: 'MASTER-1',
+    orders: [
+      masterLeg,
+      { combo_type: 'STOP_LOSS', status: 'FILLED', order_id: 'SL-1', filled_quantity: '1', filled_price: '1.75' },
+      { combo_type: 'STOP_PROFIT', status: 'FILLED', order_id: 'TP-1', filled_quantity: '1', filled_price: '2.5' },
+    ],
+  };
+
+  it('keeps polling a filled bracket whose exit leg is still working (does not short-circuit)', async () => {
+    const { id } = bracketFilledWithOpenPosition();
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp([bracketWorkingEnvelope]))
+      .mockResolvedValueOnce(okResp([bracketWorkingEnvelope]));
+    const r = await reconcileIntent(id, 'ACC1');
+    expect(r).toMatchObject({ ok: true, changed: false });
+    expect(fetchSpy).toHaveBeenCalled(); // NOT short-circuited despite intent.state === 'filled'
+    expect(listPositions({ status: 'open' })).toHaveLength(1); // still open
+  });
+
+  it('records the exit once the STOP_LOSS leg reports FILLED, priced from the LEG (not the entry)', async () => {
+    const { id, positionId } = bracketFilledWithOpenPosition();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(okResp([bracketStopFilledEnvelope]));
+
+    const r = await reconcileIntent(id, 'ACC1');
+    expect(r).toMatchObject({ ok: true, changed: true });
+    const pos = listPositions().find((p) => p.id === positionId)!;
+    expect(pos.status).toBe('closed');
+    expect(pos.exits).toHaveLength(1);
+    expect(pos.exits[0]).toMatchObject({ quantity: 1, exitPrice: 1.75 }); // the STOP_LOSS leg's price
+  });
+
+  it('also records the exit when the STOP_PROFIT (take-profit) leg fills instead — symmetric handling', async () => {
+    const { id, positionId } = bracketFilledWithOpenPosition();
+    const targetFilledEnvelope = {
+      client_order_id: CID,
+      combo_order_id: 'MASTER-1',
+      orders: [
+        masterLeg,
+        { combo_type: 'STOP_LOSS', status: 'CANCELLED', order_id: 'SL-1' },
+        { combo_type: 'STOP_PROFIT', status: 'FILLED', order_id: 'TP-1', filled_quantity: '1', filled_price: '2.5' },
+      ],
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(okResp([targetFilledEnvelope]));
+
+    const r = await reconcileIntent(id, 'ACC1');
+    expect(r).toMatchObject({ ok: true, changed: true });
+    const pos = listPositions().find((p) => p.id === positionId)!;
+    expect(pos.status).toBe('closed');
+    expect(pos.exits[0]).toMatchObject({ quantity: 1, exitPrice: 2.5 }); // the STOP_PROFIT leg's price
+  });
+
+  it('leaves the position open (fails closed) when two exit legs both report FILLED — ambiguous', async () => {
+    const { id } = bracketFilledWithOpenPosition();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(okResp([bracketBothFilledEnvelope]));
+    const r = await reconcileIntent(id, 'ACC1');
+    expect(r).toMatchObject({ ok: true, changed: false });
+    expect(listPositions({ status: 'open' })).toHaveLength(1);
+  });
+
+  it('stops polling once the position is already fully closed', async () => {
+    const { id, positionId } = bracketFilledWithOpenPosition();
+    addExit(positionId, { quantity: 1, exitPrice: 1.75, exitDate: '2026-06-05' });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const r = await reconcileIntent(id, 'ACC1');
+    expect(r).toMatchObject({ ok: true, changed: false });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('reconcileAllWorking includes a filled bracket with a still-open position', async () => {
+    const { id } = bracketFilledWithOpenPosition();
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp([bracketWorkingEnvelope]));
+    const r = await reconcileAllWorking('ACC1');
+    expect(r.results.map((x) => x.id)).toContain(id);
+    expect(fetchSpy).toHaveBeenCalled();
   });
 });
 

@@ -579,6 +579,7 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
       const r = await client.webullPositionsSync(accountId);
       if (r.ok) {
         const parts: string[] = [];
+        if (r.ordersChanged) parts.push(`${r.ordersChanged} order${r.ordersChanged === 1 ? '' : 's'} updated`);
         if (r.closed)
           parts.push(`closed ${r.closed}${r.closedSymbols.length ? ` (${r.closedSymbols.join(', ')})` : ''}`);
         if (r.imported) parts.push(`imported ${r.imported}`);
@@ -634,8 +635,10 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
         Preview your open Webull positions, then import the ones not already in the journal — import only <em>adds</em>{' '}
         open positions, it never edits or deletes existing entries. Imported positions are tagged{' '}
         <code className="text-slate-400">webull</code>. <strong>Sync now</strong> and the automatic background sync
-        below also <em>close</em> journal positions Webull no longer shows as held (e.g. sold directly in the Webull
-        app) — something preview/import alone never does.
+        below go further: they reconcile orders this app already placed (including a bracket's stop-loss/take-profit
+        exit leg, which used to be missed once the entry itself was filled), and <em>close</em> journal positions Webull
+        no longer shows as held at all (e.g. sold directly in the Webull app) — something preview/import alone never
+        does.
       </p>
       <div className="flex flex-wrap items-end gap-2">
         <Field label="Account ID" hint="Copy an account_id from Account list">

@@ -2,10 +2,11 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, parseBody, parseQuery } from './_helpers';
 import { ProbeKind, webullProbe, webullStatus } from '../providers/webull/account';
-import { importWebullPositions, previewWebullPositions, runWebullPositionsSync } from '../providers/webull/positions';
+import { importWebullPositions, previewWebullPositions } from '../providers/webull/positions';
 import {
   getWebullSyncConfig,
   setWebullSyncConfig,
+  syncWebullAccount,
   MIN_SYNC_INTERVAL_SECONDS,
 } from '../services/webullPositionsScheduler';
 import { webullMovers } from '../providers/webull/movers';
@@ -67,14 +68,15 @@ webullRouter.post(
   }),
 );
 
-// Full two-way sync (close + import in one pass) — what the "Sync now" button
-// and the background scheduler both call. Unlike preview/import above, close
-// detection writes without a confirm step (see providers/webull/positions.ts).
+// Full sync (reconcile working orders, close positions Webull no longer
+// shows, import new ones) — what the "Sync now" button and the background
+// scheduler both call. Unlike preview/import above, this writes without a
+// confirm step (see services/webullPositionsScheduler.ts's syncWebullAccount).
 webullRouter.post(
   '/positions/sync',
   asyncHandler(async (req, res) => {
     const { accountId } = parseBody(accountBody, req);
-    res.json(await runWebullPositionsSync(accountId));
+    res.json(await syncWebullAccount(accountId));
   }),
 );
 

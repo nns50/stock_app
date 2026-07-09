@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { initDb, db } from '../src/db';
-import { createPosition, getPosition } from '../src/db/positions';
+import { createPosition, getPosition, listPositions } from '../src/db/positions';
+import { createIntent, transitionIntent } from '../src/db/orders';
 import { config } from '../src/config';
 import {
   getWebullSyncConfig,
@@ -10,16 +11,21 @@ import {
   MIN_SYNC_INTERVAL_SECONDS,
 } from '../src/services/webullPositionsScheduler';
 import { priceMap } from '../src/services/quotes';
+import type { OrderIntent } from '../src/services/trading/guardrails';
 
 vi.mock('../src/services/quotes', () => ({ priceMap: vi.fn() }));
 
 const origWebull = { ...config.webull };
+const okResp = (b: unknown) => ({ ok: true, status: 200, text: async () => JSON.stringify(b) }) as Response;
 
 beforeAll(() => initDb());
 beforeEach(() => {
   stopWebullPositionsSync();
   db.exec("DELETE FROM settings WHERE key = 'webullPositionsScheduler'");
-  db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+  db.exec(
+    'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; DELETE FROM order_events; ' +
+      'DELETE FROM order_intents; DELETE FROM position_exits; DELETE FROM positions;',
+  );
   vi.mocked(priceMap).mockReset();
 });
 afterEach(() => {
@@ -90,5 +96,65 @@ describe('runSchedulerTick', () => {
     const r = await runSchedulerTick();
     expect(r).toMatchObject({ ok: true, accountId: 'ACC1', closed: 1, closedSymbols: ['VRAX'] });
     expect(getPosition(p.id)!.status).toBe('closed');
+  });
+
+  it('also reconciles a working order in the same tick — a filled bracket exit leg', async () => {
+    const CID = 'sched-bracket-cid';
+    const rec = createIntent(
+      {
+        symbol: 'AMC',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 1,
+        orderType: 'limit',
+        limitPrice: 1.89,
+        referencePrice: 1.89,
+        bracket: { takeProfitPrice: 2.5, stopLossPrice: 1.5 },
+      } as OrderIntent,
+      CID,
+    );
+    transitionIntent(rec.id, 'validated');
+    transitionIntent(rec.id, 'confirmed');
+    transitionIntent(rec.id, 'submitted');
+    transitionIntent(rec.id, 'acknowledged', { brokerOrderId: 'MASTER-1' });
+    transitionIntent(rec.id, 'filled', { detail: 'entry filled' });
+    const pos = createPosition({
+      assetType: 'stock',
+      symbol: 'AMC',
+      side: 'long',
+      quantity: 1,
+      entryPrice: 1.89,
+      entryDate: '2026-06-01',
+      sourceIntentId: rec.id,
+    });
+
+    const bracketStopFilledEnvelope = {
+      client_order_id: CID,
+      combo_order_id: 'MASTER-1',
+      orders: [
+        {
+          combo_type: 'MASTER',
+          status: 'FILLED',
+          client_order_id: CID,
+          order_id: 'MASTER-1',
+          filled_quantity: '1',
+          filled_price: '1.89',
+        },
+        { combo_type: 'STOP_LOSS', status: 'FILLED', order_id: 'SL-1', filled_quantity: '1', filled_price: '1.75' },
+        { combo_type: 'STOP_PROFIT', status: 'CANCELLED', order_id: 'TP-1' },
+      ],
+    };
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp([bracketStopFilledEnvelope])) // reconcileAllWorking: open orders, matches
+      .mockResolvedValueOnce(okResp([])); // position-truth sync: nothing else to close/import
+    setWebullSyncConfig({ enabled: true, accountId: 'ACC1' });
+
+    const r = await runSchedulerTick();
+    expect(r).toMatchObject({ ok: true, ordersReconciled: 1, ordersChanged: 1 });
+    const closed = listPositions().find((x) => x.id === pos.id)!;
+    expect(closed.status).toBe('closed');
+    expect(closed.exits[0]).toMatchObject({ exitPrice: 1.75 });
   });
 });

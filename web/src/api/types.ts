@@ -683,11 +683,14 @@ export interface WebullImportSummary {
   error?: string;
 }
 
-/** Result of the full two-way sync: close what Webull no longer shows as
- *  held, then import anything new. */
+/** Result of the full sync: reconcile working orders THIS app placed
+ *  (including a bracket's stop-loss/take-profit exit leg), close positions
+ *  Webull no longer shows as held, then import anything new. */
 export interface WebullSyncResult {
   ok: boolean;
   accountId: string;
+  ordersReconciled: number;
+  ordersChanged: number;
   closed: number;
   closedSymbols: string[];
   imported: number;

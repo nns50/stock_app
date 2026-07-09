@@ -935,15 +935,20 @@ One home (⚙ or `⌘K → Settings`) for everything:
 - **Sync positions from Webull.** In **Settings → Webull**, preview your open Webull
   positions and import the ones not already in your journal (preview-and-confirm; import
   only *adds* — it never edits or deletes existing entries, and tags imports `webull`).
-  **Sync now** and the **automatic background sync** below it go further: they also
-  *close* journal positions Webull no longer shows as held (e.g. sold directly in the
-  Webull app, or by a live auto-trade exit) — something preview/import alone never did, so
-  Positions/Journal (and the Auto-Trade page, for `live`-tagged positions) previously kept
-  showing a position as open after it was actually sold elsewhere. The exit price is an
-  *estimate* from the latest quote (there's no fill to read a price from), noted as such on
-  the exit — edit it if you have your broker confirmation. Enter an account ID once, flip
-  on **Sync automatically in the background**, and pick an interval (1m–30m); it then keeps
-  itself current with no further clicking, independent of any open tab.
+  **Sync now** and the **automatic background sync** below it go further, in two ways:
+  - They **reconcile orders this app already placed** — including a bracket's stop-loss/
+    take-profit exit leg, which used to be missed by "Refresh status"/"Refresh all" once the
+    entry itself had filled (a bracket's own status only ever reflects its entry leg).
+  - They **close journal positions Webull no longer shows as held at all** (e.g. sold
+    directly in the Webull app) — for anything still not attributable to a known order.
+
+  Either way, Positions/Journal (and the Auto-Trade page, for `live`-tagged positions)
+  previously kept showing a position as open long after it was actually sold. When the exit
+  price comes from the close-detection side (no fill to read a price from), it's an
+  *estimate* from the latest quote, noted as such on the exit — edit it if you have your
+  broker confirmation. Enter an account ID once, flip on **Sync automatically in the
+  background**, and pick an interval (1m–30m); it then keeps itself current with no further
+  clicking, independent of any open tab.
 - **Quotes may be delayed** (commonly ~15 min on free tiers). The provider chip shows
   live vs demo. Responses are cached briefly and pages with a **Refresh** control
   auto-poll every **1 minute** by default (adjustable, including off).

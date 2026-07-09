@@ -1,13 +1,22 @@
 import { getSetting, setSetting } from '../db/settings';
 import { runWebullPositionsSync, WebullSyncResult } from '../providers/webull/positions';
+import { reconcileAllWorking } from './trading/reconcile';
 
 // ---------------------------------------------------------------------------
-// Background Webull positions sync. A single self-scheduling loop keeps the
-// journal's open positions in sync with the broker — closing ones Webull no
-// longer shows as held and importing new ones — independent of any open
-// browser tab, so nobody has to remember to click "Sync" on the Settings
-// page. Enabled by default, but a no-op until an account id is configured
-// (same fail-quiet posture as the alert scheduler while unconfigured); the
+// Background Webull sync. A single self-scheduling loop keeps the journal in
+// sync with the broker on two fronts — independent of any open browser tab,
+// so nobody has to remember to click a button:
+//   1. Order reconcile (reconcileAllWorking): picks up fills on orders THIS
+//      app already placed and knows about — including a bracket's stop-loss/
+//      take-profit exit leg (see services/trading/reconcile.ts's
+//      watchingBracketExit), which "Refresh all" alone never used to detect
+//      once the entry itself had gone terminal.
+//   2. Position-truth sync (runWebullPositionsSync): catches anything the
+//      order reconcile still can't attribute to a known order — e.g. sold
+//      directly in the Webull app — by diffing against Webull's live
+//      holdings, plus imports new positions.
+// Enabled by default, but a no-op until an account id is configured (same
+// fail-quiet posture as the alert scheduler while unconfigured); the
 // interval/enabled/account id all live in a setting (UI-toggleable on
 // Settings), so the loop re-reads them each cycle and adjusts without a
 // restart.
@@ -54,12 +63,31 @@ export function setWebullSyncConfig(patch: Partial<WebullSyncConfig>): WebullSyn
   return next;
 }
 
+export interface WebullFullSyncResult extends WebullSyncResult {
+  /** Still-working orders checked against the broker (reconcileAllWorking). */
+  ordersReconciled: number;
+  /** How many of those advanced to a new state (a fill, a bracket exit leg, etc). */
+  ordersChanged: number;
+}
+
+/**
+ * Reconcile every still-working order THIS app placed, THEN run the
+ * position-truth sync (close/import) to catch anything that still isn't
+ * reflected. Both the manual "Sync now" action and the background scheduler
+ * call this — one place for "make the journal match Webull."
+ */
+export async function syncWebullAccount(accountId: string): Promise<WebullFullSyncResult> {
+  const orderResult = await reconcileAllWorking(accountId);
+  const posResult = await runWebullPositionsSync(accountId);
+  return { ...posResult, ordersReconciled: orderResult.reconciled, ordersChanged: orderResult.changed };
+}
+
 /** One sync pass — exposed for tests/manual triggering. Returns null (a
  *  no-op, not an error) while disabled or before an account id is set. */
-export async function runSchedulerTick(): Promise<WebullSyncResult | null> {
+export async function runSchedulerTick(): Promise<WebullFullSyncResult | null> {
   const cfg = getWebullSyncConfig();
   if (!cfg.enabled || !cfg.accountId) return null;
-  return runWebullPositionsSync(cfg.accountId);
+  return syncWebullAccount(cfg.accountId);
 }
 
 let timer: NodeJS.Timeout | null = null;

@@ -185,23 +185,43 @@ A phase doesn't start until the previous one is merged and you've used it.
     stop-limit's limit against its OWN stop (not the market, which the stop is
     deliberately away from). Autotrade already sets `referencePrice` server-side, so it's
     unaffected.
-  - **Fixed (2026-07-09), stale positions when a live-tagged position is closed outside
-    any order this app tracked.** Every reconcile path (this file's own
-    `reconcileLiveOrders`, and the human path's `services/trading/reconcile.ts`) is
-    order-centric — it polls the status of an order THIS app placed. A position sold
-    directly in the Webull app (bypassing this app's order flow entirely, e.g. a manual
-    override of a bracket) leaves no order for either reconcile to poll, so the position
-    stayed "open" on the Auto-Trade page and in Positions/Journal indefinitely — reported
-    against two real symbols after a manual sell. `providers/webull/positions.ts` gained a
-    position-**truth** check (`syncClosedWebullPositions` / `runWebullPositionsSync`,
-    scoped to positions tagged `webull`/`live` or linked to a live `order_intent` — never a
-    plain manually-logged position, which could be tracked at a different broker
-    entirely): it diffs the journal's open quantity per contract against Webull's actual
-    live holdings and records the gap as an exit (FIFO across lots), priced from the
-    latest quote/mark since there's no fill to read a price from (skipped, not guessed at
-    $0, if pricing fails). Runs on a background scheduler
-    (`services/webullPositionsScheduler.ts`, enabled by default once an account id is set
-    on Settings) as well as on-demand.
+  - **Fixed (2026-07-09), a human-placed bracket's exit leg was never reconciled —
+    reported against two real symbols that stayed "open" long after their stop/target
+    actually filled.** Root cause: `order_intents.state` reflects only the bracket's
+    MASTER (entry) leg — it reads `filled` the instant the entry fills and, since
+    `filled` is terminal, never moves again, even while a linked STOP_LOSS/STOP_PROFIT
+    exit leg is still working at the broker. `services/trading/reconcile.ts`'s
+    `reconcileIntent`/`reconcileAllWorking` (the human "Refresh status"/"Refresh all"
+    path) short-circuited on that terminal state and never looked at `broker.legs` at
+    all — so a bracket's exit was undetectable there no matter how many times "Refresh
+    all" was clicked. (`autotrading/liveExecute.ts`'s own `reconcileOneLiveOrder` already
+    had this exit-leg check for the autotrade path — the gap was specific to the human
+    path.) Fixed by keeping a filled bracket "pending" in `reconcileIntent` as long as its
+    position is still open (mirrors `autotradeLiveOrders.ts`'s `listPendingLiveOrders`
+    logic), then checking `broker.legs` for a leg unambiguously identified as non-MASTER
+    and FILLED (same fails-closed posture — ambiguous or still-working leaves the position
+    open rather than guessing) and recording the exit priced from THAT leg specifically
+    (not the entry's own fill price). A subtlety: `recordCloseAsExit` infers which
+    position side to reduce from the closing order's own `side` — but a bracket's exit
+    leg is still the SAME entry intent (`side`/`openClose` never changed from
+    `buy`/`open`), so a synthetic side-flipped copy is passed in rather than the
+    intent's own fields, or the inference lands backwards.
+  - **Fixed (2026-07-09), no automatic reconciliation for human-placed live orders at
+    all.** `reconcileAllWorking` only ever ran on a manual "Refresh all" click — unlike
+    autotrade's own always-on 60s loop, nothing polled a human-confirmed live order's
+    status in the background. New `services/webullPositionsScheduler.ts` (mirrors
+    `alertScheduler.ts`'s self-scheduling pattern) runs `syncWebullAccount()` — order
+    reconcile (including the bracket-exit fix above), then a position-**truth** check
+    (`providers/webull/positions.ts`'s `syncClosedWebullPositions`/
+    `runWebullPositionsSync`) that diffs the journal's open quantity per contract against
+    Webull's actual live holdings and closes the gap (FIFO, priced from the latest
+    quote/mark since there's no fill to read a price from — skipped, not guessed at $0, if
+    pricing fails) to catch anything still unattributable to a known order (e.g. sold
+    directly in the Webull app, bypassing this app's order flow entirely), then imports
+    anything new. Scoped to positions tagged `webull`/`live` or linked to a live
+    `order_intent` — never a plain manually-logged position, which could be tracked at a
+    different broker entirely. Enabled by default once an account id is set on Settings;
+    also available on-demand via a "Sync now" button.
 - The submit path is **never** exercised against the live broker in tests — `fetch` is
   mocked, exactly as the existing Webull tests do.
 - A "panic" test: kill switch on ⇒ every submit refuses.
