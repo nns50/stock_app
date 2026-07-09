@@ -60,6 +60,28 @@ describe('generateSignal', () => {
     expect(signal!.target).toBe(100 - 1.5 * 4 * 2); // 88
   });
 
+  it('rounds stop/target to the nearest cent even when the ATR math lands on a sub-penny value', () => {
+    // Regression: confirmed in production. stop/target flow straight through
+    // to a live bracket order as REAL broker prices (liveExecute.ts's
+    // attemptLiveEntry() passes them as bracket.stopLossPrice/takeProfitPrice
+    // with no rounding of its own) — an ATR-derived distance is essentially
+    // never an exact cent, so an unrounded stop/target here got the WHOLE
+    // bracket order rejected by Webull's tick-size validation ("Price
+    // increment should be 0.01...") on every single live entry attempt.
+    const signal = generateSignal(candidate({ price: 100, indicators: ind({ atr: 1.23456 }) }), {
+      direction: 'long',
+      stopAtrMultiple: 1.5,
+      targetRMultiple: 2,
+    });
+    expect(signal).not.toBeNull();
+    // Raw (unrounded) math would give 98.14816 / 103.70368 -- neither is a
+    // clean cent.
+    expect(signal!.stop).toBe(98.15);
+    expect(signal!.target).toBe(103.7);
+    expect(String(signal!.stop).split('.')[1]?.length ?? 0).toBeLessThanOrEqual(2);
+    expect(String(signal!.target).split('.')[1]?.length ?? 0).toBeLessThanOrEqual(2);
+  });
+
   it('returns null when ATR is unavailable (insufficient history)', () => {
     expect(generateSignal(candidate({ indicators: ind({ atr: null }) }))).toBeNull();
   });

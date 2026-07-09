@@ -30,15 +30,30 @@ const ORDER_TYPE_TO_WEBULL: Record<OrderType, string> = {
   stop_loss_limit: 'STOP_LOSS_LIMIT',
 };
 
+/** Rounds to the nearest cent before stringifying -- the last checkpoint
+ *  before a price reaches the broker. Webull rejects the WHOLE order
+ *  (bracket legs included) if any price isn't an exact $0.01 increment;
+ *  an upstream caller doing its own arithmetic (an ATR-based stop/target,
+ *  a computed net debit/credit) can easily produce a sub-penny float that
+ *  looks fine right up until Webull's own tick-size validation rejects it.
+ *  Confirmed in production: an unrounded ATR-derived stop/target blocked
+ *  EVERY live bracket order with "Price increment should be 0.01..." until
+ *  fixed at the source (decide.ts) -- this is the defensive backstop so no
+ *  other caller, present or future, can reintroduce the same failure mode
+ *  here at the one place every live order price actually gets sent. */
+function priceStr(n: number): string {
+  return String(Math.round(n * 100) / 100);
+}
+
 /** The price fields a Webull body carries for this order type: limit_price for
  *  limit + stop-limit, stop_price for either stop type. */
 function priceFields(intent: OrderIntent): Record<string, string> {
   const f: Record<string, string> = {};
   if ((intent.orderType === 'limit' || intent.orderType === 'stop_loss_limit') && intent.limitPrice !== undefined) {
-    f.limit_price = String(intent.limitPrice);
+    f.limit_price = priceStr(intent.limitPrice);
   }
   if ((intent.orderType === 'stop_loss' || intent.orderType === 'stop_loss_limit') && intent.stopPrice !== undefined) {
-    f.stop_price = String(intent.stopPrice);
+    f.stop_price = priceStr(intent.stopPrice);
   }
   return f;
 }
@@ -111,7 +126,7 @@ export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: strin
       symbol,
       legs,
     };
-    if (intent.limitPrice !== undefined) body.limit_price = String(intent.limitPrice); // NET debit/credit
+    if (intent.limitPrice !== undefined) body.limit_price = priceStr(intent.limitPrice); // NET debit/credit
     return body;
   }
 
@@ -149,7 +164,7 @@ export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: strin
       symbol,
       legs,
     };
-    if (intent.limitPrice !== undefined) body.limit_price = String(intent.limitPrice); // NET debit
+    if (intent.limitPrice !== undefined) body.limit_price = priceStr(intent.limitPrice); // NET debit
     return body;
   }
 
@@ -181,7 +196,7 @@ export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: strin
       symbol,
       legs,
     };
-    if (intent.limitPrice !== undefined) body.limit_price = String(intent.limitPrice); // NET credit/debit
+    if (intent.limitPrice !== undefined) body.limit_price = priceStr(intent.limitPrice); // NET credit/debit
     return body;
   }
 
@@ -242,8 +257,8 @@ function bracketExit(
     time_in_force: 'DAY',
     support_trading_session: SESSION_TO_WEBULL[intent.session ?? 'core'],
   };
-  if (orderType === 'LIMIT') body.limit_price = String(price);
-  else body.stop_price = String(price);
+  if (orderType === 'LIMIT') body.limit_price = priceStr(price);
+  else body.stop_price = priceStr(price);
   return body;
 }
 
@@ -283,8 +298,8 @@ function optionBracketExit(
     symbol,
     legs: [leg],
   };
-  if (orderType === 'LIMIT') body.limit_price = String(price);
-  else body.stop_price = String(price);
+  if (orderType === 'LIMIT') body.limit_price = priceStr(price);
+  else body.stop_price = priceStr(price);
   return body;
 }
 
@@ -578,8 +593,8 @@ export async function webullReplaceOrder(
   if (!webullConfigured()) return { ok: false, error: 'Webull is not configured.' };
   const modify: Record<string, string> = { client_order_id: clientOrderId };
   if (patch.quantity !== undefined) modify.quantity = String(patch.quantity);
-  if (patch.limitPrice !== undefined) modify.limit_price = String(patch.limitPrice);
-  if (patch.stopPrice !== undefined) modify.stop_price = String(patch.stopPrice);
+  if (patch.limitPrice !== undefined) modify.limit_price = priceStr(patch.limitPrice);
+  if (patch.stopPrice !== undefined) modify.stop_price = priceStr(patch.stopPrice);
   const r = await webullClient().call('POST', '/openapi/trade/order/replace', {
     body: { account_id: accountId, modify_orders: [modify] },
     surface: 'trade',

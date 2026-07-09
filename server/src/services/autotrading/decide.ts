@@ -50,6 +50,8 @@ function fmtPct(v: number | null): string {
   return v === null ? 'n/a' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
 }
 
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+
 /**
  * Turn one screened candidate into a trade signal, or null if a sound stop
  * can't be computed (no ATR — insufficient history — or the ATR-based stop
@@ -62,14 +64,22 @@ export function generateSignal(
   const { atr } = candidate.indicators;
   if (atr === null || atr <= 0) return null;
 
-  const entry = candidate.price;
+  // Rounded to cents -- stop/target become REAL broker bracket-leg prices
+  // once a live entry places (liveExecute.ts's attemptLiveEntry() passes
+  // them straight through as bracket.stopLossPrice/takeProfitPrice with no
+  // rounding of its own). An ATR-derived distance is essentially never an
+  // exact cent, so leaving these unrounded sent a sub-penny stop/target
+  // price to Webull on EVERY live bracket order -- confirmed in production
+  // (Webull's own "Price increment should be 0.01" rejection, blocking every
+  // single live entry attempt, not just an occasional one).
+  const entry = round2(candidate.price);
   const stopDistance = cfg.stopAtrMultiple * atr;
   const long = cfg.direction === 'long';
-  const stop = long ? entry - stopDistance : entry + stopDistance;
+  const stop = round2(long ? entry - stopDistance : entry + stopDistance);
   if (stop <= 0) return null;
 
   const targetDistance = stopDistance * cfg.targetRMultiple;
-  const target = long ? entry + targetDistance : entry - targetDistance;
+  const target = round2(long ? entry + targetDistance : entry - targetDistance);
 
   const { gapPct, relVolume, rsi } = candidate.indicators;
   const rationale =

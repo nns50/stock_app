@@ -524,3 +524,85 @@ describe('webull stock order + preview', () => {
     expect(body.modify_orders[0]).toEqual({ client_order_id: 'CID-REP', quantity: '2', limit_price: '179' });
   });
 });
+
+describe('price rounding (defensive backstop for sub-penny broker prices)', () => {
+  // Regression: confirmed in production. Webull rejects the ENTIRE order
+  // (bracket legs included) if any price isn't an exact $0.01 increment
+  // ("Price increment should be 0.01 when price is equal to or greater than
+  // 0.9999"). An upstream caller's own arithmetic (an ATR-based stop/target, a
+  // computed net debit/credit) can produce a sub-penny float; priceStr() is
+  // the last checkpoint before a price is serialized for the broker, so every
+  // price field must come out rounded to the cent no matter what raw value
+  // came in. 98.14816 / 103.70368 mirror the exact sub-penny values decide.ts
+  // used to send (a 1.23456 ATR at a 1.5x/2R stop/target).
+
+  it('rounds a sub-penny limit_price/stop_price on a stock order', () => {
+    const o = buildWebullStockOrder(
+      intent({ orderType: 'stop_loss_limit', limitPrice: 98.14816, stopPrice: 103.70368 }),
+      'C',
+    );
+    expect(o.limit_price).toBe('98.15');
+    expect(o.stop_price).toBe('103.7');
+  });
+
+  it('rounds sub-penny stock bracket exit-leg prices (stop/target straight from an unrounded caller)', () => {
+    const req = buildOrderRequest(
+      intent({
+        orderType: 'limit',
+        limitPrice: 100,
+        bracket: { takeProfitPrice: 103.70368, stopLossPrice: 98.14816 },
+      }),
+      'CID-MASTER',
+    );
+    const [, tp, sl] = req.new_orders as Array<Record<string, string>>;
+    expect(tp.limit_price).toBe('103.7');
+    expect(sl.stop_price).toBe('98.15');
+  });
+
+  it('rounds sub-penny option bracket exit-leg prices', () => {
+    const req = buildOrderRequest(
+      intent({
+        assetKind: 'option',
+        optionStrategy: 'SINGLE',
+        orderType: 'limit',
+        limitPrice: 0.5,
+        optionType: 'call',
+        strike: 100,
+        expiration: '2026-07-17',
+        bracket: { takeProfitPrice: 103.70368, stopLossPrice: 98.14816 },
+      }),
+      'CID-OB',
+    );
+    const [, tp, sl] = req.new_orders as Array<Record<string, unknown>>;
+    expect(tp.limit_price).toBe('103.7');
+    expect(sl.stop_price).toBe('98.15');
+  });
+
+  it('rounds a sub-penny net limit_price on a VERTICAL spread', () => {
+    const body = buildWebullOptionOrder(
+      intent({
+        assetKind: 'option',
+        optionStrategy: 'VERTICAL',
+        limitPrice: 98.14816,
+        optionLegs: [
+          { side: 'buy', optionType: 'call', strike: 500, expiration: '2026-07-17' },
+          { side: 'sell', optionType: 'call', strike: 505, expiration: '2026-07-17' },
+        ],
+      }),
+      'CID-V',
+    );
+    expect(body.limit_price).toBe('98.15');
+  });
+
+  it('rounds sub-penny prices in a replace patch', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) } as Response);
+
+    await webullReplaceOrder('ACC1', 'CID-REP', { limitPrice: 98.14816, stopPrice: 103.70368 });
+    const [, opts] = fetchSpy.mock.calls[0];
+    const body = JSON.parse((opts as RequestInit).body as string);
+    expect(body.modify_orders[0]).toMatchObject({ limit_price: '98.15', stop_price: '103.7' });
+  });
+});
