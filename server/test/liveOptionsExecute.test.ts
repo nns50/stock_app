@@ -25,6 +25,7 @@ import {
   getLiveOptionsPosition,
   listOpenLiveOptionsPositions,
 } from '../src/db/autotradeLiveOptionsPositions';
+import * as liveOptionsPositionsDb from '../src/db/autotradeLiveOptionsPositions';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from '../src/services/autotrading/optionsRiskCheck';
 import { RISK_PROFILES } from '../src/services/autotrading/riskProfiles';
 import { DebitSpreadOptionsSignal, SingleLegOptionsSignal } from '../src/services/autotrading/optionsDecide';
@@ -929,5 +930,48 @@ describe('reconcileLiveOptionsOrders', () => {
     const outcomes = await reconcileLiveOptionsOrders();
     expect(outcomes[0].changed).toBe(false);
     expect(listOpenLiveOptionsPositions()).toEqual([]);
+  });
+
+  it('RETRIES a filled exit whose close threw on the first pass, instead of stranding the position forever', async () => {
+    // Regression (hardening audit): reconcile transitioned the exit intent to
+    // the terminal 'filled' state and then materialized the close in the SAME
+    // pass. If closeLiveOptionsPosition() threw after that terminal transition
+    // committed, the old isTerminal() short-circuit skipped the row on every
+    // later pass — the position stayed 'open' in our ledger forever while flat
+    // at the broker (polluting open-risk/budget, blocking new positions on the
+    // symbol). Equity's exit path already retries; options now does too.
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({ expiration: '2024-06-05', entryPrice: 3, quantity: 2 });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 5 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-RETRY' });
+    await checkLiveOptionsExits();
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: 2,
+      filledPrice: 4.75,
+    } as WebullOrderStatus);
+
+    // First pass: the close throws AFTER the intent has committed to 'filled'.
+    const closeSpy = vi.spyOn(liveOptionsPositionsDb, 'closeLiveOptionsPosition').mockImplementationOnce(() => {
+      throw new Error('disk I/O error');
+    });
+    const first = await reconcileLiveOptionsOrders();
+    expect(first[0].error).toMatch(/failed to materialize/);
+    expect(getLiveOptionsPosition(pos.id)!.status).toBe('open'); // NOT closed — the close threw
+    expect(listAutotradeEvents({}).some((e) => e.action === 'live_options_materialization_failed')).toBe(true);
+    // The exit row is still pending, so it's retryable — not silently dropped.
+    expect(listPendingLiveOptionsOrders().some((o) => o.role === 'exit')).toBe(true);
+
+    // Second pass: the spy is exhausted (mockImplementationOnce) so the real
+    // close runs. The retry branch must re-attempt it and finally close.
+    closeSpy.mockRestore();
+    const second = await reconcileLiveOptionsOrders();
+    expect(second[0]).toMatchObject({ changed: true, action: 'exit_filled' });
+    expect(getLiveOptionsPosition(pos.id)!.status).toBe('closed');
   });
 });
