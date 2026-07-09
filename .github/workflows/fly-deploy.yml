@@ -29,8 +29,17 @@ jobs:
         if: env.FLY_API_TOKEN != ''
       - uses: superfly/flyctl-actions/setup-flyctl@master
         if: env.FLY_API_TOKEN != ''
-      # Builds the image on Fly's remote builders (no Docker needed here) and
-      # releases it. Reads app/region/mounts/VM from fly.toml.
+      # Reads app/region/mounts/VM from fly.toml and releases the image.
+      # Fly's REMOTE builder occasionally fails to provision — "Waiting for
+      # depot builder... context deadline exceeded" — stalling the deploy for
+      # ~10 min and then failing, with nothing of ours built. Try the remote
+      # builder first (fast, no local Docker), and fall back to building on THIS
+      # runner's own Docker (ubuntu-latest ships with it) when the remote
+      # builder is unavailable, so a Fly builder outage can't block deploys.
       - name: Deploy
         if: env.FLY_API_TOKEN != ''
-        run: flyctl deploy --remote-only
+        run: |
+          flyctl deploy --remote-only || {
+            echo "::warning::Fly remote builder failed — retrying with a local Docker build (--local-only)."
+            flyctl deploy --local-only
+          }
