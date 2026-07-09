@@ -97,6 +97,10 @@ beforeEach(() => {
   db.exec(
     'DELETE FROM autotrade_config; DELETE FROM trading_config; DELETE FROM autotrade_events; ' +
       'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; ' +
+      // runLiveExecution now seeds from the COMBINED live book (combinedLiveOpenRisk
+      // reads the options positions/orders too), so a leaked open options position
+      // from another test file would perturb this file's equity risk math.
+      'DELETE FROM autotrade_live_options_positions; ' +
       'DELETE FROM order_events; DELETE FROM order_intents; ' +
       'DELETE FROM position_exits; DELETE FROM positions;',
   );

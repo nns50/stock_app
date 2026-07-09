@@ -184,6 +184,26 @@ export function listPendingLiveOptionsOrders(): LiveOptionsOrderMeta[] {
   return rows.map(mapRow);
 }
 
+/** Aggregate risk $ and count of autotrade options ENTRY orders that are
+ *  PLACED but not yet materialized into a live options position (position_id
+ *  IS NULL, intent not cancelled/rejected/expired). The counterpart to
+ *  autotradeLiveOrders.ts's pendingLiveOrdersRisk() -- committed live risk with
+ *  no position row yet (a live fill materializes only on a later reconcile
+ *  tick). ENTRY only: an exit order is closing already-counted risk, not
+ *  adding new risk, and exit rows carry no risk_amount anyway. */
+export function pendingLiveOptionsOrdersRisk(): { risk: number; count: number } {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(alo.risk_amount), 0) AS risk, COUNT(*) AS count
+         FROM autotrade_live_options_orders alo
+         JOIN order_intents oi ON oi.id = alo.intent_id
+        WHERE alo.role = 'entry' AND alo.position_id IS NULL
+          AND oi.state NOT IN ('cancelled','rejected','expired')`,
+    )
+    .get() as { risk: number; count: number };
+  return { risk: row.risk, count: row.count };
+}
+
 /** How many autotrade-placed LIVE OPTIONS entry intents exist at/after
  *  `sinceMs` -- the probation-window trade count. ENTRY only, mirroring
  *  autotradeLiveOrders.ts's countLiveOrdersSince() (an exit is closing an

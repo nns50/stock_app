@@ -18,7 +18,8 @@ import { initDb, db } from '../src/db';
 import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
-import { listIntents } from '../src/db/orders';
+import { listIntents, createIntent } from '../src/db/orders';
+import { recordLiveOrder } from '../src/db/autotradeLiveOrders';
 import { getLiveOptionsOrder, listPendingLiveOptionsOrders } from '../src/db/autotradeLiveOptionsOrders';
 import {
   createLiveOptionsPosition,
@@ -585,6 +586,47 @@ describe('runLiveOptionsExecution', () => {
     ]);
     expect(outcomes.map((o) => o.ok)).toEqual([true, true]);
     expect(mockPlaceOrder).toHaveBeenCalledTimes(2);
+  });
+
+  it('counts a pending (unmaterialized) live EQUITY order against the combined budget — blocking an options entry a position-only seed would allow', async () => {
+    // Regression (hardening audit, HIGH): a live fill becomes a `positions` row
+    // only on a LATER reconcile tick, so an equity order placed earlier in the
+    // SAME tick has no position row yet. Seeding the options batch from a
+    // position-only snapshot let it re-spend the equity batch's just-committed
+    // headroom (combined open risk up to 2x maxAggregateOpenRiskPct). The seed
+    // now folds in pending orders of BOTH books via combinedLiveOpenRisk().
+    setAutotradeConfig(liveConfig());
+    // A pending equity order (position_id NULL) whose risk alone blows the
+    // aggregate-risk budget — invisible to the old position-only seed.
+    const intent = createIntent(
+      {
+        symbol: 'MSFT',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 10,
+        orderType: 'limit',
+        limitPrice: 100,
+        referencePrice: 100,
+      },
+      'CID-EQ-PENDING',
+    );
+    recordLiveOrder({
+      intentId: intent.id,
+      symbol: 'MSFT',
+      stopPrice: 95,
+      targetPrice: 110,
+      riskAmount: 1_000_000,
+      riskProfile: 'MODERATE',
+    });
+
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-BLOCK' });
+
+    const outcomes = await runLiveOptionsExecution([{ signal: optionSignal() }]);
+    expect(outcomes[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/risk check/i) });
+    expect(mockPlaceOrder).not.toHaveBeenCalled(); // the pending equity risk left no room
   });
 });
 

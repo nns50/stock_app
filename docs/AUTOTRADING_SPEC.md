@@ -1452,6 +1452,26 @@ on its own timeline regardless of this options work.
       place-timeout can throw despite the "never throws" contract — remain
       tracked for follow-up (both require a rare better-sqlite3 write or network
       throw; the broker layer itself never throws).
+    - **Follow-up, hardening deep-dive — combined-budget same-tick double-spend
+      (2026-07-09).** The sizing audit confirmed a HIGH-severity over-risk bug:
+      the live equity and options batches run sequentially within one tick
+      (equity first), but a live fill only becomes a `positions` row on a LATER
+      reconcile tick — so the options batch's risk seed (built from open
+      POSITION rows) couldn't see the equity orders just placed this tick, and
+      re-spent the same headroom. At $100k / 2% aggregate cap, equity could
+      place $2,000 of risk and options another $2,000 the same tick = $4,000 =
+      2× the cap (and 2× maxConcurrentPositions). Paper never hit this (paper
+      positions write synchronously). Fixed by seeding BOTH batches from a new
+      `combinedLiveOpenRisk()` (liveExecute.ts) = open positions of both books
+      PLUS every placed-but-not-yet-materialized order (`pendingLiveOrdersRisk`
+      / `pendingLiveOptionsOrdersRisk`, position_id IS NULL, so no double-count
+      with materialized positions). This also closes the pre-existing one-way
+      gap (equity's batch never saw options risk at all) and cross-tick still-
+      working orders. Regression-tested (a pending equity order blocks an
+      options entry a position-only seed would have allowed) and revert-verified;
+      full suite green across repeated runs. The audit CLEARED probation
+      counting, cap 0/negative handling (all fail closed), the options ×100
+      multiplier, and sizing-vs-cap consistency.
 
 ---
 

@@ -118,6 +118,26 @@ export function listPendingLiveOrders(): LiveOrderMeta[] {
   return rows.map(mapRow);
 }
 
+/** Aggregate risk $ and count of autotrade equity orders that are PLACED but
+ *  not yet materialized into a `positions` row (position_id IS NULL, and the
+ *  intent isn't cancelled/rejected/expired). A live fill only becomes a
+ *  position row on a LATER reconcile tick, so an order placed earlier in the
+ *  same tick (or a prior tick, still working) carries real committed risk that
+ *  no position-based snapshot can see yet. The execution batches add this to
+ *  the position-based open risk so two batches in one tick can't each re-spend
+ *  the same budget headroom (see runLiveExecution / runLiveOptionsExecution). */
+export function pendingLiveOrdersRisk(): { risk: number; count: number } {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(alo.risk_amount), 0) AS risk, COUNT(*) AS count
+         FROM autotrade_live_orders alo
+         JOIN order_intents oi ON oi.id = alo.intent_id
+        WHERE alo.position_id IS NULL AND oi.state NOT IN ('cancelled','rejected','expired')`,
+    )
+    .get() as { risk: number; count: number };
+  return { risk: row.risk, count: row.count };
+}
+
 /** How many autotrade-placed live intents exist at/after `sinceMs` — the
  *  probation-window trade count (services/autotrading/liveExecute.ts). Counts
  *  an intent the moment it's placed (not just once filled): an order that's

@@ -41,7 +41,7 @@ import { RISK_PROFILES } from './riskProfiles';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { dispatchNotifications } from '../notifier';
 import { fetchContractMark, validPremium } from './optionsExecute';
-import { getLivePortfolioSnapshot, ProbationStatus } from './liveExecute';
+import { getLivePortfolioSnapshot, combinedLiveOpenRisk, ProbationStatus } from './liveExecute';
 
 // ---------------------------------------------------------------------------
 // Task #70: the LIVE counterpart to optionsExecute.ts's paper options
@@ -66,14 +66,17 @@ import { getLivePortfolioSnapshot, ProbationStatus } from './liveExecute';
 // optionBracketExit() flip rule (side === 'buy' ? 'SELL' : 'BUY') applied
 // per-leg, the closest existing "flip an entry to close it" convention.
 //
-// Combined live budget (one-way for now): this file folds live EQUITY's own
-// running risk/count/positions (getLivePortfolioSnapshot(), liveExecute.ts)
-// into every live options risk-check, same "one real account, one combined
-// budget" reasoning as optionsExecute.ts folding in equity's PAPER snapshot.
-// The reverse (equity's own runLiveExecution seeing live options' book) is
-// deferred to Step D, when loop.ts actually threads a seed both ways -- this
-// mirrors how paper's own bidirectional seeding was completed at the loop
-// level, not when options paper execution was first built.
+// Combined live budget (two-way, pending-inclusive): both this batch and
+// equity's runLiveExecution seed their running risk/count from
+// combinedLiveOpenRisk() (liveExecute.ts) -- open positions of BOTH books PLUS
+// every placed-but-not-yet-materialized order. A live fill only becomes a
+// position row on a LATER reconcile tick, so orders one batch places earlier in
+// the SAME tick are invisible to a position-only snapshot; seeding from
+// positions alone let the two batches jointly place ~2x the aggregate-risk /
+// concurrent-position caps (fixed in the 2026-07-09 hardening deep-dive). Same
+// "one real account, one combined budget" reasoning as optionsExecute.ts
+// folding in equity's PAPER snapshot -- but for live it must count pending
+// orders too, since live positions aren't synchronous the way paper's are.
 // ---------------------------------------------------------------------------
 
 /** Options bid/ask spreads run far wider, as a % of premium, than a stock's --
@@ -545,8 +548,15 @@ export async function runLiveOptionsExecution(
   const dailyPnl = optSnapshot.dailyPnl + eqSnapshot.dailyPnl;
   const tradesToday = optSnapshot.tradesToday + eqSnapshot.tradesToday;
   const consecutiveLosses = Math.max(optSnapshot.consecutiveLosses, eqSnapshot.consecutiveLosses);
-  let runningRisk = optSnapshot.openRisk + eqSnapshot.openRisk;
-  let runningCount = optSnapshot.openPositionsCount + eqSnapshot.openPositionsCount;
+  // Seed from the COMBINED live book (both books, positions AND placed-but-
+  // unmaterialized orders) rather than optSnapshot+eqSnapshot POSITIONS alone.
+  // Equity entries placed earlier in THIS tick have no position row yet (a live
+  // fill materializes only on a later reconcile tick), so a position-only seed
+  // let this batch re-spend the equity batch's just-committed headroom -- up to
+  // 2x the aggregate-risk / concurrent-position caps.
+  const combined = combinedLiveOpenRisk();
+  let runningRisk = combined.risk;
+  let runningCount = combined.count;
   const runningPositions: { symbol: string; notional: number }[] = [
     ...optSnapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.riskAmount })),
     ...eqSnapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.entryPrice * p.quantity })),
