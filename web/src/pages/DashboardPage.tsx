@@ -5,7 +5,7 @@ import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { TRADE_LOGGED_EVENT } from '../components/GlobalLogTrade';
 import { cx, fmtDate, fmtPct, fmtUsd } from '../lib/format';
-import { Card, EmptyState, PageHeader, PnL, Spinner, StatTile } from '../components/ui';
+import { CollapsibleCard, EmptyState, PageHeader, PnL, Spinner, StatTile } from '../components/ui';
 import { GettingStarted } from '../components/GettingStarted';
 import { DayGuardCard } from '../components/DayGuardCard';
 import { TodaysSetups } from '../components/TodaysSetups';
@@ -13,31 +13,6 @@ import { MarketMovers } from '../components/MarketMovers';
 
 function daysToExpiry(exp: string): number {
   return Math.ceil((Date.parse(exp) - Date.now()) / 86_400_000);
-}
-
-function Panel({
-  title,
-  icon,
-  action,
-  children,
-}: {
-  title: string;
-  icon?: React.ReactNode;
-  action?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <Card className="p-4">
-      <div className="flex items-center justify-between mb-3 pb-2 border-b border-ink-700/50">
-        <h3 className="font-medium text-sm flex items-center gap-2 text-slate-200">
-          {icon}
-          {title}
-        </h3>
-        {action}
-      </div>
-      {children}
-    </Card>
-  );
 }
 
 export default function DashboardPage() {
@@ -102,7 +77,8 @@ export default function DashboardPage() {
       <MarketMovers />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-        <Panel
+        <CollapsibleCard
+          id="dashboard.attention"
           title="Needs attention"
           icon={<TriangleAlert className={cx('h-4 w-4', attentionCount > 0 ? 'text-amber-400' : 'text-slate-500')} />}
           action={
@@ -135,9 +111,10 @@ export default function DashboardPage() {
               ))}
             </ul>
           )}
-        </Panel>
+        </CollapsibleCard>
 
-        <Panel
+        <CollapsibleCard
+          id="dashboard.watchlist"
           title="Watchlist"
           icon={<Star className="h-4 w-4 text-slate-500" />}
           action={
@@ -174,9 +151,10 @@ export default function DashboardPage() {
               })}
             </ul>
           )}
-        </Panel>
+        </CollapsibleCard>
 
-        <Panel
+        <CollapsibleCard
+          id="dashboard.expirations"
           title="Upcoming expirations"
           icon={<CalendarClock className="h-4 w-4 text-slate-500" />}
           action={
@@ -209,9 +187,10 @@ export default function DashboardPage() {
               ))}
             </ul>
           )}
-        </Panel>
+        </CollapsibleCard>
 
-        <Panel
+        <CollapsibleCard
+          id="dashboard.snapshot"
           title="Latest screener snapshot"
           icon={<Camera className="h-4 w-4 text-slate-500" />}
           action={
@@ -238,7 +217,7 @@ export default function DashboardPage() {
               {latestSnapshot.note && <div className="text-slate-400 text-xs mt-1">{latestSnapshot.note}</div>}
             </div>
           )}
-        </Panel>
+        </CollapsibleCard>
       </div>
     </div>
   );

@@ -99,6 +99,11 @@ If the app ever looks out of date, check that the footer build matches the lates
 
 Your at-a-glance morning screen.
 
+- **Collapsible tiles:** click a tile's header (the ▾/▸ chevron) to collapse or expand
+  it — handy for hiding sections you don't check every day. Each tile remembers its own
+  collapsed/expanded state in your browser, so it stays that way next time you load the
+  page. Applies to **Today's setups**, **Market movers**, **Needs attention**,
+  **Watchlist**, **Upcoming expirations**, and **Latest screener snapshot**.
 - **Stat tiles:** Open P&L, Unrealized, Open positions, Gross exposure, and **Needs
   attention** (a count that turns amber when something wants a decision).
 - **Today's setups** — a morning shortlist that **auto-scans once** when you first land
@@ -689,10 +694,9 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   Recent activity all reflect state the background loop can change on its own, every
   minute, with nothing clicked — unlike Configuration, the exclusion list, and the
   backtest tool, which only change in response to a direct action. One shared control
-  covers all three: a manual **Refresh** always works, and an **Auto** dropdown turns on
-  polling (10s/30s/1m/5m) if you want the page to keep itself current without you
-  clicking anything — off by default, same as everywhere else in this app that offers
-  polling.
+  covers all three: a manual **Refresh** always works, and an **Auto** dropdown controls
+  polling (off/10s/30s/1m/5m) — defaults to **every 1 minute**, same as everywhere else in
+  this app that offers polling; pick **Off** if you'd rather refresh by hand.
 - **Monitoring** — a real-time panel reading the loop's current state directly: active
   **risk profile**, **open positions** vs. the profile's concurrent-position cap,
   **aggregate open risk** used vs. its $ cap, today's **day P&L** vs. the $ level that
@@ -931,8 +935,23 @@ One home (⚙ or `⌘K → Settings`) for everything:
 - **Sync positions from Webull.** In **Settings → Webull**, preview your open Webull
   positions and import the ones not already in your journal (preview-and-confirm; import
   only *adds* — it never edits or deletes existing entries, and tags imports `webull`).
+  **Sync now** and the **automatic background sync** below it go further, in two ways:
+  - They **reconcile orders this app already placed** — including a bracket's stop-loss/
+    take-profit exit leg, which used to be missed by "Refresh status"/"Refresh all" once the
+    entry itself had filled (a bracket's own status only ever reflects its entry leg).
+  - They **close journal positions Webull no longer shows as held at all** (e.g. sold
+    directly in the Webull app) — for anything still not attributable to a known order.
+
+  Either way, Positions/Journal (and the Auto-Trade page, for `live`-tagged positions)
+  previously kept showing a position as open long after it was actually sold. When the exit
+  price comes from the close-detection side (no fill to read a price from), it's an
+  *estimate* from the latest quote, noted as such on the exit — edit it if you have your
+  broker confirmation. Enter an account ID once, flip on **Sync automatically in the
+  background**, and pick an interval (1m–30m); it then keeps itself current with no further
+  clicking, independent of any open tab.
 - **Quotes may be delayed** (commonly ~15 min on free tiers). The provider chip shows
-  live vs demo. Responses are cached briefly and auto-polling is off by default.
+  live vs demo. Responses are cached briefly and pages with a **Refresh** control
+  auto-poll every **1 minute** by default (adjustable, including off).
 - **Demo/synthetic data** is deterministic placeholder data for trying the app — it is
   clearly labeled and must **not** be used for real decisions.
 

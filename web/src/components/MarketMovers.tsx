@@ -5,7 +5,7 @@ import { client } from '../api/client';
 import { useAsync, useLocalStorage } from '../lib/hooks';
 import { cx, fmtCompact, fmtPct } from '../lib/format';
 import type { MoverList, MoverSession } from '../api/types';
-import { Card, Spinner } from './ui';
+import { CollapsibleCard, Spinner } from './ui';
 
 const TABS: { key: MoverList; label: string }[] = [
   { key: 'gainers', label: 'Gainers' },
@@ -46,12 +46,16 @@ export function MarketMovers() {
   const numCls = 'input h-6 w-16 px-1.5 text-xs';
 
   return (
-    <Card className="p-4">
-      <div className="flex items-center justify-between mb-3 pb-2 border-b border-ink-700/50">
-        <h3 className="font-medium text-sm flex items-center gap-2 text-slate-200">
-          <TrendingUp className="h-4 w-4 text-slate-500" /> Market movers
+    <CollapsibleCard
+      id="dashboard.marketMovers"
+      title={
+        <span className="inline-flex items-center gap-2">
+          Market movers
           <span className="text-[10px] uppercase tracking-wide text-slate-500 font-normal">Webull</span>
-        </h3>
+        </span>
+      }
+      icon={<TrendingUp className="h-4 w-4 text-slate-500" />}
+      action={
         <div className="flex flex-wrap items-center gap-1">
           {TABS.map((t) => (
             <button
@@ -80,8 +84,8 @@ export function MarketMovers() {
             </button>
           ))}
         </div>
-      </div>
-
+      }
+    >
       <div className="flex items-center gap-3 mb-2 text-xs text-slate-500">
         <span>Filter</span>
         <label className="flex items-center gap-1">
@@ -163,6 +167,6 @@ export function MarketMovers() {
           ))}
         </ul>
       )}
-    </Card>
+    </CollapsibleCard>
   );
 }

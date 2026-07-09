@@ -3,6 +3,12 @@ import { z } from 'zod';
 import { asyncHandler, parseBody, parseQuery } from './_helpers';
 import { ProbeKind, webullProbe, webullStatus } from '../providers/webull/account';
 import { importWebullPositions, previewWebullPositions } from '../providers/webull/positions';
+import {
+  getWebullSyncConfig,
+  setWebullSyncConfig,
+  syncWebullAccount,
+  MIN_SYNC_INTERVAL_SECONDS,
+} from '../services/webullPositionsScheduler';
 import { webullMovers } from '../providers/webull/movers';
 import { webullOptionQuotes } from '../providers/webull/optionQuotes';
 
@@ -59,6 +65,38 @@ webullRouter.post(
   asyncHandler(async (req, res) => {
     const { accountId } = parseBody(accountBody, req);
     res.json(await importWebullPositions(accountId));
+  }),
+);
+
+// Full sync (reconcile working orders, close positions Webull no longer
+// shows, import new ones) — what the "Sync now" button and the background
+// scheduler both call. Unlike preview/import above, this writes without a
+// confirm step (see services/webullPositionsScheduler.ts's syncWebullAccount).
+webullRouter.post(
+  '/positions/sync',
+  asyncHandler(async (req, res) => {
+    const { accountId } = parseBody(accountBody, req);
+    res.json(await syncWebullAccount(accountId));
+  }),
+);
+
+// Background sync scheduler config — enable/interval/account id. The loop
+// itself starts unconditionally at boot (services/webullPositionsScheduler.ts)
+// and no-ops until enabled with an account id set here.
+const schedulerBody = z.object({
+  enabled: z.boolean().optional(),
+  intervalSeconds: z.number().int().min(MIN_SYNC_INTERVAL_SECONDS).max(86400).optional(),
+  accountId: z.string().max(64).nullable().optional(),
+});
+
+webullRouter.get('/positions/scheduler', (_req, res) => {
+  res.json(getWebullSyncConfig());
+});
+
+webullRouter.post(
+  '/positions/scheduler',
+  asyncHandler(async (req, res) => {
+    res.json(setWebullSyncConfig(parseBody(schedulerBody, req)));
   }),
 );
 

@@ -537,13 +537,63 @@ function WebullSection() {
   );
 }
 
-/** Preview-and-confirm sync of open Webull positions into the journal. */
+const SYNC_INTERVALS = [
+  { value: 60, label: 'Every 1m' },
+  { value: 300, label: 'Every 5m' },
+  { value: 900, label: 'Every 15m' },
+  { value: 1800, label: 'Every 30m' },
+];
+
+/** Preview-and-confirm sync of open Webull positions into the journal, plus a
+ *  one-click "Sync now" and an automatic background schedule — both of which
+ *  also close journal positions Webull no longer shows as held (the preview/
+ *  import pair above only ever adds; it never did, and still doesn't). */
 function WebullPositionsSync({ configured }: { configured: boolean }) {
   const { toast } = useToast();
   const [accountId, setAccountId] = useState('');
-  const [busy, setBusy] = useState<'preview' | 'import' | null>(null);
+  const [busy, setBusy] = useState<'preview' | 'import' | 'sync' | null>(null);
   const [preview, setPreview] = useState<Awaited<ReturnType<typeof client.webullPositionsPreview>> | null>(null);
   const [showRaw, setShowRaw] = useState(false);
+
+  const scheduler = useAsync(() => client.webullSyncSchedulerStatus(), []);
+  const [autoEnabled, setAutoEnabled] = useState(true);
+  const [autoInterval, setAutoInterval] = useState(300);
+
+  useEffect(() => {
+    if (!scheduler.data) return;
+    setAutoEnabled(scheduler.data.enabled);
+    setAutoInterval(scheduler.data.intervalSeconds);
+    setAccountId((cur) => cur || scheduler.data!.accountId || '');
+  }, [scheduler.data]);
+
+  const saveScheduler = async (patch: { enabled?: boolean; intervalSeconds?: number; accountId?: string | null }) => {
+    const saved = await client.setWebullSyncScheduler(patch);
+    setAutoEnabled(saved.enabled);
+    setAutoInterval(saved.intervalSeconds);
+  };
+
+  const runSyncNow = async () => {
+    if (!accountId) return;
+    setBusy('sync');
+    try {
+      const r = await client.webullPositionsSync(accountId);
+      if (r.ok) {
+        const parts: string[] = [];
+        if (r.ordersChanged) parts.push(`${r.ordersChanged} order${r.ordersChanged === 1 ? '' : 's'} updated`);
+        if (r.closed)
+          parts.push(`closed ${r.closed}${r.closedSymbols.length ? ` (${r.closedSymbols.join(', ')})` : ''}`);
+        if (r.imported) parts.push(`imported ${r.imported}`);
+        toast(parts.length ? `Synced — ${parts.join(' · ')}` : 'Synced — already up to date', { type: 'success' });
+        setPreview(null);
+      } else {
+        toast(r.error || 'Sync failed', { type: 'error' });
+      }
+    } catch (e) {
+      toast((e as Error).message || 'Sync failed', { type: 'error' });
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const runPreview = async () => {
     if (!accountId) return;
@@ -582,9 +632,13 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
     <div className="border-t border-ink-700 pt-3 space-y-2">
       <div className="text-sm font-medium">Sync positions → journal</div>
       <p className="text-[11px] text-slate-500">
-        Preview your open Webull positions, then import the ones not already in the journal. Import only <em>adds</em>{' '}
-        open positions — it never edits or deletes existing entries. Imported positions are tagged{' '}
-        <code className="text-slate-400">webull</code>.
+        Preview your open Webull positions, then import the ones not already in the journal — import only <em>adds</em>{' '}
+        open positions, it never edits or deletes existing entries. Imported positions are tagged{' '}
+        <code className="text-slate-400">webull</code>. <strong>Sync now</strong> and the automatic background sync
+        below go further: they reconcile orders this app already placed (including a bracket's stop-loss/take-profit
+        exit leg, which used to be missed once the entry itself was filled), and <em>close</em> journal positions Webull
+        no longer shows as held at all (e.g. sold directly in the Webull app) — something preview/import alone never
+        does.
       </p>
       <div className="flex flex-wrap items-end gap-2">
         <Field label="Account ID" hint="Copy an account_id from Account list">
@@ -592,6 +646,7 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
             className="input max-w-[260px] font-mono text-xs"
             value={accountId}
             onChange={(e) => setAccountId(e.target.value.trim())}
+            onBlur={() => accountId && saveScheduler({ accountId })}
             placeholder="account_id"
           />
         </Field>
@@ -603,6 +658,9 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
             {busy === 'import' ? 'Importing…' : `Import ${preview.positions.length}`}
           </button>
         )}
+        <button className="btn-ghost" onClick={runSyncNow} disabled={!configured || !accountId || busy !== null}>
+          {busy === 'sync' ? 'Syncing…' : 'Sync now'}
+        </button>
       </div>
 
       {preview && !preview.ok && <div className="text-sm text-bear">✕ {preview.error ?? 'failed'}</div>}
@@ -658,6 +716,39 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
           )}
         </div>
       )}
+
+      <div className="border-t border-ink-800 pt-2 space-y-2">
+        <label className="flex items-start gap-2 text-sm text-slate-300 cursor-pointer">
+          <input
+            type="checkbox"
+            className="mt-0.5 accent-accent"
+            checked={autoEnabled}
+            disabled={!configured}
+            onChange={(e) => saveScheduler({ enabled: e.target.checked, accountId: accountId || undefined })}
+          />
+          <span>
+            Sync automatically in the background
+            <span className="block text-[11px] text-slate-500">
+              Runs on the server on a schedule — no button needed.
+              {accountId ? '' : ' Enter an account ID above first.'}
+            </span>
+          </span>
+        </label>
+        <Field label="Sync interval">
+          <select
+            className="input max-w-[200px]"
+            value={autoInterval}
+            disabled={!autoEnabled}
+            onChange={(e) => saveScheduler({ intervalSeconds: Number(e.target.value) })}
+          >
+            {SYNC_INTERVALS.map((i) => (
+              <option key={i.value} value={i.value}>
+                {i.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
     </div>
   );
 }

@@ -683,6 +683,28 @@ export interface WebullImportSummary {
   error?: string;
 }
 
+/** Result of the full sync: reconcile working orders THIS app placed
+ *  (including a bracket's stop-loss/take-profit exit leg), close positions
+ *  Webull no longer shows as held, then import anything new. */
+export interface WebullSyncResult {
+  ok: boolean;
+  accountId: string;
+  ordersReconciled: number;
+  ordersChanged: number;
+  closed: number;
+  closedSymbols: string[];
+  imported: number;
+  skipped: number;
+  unmapped: number;
+  error?: string;
+}
+
+export interface WebullSyncConfig {
+  enabled: boolean;
+  intervalSeconds: number;
+  accountId: string | null;
+}
+
 export type MoverList = 'gainers' | 'losers' | 'active' | 'unusual';
 export type MoverSession = 'regular' | 'premarket' | 'afterhours';
 

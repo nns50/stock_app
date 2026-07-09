@@ -1,6 +1,7 @@
 import { isValidElement, ReactNode, useEffect, useId, useState } from 'react';
-import { X } from 'lucide-react';
+import { ChevronDown, ChevronRight, X } from 'lucide-react';
 import { cx, fmtSignedUsd, pnlClass } from '../lib/format';
+import { useLocalStorage } from '../lib/hooks';
 
 /**
  * Gain/loss readout that doesn't rely on color alone: a ▲/▼ caret encodes
@@ -34,6 +35,57 @@ export function PnL({
 
 export function Card({ className, children }: { className?: string; children: ReactNode }) {
   return <div className={cx('card', className)}>{children}</div>;
+}
+
+/**
+ * A Card with a collapsible body: click the header to hide/show `children`.
+ * Collapsed state persists to localStorage under `id`, so it survives a
+ * reload — `id` must be stable and unique among the collapsible cards
+ * rendered at once (e.g. "dashboard.watchlist").
+ */
+export function CollapsibleCard({
+  id,
+  title,
+  icon,
+  action,
+  defaultCollapsed = false,
+  children,
+}: {
+  id: string;
+  title: ReactNode;
+  icon?: ReactNode;
+  action?: ReactNode;
+  defaultCollapsed?: boolean;
+  children: ReactNode;
+}) {
+  const [collapsed, setCollapsed] = useLocalStorage(`tile.collapsed.${id}`, defaultCollapsed);
+  return (
+    <Card className="p-4">
+      <div
+        className={cx(
+          'flex flex-wrap items-center justify-between gap-2',
+          !collapsed && 'mb-3 pb-2 border-b border-ink-700/50',
+        )}
+      >
+        <button
+          type="button"
+          className="flex min-w-0 items-center gap-2 text-sm font-medium text-slate-200 hover:text-accent"
+          onClick={() => setCollapsed(!collapsed)}
+          aria-expanded={!collapsed}
+        >
+          {collapsed ? (
+            <ChevronRight className="h-4 w-4 shrink-0 text-slate-500" />
+          ) : (
+            <ChevronDown className="h-4 w-4 shrink-0 text-slate-500" />
+          )}
+          {icon}
+          <span className="truncate">{title}</span>
+        </button>
+        {!collapsed && action}
+      </div>
+      {!collapsed && children}
+    </Card>
+  );
 }
 
 /**
