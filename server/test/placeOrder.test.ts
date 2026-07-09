@@ -6,6 +6,16 @@ import { setTradingConfig } from '../src/db/trading';
 import { getEvents, listIntents } from '../src/db/orders';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
+// placeOrder re-derives the fat-finger reference from a fresh stock quote
+// (never the client's). Mock that source so it's deterministic and doesn't
+// touch the Webull fetch mocks: every symbol resolves to $7 (matching the
+// default intent's limit, so fat_finger passes on the happy path).
+vi.mock('../src/services/quotes', () => ({
+  resolveStockPrices: vi.fn(async (symbols: string[]) => {
+    return new Map(symbols.map((s) => [s.toUpperCase(), { symbol: s.toUpperCase(), price: 7, stale: false, asOf: 0 }]));
+  }),
+}));
+
 const origWebull = { ...config.webull };
 const origPlace = config.trading.placeEnabled;
 
@@ -114,6 +124,22 @@ describe('place order (live)', () => {
     expect(r).toMatchObject({ placed: false, reason: 'account_error' });
     expect(r.error).toMatch(/verify current positions/i);
     expect(fetchSpy).toHaveBeenCalledTimes(2); // balance + positions, then STOP — no /place
+  });
+
+  it('re-derives the fat-finger reference server-side, so a spoofed client referencePrice cannot defeat it', async () => {
+    // Regression (hardening audit): the client sends referencePrice == its own
+    // absurd limit (client-side deviation 0), but the server re-derives the
+    // reference from a fresh quote ($7 per the mock) — so an $80 limit is
+    // 1043% off and fat_finger BLOCKS it, no broker call.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE)) // balance
+      .mockResolvedValueOnce(okResp([])); // positions
+    const spoofed = intent({ limitPrice: 80, referencePrice: 80 });
+    const r = await placeOrder(spoofed, 'ACC1', placeConfirmation(spoofed));
+    expect(r).toMatchObject({ placed: false, reason: 'blocked' });
+    expect(r.guardrails?.checks.find((c) => c.rule === 'fat_finger')?.passed).toBe(false);
+    expect(fetchSpy).toHaveBeenCalledTimes(2); // no /place
   });
 
   it('places a live order when all gates pass, recording the broker order id + full audit trail', async () => {
