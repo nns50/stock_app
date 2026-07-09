@@ -11,8 +11,9 @@ const INTERVALS: { label: string; ms: number | null }[] = [
 ];
 
 /**
- * Manual Refresh button + optional polling interval (default OFF) + last-updated
- * indicator. Polling is opt-in per the UX spec.
+ * Manual Refresh button + polling interval (default 1m) + last-updated
+ * indicator. Provider calls are cached server-side, so polling at the
+ * default cadence doesn't risk rate limits.
  */
 export function RefreshBar({
   onRefresh,
@@ -23,7 +24,7 @@ export function RefreshBar({
   lastUpdated: number | null;
   loading?: boolean;
 }) {
-  const [intervalMs, setIntervalMs] = useState<number | null>(null);
+  const [intervalMs, setIntervalMs] = useState<number | null>(60_000);
   usePolling(onRefresh, intervalMs);
 
   return (

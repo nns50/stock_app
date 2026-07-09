@@ -33,6 +33,8 @@ import type {
   WebullProbeResult,
   WebullPositionsPreview,
   WebullImportSummary,
+  WebullSyncResult,
+  WebullSyncConfig,
   WebullMoversResult,
   OptionLiveQuotesResult,
   MoverList,
@@ -163,6 +165,10 @@ export const client = {
     api<WebullPositionsPreview>('/webull/positions/preview', post({ accountId })),
   webullPositionsImport: (accountId: string) =>
     api<WebullImportSummary>('/webull/positions/import', post({ accountId })),
+  webullPositionsSync: (accountId: string) => api<WebullSyncResult>('/webull/positions/sync', post({ accountId })),
+  webullSyncSchedulerStatus: () => api<WebullSyncConfig>('/webull/positions/scheduler'),
+  setWebullSyncScheduler: (patch: Partial<WebullSyncConfig>) =>
+    api<WebullSyncConfig>('/webull/positions/scheduler', post(patch)),
   webullMovers: (list: MoverList = 'gainers', session: MoverSession = 'regular', limit = 10) =>
     api<WebullMoversResult>(`/webull/movers?list=${list}&session=${session}&limit=${limit}`),
   webullOptionQuotes: (symbols: string[]) =>

@@ -185,6 +185,23 @@ A phase doesn't start until the previous one is merged and you've used it.
     stop-limit's limit against its OWN stop (not the market, which the stop is
     deliberately away from). Autotrade already sets `referencePrice` server-side, so it's
     unaffected.
+  - **Fixed (2026-07-09), stale positions when a live-tagged position is closed outside
+    any order this app tracked.** Every reconcile path (this file's own
+    `reconcileLiveOrders`, and the human path's `services/trading/reconcile.ts`) is
+    order-centric — it polls the status of an order THIS app placed. A position sold
+    directly in the Webull app (bypassing this app's order flow entirely, e.g. a manual
+    override of a bracket) leaves no order for either reconcile to poll, so the position
+    stayed "open" on the Auto-Trade page and in Positions/Journal indefinitely — reported
+    against two real symbols after a manual sell. `providers/webull/positions.ts` gained a
+    position-**truth** check (`syncClosedWebullPositions` / `runWebullPositionsSync`,
+    scoped to positions tagged `webull`/`live` or linked to a live `order_intent` — never a
+    plain manually-logged position, which could be tracked at a different broker
+    entirely): it diffs the journal's open quantity per contract against Webull's actual
+    live holdings and records the gap as an exit (FIFO across lots), priced from the
+    latest quote/mark since there's no fill to read a price from (skipped, not guessed at
+    $0, if pricing fails). Runs on a background scheduler
+    (`services/webullPositionsScheduler.ts`, enabled by default once an account id is set
+    on Settings) as well as on-demand.
 - The submit path is **never** exercised against the live broker in tests — `fetch` is
   mocked, exactly as the existing Webull tests do.
 - A "panic" test: kill switch on ⇒ every submit refuses.

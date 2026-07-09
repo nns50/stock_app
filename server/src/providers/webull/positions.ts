@@ -4,9 +4,11 @@ import {
   OptionType,
   Position,
   Side,
+  addExit,
   createPosition,
   listPositions,
 } from '../../db/positions';
+import { priceMap } from '../../services/quotes';
 import { webullClient, webullConfigured } from './account';
 
 // ---------------------------------------------------------------------------
@@ -166,6 +168,24 @@ function matchesOpen(open: Position[], p: ImportablePosition): boolean {
   );
 }
 
+interface ContractLike {
+  symbol: string;
+  assetType: AssetType;
+  optionType?: OptionType | null;
+  strike?: number | null;
+  expiration?: string | null;
+}
+
+/** Groups a Position/ImportablePosition by underlying contract — same identity
+ *  `matchesOpen` already uses (symbol + asset type + option legs), NOT side. A
+ *  long flipping to a short in the same symbol between syncs is a known,
+ *  pre-existing blind spot shared with matchesOpen — this mirrors it rather
+ *  than inventing stricter matching only the close-detector below applies. */
+function contractKey(p: ContractLike): string {
+  if (p.assetType !== 'option') return `${p.symbol.toUpperCase()}|stock`;
+  return `${p.symbol.toUpperCase()}|option|${p.optionType ?? ''}|${p.strike ?? ''}|${p.expiration ?? ''}`;
+}
+
 export interface ImportSummary {
   ok: boolean;
   accountId: string;
@@ -176,6 +196,20 @@ export interface ImportSummary {
   unmapped: number;
   created: Position[];
   error?: string;
+}
+
+function importFromPreview(accountId: string, preview: PositionsPreview): ImportSummary {
+  const open = listPositions({ status: 'open' });
+  const created: Position[] = [];
+  let skipped = 0;
+  for (const p of preview.positions) {
+    if (matchesOpen(open, p)) {
+      skipped++;
+      continue;
+    }
+    created.push(createPosition(p));
+  }
+  return { ok: true, accountId, imported: created.length, skipped, unmapped: preview.unmapped, created };
 }
 
 /**
@@ -196,15 +230,148 @@ export async function importWebullPositions(accountId: string): Promise<ImportSu
       error: preview.error,
     };
   }
-  const open = listPositions({ status: 'open' });
-  const created: Position[] = [];
-  let skipped = 0;
+  return importFromPreview(accountId, preview);
+}
+
+/** An open journal position counts as Webull-attributable only if the app
+ *  itself put it there from this brokerage: imported by this same sync
+ *  (tagged 'webull'), opened by a live autotrade fill (tagged 'live'), or
+ *  linked to a live order_intent (sourceIntentId). A plain manually-logged
+ *  position (e.g. tracked at a different broker) is left alone even though
+ *  it isn't in Webull's live list — closing it based on Webull's holdings
+ *  would be a false positive. */
+function isWebullTracked(p: Position): boolean {
+  return p.tags.includes('webull') || p.tags.includes('live') || p.sourceIntentId !== null;
+}
+
+export interface ClosedSyncResult {
+  ok: boolean;
+  accountId: string;
+  /** Number of exit records written (one lot closed FIFO can span several rows). */
+  closed: number;
+  /** Distinct symbols that had at least one exit recorded. */
+  closedSymbols: string[];
+  error?: string;
+}
+
+const NOTE_AUTO_CLOSED =
+  'Auto-closed via Webull sync — no longer held at the broker. Exit price is an ESTIMATE from the ' +
+  'latest quote (not a confirmed fill); edit it if you have your broker confirmation.';
+
+/**
+ * Close the gap between what the journal thinks is open (for Webull-tracked
+ * positions only) and what Webull's live position list actually shows,
+ * oldest-lot-first (FIFO) — the read side of the sync, complementing
+ * importFromPreview's add side. This is what neither the order-status
+ * reconcile (services/trading/reconcile.ts, autotrading/liveExecute.ts —
+ * both only poll orders THIS app placed) nor the plain import above (add-only
+ * by design) ever did: notice a position sold at the broker OUTSIDE any order
+ * this app tracked (e.g. placed directly in the Webull app) and record the
+ * exit. Priced via the same quote/mark resolver Positions/Journal already use
+ * (services/quotes.ts's priceMap) since there's no broker fill to read a
+ * price from; a contract priceMap can't resolve is left open rather than
+ * guessed at $0 — it'll be picked up on a later sync once pricing recovers.
+ */
+async function closePositionsFromPreview(
+  preview: PositionsPreview,
+): Promise<{ closed: number; closedSymbols: string[] }> {
+  const liveQtyByKey = new Map<string, number>();
   for (const p of preview.positions) {
-    if (matchesOpen(open, p)) {
-      skipped++;
-      continue;
-    }
-    created.push(createPosition(p));
+    const key = contractKey(p);
+    liveQtyByKey.set(key, (liveQtyByKey.get(key) ?? 0) + p.quantity);
   }
-  return { ok: true, accountId, imported: created.length, skipped, unmapped: preview.unmapped, created };
+
+  const open = listPositions({ status: 'open' }).filter(isWebullTracked);
+  const lotsByKey = new Map<string, Position[]>();
+  for (const p of open) {
+    const key = contractKey(p);
+    (lotsByKey.get(key) ?? lotsByKey.set(key, []).get(key)!).push(p);
+  }
+
+  const toClose = new Map<string, { lots: Position[]; qty: number }>();
+  for (const [key, lots] of lotsByKey) {
+    lots.sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.id - b.id); // FIFO: oldest first
+    const journalQty = lots.reduce((s, p) => s + p.remainingQuantity, 0);
+    const gap = journalQty - (liveQtyByKey.get(key) ?? 0);
+    if (gap > 1e-9) toClose.set(key, { lots, qty: gap });
+  }
+  if (toClose.size === 0) return { closed: 0, closedSymbols: [] };
+
+  // Price once per contract (any lot of the same contract shares one live price).
+  const prices = await priceMap(Array.from(toClose.values(), ({ lots }) => lots[0]));
+
+  const exitDate = today();
+  const closedSymbols = new Set<string>();
+  let closed = 0;
+  for (const { lots, qty } of toClose.values()) {
+    const exitPrice = prices.get(lots[0].id)?.price;
+    if (exitPrice == null) continue; // can't price it — leave open, retry next sync
+    let remaining = qty;
+    for (const p of lots) {
+      if (remaining <= 1e-9) break;
+      const take = Math.min(remaining, p.remainingQuantity);
+      if (take <= 1e-9) continue;
+      const result = addExit(p.id, { quantity: take, exitPrice, exitDate, notes: NOTE_AUTO_CLOSED });
+      if (result) {
+        closed++;
+        closedSymbols.add(p.symbol);
+      }
+      remaining -= take;
+    }
+  }
+  return { closed, closedSymbols: Array.from(closedSymbols) };
+}
+
+/** Standalone close-detection pass — fetches its own live positions preview.
+ *  Prefer runWebullPositionsSync() when also importing, so the live list is
+ *  only fetched once. */
+export async function syncClosedWebullPositions(accountId: string): Promise<ClosedSyncResult> {
+  const preview = await previewWebullPositions(accountId);
+  if (!preview.ok) return { ok: false, accountId, closed: 0, closedSymbols: [], error: preview.error };
+  const { closed, closedSymbols } = await closePositionsFromPreview(preview);
+  return { ok: true, accountId, closed, closedSymbols };
+}
+
+export interface WebullSyncResult {
+  ok: boolean;
+  accountId: string;
+  closed: number;
+  closedSymbols: string[];
+  imported: number;
+  skipped: number;
+  unmapped: number;
+  error?: string;
+}
+
+/**
+ * The full two-way sync: close what Webull no longer shows as held, then
+ * import anything new — one live positions fetch shared by both halves. This
+ * is what both the manual "Sync now" action and the background scheduler
+ * (services/webullPositionsScheduler.ts) call.
+ */
+export async function runWebullPositionsSync(accountId: string): Promise<WebullSyncResult> {
+  const preview = await previewWebullPositions(accountId);
+  if (!preview.ok) {
+    return {
+      ok: false,
+      accountId,
+      closed: 0,
+      closedSymbols: [],
+      imported: 0,
+      skipped: 0,
+      unmapped: 0,
+      error: preview.error,
+    };
+  }
+  const closeResult = await closePositionsFromPreview(preview);
+  const importResult = importFromPreview(accountId, preview);
+  return {
+    ok: true,
+    accountId,
+    closed: closeResult.closed,
+    closedSymbols: closeResult.closedSymbols,
+    imported: importResult.imported,
+    skipped: importResult.skipped,
+    unmapped: preview.unmapped,
+  };
 }

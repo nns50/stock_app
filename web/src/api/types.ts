@@ -683,6 +683,25 @@ export interface WebullImportSummary {
   error?: string;
 }
 
+/** Result of the full two-way sync: close what Webull no longer shows as
+ *  held, then import anything new. */
+export interface WebullSyncResult {
+  ok: boolean;
+  accountId: string;
+  closed: number;
+  closedSymbols: string[];
+  imported: number;
+  skipped: number;
+  unmapped: number;
+  error?: string;
+}
+
+export interface WebullSyncConfig {
+  enabled: boolean;
+  intervalSeconds: number;
+  accountId: string | null;
+}
+
 export type MoverList = 'gainers' | 'losers' | 'active' | 'unusual';
 export type MoverSession = 'regular' | 'premarket' | 'afterhours';
 
