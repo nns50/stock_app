@@ -5,11 +5,8 @@ import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { evaluateOptionsRiskCheck, runOptionsRiskCheck } from '../src/services/autotrading/optionsRiskCheck';
 import { runAutotradeRiskCheck, RiskCheckContext } from '../src/services/autotrading/riskCheck';
-import { RISK_PROFILES } from '../src/services/autotrading/riskProfiles';
 import { DebitSpreadOptionsSignal, SingleLegOptionsSignal } from '../src/services/autotrading/optionsDecide';
 import { TradeSignal } from '../src/services/autotrading/decide';
-
-const MODERATE = RISK_PROFILES.MODERATE;
 
 function optionSignal(overrides: Partial<SingleLegOptionsSignal> = {}): SingleLegOptionsSignal {
   return {
@@ -70,6 +67,10 @@ function equitySignal(overrides: Partial<TradeSignal> = {}): TradeSignal {
   };
 }
 
+// Matches the old MODERATE preset exactly (riskProfiles.ts's now-removed
+// RISK_PROFILES.MODERATE) — every field below is a directly user-configured
+// AutotradeConfig field now, but these test fixtures still exercise the same
+// numbers.
 function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
   return {
     equity: 100_000,
@@ -80,6 +81,13 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
     openPositionsCount: 0,
     maxConcurrentPositions: 2,
     correlatedNotional: 0,
+    riskPerTradePct: 1,
+    maxDailyDrawdownPct: 3,
+    stepDownAfterLosses: 2,
+    stepDownSizeCutPct: 50,
+    maxAggregateOpenRiskPct: 2,
+    maxCorrelatedExposurePct: 6,
+    maxTradesPerDay: 6,
     ...overrides,
   };
 }
@@ -89,13 +97,13 @@ const findCheck = (result: ReturnType<typeof evaluateOptionsRiskCheck>, rule: st
 
 describe('evaluateOptionsRiskCheck — pure evaluator', () => {
   it('passes a clean signal with no competing exposure', () => {
-    const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx(), MODERATE);
+    const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx());
     expect(result.ok).toBe(true);
     expect(result.checks.every((c) => c.passed)).toBe(true);
   });
 
   it('sizes by full premium paid (stopPrice: 0): 1% of $100k = $1000 budget / ($3 premium x 100) = 3 contracts', () => {
-    const result = evaluateOptionsRiskCheck(optionSignal({ premium: 3 }), baseCtx(), MODERATE);
+    const result = evaluateOptionsRiskCheck(optionSignal({ premium: 3 }), baseCtx());
     expect(result.sizing.suggestedQuantity).toBe(3);
     expect(result.sizing.riskOfPosition).toBe(900); // 3 contracts x $300 risk/contract
     expect(result.approvedRiskAmount).toBe(900);
@@ -105,12 +113,12 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
   });
 
   it('sizes identically for a long put (side is directional only, not a sizing input)', () => {
-    const result = evaluateOptionsRiskCheck(optionSignal({ side: 'put', premium: 3 }), baseCtx(), MODERATE);
+    const result = evaluateOptionsRiskCheck(optionSignal({ side: 'put', premium: 3 }), baseCtx());
     expect(result.sizing.suggestedQuantity).toBe(3);
   });
 
   it('blocks everything when equity is not configured', () => {
-    const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ equity: 0 }), MODERATE);
+    const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ equity: 0 }));
     expect(result.ok).toBe(false);
     expect(findCheck(result, 'equity_configured').passed).toBe(false);
     expect(result.sizing.suggestedQuantity).toBe(0);
@@ -118,14 +126,14 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
 
   it('blocks when the risk budget cannot size even one contract', () => {
     // $10 equity * 1% = $0.10 budget; a $3 premium x 100 = $300/contract -> 0 contracts.
-    const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ equity: 10 }), MODERATE);
+    const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ equity: 10 }));
     expect(result.ok).toBe(false);
     expect(findCheck(result, 'quantity').passed).toBe(false);
   });
 
   describe('step-down sizing', () => {
     it('cuts size by stepDownSizeCutPct once the consecutive-loss threshold is reached', () => {
-      const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ consecutiveLosses: 2 }), MODERATE);
+      const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ consecutiveLosses: 2 }));
       expect(result.stepDownActive).toBe(true);
       // 0.5% of 100,000 = $500 budget / $300 per contract = 1 contract
       expect(result.sizing.suggestedQuantity).toBe(1);
@@ -134,7 +142,7 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
 
   describe('daily drawdown halt', () => {
     it('blocks at or beyond the halt level (3% of 100k = -3000)', () => {
-      const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ dailyPnl: -3000 }), MODERATE);
+      const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ dailyPnl: -3000 }));
       expect(result.ok).toBe(false);
       expect(findCheck(result, 'daily_drawdown_halt').passed).toBe(false);
     });
@@ -142,7 +150,7 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
 
   describe('daily trade cap', () => {
     it('blocks at the profile max (MODERATE: 6/day)', () => {
-      const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ tradesToday: 6 }), MODERATE);
+      const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ tradesToday: 6 }));
       expect(result.ok).toBe(false);
       expect(findCheck(result, 'max_trades_per_day').passed).toBe(false);
     });
@@ -150,7 +158,7 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
 
   describe('concurrent position cap', () => {
     it('blocks at the profile max (MODERATE: 2) — combined with however many equity positions are already open', () => {
-      const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ openPositionsCount: 2 }), MODERATE);
+      const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ openPositionsCount: 2 }));
       expect(result.ok).toBe(false);
       expect(findCheck(result, 'max_concurrent_positions').passed).toBe(false);
     });
@@ -161,25 +169,25 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
       // MODERATE cap = 2% of 100k = $2000. $1500 already at risk (e.g. from
       // equity positions or an earlier-approved signal this batch); this
       // option's own risk is a normal $900 - 1500+900=2400 > 2000, must block.
-      const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ openRisk: 1500 }), MODERATE);
+      const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ openRisk: 1500 }));
       expect(result.ok).toBe(false);
       expect(findCheck(result, 'max_aggregate_open_risk').passed).toBe(false);
     });
 
     it('passes at exactly the cap boundary', () => {
-      const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ openRisk: 1100 }), MODERATE);
+      const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ openRisk: 1100 }));
       expect(findCheck(result, 'max_aggregate_open_risk').passed).toBe(true); // 1100+900=2000 <= 2000
     });
   });
 
   describe('correlated-ticker exposure cap', () => {
     it("does NOT count the proposed option's own notional", () => {
-      const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ correlatedNotional: 0 }), MODERATE);
+      const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ correlatedNotional: 0 }));
       expect(findCheck(result, 'max_correlated_exposure').passed).toBe(true);
     });
 
     it('blocks when capital already correlated with this underlying exceeds the cap', () => {
-      const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ correlatedNotional: 7000 }), MODERATE);
+      const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ correlatedNotional: 7000 }));
       expect(result.ok).toBe(false);
       expect(findCheck(result, 'max_correlated_exposure').passed).toBe(false); // 7000 > 6000 cap
     });
@@ -187,21 +195,21 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
 
   describe('debit spread (signal.kind: debit_spread)', () => {
     it('sizes by max loss per spread, not premium alone: 1% of $100k = $1000 budget / $200 max loss per spread = 5 spreads', () => {
-      const result = evaluateOptionsRiskCheck(spreadSignal(), baseCtx(), MODERATE);
+      const result = evaluateOptionsRiskCheck(spreadSignal(), baseCtx());
       expect(result.ok).toBe(true);
       expect('suggestedContracts' in result.sizing && result.sizing.suggestedContracts).toBe(5);
       expect(result.approvedRiskAmount).toBe(1000); // 5 spreads x $200 max loss/spread
     });
 
     it('approvedNotional equals approvedRiskAmount — capital tied up IS the max loss for a debit spread', () => {
-      const result = evaluateOptionsRiskCheck(spreadSignal(), baseCtx(), MODERATE);
+      const result = evaluateOptionsRiskCheck(spreadSignal(), baseCtx());
       expect(result.approvedNotional).toBe(result.approvedRiskAmount);
       expect(result.approvedNotional).toBe(1000);
     });
 
     it('blocks when the risk budget cannot size even one spread', () => {
       // $10 equity x 1% = $0.10 budget; $200 max loss/spread -> 0 spreads.
-      const result = evaluateOptionsRiskCheck(spreadSignal(), baseCtx({ equity: 10 }), MODERATE);
+      const result = evaluateOptionsRiskCheck(spreadSignal(), baseCtx({ equity: 10 }));
       expect(result.ok).toBe(false);
       expect(findCheck(result, 'quantity').passed).toBe(false);
     });
@@ -209,17 +217,17 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
     it("counts a spread's max loss (not its notional/premium) toward the combined aggregate-risk budget", () => {
       // MODERATE cap = 2% of 100k = $2000. $1000 already at risk; this spread's
       // own risk is $1000 (5 x $200) - 1000+1000=2000, exactly at the cap.
-      const atCap = evaluateOptionsRiskCheck(spreadSignal(), baseCtx({ openRisk: 1000 }), MODERATE);
+      const atCap = evaluateOptionsRiskCheck(spreadSignal(), baseCtx({ openRisk: 1000 }));
       expect(findCheck(atCap, 'max_aggregate_open_risk').passed).toBe(true);
 
-      const overCap = evaluateOptionsRiskCheck(spreadSignal(), baseCtx({ openRisk: 1001 }), MODERATE);
+      const overCap = evaluateOptionsRiskCheck(spreadSignal(), baseCtx({ openRisk: 1001 }));
       expect(overCap.ok).toBe(false);
       expect(findCheck(overCap, 'max_aggregate_open_risk').passed).toBe(false);
     });
 
     it('cuts spread size via step-down sizing exactly like a single leg', () => {
       // 0.5% of 100,000 = $500 budget / $200 per spread = 2 spreads (floor(2.5)).
-      const result = evaluateOptionsRiskCheck(spreadSignal(), baseCtx({ consecutiveLosses: 2 }), MODERATE);
+      const result = evaluateOptionsRiskCheck(spreadSignal(), baseCtx({ consecutiveLosses: 2 }));
       expect(result.stepDownActive).toBe(true);
       expect('suggestedContracts' in result.sizing && result.sizing.suggestedContracts).toBe(2);
     });

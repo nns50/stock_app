@@ -49,6 +49,41 @@ export interface AutotradeConfig {
    *  doesn't silently change a cap the user explicitly set. */
   maxConcurrentPositions: number;
 
+  // --- Risk-check parameters (docs/AUTOTRADING_SPEC.md — RISK PROFILES).
+  // Every field below used to live in riskProfiles.ts's MODERATE/AGGRESSIVE
+  // preset table, swinging whenever riskProfile changed. Moved out
+  // 2026-07-10, same treatment (and same reasoning) as maxConcurrentPositions
+  // above — reported directly: raising maxConcurrentPositions alone (to 15)
+  // didn't unblock new entries with only 2 positions open, because
+  // maxAggregateOpenRiskPct — 2% of equity at the old MODERATE preset, about
+  // 2 positions' worth of risk at 1%/trade — was the one actually binding,
+  // and had no independent lever at all. Defaults below match the old
+  // MODERATE preset exactly, so an untouched config's behavior doesn't
+  // change; riskProfile itself no longer has ANY computational effect on
+  // these (see riskProfiles.ts's header comment) — it's kept purely as a
+  // label (still gates the AGGRESSIVE-switch confirmation dialog). ------
+
+  /** % of account equity risked per trade (before any step-down cut). */
+  riskPerTradePct: number;
+  /** % daily drawdown (of equity) that halts new entries for the rest of the day. */
+  maxDailyDrawdownPct: number;
+  /** Consecutive losing trades that trigger step-down sizing. */
+  stepDownAfterLosses: number;
+  /** % cut to riskPerTradePct once step-down is active. */
+  stepDownSizeCutPct: number;
+  /** % of equity — sum(size × stop distance) across open + proposed
+   *  positions (the CRITICAL pre-trade check — see riskCheck.ts). ONE
+   *  combined budget shared by equity + options, same pool as
+   *  maxConcurrentPositions above. */
+  maxAggregateOpenRiskPct: number;
+  /** % of equity — capital (not risk) already concentrated in tickers
+   *  statistically correlated (|r| ≥ 0.7 over 30 trading days —
+   *  riskProfiles.ts's CORRELATION_THRESHOLD/CORRELATION_LOOKBACK_DAYS,
+   *  still fixed methodology constants, not user-tunable) with the candidate. */
+  maxCorrelatedExposurePct: number;
+  /** Max entries (paper + live combined) risk-check will approve per day. */
+  maxTradesPerDay: number;
+
   // --- Phase 8: live-trading gate (docs/AUTOTRADING_SPEC.md) -----------------
 
   /** Master on/off for the loop placing REAL orders through Webull. False by
@@ -77,8 +112,8 @@ export interface AutotradeConfig {
    *  db/trading.ts's human-tuned TradingConfig) — deliberately a separate cap
    *  set, since autotrade sizes risk-based (% equity × stop distance), which
    *  can imply a different notional than the human page's flat caps were
-   *  tuned around. See suggestLiveCaps() for the equity/profile-derived
-   *  starting formula; freely editable afterward. */
+   *  tuned around. See suggestLiveCaps() for the equity-derived starting
+   *  formula; freely editable afterward. */
   liveMaxOrderUsd: number;
   liveMaxDailyLossUsd: number;
   liveMaxOrdersPerDay: number;
@@ -170,10 +205,9 @@ interface ConfigRow {
  *  normalization style as services/trading/placeOrder.ts's placeConfirmation. */
 export const LIVE_TRADING_CONFIRMATION_PHRASE = 'ENABLE LIVE TRADING';
 
-/** MODERATE's own maxTradesPerDay (services/autotrading/riskProfiles.ts) — kept
- *  as a literal here rather than imported, since riskProfiles.ts already
- *  imports RiskProfileName from this file and importing the value back would
- *  create a circular module dependency. */
+/** Independent of maxTradesPerDay below (a live-only broker guardrail, not
+ *  the risk-check's own trade-count cap) — the two happen to share a default,
+ *  not a dependency. */
 const DEFAULT_LIVE_MAX_ORDERS_PER_DAY = 6;
 
 export function defaultAutotradeConfig(): AutotradeConfig {
@@ -183,6 +217,13 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     riskProfile: 'MODERATE',
     accountEquityUsd: null,
     maxConcurrentPositions: 2,
+    riskPerTradePct: 1,
+    maxDailyDrawdownPct: 3,
+    stepDownAfterLosses: 2,
+    stepDownSizeCutPct: 50,
+    maxAggregateOpenRiskPct: 2,
+    maxCorrelatedExposurePct: 6,
+    maxTradesPerDay: 6,
     liveTradingEnabled: false,
     liveEnabledAt: null,
     liveAccountId: null,
@@ -256,6 +297,13 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       input.riskProfile === 'AGGRESSIVE' || input.riskProfile === 'MODERATE' ? input.riskProfile : d.riskProfile,
     accountEquityUsd: equity,
     maxConcurrentPositions: posIntMin1(input.maxConcurrentPositions, d.maxConcurrentPositions),
+    riskPerTradePct: pct(input.riskPerTradePct, d.riskPerTradePct),
+    maxDailyDrawdownPct: pct(input.maxDailyDrawdownPct, d.maxDailyDrawdownPct),
+    stepDownAfterLosses: posInt(input.stepDownAfterLosses, d.stepDownAfterLosses),
+    stepDownSizeCutPct: pct(input.stepDownSizeCutPct, d.stepDownSizeCutPct),
+    maxAggregateOpenRiskPct: pct(input.maxAggregateOpenRiskPct, d.maxAggregateOpenRiskPct),
+    maxCorrelatedExposurePct: pct(input.maxCorrelatedExposurePct, d.maxCorrelatedExposurePct),
+    maxTradesPerDay: posInt(input.maxTradesPerDay, d.maxTradesPerDay),
     liveTradingEnabled: typeof input.liveTradingEnabled === 'boolean' ? input.liveTradingEnabled : d.liveTradingEnabled,
     liveEnabledAt: enabledAt,
     liveAccountId: accountId,

@@ -239,6 +239,77 @@ describe('autotrade config persistence', () => {
     });
   });
 
+  describe("risk-check parameters (formerly riskProfiles.ts's MODERATE/AGGRESSIVE preset table)", () => {
+    it('defaults to the old MODERATE preset exactly', () => {
+      const d = defaultAutotradeConfig();
+      expect(d.riskPerTradePct).toBe(1);
+      expect(d.maxDailyDrawdownPct).toBe(3);
+      expect(d.stepDownAfterLosses).toBe(2);
+      expect(d.stepDownSizeCutPct).toBe(50);
+      expect(d.maxAggregateOpenRiskPct).toBe(2);
+      expect(d.maxCorrelatedExposurePct).toBe(6);
+      expect(d.maxTradesPerDay).toBe(6);
+    });
+
+    it('persists a patch and round-trips', () => {
+      const cfg = setAutotradeConfig({
+        riskPerTradePct: 1.5,
+        maxDailyDrawdownPct: 5,
+        stepDownAfterLosses: 3,
+        stepDownSizeCutPct: 25,
+        maxAggregateOpenRiskPct: 4.5,
+        maxCorrelatedExposurePct: 10,
+        maxTradesPerDay: 10,
+      });
+      expect(cfg).toMatchObject({
+        riskPerTradePct: 1.5,
+        maxDailyDrawdownPct: 5,
+        stepDownAfterLosses: 3,
+        stepDownSizeCutPct: 25,
+        maxAggregateOpenRiskPct: 4.5,
+        maxCorrelatedExposurePct: 10,
+        maxTradesPerDay: 10,
+      });
+      expect(getAutotradeConfig()).toMatchObject({
+        riskPerTradePct: 1.5,
+        maxDailyDrawdownPct: 5,
+        maxAggregateOpenRiskPct: 4.5,
+      });
+    });
+
+    it('switching riskProfile no longer touches any of these — they are fully independent now', () => {
+      setAutotradeConfig({ riskPerTradePct: 1.5, maxAggregateOpenRiskPct: 4.5, maxTradesPerDay: 10 });
+      const cfg = setAutotradeConfig({ riskProfile: 'MODERATE' });
+      expect(cfg.riskPerTradePct).toBe(1.5);
+      expect(cfg.maxAggregateOpenRiskPct).toBe(4.5);
+      expect(cfg.maxTradesPerDay).toBe(10);
+    });
+
+    it("clamps a negative pct field to 0 (matches the pct() helper's existing clamp-not-reject behavior)", () => {
+      const cfg = setAutotradeConfig({ maxAggregateOpenRiskPct: -1 });
+      expect(cfg.maxAggregateOpenRiskPct).toBe(0);
+    });
+
+    it('clamps a pct field above 100 down to 100', () => {
+      const cfg = setAutotradeConfig({ maxCorrelatedExposurePct: 500 });
+      expect(cfg.maxCorrelatedExposurePct).toBe(100);
+    });
+
+    it('allows stepDownAfterLosses/maxTradesPerDay of exactly 0 (always-on step-down / no trades today)', () => {
+      const cfg = setAutotradeConfig({ stepDownAfterLosses: 0, maxTradesPerDay: 0 });
+      expect(cfg.stepDownAfterLosses).toBe(0);
+      expect(cfg.maxTradesPerDay).toBe(0);
+    });
+
+    it('rejects a negative stepDownAfterLosses/maxTradesPerDay, failing closed to the default', () => {
+      setAutotradeConfig({ stepDownAfterLosses: 3, maxTradesPerDay: 10 });
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+      const cfg = setAutotradeConfig({ stepDownAfterLosses: -1, maxTradesPerDay: -1 });
+      expect(cfg.stepDownAfterLosses).toBe(defaultAutotradeConfig().stepDownAfterLosses);
+      expect(cfg.maxTradesPerDay).toBe(defaultAutotradeConfig().maxTradesPerDay);
+    });
+  });
+
   describe('movers auto-promotion', () => {
     it('defaults to enabled, 3 within 10 days, cap 50', () => {
       const d = defaultAutotradeConfig();

@@ -10,7 +10,6 @@ import { hasOpenPaperPosition, listPaperPositions, openPaperPosition } from '../
 import * as paperPositionsDb from '../src/db/autotradePaperPositions';
 import { attemptPaperEntry, checkPaperExits, runPaperExecution } from '../src/services/autotrading/execute';
 import { evaluateRiskCheck, RiskCheckResult } from '../src/services/autotrading/riskCheck';
-import { RISK_PROFILES } from '../src/services/autotrading/riskProfiles';
 import { TradeSignal } from '../src/services/autotrading/decide';
 
 const mockGetProvider = vi.mocked(getProvider);
@@ -47,20 +46,23 @@ beforeEach(() => {
 });
 
 describe('attemptPaperEntry', () => {
-  const okResult: RiskCheckResult = evaluateRiskCheck(
-    signal(),
-    {
-      equity: 100_000,
-      dailyPnl: 0,
-      tradesToday: 0,
-      consecutiveLosses: 0,
-      openRisk: 0,
-      openPositionsCount: 0,
-      maxConcurrentPositions: 2,
-      correlatedNotional: 0,
-    },
-    RISK_PROFILES.MODERATE,
-  );
+  const okResult: RiskCheckResult = evaluateRiskCheck(signal(), {
+    equity: 100_000,
+    dailyPnl: 0,
+    tradesToday: 0,
+    consecutiveLosses: 0,
+    openRisk: 0,
+    openPositionsCount: 0,
+    maxConcurrentPositions: 2,
+    correlatedNotional: 0,
+    riskPerTradePct: 1,
+    maxDailyDrawdownPct: 3,
+    stepDownAfterLosses: 2,
+    stepDownSizeCutPct: 50,
+    maxAggregateOpenRiskPct: 2,
+    maxCorrelatedExposurePct: 6,
+    maxTradesPerDay: 6,
+  });
 
   it('fills at a freshly-fetched quote, not the signal price', async () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 101.5 }) as never);
@@ -164,8 +166,16 @@ describe('runPaperExecution', () => {
     // aggregate-open-risk cap (4.5% = $4500) is what should bind once two
     // $1500-risk positions (1.5% each) are already running — proving the
     // SECOND approval's risk is counted before the THIRD candidate is
-    // evaluated, not just the pre-call snapshot.
-    setAutotradeConfig({ riskProfile: 'AGGRESSIVE', maxConcurrentPositions: 3 });
+    // evaluated, not just the pre-call snapshot. riskPerTradePct/
+    // maxAggregateOpenRiskPct set explicitly (matching AGGRESSIVE's OLD preset
+    // values) since riskProfile itself no longer implies them — see
+    // riskProfiles.ts's header comment.
+    setAutotradeConfig({
+      riskProfile: 'AGGRESSIVE',
+      maxConcurrentPositions: 3,
+      riskPerTradePct: 1.5,
+      maxAggregateOpenRiskPct: 4.5,
+    });
     mockGetProvider.mockReturnValue(quoteReturning({ AAA: 100, BBB: 100, CCC: 100 }) as never);
     // 1.5% risk/trade * $100k = $1500 budget each; $10 stop distance -> 150 shares, $1500 risk.
     const sig = (sym: string) => signal({ symbol: sym, entry: 100, stop: 90, target: 130 });

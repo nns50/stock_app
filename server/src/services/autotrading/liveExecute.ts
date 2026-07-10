@@ -24,7 +24,6 @@ import { createPosition, listPositions, addExit, Position } from '../../db/posit
 import { realizedPnlOf, initialRiskOf, computeStreaksAndDrawdown } from '../pnl';
 import { TradeSignal } from './decide';
 import { RiskCheckContext, RiskCheckResult, correlatedNotional, evaluateRiskCheck } from './riskCheck';
-import { RISK_PROFILES } from './riskProfiles';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { getProvider } from '../../providers';
 import { dispatchNotifications } from '../notifier';
@@ -462,7 +461,6 @@ export async function attemptLiveEntry(
  */
 export async function runLiveExecution(candidates: { signal: TradeSignal }[]): Promise<LiveExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
-  const profile = RISK_PROFILES[cfg.riskProfile];
   const equity = cfg.accountEquityUsd ?? 0;
 
   const snapshot = getLivePortfolioSnapshot();
@@ -508,8 +506,15 @@ export async function runLiveExecution(candidates: { signal: TradeSignal }[]): P
       openPositionsCount: runningCount,
       maxConcurrentPositions: cfg.maxConcurrentPositions,
       correlatedNotional: correlated,
+      riskPerTradePct: cfg.riskPerTradePct,
+      maxDailyDrawdownPct: cfg.maxDailyDrawdownPct,
+      stepDownAfterLosses: cfg.stepDownAfterLosses,
+      stepDownSizeCutPct: cfg.stepDownSizeCutPct,
+      maxAggregateOpenRiskPct: cfg.maxAggregateOpenRiskPct,
+      maxCorrelatedExposurePct: cfg.maxCorrelatedExposurePct,
+      maxTradesPerDay: cfg.maxTradesPerDay,
     };
-    const result = evaluateRiskCheck(signal, ctx, profile);
+    const result = evaluateRiskCheck(signal, ctx);
     if (!result.ok) {
       outcomes.push({ symbol, ok: false, reason: 'Risk check blocked' });
       continue;

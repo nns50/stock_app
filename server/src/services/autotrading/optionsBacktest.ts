@@ -2,7 +2,16 @@ import { Candle } from '../../providers/types';
 import { ScreenerConfig, scoreSymbol } from '../../indicators/screener';
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { defaultAutotradeScreenerConfig } from './screen';
-import { addDays, indexAsOf, loadBacktestHistory, toISO, WARMUP_PADDING_DAYS, EquityPoint } from './backtest';
+import {
+  addDays,
+  BacktestRiskParams,
+  indexAsOf,
+  loadBacktestHistory,
+  resolveBacktestRiskParams,
+  toISO,
+  WARMUP_PADDING_DAYS,
+  EquityPoint,
+} from './backtest';
 import {
   defaultAutotradeEntryConfig,
   OptionsDecisionConfig,
@@ -11,7 +20,7 @@ import {
 } from './optionsDecide';
 import { evaluateOptionsRiskCheck } from './optionsRiskCheck';
 import { RiskCheckContext } from './riskCheck';
-import { CORRELATION_LOOKBACK_DAYS, CORRELATION_THRESHOLD, RISK_PROFILES, RiskProfileParams } from './riskProfiles';
+import { CORRELATION_LOOKBACK_DAYS, CORRELATION_THRESHOLD } from './riskProfiles';
 import { RiskProfileName, OptionsStrategyType } from '../../db/autotradeConfig';
 import { getHistoricalOptionContracts } from './optionsHistoricalData';
 import { getHistoricalBars } from './historicalData';
@@ -79,7 +88,7 @@ import { computeStreaksAndDrawdown } from '../pnl';
  *  available (optionStrategy.ts's combinedGreeks/probabilityOfProfit). */
 const RISK_FREE_RATE = 0.04;
 
-export interface OptionsBacktestConfig {
+export interface OptionsBacktestConfig extends Partial<BacktestRiskParams> {
   symbols: string[];
   /** YYYY-MM-DD, inclusive. */
   from: string;
@@ -331,7 +340,7 @@ export async function simulateOptionsBacktest(
   contractsBySymbol: Map<string, OptionContractRef[]>,
   cfg: OptionsBacktestConfig,
 ): Promise<OptionsBacktestReport> {
-  const profile: RiskProfileParams = RISK_PROFILES[cfg.riskProfile];
+  const riskParams = resolveBacktestRiskParams(cfg);
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
   const direction = cfg.optionsDecisionConfig?.direction ?? 'long';
   const side: OptionsSignalSide = direction === 'long' ? 'call' : 'put';
@@ -643,6 +652,7 @@ export async function simulateOptionsBacktest(
         openPositionsCount: runningCount,
         maxConcurrentPositions: cfg.maxConcurrentPositions,
         correlatedNotional: correlated,
+        ...riskParams,
       };
       const result = evaluateOptionsRiskCheck(
         shortRef
@@ -685,7 +695,6 @@ export async function simulateOptionsBacktest(
               score: candidate.total,
             },
         ctx,
-        profile,
       );
       if (!result.ok) {
         skipped.push({

@@ -1059,6 +1059,16 @@ export interface AutotradeConfig {
   /** ONE combined open-position budget shared by equity + options. */
   maxConcurrentPositions: number;
 
+  // --- Risk-check parameters — independently user-configured, no longer
+  // tied to riskProfile (which is now purely a label). ---
+  riskPerTradePct: number;
+  maxDailyDrawdownPct: number;
+  stepDownAfterLosses: number;
+  stepDownSizeCutPct: number;
+  maxAggregateOpenRiskPct: number;
+  maxCorrelatedExposurePct: number;
+  maxTradesPerDay: number;
+
   // --- Phase 8: live trading ---
   liveTradingEnabled: boolean;
   liveEnabledAt: number | null;
@@ -1303,7 +1313,22 @@ export interface WalkForwardResponse {
   errors: { symbol: string; message: string }[];
 }
 
-export interface BacktestRequest {
+/** Optional overrides for the seven risk-check parameters — when omitted, a
+ *  backtest falls back field-by-field to riskProfile's OLD MODERATE/AGGRESSIVE
+ *  preset bundle (a backtest's riskProfile is a self-contained hypothesis, not
+ *  an ongoing account setting, so it's kept implying this bundle unless
+ *  explicitly overridden — see server's resolveBacktestRiskParams()). */
+export interface BacktestRiskParams {
+  riskPerTradePct?: number;
+  maxDailyDrawdownPct?: number;
+  stepDownAfterLosses?: number;
+  stepDownSizeCutPct?: number;
+  maxAggregateOpenRiskPct?: number;
+  maxCorrelatedExposurePct?: number;
+  maxTradesPerDay?: number;
+}
+
+export interface BacktestRequest extends BacktestRiskParams {
   symbols: string[];
   from: string;
   to: string;
@@ -1370,7 +1395,7 @@ export interface OptionsWalkForwardResponse {
   errors: { symbol: string; message: string }[];
 }
 
-export interface OptionsBacktestRequest {
+export interface OptionsBacktestRequest extends BacktestRiskParams {
   symbols: string[];
   from: string;
   to: string;
@@ -1415,7 +1440,7 @@ export interface CombinedWalkForwardResponse {
   errors: { symbol: string; message: string }[];
 }
 
-export interface CombinedBacktestRequest {
+export interface CombinedBacktestRequest extends BacktestRiskParams {
   symbols: string[];
   from: string;
   to: string;

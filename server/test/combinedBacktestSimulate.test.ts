@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../src/services/autotrading/historicalData', () => ({ getHistoricalBars: vi.fn() }));
 
@@ -7,7 +7,6 @@ import { simulateCombinedBacktest, CombinedBacktestConfig } from '../src/service
 import { OptionContractRef } from '../src/services/autotrading/polygonOptionsClient';
 import { Candle } from '../src/providers/types';
 import { bsPrice } from '../src/options/blackScholes';
-import { RISK_PROFILES } from '../src/services/autotrading/riskProfiles';
 
 const mockGetHistoricalBars = vi.mocked(getHistoricalBars);
 
@@ -150,22 +149,16 @@ describe('simulateCombinedBacktest', () => {
   });
 
   describe('CRITICAL: the combined aggregate-risk budget crosses instrument types', () => {
-    const original = { ...RISK_PROFILES.MODERATE };
-    beforeEach(() => {
-      // Generous on every other cap so max_aggregate_open_risk is
-      // unambiguously the one doing the blocking below. maxConcurrentPositions
-      // is a CombinedBacktestConfig field now (passed to baseConfig() at each
-      // call site below), not part of RISK_PROFILES.
-      Object.assign(RISK_PROFILES.MODERATE, {
-        maxCorrelatedExposurePct: 100,
-        maxDailyDrawdownPct: 100,
-        maxTradesPerDay: 100,
-        maxAggregateOpenRiskPct: 1.5, // one ~1%-risk position fits; two don't
-      });
-    });
-    afterEach(() => {
-      Object.assign(RISK_PROFILES.MODERATE, original);
-    });
+    // Generous on every other cap (via the riskCaps() overrides threaded into
+    // baseConfig() at each call site below) so max_aggregate_open_risk is
+    // unambiguously the one doing the blocking. maxConcurrentPositions is a
+    // separate CombinedBacktestConfig field, set independently at each site.
+    const riskCaps = {
+      maxCorrelatedExposurePct: 100,
+      maxDailyDrawdownPct: 100,
+      maxTradesPerDay: 100,
+      maxAggregateOpenRiskPct: 1.5, // one ~1%-risk position fits; two don't
+    };
 
     it("an already-open EQUITY position's risk blocks a NEW options candidate once the combined total would exceed the cap", async () => {
       const day0 = '2024-03-01'; // AAA's equity signal day
@@ -205,7 +198,7 @@ describe('simulateCombinedBacktest', () => {
       const report = await simulateCombinedBacktest(
         historyBySymbol,
         contractsBySymbol,
-        baseConfig({ symbols: ['AAA', 'BBB'], from: day0, to: day3, maxConcurrentPositions: 100 }),
+        baseConfig({ symbols: ['AAA', 'BBB'], from: day0, to: day3, maxConcurrentPositions: 100, ...riskCaps }),
       );
 
       // AAA's equity position opened successfully (it's the FIRST approval,
@@ -274,7 +267,7 @@ describe('simulateCombinedBacktest', () => {
       const report = await simulateCombinedBacktest(
         historyBySymbol,
         contractsBySymbol,
-        baseConfig({ symbols: ['BBB', 'AAA'], from: day0, to: day3, maxConcurrentPositions: 100 }),
+        baseConfig({ symbols: ['BBB', 'AAA'], from: day0, to: day3, maxConcurrentPositions: 100, ...riskCaps }),
       );
 
       expect(report.optionsTrades.some((t) => t.symbol === 'BBB')).toBe(true);
@@ -376,69 +369,61 @@ describe('simulateCombinedBacktest', () => {
     });
 
     it("a debit spread's net-debit riskAmount feeds the SAME shared ledger equity positions use", async () => {
-      const original = { ...RISK_PROFILES.MODERATE };
-      // Generous on every other cap so max_aggregate_open_risk is
-      // unambiguously the one doing the blocking (same convention as the
-      // "CRITICAL" describe block above). maxConcurrentPositions is passed to
-      // baseConfig() below instead — see that block's comment for why.
-      Object.assign(RISK_PROFILES.MODERATE, {
-        maxCorrelatedExposurePct: 100,
-        maxDailyDrawdownPct: 100,
-        maxTradesPerDay: 100,
-        maxAggregateOpenRiskPct: 1.5,
+      // Generous on every other cap (via baseConfig's overrides below) so
+      // max_aggregate_open_risk is unambiguously the one doing the blocking
+      // (same convention as the "CRITICAL" describe block above).
+      const day0 = '2024-03-01';
+      const day1 = d(day0, 1);
+      // AAA: an ordinary equity long already at ~1% of equity risk.
+      const aaaHistory = [...warmupThrough(day0), equityBar(day1)];
+      // BBB: flat (isolates to its options side only), same day as AAA.
+      const bbbHistory = flatHistory(day0, [day1]);
+      const historyBySymbol = new Map([
+        ['AAA', aaaHistory],
+        ['BBB', bbbHistory],
+      ]);
+      const expiration = d(day0, DTE_DAYS);
+      const T = yearsFor(DTE_DAYS);
+      // Natural, self-consistent BS pricing for both legs (same sigma
+      // already confirmed to land each leg's delta in its own band, see
+      // optionsBacktestSimulate.test.ts) sizes to several contracts at
+      // ~$913 total risk — stacked on AAA's already-open ~1%/$1000 equity
+      // risk, the running total exceeds the 1.5%/$1500 cap, proving the
+      // spread's riskAmount (net debit x contracts x 100), not some other
+      // figure, is what the shared ledger actually sees.
+      const longEntry = premiumFor(100, LONG_STRIKE, T);
+      const shortEntry = premiumFor(100, SHORT_STRIKE, T);
+      mockContractBars({
+        [LONG_TICKER]: [optionBar(day0, longEntry), optionBar(day1, longEntry, { open: longEntry })],
+        [SHORT_TICKER]: [optionBar(day0, shortEntry), optionBar(day1, shortEntry, { open: shortEntry })],
       });
-      try {
-        const day0 = '2024-03-01';
-        const day1 = d(day0, 1);
-        // AAA: an ordinary equity long already at ~1% of equity risk.
-        const aaaHistory = [...warmupThrough(day0), equityBar(day1)];
-        // BBB: flat (isolates to its options side only), same day as AAA.
-        const bbbHistory = flatHistory(day0, [day1]);
-        const historyBySymbol = new Map([
-          ['AAA', aaaHistory],
-          ['BBB', bbbHistory],
-        ]);
-        const expiration = d(day0, DTE_DAYS);
-        const T = yearsFor(DTE_DAYS);
-        // Natural, self-consistent BS pricing for both legs (same sigma
-        // already confirmed to land each leg's delta in its own band, see
-        // optionsBacktestSimulate.test.ts) sizes to several contracts at
-        // ~$913 total risk — stacked on AAA's already-open ~1%/$1000 equity
-        // risk, the running total exceeds the 1.5%/$1500 cap, proving the
-        // spread's riskAmount (net debit x contracts x 100), not some other
-        // figure, is what the shared ledger actually sees.
-        const longEntry = premiumFor(100, LONG_STRIKE, T);
-        const shortEntry = premiumFor(100, SHORT_STRIKE, T);
-        mockContractBars({
-          [LONG_TICKER]: [optionBar(day0, longEntry), optionBar(day1, longEntry, { open: longEntry })],
-          [SHORT_TICKER]: [optionBar(day0, shortEntry), optionBar(day1, shortEntry, { open: shortEntry })],
-        });
-        const contractsBySymbol = new Map([
-          [
-            'BBB',
-            [contractRef(LONG_TICKER, LONG_STRIKE, expiration), contractRef(SHORT_TICKER, SHORT_STRIKE, expiration)],
-          ],
-        ]);
+      const contractsBySymbol = new Map([
+        [
+          'BBB',
+          [contractRef(LONG_TICKER, LONG_STRIKE, expiration), contractRef(SHORT_TICKER, SHORT_STRIKE, expiration)],
+        ],
+      ]);
 
-        const report = await simulateCombinedBacktest(
-          historyBySymbol,
-          contractsBySymbol,
-          baseConfig({
-            symbols: ['AAA', 'BBB'],
-            from: day0,
-            to: day1,
-            maxConcurrentPositions: 100,
-            optionsDecisionConfig: { strategyType: 'debit_spread' },
-          }),
-        );
-        expect(report.equityTrades.some((t) => t.symbol === 'AAA')).toBe(true); // AAA's own ~1% fits alone
-        expect(report.optionsTrades).toEqual([]); // BBB's spread risk on top of AAA's exceeds the 1.5% cap
-        expect(report.optionsSkipped.some((s) => s.symbol === 'BBB' && s.reason.includes('Risk check blocked'))).toBe(
-          true,
-        );
-      } finally {
-        Object.assign(RISK_PROFILES.MODERATE, original);
-      }
+      const report = await simulateCombinedBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        baseConfig({
+          symbols: ['AAA', 'BBB'],
+          from: day0,
+          to: day1,
+          maxConcurrentPositions: 100,
+          maxCorrelatedExposurePct: 100,
+          maxDailyDrawdownPct: 100,
+          maxTradesPerDay: 100,
+          maxAggregateOpenRiskPct: 1.5,
+          optionsDecisionConfig: { strategyType: 'debit_spread' },
+        }),
+      );
+      expect(report.equityTrades.some((t) => t.symbol === 'AAA')).toBe(true); // AAA's own ~1% fits alone
+      expect(report.optionsTrades).toEqual([]); // BBB's spread risk on top of AAA's exceeds the 1.5% cap
+      expect(report.optionsSkipped.some((s) => s.symbol === 'BBB' && s.reason.includes('Risk check blocked'))).toBe(
+        true,
+      );
     });
   });
 });

@@ -5,7 +5,7 @@ import { computeRiskSizing, RiskSizingResult } from '../riskSizing';
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { logAutotradeEvent, listAutotradeEvents } from '../../db/autotradeEvents';
-import { CORRELATION_LOOKBACK_DAYS, CORRELATION_THRESHOLD, RISK_PROFILES, RiskProfileParams } from './riskProfiles';
+import { CORRELATION_LOOKBACK_DAYS, CORRELATION_THRESHOLD } from './riskProfiles';
 import { TradeSignal } from './decide';
 
 // ---------------------------------------------------------------------------
@@ -183,6 +183,19 @@ export interface RiskCheckContext {
    *  riskProfiles.ts). Sourced from config the same way `equity` already is. */
   maxConcurrentPositions: number;
   correlatedNotional: number;
+  /** Everything below is a directly user-configured AutotradeConfig field —
+   *  all used to live in riskProfiles.ts's MODERATE/AGGRESSIVE preset table,
+   *  moved out 2026-07-10 for the same reason maxConcurrentPositions was:
+   *  switching riskProfile silently changing a cap the user explicitly set
+   *  would be a worse surprise than leaving profile-switching alone. See
+   *  AutotradeConfig's own doc comments for the full reasoning/defaults. */
+  riskPerTradePct: number;
+  maxDailyDrawdownPct: number;
+  stepDownAfterLosses: number;
+  stepDownSizeCutPct: number;
+  maxAggregateOpenRiskPct: number;
+  maxCorrelatedExposurePct: number;
+  maxTradesPerDay: number;
 }
 
 export interface RiskCheckRule {
@@ -204,15 +217,13 @@ export interface RiskCheckResult {
 }
 
 /**
- * Evaluate one already-sized signal against the active risk profile. Pure —
- * no I/O. `ctx` carries everything the checks need, including any signals
- * already approved earlier in the same batch (see runAutotradeRiskCheck).
+ * Evaluate one already-sized signal against the configured risk caps. Pure —
+ * no I/O. `ctx` carries everything the checks need — every cap is a directly
+ * user-configured AutotradeConfig field now (see RiskCheckContext's doc
+ * comment), including any signals already approved earlier in the same batch
+ * (see runAutotradeRiskCheck).
  */
-export function evaluateRiskCheck(
-  signal: TradeSignal,
-  ctx: RiskCheckContext,
-  profile: RiskProfileParams,
-): RiskCheckResult {
+export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): RiskCheckResult {
   const checks: RiskCheckRule[] = [];
   const check = (rule: string, passed: boolean, detail: string) => checks.push({ rule, passed, detail });
   const blocked = (sizing: RiskSizingResult, stepDownActive: boolean): RiskCheckResult => ({
@@ -233,16 +244,16 @@ export function evaluateRiskCheck(
   );
   if (!equityOk) return blocked(ZERO_SIZING, false);
 
-  const stepDownActive = ctx.consecutiveLosses >= profile.stepDownAfterLosses;
+  const stepDownActive = ctx.consecutiveLosses >= ctx.stepDownAfterLosses;
   const effectiveRiskPct = stepDownActive
-    ? profile.riskPerTradePct * (1 - profile.stepDownSizeCutPct / 100)
-    : profile.riskPerTradePct;
+    ? ctx.riskPerTradePct * (1 - ctx.stepDownSizeCutPct / 100)
+    : ctx.riskPerTradePct;
   check(
     'step_down_sizing',
     true,
     stepDownActive
-      ? `active — ${ctx.consecutiveLosses} consecutive losses, sizing at ${effectiveRiskPct}% instead of ${profile.riskPerTradePct}% (${profile.stepDownSizeCutPct}% cut)`
-      : `inactive — ${ctx.consecutiveLosses} consecutive losses (triggers at ${profile.stepDownAfterLosses})`,
+      ? `active — ${ctx.consecutiveLosses} consecutive losses, sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}% (${ctx.stepDownSizeCutPct}% cut)`
+      : `inactive — ${ctx.consecutiveLosses} consecutive losses (triggers at ${ctx.stepDownAfterLosses})`,
   );
 
   const sizing = computeRiskSizing({
@@ -264,16 +275,16 @@ export function evaluateRiskCheck(
   );
   if (!qtyOk) return blocked(sizing, stepDownActive);
 
-  const dailyHaltLevel = -(profile.maxDailyDrawdownPct / 100) * ctx.equity;
+  const dailyHaltLevel = -(ctx.maxDailyDrawdownPct / 100) * ctx.equity;
   const haltOk = ctx.dailyPnl > dailyHaltLevel;
   check(
     'daily_drawdown_halt',
     haltOk,
-    `today ${usd(ctx.dailyPnl)} vs halt at ${usd(dailyHaltLevel)} (${profile.maxDailyDrawdownPct}% of equity)`,
+    `today ${usd(ctx.dailyPnl)} vs halt at ${usd(dailyHaltLevel)} (${ctx.maxDailyDrawdownPct}% of equity)`,
   );
 
-  const tradesOk = ctx.tradesToday < profile.maxTradesPerDay;
-  check('max_trades_per_day', tradesOk, `${ctx.tradesToday} placed vs ${profile.maxTradesPerDay}/day`);
+  const tradesOk = ctx.tradesToday < ctx.maxTradesPerDay;
+  check('max_trades_per_day', tradesOk, `${ctx.tradesToday} placed vs ${ctx.maxTradesPerDay}/day`);
 
   const positionsOk = ctx.openPositionsCount < ctx.maxConcurrentPositions;
   check('max_concurrent_positions', positionsOk, `${ctx.openPositionsCount} open vs cap ${ctx.maxConcurrentPositions}`);
@@ -283,13 +294,13 @@ export function evaluateRiskCheck(
   // distance) across ALL open + this proposed position — that blocks BEFORE
   // several positions could get stopped out together and blow past the daily
   // halt before it can even trigger.
-  const aggregateCap = (profile.maxAggregateOpenRiskPct / 100) * ctx.equity;
+  const aggregateCap = (ctx.maxAggregateOpenRiskPct / 100) * ctx.equity;
   const aggregateAfter = ctx.openRisk + sizing.riskOfPosition;
   const aggregateOk = aggregateAfter <= aggregateCap;
   check(
     'max_aggregate_open_risk',
     aggregateOk,
-    `${usd(aggregateAfter)} vs cap ${usd(aggregateCap)} (${profile.maxAggregateOpenRiskPct}% of equity)`,
+    `${usd(aggregateAfter)} vs cap ${usd(aggregateCap)} (${ctx.maxAggregateOpenRiskPct}% of equity)`,
   );
 
   // Unlike aggregate open risk, this does NOT add the proposed trade's own
@@ -302,12 +313,12 @@ export function evaluateRiskCheck(
   // the candidate's own size is what per-trade risk / aggregate open risk
   // already govern. Once approved, it's added to the running portfolio (see
   // runAutotradeRiskCheck) so it correctly counts against the NEXT candidate.
-  const correlatedCap = (profile.maxCorrelatedExposurePct / 100) * ctx.equity;
+  const correlatedCap = (ctx.maxCorrelatedExposurePct / 100) * ctx.equity;
   const correlatedOk = ctx.correlatedNotional <= correlatedCap;
   check(
     'max_correlated_exposure',
     correlatedOk,
-    `${usd(ctx.correlatedNotional)} already correlated vs cap ${usd(correlatedCap)} (${profile.maxCorrelatedExposurePct}% of equity, |r| ≥ ${CORRELATION_THRESHOLD})`,
+    `${usd(ctx.correlatedNotional)} already correlated vs cap ${usd(correlatedCap)} (${ctx.maxCorrelatedExposurePct}% of equity, |r| ≥ ${CORRELATION_THRESHOLD})`,
   );
 
   const ok = checks.every((c) => c.passed);
@@ -333,7 +344,6 @@ export function evaluateRiskCheck(
  */
 export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<RiskCheckResult[]> {
   const config = getAutotradeConfig();
-  const profile = RISK_PROFILES[config.riskProfile];
   const snapshot = getPortfolioSnapshot();
 
   const results: RiskCheckResult[] = [];
@@ -352,8 +362,15 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
       openPositionsCount: runningCount,
       maxConcurrentPositions: config.maxConcurrentPositions,
       correlatedNotional: correlated,
+      riskPerTradePct: config.riskPerTradePct,
+      maxDailyDrawdownPct: config.maxDailyDrawdownPct,
+      stepDownAfterLosses: config.stepDownAfterLosses,
+      stepDownSizeCutPct: config.stepDownSizeCutPct,
+      maxAggregateOpenRiskPct: config.maxAggregateOpenRiskPct,
+      maxCorrelatedExposurePct: config.maxCorrelatedExposurePct,
+      maxTradesPerDay: config.maxTradesPerDay,
     };
-    const result = evaluateRiskCheck(signal, ctx, profile);
+    const result = evaluateRiskCheck(signal, ctx);
     results.push(result);
 
     logAutotradeEvent({

@@ -168,28 +168,23 @@ describe('getProbationStatus', () => {
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-9' });
     const enabledAt = Date.now() - 1000;
     const cfg = liveConfig({ liveEnabledAt: enabledAt, liveProbationTrades: 5, liveProbationSizeMultiplier: 0.4 });
-    const okResult = evaluateRiskCheck(
-      signal(),
-      {
-        equity: 100_000,
-        dailyPnl: 0,
-        tradesToday: 0,
-        consecutiveLosses: 0,
-        openRisk: 0,
-        openPositionsCount: 0,
-        maxConcurrentPositions: 2,
-        correlatedNotional: 0,
-      },
-      {
-        riskPerTradePct: 1,
-        maxDailyDrawdownPct: 3,
-        stepDownAfterLosses: 2,
-        stepDownSizeCutPct: 50,
-        maxAggregateOpenRiskPct: 2,
-        maxCorrelatedExposurePct: 6,
-        maxTradesPerDay: 6,
-      },
-    );
+    const okResult = evaluateRiskCheck(signal(), {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      maxConcurrentPositions: 2,
+      correlatedNotional: 0,
+      riskPerTradePct: 1,
+      maxDailyDrawdownPct: 3,
+      stepDownAfterLosses: 2,
+      stepDownSizeCutPct: 50,
+      maxAggregateOpenRiskPct: 2,
+      maxCorrelatedExposurePct: 6,
+      maxTradesPerDay: 6,
+    });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
     const intentId = listIntents()[0].id;
     transitionIntent(intentId, 'expired', { detail: 'test: order timed out unfilled' });
@@ -268,28 +263,23 @@ describe('syncAccountEquityFromBroker', () => {
 });
 
 describe('attemptLiveEntry', () => {
-  const okResult: RiskCheckResult = evaluateRiskCheck(
-    signal(),
-    {
-      equity: 100_000,
-      dailyPnl: 0,
-      tradesToday: 0,
-      consecutiveLosses: 0,
-      openRisk: 0,
-      openPositionsCount: 0,
-      maxConcurrentPositions: 2,
-      correlatedNotional: 0,
-    },
-    {
-      riskPerTradePct: 1,
-      maxDailyDrawdownPct: 3,
-      stepDownAfterLosses: 2,
-      stepDownSizeCutPct: 50,
-      maxAggregateOpenRiskPct: 2,
-      maxCorrelatedExposurePct: 6,
-      maxTradesPerDay: 6,
-    },
-  );
+  const okResult: RiskCheckResult = evaluateRiskCheck(signal(), {
+    equity: 100_000,
+    dailyPnl: 0,
+    tradesToday: 0,
+    consecutiveLosses: 0,
+    openRisk: 0,
+    openPositionsCount: 0,
+    maxConcurrentPositions: 2,
+    correlatedNotional: 0,
+    riskPerTradePct: 1,
+    maxDailyDrawdownPct: 3,
+    stepDownAfterLosses: 2,
+    stepDownSizeCutPct: 50,
+    maxAggregateOpenRiskPct: 2,
+    maxCorrelatedExposurePct: 6,
+    maxTradesPerDay: 6,
+  });
 
   it('refuses when TRADING_ENABLED is off — no intent, no broker call, regardless of every other gate passing', async () => {
     config.trading.placeEnabled = false;
@@ -597,28 +587,23 @@ describe('reconcileLiveOrders', () => {
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-3' });
     const cfg = liveConfig();
-    const okResult = evaluateRiskCheck(
-      signal(),
-      {
-        equity: 100_000,
-        dailyPnl: 0,
-        tradesToday: 0,
-        consecutiveLosses: 0,
-        openRisk: 0,
-        openPositionsCount: 0,
-        maxConcurrentPositions: 2,
-        correlatedNotional: 0,
-      },
-      {
-        riskPerTradePct: 1,
-        maxDailyDrawdownPct: 3,
-        stepDownAfterLosses: 2,
-        stepDownSizeCutPct: 50,
-        maxAggregateOpenRiskPct: 2,
-        maxCorrelatedExposurePct: 6,
-        maxTradesPerDay: 6,
-      },
-    );
+    const okResult = evaluateRiskCheck(signal(), {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      maxConcurrentPositions: 2,
+      correlatedNotional: 0,
+      riskPerTradePct: 1,
+      maxDailyDrawdownPct: 3,
+      stepDownAfterLosses: 2,
+      stepDownSizeCutPct: 50,
+      maxAggregateOpenRiskPct: 2,
+      maxCorrelatedExposurePct: 6,
+      maxTradesPerDay: 6,
+    });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
     const intentId = listIntents()[0].id;
 
@@ -646,28 +631,23 @@ describe('reconcileLiveOrders', () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-4' });
-    const okResult = evaluateRiskCheck(
-      signal(),
-      {
-        equity: 100_000,
-        dailyPnl: 0,
-        tradesToday: 0,
-        consecutiveLosses: 0,
-        openRisk: 0,
-        openPositionsCount: 0,
-        maxConcurrentPositions: 2,
-        correlatedNotional: 0,
-      },
-      {
-        riskPerTradePct: 1,
-        maxDailyDrawdownPct: 3,
-        stepDownAfterLosses: 2,
-        stepDownSizeCutPct: 50,
-        maxAggregateOpenRiskPct: 2,
-        maxCorrelatedExposurePct: 6,
-        maxTradesPerDay: 6,
-      },
-    );
+    const okResult = evaluateRiskCheck(signal(), {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      maxConcurrentPositions: 2,
+      correlatedNotional: 0,
+      riskPerTradePct: 1,
+      maxDailyDrawdownPct: 3,
+      stepDownAfterLosses: 2,
+      stepDownSizeCutPct: 50,
+      maxAggregateOpenRiskPct: 2,
+      maxCorrelatedExposurePct: 6,
+      maxTradesPerDay: 6,
+    });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
 
     // First reconcile: entry fills.
@@ -704,28 +684,23 @@ describe('reconcileLiveOrders', () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-5' });
-    const okResult = evaluateRiskCheck(
-      signal(),
-      {
-        equity: 100_000,
-        dailyPnl: 0,
-        tradesToday: 0,
-        consecutiveLosses: 0,
-        openRisk: 0,
-        openPositionsCount: 0,
-        maxConcurrentPositions: 2,
-        correlatedNotional: 0,
-      },
-      {
-        riskPerTradePct: 1,
-        maxDailyDrawdownPct: 3,
-        stepDownAfterLosses: 2,
-        stepDownSizeCutPct: 50,
-        maxAggregateOpenRiskPct: 2,
-        maxCorrelatedExposurePct: 6,
-        maxTradesPerDay: 6,
-      },
-    );
+    const okResult = evaluateRiskCheck(signal(), {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      maxConcurrentPositions: 2,
+      correlatedNotional: 0,
+      riskPerTradePct: 1,
+      maxDailyDrawdownPct: 3,
+      stepDownAfterLosses: 2,
+      stepDownSizeCutPct: 50,
+      maxAggregateOpenRiskPct: 2,
+      maxCorrelatedExposurePct: 6,
+      maxTradesPerDay: 6,
+    });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
 
     mockOrderStatus.mockResolvedValue({
@@ -763,28 +738,23 @@ describe('reconcileLiveOrders', () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-7' });
-    const okResult = evaluateRiskCheck(
-      signal(),
-      {
-        equity: 100_000,
-        dailyPnl: 0,
-        tradesToday: 0,
-        consecutiveLosses: 0,
-        openRisk: 0,
-        openPositionsCount: 0,
-        maxConcurrentPositions: 2,
-        correlatedNotional: 0,
-      },
-      {
-        riskPerTradePct: 1,
-        maxDailyDrawdownPct: 3,
-        stepDownAfterLosses: 2,
-        stepDownSizeCutPct: 50,
-        maxAggregateOpenRiskPct: 2,
-        maxCorrelatedExposurePct: 6,
-        maxTradesPerDay: 6,
-      },
-    );
+    const okResult = evaluateRiskCheck(signal(), {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      maxConcurrentPositions: 2,
+      correlatedNotional: 0,
+      riskPerTradePct: 1,
+      maxDailyDrawdownPct: 3,
+      stepDownAfterLosses: 2,
+      stepDownSizeCutPct: 50,
+      maxAggregateOpenRiskPct: 2,
+      maxCorrelatedExposurePct: 6,
+      maxTradesPerDay: 6,
+    });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
     const intentId = listIntents()[0].id;
 
@@ -821,28 +791,23 @@ describe('reconcileLiveOrders', () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-8' });
-    const okResult = evaluateRiskCheck(
-      signal(),
-      {
-        equity: 100_000,
-        dailyPnl: 0,
-        tradesToday: 0,
-        consecutiveLosses: 0,
-        openRisk: 0,
-        openPositionsCount: 0,
-        maxConcurrentPositions: 2,
-        correlatedNotional: 0,
-      },
-      {
-        riskPerTradePct: 1,
-        maxDailyDrawdownPct: 3,
-        stepDownAfterLosses: 2,
-        stepDownSizeCutPct: 50,
-        maxAggregateOpenRiskPct: 2,
-        maxCorrelatedExposurePct: 6,
-        maxTradesPerDay: 6,
-      },
-    );
+    const okResult = evaluateRiskCheck(signal(), {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      maxConcurrentPositions: 2,
+      correlatedNotional: 0,
+      riskPerTradePct: 1,
+      maxDailyDrawdownPct: 3,
+      stepDownAfterLosses: 2,
+      stepDownSizeCutPct: 50,
+      maxAggregateOpenRiskPct: 2,
+      maxCorrelatedExposurePct: 6,
+      maxTradesPerDay: 6,
+    });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
 
     mockOrderStatus.mockResolvedValue({
@@ -889,28 +854,23 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-6' });
-    const okResult = evaluateRiskCheck(
-      signal(),
-      {
-        equity: 100_000,
-        dailyPnl: 0,
-        tradesToday: 0,
-        consecutiveLosses: 0,
-        openRisk: 0,
-        openPositionsCount: 0,
-        maxConcurrentPositions: 2,
-        correlatedNotional: 0,
-      },
-      {
-        riskPerTradePct: 1,
-        maxDailyDrawdownPct: 3,
-        stepDownAfterLosses: 2,
-        stepDownSizeCutPct: 50,
-        maxAggregateOpenRiskPct: 2,
-        maxCorrelatedExposurePct: 6,
-        maxTradesPerDay: 6,
-      },
-    );
+    const okResult = evaluateRiskCheck(signal(), {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      maxConcurrentPositions: 2,
+      correlatedNotional: 0,
+      riskPerTradePct: 1,
+      maxDailyDrawdownPct: 3,
+      stepDownAfterLosses: 2,
+      stepDownSizeCutPct: 50,
+      maxAggregateOpenRiskPct: 2,
+      maxCorrelatedExposurePct: 6,
+      maxTradesPerDay: 6,
+    });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
     expect(listPendingLiveOrders()).toHaveLength(1); // acknowledged — still working, not yet filled
 
@@ -948,28 +908,23 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
     mockPlaceOrder.mockResolvedValue({ ok: false, error: 'nope' });
-    const okResult = evaluateRiskCheck(
-      signal(),
-      {
-        equity: 100_000,
-        dailyPnl: 0,
-        tradesToday: 0,
-        consecutiveLosses: 0,
-        openRisk: 0,
-        openPositionsCount: 0,
-        maxConcurrentPositions: 2,
-        correlatedNotional: 0,
-      },
-      {
-        riskPerTradePct: 1,
-        maxDailyDrawdownPct: 3,
-        stepDownAfterLosses: 2,
-        stepDownSizeCutPct: 50,
-        maxAggregateOpenRiskPct: 2,
-        maxCorrelatedExposurePct: 6,
-        maxTradesPerDay: 6,
-      },
-    );
+    const okResult = evaluateRiskCheck(signal(), {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      maxConcurrentPositions: 2,
+      correlatedNotional: 0,
+      riskPerTradePct: 1,
+      maxDailyDrawdownPct: 3,
+      stepDownAfterLosses: 2,
+      stepDownSizeCutPct: 50,
+      maxAggregateOpenRiskPct: 2,
+      maxCorrelatedExposurePct: 6,
+      maxTradesPerDay: 6,
+    });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
     expect(listIntents()).toHaveLength(1); // the rejected intent IS audited...
     expect(listPendingLiveOrders()).toHaveLength(0); // ...but was never tagged as autotrade's, since recordLiveOrder only runs on a successful placement

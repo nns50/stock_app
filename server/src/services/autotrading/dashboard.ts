@@ -2,7 +2,6 @@ import { getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
 import { PaperPosition } from '../../db/autotradePaperPositions';
 import { OptionsPaperPosition } from '../../db/autotradeOptionsPaperPositions';
 import { Position } from '../../db/positions';
-import { RISK_PROFILES } from './riskProfiles';
 import { getPaperPortfolioSnapshot } from './execute';
 import { getOptionsPaperPortfolioSnapshot } from './optionsExecute';
 import { getLivePortfolioSnapshot, getProbationStatus, ProbationStatus } from './liveExecute';
@@ -120,7 +119,6 @@ export interface AutotradeDashboard {
 
 export function getAutotradeDashboard(): AutotradeDashboard {
   const config = getAutotradeConfig();
-  const profile = RISK_PROFILES[config.riskProfile];
   const equity = config.accountEquityUsd ?? 0;
   const snapshot = getPaperPortfolioSnapshot();
   const optionsSnapshot = getOptionsPaperPortfolioSnapshot();
@@ -139,16 +137,16 @@ export function getAutotradeDashboard(): AutotradeDashboard {
     maxConcurrentPositions: config.maxConcurrentPositions,
 
     openRisk: snapshot.openRisk + optionsSnapshot.openRisk,
-    maxAggregateOpenRisk: (profile.maxAggregateOpenRiskPct / 100) * equity,
+    maxAggregateOpenRisk: (config.maxAggregateOpenRiskPct / 100) * equity,
 
     dailyPnl: snapshot.dailyPnl + optionsSnapshot.dailyPnl,
-    dailyDrawdownHaltLevel: -(profile.maxDailyDrawdownPct / 100) * equity,
+    dailyDrawdownHaltLevel: -(config.maxDailyDrawdownPct / 100) * equity,
 
     tradesToday: snapshot.tradesToday + optionsSnapshot.tradesToday,
-    maxTradesPerDay: profile.maxTradesPerDay,
+    maxTradesPerDay: config.maxTradesPerDay,
 
     consecutiveLosses: Math.max(snapshot.consecutiveLosses, optionsSnapshot.consecutiveLosses),
-    stepDownAfterLosses: profile.stepDownAfterLosses,
+    stepDownAfterLosses: config.stepDownAfterLosses,
 
     openOptionsPositions: optionsSnapshot.openPositions.map((p) => ({
       ...p,

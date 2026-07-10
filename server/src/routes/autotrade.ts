@@ -55,6 +55,15 @@ const configBody = z.object({
   accountEquityUsd: z.number().positive().nullable().optional(),
   /** ONE combined open-position budget shared by equity + options. */
   maxConcurrentPositions: z.number().int().min(1).optional(),
+  // --- Risk-check parameters (formerly riskProfiles.ts's MODERATE/AGGRESSIVE
+  // preset table — see AutotradeConfig's own doc comments) --------------------
+  riskPerTradePct: z.number().min(0).max(100).optional(),
+  maxDailyDrawdownPct: z.number().min(0).max(100).optional(),
+  stepDownAfterLosses: z.number().int().nonnegative().optional(),
+  stepDownSizeCutPct: z.number().min(0).max(100).optional(),
+  maxAggregateOpenRiskPct: z.number().min(0).max(100).optional(),
+  maxCorrelatedExposurePct: z.number().min(0).max(100).optional(),
+  maxTradesPerDay: z.number().int().nonnegative().optional(),
   // --- Phase 8: live trading -------------------------------------------------
   liveTradingEnabled: z.boolean().optional(),
   /** Required (and must exactly match LIVE_TRADING_CONFIRMATION_PHRASE) only
@@ -112,6 +121,13 @@ autotradeRouter.put(
     if (body.riskProfile !== undefined) patch.riskProfile = body.riskProfile;
     if (body.accountEquityUsd !== undefined) patch.accountEquityUsd = body.accountEquityUsd;
     if (body.maxConcurrentPositions !== undefined) patch.maxConcurrentPositions = body.maxConcurrentPositions;
+    if (body.riskPerTradePct !== undefined) patch.riskPerTradePct = body.riskPerTradePct;
+    if (body.maxDailyDrawdownPct !== undefined) patch.maxDailyDrawdownPct = body.maxDailyDrawdownPct;
+    if (body.stepDownAfterLosses !== undefined) patch.stepDownAfterLosses = body.stepDownAfterLosses;
+    if (body.stepDownSizeCutPct !== undefined) patch.stepDownSizeCutPct = body.stepDownSizeCutPct;
+    if (body.maxAggregateOpenRiskPct !== undefined) patch.maxAggregateOpenRiskPct = body.maxAggregateOpenRiskPct;
+    if (body.maxCorrelatedExposurePct !== undefined) patch.maxCorrelatedExposurePct = body.maxCorrelatedExposurePct;
+    if (body.maxTradesPerDay !== undefined) patch.maxTradesPerDay = body.maxTradesPerDay;
     if (body.liveMaxOrderUsd !== undefined) patch.liveMaxOrderUsd = body.liveMaxOrderUsd;
     if (body.liveMaxDailyLossUsd !== undefined) patch.liveMaxDailyLossUsd = body.liveMaxDailyLossUsd;
     if (body.liveMaxOrdersPerDay !== undefined) patch.liveMaxOrdersPerDay = body.liveMaxOrdersPerDay;
@@ -456,6 +472,42 @@ const dateStr = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD')
   .refine(isValidCalendarDate, { message: 'Not a valid calendar date' });
+// Optional per-request overrides for the seven risk-check parameters — when
+// omitted, a backtest falls back field-by-field to riskProfile's OLD
+// MODERATE/AGGRESSIVE preset bundle (see backtest.ts's
+// resolveBacktestRiskParams/LEGACY_BACKTEST_RISK_DEFAULTS). Shared across all
+// three backtest body schemas below.
+const backtestRiskParamsSchema = {
+  riskPerTradePct: z.number().nonnegative().optional(),
+  maxDailyDrawdownPct: z.number().min(0).max(100).optional(),
+  stepDownAfterLosses: z.number().int().nonnegative().optional(),
+  stepDownSizeCutPct: z.number().min(0).max(100).optional(),
+  maxAggregateOpenRiskPct: z.number().min(0).max(100).optional(),
+  maxCorrelatedExposurePct: z.number().min(0).max(100).optional(),
+  maxTradesPerDay: z.number().int().nonnegative().optional(),
+};
+/** Pulls the seven optional risk-param overrides off an already-parsed
+ *  backtest body, for spreading into a runXBacktest({...}) call — avoids
+ *  repeating all seven field names at each of the six call sites below. */
+function backtestRiskParamsFrom(body: {
+  riskPerTradePct?: number;
+  maxDailyDrawdownPct?: number;
+  stepDownAfterLosses?: number;
+  stepDownSizeCutPct?: number;
+  maxAggregateOpenRiskPct?: number;
+  maxCorrelatedExposurePct?: number;
+  maxTradesPerDay?: number;
+}) {
+  return {
+    riskPerTradePct: body.riskPerTradePct,
+    maxDailyDrawdownPct: body.maxDailyDrawdownPct,
+    stepDownAfterLosses: body.stepDownAfterLosses,
+    stepDownSizeCutPct: body.stepDownSizeCutPct,
+    maxAggregateOpenRiskPct: body.maxAggregateOpenRiskPct,
+    maxCorrelatedExposurePct: body.maxCorrelatedExposurePct,
+    maxTradesPerDay: body.maxTradesPerDay,
+  };
+}
 const backtestBodyBase = z.object({
   symbols: z.array(z.string().min(1)).min(1).max(50, 'At most 50 symbols per backtest run'),
   from: dateStr,
@@ -463,6 +515,7 @@ const backtestBodyBase = z.object({
   riskProfile: z.enum(['MODERATE', 'AGGRESSIVE']),
   startingEquity: z.number().positive(),
   maxConcurrentPositions: z.number().int().min(1),
+  ...backtestRiskParamsSchema,
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   decisionConfig: z.record(z.string(), z.unknown()).optional(),
 });
@@ -488,6 +541,7 @@ autotradeRouter.post(
       riskProfile: body.riskProfile,
       startingEquity: body.startingEquity,
       maxConcurrentPositions: body.maxConcurrentPositions,
+      ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
     });
@@ -507,6 +561,7 @@ autotradeRouter.post(
       riskProfile: body.riskProfile,
       startingEquity: body.startingEquity,
       maxConcurrentPositions: body.maxConcurrentPositions,
+      ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
     });
@@ -526,6 +581,7 @@ const optionsBacktestBodyBase = z.object({
   riskProfile: z.enum(['MODERATE', 'AGGRESSIVE']),
   startingEquity: z.number().positive(),
   maxConcurrentPositions: z.number().int().min(1),
+  ...backtestRiskParamsSchema,
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   optionsDecisionConfig: z.record(z.string(), z.unknown()).optional(),
 });
@@ -551,6 +607,7 @@ autotradeRouter.post(
       riskProfile: body.riskProfile,
       startingEquity: body.startingEquity,
       maxConcurrentPositions: body.maxConcurrentPositions,
+      ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
     });
@@ -570,6 +627,7 @@ autotradeRouter.post(
       riskProfile: body.riskProfile,
       startingEquity: body.startingEquity,
       maxConcurrentPositions: body.maxConcurrentPositions,
+      ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
     });
@@ -607,6 +665,7 @@ const combinedBacktestBodyBase = z.object({
   riskProfile: z.enum(['MODERATE', 'AGGRESSIVE']),
   startingEquity: z.number().positive(),
   maxConcurrentPositions: z.number().int().min(1),
+  ...backtestRiskParamsSchema,
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   decisionConfig: z.record(z.string(), z.unknown()).optional(),
   optionsDecisionConfig: z.record(z.string(), z.unknown()).optional(),
@@ -633,6 +692,7 @@ autotradeRouter.post(
       riskProfile: body.riskProfile,
       startingEquity: body.startingEquity,
       maxConcurrentPositions: body.maxConcurrentPositions,
+      ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
@@ -653,6 +713,7 @@ autotradeRouter.post(
       riskProfile: body.riskProfile,
       startingEquity: body.startingEquity,
       maxConcurrentPositions: body.maxConcurrentPositions,
+      ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,

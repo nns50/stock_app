@@ -428,6 +428,14 @@ export const client = {
     riskProfile?: AutotradeRiskProfile;
     confirmAggressive?: boolean;
     accountEquityUsd?: number | null;
+    maxConcurrentPositions?: number;
+    riskPerTradePct?: number;
+    maxDailyDrawdownPct?: number;
+    stepDownAfterLosses?: number;
+    stepDownSizeCutPct?: number;
+    maxAggregateOpenRiskPct?: number;
+    maxCorrelatedExposurePct?: number;
+    maxTradesPerDay?: number;
     liveTradingEnabled?: boolean;
     confirmLiveTrading?: string;
     liveAccountId?: string | null;

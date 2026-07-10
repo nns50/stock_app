@@ -3,7 +3,7 @@ import { ScreenerConfig, SymbolScore, scoreSymbol } from '../../indicators/scree
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } from './decide';
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
-import { CORRELATION_LOOKBACK_DAYS, CORRELATION_THRESHOLD, RISK_PROFILES, RiskProfileParams } from './riskProfiles';
+import { CORRELATION_LOOKBACK_DAYS, CORRELATION_THRESHOLD } from './riskProfiles';
 import { RiskProfileName } from '../../db/autotradeConfig';
 import { defaultAutotradeScreenerConfig } from './screen';
 import { isExcluded } from '../../db/autotradeExclusions';
@@ -41,7 +41,66 @@ export const TIMEFRAME: Timeframe = 'daily';
  *  default) have a full warmup window on the very first simulated day. */
 export const WARMUP_PADDING_DAYS = 100;
 
-export interface BacktestConfig {
+/** riskProfile's old MODERATE/AGGRESSIVE bundles — every field here used to
+ *  live in riskProfiles.ts's now-removed RISK_PROFILES table, back when
+ *  switching riskProfile implied all seven together. That's gone from the
+ *  LIVE config (2026-07-10 — see AutotradeConfig's own doc comments: each
+ *  field is independently user-configured now, and riskProfile no longer
+ *  touches any of them). A backtest's `riskProfile` selector is different in
+ *  kind, though — a self-contained hypothesis ("what would this profile have
+ *  done"), not an ongoing account setting — so it's kept implying this same
+ *  bundle unless a caller explicitly overrides an individual field below. */
+const LEGACY_BACKTEST_RISK_DEFAULTS: Record<RiskProfileName, BacktestRiskParams> = {
+  MODERATE: {
+    riskPerTradePct: 1,
+    maxDailyDrawdownPct: 3,
+    stepDownAfterLosses: 2,
+    stepDownSizeCutPct: 50,
+    maxAggregateOpenRiskPct: 2,
+    maxCorrelatedExposurePct: 6,
+    maxTradesPerDay: 6,
+  },
+  AGGRESSIVE: {
+    riskPerTradePct: 1.5,
+    maxDailyDrawdownPct: 5,
+    stepDownAfterLosses: 2,
+    stepDownSizeCutPct: 50,
+    maxAggregateOpenRiskPct: 4.5,
+    maxCorrelatedExposurePct: 10,
+    maxTradesPerDay: 10,
+  },
+};
+
+export interface BacktestRiskParams {
+  riskPerTradePct: number;
+  maxDailyDrawdownPct: number;
+  stepDownAfterLosses: number;
+  stepDownSizeCutPct: number;
+  maxAggregateOpenRiskPct: number;
+  maxCorrelatedExposurePct: number;
+  maxTradesPerDay: number;
+}
+
+/** Resolves each risk param from an explicit override on `cfg`, falling back
+ *  to riskProfile's legacy bundle field-by-field — so a caller can loosen
+ *  just ONE number (e.g. maxAggregateOpenRiskPct) without having to also
+ *  specify the other six. */
+export function resolveBacktestRiskParams(
+  cfg: Partial<BacktestRiskParams> & { riskProfile: RiskProfileName },
+): BacktestRiskParams {
+  const d = LEGACY_BACKTEST_RISK_DEFAULTS[cfg.riskProfile];
+  return {
+    riskPerTradePct: cfg.riskPerTradePct ?? d.riskPerTradePct,
+    maxDailyDrawdownPct: cfg.maxDailyDrawdownPct ?? d.maxDailyDrawdownPct,
+    stepDownAfterLosses: cfg.stepDownAfterLosses ?? d.stepDownAfterLosses,
+    stepDownSizeCutPct: cfg.stepDownSizeCutPct ?? d.stepDownSizeCutPct,
+    maxAggregateOpenRiskPct: cfg.maxAggregateOpenRiskPct ?? d.maxAggregateOpenRiskPct,
+    maxCorrelatedExposurePct: cfg.maxCorrelatedExposurePct ?? d.maxCorrelatedExposurePct,
+    maxTradesPerDay: cfg.maxTradesPerDay ?? d.maxTradesPerDay,
+  };
+}
+
+export interface BacktestConfig extends Partial<BacktestRiskParams> {
   symbols: string[];
   /** YYYY-MM-DD, inclusive. */
   from: string;
@@ -179,7 +238,7 @@ export function backtestCorrelatedNotional(
  * should include WARMUP_PADDING_DAYS or more of lookback before `cfg.from`.
  */
 export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: BacktestConfig): BacktestReport {
-  const profile: RiskProfileParams = RISK_PROFILES[cfg.riskProfile];
+  const riskParams = resolveBacktestRiskParams(cfg);
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
   const decisionCfg = { ...defaultDecisionConfig(), ...cfg.decisionConfig };
 
@@ -328,8 +387,9 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
         openPositionsCount: runningCount,
         maxConcurrentPositions: cfg.maxConcurrentPositions,
         correlatedNotional: correlated,
+        ...riskParams,
       };
-      const result = evaluateRiskCheck(signal, ctx, profile);
+      const result = evaluateRiskCheck(signal, ctx);
       if (!result.ok) continue;
       pendingEntries.push({
         symbol: signal.symbol,

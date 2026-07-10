@@ -36,7 +36,6 @@ import {
 } from '../src/db/autotradeLiveOptionsPositions';
 import * as liveOptionsPositionsDb from '../src/db/autotradeLiveOptionsPositions';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from '../src/services/autotrading/optionsRiskCheck';
-import { RISK_PROFILES } from '../src/services/autotrading/riskProfiles';
 import { DebitSpreadOptionsSignal, SingleLegOptionsSignal } from '../src/services/autotrading/optionsDecide';
 import {
   attemptLiveOptionsEntry,
@@ -161,20 +160,23 @@ function liveConfig(overrides: Partial<AutotradeConfig> = {}): AutotradeConfig {
 }
 
 const okResult = (signal: SingleLegOptionsSignal | DebitSpreadOptionsSignal): OptionsRiskCheckResult =>
-  evaluateOptionsRiskCheck(
-    signal,
-    {
-      equity: 100_000,
-      dailyPnl: 0,
-      tradesToday: 0,
-      consecutiveLosses: 0,
-      openRisk: 0,
-      openPositionsCount: 0,
-      maxConcurrentPositions: 2,
-      correlatedNotional: 0,
-    },
-    RISK_PROFILES.MODERATE,
-  );
+  evaluateOptionsRiskCheck(signal, {
+    equity: 100_000,
+    dailyPnl: 0,
+    tradesToday: 0,
+    consecutiveLosses: 0,
+    openRisk: 0,
+    openPositionsCount: 0,
+    maxConcurrentPositions: 2,
+    correlatedNotional: 0,
+    riskPerTradePct: 1,
+    maxDailyDrawdownPct: 3,
+    stepDownAfterLosses: 2,
+    stepDownSizeCutPct: 50,
+    maxAggregateOpenRiskPct: 2,
+    maxCorrelatedExposurePct: 6,
+    maxTradesPerDay: 6,
+  });
 
 const origPlaceEnabled = config.trading.placeEnabled;
 

@@ -628,29 +628,47 @@ phrase to turn it on, plus the guardrails and kill switches described below.
 - **Configuration** — a master **enabled** switch for the execution loop below (when on,
   the server runs the full cycle on its own every minute, placing paper trades — see
   "Paper trading" below), the active **risk profile** (`Moderate`, the conservative
-  default, or `Aggressive`; switching to
-  Aggressive always pops a confirmation dialog explaining what it raises — per-trade
-  risk, the daily drawdown halt, max aggregate open risk, correlated-ticker exposure,
-  and the daily trade cap — never a silent dropdown change),
-  the **options strategy** the loop builds (`Single leg` — a long call/put, uncapped
-  upside, the default — or `Debit spread` — the same long leg plus a further
-  out-of-the-money short leg that caps both max loss and max gain; switch anytime, no
-  confirmation needed, unlike the risk-profile change above), **account equity ($)**
-  — what the risk engine sizes trades and computes its % caps against. Type it in
-  manually, or click **Sync from Webull** to pull your live account's net liquidation
-  value instead (needs a Webull account ID set under **Live trading** below first — the
-  sync itself doesn't require live trading to be enabled). Until equity is set one way
-  or the other, the risk engine blocks every trade (fails closed rather than guessing).
-  Once a Webull account ID is set, equity also **syncs automatically every 1 minute** —
-  the background execution loop (see "Configuration" above) re-pulls it every cycle, so
-  it self-heals even with the page closed; the tile's own display catches up on the same
-  cadence while the page is open, skipping a refresh whenever the field has an unsaved
-  manual edit so it never clobbers in-progress typing. And
-  **max concurrent positions** — ONE combined open-position budget shared by stocks and
-  options together (a stock position and an option position draw from the same pool);
-  independent of the risk profile, so switching Moderate ↔ Aggressive never silently
-  changes this — set it directly and it applies to paper and live trading alike.
-  **Auto-promote recurring movers** (on by default) grows your universe automatically:
+  default, or `Aggressive`) — today this is just a label, journaled with every trade so
+  your history shows which posture you intended; it no longer changes any guardrail
+  number itself (see below — every one is its own directly-editable field now).
+  Switching to Aggressive still always pops a confirmation dialog, since flipping the
+  label that's baked into your trade journal should be a deliberate choice, not a
+  default, never a silent dropdown change. Next to it, the **options strategy** the
+  loop builds (`Single leg` — a long call/put, uncapped upside, the default — or
+  `Debit spread` — the same long leg plus a further out-of-the-money short leg that
+  caps both max loss and max gain; switch anytime, no confirmation needed), and
+  **account equity ($)** — what the risk engine sizes trades and computes its % caps
+  against. Type it in manually, or click **Sync from Webull** to pull your live
+  account's net liquidation value instead (needs a Webull account ID set under **Live
+  trading** below first — the sync itself doesn't require live trading to be enabled).
+  Until equity is set one way or the other, the risk engine blocks every trade (fails
+  closed rather than guessing). Once a Webull account ID is set, equity also **syncs
+  automatically every 1 minute** — the background execution loop (see "Configuration"
+  above) re-pulls it every cycle, so it self-heals even with the page closed; the
+  tile's own display catches up on the same cadence while the page is open, skipping a
+  refresh whenever the field has an unsaved manual edit so it never clobbers
+  in-progress typing.
+  Every guardrail the risk engine actually enforces is its own directly-editable field
+  below account equity, independent of the risk-profile label above — switching
+  Moderate ↔ Aggressive never silently changes any of them, matching how **max
+  concurrent positions** (ONE combined open-position budget shared by stocks and
+  options — a stock position and an option position draw from the same pool) already
+  worked: **risk per trade** (% of equity risked per trade, before any step-down cut;
+  for options this is premium paid, not notional exposure), **max daily drawdown** (%
+  realized loss for the day that halts new entries until tomorrow — existing
+  positions' stops/targets keep working regardless), **step-down after (consecutive
+  losses)** and **step-down size cut** (once your losing streak reaches the trigger
+  count, new positions size down by the cut %, until a win breaks the streak), **max
+  aggregate open risk** (a PRE-TRADE % cap on total open risk — size × stop distance —
+  across every open position plus the one being proposed, distinct from the daily
+  drawdown halt, which only reacts to realized losses after a trade closes), **max
+  correlated exposure** (% of equity cap on capital, not risk, already concentrated in
+  tickers statistically correlated — |r| ≥ 0.7 over 30 trading days — with a
+  candidate), and **max trades per day** (a hard cap on new entries, paper and live,
+  stocks and options, all combined). Every field here applies to paper and live
+  trading alike, and each has its own **Save** button, so you can change one without
+  touching the rest. **Auto-promote recurring movers** (on by default) grows your
+  universe automatically:
   a symbol Webull's premarket movers surface that also clears screening on **3 distinct
   days within a 10-day window** (both tunable, along with a **50-symbol lifetime cap** on
   how many this can add) earns a permanent spot in your universe — the same list the
@@ -672,8 +690,8 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   ($), max orders/day, fat-finger %, and whether to allow naked-short exposure (leave
   unchecked — this app only takes defined-risk positions by default). A **probation**
   setting cuts position size (e.g. to half) for the first N live trades after you enable
-  it, on top of whatever the risk profile and any loss-streak step-down already produce —
-  save these before enabling. Your **paper track record** (trade count, win rate, date
+  it, on top of whatever the configured risk-per-trade % and any loss-streak step-down
+  already produce — save these before enabling. Your **paper track record** (trade count, win rate, date
   range) is shown for you to review first — it's informational only, not an enforced
   gate. To actually go live, type the exact phrase shown (**ENABLE LIVE TRADING**) into
   the confirmation box — a one-time, deliberate gesture, not a per-order one: once
@@ -781,8 +799,9 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   be verified this run — reconsidered next run, never silently allowed through), and
   **Errors**. A candidate with no usable volatility history (ATR) gets no trade plan —
   shown separately as "no signal," not guessed at. Each candidate with a trade plan is
-  then sized (by the active risk profile's per-trade risk %, cut in half after 2
-  consecutive losing trades) and risk-checked against every cap — daily drawdown halt,
+  then sized (by the configured risk-per-trade %, cut by the configured step-down %
+  once your losing streak reaches its configured trigger count) and risk-checked
+  against every cap — daily drawdown halt,
   concurrent-position count, the aggregate open-risk check (sum of size × stop distance
   across everything open plus this trade — distinct from the daily halt, since it
   catches several positions getting stopped out together before that halt could even
@@ -809,7 +828,7 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   trade caps both max loss and max gain instead of just max loss. Each options signal is
   also risk-checked — a single leg sized by full premium paid (contracts × $100, the
   option's real worst case), a debit spread sized by max loss per spread instead (there's
-  no price stop for either shape) — against the same active risk profile, showing an
+  no price stop for either shape) — against the same configured risk caps, showing an
   **approved/blocked** badge and the sized contract (or spread) count right below its
   contract details. This draws from **one combined risk budget** shared with the
   equity signals in the same run, not a separate options-only pool: an approved equity
