@@ -419,7 +419,8 @@ starts.
 2. **Screening & real-estate exclusion — shipped.** Discovers candidates from
    `universe` plus (when Webull is configured) its pre-market "unusual volume" and
    gainers movers — the only source in this app that finds gappers outside the
-   ~124-symbol seeded universe; falls back to universe-only otherwise. Each candidate
+   seeded universe (507 symbols — see the follow-up below; originally 124); falls
+   back to universe-only otherwise. Each candidate
    is checked against the exclusion list, then (`services/autotrading/realEstateClassifier.ts`)
    `universe.sector`, then — for the common case of a symbol outside that seed — a
    live Yahoo fundamentals fetch (independent of `MARKET_DATA_PROVIDER`, since Tradier
@@ -437,6 +438,50 @@ starts.
    (`/auto-trade`) covers config, the exclusion list, a "Run screen" button with
    candidates/excluded/skipped/errors, and the recent-activity journal — the AGGRESSIVE
    switch is gated by a `useConfirm()` modal, not just a raw `<select>`.
+
+   **Fixed (2026-07-10) — the 124-symbol default universe was too narrow for the
+   screener's own volume bar, so the loop kept repeating the same handful of symbols
+   and making no progress.** Reported directly: the app "pigeon holes itself into only
+   a few equities" that "keep repeating to screen them and they keep failing the
+   checks." Root cause: `defaultAutotradeScreenerConfig()` layers `minRelVol: 1.5` on
+   top of the base screener filters, and the 124-symbol starter list is exclusively
+   S&P 500 mega-caps — names that rarely trade 1.5× their average volume without a
+   real catalyst that day. With Webull unconfigured (or its movers feed thin), every
+   cycle re-screened the same static set, most of which predictably failed the same
+   filter again. Two changes, presented as options and both approved (the user chose
+   "expand now, add auto-promotion as a follow-up" over either alone):
+   1. **The seeded universe grew from 124 to 507 symbols** — the full current S&P 500,
+      not just its largest names — so relative-volume breakouts have a much larger
+      pool to be found in. `server/data/sp500.json` was rebuilt as a **union**, not a
+      replacement: all 124 original entries kept verbatim in their original order,
+      plus 383 newly-sourced entries appended, added only where the symbol wasn't
+      already present. Deliberately additive rather than a wholesale replace because
+      the new data came from a web fetch processed through a summarizing model (not a
+      guaranteed byte-exact source) — a small mismatch already surfaced (`MMC` vs.
+      `MRSH` for Marsh McLennan) that a destructive replace would have silently
+      applied to a live production universe.
+   2. **A new one-time top-up migration** (`topUpUniverseOnce()`, `db/index.ts`)
+      applies the expansion to the `universe` table on next startup even though
+      `seedUniverseIfEmpty()` — which only ever acts on a genuinely empty table — has
+      long since no-opped against this app's already-seeded production DB. Reads a
+      **frozen delta file** (`server/data/sp500_topup_2026_07.json`, just the 383
+      newly-added symbols) rather than diffing the full `sp500.json` against what's
+      currently in the table: `sp500.json` still lists the original 124 too (it's a
+      union), so a full-file diff can't tell "never seeded" apart from "user removed
+      it on purpose" and would silently resurrect any original-124 symbol a user had
+      already deleted — caught by a smoke test that simulated exactly that (an
+      already-seeded DB with a manually-removed original symbol) before this shipped.
+      Uses the same `INSERT OR IGNORE` upsert `addSymbols()` already relies on, so
+      it's naturally safe to run redundantly, and is additionally gated by a
+      `settings` key (`universeTopUp`) so it truly applies once: once set, it never
+      re-adds a symbol a user later removes from the delta either. Runs from
+      `initDb()` right after `seedUniverseIfEmpty()`.
+
+   **Not yet built — the explicitly separate second half of the same request:**
+   auto-promoting a symbol into the persistent universe once it recurs often enough
+   in Webull's daily movers feed, so genuinely active names earn a permanent spot
+   without a manual edit. Tracked as its own follow-up, not started alongside this
+   fix.
 3. **Strategy / Decision module — shipped.** Turns each screened candidate into a
    concrete trade plan (`services/autotrading/decide.ts`): entry = current price, a
    **hard stop** at `stopAtrMultiple`× the symbol's own ATR (default 1.5×, so the stop

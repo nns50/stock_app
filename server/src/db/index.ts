@@ -480,6 +480,55 @@ function seedUniverseIfEmpty(): void {
   tx(list);
 }
 
+const UNIVERSE_TOPUP_SETTING_KEY = 'universeTopUp';
+
+/**
+ * One-time top-up that expands an already-seeded universe table with the
+ * symbols added when sp500.json grew from ~124 mega-caps to the full S&P 500
+ * (the small starter set was clearing the autotrade screener's
+ * relative-volume bar too rarely, see docs/AUTOTRADING_SPEC.md).
+ * seedUniverseIfEmpty() only acts on a genuinely empty table, so it never
+ * revisits a production DB that was already seeded before this expansion
+ * shipped. Deliberately reads a FROZEN delta file (sp500_topup_2026_07.json —
+ * just the newly-added symbols) rather than diffing against sp500.json
+ * itself: sp500.json also contains the original 124, and diffing the full
+ * file against "not currently in the table" can't tell a symbol that was
+ * never seeded apart from one a user deliberately removed, so it would
+ * resurrect any original-124 removal. Applies the frozen delta via the same
+ * INSERT OR IGNORE addSymbols()-style upsert, gated by a settings marker so
+ * it runs exactly once and never re-fights a later removal of one of ITS
+ * symbols either. Exported + db-injectable for the migration test.
+ */
+export function topUpUniverseOnce(database: Database.Database): void {
+  const marker = database.prepare('SELECT 1 FROM settings WHERE key = ?').get(UNIVERSE_TOPUP_SETTING_KEY);
+  if (marker) return;
+
+  const file = path.join(DATA_DIR, 'sp500_topup_2026_07.json');
+  let list: SeedRow[];
+  try {
+    list = JSON.parse(fs.readFileSync(file, 'utf8')) as SeedRow[];
+  } catch {
+    list = [];
+  }
+
+  const insert = database.prepare('INSERT OR IGNORE INTO universe(symbol, name, sector, added_at) VALUES (?, ?, ?, ?)');
+  const setMarker = database.prepare(
+    `INSERT INTO settings(key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  );
+  const now = Date.now();
+  const tx = database.transaction((items: SeedRow[]) => {
+    let added = 0;
+    for (const it of items) {
+      if (!it.symbol) continue;
+      const res = insert.run(it.symbol.toUpperCase(), it.name ?? null, it.sector ?? null, now);
+      added += res.changes;
+    }
+    setMarker.run(UNIVERSE_TOPUP_SETTING_KEY, JSON.stringify({ appliedAt: now, added }), now);
+  });
+  tx(list);
+}
+
 interface ExclusionSeedRow {
   symbol: string;
   reason?: string;
@@ -644,5 +693,6 @@ export function initDb(): void {
   db.exec(SCHEMA);
   migrate();
   seedUniverseIfEmpty();
+  topUpUniverseOnce(db);
   seedAutotradeExclusionsIfEmpty();
 }
