@@ -7,8 +7,10 @@ decisions. It is **not** a signal service, it makes no predictions, and it never
 places trades.
 
 > Looking for *how to trade profitably with it*? See the
-> **[Strategy Playbook](./STRATEGY_PLAYBOOK.md)**. Looking for install/config?
-> See the main **[README](../README.md)**.
+> **[Strategy Playbook](./STRATEGY_PLAYBOOK.md)**. Looking for a plain-English
+> explanation of the Auto-Trade page's risk settings specifically? See
+> **[Auto-Trade Risk Settings](./AUTOTRADE_RISK_SETTINGS.md)**. Looking for
+> install/config? See the main **[README](../README.md)**.
 
 ---
 
@@ -667,8 +669,10 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   candidate), and **max trades per day** (a hard cap on new entries, paper and live,
   stocks and options, all combined). Every field here applies to paper and live
   trading alike, and each has its own **Save** button, so you can change one without
-  touching the rest. **Auto-promote recurring movers** (on by default) grows your
-  universe automatically:
+  touching the rest. For a plain-English walkthrough of each of these — with worked
+  examples and guidance on what to change when nothing's trading — see
+  **[Auto-Trade Risk Settings](./AUTOTRADE_RISK_SETTINGS.md)**.
+  **Auto-promote recurring movers** (on by default) grows your universe automatically:
   a symbol Webull's premarket movers surface that also clears screening on **3 distinct
   days within a 10-day window** (both tunable, along with a **50-symbol lifetime cap** on
   how many this can add) earns a permanent spot in your universe — the same list the
