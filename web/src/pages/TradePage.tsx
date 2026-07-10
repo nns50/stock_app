@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { client } from '../api/client';
-import { useAsync, useLocalStorage } from '../lib/hooks';
+import { useAsync, useLocalStorage, usePolling } from '../lib/hooks';
 import { cx, fmtUsd } from '../lib/format';
 import { Badge, Card, CollapsibleCard, Field, NumberInput, PageHeader, Segmented, Spinner } from '../components/ui';
 import { ExpirySelect, StrikeSelect, chainStrikes, suggestedNet } from '../components/OptionPicker';
@@ -95,6 +95,11 @@ function Workspace({
   const [confirmText, setConfirmText] = useState('');
   const [placing, setPlacing] = useState(false);
   const [placeResult, setPlaceResult] = useState<PlaceResult>();
+  // Last snapshot WE set from a pull (manual or auto) — lets the 1-minute
+  // auto-refresh below tell "still showing what we last pulled" apart from
+  // "user is mid-edit for a Dry-run (manual state) test", so it never clobbers
+  // a hand-typed hypothetical the user hasn't asked to refresh.
+  const lastPulledAccount = useRef<AccountStateInput | undefined>(undefined);
 
   const placePhrase = `${order.side.toUpperCase()} ${order.quantity} ${order.symbol.toUpperCase()}`;
 
@@ -231,6 +236,7 @@ function Workspace({
       const r = await client.tradeAccountState(accountId.trim(), order.symbol);
       if (r.ok && r.state) {
         setAccount(r.state);
+        lastPulledAccount.current = r.state;
         setPullMsg(
           `Pulled — buying power $${r.state.buyingPowerUsd.toLocaleString('en-US')}` +
             (r.netLiquidationUsd !== undefined ? ` · net liq $${r.netLiquidationUsd.toLocaleString('en-US')}` : ''),
@@ -244,6 +250,16 @@ function Workspace({
       setPulling(false);
     }
   };
+
+  // Auto-refresh from Webull every 1 minute instead of requiring the "Pull
+  // from Webull" button. Skipped whenever the fields no longer match what we
+  // last pulled — i.e. the user is mid-edit on a "Dry-run (manual state)"
+  // hypothetical — so the background refresh never clobbers it.
+  usePolling(() => {
+    if (!accountId.trim()) return;
+    if (lastPulledAccount.current && JSON.stringify(account) !== JSON.stringify(lastPulledAccount.current)) return;
+    void pull();
+  }, 60_000);
 
   return (
     <div className="grid gap-4 lg:grid-cols-3">
@@ -596,14 +612,19 @@ function Workspace({
                   placeholder="account_id"
                 />
               </Field>
-              <button className="btn-ghost" onClick={pull} disabled={pulling}>
+              <button
+                className="btn-ghost"
+                onClick={pull}
+                disabled={pulling}
+                title="Also auto-refreshes every 1 minute"
+              >
                 {pulling ? 'Pulling…' : 'Pull from Webull'}
               </button>
             </div>
           }
         >
           <div className="space-y-3">
-            {pullMsg && <p className="text-xs text-slate-400">{pullMsg}</p>}
+            {pullMsg && <p className="text-xs text-slate-400">{pullMsg} · auto-refreshes every 1m</p>}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               <Field label="Buying power $">
                 <NumberInput value={account.buyingPowerUsd} onChange={(v) => setA('buyingPowerUsd', v ?? 0)} min={0} />

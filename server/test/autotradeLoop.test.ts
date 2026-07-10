@@ -16,7 +16,11 @@ vi.mock('../src/services/autotrading/optionsExecute', () => ({
   getOptionsPaperPortfolioSnapshot: vi.fn(),
   optionsSeedForEquity: vi.fn(),
 }));
-vi.mock('../src/services/autotrading/liveExecute', () => ({ runLiveExecution: vi.fn(), reconcileLiveOrders: vi.fn() }));
+vi.mock('../src/services/autotrading/liveExecute', () => ({
+  runLiveExecution: vi.fn(),
+  reconcileLiveOrders: vi.fn(),
+  syncAccountEquityFromBroker: vi.fn(),
+}));
 vi.mock('../src/services/autotrading/liveOptionsExecute', () => ({
   runLiveOptionsExecution: vi.fn(),
   checkLiveOptionsExits: vi.fn(),
@@ -43,7 +47,11 @@ import {
   getOptionsPaperPortfolioSnapshot,
   optionsSeedForEquity,
 } from '../src/services/autotrading/optionsExecute';
-import { runLiveExecution, reconcileLiveOrders } from '../src/services/autotrading/liveExecute';
+import {
+  runLiveExecution,
+  reconcileLiveOrders,
+  syncAccountEquityFromBroker,
+} from '../src/services/autotrading/liveExecute';
 import {
   runLiveOptionsExecution,
   checkLiveOptionsExits,
@@ -70,6 +78,7 @@ const mockGetOptionsSnapshot = vi.mocked(getOptionsPaperPortfolioSnapshot);
 const mockOptionsSeed = vi.mocked(optionsSeedForEquity);
 const mockLiveExecute = vi.mocked(runLiveExecution);
 const mockReconcileLive = vi.mocked(reconcileLiveOrders);
+const mockSyncEquity = vi.mocked(syncAccountEquityFromBroker);
 const mockLiveOptionsExecute = vi.mocked(runLiveOptionsExecution);
 const mockCheckLiveOptionsExits = vi.mocked(checkLiveOptionsExits);
 const mockReconcileLiveOptions = vi.mocked(reconcileLiveOptionsOrders);
@@ -160,6 +169,7 @@ beforeEach(() => {
   mockOptionsSeed.mockReset().mockReturnValue(emptySeed);
   mockLiveExecute.mockReset();
   mockReconcileLive.mockReset().mockResolvedValue([]);
+  mockSyncEquity.mockReset().mockResolvedValue({ ok: false, error: 'No liveAccountId configured' });
   mockLiveOptionsExecute.mockReset();
   mockCheckLiveOptionsExits.mockReset().mockResolvedValue([]);
   mockReconcileLiveOptions.mockReset().mockResolvedValue([]);
@@ -231,6 +241,34 @@ describe('runAutotradeLoopTick', () => {
     expect(summary.liveOrdersReconciled).toBe(2);
     expect(summary.livePositionsClosed).toBe(1);
     expect(summary.ranEntries).toBe(false);
+  });
+
+  it('always syncs account equity from the broker too, even when neither paper nor live can open new entries', async () => {
+    setAutotradeConfig({ enabled: false }); // paper off, live never configured either
+    const summary = await runAutotradeLoopTick();
+    expect(mockSyncEquity).toHaveBeenCalledTimes(1);
+    expect(summary.ranEntries).toBe(false);
+  });
+
+  it('a broker hiccup during the equity sync does not stop exits, reconcile, or entries from running', async () => {
+    mockSyncEquity.mockRejectedValue(new Error('Webull timeout'));
+    mockCheckExits.mockResolvedValue([{ symbol: 'AAPL', closed: true }]);
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(summary.exitsClosed).toBe(1);
+    expect(summary.ranEntries).toBe(true);
+    expect(summary.entriesOpened).toBe(1);
   });
 
   it('screens, decides, and executes when the session window is open', async () => {

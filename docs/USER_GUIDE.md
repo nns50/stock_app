@@ -329,7 +329,11 @@ strikes); other structures (straddles, iron condors) aren't live-placeable yet.
   **blocked**, with the **notional**, audited intent **state**, and the full **guardrail
   breakdown** (✓ pass / ✕ blocked / ⚠ warn, hover for detail).
 - **Pull from Webull** — fill the account-state form with your real buying power / exposure /
-  position (read-only).
+  position (read-only). Once a **Cash account_id** is set, this also happens automatically every
+  **1 minute** in the background, so the tile stays current without re-pressing the button. A
+  background refresh is skipped whenever the fields no longer match the last pull — e.g. you're
+  mid-edit on a **Dry-run (manual state)** hypothetical — so it never overwrites hand-typed test
+  values.
 - **Preview (live)** — paste your cash `account_id`; this pulls your real account, runs the
   guardrails against it, and (kill switch permitting) fetches the **broker's cost estimate**.
   Places nothing. For options it also **validates the exact contract** with the broker (a bad
@@ -635,7 +639,11 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   value instead (needs a Webull account ID set under **Live trading** below first — the
   sync itself doesn't require live trading to be enabled). Until equity is set one way
   or the other, the risk engine blocks every trade (fails closed rather than guessing).
-  Syncing is on-demand only — there's no automatic background refresh yet. And
+  Once a Webull account ID is set, equity also **syncs automatically every 1 minute** —
+  the background execution loop (see "Configuration" above) re-pulls it every cycle, so
+  it self-heals even with the page closed; the tile's own display catches up on the same
+  cadence while the page is open, skipping a refresh whenever the field has an unsaved
+  manual edit so it never clobbers in-progress typing. And
   **max concurrent positions** — ONE combined open-position budget shared by stocks and
   options together (a stock position and an option position draw from the same pool);
   independent of the risk profile, so switching Moderate ↔ Aggressive never silently
