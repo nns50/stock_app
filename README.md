@@ -115,6 +115,10 @@ npm run seed       # 5 closed + 2 open trades, 7 watchlist symbols (idempotent)
   (risk sizing, the screener Edge Report, R-multiple analytics, MAE/MFE, risk-of-ruin,
   the SPY benchmark) to trade with a real process edge — plus concrete long-stock,
   short-fade, and options playbooks.
+- **[Auto-Trade Risk Settings](docs/AUTOTRADE_RISK_SETTINGS.md)** — a plain-English
+  guide to every risk setting on the Auto-Trade page's Configuration card (risk per
+  trade, daily drawdown, aggregate open risk, correlated exposure, and more), with
+  worked examples for each.
 - In-app **About** page — the live, authoritative description of the scoring formulas
   and glossary.
 

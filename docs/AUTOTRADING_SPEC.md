@@ -1824,6 +1824,11 @@ MODERATE/AGGRESSIVE bundle that lives only in `backtest.ts` (unreachable from
 live code), used to fill in whichever of the seven fields a given backtest
 request doesn't explicitly override.
 
+For a plain-English explanation of what each of these seven fields (plus
+`maxConcurrentPositions`) actually does, with worked examples, see
+[`docs/AUTOTRADE_RISK_SETTINGS.md`](./AUTOTRADE_RISK_SETTINGS.md) — this section
+stays the engineering-level record of *why* each decision was made.
+
 ### CRITICAL: MAX AGGREGATE OPEN RISK
 This is distinct from the daily drawdown halt. The daily halt only reacts to
 REALIZED losses after trades close. Max aggregate open risk is a PRE-TRADE
