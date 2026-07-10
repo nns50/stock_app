@@ -4,7 +4,7 @@ import { ApiError, client } from '../api/client';
 import { useAsync, useLocalStorage } from '../lib/hooks';
 import { cx } from '../lib/format';
 import { CHECKLIST_SETTING_KEY, DEFAULT_CHECKLIST_RULES, rulesFromSetting } from '../lib/checklist';
-import { Card, Field, NumberInput, PageHeader, Spinner } from '../components/ui';
+import { CollapsibleCard, Field, NumberInput, PageHeader, Spinner } from '../components/ui';
 import { DataTools } from '../components/DataTools';
 import { ProviderStatusModal } from '../components/ProviderStatusModal';
 import { useProvider } from '../components/ProviderContext';
@@ -18,14 +18,22 @@ import { NOTIFY_KEY, requestNotificationPermission } from '../lib/notify';
 // alert polling, and data export/restore. Browser-scoped prefs persist to
 // localStorage (instant); the checklist persists server-side.
 
-function Section({ title, desc, children }: { title: string; desc?: string; children: React.ReactNode }) {
+function Section({
+  id,
+  title,
+  desc,
+  children,
+}: {
+  id: string;
+  title: string;
+  desc?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <Card className="p-4">
-      <h2 className="font-medium text-sm">{title}</h2>
+    <CollapsibleCard id={`settings.${id}`} title={title} headingLevel="h2">
       {desc && <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-2xl">{desc}</p>}
-      {!desc && <div className="mb-3" />}
       {children}
-    </Card>
+    </CollapsibleCard>
   );
 }
 
@@ -98,6 +106,7 @@ export default function SettingsPage() {
       <PageHeader title="Settings" subtitle="Provider, risk defaults, benchmark, checklist, alerts, and your data." />
 
       <Section
+        id="provider"
         title="Market data provider"
         desc="The provider is configured server-side in server/.env (MARKET_DATA_PROVIDER and any API token). This is its current status."
       >
@@ -128,6 +137,7 @@ export default function SettingsPage() {
       </Section>
 
       <Section
+        id="risk"
         title="Risk &amp; sizing defaults"
         desc="Used by the position sizer and the “you vs benchmark” comparison. Saved in this browser."
       >
@@ -142,6 +152,7 @@ export default function SettingsPage() {
       </Section>
 
       <Section
+        id="guardrails"
         title="Discipline guardrails"
         desc="Opt-in daily circuit breaker. When today's booked loss or new-trade count reaches a limit, the dashboard warns you to step away. 0 = off. It never blocks or places trades."
       >
@@ -156,6 +167,7 @@ export default function SettingsPage() {
       </Section>
 
       <Section
+        id="benchmark"
         title="Benchmark"
         desc="The buy-and-hold index your realized trading is measured against in the journal."
       >
@@ -170,6 +182,7 @@ export default function SettingsPage() {
       </Section>
 
       <Section
+        id="checklist"
         title="Pre-trade checklist"
         desc="The discipline rules you tick before logging an entry. One rule per line; shared everywhere you log a trade."
       >
@@ -192,7 +205,7 @@ export default function SettingsPage() {
         )}
       </Section>
 
-      <Section title="Alerts" desc="How often the app re-evaluates your alerts in the background.">
+      <Section id="alerts" title="Alerts" desc="How often the app re-evaluates your alerts in the background.">
         <Field label="Auto-check interval">
           <select
             className="input max-w-[200px]"
@@ -225,12 +238,16 @@ export default function SettingsPage() {
 
       <WebullSection />
 
-      <Section title="Data" desc="Export your trades, take a full database backup, or restore from a previous export.">
+      <Section
+        id="data"
+        title="Data"
+        desc="Export your trades, take a full database backup, or restore from a previous export."
+      >
         <DataTools onImported={() => toast('Import complete', { type: 'success' })} />
       </Section>
 
       {authRequired && (
-        <Section title="Account" desc="This app is password-protected.">
+        <Section id="account" title="Account" desc="This app is password-protected.">
           <div className="space-y-5">
             <div>
               <div className="label mb-1.5">Two-factor authentication</div>
@@ -309,6 +326,7 @@ function ServerWatchSection() {
 
   return (
     <Section
+      id="serverWatch"
       title="Server-side watching"
       desc="Let the server evaluate your alerts on a schedule and push them to a webhook — so alerts fire even when the app/browser is closed. The server process must stay running."
     >
@@ -419,6 +437,7 @@ function WebullSection() {
 
   return (
     <Section
+      id="webull"
       title="Webull (beta)"
       desc="Connect Webull's OpenAPI (v2) for stock & option market data and your account. Credentials are server-side (WEBULL_APP_KEY / WEBULL_APP_SECRET). Market data needs an active OpenAPI subscription on your Webull account."
     >

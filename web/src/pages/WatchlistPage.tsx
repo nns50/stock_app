@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { client } from '../api/client';
 import { useSort } from '../lib/hooks';
 import { fmtCompact, fmtPct, fmtUsd } from '../lib/format';
-import { Card, EmptyState, PageHeader, PnL, SortTh, Spinner } from '../components/ui';
+import { Card, CollapsibleCard, EmptyState, PageHeader, PnL, SortTh, Spinner } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
 import { useToast } from '../components/ToastContext';
 import type { Quote } from '../api/types';
@@ -136,10 +136,10 @@ export default function WatchlistPage() {
         </div>
       </Card>
 
-      {loading && symbols.length === 0 ? (
-        <Spinner label="Loading watchlist…" />
-      ) : symbols.length === 0 ? (
-        <Card>
+      <CollapsibleCard id="watchlist.table" title="Watchlist">
+        {loading && symbols.length === 0 ? (
+          <Spinner label="Loading watchlist…" />
+        ) : symbols.length === 0 ? (
           <EmptyState
             title="Nothing on your watchlist yet"
             hint="Add symbols above, or use the ☆ on a symbol's detail page. Your list is saved on the server."
@@ -149,59 +149,59 @@ export default function WatchlistPage() {
               </button>
             }
           />
-        </Card>
-      ) : (
-        <Card className="overflow-auto max-h-[70vh]">
-          <table className="w-full table-zebra">
-            <thead className="sticky-thead">
-              <tr>
-                <SortTh label="Symbol" k="symbol" active={sortKey} dir={sortDir} onSort={onSort} />
-                <SortTh label="Last" k="last" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                <SortTh label="Change" k="change" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                <SortTh label="Bid" k="bid" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                <SortTh label="Ask" k="ask" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                <SortTh label="Volume" k="volume" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                <th className="th"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedWatch.map(({ sym, q }) => {
-                return (
-                  <tr key={sym} className="border-b border-ink-700/50 hover:bg-ink-700/30">
-                    <td className="td">
-                      <Link to={`/symbol/${sym}`} className="font-semibold hover:text-accent">
-                        {sym}
-                      </Link>
-                    </td>
-                    <td className="td text-right tabular-nums">{q ? fmtUsd(q.last) : '—'}</td>
-                    <td className="td text-right">
-                      {q && q.changePct !== undefined ? <PnL value={q.changePct} format={fmtPct} /> : '—'}
-                    </td>
-                    <td className="td text-right tabular-nums text-slate-400">
-                      {q?.bid != null ? fmtUsd(q.bid) : '—'}
-                    </td>
-                    <td className="td text-right tabular-nums text-slate-400">
-                      {q?.ask != null ? fmtUsd(q.ask) : '—'}
-                    </td>
-                    <td className="td text-right tabular-nums text-slate-400">
-                      {q?.volume != null ? fmtCompact(q.volume) : '—'}
-                    </td>
-                    <td className="td text-right">
-                      <button
-                        className="text-slate-500 hover:text-bear text-xs"
-                        onClick={() => remove(sym)}
-                        aria-label={`Remove ${sym}`}
-                      >
-                        ✕
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </Card>
-      )}
+        ) : (
+          <div className="overflow-auto max-h-[70vh]">
+            <table className="w-full table-zebra">
+              <thead className="sticky-thead">
+                <tr>
+                  <SortTh label="Symbol" k="symbol" active={sortKey} dir={sortDir} onSort={onSort} />
+                  <SortTh label="Last" k="last" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                  <SortTh label="Change" k="change" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                  <SortTh label="Bid" k="bid" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                  <SortTh label="Ask" k="ask" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                  <SortTh label="Volume" k="volume" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                  <th className="th"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedWatch.map(({ sym, q }) => {
+                  return (
+                    <tr key={sym} className="border-b border-ink-700/50 hover:bg-ink-700/30">
+                      <td className="td">
+                        <Link to={`/symbol/${sym}`} className="font-semibold hover:text-accent">
+                          {sym}
+                        </Link>
+                      </td>
+                      <td className="td text-right tabular-nums">{q ? fmtUsd(q.last) : '—'}</td>
+                      <td className="td text-right">
+                        {q && q.changePct !== undefined ? <PnL value={q.changePct} format={fmtPct} /> : '—'}
+                      </td>
+                      <td className="td text-right tabular-nums text-slate-400">
+                        {q?.bid != null ? fmtUsd(q.bid) : '—'}
+                      </td>
+                      <td className="td text-right tabular-nums text-slate-400">
+                        {q?.ask != null ? fmtUsd(q.ask) : '—'}
+                      </td>
+                      <td className="td text-right tabular-nums text-slate-400">
+                        {q?.volume != null ? fmtCompact(q.volume) : '—'}
+                      </td>
+                      <td className="td text-right">
+                        <button
+                          className="text-slate-500 hover:text-bear text-xs"
+                          onClick={() => remove(sym)}
+                          aria-label={`Remove ${sym}`}
+                        >
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CollapsibleCard>
     </div>
   );
 }

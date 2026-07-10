@@ -8,7 +8,7 @@ import { RefreshBar } from '../components/RefreshBar';
 import { ago, cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd, fmtUsd } from '../lib/format';
 import {
   Badge,
-  Card,
+  CollapsibleCard,
   EmptyState,
   ErrorState,
   Field,
@@ -1810,8 +1810,7 @@ export default function AutoTradePage() {
         }
       />
 
-      <Card className="p-4">
-        <h3 className="font-medium text-sm mb-3">Configuration</h3>
+      <CollapsibleCard id="autotrade.configuration" title="Configuration">
         {/* Deliberately OUTSIDE the loading/error branch below: it renders
             from local `killSwitch` state, not `config.data`, so a transient
             reload failure (e.g. right after a toggle — saveConfig/
@@ -1924,10 +1923,9 @@ export default function AutoTradePage() {
             below); going live is configured separately (see &quot;Live trading&quot; below).
           </p>
         )}
-      </Card>
+      </CollapsibleCard>
 
-      <Card className="p-4">
-        <h3 className="font-medium text-sm mb-3">Live trading</h3>
+      <CollapsibleCard id="autotrade.liveTrading" title="Live trading">
         <p className="text-[11px] text-slate-500 mb-3">
           Places REAL orders through Webull once enabled — no per-order confirmation, only the guardrails configured
           here plus the kill switch. Independent of paper trading above (both can run at once). See
@@ -2074,10 +2072,9 @@ export default function AutoTradePage() {
             );
           })()
         )}
-      </Card>
+      </CollapsibleCard>
 
-      <Card className="p-4">
-        <h3 className="font-medium text-sm mb-3">Monitoring</h3>
+      <CollapsibleCard id="autotrade.monitoring" title="Monitoring">
         {dashboard.loading && !dashboard.data ? (
           <Spinner />
         ) : dashboard.error ? (
@@ -2085,10 +2082,9 @@ export default function AutoTradePage() {
         ) : dashboard.data ? (
           <MonitoringDashboard dash={dashboard.data} />
         ) : null}
-      </Card>
+      </CollapsibleCard>
 
-      <Card className="p-4">
-        <h3 className="font-medium text-sm mb-3">Real-estate exclusion list</h3>
+      <CollapsibleCard id="autotrade.realEstateExclusion" title="Real-estate exclusion list">
         <div className="grid sm:grid-cols-4 gap-2 items-end mb-3">
           <Field label="Symbol">
             <input
@@ -2152,15 +2148,17 @@ export default function AutoTradePage() {
             </tbody>
           </table>
         )}
-      </Card>
+      </CollapsibleCard>
 
-      <Card className="p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-medium text-sm">Research, Screen &amp; Decide</h3>
+      <CollapsibleCard
+        id="autotrade.screen"
+        title="Research, Screen & Decide"
+        action={
           <button className="btn-primary" onClick={runScreen} disabled={screenBusy}>
             {screenBusy ? 'Scanning…' : 'Run screen'}
           </button>
-        </div>
+        }
+      >
         {screenErr && <div className="text-bear text-sm mb-2">{screenErr}</div>}
         {screenResult ? (
           <div className="space-y-4">
@@ -2369,10 +2367,9 @@ export default function AutoTradePage() {
             </p>
           )
         )}
-      </Card>
+      </CollapsibleCard>
 
-      <Card className="p-4">
-        <h3 className="font-medium text-sm mb-3">Backtest &amp; walk-forward</h3>
+      <CollapsibleCard id="autotrade.backtest" title="Backtest & walk-forward">
         <p className="text-xs text-slate-500 mb-3">
           Replays Screen → Decision → Risk Check day-by-day over historical daily bars, using the exact same logic the
           live loop uses — the validation gate docs/AUTOTRADING_SPEC.md requires before any paper or live trading. Leave
@@ -2583,15 +2580,17 @@ export default function AutoTradePage() {
             />
           </div>
         )}
-      </Card>
+      </CollapsibleCard>
 
-      <Card className="p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-medium text-sm">Paper trading</h3>
+      <CollapsibleCard
+        id="autotrade.paperTrading"
+        title="Paper trading"
+        action={
           <button className="btn-primary" onClick={runLoopOnce} disabled={loopBusy}>
             {loopBusy ? 'Running…' : 'Run one cycle now'}
           </button>
-        </div>
+        }
+      >
         <p className="text-xs text-slate-500 mb-3">
           When enabled above, the server runs this same Screen → Decision → Risk Check → Execution cycle on its own
           every minute — this button just runs one cycle immediately, so you can watch it work without waiting. Every
@@ -2695,10 +2694,9 @@ export default function AutoTradePage() {
             );
           })()
         )}
-      </Card>
+      </CollapsibleCard>
 
-      <Card className="p-4">
-        <h3 className="font-medium text-sm mb-3">Recent activity</h3>
+      <CollapsibleCard id="autotrade.recentActivity" title="Recent activity">
         {events.loading ? (
           <Spinner />
         ) : events.error ? (
@@ -2736,7 +2734,7 @@ export default function AutoTradePage() {
             </tbody>
           </table>
         )}
-      </Card>
+      </CollapsibleCard>
 
       <p className="text-[11px] text-slate-500">
         Decision-support and tracking, not financial advice. Paper trading above is always a local simulation that never

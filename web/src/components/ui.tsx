@@ -41,7 +41,11 @@ export function Card({ className, children }: { className?: string; children: Re
  * A Card with a collapsible body: click the header to hide/show `children`.
  * Collapsed state persists to localStorage under `id`, so it survives a
  * reload — `id` must be stable and unique among the collapsible cards
- * rendered at once (e.g. "dashboard.watchlist").
+ * rendered at once (e.g. "dashboard.watchlist"). The title is wrapped in a
+ * real heading element (`headingLevel`, default h3) containing the toggle
+ * button — the WAI-ARIA accordion pattern — so collapsing a tile everywhere
+ * in the app doesn't flatten the page's heading outline for screen readers;
+ * `contents` keeps that wrapper invisible to layout.
  */
 export function CollapsibleCard({
   id,
@@ -49,6 +53,7 @@ export function CollapsibleCard({
   icon,
   action,
   defaultCollapsed = false,
+  headingLevel = 'h3',
   children,
 }: {
   id: string;
@@ -56,9 +61,11 @@ export function CollapsibleCard({
   icon?: ReactNode;
   action?: ReactNode;
   defaultCollapsed?: boolean;
+  headingLevel?: 'h2' | 'h3' | 'h4';
   children: ReactNode;
 }) {
   const [collapsed, setCollapsed] = useLocalStorage(`tile.collapsed.${id}`, defaultCollapsed);
+  const Heading = headingLevel;
   return (
     <Card className="p-4">
       <div
@@ -67,20 +74,22 @@ export function CollapsibleCard({
           !collapsed && 'mb-3 pb-2 border-b border-ink-700/50',
         )}
       >
-        <button
-          type="button"
-          className="flex min-w-0 items-center gap-2 text-sm font-medium text-slate-200 hover:text-accent"
-          onClick={() => setCollapsed(!collapsed)}
-          aria-expanded={!collapsed}
-        >
-          {collapsed ? (
-            <ChevronRight className="h-4 w-4 shrink-0 text-slate-500" />
-          ) : (
-            <ChevronDown className="h-4 w-4 shrink-0 text-slate-500" />
-          )}
-          {icon}
-          <span className="truncate">{title}</span>
-        </button>
+        <Heading className="contents">
+          <button
+            type="button"
+            className="flex min-w-0 items-center gap-2 text-sm font-medium text-slate-200 hover:text-accent"
+            onClick={() => setCollapsed(!collapsed)}
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? (
+              <ChevronRight className="h-4 w-4 shrink-0 text-slate-500" />
+            ) : (
+              <ChevronDown className="h-4 w-4 shrink-0 text-slate-500" />
+            )}
+            {icon}
+            <span className="truncate">{title}</span>
+          </button>
+        </Heading>
         {!collapsed && action}
       </div>
       {!collapsed && children}

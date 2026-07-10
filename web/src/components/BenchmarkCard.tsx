@@ -1,7 +1,7 @@
 import { client } from '../api/client';
 import { useAsync, useLocalStorage } from '../lib/hooks';
 import { fmtPct, fmtUsd } from '../lib/format';
-import { Card, PnL, StatTile } from './ui';
+import { CollapsibleCard, PnL, StatTile } from './ui';
 
 /**
  * "Am I beating the index?" — realized return over the trading period vs SPY
@@ -14,13 +14,15 @@ export function BenchmarkCard() {
   const d = b.data;
   if (!d || d.benchmarkReturnPct === null) return null;
   return (
-    <Card className="p-4">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="font-medium text-sm">You vs {d.symbol} (buy &amp; hold)</h3>
+    <CollapsibleCard
+      id="journal.benchmark"
+      title={`You vs ${d.symbol} (buy & hold)`}
+      action={
         <span className="text-xs text-slate-500">
           {d.startDate} → {d.endDate}
         </span>
-      </div>
+      }
+    >
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         <StatTile
           label="Your return"
@@ -38,6 +40,6 @@ export function BenchmarkCard() {
         Your return uses your account size (edit it in the risk sizer). Alpha &lt; 0 means buy-and-hold would have
         beaten your trading over this period.
       </p>
-    </Card>
+    </CollapsibleCard>
   );
 }

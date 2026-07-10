@@ -1,12 +1,11 @@
 import { ReactNode } from 'react';
-import { Card, PageHeader } from '../components/ui';
+import { CollapsibleCard, PageHeader } from '../components/ui';
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return (
-    <Card className="p-4 sm:p-5">
-      <h2 className="text-base font-semibold text-slate-100">{title}</h2>
-      <div className="mt-2 space-y-2 text-sm text-slate-300 leading-relaxed">{children}</div>
-    </Card>
+    <CollapsibleCard id={`about.${id}`} title={title} headingLevel="h2">
+      <div className="space-y-2 text-sm text-slate-300 leading-relaxed">{children}</div>
+    </CollapsibleCard>
   );
 }
 
@@ -62,7 +61,7 @@ export default function AboutPage() {
         subtitle="A transparent, rule-based research assistant — every number on screen traces back to a formula here. It is not a signal service and it never places trades."
       />
 
-      <Section title="What this is (and isn’t)">
+      <Section id="whatThisIs" title="What this is (and isn’t)">
         <p>
           This is a personal <strong className="text-slate-200">decision-support and tracking</strong> tool. It screens
           a universe you control, scores symbols with a configurable rule set, helps you reason about option entries and
@@ -75,7 +74,7 @@ export default function AboutPage() {
         </p>
       </Section>
 
-      <Section title="How the screener score works">
+      <Section id="screenerScore" title="How the screener score works">
         <p>
           Each symbol gets six sub-scores, each normalized to <span className="tabular-nums">0–100</span>. The total is
           their <strong className="text-slate-200">weighted average</strong> using the weights below (also 0–100). Every
@@ -108,7 +107,7 @@ export default function AboutPage() {
         </p>
       </Section>
 
-      <Section title="Alerts & the suggested exit">
+      <Section id="alerts" title="Alerts & the suggested exit">
         <p>
           An alert is a one-shot <strong className="text-slate-200">condition</strong> you set — never a buy/sell call.
           Each evaluation reads the current value and trips when it crosses your threshold (
@@ -138,7 +137,7 @@ export default function AboutPage() {
         </ul>
       </Section>
 
-      <Section title="Glossary">
+      <Section id="glossary" title="Glossary">
         <dl>
           <Term term="Moving average">
             Average closing price over the last N periods (e.g. 20MA, 50MA). Used to gauge trend and how stretched price
@@ -180,7 +179,7 @@ export default function AboutPage() {
         </dl>
       </Section>
 
-      <Section title="Data & assumptions">
+      <Section id="dataAssumptions" title="Data & assumptions">
         <ul className="list-disc pl-5 space-y-1.5 text-slate-400">
           <li>
             Market data comes from the provider you configure. Quotes may be delayed (commonly ~15 minutes on free
@@ -207,7 +206,7 @@ export default function AboutPage() {
         </ul>
       </Section>
 
-      <Section title="Privacy">
+      <Section id="privacy" title="Privacy">
         <p>
           Your data stays with you. Positions, journal entries, presets, and settings live in a{' '}
           <strong className="text-slate-200">local SQLite database</strong> on the machine running the server. API keys
@@ -216,7 +215,7 @@ export default function AboutPage() {
         </p>
       </Section>
 
-      <Section title="Disclaimers">
+      <Section id="disclaimers" title="Disclaimers">
         <ul className="list-disc pl-5 space-y-1.5 text-slate-400">
           <li>
             This tool is for personal research and education. It is{' '}

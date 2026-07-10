@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { client } from '../api/client';
 import { useAsync, useLocalStorage } from '../lib/hooks';
 import { cx, fmtUsd } from '../lib/format';
-import { Badge, Card, Field, NumberInput, PageHeader, Segmented, Spinner } from '../components/ui';
+import { Badge, Card, CollapsibleCard, Field, NumberInput, PageHeader, Segmented, Spinner } from '../components/ui';
 import { ExpirySelect, StrikeSelect, chainStrikes, suggestedNet } from '../components/OptionPicker';
 import type {
   AccountStateInput,
@@ -583,9 +583,10 @@ function Workspace({
           {error && <p className="text-sm text-bear">{error}</p>}
         </Card>
 
-        <Card className="p-4 space-y-3">
-          <div className="flex flex-wrap items-end justify-between gap-2">
-            <h3 className="font-medium">Account state</h3>
+        <CollapsibleCard
+          id="trade.accountState"
+          title="Account state"
+          action={
             <div className="flex items-end gap-2">
               <Field label="Cash account_id" hint="Settings → Webull → Account list">
                 <input
@@ -599,26 +600,32 @@ function Workspace({
                 {pulling ? 'Pulling…' : 'Pull from Webull'}
               </button>
             </div>
+          }
+        >
+          <div className="space-y-3">
+            {pullMsg && <p className="text-xs text-slate-400">{pullMsg}</p>}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <Field label="Buying power $">
+                <NumberInput value={account.buyingPowerUsd} onChange={(v) => setA('buyingPowerUsd', v ?? 0)} min={0} />
+              </Field>
+              <Field label="Exposure $">
+                <NumberInput value={account.exposureUsd} onChange={(v) => setA('exposureUsd', v ?? 0)} min={0} />
+              </Field>
+              <Field label="Today's P&L $">
+                <NumberInput
+                  value={account.realizedPnlTodayUsd}
+                  onChange={(v) => setA('realizedPnlTodayUsd', v ?? 0)}
+                />
+              </Field>
+              <Field label="Orders today">
+                <NumberInput value={account.ordersToday} onChange={(v) => setA('ordersToday', v ?? 0)} min={0} />
+              </Field>
+              <Field label="Current position">
+                <NumberInput value={account.currentPositionQty} onChange={(v) => setA('currentPositionQty', v ?? 0)} />
+              </Field>
+            </div>
           </div>
-          {pullMsg && <p className="text-xs text-slate-400">{pullMsg}</p>}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <Field label="Buying power $">
-              <NumberInput value={account.buyingPowerUsd} onChange={(v) => setA('buyingPowerUsd', v ?? 0)} min={0} />
-            </Field>
-            <Field label="Exposure $">
-              <NumberInput value={account.exposureUsd} onChange={(v) => setA('exposureUsd', v ?? 0)} min={0} />
-            </Field>
-            <Field label="Today's P&L $">
-              <NumberInput value={account.realizedPnlTodayUsd} onChange={(v) => setA('realizedPnlTodayUsd', v ?? 0)} />
-            </Field>
-            <Field label="Orders today">
-              <NumberInput value={account.ordersToday} onChange={(v) => setA('ordersToday', v ?? 0)} min={0} />
-            </Field>
-            <Field label="Current position">
-              <NumberInput value={account.currentPositionQty} onChange={(v) => setA('currentPositionQty', v ?? 0)} />
-            </Field>
-          </div>
-        </Card>
+        </CollapsibleCard>
 
         {livePrev && <LivePreviewPanel result={livePrev} />}
 
@@ -802,9 +809,10 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
   const workingCount = rows.filter((r) => r.brokerOrderId && cancellable(r.state)).length;
 
   return (
-    <Card className="p-4 space-y-3">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="font-medium">Orders</h3>
+    <CollapsibleCard
+      id="trade.orders"
+      title="Orders"
+      action={
         <div className="flex items-center gap-2">
           {workingCount > 0 && (
             <button className="btn-ghost text-xs" onClick={refreshAll} disabled={busyAll}>
@@ -815,84 +823,87 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
             {intents.loading ? 'Loading…' : 'Reload'}
           </button>
         </div>
-      </div>
-      {allMsg && <p className="text-[11px] text-slate-400">{allMsg}</p>}
-      {rows.length === 0 ? (
-        <p className="text-xs text-slate-500">No orders yet — placed and dry-run orders show here.</p>
-      ) : (
-        <ul className="space-y-2">
-          {rows.map((it) => (
-            <li key={it.id} className="rounded-md border border-ink-600 bg-ink-700/40 p-2 text-sm">
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-[11px] text-slate-500">#{it.id}</span>
-                <span className="flex-1 truncate">
-                  {it.side.toUpperCase()} {it.quantity} {it.symbol}{' '}
-                  <span className="text-slate-500">
-                    {it.orderType}
-                    {it.limitPrice !== null ? ` @ ${fmtUsd(it.limitPrice)}` : ''}
+      }
+    >
+      <div className="space-y-3">
+        {allMsg && <p className="text-[11px] text-slate-400">{allMsg}</p>}
+        {rows.length === 0 ? (
+          <p className="text-xs text-slate-500">No orders yet — placed and dry-run orders show here.</p>
+        ) : (
+          <ul className="space-y-2">
+            {rows.map((it) => (
+              <li key={it.id} className="rounded-md border border-ink-600 bg-ink-700/40 p-2 text-sm">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[11px] text-slate-500">#{it.id}</span>
+                  <span className="flex-1 truncate">
+                    {it.side.toUpperCase()} {it.quantity} {it.symbol}{' '}
+                    <span className="text-slate-500">
+                      {it.orderType}
+                      {it.limitPrice !== null ? ` @ ${fmtUsd(it.limitPrice)}` : ''}
+                    </span>
                   </span>
-                </span>
-                {comboLabel(it) && <Badge color="blue">{comboLabel(it)}</Badge>}
-                <span className={cx('text-xs font-medium', stateTone(it.state))}>{it.state}</span>
-                {it.brokerOrderId && (
-                  <button className="btn-ghost text-xs" onClick={() => refresh(it.id)} disabled={busyId === it.id}>
-                    {busyId === it.id ? '…' : 'Refresh status'}
-                  </button>
-                )}
-                {it.brokerOrderId && cancellable(it.state) && (
-                  <>
-                    {inPlaceModifiable(it) ? (
-                      <button className="btn-ghost text-xs" onClick={() => openEdit(it)} disabled={busyId === it.id}>
-                        Modify
-                      </button>
-                    ) : (
-                      <span
-                        className="text-[11px] text-slate-500"
-                        title="A spread or bracket is one combo of broker orders — cancel and re-place to change it."
-                      >
-                        cancel &amp; re-place to change
-                      </span>
-                    )}
-                    <button
-                      className="btn-ghost text-xs !text-bear"
-                      onClick={() => cancel(it.id)}
-                      disabled={busyId === it.id}
-                    >
-                      Cancel
+                  {comboLabel(it) && <Badge color="blue">{comboLabel(it)}</Badge>}
+                  <span className={cx('text-xs font-medium', stateTone(it.state))}>{it.state}</span>
+                  {it.brokerOrderId && (
+                    <button className="btn-ghost text-xs" onClick={() => refresh(it.id)} disabled={busyId === it.id}>
+                      {busyId === it.id ? '…' : 'Refresh status'}
                     </button>
-                  </>
-                )}
-              </div>
-              {editId === it.id && (
-                <div className="mt-1.5 flex flex-wrap items-end gap-2 border-t border-ink-600/60 pt-1.5">
-                  <Field label="New qty">
-                    <NumberInput value={editQty} onChange={setEditQty} min={1} />
-                  </Field>
-                  <Field label="New limit">
-                    <NumberInput value={editLimit} onChange={setEditLimit} min={0} step={0.01} />
-                  </Field>
-                  <button className="btn-primary text-xs" onClick={() => replace(it.id)} disabled={busyId === it.id}>
-                    {busyId === it.id ? '…' : 'Replace'}
-                  </button>
-                  <button className="btn-ghost text-xs" onClick={() => setEditId(undefined)}>
-                    Cancel edit
-                  </button>
+                  )}
+                  {it.brokerOrderId && cancellable(it.state) && (
+                    <>
+                      {inPlaceModifiable(it) ? (
+                        <button className="btn-ghost text-xs" onClick={() => openEdit(it)} disabled={busyId === it.id}>
+                          Modify
+                        </button>
+                      ) : (
+                        <span
+                          className="text-[11px] text-slate-500"
+                          title="A spread or bracket is one combo of broker orders — cancel and re-place to change it."
+                        >
+                          cancel &amp; re-place to change
+                        </span>
+                      )}
+                      <button
+                        className="btn-ghost text-xs !text-bear"
+                        onClick={() => cancel(it.id)}
+                        disabled={busyId === it.id}
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
                 </div>
-              )}
-              {it.brokerOrderId && (
-                <div className="truncate font-mono text-[10px] text-slate-500">broker {it.brokerOrderId}</div>
-              )}
-              {msg[it.id] && <div className="text-[11px] text-slate-400">{msg[it.id]}</div>}
-            </li>
-          ))}
-        </ul>
-      )}
-      <p className="text-[11px] text-slate-500">
-        <b>Refresh status</b> pulls the live broker status (read-only). <b>Modify</b> changes a working single-leg
-        order's qty/limit (re-checked against the guardrails); a spread or bracket is one combo, so change it by{' '}
-        <b>Cancel</b>-and-re-place. <b>Cancel</b> pulls a working order.
-      </p>
-    </Card>
+                {editId === it.id && (
+                  <div className="mt-1.5 flex flex-wrap items-end gap-2 border-t border-ink-600/60 pt-1.5">
+                    <Field label="New qty">
+                      <NumberInput value={editQty} onChange={setEditQty} min={1} />
+                    </Field>
+                    <Field label="New limit">
+                      <NumberInput value={editLimit} onChange={setEditLimit} min={0} step={0.01} />
+                    </Field>
+                    <button className="btn-primary text-xs" onClick={() => replace(it.id)} disabled={busyId === it.id}>
+                      {busyId === it.id ? '…' : 'Replace'}
+                    </button>
+                    <button className="btn-ghost text-xs" onClick={() => setEditId(undefined)}>
+                      Cancel edit
+                    </button>
+                  </div>
+                )}
+                {it.brokerOrderId && (
+                  <div className="truncate font-mono text-[10px] text-slate-500">broker {it.brokerOrderId}</div>
+                )}
+                {msg[it.id] && <div className="text-[11px] text-slate-400">{msg[it.id]}</div>}
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="text-[11px] text-slate-500">
+          <b>Refresh status</b> pulls the live broker status (read-only). <b>Modify</b> changes a working single-leg
+          order's qty/limit (re-checked against the guardrails); a spread or bracket is one combo, so change it by{' '}
+          <b>Cancel</b>-and-re-place. <b>Cancel</b> pulls a working order.
+        </p>
+      </div>
+    </CollapsibleCard>
   );
 }
 
@@ -1056,69 +1067,71 @@ function ConfigPanel({ config, reload }: { config: TradingConfig; reload: () => 
   };
 
   return (
-    <Card className="p-4 space-y-3 self-start">
-      <h3 className="font-medium">Guardrail config</h3>
+    <div className="self-start">
+      <CollapsibleCard id="trade.guardrailConfig" title="Guardrail config">
+        <div className="space-y-3">
+          <button
+            onClick={toggleKill}
+            className={cx(
+              'w-full rounded-lg border px-3 py-2 text-sm font-semibold transition-colors',
+              config.killSwitch
+                ? 'border-bear bg-bear/20 text-bear'
+                : 'border-ink-600 bg-ink-700/40 text-slate-300 hover:border-bear/60',
+            )}
+          >
+            {config.killSwitch ? '■ Kill switch ENGAGED — release' : 'Kill switch — engage halt'}
+          </button>
 
-      <button
-        onClick={toggleKill}
-        className={cx(
-          'w-full rounded-lg border px-3 py-2 text-sm font-semibold transition-colors',
-          config.killSwitch
-            ? 'border-bear bg-bear/20 text-bear'
-            : 'border-ink-600 bg-ink-700/40 text-slate-300 hover:border-bear/60',
-        )}
-      >
-        {config.killSwitch ? '■ Kill switch ENGAGED — release' : 'Kill switch — engage halt'}
-      </button>
+          <label className="flex items-center justify-between text-sm">
+            <span className="text-slate-300">Trading enabled</span>
+            <input type="checkbox" checked={draft.enabled} onChange={(e) => set('enabled', e.target.checked)} />
+          </label>
+          <p className="text-[11px] text-slate-500 -mt-2">
+            Arms the <code>trading_enabled</code> guardrail. Separate from the server <code>TRADING_ENABLED</code> env —
+            both must be on to place. Remember to <b>Save</b>.
+          </p>
+          <label className="flex items-center justify-between text-sm">
+            <span className="text-slate-300">Allow naked short</span>
+            <input
+              type="checkbox"
+              checked={draft.allowNakedShort}
+              onChange={(e) => set('allowNakedShort', e.target.checked)}
+            />
+          </label>
 
-      <label className="flex items-center justify-between text-sm">
-        <span className="text-slate-300">Trading enabled</span>
-        <input type="checkbox" checked={draft.enabled} onChange={(e) => set('enabled', e.target.checked)} />
-      </label>
-      <p className="text-[11px] text-slate-500 -mt-2">
-        Arms the <code>trading_enabled</code> guardrail. Separate from the server <code>TRADING_ENABLED</code> env —
-        both must be on to place. Remember to <b>Save</b>.
-      </p>
-      <label className="flex items-center justify-between text-sm">
-        <span className="text-slate-300">Allow naked short</span>
-        <input
-          type="checkbox"
-          checked={draft.allowNakedShort}
-          onChange={(e) => set('allowNakedShort', e.target.checked)}
-        />
-      </label>
+          <div className="grid sm:grid-cols-2 gap-2">
+            <Field label="Max order $">
+              <NumberInput value={draft.maxOrderUsd} onChange={(v) => set('maxOrderUsd', v ?? 0)} min={0} />
+            </Field>
+            <Field label="Max symbol qty">
+              <NumberInput
+                value={draft.maxSymbolPositionQty}
+                onChange={(v) => set('maxSymbolPositionQty', v ?? 0)}
+                min={0}
+              />
+            </Field>
+            <Field label="Max exposure $">
+              <NumberInput value={draft.maxExposureUsd} onChange={(v) => set('maxExposureUsd', v ?? 0)} min={0} />
+            </Field>
+            <Field label="Max orders/day">
+              <NumberInput value={draft.maxOrdersPerDay} onChange={(v) => set('maxOrdersPerDay', v ?? 0)} min={0} />
+            </Field>
+            <Field label="Max daily loss $">
+              <NumberInput value={draft.maxDailyLossUsd} onChange={(v) => set('maxDailyLossUsd', v ?? 0)} min={0} />
+            </Field>
+            <Field label="Fat-finger %">
+              <NumberInput value={draft.fatFingerPct} onChange={(v) => set('fatFingerPct', v ?? 0)} min={0} max={100} />
+            </Field>
+          </div>
 
-      <div className="grid sm:grid-cols-2 gap-2">
-        <Field label="Max order $">
-          <NumberInput value={draft.maxOrderUsd} onChange={(v) => set('maxOrderUsd', v ?? 0)} min={0} />
-        </Field>
-        <Field label="Max symbol qty">
-          <NumberInput
-            value={draft.maxSymbolPositionQty}
-            onChange={(v) => set('maxSymbolPositionQty', v ?? 0)}
-            min={0}
-          />
-        </Field>
-        <Field label="Max exposure $">
-          <NumberInput value={draft.maxExposureUsd} onChange={(v) => set('maxExposureUsd', v ?? 0)} min={0} />
-        </Field>
-        <Field label="Max orders/day">
-          <NumberInput value={draft.maxOrdersPerDay} onChange={(v) => set('maxOrdersPerDay', v ?? 0)} min={0} />
-        </Field>
-        <Field label="Max daily loss $">
-          <NumberInput value={draft.maxDailyLossUsd} onChange={(v) => set('maxDailyLossUsd', v ?? 0)} min={0} />
-        </Field>
-        <Field label="Fat-finger %">
-          <NumberInput value={draft.fatFingerPct} onChange={(v) => set('fatFingerPct', v ?? 0)} min={0} max={100} />
-        </Field>
-      </div>
-
-      <button className="btn-primary w-full" onClick={save} disabled={saving}>
-        {saving ? 'Saving…' : 'Save config'}
-      </button>
-      <p className="text-[11px] text-slate-500">
-        Caps and the kill switch persist server-side. Defaults are intentionally tiny and trading ships <b>off</b>.
-      </p>
-    </Card>
+          <button className="btn-primary w-full" onClick={save} disabled={saving}>
+            {saving ? 'Saving…' : 'Save config'}
+          </button>
+          <p className="text-[11px] text-slate-500">
+            Caps and the kill switch persist server-side. Defaults are intentionally tiny and trading ships <b>off</b>.
+          </p>
+        </div>
+      </CollapsibleCard>
+    </div>
   );
 }

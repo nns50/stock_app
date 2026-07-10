@@ -16,7 +16,18 @@ import { client } from '../api/client';
 import { useAsync, useSort } from '../lib/hooks';
 import { cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd } from '../lib/format';
 import { disciplineCount } from '../lib/checklist';
-import { Badge, Card, EmptyState, InfoTip, PageHeader, PnL, SortTh, Spinner, StatTile } from '../components/ui';
+import {
+  Badge,
+  Card,
+  CollapsibleCard,
+  EmptyState,
+  InfoTip,
+  PageHeader,
+  PnL,
+  SortTh,
+  Spinner,
+  StatTile,
+} from '../components/ui';
 import { JournalEditModal } from '../components/PositionForms';
 import { DataTools } from '../components/DataTools';
 import { JournalAnalyticsModal } from '../components/JournalAnalyticsModal';
@@ -54,11 +65,10 @@ function sqnLabel(sqn: number): string {
 }
 
 /** Compact "realized P&L grouped by X" table used in the Performance breakdown. */
-function Breakdown({ title, colLabel, rows }: { title: string; colLabel: string; rows: GroupStat[] }) {
+function Breakdown({ id, title, colLabel, rows }: { id: string; title: string; colLabel: string; rows: GroupStat[] }) {
   if (!rows.length) return null;
   return (
-    <Card className="p-3">
-      <h3 className="font-medium text-sm mb-2">{title}</h3>
+    <CollapsibleCard id={`journal.${id}`} title={title}>
       <table className="w-full text-sm">
         <thead>
           <tr className="text-[11px] uppercase tracking-wide text-slate-500 text-left border-b border-ink-600/60">
@@ -83,7 +93,7 @@ function Breakdown({ title, colLabel, rows }: { title: string; colLabel: string;
           ))}
         </tbody>
       </table>
-    </Card>
+    </CollapsibleCard>
   );
 }
 
@@ -153,14 +163,16 @@ export default function JournalPage() {
       </div>
 
       {s.rTrades > 0 && s.avgR != null && (
-        <Card className="p-4">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="font-medium text-sm flex items-center">
-              Edge (R-multiples)
+        <CollapsibleCard
+          id="journal.edgeR"
+          title="Edge (R-multiples)"
+          action={
+            <span className="flex items-center gap-2">
               <InfoTip text="P&L per trade in multiples of initial risk (entry→stop). A positive expectancy means an edge, independent of position size." />
-            </h3>
-            <span className="text-xs text-slate-500">{s.rTrades} closed trades with a stop</span>
-          </div>
+              <span className="text-xs text-slate-500">{s.rTrades} closed trades with a stop</span>
+            </span>
+          }
+        >
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
             <StatTile
               label="Expectancy"
@@ -196,15 +208,17 @@ export default function JournalPage() {
               );
             })}
           </div>
-        </Card>
+        </CollapsibleCard>
       )}
 
       {s.kelly && (
-        <Card className="p-4">
-          <h3 className="font-medium text-sm flex items-center">
-            Edge-based sizing
+        <CollapsibleCard
+          id="journal.edgeSizing"
+          title="Edge-based sizing"
+          action={
             <InfoTip text="Suggested risk per trade from your realized win rate and payoff ratio (quarter-Kelly, capped at 3%). Kelly is aggressive and assumes your edge persists — a ceiling, not a recommendation." />
-          </h3>
+          }
+        >
           <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
             <span>
               Suggested:{' '}
@@ -221,13 +235,14 @@ export default function JournalPage() {
               Only {s.kelly.sampleSize} decisive trades — too few to lean on; size conservatively.
             </div>
           )}
-        </Card>
+        </CollapsibleCard>
       )}
 
-      <Card className="p-4">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-          <h3 className="font-medium text-sm">P&L over time (cumulative realized)</h3>
-          {s.totalClosed > 0 && (
+      <CollapsibleCard
+        id="journal.pnlOverTime"
+        title="P&L over time (cumulative realized)"
+        action={
+          s.totalClosed > 0 && (
             <div className="text-xs text-slate-500 tabular-nums flex flex-wrap gap-x-3">
               <span>
                 Max drawdown <span className="text-bear">{fmtSignedUsd(-s.maxDrawdown)}</span>
@@ -259,8 +274,9 @@ export default function JournalPage() {
                 <span className="text-bear">{s.longestLossStreak}L</span>
               </span>
             </div>
-          )}
-        </div>
+          )
+        }
+      >
         {s.equityCurve.length === 0 ? (
           <div className="text-slate-500 text-sm py-8 text-center">Close some trades to build the equity curve.</div>
         ) : (
@@ -304,17 +320,19 @@ export default function JournalPage() {
             </AreaChart>
           </ResponsiveContainer>
         )}
-      </Card>
+      </CollapsibleCard>
 
       {s.rollingExpectancy.length > 0 && (
-        <Card className="p-4">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="font-medium text-sm flex items-center">
-              Edge over time
+        <CollapsibleCard
+          id="journal.edgeOverTime"
+          title="Edge over time"
+          action={
+            <span className="flex items-center gap-2">
               <InfoTip text="Per-trade expectancy ($) over a trailing 20-trade window. Rising means your edge is strengthening; falling toward or below zero means it's decaying." />
-            </h3>
-            <span className="text-xs text-slate-500">rolling 20-trade expectancy</span>
-          </div>
+              <span className="text-xs text-slate-500">rolling 20-trade expectancy</span>
+            </span>
+          }
+        >
           <ResponsiveContainer width="100%" height={200}>
             <LineChart data={s.rollingExpectancy} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
               <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="2 4" vertical={false} />
@@ -346,7 +364,7 @@ export default function JournalPage() {
               />
             </LineChart>
           </ResponsiveContainer>
-        </Card>
+        </CollapsibleCard>
       )}
 
       {s.totalClosed > 0 && <BenchmarkCard />}
@@ -358,9 +376,9 @@ export default function JournalPage() {
             <span className="text-slate-500 font-normal"> — what’s actually working</span>
           </h2>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 items-start">
-            <Breakdown title="By tag" colLabel="Tag" rows={s.byTag} />
-            <Breakdown title="By grade" colLabel="Grade" rows={s.byGrade} />
-            <Breakdown title="By discipline" colLabel="Checklist" rows={s.byDiscipline} />
+            <Breakdown id="byTag" title="By tag" colLabel="Tag" rows={s.byTag} />
+            <Breakdown id="byGrade" title="By grade" colLabel="Grade" rows={s.byGrade} />
+            <Breakdown id="byDiscipline" title="By discipline" colLabel="Checklist" rows={s.byDiscipline} />
           </div>
         </div>
       )}
@@ -372,9 +390,11 @@ export default function JournalPage() {
             <span className="text-slate-500 font-normal"> — when do you trade best?</span>
           </h2>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
-            <Breakdown title="By weekday (exit)" colLabel="Day" rows={s.byWeekday} />
-            <Breakdown title="By hold time" colLabel="Held" rows={s.byHold} />
-            {s.byTimeOfDay.length > 0 && <Breakdown title="By entry session" colLabel="Session" rows={s.byTimeOfDay} />}
+            <Breakdown id="byWeekday" title="By weekday (exit)" colLabel="Day" rows={s.byWeekday} />
+            <Breakdown id="byHold" title="By hold time" colLabel="Held" rows={s.byHold} />
+            {s.byTimeOfDay.length > 0 && (
+              <Breakdown id="byTimeOfDay" title="By entry session" colLabel="Session" rows={s.byTimeOfDay} />
+            )}
           </div>
         </div>
       )}

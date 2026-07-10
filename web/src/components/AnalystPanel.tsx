@@ -2,7 +2,7 @@ import { ArrowDownRight, ArrowUpRight, Minus } from 'lucide-react';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtPct, fmtUsd } from '../lib/format';
-import { Card, Spinner } from './ui';
+import { Card, CollapsibleCard, Spinner } from './ui';
 
 const RATING_LABEL: Record<string, string> = {
   strong_buy: 'Strong Buy',
@@ -42,10 +42,14 @@ export function AnalystPanel({ symbol, price }: { symbol: string; price?: number
   const upside = d.targetMean != null && price ? (d.targetMean / price - 1) * 100 : null;
 
   return (
-    <Card className="p-4">
-      <h3 className="font-medium text-sm mb-3 text-slate-200">
-        Analyst <span className="text-[10px] uppercase tracking-wide text-slate-500 font-normal">Yahoo</span>
-      </h3>
+    <CollapsibleCard
+      id="symbol.analyst"
+      title={
+        <span>
+          Analyst <span className="text-[10px] uppercase tracking-wide text-slate-500 font-normal">Yahoo</span>
+        </span>
+      }
+    >
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm mb-3">
         {d.recommendationKey && (
           <div>
@@ -98,6 +102,6 @@ export function AnalystPanel({ symbol, price }: { symbol: string; price?: number
           </ul>
         </div>
       )}
-    </Card>
+    </CollapsibleCard>
   );
 }
