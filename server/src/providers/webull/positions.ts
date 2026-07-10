@@ -168,7 +168,7 @@ function matchesOpen(open: Position[], p: ImportablePosition): boolean {
   );
 }
 
-interface ContractLike {
+export interface ContractLike {
   symbol: string;
   assetType: AssetType;
   optionType?: OptionType | null;
@@ -180,8 +180,12 @@ interface ContractLike {
  *  `matchesOpen` already uses (symbol + asset type + option legs), NOT side. A
  *  long flipping to a short in the same symbol between syncs is a known,
  *  pre-existing blind spot shared with matchesOpen — this mirrors it rather
- *  than inventing stricter matching only the close-detector below applies. */
-function contractKey(p: ContractLike): string {
+ *  than inventing stricter matching only the close-detector below applies.
+ *  Exported so liveOptionsExecute.ts's own broker-truth backstop (over the
+ *  SEPARATE autotrade_live_options_positions table, not this file's
+ *  `positions`) can identify the same contract identity per LEG, without
+ *  duplicating this matching logic. */
+export function contractKey(p: ContractLike): string {
   if (p.assetType !== 'option') return `${p.symbol.toUpperCase()}|stock`;
   return `${p.symbol.toUpperCase()}|option|${p.optionType ?? ''}|${p.strike ?? ''}|${p.expiration ?? ''}`;
 }

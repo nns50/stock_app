@@ -962,9 +962,55 @@ starts.
      not an estimate); this is purely a backstop for what it can't. No-ops when
      `liveAccountId` isn't set; wrapped in its own try/catch so a broker hiccup here
      can't take down exits, reconcile, or entries. Options live positions
-     (`autotrade_live_options_positions`) are a separate table this doesn't cover — they
-     have no equivalent backstop yet, a known gap for a future look, not something this
-     fix addresses.
+     (`autotrade_live_options_positions`) are a separate table this doesn't cover — see
+     the follow-up immediately below for that side.
+
+     **Follow-up (2026-07-10), same day — the equivalent backstop for LIVE OPTIONS
+     positions.** `reconcileLiveOptionsOrders()` shares the equity gap above, and is
+     arguably worse: unlike equity's bracket (whose exit legs exist for the position's
+     *entire* open life), an options position often has **no order watching it at all**
+     for most of its life — `checkLiveOptionsExits()` only places a closing order inside
+     the final `AUTOTRADE_TIME_EXIT_DAYS` (7), and only when it can get a valid quote; an
+     illiquid near-expiry contract can keep failing that and leave the position invisible
+     to reconcile even in principle, since `listPendingLiveOptionsOrders()` only ever
+     returns rows joined against an order that actually exists. Unlike equity, there was
+     no existing, already-tested Webull-holdings diff to reuse — `providers/webull/
+     positions.ts` has never parsed anything beyond a single option contract, has no
+     concept of a multi-leg spread, and had zero test coverage of any option position
+     flowing through it. Given the stakes (a false-positive close would understate real
+     exposure to the risk engine and write a guessed, not confirmed, exit price into
+     realized P&L — worse than staying stale), this was a genuine design fork: build a
+     full auto-closing backstop matching equity's, add a narrower one that only alerts
+     without auto-closing, or just harden `checkLiveOptionsExits()`'s own persistence.
+     Put to the user explicitly; the answer was the full auto-closing backstop, same
+     posture as equity, accepting the added risk.
+     `syncLiveOptionsPositionsFromBroker(accountId)` (`liveOptionsExecute.ts`) diffs each
+     open live options position's leg(s) against `previewWebullPositions()`'s current
+     holdings, reusing `contractKey()` (now exported from `providers/webull/positions.ts`)
+     — the SAME already-tested per-contract matching equity's backstop uses — applied
+     once per LEG rather than trying to reconstruct a whole spread from one raw payload
+     row (Webull's positions endpoint has no known concept of a multi-leg strategy, and
+     nothing in this codebase has ever confirmed one exists). A debit spread only closes
+     once **both** legs are confirmed gone; if just one leg is missing (e.g. early
+     assignment on the short leg), that's a materially different, ambiguous situation
+     left open rather than guessed — same "don't guess" posture as equity's own ambiguous
+     exit-leg handling. `runAutotradeLoopTick()` calls it right after
+     `reconcileLiveOptionsOrders()` and before `checkLiveOptionsExits()`, same ordering
+     logic as the existing comment there (a position this just closed shouldn't also get
+     a wasted new closing order placed for it the same tick). Exit price is a current
+     quote via `fetchContractMark()` (already used elsewhere in this file), never
+     guessed — if it can't be fetched, the position is left open to retry on a later
+     sync, same as equity's own `closePositionsFromPreview`. Unlike equity's *silent*
+     broker-truth close, this DOES journal a `live_options_position_closed` event
+     (`detail.via: 'broker_sync'`) on every close it makes — deliberately more visible
+     than equity's precedent, since this per-leg matching is new and unvalidated against
+     a real account's multi-leg holdings; `exitReason` is stored as `'manual'` (the
+     closer of the two values the `exit_reason` CHECK constraint allows, to avoid a
+     schema migration against the already-deployed table — `'time_exit'` would
+     misleadingly imply `checkLiveOptionsExits()` placed a real closing order); the
+     journaled event's own `detail.via` is what actually distinguishes it. No-ops without
+     a `liveAccountId`; wrapped in its own try/catch so a broker hiccup here can't take
+     down exits, reconcile, or entries either.
 
      **Follow-up, added 2026-07-04 — autotrade-specific alerting.** Before this, the
      only way to learn a live order had fired, or that the kill switch had engaged,

@@ -42,6 +42,7 @@ import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { dispatchNotifications } from '../notifier';
 import { fetchContractMark, validPremium } from './optionsExecute';
 import { getLivePortfolioSnapshot, combinedLiveOpenRisk, ProbationStatus } from './liveExecute';
+import { previewWebullPositions, contractKey } from '../../providers/webull/positions';
 
 // ---------------------------------------------------------------------------
 // Task #70: the LIVE counterpart to optionsExecute.ts's paper options
@@ -1005,4 +1006,164 @@ function materializeOptionsExitFill(
     riskProfile: meta.riskProfile,
   });
   return 'exit_filled';
+}
+
+export interface LiveOptionsPositionsSyncResult {
+  ok: boolean;
+  checked: number;
+  closed: number;
+  closedSymbols: string[];
+  error?: string;
+}
+
+/**
+ * Backstop for reconcileLiveOptionsOrders() above: that only detects a close
+ * via the SPECIFIC order this app placed and is tracking — and, unlike
+ * equity (whose bracket's exit legs exist for the position's entire open
+ * life), an options position often has NO order watching it at all for most
+ * of its life. checkLiveOptionsExits() only places a closing order inside
+ * the final AUTOTRADE_TIME_EXIT_DAYS, and only when it can get a valid
+ * quote — an illiquid near-expiry contract can keep failing that check and
+ * leave the position invisible to reconcile even in principle, since
+ * listPendingLiveOptionsOrders() only ever returns rows joined against an
+ * order that actually exists.
+ *
+ * This instead diffs each open live options position's leg(s) against what
+ * Webull's account currently holds, reusing previewWebullPositions() /
+ * contractKey() — the SAME already-tested per-contract matching the equity
+ * backstop (loop.ts's runWebullPositionsSync call) uses — applied once per
+ * LEG rather than trying to reconstruct a whole spread from one raw payload
+ * row (Webull's positions endpoint has no known concept of a multi-leg
+ * strategy, and nothing in this codebase has ever confirmed one exists). A
+ * debit spread only closes when BOTH legs are gone from the broker's
+ * holdings — if just one leg is missing (e.g. early assignment on the short
+ * leg), that's a materially different, ambiguous situation left open rather
+ * than guessed, mirroring reconcileLiveOrders()'s own "don't guess" posture
+ * for an ambiguous equity bracket exit.
+ *
+ * Unlike equity's silent broker-truth close (closePositionsFromPreview
+ * never journals), this DOES log a 'live_options_position_closed' event
+ * (detail.via: 'broker_sync') on every close it makes — deliberately more
+ * visible than equity's precedent, since this per-leg matching is new and
+ * hasn't been validated against a real account's multi-leg holdings the way
+ * equity's has; the extra visibility costs nothing and lets a close be
+ * sanity-checked rather than trusted silently. exitReason is stored as
+ * 'manual' — the closer of the two values the exit_reason CHECK constraint
+ * allows ('time_exit' would misleadingly imply checkLiveOptionsExits()
+ * placed a real closing order); the journaled event's own detail.via is
+ * what actually distinguishes it.
+ */
+export async function syncLiveOptionsPositionsFromBroker(accountId: string): Promise<LiveOptionsPositionsSyncResult> {
+  const preview = await previewWebullPositions(accountId);
+  if (!preview.ok) return { ok: false, checked: 0, closed: 0, closedSymbols: [], error: preview.error };
+
+  const heldKeys = new Set(
+    preview.positions
+      .filter((p) => p.assetType === 'option')
+      .map((p) =>
+        contractKey({
+          symbol: p.symbol,
+          assetType: 'option',
+          optionType: p.optionType,
+          strike: p.strike,
+          expiration: p.expiration,
+        }),
+      ),
+  );
+
+  const open = listOpenLiveOptionsPositions();
+  const closedSymbols = new Set<string>();
+  let closed = 0;
+  for (const pos of open) {
+    const longHeld = heldKeys.has(
+      contractKey({
+        symbol: pos.symbol,
+        assetType: 'option',
+        optionType: pos.side,
+        strike: pos.strike,
+        expiration: pos.expiration,
+      }),
+    );
+
+    if (pos.kind === 'single_leg') {
+      if (longHeld) continue; // still held at the broker
+      const exitPrice = await safeContractMark(pos.symbol, pos.expiration, pos.strike, pos.side);
+      if (exitPrice == null) continue; // can't price it — leave open, retry next sync
+      if (closeLiveOptionsPositionFromBroker(pos, exitPrice, null)) {
+        closed++;
+        closedSymbols.add(pos.symbol);
+      }
+      continue;
+    }
+
+    // debit_spread — only close when BOTH legs are gone; see header comment
+    // on why one leg missing is left open rather than guessed.
+    const shortHeld = heldKeys.has(
+      contractKey({
+        symbol: pos.symbol,
+        assetType: 'option',
+        optionType: pos.side,
+        strike: pos.shortStrike!,
+        expiration: pos.expiration,
+      }),
+    );
+    if (longHeld || shortHeld) continue;
+
+    const [longExit, shortExit] = await Promise.all([
+      safeContractMark(pos.symbol, pos.expiration, pos.strike, pos.side),
+      safeContractMark(pos.symbol, pos.expiration, pos.shortStrike!, pos.side),
+    ]);
+    if (longExit == null || shortExit == null) continue; // can't price both legs — leave open, retry next sync
+    if (closeLiveOptionsPositionFromBroker(pos, longExit, shortExit)) {
+      closed++;
+      closedSymbols.add(pos.symbol);
+    }
+  }
+  return { ok: true, checked: open.length, closed, closedSymbols: Array.from(closedSymbols) };
+}
+
+/** A quote fetch failing (no current market for an illiquid/expired
+ *  contract) means "can't price it yet," not "the position is gone" —
+ *  mirrors positions.ts's own closePositionsFromPreview, which leaves a
+ *  position open rather than guessing at $0 when priceMap can't resolve it,
+ *  retrying on a later sync once pricing recovers. */
+async function safeContractMark(
+  symbol: string,
+  expiration: string,
+  strike: number,
+  side: 'call' | 'put',
+): Promise<number | null> {
+  try {
+    return await fetchContractMark(symbol, expiration, strike, side);
+  } catch {
+    return null;
+  }
+}
+
+function closeLiveOptionsPositionFromBroker(
+  pos: LiveOptionsPosition,
+  exitPrice: number,
+  shortExitPrice: number | null,
+): boolean {
+  const closed = closeLiveOptionsPosition(pos.id, {
+    exitPrice,
+    shortExitPrice: shortExitPrice ?? undefined,
+    exitReason: 'manual',
+  });
+  if (!closed) return false; // already closed (e.g. by reconcileLiveOptionsOrders earlier this same tick) — not an error
+  logAutotradeEvent({
+    symbol: pos.symbol,
+    stage: 'execution',
+    action: 'live_options_position_closed',
+    detail: {
+      via: 'broker_sync',
+      kind: pos.kind,
+      exitPrice,
+      shortExitPrice,
+      pnl: liveOptionsPnl(closed, exitPrice, shortExitPrice),
+      note: 'Auto-closed via Webull broker-truth sync — no longer held at the broker. Exit price is an ESTIMATE from the latest quote, not a confirmed fill.',
+    },
+    riskProfile: pos.riskProfile,
+  });
+  return true;
 }

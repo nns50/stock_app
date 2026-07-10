@@ -13,7 +13,12 @@ import {
   optionsSeedForEquity,
 } from './optionsExecute';
 import { runLiveExecution, reconcileLiveOrders, syncAccountEquityFromBroker } from './liveExecute';
-import { runLiveOptionsExecution, checkLiveOptionsExits, reconcileLiveOptionsOrders } from './liveOptionsExecute';
+import {
+  runLiveOptionsExecution,
+  checkLiveOptionsExits,
+  reconcileLiveOptionsOrders,
+  syncLiveOptionsPositionsFromBroker,
+} from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures } from './liveFailureAlert';
 import { checkSessionWindow, checkVolatility, defaultVolatilityFilterConfig, getMarketAtrPct } from './executionGuards';
 import { runWebullPositionsSync } from '../../providers/webull/positions';
@@ -28,10 +33,10 @@ import { runWebullPositionsSync } from '../../providers/webull/positions';
 // alive on its own.
 //
 // The background timer ticks unconditionally — exit-checking, live-order
-// reconcile, the live position-truth backstop, and the equity sync from the
-// broker (below) must run every cycle regardless of any gate, so the outer
-// loop() no longer gates on those; runAutotradeLoopTick() does its own, more
-// granular gating.
+// reconcile, both live position-truth backstops (equity and options), and the
+// equity sync from the broker (below) must run every cycle regardless of any
+// gate, so the outer loop() no longer gates on those; runAutotradeLoopTick()
+// does its own, more granular gating.
 //
 // Phase 8: paper and live execution are INDEPENDENT — screening/deciding runs
 // once per cycle whenever EITHER is active, then each of runPaperExecution()/
@@ -261,6 +266,26 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // gone from listOpenLiveOptionsPositions() by the time checkLiveOptionsExits
     // runs, rather than raising a question of re-triggering it in the same pass.
     const liveOptionsReconcileOutcomes = await reconcileLiveOptionsOrders();
+    // Backstop for reconcileLiveOptionsOrders() just above, mirroring the
+    // equity backstop above it — but MORE necessary here: an options position
+    // often has NO order watching it at all for most of its life (a closing
+    // order only exists once checkLiveOptionsExits(), below, has actually
+    // managed to place one), so there's frequently nothing for order-based
+    // reconcile to even poll. Diffs each open live options position's leg(s)
+    // against Webull's actual current holdings (see
+    // syncLiveOptionsPositionsFromBroker's own doc comment for the full
+    // reasoning, including why a debit spread only closes when BOTH legs are
+    // confirmed gone). Runs before checkLiveOptionsExits() for the same
+    // reason the comment above already applies to reconcile: a position this
+    // just closed shouldn't also get a wasted new closing order placed for it
+    // this same tick. No-ops without a liveAccountId; caught so a broker
+    // hiccup here can't take down anything else in this tick.
+    try {
+      const liveOptionsCfg = getAutotradeConfig();
+      if (liveOptionsCfg.liveAccountId) await syncLiveOptionsPositionsFromBroker(liveOptionsCfg.liveAccountId);
+    } catch (e) {
+      console.error('[autotrade-loop] live options position-truth sync failed:', (e as Error).message);
+    }
     const liveOptionsExitOutcomes = await checkLiveOptionsExits();
     // Keep accountEquityUsd fresh every tick instead of requiring the
     // Configuration tile's "Sync from Webull" button — read-only toward the
