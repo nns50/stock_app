@@ -25,6 +25,7 @@ vi.mock('../src/services/autotrading/liveOptionsExecute', () => ({
   runLiveOptionsExecution: vi.fn(),
   checkLiveOptionsExits: vi.fn(),
   reconcileLiveOptionsOrders: vi.fn(),
+  syncLiveOptionsPositionsFromBroker: vi.fn(),
 }));
 vi.mock('../src/providers/webull/positions', () => ({ runWebullPositionsSync: vi.fn() }));
 vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) => {
@@ -57,6 +58,7 @@ import {
   runLiveOptionsExecution,
   checkLiveOptionsExits,
   reconcileLiveOptionsOrders,
+  syncLiveOptionsPositionsFromBroker,
 } from '../src/services/autotrading/liveOptionsExecute';
 import { runWebullPositionsSync } from '../src/providers/webull/positions';
 import { checkSessionWindow, getMarketAtrPct } from '../src/services/autotrading/executionGuards';
@@ -84,6 +86,7 @@ const mockSyncEquity = vi.mocked(syncAccountEquityFromBroker);
 const mockLiveOptionsExecute = vi.mocked(runLiveOptionsExecution);
 const mockCheckLiveOptionsExits = vi.mocked(checkLiveOptionsExits);
 const mockReconcileLiveOptions = vi.mocked(reconcileLiveOptionsOrders);
+const mockOptionsPositionsSync = vi.mocked(syncLiveOptionsPositionsFromBroker);
 const mockPositionsSync = vi.mocked(runWebullPositionsSync);
 const mockSessionWindow = vi.mocked(checkSessionWindow);
 const mockMarketAtr = vi.mocked(getMarketAtrPct);
@@ -185,6 +188,7 @@ beforeEach(() => {
   mockLiveOptionsExecute.mockReset();
   mockCheckLiveOptionsExits.mockReset().mockResolvedValue([]);
   mockReconcileLiveOptions.mockReset().mockResolvedValue([]);
+  mockOptionsPositionsSync.mockReset().mockResolvedValue({ ok: true, checked: 0, closed: 0, closedSymbols: [] });
   mockSessionWindow.mockReset().mockReturnValue({ ok: true });
   mockMarketAtr.mockReset().mockResolvedValue(2);
   mockLogEvent.mockReset();
@@ -325,6 +329,59 @@ describe('runAutotradeLoopTick', () => {
     expect(summary.exitsClosed).toBe(1);
     expect(summary.ranEntries).toBe(true);
     expect(summary.entriesOpened).toBe(1);
+  });
+
+  it('backstops reconcileLiveOptionsOrders with a live options position-truth sync against liveAccountId, every tick', async () => {
+    setAutotradeConfig({ enabled: false, liveAccountId: 'ACC1' });
+    const summary = await runAutotradeLoopTick();
+    expect(mockOptionsPositionsSync).toHaveBeenCalledTimes(1);
+    expect(mockOptionsPositionsSync).toHaveBeenCalledWith('ACC1');
+    expect(summary.ranEntries).toBe(false);
+  });
+
+  it('skips the live options position-truth sync when no liveAccountId is configured', async () => {
+    setAutotradeConfig({ enabled: false });
+    await runAutotradeLoopTick();
+    expect(mockOptionsPositionsSync).not.toHaveBeenCalled();
+  });
+
+  it('a broker hiccup during the live options position-truth sync does not stop exits, reconcile, or entries from running', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockOptionsPositionsSync.mockRejectedValue(new Error('Webull timeout'));
+    mockCheckExits.mockResolvedValue([{ symbol: 'AAPL', closed: true }]);
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(summary.exitsClosed).toBe(1);
+    expect(summary.ranEntries).toBe(true);
+    expect(summary.entriesOpened).toBe(1);
+  });
+
+  it('runs the live options position-truth sync before checkLiveOptionsExits, so a just-closed position is not also handed a new exit order', async () => {
+    setAutotradeConfig({ enabled: false, liveAccountId: 'ACC1' });
+    const callOrder: string[] = [];
+    mockOptionsPositionsSync.mockImplementation(async () => {
+      callOrder.push('positionsSync');
+      return { ok: true, checked: 0, closed: 0, closedSymbols: [] };
+    });
+    mockCheckLiveOptionsExits.mockImplementation(async () => {
+      callOrder.push('checkExits');
+      return [];
+    });
+
+    await runAutotradeLoopTick();
+
+    expect(callOrder).toEqual(['positionsSync', 'checkExits']);
   });
 
   it('screens, decides, and executes when the session window is open', async () => {

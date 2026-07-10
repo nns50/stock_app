@@ -9,11 +9,19 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/providers/webull/orders')>();
   return { ...actual, webullPlaceOrder: vi.fn(), webullOrderStatus: vi.fn() };
 });
+vi.mock('../src/providers/webull/positions', async (importOriginal) => {
+  // contractKey is kept REAL (a pure, deterministic function this file's new
+  // tests want to actually exercise, not mock away) — only the network call
+  // is mocked.
+  const actual = await importOriginal<typeof import('../src/providers/webull/positions')>();
+  return { ...actual, previewWebullPositions: vi.fn() };
+});
 
 import { config } from '../src/config';
 import { getProvider } from '../src/providers';
 import { webullAccountState, webullAccountType } from '../src/providers/webull/accountState';
 import { webullPlaceOrder, webullOrderStatus, WebullOrderStatus } from '../src/providers/webull/orders';
+import { previewWebullPositions } from '../src/providers/webull/positions';
 import { initDb, db } from '../src/db';
 import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
@@ -38,9 +46,11 @@ import {
   runLiveOptionsExecution,
   checkLiveOptionsExits,
   reconcileLiveOptionsOrders,
+  syncLiveOptionsPositionsFromBroker,
 } from '../src/services/autotrading/liveOptionsExecute';
 
 const mockGetProvider = vi.mocked(getProvider);
+const mockPreviewPositions = vi.mocked(previewWebullPositions);
 const mockAccountState = vi.mocked(webullAccountState);
 const mockAccountType = vi.mocked(webullAccountType);
 const mockPlaceOrder = vi.mocked(webullPlaceOrder);
@@ -179,6 +189,7 @@ beforeEach(() => {
   setTradingConfig({ enabled: true, killSwitch: false });
   config.trading.placeEnabled = true;
   mockGetProvider.mockReset();
+  mockPreviewPositions.mockReset();
   mockAccountState.mockReset();
   mockAccountType.mockReset();
   mockPlaceOrder.mockReset();
@@ -1016,5 +1027,142 @@ describe('reconcileLiveOptionsOrders', () => {
     const second = await reconcileLiveOptionsOrders();
     expect(second[0]).toMatchObject({ changed: true, action: 'exit_filled' });
     expect(getLiveOptionsPosition(pos.id)!.status).toBe('closed');
+  });
+});
+
+function previewOf(
+  positions: Array<{ symbol: string; optionType: 'call' | 'put'; strike: number; expiration: string }>,
+) {
+  return {
+    ok: true as const,
+    accountId: 'ACC1',
+    positions: positions.map((p) => ({
+      assetType: 'option' as const,
+      symbol: p.symbol,
+      side: 'long' as const,
+      quantity: 1,
+      entryPrice: 0,
+      entryDate: '2024-01-01',
+      optionType: p.optionType,
+      strike: p.strike,
+      expiration: p.expiration,
+    })),
+    unmapped: 0,
+  };
+}
+
+function openSpreadPosition(overrides: Partial<Parameters<typeof createLiveOptionsPosition>[0]> = {}) {
+  return createLiveOptionsPosition({
+    symbol: 'AAPL',
+    side: 'call',
+    kind: 'debit_spread',
+    contractSymbol: 'AAPL-long',
+    strike: 100,
+    shortContractSymbol: 'AAPL-short',
+    shortStrike: 110,
+    shortEntryPrice: 1,
+    expiration: '2030-01-18',
+    quantity: 2,
+    entryPrice: 3,
+    riskAmount: 400,
+    riskProfile: 'MODERATE',
+    rationale: 'fixture',
+    ...overrides,
+  });
+}
+
+describe('syncLiveOptionsPositionsFromBroker', () => {
+  it('closes a single-leg position once Webull no longer holds the contract, pricing the exit from the current quote', async () => {
+    const pos = openLivePosition({ strike: 100, expiration: '2030-01-18' });
+    mockPreviewPositions.mockResolvedValue(previewOf([])); // broker holds nothing matching
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.5 } }) as never);
+
+    const result = await syncLiveOptionsPositionsFromBroker('ACC1');
+
+    expect(result).toMatchObject({ ok: true, checked: 1, closed: 1, closedSymbols: ['AAPL'] });
+    const closedPos = getLiveOptionsPosition(pos.id)!;
+    expect(closedPos.status).toBe('closed');
+    expect(closedPos.exitPrice).toBe(4.5);
+    expect(closedPos.exitReason).toBe('manual'); // closest allowed value; detail.via distinguishes it
+    const event = listAutotradeEvents({}).find((e) => e.action === 'live_options_position_closed');
+    expect(JSON.parse(event!.detail!)).toMatchObject({ via: 'broker_sync', kind: 'single_leg', exitPrice: 4.5 });
+  });
+
+  it('leaves a single-leg position open while Webull still holds the contract', async () => {
+    const pos = openLivePosition({ strike: 100, expiration: '2030-01-18' });
+    mockPreviewPositions.mockResolvedValue(
+      previewOf([{ symbol: 'AAPL', optionType: 'call', strike: 100, expiration: '2030-01-18' }]),
+    );
+
+    const result = await syncLiveOptionsPositionsFromBroker('ACC1');
+
+    expect(result).toMatchObject({ ok: true, checked: 1, closed: 0 });
+    expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
+    expect(listAutotradeEvents({}).some((e) => e.action === 'live_options_position_closed')).toBe(false);
+  });
+
+  it('leaves a position open (retrying later) when the broker no longer holds it but no current quote can price the exit', async () => {
+    openLivePosition({ strike: 100, expiration: '2030-01-18' });
+    mockPreviewPositions.mockResolvedValue(previewOf([]));
+    mockGetProvider.mockReturnValue(chainsFor({}) as never); // no chain for AAPL -> fetchContractMark throws
+
+    const result = await syncLiveOptionsPositionsFromBroker('ACC1');
+
+    expect(result).toMatchObject({ ok: true, checked: 1, closed: 0 });
+  });
+
+  it('closes a debit spread only once BOTH legs are confirmed gone from the broker, netting both legs into the exit P&L', async () => {
+    const pos = openSpreadPosition();
+    mockPreviewPositions.mockResolvedValue(previewOf([])); // neither leg held
+    mockGetProvider.mockReturnValue(
+      chainsFor({
+        AAPL: [
+          { side: 'call', strike: 100, mark: 5 },
+          { side: 'call', strike: 110, mark: 1.5 },
+        ],
+      }) as never,
+    );
+
+    const result = await syncLiveOptionsPositionsFromBroker('ACC1');
+
+    expect(result).toMatchObject({ ok: true, checked: 1, closed: 1 });
+    const closedPos = getLiveOptionsPosition(pos.id)!;
+    expect(closedPos.status).toBe('closed');
+    expect(closedPos.exitPrice).toBe(5);
+    expect(closedPos.shortExitPrice).toBe(1.5);
+    // netDebitAtEntry = 3 - 1 = 2; netCreditAtExit = 5 - 1.5 = 3.5; (3.5 - 2) * 2 * 100
+    const event = listAutotradeEvents({}).find((e) => e.action === 'live_options_position_closed');
+    expect(JSON.parse(event!.detail!)).toMatchObject({ via: 'broker_sync', kind: 'debit_spread', pnl: 300 });
+  });
+
+  it('leaves a debit spread open when only ONE leg is missing from the broker — ambiguous, not guessed', async () => {
+    const pos = openSpreadPosition();
+    // Only the long leg (100 strike) still shows at the broker; the short
+    // (110) doesn't -- a partial mismatch, deliberately left alone rather
+    // than treated as evidence the whole spread closed.
+    mockPreviewPositions.mockResolvedValue(
+      previewOf([{ symbol: 'AAPL', optionType: 'call', strike: 100, expiration: '2030-01-18' }]),
+    );
+
+    const result = await syncLiveOptionsPositionsFromBroker('ACC1');
+
+    expect(result).toMatchObject({ ok: true, checked: 1, closed: 0 });
+    expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
+  });
+
+  it('returns ok:false without touching any position when the broker preview itself fails', async () => {
+    const pos = openLivePosition({ strike: 100, expiration: '2030-01-18' });
+    mockPreviewPositions.mockResolvedValue({
+      ok: false,
+      accountId: 'ACC1',
+      positions: [],
+      unmapped: 0,
+      error: 'Webull is not configured.',
+    });
+
+    const result = await syncLiveOptionsPositionsFromBroker('ACC1');
+
+    expect(result).toMatchObject({ ok: false, checked: 0, closed: 0, error: 'Webull is not configured.' });
+    expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
   });
 });

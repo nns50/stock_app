@@ -700,7 +700,10 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   instead of just recording a paper close. A **Live options positions** table below
   the equity Live positions table shows every real options position the loop has
   placed, with the same side/strike badges (and both strikes for a spread) as the
-  options paper table.
+  options paper table. Kept accurate every cycle by the same kind of broker-truth
+  backstop the equity table uses — for a spread, both legs have to be confirmed gone
+  at the broker before it's marked closed; one leg missing on its own is left open
+  rather than guessed.
 - **Alerts** — a few loop events push a notification through whichever webhooks you've
   configured in [Settings → Server-side watching](#server-side-watching-alerts-with-the-app-closed)
   (Slack/Discord/generic) — the same destinations the price-alert poller uses, so
