@@ -529,6 +529,18 @@ starts.
    stateless server-side (no DB table backs it), so there's nothing for a server loop to
    keep fresh; it also skips its refresh whenever the tile's fields no longer match the
    last pull, preserving the "Dry-run (manual state)" hand-editing workflow.
+   **Fixed (2026-07-10), same day, caught in real use once deployed:** the automatic
+   per-tick sync above initially reused `syncAccountEquityFromBroker()`'s existing
+   "journal an `equity_synced` event whenever the value changes" behavior unchanged —
+   fine for the old on-demand button (an occasional, deliberate action worth a record),
+   but net liquidation value drifts with mark-to-market on nearly every once-a-minute
+   check, so it flooded the Recent Activity tile's fixed-size window (`GET
+   /autotrade/events?limit=50`) with equity noise, crowding out the screen/decide/
+   execute events that tile exists to surface. `syncAccountEquityFromBroker()` now takes
+   an optional `{ log?: boolean }` (default `true`); `loop.ts`'s per-tick call passes
+   `{ log: false }` so the automatic sync still updates `accountEquityUsd` but never
+   journals, while the manual "Sync from Webull" button (unchanged, no args) keeps
+   journaling every change exactly as before.
    **Fixed (2026-07-04), originally flagged during Phase 6's review, deferred through
    Phase 8:** `getPortfolioSnapshot()`'s "today" bucketing was UTC-based
    (`new Date().toISOString().slice(0, 10)`) for `dailyPnl`, plus a SEPARATE

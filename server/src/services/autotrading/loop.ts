@@ -247,9 +247,12 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // value. No-ops via its own liveAccountId check when live trading isn't
     // configured; caught anyway (it isn't expected to throw) so a future
     // broker hiccup here can never take down exits/reconcile above or entries
-    // below.
+    // below. log: false — mark-to-market drifts the balance on nearly every
+    // once-a-minute check, so logging an equity_synced entry per tick would
+    // flood Recent Activity's fixed window with noise (confirmed in practice);
+    // the manual "Sync from Webull" button still journals every change.
     try {
-      await syncAccountEquityFromBroker();
+      await syncAccountEquityFromBroker({ log: false });
     } catch (e) {
       console.error('[autotrade-loop] equity sync failed:', (e as Error).message);
     }
