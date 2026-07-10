@@ -147,7 +147,9 @@ Your at-a-glance morning screen.
 ## Screener
 
 Rank a universe of symbols by a transparent, fully configurable rule set. **Nothing is
-a black box** — every score can be traced to a formula.
+a black box** — every score can be traced to a formula. The universe ships seeded with
+the full S&P 500 (500+ symbols); use **Manage universe** to add or remove symbols —
+this is the same persistent list Auto-Trade's screener draws from.
 
 ### Running it
 
@@ -756,10 +758,12 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   classifies every candidate by sector/industry, so REITs and real-estate operating
   companies that aren't on the list (e.g. cell-tower or data-center REITs) still get
   caught.
-- **Research, Screen & Decide** — **Run screen** scans your universe (plus Webull's
-  pre-market "unusual volume" and gainers movers, when Webull is configured) for
-  volatility/volume-breakout candidates, reusing the same scoring engine as the
-  **Screener** page. Real-estate exclusion runs *before* scoring, so an excluded symbol
+- **Research, Screen & Decide** — **Run screen** scans your universe (the same
+  500+-symbol S&P 500 list managed from the **Screener** page — see **Manage
+  universe** there — plus Webull's pre-market "unusual volume" and gainers movers,
+  when Webull is configured) for volatility/volume-breakout candidates, reusing the
+  same scoring engine as the Screener page. Real-estate exclusion runs *before*
+  scoring, so an excluded symbol
   never shows up as a candidate. Results split into **Candidates** (passed screening,
   now with an **Entry / Stop / Target / R** trade plan for each — the stop is set at
   1.5× the symbol's own ATR so it adapts to its actual volatility, and the target is a
