@@ -1,60 +1,37 @@
-import { RiskProfileName } from '../../db/autotradeConfig';
-
 // ---------------------------------------------------------------------------
-// The risk profile parameter tables (docs/AUTOTRADING_SPEC.md — RISK PROFILES).
-// Values are the spec's, verbatim — not tuned, not guessed.
+// docs/AUTOTRADING_SPEC.md — RISK PROFILES. Originally a MODERATE/AGGRESSIVE
+// preset table; every field it held (riskPerTradePct, maxDailyDrawdownPct,
+// stepDownAfterLosses, stepDownSizeCutPct, maxAggregateOpenRiskPct,
+// maxCorrelatedExposurePct, maxTradesPerDay) has since moved out to become a
+// directly user-configurable field on AutotradeConfig instead — see each
+// field's own doc comment there. maxConcurrentPositions led this (2026-07-10,
+// task #90); everything else followed the same day, reported directly:
+// raising maxConcurrentPositions alone (to 15) didn't unblock new entries
+// with only 2 positions open, because maxAggregateOpenRiskPct — 2% of equity
+// at the old MODERATE preset, about 2 positions' worth of risk at 1%/trade —
+// was the one actually binding, and every other profile number had the exact
+// same "no independent lever" problem once you looked for it.
+//
+// Switching riskProfile no longer touches ANY of these numbers, by design —
+// silently resetting a value the user explicitly set, just because they
+// flipped an unrelated toggle, would be a worse surprise than leaving
+// profile-switching alone (this reasoning predates this file's emptying out;
+// see AutotradeConfig.maxConcurrentPositions's own comment). `riskProfile`
+// itself is kept on AutotradeConfig purely as a label today (still gates the
+// AGGRESSIVE-switch confirmation dialog) — it has no remaining computational
+// effect on risk-check math.
 // ---------------------------------------------------------------------------
-
-export interface RiskProfileParams {
-  /** % of account equity risked per trade. */
-  riskPerTradePct: number;
-  /** % daily drawdown (of equity) that halts new entries for the day. */
-  maxDailyDrawdownPct: number;
-  /** Consecutive losing trades that trigger step-down sizing. */
-  stepDownAfterLosses: number;
-  /** % cut to risk-per-trade once step-down is active. */
-  stepDownSizeCutPct: number;
-  /** % of equity — sum(size × stop distance) across open + proposed positions. */
-  maxAggregateOpenRiskPct: number;
-  /** % of equity — capital (not risk) in statistically-correlated tickers. */
-  maxCorrelatedExposurePct: number;
-  maxTradesPerDay: number;
-}
-
-// maxConcurrentPositions used to live here (2 for MODERATE, 3 for AGGRESSIVE)
-// but is now a directly user-configurable field on AutotradeConfig instead —
-// see RiskCheckContext.maxConcurrentPositions — since switching risk profile
-// silently changing a position-count cap the user had explicitly set would be
-// a surprising side effect, not a preset the user asked to bundle in.
-export const RISK_PROFILES: Record<RiskProfileName, RiskProfileParams> = {
-  MODERATE: {
-    riskPerTradePct: 1,
-    maxDailyDrawdownPct: 3,
-    stepDownAfterLosses: 2,
-    stepDownSizeCutPct: 50,
-    maxAggregateOpenRiskPct: 2,
-    maxCorrelatedExposurePct: 6,
-    maxTradesPerDay: 6,
-  },
-  AGGRESSIVE: {
-    riskPerTradePct: 1.5,
-    maxDailyDrawdownPct: 5,
-    stepDownAfterLosses: 2,
-    stepDownSizeCutPct: 50,
-    maxAggregateOpenRiskPct: 4.5,
-    maxCorrelatedExposurePct: 10,
-    maxTradesPerDay: 10,
-  },
-};
 
 /**
- * Statistical-correlation exposure cap parameters (the window/threshold the
- * spec's resolved decisions explicitly deferred to this phase). Same for both
- * profiles — only the capital cap itself (maxCorrelatedExposurePct) differs.
- * 30 trading days (~6 weeks) is long enough to be statistically meaningful,
- * short enough to reflect the current correlation regime; |r| ≥ 0.7 is the
- * standard "strong correlation" convention. Both are tunable defaults, not
- * laws of physics — revisit if backtesting (a later phase) suggests otherwise.
+ * Statistical-correlation exposure check's methodology constants (the
+ * window/threshold the spec's resolved decisions explicitly deferred to this
+ * phase) — NOT part of the old per-profile preset table (both profiles always
+ * shared these), and not a risk-tolerance dial the way maxCorrelatedExposurePct
+ * is: this is how correlation is MEASURED, not a pass/fail cap. 30 trading
+ * days (~6 weeks) is long enough to be statistically meaningful, short enough
+ * to reflect the current correlation regime; |r| ≥ 0.7 is the standard
+ * "strong correlation" convention. Tunable defaults, not laws of physics —
+ * revisit if backtesting suggests otherwise.
  */
 export const CORRELATION_LOOKBACK_DAYS = 30;
 export const CORRELATION_THRESHOLD = 0.7;

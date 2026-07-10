@@ -1,7 +1,6 @@
 import { computeRiskSizing, computeSpreadSizing, RiskSizingResult, SpreadSizingResult } from '../riskSizing';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
-import { RISK_PROFILES, RiskProfileParams } from './riskProfiles';
 import { OptionsTradeSignal } from './optionsDecide';
 import {
   correlatedNotional,
@@ -83,19 +82,16 @@ function usd(n: number): string {
 }
 
 /**
- * Evaluate one already-generated options signal against the active risk
- * profile. Pure — no I/O. `ctx` carries everything the checks need, including
- * the real portfolio state PLUS any signal (equity or options) already
- * approved earlier in the same combined batch. Sizing math branches on
- * signal.kind (single-leg premium-at-risk vs. spread max-loss); every other
- * check (drawdown halt, trade/position caps, combined aggregate-risk budget,
- * correlated exposure) is identical for both shapes.
+ * Evaluate one already-generated options signal against the configured risk
+ * caps. Pure — no I/O. `ctx` carries everything the checks need — every cap
+ * is a directly user-configured AutotradeConfig field (see RiskCheckContext's
+ * doc comment) — including the real portfolio state PLUS any signal (equity
+ * or options) already approved earlier in the same combined batch. Sizing
+ * math branches on signal.kind (single-leg premium-at-risk vs. spread
+ * max-loss); every other check (drawdown halt, trade/position caps, combined
+ * aggregate-risk budget, correlated exposure) is identical for both shapes.
  */
-export function evaluateOptionsRiskCheck(
-  signal: OptionsTradeSignal,
-  ctx: RiskCheckContext,
-  profile: RiskProfileParams,
-): OptionsRiskCheckResult {
+export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCheckContext): OptionsRiskCheckResult {
   const checks: RiskCheckRule[] = [];
   const check = (rule: string, passed: boolean, detail: string) => checks.push({ rule, passed, detail });
   const blocked = (sizing: OptionsSizingResult, stepDownActive: boolean): OptionsRiskCheckResult => ({
@@ -117,16 +113,16 @@ export function evaluateOptionsRiskCheck(
   );
   if (!equityOk) return blocked(zeroSizing, false);
 
-  const stepDownActive = ctx.consecutiveLosses >= profile.stepDownAfterLosses;
+  const stepDownActive = ctx.consecutiveLosses >= ctx.stepDownAfterLosses;
   const effectiveRiskPct = stepDownActive
-    ? profile.riskPerTradePct * (1 - profile.stepDownSizeCutPct / 100)
-    : profile.riskPerTradePct;
+    ? ctx.riskPerTradePct * (1 - ctx.stepDownSizeCutPct / 100)
+    : ctx.riskPerTradePct;
   check(
     'step_down_sizing',
     true,
     stepDownActive
-      ? `active — ${ctx.consecutiveLosses} consecutive losses, sizing at ${effectiveRiskPct}% instead of ${profile.riskPerTradePct}% (${profile.stepDownSizeCutPct}% cut)`
-      : `inactive — ${ctx.consecutiveLosses} consecutive losses (triggers at ${profile.stepDownAfterLosses})`,
+      ? `active — ${ctx.consecutiveLosses} consecutive losses, sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}% (${ctx.stepDownSizeCutPct}% cut)`
+      : `inactive — ${ctx.consecutiveLosses} consecutive losses (triggers at ${ctx.stepDownAfterLosses})`,
   );
 
   // Sizing itself is the one place single-leg and spread genuinely differ:
@@ -187,16 +183,16 @@ export function evaluateOptionsRiskCheck(
   check('quantity', qtyOk, qtyDetail);
   if (!qtyOk) return blocked(sizing, stepDownActive);
 
-  const dailyHaltLevel = -(profile.maxDailyDrawdownPct / 100) * ctx.equity;
+  const dailyHaltLevel = -(ctx.maxDailyDrawdownPct / 100) * ctx.equity;
   const haltOk = ctx.dailyPnl > dailyHaltLevel;
   check(
     'daily_drawdown_halt',
     haltOk,
-    `today ${usd(ctx.dailyPnl)} vs halt at ${usd(dailyHaltLevel)} (${profile.maxDailyDrawdownPct}% of equity)`,
+    `today ${usd(ctx.dailyPnl)} vs halt at ${usd(dailyHaltLevel)} (${ctx.maxDailyDrawdownPct}% of equity)`,
   );
 
-  const tradesOk = ctx.tradesToday < profile.maxTradesPerDay;
-  check('max_trades_per_day', tradesOk, `${ctx.tradesToday} placed vs ${profile.maxTradesPerDay}/day`);
+  const tradesOk = ctx.tradesToday < ctx.maxTradesPerDay;
+  check('max_trades_per_day', tradesOk, `${ctx.tradesToday} placed vs ${ctx.maxTradesPerDay}/day`);
 
   const positionsOk = ctx.openPositionsCount < ctx.maxConcurrentPositions;
   check('max_concurrent_positions', positionsOk, `${ctx.openPositionsCount} open vs cap ${ctx.maxConcurrentPositions}`);
@@ -204,13 +200,13 @@ export function evaluateOptionsRiskCheck(
   // The combined budget itself: ctx.openRisk already carries real equity
   // positions' risk PLUS anything (equity or options) approved earlier in
   // this exact batch — see runOptionsRiskCheck.
-  const aggregateCap = (profile.maxAggregateOpenRiskPct / 100) * ctx.equity;
+  const aggregateCap = (ctx.maxAggregateOpenRiskPct / 100) * ctx.equity;
   const aggregateAfter = ctx.openRisk + riskOfPosition;
   const aggregateOk = aggregateAfter <= aggregateCap;
   check(
     'max_aggregate_open_risk',
     aggregateOk,
-    `${usd(aggregateAfter)} vs cap ${usd(aggregateCap)} (${profile.maxAggregateOpenRiskPct}% of equity)`,
+    `${usd(aggregateAfter)} vs cap ${usd(aggregateCap)} (${ctx.maxAggregateOpenRiskPct}% of equity)`,
   );
 
   // Notional here is the premium paid / max loss (= approvedRiskAmount,
@@ -221,12 +217,12 @@ export function evaluateOptionsRiskCheck(
   // codebase computes one today; premium-paid/max-loss is the same
   // conservative, simple reading this file already uses for "notional"
   // elsewhere.
-  const correlatedCap = (profile.maxCorrelatedExposurePct / 100) * ctx.equity;
+  const correlatedCap = (ctx.maxCorrelatedExposurePct / 100) * ctx.equity;
   const correlatedOk = ctx.correlatedNotional <= correlatedCap;
   check(
     'max_correlated_exposure',
     correlatedOk,
-    `${usd(ctx.correlatedNotional)} already correlated vs cap ${usd(correlatedCap)} (${profile.maxCorrelatedExposurePct}% of equity)`,
+    `${usd(ctx.correlatedNotional)} already correlated vs cap ${usd(correlatedCap)} (${ctx.maxCorrelatedExposurePct}% of equity)`,
   );
 
   const ok = checks.every((c) => c.passed);
@@ -257,7 +253,6 @@ export async function runOptionsRiskCheck(
   equityResults: Pick<RiskCheckResult, 'symbol' | 'ok' | 'approvedRiskAmount' | 'approvedNotional'>[] = [],
 ): Promise<OptionsRiskCheckResult[]> {
   const config = getAutotradeConfig();
-  const profile = RISK_PROFILES[config.riskProfile];
   const snapshot = getPortfolioSnapshot();
   const approvedEquity = equityResults.filter((r) => r.ok);
 
@@ -282,8 +277,15 @@ export async function runOptionsRiskCheck(
       openPositionsCount: runningCount,
       maxConcurrentPositions: config.maxConcurrentPositions,
       correlatedNotional: correlated,
+      riskPerTradePct: config.riskPerTradePct,
+      maxDailyDrawdownPct: config.maxDailyDrawdownPct,
+      stepDownAfterLosses: config.stepDownAfterLosses,
+      stepDownSizeCutPct: config.stepDownSizeCutPct,
+      maxAggregateOpenRiskPct: config.maxAggregateOpenRiskPct,
+      maxCorrelatedExposurePct: config.maxCorrelatedExposurePct,
+      maxTradesPerDay: config.maxTradesPerDay,
     };
-    const result = evaluateOptionsRiskCheck(signal, ctx, profile);
+    const result = evaluateOptionsRiskCheck(signal, ctx);
     results.push(result);
 
     const contracts =

@@ -107,8 +107,17 @@ describe('getAutotradeDashboard', () => {
     expect(dash.dailyDrawdownHaltLevel).toBeCloseTo(-3_000, 5); // -(3% of 100k)
   });
 
-  it('computes $ caps from equity and the active AGGRESSIVE profile', () => {
-    setAutotradeConfig({ accountEquityUsd: 100_000, riskProfile: 'AGGRESSIVE' });
+  it("computes $ caps from equity and the configured caps (AGGRESSIVE's old preset values, set explicitly)", () => {
+    // riskProfile no longer implies these — every field is independently
+    // user-configured now (see riskProfiles.ts's header comment) — so the
+    // AGGRESSIVE numbers this test wants have to be set explicitly.
+    setAutotradeConfig({
+      accountEquityUsd: 100_000,
+      riskProfile: 'AGGRESSIVE',
+      maxDailyDrawdownPct: 5,
+      maxAggregateOpenRiskPct: 4.5,
+      maxTradesPerDay: 10,
+    });
     const dash = getAutotradeDashboard();
     // maxConcurrentPositions is NOT asserted here — it's config-driven now
     // (AutotradeConfig.maxConcurrentPositions), not part of the risk profile,

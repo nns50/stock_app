@@ -1744,24 +1744,29 @@ separately, after backtesting.
 Implement a `riskProfile` setting with two presets:
 
 **MODERATE:**
-- Risk per trade: 1% of account equity
-- Max daily drawdown (halt trading): 3%
+- Risk per trade: 1% of account equity *(narrowed 2026-07-10 — see the
+  follow-ups below: this is no longer part of the profile preset)*
+- Max daily drawdown (halt trading): 3% *(narrowed 2026-07-10 — see below)*
 - Step-down sizing trigger: after 2 consecutive losing trades (cut size 50%)
+  *(narrowed 2026-07-10 — see below)*
 - Max concurrent open positions: 2 *(narrowed 2026-07-10 — see the follow-up
   below: this is no longer part of the profile preset)*
-- Max aggregate open risk (see below): 2%
+- Max aggregate open risk (see below): 2% *(narrowed 2026-07-10 — see below)*
 - Max exposure to correlated tickers (capital, not risk): 6% of capital
-- Max trades per day: 6
+  *(narrowed 2026-07-10 — see below)*
+- Max trades per day: 6 *(narrowed 2026-07-10 — see below)*
 
 **AGGRESSIVE:**
-- Risk per trade: 1.5% of account equity
-- Max daily drawdown (halt trading): 5%
+- Risk per trade: 1.5% of account equity *(narrowed 2026-07-10 — see below)*
+- Max daily drawdown (halt trading): 5% *(narrowed 2026-07-10 — see below)*
 - Step-down sizing trigger: after 2 consecutive losing trades (cut size 50%)
+  *(narrowed 2026-07-10 — see below)*
 - Max concurrent open positions: 3 *(narrowed 2026-07-10 — see the follow-up
   below: this is no longer part of the profile preset)*
-- Max aggregate open risk (see below): 4.5%
+- Max aggregate open risk (see below): 4.5% *(narrowed 2026-07-10 — see below)*
 - Max exposure to correlated tickers (capital, not risk): 10% of capital
-- Max trades per day: 10
+  *(narrowed 2026-07-10 — see below)*
+- Max trades per day: 10 *(narrowed 2026-07-10 — see below)*
 
 Default to MODERATE. Switching to AGGRESSIVE requires an explicit manual
 confirmation in the UI (not just a config file edit), since it's the
@@ -1788,6 +1793,36 @@ leaving profile-switching alone. Backtesting gets its own
 `maxConcurrentPositions` input (mirrors `startingEquity`'s existing
 convention — a backtest is a self-contained hypothetical, not coupled to the
 live account's current setting).
+
+**Follow-up (2026-07-10, continued) — the rest of the risk-profile preset is
+now configurable too.** Reported directly, right after the above shipped:
+raising `maxConcurrentPositions` alone (to 15) didn't unblock new entries with
+only 2 positions open, because `maxAggregateOpenRiskPct` — 2% of equity at the
+old MODERATE preset, about 2 positions' worth of risk at 1%/trade — was the
+one actually binding, and had no independent lever at all. Asked directly to
+"look at everything that is needed [for] the decision gates and make it all
+configurable," so the remaining six fields (`riskPerTradePct`,
+`maxDailyDrawdownPct`, `stepDownAfterLosses`, `stepDownSizeCutPct`,
+`maxAggregateOpenRiskPct`, `maxCorrelatedExposurePct`, `maxTradesPerDay`) got
+the exact same treatment as `maxConcurrentPositions` above: moved out of
+`RiskProfileParams`/`RISK_PROFILES` (`services/autotrading/riskProfiles.ts`,
+now deleted — the file just re-exports `CORRELATION_LOOKBACK_DAYS`/
+`CORRELATION_THRESHOLD`, the two methodology constants that stayed fixed) onto
+`AutotradeConfig` directly, each defaulting to its old MODERATE value so an
+untouched config's behavior doesn't change, each independently editable (its
+own field, its own Save button) on the Auto-Trade page. `riskProfile` itself
+is kept on `AutotradeConfig` — switching MODERATE ↔ AGGRESSIVE still pops the
+same confirmation dialog it always has — but it is now purely a label,
+journaled with every trade, with **zero** computational effect anywhere: it no
+longer resolves to a bundle of numbers at all outside of backtesting (see
+below). `RiskCheckContext` (`riskCheck.ts`) and its options counterpart
+(`optionsRiskCheck.ts`) carry all seven fields directly instead of a separate
+`profile: RiskProfileParams` argument. Backtesting keeps its own
+self-contained `riskProfile` — same reasoning as `maxConcurrentPositions`'s
+own backtest treatment above — via a `LEGACY_BACKTEST_RISK_DEFAULTS`
+MODERATE/AGGRESSIVE bundle that lives only in `backtest.ts` (unreachable from
+live code), used to fill in whichever of the seven fields a given backtest
+request doesn't explicitly override.
 
 ### CRITICAL: MAX AGGREGATE OPEN RISK
 This is distinct from the daily drawdown halt. The daily halt only reacts to

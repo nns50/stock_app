@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { simulateBacktest, BacktestConfig } from '../src/services/autotrading/backtest';
 import { Candle } from '../src/providers/types';
-import { RISK_PROFILES } from '../src/services/autotrading/riskProfiles';
 
 // Fully relaxed filters so a signal fires on the very first eligible day
 // (once ATR has its 14-day warmup) regardless of the exact price action —
@@ -265,50 +264,47 @@ describe('simulateBacktest', () => {
   });
 
   it('blocks a same-day candidate via max_trades_per_day once enough positions have filled today', () => {
-    const original = { ...RISK_PROFILES.MODERATE };
-    // Generous on every other cap so max_trades_per_day is unambiguously the
-    // one doing the blocking below. maxConcurrentPositions is a BacktestConfig
-    // field now (passed to baseConfig() below), not part of RISK_PROFILES.
-    Object.assign(RISK_PROFILES.MODERATE, {
-      maxAggregateOpenRiskPct: 100,
-      maxCorrelatedExposurePct: 100,
-      maxDailyDrawdownPct: 100,
-      maxTradesPerDay: 1,
-    });
-    try {
-      const day0 = '2024-03-01';
-      const day1 = d(day0, 1);
-      const day2 = d(day0, 2);
-      // TDAYA: standard 60-day warmup, signals on day0, fills on day1 ->
-      // one position has already filled "today" by the time day1's step 3 runs.
-      // Extends through day2 so a day1 approval (if wrongly allowed) has a day
-      // to actually fill and show up in report.trades — a signal approved on
-      // the LAST simulated day never fills and would be silently invisible
-      // either way, which would make this test pass for the wrong reason.
-      const tdayA = [...warmupThrough(day0), bar(day1), bar(day2)];
-      // TDAYD: exactly 14 bars through day0 — atrSeries needs >= period+1 (15)
-      // bars to produce a non-null ATR, so TDAYD's ATR is null (no signal
-      // possible) on day0. The 15th bar (day1) makes ATR computable for the
-      // FIRST time exactly on day1 — the same day TDAYA's fill already used
-      // up the day's one-trade cap.
-      const tdayDWarmup: Candle[] = [];
-      for (let i = 13; i >= 0; i--) tdayDWarmup.push(bar(d(day0, -i)));
-      const tdayD = [...tdayDWarmup, bar(day1), bar(day2)];
+    const day0 = '2024-03-01';
+    const day1 = d(day0, 1);
+    const day2 = d(day0, 2);
+    // TDAYA: standard 60-day warmup, signals on day0, fills on day1 ->
+    // one position has already filled "today" by the time day1's step 3 runs.
+    // Extends through day2 so a day1 approval (if wrongly allowed) has a day
+    // to actually fill and show up in report.trades — a signal approved on
+    // the LAST simulated day never fills and would be silently invisible
+    // either way, which would make this test pass for the wrong reason.
+    const tdayA = [...warmupThrough(day0), bar(day1), bar(day2)];
+    // TDAYD: exactly 14 bars through day0 — atrSeries needs >= period+1 (15)
+    // bars to produce a non-null ATR, so TDAYD's ATR is null (no signal
+    // possible) on day0. The 15th bar (day1) makes ATR computable for the
+    // FIRST time exactly on day1 — the same day TDAYA's fill already used
+    // up the day's one-trade cap.
+    const tdayDWarmup: Candle[] = [];
+    for (let i = 13; i >= 0; i--) tdayDWarmup.push(bar(d(day0, -i)));
+    const tdayD = [...tdayDWarmup, bar(day1), bar(day2)];
 
-      const historyBySymbol = new Map([
-        ['TDAYA', tdayA],
-        ['TDAYD', tdayD],
-      ]);
-      const report = simulateBacktest(
-        historyBySymbol,
-        baseConfig({ symbols: ['TDAYA', 'TDAYD'], from: day0, to: day2, maxConcurrentPositions: 100 }),
-      );
-      // Only TDAYA's trade should exist — TDAYD's first-ever eligible signal
-      // (day1) is blocked by max_trades_per_day, not approved as a second
-      // same-day trade (which would otherwise fill, and appear here, on day2).
-      expect(report.trades.map((t) => t.symbol)).toEqual(['TDAYA']);
-    } finally {
-      Object.assign(RISK_PROFILES.MODERATE, original);
-    }
+    const historyBySymbol = new Map([
+      ['TDAYA', tdayA],
+      ['TDAYD', tdayD],
+    ]);
+    const report = simulateBacktest(
+      historyBySymbol,
+      baseConfig({
+        symbols: ['TDAYA', 'TDAYD'],
+        from: day0,
+        to: day2,
+        maxConcurrentPositions: 100,
+        // Generous on every other cap so max_trades_per_day is unambiguously
+        // the one doing the blocking below.
+        maxAggregateOpenRiskPct: 100,
+        maxCorrelatedExposurePct: 100,
+        maxDailyDrawdownPct: 100,
+        maxTradesPerDay: 1,
+      }),
+    );
+    // Only TDAYA's trade should exist — TDAYD's first-ever eligible signal
+    // (day1) is blocked by max_trades_per_day, not approved as a second
+    // same-day trade (which would otherwise fill, and appear here, on day2).
+    expect(report.trades.map((t) => t.symbol)).toEqual(['TDAYA']);
   });
 });

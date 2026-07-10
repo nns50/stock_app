@@ -4,7 +4,6 @@ import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } fr
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
 import { evaluateOptionsRiskCheck } from './optionsRiskCheck';
 import { defaultAutotradeEntryConfig, OptionsDecisionConfig, OptionsSignalSide } from './optionsDecide';
-import { RISK_PROFILES, RiskProfileParams } from './riskProfiles';
 import { RiskProfileName, OptionsStrategyType } from '../../db/autotradeConfig';
 import { defaultAutotradeScreenerConfig } from './screen';
 import { getHistoricalBars } from './historicalData';
@@ -16,9 +15,11 @@ import { computeStreaksAndDrawdown } from '../pnl';
 import {
   addDays,
   backtestCorrelatedNotional,
+  BacktestRiskParams,
   EquityPoint,
   indexAsOf,
   loadBacktestHistory,
+  resolveBacktestRiskParams,
   SimulatedTrade,
   toISO,
   WARMUP_PADDING_DAYS,
@@ -86,7 +87,7 @@ import {
 
 const RISK_FREE_RATE = 0.04;
 
-export interface CombinedBacktestConfig {
+export interface CombinedBacktestConfig extends Partial<BacktestRiskParams> {
   symbols: string[];
   /** YYYY-MM-DD, inclusive. */
   from: string;
@@ -180,7 +181,7 @@ export async function simulateCombinedBacktest(
   contractsBySymbol: Map<string, OptionContractRef[]>,
   cfg: CombinedBacktestConfig,
 ): Promise<CombinedBacktestReport> {
-  const profile: RiskProfileParams = RISK_PROFILES[cfg.riskProfile];
+  const riskParams = resolveBacktestRiskParams(cfg);
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
   const decisionCfg = { ...defaultDecisionConfig(), ...cfg.decisionConfig };
   const optDirection = cfg.optionsDecisionConfig?.direction ?? 'long';
@@ -461,8 +462,9 @@ export async function simulateCombinedBacktest(
         openPositionsCount: runningCount,
         maxConcurrentPositions: cfg.maxConcurrentPositions,
         correlatedNotional: correlated,
+        ...riskParams,
       };
-      const result = evaluateRiskCheck(signal, ctx, profile);
+      const result = evaluateRiskCheck(signal, ctx);
       if (!result.ok) continue;
       pendingEquity.push({
         symbol: signal.symbol,
@@ -616,6 +618,7 @@ export async function simulateCombinedBacktest(
         openPositionsCount: runningCount,
         maxConcurrentPositions: cfg.maxConcurrentPositions,
         correlatedNotional: correlated,
+        ...riskParams,
       };
       const result = evaluateOptionsRiskCheck(
         shortRef
@@ -658,7 +661,6 @@ export async function simulateCombinedBacktest(
               score: candidate.total,
             },
         ctx,
-        profile,
       );
       if (!result.ok) {
         optionsSkipped.push({

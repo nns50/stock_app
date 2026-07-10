@@ -37,7 +37,6 @@ import { defaultExitConfig, evaluateExit } from '../../options/exitRules';
 import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskCheck';
 import { correlatedNotional, RiskCheckContext } from './riskCheck';
-import { RISK_PROFILES } from './riskProfiles';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { dispatchNotifications } from '../notifier';
 import { fetchContractMark, validPremium } from './optionsExecute';
@@ -540,7 +539,6 @@ export async function runLiveOptionsExecution(
   candidates: { signal: OptionsTradeSignal }[],
 ): Promise<LiveOptionsExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
-  const profile = RISK_PROFILES[cfg.riskProfile];
   const equity = cfg.accountEquityUsd ?? 0;
 
   const optSnapshot = getLiveOptionsPortfolioSnapshot();
@@ -591,8 +589,15 @@ export async function runLiveOptionsExecution(
       openPositionsCount: runningCount,
       maxConcurrentPositions: cfg.maxConcurrentPositions,
       correlatedNotional: correlated,
+      riskPerTradePct: cfg.riskPerTradePct,
+      maxDailyDrawdownPct: cfg.maxDailyDrawdownPct,
+      stepDownAfterLosses: cfg.stepDownAfterLosses,
+      stepDownSizeCutPct: cfg.stepDownSizeCutPct,
+      maxAggregateOpenRiskPct: cfg.maxAggregateOpenRiskPct,
+      maxCorrelatedExposurePct: cfg.maxCorrelatedExposurePct,
+      maxTradesPerDay: cfg.maxTradesPerDay,
     };
-    const result = evaluateOptionsRiskCheck(signal, ctx, profile);
+    const result = evaluateOptionsRiskCheck(signal, ctx);
     if (!result.ok) {
       outcomes.push({ symbol, ok: false, reason: 'Risk check blocked' });
       continue;

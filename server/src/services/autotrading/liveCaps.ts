@@ -1,6 +1,3 @@
-import { RiskProfileName } from '../../db/autotradeConfig';
-import { RISK_PROFILES } from './riskProfiles';
-
 // ---------------------------------------------------------------------------
 // Suggested starting values for autotrade's live-only guardrail caps (Phase 8
 // Step A — docs/AUTOTRADING_SPEC.md's "Phase 8 live-order caps" resolved
@@ -25,18 +22,24 @@ export interface SuggestedLiveCaps {
  * fine-tune ordinary position sizes.
  *
  * `liveMaxDailyLossUsd` / `liveMaxOrdersPerDay` — set to exactly match the
- * active risk profile's own daily-drawdown-halt % and maxTradesPerDay, rather
- * than an independently-guessed second number. The risk engine (riskCheck.ts)
- * already hard-blocks on both; having the guardrail layer agree exactly means
- * it's a redundant, independently-coded confirmation of the same limit, not a
- * second opinion that could conflict with the first (mirrors optionStrategy.ts's
- * analyzeStrategy() acting as a structural backstop rather than a competing rule).
+ * caller's current maxDailyDrawdownPct/maxTradesPerDay (AutotradeConfig
+ * fields — see riskCheck.ts and db/autotradeConfig.ts; no longer derived from
+ * a risk-profile preset table, since both moved to being directly
+ * user-configured 2026-07-10), rather than an independently-guessed second
+ * number. The risk engine (riskCheck.ts) already hard-blocks on both; having
+ * the guardrail layer agree exactly means it's a redundant, independently-
+ * coded confirmation of the same limit, not a second opinion that could
+ * conflict with the first (mirrors optionStrategy.ts's analyzeStrategy()
+ * acting as a structural backstop rather than a competing rule).
  */
-export function suggestLiveCaps(equityUsd: number, profile: RiskProfileName): SuggestedLiveCaps {
-  const params = RISK_PROFILES[profile];
+export function suggestLiveCaps(
+  equityUsd: number,
+  maxDailyDrawdownPct: number,
+  maxTradesPerDay: number,
+): SuggestedLiveCaps {
   return {
     liveMaxOrderUsd: Math.round(equityUsd * 0.25),
-    liveMaxDailyLossUsd: Math.round(equityUsd * (params.maxDailyDrawdownPct / 100)),
-    liveMaxOrdersPerDay: params.maxTradesPerDay,
+    liveMaxDailyLossUsd: Math.round(equityUsd * (maxDailyDrawdownPct / 100)),
+    liveMaxOrdersPerDay: maxTradesPerDay,
   };
 }

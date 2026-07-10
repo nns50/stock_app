@@ -4,10 +4,7 @@ import { createPosition } from '../src/db/positions';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { listAutotradeEvents, logAutotradeEvent } from '../src/db/autotradeEvents';
 import { evaluateRiskCheck, RiskCheckContext, runAutotradeRiskCheck } from '../src/services/autotrading/riskCheck';
-import { RISK_PROFILES } from '../src/services/autotrading/riskProfiles';
 import { TradeSignal } from '../src/services/autotrading/decide';
-
-const MODERATE = RISK_PROFILES.MODERATE;
 
 function signal(overrides: Partial<TradeSignal> = {}): TradeSignal {
   return {
@@ -23,6 +20,10 @@ function signal(overrides: Partial<TradeSignal> = {}): TradeSignal {
   };
 }
 
+// Matches the old MODERATE preset exactly (riskProfiles.ts's now-removed
+// RISK_PROFILES.MODERATE) — every field below is a directly user-configured
+// AutotradeConfig field now, but these test fixtures still exercise the same
+// numbers.
 function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
   return {
     equity: 100_000,
@@ -33,6 +34,13 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
     openPositionsCount: 0,
     maxConcurrentPositions: 2,
     correlatedNotional: 0,
+    riskPerTradePct: 1,
+    maxDailyDrawdownPct: 3,
+    stepDownAfterLosses: 2,
+    stepDownSizeCutPct: 50,
+    maxAggregateOpenRiskPct: 2,
+    maxCorrelatedExposurePct: 6,
+    maxTradesPerDay: 6,
     ...overrides,
   };
 }
@@ -57,25 +65,25 @@ function etDateStr(ms: number = Date.now()): string {
 
 describe('evaluateRiskCheck — pure evaluator', () => {
   it('passes a clean signal with no competing exposure', () => {
-    const result = evaluateRiskCheck(signal(), baseCtx(), MODERATE);
+    const result = evaluateRiskCheck(signal(), baseCtx());
     expect(result.ok).toBe(true);
     expect(result.checks.every((c) => c.passed)).toBe(true);
   });
 
   it('sizes exactly like computeRiskSizing at the profile risk %: 1% of $100k / $5 stop = 200 shares', () => {
-    const result = evaluateRiskCheck(signal(), baseCtx(), MODERATE);
+    const result = evaluateRiskCheck(signal(), baseCtx());
     expect(result.sizing.suggestedQuantity).toBe(200);
     expect(result.sizing.riskOfPosition).toBe(1000); // 1% of 100,000
     expect(result.sizing.positionCost).toBe(20_000);
   });
 
   it('mirrors the sizing for a short (side: sell -> long: false)', () => {
-    const result = evaluateRiskCheck(signal({ side: 'sell', entry: 100, stop: 105, target: 90 }), baseCtx(), MODERATE);
+    const result = evaluateRiskCheck(signal({ side: 'sell', entry: 100, stop: 105, target: 90 }), baseCtx());
     expect(result.sizing.suggestedQuantity).toBe(200); // same $5 stop distance
   });
 
   it('blocks everything when equity is not configured', () => {
-    const result = evaluateRiskCheck(signal(), baseCtx({ equity: 0 }), MODERATE);
+    const result = evaluateRiskCheck(signal(), baseCtx({ equity: 0 }));
     expect(result.ok).toBe(false);
     expect(findCheck(result, 'equity_configured').passed).toBe(false);
     expect(result.sizing.suggestedQuantity).toBe(0);
@@ -83,21 +91,21 @@ describe('evaluateRiskCheck — pure evaluator', () => {
 
   it('blocks when the risk budget cannot size even one share', () => {
     // $10 equity * 1% = $0.10 risk budget; $5 stop distance -> 0 shares.
-    const result = evaluateRiskCheck(signal(), baseCtx({ equity: 10 }), MODERATE);
+    const result = evaluateRiskCheck(signal(), baseCtx({ equity: 10 }));
     expect(result.ok).toBe(false);
     expect(findCheck(result, 'quantity').passed).toBe(false);
   });
 
   describe('step-down sizing', () => {
     it('is inactive below the consecutive-loss threshold', () => {
-      const result = evaluateRiskCheck(signal(), baseCtx({ consecutiveLosses: 1 }), MODERATE);
+      const result = evaluateRiskCheck(signal(), baseCtx({ consecutiveLosses: 1 }));
       expect(result.stepDownActive).toBe(false);
       expect(result.sizing.suggestedQuantity).toBe(200); // full 1% sizing
       expect(findCheck(result, 'step_down_sizing').detail).toMatch(/inactive/);
     });
 
     it('cuts size by stepDownSizeCutPct once the threshold is reached', () => {
-      const result = evaluateRiskCheck(signal(), baseCtx({ consecutiveLosses: 2 }), MODERATE);
+      const result = evaluateRiskCheck(signal(), baseCtx({ consecutiveLosses: 2 }));
       expect(result.stepDownActive).toBe(true);
       // 1% * (1 - 50%) = 0.5% of 100,000 = 500 risk budget / $5 stop = 100 shares
       expect(result.sizing.suggestedQuantity).toBe(100);
@@ -106,24 +114,24 @@ describe('evaluateRiskCheck — pure evaluator', () => {
     });
 
     it('stays active above the threshold, not just exactly at it', () => {
-      const result = evaluateRiskCheck(signal(), baseCtx({ consecutiveLosses: 5 }), MODERATE);
+      const result = evaluateRiskCheck(signal(), baseCtx({ consecutiveLosses: 5 }));
       expect(result.stepDownActive).toBe(true);
     });
   });
 
   describe('daily drawdown halt', () => {
     it('passes when today is flat or positive', () => {
-      const result = evaluateRiskCheck(signal(), baseCtx({ dailyPnl: 0 }), MODERATE);
+      const result = evaluateRiskCheck(signal(), baseCtx({ dailyPnl: 0 }));
       expect(findCheck(result, 'daily_drawdown_halt').passed).toBe(true);
     });
 
     it('passes just short of the halt level (3% of 100k = -3000)', () => {
-      const result = evaluateRiskCheck(signal(), baseCtx({ dailyPnl: -2999 }), MODERATE);
+      const result = evaluateRiskCheck(signal(), baseCtx({ dailyPnl: -2999 }));
       expect(findCheck(result, 'daily_drawdown_halt').passed).toBe(true);
     });
 
     it('blocks at or beyond the halt level', () => {
-      const result = evaluateRiskCheck(signal(), baseCtx({ dailyPnl: -3000 }), MODERATE);
+      const result = evaluateRiskCheck(signal(), baseCtx({ dailyPnl: -3000 }));
       expect(result.ok).toBe(false);
       expect(findCheck(result, 'daily_drawdown_halt').passed).toBe(false);
     });
@@ -131,20 +139,20 @@ describe('evaluateRiskCheck — pure evaluator', () => {
 
   describe('daily trade cap', () => {
     it('blocks at the profile max (MODERATE: 6/day)', () => {
-      const result = evaluateRiskCheck(signal(), baseCtx({ tradesToday: 6 }), MODERATE);
+      const result = evaluateRiskCheck(signal(), baseCtx({ tradesToday: 6 }));
       expect(result.ok).toBe(false);
       expect(findCheck(result, 'max_trades_per_day').passed).toBe(false);
     });
 
     it('passes just under the max', () => {
-      const result = evaluateRiskCheck(signal(), baseCtx({ tradesToday: 5 }), MODERATE);
+      const result = evaluateRiskCheck(signal(), baseCtx({ tradesToday: 5 }));
       expect(findCheck(result, 'max_trades_per_day').passed).toBe(true);
     });
   });
 
   describe('concurrent position cap', () => {
     it('blocks at the profile max (MODERATE: 2)', () => {
-      const result = evaluateRiskCheck(signal(), baseCtx({ openPositionsCount: 2 }), MODERATE);
+      const result = evaluateRiskCheck(signal(), baseCtx({ openPositionsCount: 2 }));
       expect(result.ok).toBe(false);
       expect(findCheck(result, 'max_concurrent_positions').passed).toBe(false);
     });
@@ -158,7 +166,7 @@ describe('evaluateRiskCheck — pure evaluator', () => {
       // 1500 + 1000 = 2500 > 2000, so it must block. This is the exact
       // scenario docs/AUTOTRADING_SPEC.md calls out as the reason this check
       // exists separately from the daily halt and the position-count cap.
-      const result = evaluateRiskCheck(signal(), baseCtx({ openRisk: 1500, openPositionsCount: 1 }), MODERATE);
+      const result = evaluateRiskCheck(signal(), baseCtx({ openRisk: 1500, openPositionsCount: 1 }));
       expect(result.ok).toBe(false);
       const check = findCheck(result, 'max_aggregate_open_risk');
       expect(check.passed).toBe(false);
@@ -168,12 +176,12 @@ describe('evaluateRiskCheck — pure evaluator', () => {
     });
 
     it('passes when the aggregate (existing + proposed) stays within the cap', () => {
-      const result = evaluateRiskCheck(signal(), baseCtx({ openRisk: 900, openPositionsCount: 1 }), MODERATE);
+      const result = evaluateRiskCheck(signal(), baseCtx({ openRisk: 900, openPositionsCount: 1 }));
       expect(findCheck(result, 'max_aggregate_open_risk').passed).toBe(true); // 900+1000=1900 <= 2000
     });
 
     it('passes at exactly the cap boundary', () => {
-      const result = evaluateRiskCheck(signal(), baseCtx({ openRisk: 1000, openPositionsCount: 1 }), MODERATE);
+      const result = evaluateRiskCheck(signal(), baseCtx({ openRisk: 1000, openPositionsCount: 1 }));
       expect(findCheck(result, 'max_aggregate_open_risk').passed).toBe(true); // 1000+1000=2000 <= 2000
     });
   });
@@ -184,31 +192,32 @@ describe('evaluateRiskCheck — pure evaluator', () => {
       // would exceed MODERATE's 6%-of-equity ($6000) cap if it were wrongly
       // included in "correlated" exposure — a symbol is trivially "correlated"
       // with itself, so this check must be about EXISTING correlated capital.
-      const result = evaluateRiskCheck(signal(), baseCtx({ correlatedNotional: 0 }), MODERATE);
+      const result = evaluateRiskCheck(signal(), baseCtx({ correlatedNotional: 0 }));
       expect(findCheck(result, 'max_correlated_exposure').passed).toBe(true);
     });
 
     it('blocks when capital already correlated with this symbol exceeds the cap', () => {
-      const result = evaluateRiskCheck(signal(), baseCtx({ correlatedNotional: 7000 }), MODERATE);
+      const result = evaluateRiskCheck(signal(), baseCtx({ correlatedNotional: 7000 }));
       expect(result.ok).toBe(false);
       expect(findCheck(result, 'max_correlated_exposure').passed).toBe(false); // 7000 > 6000 cap
     });
 
     it('passes at exactly the cap boundary', () => {
-      const result = evaluateRiskCheck(signal(), baseCtx({ correlatedNotional: 6000 }), MODERATE);
+      const result = evaluateRiskCheck(signal(), baseCtx({ correlatedNotional: 6000 }));
       expect(findCheck(result, 'max_correlated_exposure').passed).toBe(true);
     });
   });
 
-  it('the concurrent-position cap no longer varies by risk profile — it is user-configured (ctx.maxConcurrentPositions), identical for MODERATE and AGGRESSIVE', () => {
-    const aggressive = RISK_PROFILES.AGGRESSIVE;
-    const moderateResult = evaluateRiskCheck(signal(), baseCtx({ openPositionsCount: 2 }), MODERATE);
-    const aggressiveResult = evaluateRiskCheck(signal(), baseCtx({ openPositionsCount: 2 }), aggressive);
-    // Same ctx.maxConcurrentPositions (2) either way — switching profile no
-    // longer silently changes a cap the user explicitly set (see
-    // riskProfiles.ts's header comment on why this moved out of the table).
-    expect(findCheck(moderateResult, 'max_concurrent_positions').passed).toBe(false);
-    expect(findCheck(aggressiveResult, 'max_concurrent_positions').passed).toBe(false);
+  it('every cap comes directly from ctx — evaluateRiskCheck takes no separate risk-profile argument at all', () => {
+    // riskProfiles.ts's RISK_PROFILES/RiskProfileParams table is gone entirely
+    // (2026-07-10) — every number evaluateRiskCheck uses is a plain field on
+    // the ctx it's called with, so two identically-shaped ctx objects always
+    // produce identical results regardless of what riskProfile string a
+    // caller happens to have stored elsewhere (evaluateRiskCheck never even
+    // sees it).
+    const a = evaluateRiskCheck(signal(), baseCtx({ maxAggregateOpenRiskPct: 10 }));
+    const b = evaluateRiskCheck(signal(), baseCtx({ maxAggregateOpenRiskPct: 10 }));
+    expect(a.checks).toEqual(b.checks);
   });
 });
 

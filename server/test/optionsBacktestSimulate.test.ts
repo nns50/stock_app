@@ -7,7 +7,6 @@ import { simulateOptionsBacktest, OptionsBacktestConfig } from '../src/services/
 import { OptionContractRef } from '../src/services/autotrading/polygonOptionsClient';
 import { Candle } from '../src/providers/types';
 import { bsPrice } from '../src/options/blackScholes';
-import { RISK_PROFILES } from '../src/services/autotrading/riskProfiles';
 
 const mockGetHistoricalBars = vi.mocked(getHistoricalBars);
 
@@ -414,45 +413,45 @@ describe('simulateOptionsBacktest', () => {
     // per-trade cap — never strictly over it. Proving the running total
     // actually blocks something therefore needs a THIRD candidate (mirrors
     // backtest.ts's own equivalent test for the exact same reason) — with
-    // the aggregate cap temporarily narrowed so the arithmetic lands cleanly
-    // without depending on hand-tuning the premium to hit a precise number.
-    const original = { ...RISK_PROFILES.MODERATE };
-    Object.assign(RISK_PROFILES.MODERATE, { maxAggregateOpenRiskPct: 1.5 }); // $1500 cap
-    try {
-      const signalDay = '2024-03-01';
-      const entryDay = d(signalDay, 1);
-      const expiration = d(signalDay, DTE_DAYS);
-      const T = yearsFor(DTE_DAYS);
-      const premium = premiumFor('call', 100, STRIKE, T, 0.6); // ~$611/contract risk at 1% of $100k
-      mockContractBars({
-        [CALL_TICKER]: [optionBar(signalDay, premium), optionBar(entryDay, premium, { open: premium })],
-      });
-      const historyBySymbol = new Map([
-        ['AAA', [...warmupThrough(signalDay), equityBar(entryDay)]],
-        ['MMM', [...warmupThrough(signalDay), equityBar(entryDay)]],
-        ['ZZZ', [...warmupThrough(signalDay), equityBar(entryDay)]],
-      ]);
-      const contractsBySymbol = new Map([
-        ['AAA', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]],
-        ['MMM', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]],
-        ['ZZZ', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]],
-      ]);
+    // the aggregate cap narrowed (via baseConfig below) so the arithmetic
+    // lands cleanly without depending on hand-tuning the premium to hit a
+    // precise number.
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const expiration = d(signalDay, DTE_DAYS);
+    const T = yearsFor(DTE_DAYS);
+    const premium = premiumFor('call', 100, STRIKE, T, 0.6); // ~$611/contract risk at 1% of $100k
+    mockContractBars({
+      [CALL_TICKER]: [optionBar(signalDay, premium), optionBar(entryDay, premium, { open: premium })],
+    });
+    const historyBySymbol = new Map([
+      ['AAA', [...warmupThrough(signalDay), equityBar(entryDay)]],
+      ['MMM', [...warmupThrough(signalDay), equityBar(entryDay)]],
+      ['ZZZ', [...warmupThrough(signalDay), equityBar(entryDay)]],
+    ]);
+    const contractsBySymbol = new Map([
+      ['AAA', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]],
+      ['MMM', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]],
+      ['ZZZ', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]],
+    ]);
 
-      const report = await simulateOptionsBacktest(
-        historyBySymbol,
-        contractsBySymbol,
-        baseConfig({ symbols: ['AAA', 'MMM', 'ZZZ'], from: signalDay, to: entryDay }),
-      );
-      // AAA and MMM (tied score, alphabetical) each pass on their own 1%
-      // budget (~$611, running 611 then 1222 <= $1500 cap); ZZZ's identical
-      // ~$611 risk on top of the running 1222 (-> 1833) exceeds the $1500
-      // cap — proving the running total, not a stale per-candidate snapshot,
-      // is what the THIRD candidate in the batch actually sees.
-      expect(report.trades.map((t) => t.symbol)).toEqual(['AAA', 'MMM']);
-      expect(report.skipped.some((s) => s.symbol === 'ZZZ' && s.reason.includes('Risk check blocked'))).toBe(true);
-    } finally {
-      Object.assign(RISK_PROFILES.MODERATE, original);
-    }
+    const report = await simulateOptionsBacktest(
+      historyBySymbol,
+      contractsBySymbol,
+      baseConfig({
+        symbols: ['AAA', 'MMM', 'ZZZ'],
+        from: signalDay,
+        to: entryDay,
+        maxAggregateOpenRiskPct: 1.5, // $1500 cap
+      }),
+    );
+    // AAA and MMM (tied score, alphabetical) each pass on their own 1%
+    // budget (~$611, running 611 then 1222 <= $1500 cap); ZZZ's identical
+    // ~$611 risk on top of the running 1222 (-> 1833) exceeds the $1500
+    // cap — proving the running total, not a stale per-candidate snapshot,
+    // is what the THIRD candidate in the batch actually sees.
+    expect(report.trades.map((t) => t.symbol)).toEqual(['AAA', 'MMM']);
+    expect(report.skipped.some((s) => s.symbol === 'ZZZ' && s.reason.includes('Risk check blocked'))).toBe(true);
   });
 
   describe('debit spreads', () => {

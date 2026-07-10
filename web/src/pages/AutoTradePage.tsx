@@ -1338,6 +1338,13 @@ export default function AutoTradePage() {
   const [optionsStrategyType, setOptionsStrategyType] = useState<AutotradeOptionsStrategyType>('single_leg');
   const [equityDraft, setEquityDraft] = useState<number | undefined>();
   const [maxPositionsDraft, setMaxPositionsDraft] = useState<number | undefined>();
+  const [riskPerTradePctDraft, setRiskPerTradePctDraft] = useState<number | undefined>();
+  const [maxDailyDrawdownPctDraft, setMaxDailyDrawdownPctDraft] = useState<number | undefined>();
+  const [stepDownAfterLossesDraft, setStepDownAfterLossesDraft] = useState<number | undefined>();
+  const [stepDownSizeCutPctDraft, setStepDownSizeCutPctDraft] = useState<number | undefined>();
+  const [maxAggregateOpenRiskPctDraft, setMaxAggregateOpenRiskPctDraft] = useState<number | undefined>();
+  const [maxCorrelatedExposurePctDraft, setMaxCorrelatedExposurePctDraft] = useState<number | undefined>();
+  const [maxTradesPerDayDraft, setMaxTradesPerDayDraft] = useState<number | undefined>();
   const [liveAccountIdDraft, setLiveAccountIdDraft] = useState('');
   const [liveMaxOrderUsdDraft, setLiveMaxOrderUsdDraft] = useState<number | undefined>();
   const [liveMaxDailyLossUsdDraft, setLiveMaxDailyLossUsdDraft] = useState<number | undefined>();
@@ -1367,6 +1374,13 @@ export default function AutoTradePage() {
     setOptionsStrategyType(config.data.optionsStrategyType);
     setEquityDraft(config.data.accountEquityUsd ?? undefined);
     setMaxPositionsDraft(config.data.maxConcurrentPositions);
+    setRiskPerTradePctDraft(config.data.riskPerTradePct);
+    setMaxDailyDrawdownPctDraft(config.data.maxDailyDrawdownPct);
+    setStepDownAfterLossesDraft(config.data.stepDownAfterLosses);
+    setStepDownSizeCutPctDraft(config.data.stepDownSizeCutPct);
+    setMaxAggregateOpenRiskPctDraft(config.data.maxAggregateOpenRiskPct);
+    setMaxCorrelatedExposurePctDraft(config.data.maxCorrelatedExposurePct);
+    setMaxTradesPerDayDraft(config.data.maxTradesPerDay);
     setLiveAccountIdDraft(config.data.liveAccountId ?? '');
     setLiveMaxOrderUsdDraft(config.data.liveMaxOrderUsd);
     setLiveMaxDailyLossUsdDraft(config.data.liveMaxDailyLossUsd);
@@ -1393,6 +1407,13 @@ export default function AutoTradePage() {
     riskProfile?: AutotradeRiskProfile;
     accountEquityUsd?: number | null;
     maxConcurrentPositions?: number;
+    riskPerTradePct?: number;
+    maxDailyDrawdownPct?: number;
+    stepDownAfterLosses?: number;
+    stepDownSizeCutPct?: number;
+    maxAggregateOpenRiskPct?: number;
+    maxCorrelatedExposurePct?: number;
+    maxTradesPerDay?: number;
     optionsStrategyType?: AutotradeOptionsStrategyType;
     autoPromoteMoversEnabled?: boolean;
     autoPromoteThreshold?: number;
@@ -1402,7 +1423,7 @@ export default function AutoTradePage() {
     if (patch.riskProfile === 'AGGRESSIVE' && riskProfile !== 'AGGRESSIVE') {
       const ok = await confirm({
         title: 'Switch to AGGRESSIVE?',
-        body: 'Aggressive raises per-trade risk, the daily drawdown halt, max aggregate open risk, correlated-ticker exposure, and the daily trade cap. This should be a deliberate choice, not a default. (Max concurrent positions is set separately, below, and isn’t affected by this switch.)',
+        body: 'AGGRESSIVE is just a label now — per-trade risk, the daily drawdown halt, max aggregate open risk, correlated-ticker exposure, max concurrent positions, and the daily trade cap are all set independently below and won’t change when you switch. This confirmation exists because the label itself is journaled with every trade, so it should still be a deliberate choice, not a default.',
         confirmLabel: 'Switch to Aggressive',
         danger: true,
       });
@@ -1417,6 +1438,13 @@ export default function AutoTradePage() {
       setRiskProfile(saved.riskProfile);
       setOptionsStrategyType(saved.optionsStrategyType);
       setMaxPositionsDraft(saved.maxConcurrentPositions);
+      setRiskPerTradePctDraft(saved.riskPerTradePct);
+      setMaxDailyDrawdownPctDraft(saved.maxDailyDrawdownPct);
+      setStepDownAfterLossesDraft(saved.stepDownAfterLosses);
+      setStepDownSizeCutPctDraft(saved.stepDownSizeCutPct);
+      setMaxAggregateOpenRiskPctDraft(saved.maxAggregateOpenRiskPct);
+      setMaxCorrelatedExposurePctDraft(saved.maxCorrelatedExposurePct);
+      setMaxTradesPerDayDraft(saved.maxTradesPerDay);
       setAutoPromoteMoversEnabled(saved.autoPromoteMoversEnabled);
       setAutoPromoteThresholdDraft(saved.autoPromoteThreshold);
       setAutoPromoteWindowDaysDraft(saved.autoPromoteWindowDays);
@@ -1888,11 +1916,7 @@ export default function AutoTradePage() {
             </label>
             <Field
               label="Risk profile"
-              hint={
-                riskProfile === 'AGGRESSIVE'
-                  ? 'Higher risk/trade, drawdown halt, position count, aggregate risk, and trade caps.'
-                  : 'Default — the conservative caps.'
-              }
+              hint="Just a label, journaled with every trade — per-trade risk, drawdown halt, position count, aggregate risk, correlated exposure, and trade caps are all set independently below and don't change with this switch."
             >
               <select
                 className="input"
@@ -1964,6 +1988,193 @@ export default function AutoTradePage() {
                     maxPositionsDraft == null ||
                     maxPositionsDraft < 1 ||
                     maxPositionsDraft === config.data?.maxConcurrentPositions
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Risk per trade (%)"
+              hint="% of account equity risked per trade, before any step-down cut. For options, this is premium paid, not notional exposure — sizing stays consistent with the equity risk model."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={riskPerTradePctDraft}
+                  onChange={setRiskPerTradePctDraft}
+                  min={0}
+                  max={100}
+                  step={0.1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save risk per trade"
+                  onClick={() => riskPerTradePctDraft != null && saveConfig({ riskPerTradePct: riskPerTradePctDraft })}
+                  disabled={
+                    riskPerTradePctDraft == null ||
+                    riskPerTradePctDraft < 0 ||
+                    riskPerTradePctDraft > 100 ||
+                    riskPerTradePctDraft === config.data?.riskPerTradePct
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Max daily drawdown (%)"
+              hint="Today's realized P&L crossing below this % of equity halts new entries for the rest of the day — existing positions' stops/targets keep working regardless."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={maxDailyDrawdownPctDraft}
+                  onChange={setMaxDailyDrawdownPctDraft}
+                  min={0}
+                  max={100}
+                  step={0.1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save max daily drawdown"
+                  onClick={() =>
+                    maxDailyDrawdownPctDraft != null && saveConfig({ maxDailyDrawdownPct: maxDailyDrawdownPctDraft })
+                  }
+                  disabled={
+                    maxDailyDrawdownPctDraft == null ||
+                    maxDailyDrawdownPctDraft < 0 ||
+                    maxDailyDrawdownPctDraft > 100 ||
+                    maxDailyDrawdownPctDraft === config.data?.maxDailyDrawdownPct
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Step-down after (consecutive losses)"
+              hint="Once your current losing streak reaches this count, new positions size down by the cut below — until a win breaks the streak."
+            >
+              <div className="flex gap-2">
+                <NumberInput value={stepDownAfterLossesDraft} onChange={setStepDownAfterLossesDraft} min={0} step={1} />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save step-down loss trigger"
+                  onClick={() =>
+                    stepDownAfterLossesDraft != null && saveConfig({ stepDownAfterLosses: stepDownAfterLossesDraft })
+                  }
+                  disabled={
+                    stepDownAfterLossesDraft == null ||
+                    stepDownAfterLossesDraft < 0 ||
+                    stepDownAfterLossesDraft === config.data?.stepDownAfterLosses
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Step-down size cut (%)"
+              hint="How much smaller a position sizes once step-down is active — e.g. 50 halves risk per trade for the duration of the streak."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={stepDownSizeCutPctDraft}
+                  onChange={setStepDownSizeCutPctDraft}
+                  min={0}
+                  max={100}
+                  step={1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save step-down size cut"
+                  onClick={() =>
+                    stepDownSizeCutPctDraft != null && saveConfig({ stepDownSizeCutPct: stepDownSizeCutPctDraft })
+                  }
+                  disabled={
+                    stepDownSizeCutPctDraft == null ||
+                    stepDownSizeCutPctDraft < 0 ||
+                    stepDownSizeCutPctDraft > 100 ||
+                    stepDownSizeCutPctDraft === config.data?.stepDownSizeCutPct
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Max aggregate open risk (%)"
+              hint="Pre-trade cap on total open risk (size × stop distance) across every open position plus the one being proposed — blocks a trade that would push the combined total over this % of equity, even if per-trade risk and position count are individually fine. ONE combined budget shared by stocks and options."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={maxAggregateOpenRiskPctDraft}
+                  onChange={setMaxAggregateOpenRiskPctDraft}
+                  min={0}
+                  max={100}
+                  step={0.1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save max aggregate open risk"
+                  onClick={() =>
+                    maxAggregateOpenRiskPctDraft != null &&
+                    saveConfig({ maxAggregateOpenRiskPct: maxAggregateOpenRiskPctDraft })
+                  }
+                  disabled={
+                    maxAggregateOpenRiskPctDraft == null ||
+                    maxAggregateOpenRiskPctDraft < 0 ||
+                    maxAggregateOpenRiskPctDraft > 100 ||
+                    maxAggregateOpenRiskPctDraft === config.data?.maxAggregateOpenRiskPct
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Max correlated exposure (%)"
+              hint="Cap on capital (not risk) already concentrated in tickers statistically correlated with a candidate (|r| ≥ 0.7 over 30 trading days) — guards against several correlated names getting stopped out together."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={maxCorrelatedExposurePctDraft}
+                  onChange={setMaxCorrelatedExposurePctDraft}
+                  min={0}
+                  max={100}
+                  step={0.1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save max correlated exposure"
+                  onClick={() =>
+                    maxCorrelatedExposurePctDraft != null &&
+                    saveConfig({ maxCorrelatedExposurePct: maxCorrelatedExposurePctDraft })
+                  }
+                  disabled={
+                    maxCorrelatedExposurePctDraft == null ||
+                    maxCorrelatedExposurePctDraft < 0 ||
+                    maxCorrelatedExposurePctDraft > 100 ||
+                    maxCorrelatedExposurePctDraft === config.data?.maxCorrelatedExposurePct
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Max trades per day"
+              hint="Hard cap on new entries risk-check will approve per day — paper and live, stocks and options, all combined."
+            >
+              <div className="flex gap-2">
+                <NumberInput value={maxTradesPerDayDraft} onChange={setMaxTradesPerDayDraft} min={0} step={1} />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save max trades per day"
+                  onClick={() => maxTradesPerDayDraft != null && saveConfig({ maxTradesPerDay: maxTradesPerDayDraft })}
+                  disabled={
+                    maxTradesPerDayDraft == null ||
+                    maxTradesPerDayDraft < 0 ||
+                    maxTradesPerDayDraft === config.data?.maxTradesPerDay
                   }
                 >
                   Save

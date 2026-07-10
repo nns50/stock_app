@@ -1,5 +1,4 @@
 import { getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
-import { RISK_PROFILES } from './riskProfiles';
 import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskCheck';
 import { correlatedNotional, RiskCheckContext } from './riskCheck';
@@ -354,7 +353,6 @@ export async function runOptionsPaperExecution(
   candidates: { signal: OptionsTradeSignal }[],
 ): Promise<OptionsExecutionOutcome[]> {
   const config = getAutotradeConfig();
-  const profile = RISK_PROFILES[config.riskProfile];
   const equity = config.accountEquityUsd ?? 0;
 
   const optSnapshot = getOptionsPaperPortfolioSnapshot();
@@ -388,8 +386,15 @@ export async function runOptionsPaperExecution(
       openPositionsCount: runningCount,
       maxConcurrentPositions: config.maxConcurrentPositions,
       correlatedNotional: correlated,
+      riskPerTradePct: config.riskPerTradePct,
+      maxDailyDrawdownPct: config.maxDailyDrawdownPct,
+      stepDownAfterLosses: config.stepDownAfterLosses,
+      stepDownSizeCutPct: config.stepDownSizeCutPct,
+      maxAggregateOpenRiskPct: config.maxAggregateOpenRiskPct,
+      maxCorrelatedExposurePct: config.maxCorrelatedExposurePct,
+      maxTradesPerDay: config.maxTradesPerDay,
     };
-    const result = evaluateOptionsRiskCheck(signal, ctx, profile);
+    const result = evaluateOptionsRiskCheck(signal, ctx);
     const contracts =
       'suggestedContracts' in result.sizing ? result.sizing.suggestedContracts : result.sizing.suggestedQuantity;
     logAutotradeEvent({

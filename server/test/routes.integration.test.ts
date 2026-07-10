@@ -527,6 +527,40 @@ describe('autotrade config routes (integration)', () => {
     expect(final.accountEquityUsd).toBe(20_000);
   });
 
+  it('persists the risk-check parameters (formerly the riskProfile preset table) and survives an unrelated save', async () => {
+    await put('/api/autotrade/config', {
+      riskPerTradePct: 1.5,
+      maxDailyDrawdownPct: 5,
+      stepDownAfterLosses: 3,
+      stepDownSizeCutPct: 25,
+      maxAggregateOpenRiskPct: 4.5,
+      maxCorrelatedExposurePct: 10,
+      maxTradesPerDay: 10,
+    });
+    await put('/api/autotrade/config', { accountEquityUsd: 30_000 });
+
+    const final = (await getJson('/api/autotrade/config')) as {
+      riskPerTradePct: number;
+      maxDailyDrawdownPct: number;
+      stepDownAfterLosses: number;
+      stepDownSizeCutPct: number;
+      maxAggregateOpenRiskPct: number;
+      maxCorrelatedExposurePct: number;
+      maxTradesPerDay: number;
+      accountEquityUsd: number;
+    };
+    expect(final).toMatchObject({
+      riskPerTradePct: 1.5,
+      maxDailyDrawdownPct: 5,
+      stepDownAfterLosses: 3,
+      stepDownSizeCutPct: 25,
+      maxAggregateOpenRiskPct: 4.5,
+      maxCorrelatedExposurePct: 10,
+      maxTradesPerDay: 10,
+      accountEquityUsd: 30_000,
+    });
+  });
+
   it('accountEquityUsd: null still explicitly clears it, distinct from omitting the field entirely', async () => {
     await put('/api/autotrade/config', { enabled: true, accountEquityUsd: 50_000 });
     const cleared = await put('/api/autotrade/config', { accountEquityUsd: null });

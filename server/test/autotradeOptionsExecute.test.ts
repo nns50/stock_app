@@ -21,7 +21,6 @@ import {
   runOptionsPaperExecution,
 } from '../src/services/autotrading/optionsExecute';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from '../src/services/autotrading/optionsRiskCheck';
-import { RISK_PROFILES } from '../src/services/autotrading/riskProfiles';
 import { DebitSpreadOptionsSignal, SingleLegOptionsSignal } from '../src/services/autotrading/optionsDecide';
 
 const mockGetProvider = vi.mocked(getProvider);
@@ -114,20 +113,23 @@ beforeEach(() => {
 });
 
 describe('attemptOptionsPaperEntry', () => {
-  const okResult: OptionsRiskCheckResult = evaluateOptionsRiskCheck(
-    optionSignal(),
-    {
-      equity: 100_000,
-      dailyPnl: 0,
-      tradesToday: 0,
-      consecutiveLosses: 0,
-      openRisk: 0,
-      openPositionsCount: 0,
-      maxConcurrentPositions: 2,
-      correlatedNotional: 0,
-    },
-    RISK_PROFILES.MODERATE,
-  );
+  const okResult: OptionsRiskCheckResult = evaluateOptionsRiskCheck(optionSignal(), {
+    equity: 100_000,
+    dailyPnl: 0,
+    tradesToday: 0,
+    consecutiveLosses: 0,
+    openRisk: 0,
+    openPositionsCount: 0,
+    maxConcurrentPositions: 2,
+    correlatedNotional: 0,
+    riskPerTradePct: 1,
+    maxDailyDrawdownPct: 3,
+    stepDownAfterLosses: 2,
+    stepDownSizeCutPct: 50,
+    maxAggregateOpenRiskPct: 2,
+    maxCorrelatedExposurePct: 6,
+    maxTradesPerDay: 6,
+  });
 
   it('fills at a freshly-fetched contract mark, not the signal premium', async () => {
     mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.25 } }) as never);
@@ -195,20 +197,23 @@ describe('attemptOptionsPaperEntry', () => {
   });
 
   describe('debit spreads', () => {
-    const spreadOkResult: OptionsRiskCheckResult = evaluateOptionsRiskCheck(
-      spreadSignal(),
-      {
-        equity: 100_000,
-        dailyPnl: 0,
-        tradesToday: 0,
-        consecutiveLosses: 0,
-        openRisk: 0,
-        openPositionsCount: 0,
-        maxConcurrentPositions: 2,
-        correlatedNotional: 0,
-      },
-      RISK_PROFILES.MODERATE,
-    );
+    const spreadOkResult: OptionsRiskCheckResult = evaluateOptionsRiskCheck(spreadSignal(), {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      maxConcurrentPositions: 2,
+      correlatedNotional: 0,
+      riskPerTradePct: 1,
+      maxDailyDrawdownPct: 3,
+      stepDownAfterLosses: 2,
+      stepDownSizeCutPct: 50,
+      maxAggregateOpenRiskPct: 2,
+      maxCorrelatedExposurePct: 6,
+      maxTradesPerDay: 6,
+    });
 
     it('opens both legs at freshly-fetched marks, not the signal premiums', async () => {
       expect(spreadOkResult.ok).toBe(true);
@@ -356,7 +361,15 @@ describe('runOptionsPaperExecution', () => {
   });
 
   it('threads same-batch approvals into the running risk/count for the NEXT candidate in the same call', async () => {
-    setAutotradeConfig({ riskProfile: 'AGGRESSIVE', maxConcurrentPositions: 3 });
+    // riskPerTradePct/maxAggregateOpenRiskPct set explicitly (matching
+    // AGGRESSIVE's OLD preset values) since riskProfile itself no longer
+    // implies them — see riskProfiles.ts's header comment.
+    setAutotradeConfig({
+      riskProfile: 'AGGRESSIVE',
+      maxConcurrentPositions: 3,
+      riskPerTradePct: 1.5,
+      maxAggregateOpenRiskPct: 4.5,
+    });
     // 1.5% of $100k = $1500 risk budget/trade; a $10-premium contract ->
     // riskPerUnit = 10*100 = $1000/contract -> suggestedQuantity=1, risk=$1000/contract.
     mockGetProvider.mockReturnValue(
