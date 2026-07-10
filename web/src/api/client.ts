@@ -446,6 +446,10 @@ export const client = {
     liveOptionsProbationTrades?: number;
     liveOptionsProbationSizeMultiplier?: number;
     optionsStrategyType?: AutotradeOptionsStrategyType;
+    autoPromoteMoversEnabled?: boolean;
+    autoPromoteThreshold?: number;
+    autoPromoteWindowDays?: number;
+    autoPromoteMaxSymbols?: number;
   }) => api<AutotradeConfig>('/autotrade/config', { method: 'PUT', body: JSON.stringify(body) }),
   autotradeExclusions: () => api<{ exclusions: AutotradeExclusion[] }>('/autotrade/exclusions'),
   addAutotradeExclusion: (body: { symbol: string; reason?: string }) =>

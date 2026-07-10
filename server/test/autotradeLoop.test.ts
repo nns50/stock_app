@@ -28,6 +28,7 @@ vi.mock('../src/services/autotrading/liveOptionsExecute', () => ({
   syncLiveOptionsPositionsFromBroker: vi.fn(),
 }));
 vi.mock('../src/providers/webull/positions', () => ({ runWebullPositionsSync: vi.fn() }));
+vi.mock('../src/services/autotrading/moversPromotion', () => ({ processMoversForPromotion: vi.fn() }));
 vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/autotrading/executionGuards')>();
   return { ...actual, checkSessionWindow: vi.fn(), getMarketAtrPct: vi.fn() };
@@ -61,6 +62,7 @@ import {
   syncLiveOptionsPositionsFromBroker,
 } from '../src/services/autotrading/liveOptionsExecute';
 import { runWebullPositionsSync } from '../src/providers/webull/positions';
+import { processMoversForPromotion } from '../src/services/autotrading/moversPromotion';
 import { checkSessionWindow, getMarketAtrPct } from '../src/services/autotrading/executionGuards';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { runAutotradeLoopTick, startAutotradeLoop, stopAutotradeLoop } from '../src/services/autotrading/loop';
@@ -88,6 +90,7 @@ const mockCheckLiveOptionsExits = vi.mocked(checkLiveOptionsExits);
 const mockReconcileLiveOptions = vi.mocked(reconcileLiveOptionsOrders);
 const mockOptionsPositionsSync = vi.mocked(syncLiveOptionsPositionsFromBroker);
 const mockPositionsSync = vi.mocked(runWebullPositionsSync);
+const mockMoversPromotion = vi.mocked(processMoversForPromotion);
 const mockSessionWindow = vi.mocked(checkSessionWindow);
 const mockMarketAtr = vi.mocked(getMarketAtrPct);
 const mockLogEvent = vi.mocked(logAutotradeEvent);
@@ -189,6 +192,7 @@ beforeEach(() => {
   mockCheckLiveOptionsExits.mockReset().mockResolvedValue([]);
   mockReconcileLiveOptions.mockReset().mockResolvedValue([]);
   mockOptionsPositionsSync.mockReset().mockResolvedValue({ ok: true, checked: 0, closed: 0, closedSymbols: [] });
+  mockMoversPromotion.mockReset().mockReturnValue({ recorded: [], promoted: [], atCap: [] });
   mockSessionWindow.mockReset().mockReturnValue({ ok: true });
   mockMarketAtr.mockReset().mockResolvedValue(2);
   mockLogEvent.mockReset();
@@ -382,6 +386,96 @@ describe('runAutotradeLoopTick', () => {
     await runAutotradeLoopTick();
 
     expect(callOrder).toEqual(['positionsSync', 'checkExits']);
+  });
+
+  it('runs movers auto-promotion right after screening, with the screened candidates and the auto-promote config', async () => {
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+
+    await runAutotradeLoopTick();
+
+    expect(mockMoversPromotion).toHaveBeenCalledTimes(1);
+    expect(mockMoversPromotion).toHaveBeenCalledWith(
+      [candidate('AAPL', 2)],
+      expect.objectContaining({
+        autoPromoteMoversEnabled: true,
+        autoPromoteThreshold: 3,
+        autoPromoteWindowDays: 10,
+        autoPromoteMaxSymbols: 50,
+      }),
+    );
+  });
+
+  it('reflects newly-promoted symbols in the tick summary', async () => {
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+    mockMoversPromotion.mockReturnValue({ recorded: ['AAPL'], promoted: ['AAPL'], atCap: [] });
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(summary.moversAutoPromoted).toBe(1);
+  });
+
+  it('defaults moversAutoPromoted to 0 when nothing was promoted this cycle', async () => {
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+
+    const summary = await runAutotradeLoopTick();
+    expect(summary.moversAutoPromoted).toBe(0);
+  });
+
+  it('does not run movers auto-promotion when the session window blocks new entries (screening never happens either)', async () => {
+    mockSessionWindow.mockReturnValue({ ok: false, reason: 'Market is closed' });
+    await runAutotradeLoopTick();
+    expect(mockMoversPromotion).not.toHaveBeenCalled();
+  });
+
+  it('a hiccup in movers auto-promotion does not stop exits, decision, or entries from running', async () => {
+    mockMoversPromotion.mockImplementation(() => {
+      throw new Error('DB write failed');
+    });
+    mockCheckExits.mockResolvedValue([{ symbol: 'AAPL', closed: true }]);
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(summary.exitsClosed).toBe(1);
+    expect(summary.ranEntries).toBe(true);
+    expect(summary.entriesOpened).toBe(1);
+    expect(summary.moversAutoPromoted).toBe(0); // failed silently from the tick's perspective
   });
 
   it('screens, decides, and executes when the session window is open', async () => {

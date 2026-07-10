@@ -1083,6 +1083,12 @@ export interface AutotradeConfig {
 
   // --- Options strategy shape ---
   optionsStrategyType: AutotradeOptionsStrategyType;
+
+  // --- Movers auto-promotion ---
+  autoPromoteMoversEnabled: boolean;
+  autoPromoteThreshold: number;
+  autoPromoteWindowDays: number;
+  autoPromoteMaxSymbols: number;
 }
 
 export interface EquitySyncResult {
@@ -1479,6 +1485,10 @@ export interface LoopTickSummary {
   entriesOpened: number;
   optionsEntriesOpened: number;
   liveEntriesOpened: number;
+  /** Movers-sourced symbols newly added to the persistent universe this cycle
+   *  (0 on most cycles — a symbol needs several distinct days of recurrence
+   *  first; see the About page / docs/AUTOTRADING_SPEC.md). */
+  moversAutoPromoted: number;
 }
 
 // --- Phase 12: options paper execution ---

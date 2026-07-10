@@ -1355,6 +1355,10 @@ export default function AutoTradePage() {
   const [liveOptionsProbationSizeMultiplierDraft, setLiveOptionsProbationSizeMultiplierDraft] = useState<
     number | undefined
   >();
+  const [autoPromoteMoversEnabled, setAutoPromoteMoversEnabled] = useState(true);
+  const [autoPromoteThresholdDraft, setAutoPromoteThresholdDraft] = useState<number | undefined>();
+  const [autoPromoteWindowDaysDraft, setAutoPromoteWindowDaysDraft] = useState<number | undefined>();
+  const [autoPromoteMaxSymbolsDraft, setAutoPromoteMaxSymbolsDraft] = useState<number | undefined>();
   useEffect(() => {
     if (!config.data) return;
     setEnabled(config.data.enabled);
@@ -1378,6 +1382,10 @@ export default function AutoTradePage() {
     setLiveOptionsFatFingerPctDraft(config.data.liveOptionsFatFingerPct);
     setLiveOptionsProbationTradesDraft(config.data.liveOptionsProbationTrades);
     setLiveOptionsProbationSizeMultiplierDraft(config.data.liveOptionsProbationSizeMultiplier);
+    setAutoPromoteMoversEnabled(config.data.autoPromoteMoversEnabled);
+    setAutoPromoteThresholdDraft(config.data.autoPromoteThreshold);
+    setAutoPromoteWindowDaysDraft(config.data.autoPromoteWindowDays);
+    setAutoPromoteMaxSymbolsDraft(config.data.autoPromoteMaxSymbols);
   }, [config.data]);
 
   const saveConfig = async (patch: {
@@ -1386,6 +1394,10 @@ export default function AutoTradePage() {
     accountEquityUsd?: number | null;
     maxConcurrentPositions?: number;
     optionsStrategyType?: AutotradeOptionsStrategyType;
+    autoPromoteMoversEnabled?: boolean;
+    autoPromoteThreshold?: number;
+    autoPromoteWindowDays?: number;
+    autoPromoteMaxSymbols?: number;
   }) => {
     if (patch.riskProfile === 'AGGRESSIVE' && riskProfile !== 'AGGRESSIVE') {
       const ok = await confirm({
@@ -1405,6 +1417,10 @@ export default function AutoTradePage() {
       setRiskProfile(saved.riskProfile);
       setOptionsStrategyType(saved.optionsStrategyType);
       setMaxPositionsDraft(saved.maxConcurrentPositions);
+      setAutoPromoteMoversEnabled(saved.autoPromoteMoversEnabled);
+      setAutoPromoteThresholdDraft(saved.autoPromoteThreshold);
+      setAutoPromoteWindowDaysDraft(saved.autoPromoteWindowDays);
+      setAutoPromoteMaxSymbolsDraft(saved.autoPromoteMaxSymbols);
       config.reload(); // keeps config.data — the equity-not-set warning's source of truth — fresh
       refreshLiveData(); // risk profile / equity changes shift the dashboard's caps, and get journaled
       toast('Auto-trading settings saved', { type: 'success' });
@@ -1948,6 +1964,85 @@ export default function AutoTradePage() {
                     maxPositionsDraft == null ||
                     maxPositionsDraft < 1 ||
                     maxPositionsDraft === config.data?.maxConcurrentPositions
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={autoPromoteMoversEnabled}
+                onChange={(e) => saveConfig({ autoPromoteMoversEnabled: e.target.checked })}
+              />
+              Auto-promote recurring movers
+            </label>
+            <Field
+              label="Promotion threshold"
+              hint="A movers-sourced symbol (Webull's daily gainers/unusual-volume feed) that clears screening this many DISTINCT days within the window earns a permanent spot in your universe — automatically, from the automated loop only, never from a manual Run screen."
+            >
+              <div className="flex items-center gap-2 flex-wrap">
+                <NumberInput
+                  value={autoPromoteThresholdDraft}
+                  onChange={setAutoPromoteThresholdDraft}
+                  min={1}
+                  step={1}
+                />
+                <span className="text-xs text-slate-500">times within</span>
+                <NumberInput
+                  value={autoPromoteWindowDaysDraft}
+                  onChange={setAutoPromoteWindowDaysDraft}
+                  min={1}
+                  step={1}
+                />
+                <span className="text-xs text-slate-500">days</span>
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save promotion threshold"
+                  onClick={() =>
+                    autoPromoteThresholdDraft != null &&
+                    autoPromoteWindowDaysDraft != null &&
+                    saveConfig({
+                      autoPromoteThreshold: autoPromoteThresholdDraft,
+                      autoPromoteWindowDays: autoPromoteWindowDaysDraft,
+                    })
+                  }
+                  disabled={
+                    autoPromoteThresholdDraft == null ||
+                    autoPromoteWindowDaysDraft == null ||
+                    autoPromoteThresholdDraft < 1 ||
+                    autoPromoteWindowDaysDraft < 1 ||
+                    (autoPromoteThresholdDraft === config.data?.autoPromoteThreshold &&
+                      autoPromoteWindowDaysDraft === config.data?.autoPromoteWindowDays)
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Max auto-promoted symbols"
+              hint="Lifetime cap on symbols added by this mechanism specifically — doesn't count your seeded or manually-added universe. Once a symbol is promoted (or you remove one later), it's never reconsidered again either way."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={autoPromoteMaxSymbolsDraft}
+                  onChange={setAutoPromoteMaxSymbolsDraft}
+                  min={0}
+                  step={1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save max auto-promoted symbols"
+                  onClick={() =>
+                    autoPromoteMaxSymbolsDraft != null &&
+                    saveConfig({ autoPromoteMaxSymbols: autoPromoteMaxSymbolsDraft })
+                  }
+                  disabled={
+                    autoPromoteMaxSymbolsDraft == null ||
+                    autoPromoteMaxSymbolsDraft < 0 ||
+                    autoPromoteMaxSymbolsDraft === config.data?.autoPromoteMaxSymbols
                   }
                 >
                   Save
@@ -2666,6 +2761,9 @@ export default function AutoTradePage() {
                 opened ({loopSummary.optionsEntriesOpened} options). Options decision considered{' '}
                 {loopSummary.optionsCandidatesConsidered} candidate(s) (universe-sourced only — movers can't accumulate
                 real IV-rank history) and generated {loopSummary.optionsSignalsGenerated} signal(s).{' '}
+                {loopSummary.moversAutoPromoted > 0 && (
+                  <>{loopSummary.moversAutoPromoted} recurring mover(s) promoted to the universe. </>
+                )}
               </>
             )}
             Exits checked: {loopSummary.exitsChecked} ({loopSummary.exitsClosed} closed) — options:{' '}

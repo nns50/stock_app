@@ -2229,6 +2229,13 @@ describe('AutoTradePage account-equity auto-refresh', () => {
     await screen.findByText('VNQ');
 
     const equityInput = screen.getByPlaceholderText('e.g. 25000') as HTMLInputElement;
+    // Wait for the config-load effect to populate equityDraft from accountEquityUsd
+    // FIRST — 'VNQ' above only confirms the (separate) exclusions fetch resolved, not
+    // this one, so without this wait the manual edit below can race the config load
+    // and get silently clobbered back to 100000 the instant it lands (confirmed
+    // flaky without this: the dirty-check then wrongly sees no unsaved edit and
+    // fires the sync).
+    await waitFor(() => expect(equityInput.value).toBe('100000'));
     fireEvent.change(equityInput, { target: { value: '77000' } }); // unsaved manual edit
 
     await act(() => vi.advanceTimersByTimeAsync(60_000));

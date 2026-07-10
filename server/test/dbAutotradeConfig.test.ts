@@ -238,4 +238,63 @@ describe('autotrade config persistence', () => {
       expect(cfg.riskProfile).toBe('AGGRESSIVE');
     });
   });
+
+  describe('movers auto-promotion', () => {
+    it('defaults to enabled, 3 within 10 days, cap 50', () => {
+      const d = defaultAutotradeConfig();
+      expect(d.autoPromoteMoversEnabled).toBe(true);
+      expect(d.autoPromoteThreshold).toBe(3);
+      expect(d.autoPromoteWindowDays).toBe(10);
+      expect(d.autoPromoteMaxSymbols).toBe(50);
+    });
+
+    it('persists a patch and round-trips', () => {
+      const cfg = setAutotradeConfig({
+        autoPromoteMoversEnabled: false,
+        autoPromoteThreshold: 5,
+        autoPromoteWindowDays: 20,
+        autoPromoteMaxSymbols: 10,
+      });
+      expect(cfg).toMatchObject({
+        autoPromoteMoversEnabled: false,
+        autoPromoteThreshold: 5,
+        autoPromoteWindowDays: 20,
+        autoPromoteMaxSymbols: 10,
+      });
+      expect(getAutotradeConfig()).toMatchObject({
+        autoPromoteMoversEnabled: false,
+        autoPromoteThreshold: 5,
+        autoPromoteWindowDays: 20,
+        autoPromoteMaxSymbols: 10,
+      });
+    });
+
+    it('rejects a threshold/window below 1, failing closed to the default (matches accountEquityUsd/riskProfile precedent above)', () => {
+      setAutotradeConfig({ autoPromoteThreshold: 4, autoPromoteWindowDays: 15 });
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+      const cfg = setAutotradeConfig({ autoPromoteThreshold: 0, autoPromoteWindowDays: -1 });
+      expect(cfg.autoPromoteThreshold).toBe(defaultAutotradeConfig().autoPromoteThreshold);
+      expect(cfg.autoPromoteWindowDays).toBe(defaultAutotradeConfig().autoPromoteWindowDays);
+    });
+
+    it('allows a max-symbols cap of exactly 0 (no more auto-promotion slots)', () => {
+      const cfg = setAutotradeConfig({ autoPromoteMaxSymbols: 0 });
+      expect(cfg.autoPromoteMaxSymbols).toBe(0);
+    });
+
+    it('rejects a negative max-symbols cap, failing closed to the default', () => {
+      setAutotradeConfig({ autoPromoteMaxSymbols: 25 });
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+      const cfg = setAutotradeConfig({ autoPromoteMaxSymbols: -5 });
+      expect(cfg.autoPromoteMaxSymbols).toBe(defaultAutotradeConfig().autoPromoteMaxSymbols);
+    });
+
+    it('round-trips independently of unrelated patches', () => {
+      setAutotradeConfig({ autoPromoteMoversEnabled: false, autoPromoteThreshold: 7 });
+      const cfg = setAutotradeConfig({ riskProfile: 'AGGRESSIVE' });
+      expect(cfg.autoPromoteMoversEnabled).toBe(false);
+      expect(cfg.autoPromoteThreshold).toBe(7);
+      expect(cfg.riskProfile).toBe('AGGRESSIVE');
+    });
+  });
 });

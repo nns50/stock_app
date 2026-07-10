@@ -163,6 +163,27 @@ CREATE TABLE IF NOT EXISTS iv_history (
   PRIMARY KEY (symbol, date)
 );
 
+-- Movers auto-promotion: one row per (symbol, calendar day) it showed up as a
+-- movers-sourced, filters-passing screen candidate. Once-per-day dedup shape,
+-- same as iv_history above, so many loop ticks the same day still only count once.
+CREATE TABLE IF NOT EXISTS movers_occurrences (
+  symbol      TEXT NOT NULL,
+  date        TEXT NOT NULL,           -- YYYY-MM-DD
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (symbol, date)
+);
+CREATE INDEX IF NOT EXISTS idx_movers_occurrences_symbol ON movers_occurrences(symbol);
+
+-- Append-only ledger of symbols auto-promotion has ever added to universe.
+-- Gates promotion so a symbol is never reconsidered once handled, whether
+-- it's still in universe or a user later removed it, and backs the lifetime
+-- growth cap. Kept separate from universe itself rather than a source column
+-- there, so the already-deployed universe table needs no migration.
+CREATE TABLE IF NOT EXISTS auto_promoted_symbols (
+  symbol       TEXT PRIMARY KEY,
+  promoted_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS screener_snapshots (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at    INTEGER NOT NULL,

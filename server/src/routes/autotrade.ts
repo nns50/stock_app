@@ -84,6 +84,11 @@ const configBody = z.object({
   liveOptionsProbationSizeMultiplier: z.number().positive().max(1).optional(),
   // --- Options strategy shape -------------------------------------------------
   optionsStrategyType: z.enum(['single_leg', 'debit_spread']).optional(),
+  // --- Movers auto-promotion --------------------------------------------------
+  autoPromoteMoversEnabled: z.boolean().optional(),
+  autoPromoteThreshold: z.number().int().min(1).optional(),
+  autoPromoteWindowDays: z.number().int().min(1).optional(),
+  autoPromoteMaxSymbols: z.number().int().nonnegative().optional(),
 });
 autotradeRouter.put(
   '/config',
@@ -131,6 +136,10 @@ autotradeRouter.put(
       patch.liveOptionsProbationSizeMultiplier = body.liveOptionsProbationSizeMultiplier;
     }
     if (body.optionsStrategyType !== undefined) patch.optionsStrategyType = body.optionsStrategyType;
+    if (body.autoPromoteMoversEnabled !== undefined) patch.autoPromoteMoversEnabled = body.autoPromoteMoversEnabled;
+    if (body.autoPromoteThreshold !== undefined) patch.autoPromoteThreshold = body.autoPromoteThreshold;
+    if (body.autoPromoteWindowDays !== undefined) patch.autoPromoteWindowDays = body.autoPromoteWindowDays;
+    if (body.autoPromoteMaxSymbols !== undefined) patch.autoPromoteMaxSymbols = body.autoPromoteMaxSymbols;
 
     // liveTradingEnabled and liveAccountId are handled together, NOT in the
     // generic patch above: going false -> true requires the typed
