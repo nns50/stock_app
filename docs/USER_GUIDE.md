@@ -649,8 +649,17 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   **max concurrent positions** — ONE combined open-position budget shared by stocks and
   options together (a stock position and an option position draw from the same pool);
   independent of the risk profile, so switching Moderate ↔ Aggressive never silently
-  changes this — set it directly and it applies to paper and live trading alike. The
-  **kill switch** button above these settings is a separate, sticky emergency halt —
+  changes this — set it directly and it applies to paper and live trading alike.
+  **Auto-promote recurring movers** (on by default) grows your universe automatically:
+  a symbol Webull's premarket movers surface that also clears screening on **3 distinct
+  days within a 10-day window** (both tunable, along with a **50-symbol lifetime cap** on
+  how many this can add) earns a permanent spot in your universe — the same list the
+  **Screener** page's **Manage universe** edits — so a genuinely active name stops being
+  re-discovered and re-scored from scratch every day. Only ever runs from the background
+  loop, never from a manual **Run screen**; each promotion shows up in **Recent
+  activity**, and once added, a symbol you later remove is never re-added by this
+  mechanism. The **kill switch** button above these settings is a separate, sticky
+  emergency halt —
   engaging it (one click, no confirmation needed, mirroring the same button on the
   **Trade** page) blocks all new entries immediately, regardless of the enabled toggle
   or session window, but does **not** close your existing paper positions — their

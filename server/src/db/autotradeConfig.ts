@@ -133,6 +133,31 @@ export interface AutotradeConfig {
    *  /decide preview route (routes/autotrade.ts); backtesting is unaffected
    *  (options backtests remain single-leg only). */
   optionsStrategyType: OptionsStrategyType;
+
+  // --- Movers auto-promotion (docs/AUTOTRADING_SPEC.md — the 2026-07-10
+  // universe-widening fix's explicitly separate follow-up) ---------------
+
+  /** Master on/off for promoting a recurring movers-sourced symbol into the
+   *  persistent universe. Only ever runs from the automatic loop tick
+   *  (services/autotrading/moversPromotion.ts, wired into loop.ts) — never
+   *  from the manual "Run screen" route, since this addresses the AUTOMATED
+   *  loop's own tendency to re-discover, then discard, the same genuinely
+   *  active name every day. Defaults true: promotion can't fire until a
+   *  symbol has accumulated autoPromoteThreshold days of history, so turning
+   *  this on at deploy time carries no risk of an immediate mass-promotion. */
+  autoPromoteMoversEnabled: boolean;
+  /** A symbol needs this many DISTINCT calendar days as a movers-sourced,
+   *  filters-passing screen candidate within autoPromoteWindowDays before
+   *  it's promoted. */
+  autoPromoteThreshold: number;
+  /** Rolling calendar-day window autoPromoteThreshold is measured over. */
+  autoPromoteWindowDays: number;
+  /** Lifetime cap on symbols ADDED BY THIS MECHANISM specifically — doesn't
+   *  count the seeded/user-added universe. Once a symbol is promoted (or a
+   *  user removes a promoted symbol later), it's never reconsidered again
+   *  either way: this is a one-shot "earn a permanent spot," not a rolling
+   *  membership that could thrash. */
+  autoPromoteMaxSymbols: number;
 }
 
 interface ConfigRow {
@@ -177,6 +202,10 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveOptionsProbationTrades: 20,
     liveOptionsProbationSizeMultiplier: 0.5,
     optionsStrategyType: 'single_leg',
+    autoPromoteMoversEnabled: true,
+    autoPromoteThreshold: 3,
+    autoPromoteWindowDays: 10,
+    autoPromoteMaxSymbols: 50,
   };
 }
 
@@ -256,6 +285,11 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       input.optionsStrategyType === 'debit_spread' || input.optionsStrategyType === 'single_leg'
         ? input.optionsStrategyType
         : d.optionsStrategyType,
+    autoPromoteMoversEnabled:
+      typeof input.autoPromoteMoversEnabled === 'boolean' ? input.autoPromoteMoversEnabled : d.autoPromoteMoversEnabled,
+    autoPromoteThreshold: posIntMin1(input.autoPromoteThreshold, d.autoPromoteThreshold),
+    autoPromoteWindowDays: posIntMin1(input.autoPromoteWindowDays, d.autoPromoteWindowDays),
+    autoPromoteMaxSymbols: posInt(input.autoPromoteMaxSymbols, d.autoPromoteMaxSymbols),
   };
 }
 

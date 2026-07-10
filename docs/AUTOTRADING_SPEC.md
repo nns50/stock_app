@@ -477,11 +477,50 @@ starts.
       re-adds a symbol a user later removes from the delta either. Runs from
       `initDb()` right after `seedUniverseIfEmpty()`.
 
-   **Not yet built — the explicitly separate second half of the same request:**
-   auto-promoting a symbol into the persistent universe once it recurs often enough
-   in Webull's daily movers feed, so genuinely active names earn a permanent spot
-   without a manual edit. Tracked as its own follow-up, not started alongside this
-   fix.
+   **Follow-up (2026-07-10), shipped separately — movers auto-promotion, the
+   explicitly separate second half of the same request.** A movers-sourced symbol
+   is discovered fresh every cycle but never persisted: scored, maybe traded, then
+   forgotten, so a genuinely active name gets re-found (and re-scored from zero
+   IV/history) every single day instead of earning a permanent spot in `universe`.
+   `services/autotrading/moversPromotion.ts`'s `processMoversForPromotion()` closes
+   that gap. Two new tables (`movers_occurrences`, `auto_promoted_symbols`):
+   - `movers_occurrences` records one row per (symbol, UTC calendar day) a symbol
+     showed up as a movers-sourced, **filters-passing** screen candidate — the same
+     quality bar the screener already applies, not raw movers-feed membership, so a
+     spike with no real volume/price/RSI/trend backing it can't earn a spot just by
+     appearing. Once-per-day dedup (mirrors `iv_history`'s shape) so many loop ticks
+     the same day still only count once.
+   - Once a symbol clears `autoPromoteThreshold` distinct days within a rolling
+     `autoPromoteWindowDays`-day window (defaults 3 within 10), it's added to
+     `universe` via the same `INSERT OR IGNORE` `addSymbols()` upsert, subject to
+     the real-estate exclusion list and a lifetime `autoPromoteMaxSymbols` cap
+     (default 50) on symbols promoted by this mechanism specifically.
+   - `auto_promoted_symbols` is an append-only ledger — the exact same "don't
+     re-fight a deliberate removal" posture as the sp500.json top-up above, but
+     scoped per-symbol and permanent: once a symbol is EVER promoted, it's gated on
+     the ledger (not live `universe` membership) forever after, so it's never
+     reconsidered again even if a user later removes it from their universe on
+     purpose. A symbol already in `universe` for an unrelated reason (seeded,
+     manually added) is left alone and never enters the ledger at all.
+   - Runs from `runAutotradeLoopTick()` right after `runAutotradeScreen()`, against
+     the full screened set — deliberately **before** the volatility pre-filter, since
+     a symbol's own recurrence is independent of whether today's overall market
+     conditions happen to be too choppy for the loop to actually enter anything.
+     Deliberately **only** from the automatic loop tick, never the manual "Run
+     screen" route — this specifically addresses the automated loop's own
+     pigeon-holing. Wrapped in its own try/catch, same backstop posture as the
+     equity/position-truth syncs above.
+   - Each promotion is journaled (`universe_auto_promoted`, stage `screen`, detail
+     `{occurrences, windowDays, threshold}`) — visible in Recent Activity, unlike
+     equity's own silent sync, since a symbol permanently joining the trading
+     universe is a bigger deal than a routine balance refresh. `autoPromoteMoversEnabled`
+     defaults **true**: a fresh deploy carries no risk of an immediate mass-promotion,
+     since no symbol can have accumulated `autoPromoteThreshold` days of history before
+     this shipped. All four fields (`autoPromoteMoversEnabled`, `autoPromoteThreshold`,
+     `autoPromoteWindowDays`, `autoPromoteMaxSymbols`) are user-editable in the
+     Auto-Trade page's Configuration card, same pattern as every other numeric risk
+     parameter (sensible default, freely overridable afterward — not blocked on
+     getting the exact numbers right up front).
 3. **Strategy / Decision module — shipped.** Turns each screened candidate into a
    concrete trade plan (`services/autotrading/decide.ts`): entry = current price, a
    **hard stop** at `stopAtrMultiple`× the symbol's own ATR (default 1.5×, so the stop

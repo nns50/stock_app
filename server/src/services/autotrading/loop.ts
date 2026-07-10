@@ -22,6 +22,7 @@ import {
 import { maybeAlertLiveOrderFailures } from './liveFailureAlert';
 import { checkSessionWindow, checkVolatility, defaultVolatilityFilterConfig, getMarketAtrPct } from './executionGuards';
 import { runWebullPositionsSync } from '../../providers/webull/positions';
+import { processMoversForPromotion } from './moversPromotion';
 
 // ---------------------------------------------------------------------------
 // The autonomous execution loop (docs/AUTOTRADING_SPEC.md — EXECUTION LOOP):
@@ -113,6 +114,12 @@ export interface LoopTickSummary {
   /** Live OPTIONS entries opened this cycle (Task #70 Step D) — 0 whenever
    *  live options wasn't active, mirroring liveEntriesOpened exactly. */
   liveOptionsEntriesOpened: number;
+  /** Movers-sourced symbols newly added to the persistent universe this cycle
+   *  (moversPromotion.ts) — always runs when autoPromoteMoversEnabled, same
+   *  as candidatesScreened, independent of paper/live being active. Each
+   *  promotion also gets its own 'universe_auto_promoted' journal entry with
+   *  the occurrence/threshold detail; this is just the rollup count. */
+  moversAutoPromoted: number;
 }
 
 /** Ticker-level volatility pre-filter, applied between Screen and Decision —
@@ -158,6 +165,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     optionsEntriesOpened: 0,
     liveEntriesOpened: 0,
     liveOptionsEntriesOpened: 0,
+    moversAutoPromoted: 0,
   };
 }
 
@@ -335,6 +343,19 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
 
     const screenResult = await runAutotradeScreen();
     summary.candidatesScreened = screenResult.candidates.length;
+
+    // Movers auto-promotion: runs against the full screened set (before the
+    // volatility pre-filter below), since a symbol's own recurrence in movers
+    // is independent of whether TODAY's overall market conditions happen to
+    // be too choppy for the loop to actually enter anything — see
+    // moversPromotion.ts's header comment. Own try/catch so a DB hiccup here
+    // can't take down screening/decision/execution.
+    try {
+      const promotion = processMoversForPromotion(screenResult.candidates, config);
+      summary.moversAutoPromoted = promotion.promoted.length;
+    } catch (e) {
+      console.error('[autotrade-loop] movers auto-promotion failed:', (e as Error).message);
+    }
 
     const volCfg = defaultVolatilityFilterConfig();
     const marketAtrPct = await getMarketAtrPct(volCfg.marketProxySymbol);
