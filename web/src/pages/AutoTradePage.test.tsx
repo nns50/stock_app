@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import AutoTradePage from './AutoTradePage';
 import { ToastProvider } from '../components/ToastContext';
@@ -2158,5 +2158,81 @@ describe('AutoTradePage', () => {
       expect(await screen.findByText('● enabled')).toBeInTheDocument();
       expect(screen.getByText('1 / 2')).toBeInTheDocument();
     });
+  });
+});
+
+// Only setInterval/clearInterval are faked — not setTimeout, which React's own
+// scheduler relies on (in this jsdom environment) to flush the initial async
+// config/dashboard load; faking it too hangs the very first findByText.
+// usePolling only ever calls setInterval, so this is enough to control it.
+describe('AutoTradePage account-equity auto-refresh', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('auto-syncs equity from Webull every 1 minute once a liveAccountId is configured, silently (no toast)', async () => {
+    // Stateful, like the real server: the FIRST load is pre-sync (100_000);
+    // every reload after that (i.e. after the first sync persists) reflects
+    // the newly-synced equity — otherwise the second tick's dirty-check would
+    // keep seeing the pre-sync value forever and wrongly skip as "dirty".
+    vi.spyOn(client, 'autotradeConfig')
+      .mockResolvedValueOnce(configFixture({ liveAccountId: 'ACC1' }))
+      .mockResolvedValue(configFixture({ liveAccountId: 'ACC1', accountEquityUsd: 123_456.78 }));
+    const sync = vi.spyOn(client, 'syncAutotradeEquity').mockResolvedValue({
+      ok: true,
+      accountId: 'ACC1',
+      previousEquityUsd: 100_000,
+      netLiquidationUsd: 123_456.78,
+      buyingPowerUsd: 200_000,
+      config: configFixture({ liveAccountId: 'ACC1', accountEquityUsd: 123_456.78 }),
+    });
+    renderPage();
+    await screen.findByText('VNQ');
+    expect(sync).not.toHaveBeenCalled();
+
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('status')).toBeNull(); // silent — the manual-click toast does not fire
+
+    const equityInput = screen.getByPlaceholderText('e.g. 25000') as HTMLInputElement;
+    expect(equityInput.value).toBe('123456.78');
+
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(sync).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not auto-sync while no liveAccountId is configured', async () => {
+    const sync = vi.spyOn(client, 'syncAutotradeEquity');
+    renderPage(); // default fixture: liveAccountId null
+    await screen.findByText('VNQ');
+
+    await act(() => vi.advanceTimersByTimeAsync(120_000));
+    expect(sync).not.toHaveBeenCalled();
+  });
+
+  it('does not clobber an unsaved manual equity edit with the 1-minute auto-refresh', async () => {
+    vi.spyOn(client, 'autotradeConfig').mockResolvedValue(
+      configFixture({ liveAccountId: 'ACC1', accountEquityUsd: 100_000 }),
+    );
+    const sync = vi.spyOn(client, 'syncAutotradeEquity').mockResolvedValue({
+      ok: true,
+      accountId: 'ACC1',
+      previousEquityUsd: 100_000,
+      netLiquidationUsd: 123_456.78,
+      buyingPowerUsd: 200_000,
+      config: configFixture({ liveAccountId: 'ACC1', accountEquityUsd: 123_456.78 }),
+    });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const equityInput = screen.getByPlaceholderText('e.g. 25000') as HTMLInputElement;
+    fireEvent.change(equityInput, { target: { value: '77000' } }); // unsaved manual edit
+
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(sync).not.toHaveBeenCalled(); // skipped — draft no longer matches the last known server value
+    expect(equityInput.value).toBe('77000');
   });
 });

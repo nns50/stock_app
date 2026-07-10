@@ -12,7 +12,7 @@ import {
   getOptionsPaperPortfolioSnapshot,
   optionsSeedForEquity,
 } from './optionsExecute';
-import { runLiveExecution, reconcileLiveOrders } from './liveExecute';
+import { runLiveExecution, reconcileLiveOrders, syncAccountEquityFromBroker } from './liveExecute';
 import { runLiveOptionsExecution, checkLiveOptionsExits, reconcileLiveOptionsOrders } from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures } from './liveFailureAlert';
 import { checkSessionWindow, checkVolatility, defaultVolatilityFilterConfig, getMarketAtrPct } from './executionGuards';
@@ -26,10 +26,10 @@ import { checkSessionWindow, checkVolatility, defaultVolatilityFilterConfig, get
 // can't kill the loop, and the timer is unref'd so it never keeps the process
 // alive on its own.
 //
-// The background timer ticks unconditionally — exit-checking and live-order
-// reconcile (below) must run every cycle regardless of any gate, so the outer
-// loop() no longer gates on those; runAutotradeLoopTick() does its own, more
-// granular gating.
+// The background timer ticks unconditionally — exit-checking, live-order
+// reconcile, and the equity sync from the broker (below) must run every cycle
+// regardless of any gate, so the outer loop() no longer gates on those;
+// runAutotradeLoopTick() does its own, more granular gating.
 //
 // Phase 8: paper and live execution are INDEPENDENT — screening/deciding runs
 // once per cycle whenever EITHER is active, then each of runPaperExecution()/
@@ -239,6 +239,20 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // runs, rather than raising a question of re-triggering it in the same pass.
     const liveOptionsReconcileOutcomes = await reconcileLiveOptionsOrders();
     const liveOptionsExitOutcomes = await checkLiveOptionsExits();
+    // Keep accountEquityUsd fresh every tick instead of requiring the
+    // Configuration tile's "Sync from Webull" button — read-only toward the
+    // broker and, like the reconciles above, independent of every gate (see
+    // syncAccountEquityFromBroker's own doc comment). Runs before `config` is
+    // (re-)read below so this cycle's own risk sizing already sees the synced
+    // value. No-ops via its own liveAccountId check when live trading isn't
+    // configured; caught anyway (it isn't expected to throw) so a future
+    // broker hiccup here can never take down exits/reconcile above or entries
+    // below.
+    try {
+      await syncAccountEquityFromBroker();
+    } catch (e) {
+      console.error('[autotrade-loop] equity sync failed:', (e as Error).message);
+    }
     const summary: LoopTickSummary = {
       ...emptySummary(),
       exitsChecked: exitOutcomes.length,

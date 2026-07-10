@@ -505,6 +505,30 @@ starts.
    `liveAccountId` being set, independent of `liveTradingEnabled` and both kill
    switches, since nothing here places an order — equity can be synced and reviewed
    long before ever going live.
+   **Follow-up (2026-07-10) — equity now also syncs automatically, every cycle, not
+   just on demand.** `runAutotradeLoopTick()` (`loop.ts`) calls
+   `syncAccountEquityFromBroker()` itself, right after the exits/reconcile section and
+   before `accountEquityUsd` is (re-)read for this cycle's own sizing — so a live entry
+   this cycle already prices against the freshest equity, not whatever was last
+   manually synced. Placed alongside the other "always runs regardless of any gate"
+   steps (same reasoning as the live-order reconcile: read-only toward the broker, and
+   equity accuracy doesn't depend on whether new entries happen to be gated off right
+   now); wrapped in its own try/catch so a broker hiccup here can't take down exits,
+   reconcile, or entries. No-ops via `syncAccountEquityFromBroker()`'s own
+   `liveAccountId` check when live trading isn't configured, so this is a pure no-op
+   for anyone not using it — the loop's existing 60-second cadence
+   (`TICK_INTERVAL_SECONDS`) is what makes this "every ~1 minute" without a second
+   timer. The Configuration tile's own display (`AutoTradePage.tsx`) separately polls
+   the same sync every 60 seconds client-side (via `usePolling`) purely to keep what's
+   ON SCREEN caught up without waiting for an unrelated reload — it skips whenever the
+   equity field has an unsaved manual edit (`equityDraft` no longer matches the last
+   config value), and suppresses the manual button's success/error toast so it fails
+   quietly in the background rather than popping a toast every minute. The Trade page's
+   "Account state" tile got the analogous treatment (`TradePage.tsx`) but as
+   client-side-only polling of `GET /trade/account-state` — that endpoint is entirely
+   stateless server-side (no DB table backs it), so there's nothing for a server loop to
+   keep fresh; it also skips its refresh whenever the tile's fields no longer match the
+   last pull, preserving the "Dry-run (manual state)" hand-editing workflow.
    **Fixed (2026-07-04), originally flagged during Phase 6's review, deferred through
    Phase 8:** `getPortfolioSnapshot()`'s "today" bucketing was UTC-based
    (`new Date().toISOString().slice(0, 10)`) for `dailyPnl`, plus a SEPARATE

@@ -1,7 +1,7 @@
 import { ReactNode, useEffect, useState } from 'react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { client } from '../api/client';
-import { useAsync } from '../lib/hooks';
+import { useAsync, usePolling } from '../lib/hooks';
 import { useToast } from '../components/ToastContext';
 import { useConfirm } from '../components/ConfirmContext';
 import { RefreshBar } from '../components/RefreshBar';
@@ -1414,28 +1414,46 @@ export default function AutoTradePage() {
   };
 
   const [equitySyncBusy, setEquitySyncBusy] = useState(false);
-  const syncEquityFromBroker = async () => {
+  // `silent` is used by the 1-minute auto-refresh below: same sync, but
+  // without a toast firing every minute regardless of whether equity actually
+  // moved (the manual button click below always wants the toast).
+  const syncEquityFromBroker = async (opts?: { silent?: boolean }) => {
     setEquitySyncBusy(true);
     try {
       const result = await client.syncAutotradeEquity();
       if (!result.ok) {
-        toast(result.error ?? 'Could not sync equity from Webull', { type: 'error' });
+        if (!opts?.silent) toast(result.error ?? 'Could not sync equity from Webull', { type: 'error' });
         return;
       }
       setEquityDraft(result.netLiquidationUsd);
       config.reload();
       refreshLiveData(); // synced equity shifts the dashboard's caps, same as a manual edit
-      const prevLabel =
-        result.previousEquityUsd != null ? `$${result.previousEquityUsd.toLocaleString('en-US')}` : 'unset';
-      toast(`Synced from Webull — ${prevLabel} → $${result.netLiquidationUsd!.toLocaleString('en-US')}`, {
-        type: 'success',
-      });
+      if (!opts?.silent) {
+        const prevLabel =
+          result.previousEquityUsd != null ? `$${result.previousEquityUsd.toLocaleString('en-US')}` : 'unset';
+        toast(`Synced from Webull — ${prevLabel} → $${result.netLiquidationUsd!.toLocaleString('en-US')}`, {
+          type: 'success',
+        });
+      }
     } catch (e) {
-      toast((e as Error).message || 'Could not sync equity from Webull', { type: 'error' });
+      if (!opts?.silent) toast((e as Error).message || 'Could not sync equity from Webull', { type: 'error' });
     } finally {
       setEquitySyncBusy(false);
     }
   };
+
+  // Auto-refresh account equity from Webull every 1 minute instead of
+  // requiring the "Sync from Webull" button — mirrors what the loop tick
+  // already does server-side for accountEquityUsd itself (loop.ts), this just
+  // reflects that in the UI sooner than the next unrelated reload. Skipped
+  // when there's no live account to sync from (same gate as the button), or
+  // while equityDraft has an unsaved manual edit (equityDraft !== the last
+  // value we know the server has), so it never clobbers in-progress typing.
+  usePolling(() => {
+    if (!config.data?.liveAccountId) return;
+    if (equityDraft !== (config.data?.accountEquityUsd ?? undefined)) return;
+    void syncEquityFromBroker({ silent: true });
+  }, 60_000);
 
   const [killBusy, setKillBusy] = useState(false);
   const toggleKillSwitch = async () => {
@@ -1890,8 +1908,8 @@ export default function AutoTradePage() {
               label="Account equity ($)"
               hint={
                 config.data?.liveAccountId
-                  ? 'The risk engine sizes trades and computes its % caps against this. Set manually, or sync it from your live Webull account below.'
-                  : 'The risk engine sizes trades and computes its % caps against this. Set manually — or set a Webull account ID under Live trading below to sync it instead.'
+                  ? 'The risk engine sizes trades and computes its % caps against this. Auto-syncs from your live Webull account every 1 minute — set manually, or sync it now below.'
+                  : 'The risk engine sizes trades and computes its % caps against this. Set manually — or set a Webull account ID under Live trading below to sync it automatically instead.'
               }
             >
               <div className="flex flex-col gap-2">
@@ -1908,7 +1926,7 @@ export default function AutoTradePage() {
                 </div>
                 <button
                   className="btn-ghost self-start text-xs"
-                  onClick={syncEquityFromBroker}
+                  onClick={() => syncEquityFromBroker()}
                   disabled={equitySyncBusy || !config.data?.liveAccountId}
                   title={!config.data?.liveAccountId ? 'Set a Webull account ID under Live trading first' : undefined}
                 >
