@@ -1552,7 +1552,8 @@ Implement a `riskProfile` setting with two presets:
 - Risk per trade: 1% of account equity
 - Max daily drawdown (halt trading): 3%
 - Step-down sizing trigger: after 2 consecutive losing trades (cut size 50%)
-- Max concurrent open positions: 2
+- Max concurrent open positions: 2 *(narrowed 2026-07-10 — see the follow-up
+  below: this is no longer part of the profile preset)*
 - Max aggregate open risk (see below): 2%
 - Max exposure to correlated tickers (capital, not risk): 6% of capital
 - Max trades per day: 6
@@ -1561,7 +1562,8 @@ Implement a `riskProfile` setting with two presets:
 - Risk per trade: 1.5% of account equity
 - Max daily drawdown (halt trading): 5%
 - Step-down sizing trigger: after 2 consecutive losing trades (cut size 50%)
-- Max concurrent open positions: 3
+- Max concurrent open positions: 3 *(narrowed 2026-07-10 — see the follow-up
+  below: this is no longer part of the profile preset)*
 - Max aggregate open risk (see below): 4.5%
 - Max exposure to correlated tickers (capital, not risk): 10% of capital
 - Max trades per day: 10
@@ -1569,6 +1571,28 @@ Implement a `riskProfile` setting with two presets:
 Default to MODERATE. Switching to AGGRESSIVE requires an explicit manual
 confirmation in the UI (not just a config file edit), since it's the
 higher-risk profile.
+
+**Follow-up (2026-07-10) — max concurrent positions is now its own
+user-configurable setting, not baked into the risk-profile preset.**
+Requested directly ("configure the max allowed open positions... currently
+it's hard coded to 3"). The two designs considered were (a) split it into
+independent per-asset caps (a stocks cap and a separate options cap, no
+cross-pooling) or (b) keep today's ONE combined budget (see "CRITICAL: MAX
+AGGREGATE OPEN RISK" and the options phase's own combined-budget note below)
+and just make that single number editable — chosen explicitly by the user.
+`maxConcurrentPositions` moved out of `RiskProfileParams`
+(`services/autotrading/riskProfiles.ts`) onto `AutotradeConfig` itself
+(default 2, matching MODERATE's old baseline so an untouched config's
+behavior doesn't silently change), editable in the Auto-Trade page's
+Configuration section and threaded through `RiskCheckContext` — the same
+place `equity` already comes from config rather than the profile table.
+Switching MODERATE ↔ AGGRESSIVE no longer touches this cap at all, by
+design: silently resetting a value the user explicitly set, just because
+they changed an unrelated profile toggle, would be a worse surprise than
+leaving profile-switching alone. Backtesting gets its own
+`maxConcurrentPositions` input (mirrors `startingEquity`'s existing
+convention — a backtest is a self-contained hypothetical, not coupled to the
+live account's current setting).
 
 ### CRITICAL: MAX AGGREGATE OPEN RISK
 This is distinct from the daily drawdown halt. The daily halt only reacts to

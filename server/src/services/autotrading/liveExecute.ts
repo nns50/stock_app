@@ -498,6 +498,7 @@ export async function runLiveExecution(candidates: { signal: TradeSignal }[]): P
       consecutiveLosses,
       openRisk: runningRisk,
       openPositionsCount: runningCount,
+      maxConcurrentPositions: cfg.maxConcurrentPositions,
       correlatedNotional: correlated,
     };
     const result = evaluateRiskCheck(signal, ctx, profile);

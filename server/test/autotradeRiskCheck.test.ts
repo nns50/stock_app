@@ -31,6 +31,7 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
     consecutiveLosses: 0,
     openRisk: 0,
     openPositionsCount: 0,
+    maxConcurrentPositions: 2,
     correlatedNotional: 0,
     ...overrides,
   };
@@ -199,12 +200,15 @@ describe('evaluateRiskCheck — pure evaluator', () => {
     });
   });
 
-  it('AGGRESSIVE allows a bigger book than MODERATE (sanity check on the profile tables)', () => {
+  it('the concurrent-position cap no longer varies by risk profile — it is user-configured (ctx.maxConcurrentPositions), identical for MODERATE and AGGRESSIVE', () => {
     const aggressive = RISK_PROFILES.AGGRESSIVE;
     const moderateResult = evaluateRiskCheck(signal(), baseCtx({ openPositionsCount: 2 }), MODERATE);
     const aggressiveResult = evaluateRiskCheck(signal(), baseCtx({ openPositionsCount: 2 }), aggressive);
-    expect(moderateResult.ok).toBe(false); // 2 open already hits MODERATE's cap of 2
-    expect(aggressiveResult.ok).toBe(true); // AGGRESSIVE's cap is 3
+    // Same ctx.maxConcurrentPositions (2) either way — switching profile no
+    // longer silently changes a cap the user explicitly set (see
+    // riskProfiles.ts's header comment on why this moved out of the table).
+    expect(findCheck(moderateResult, 'max_concurrent_positions').passed).toBe(false);
+    expect(findCheck(aggressiveResult, 'max_concurrent_positions').passed).toBe(false);
   });
 });
 

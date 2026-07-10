@@ -86,6 +86,10 @@ export interface OptionsBacktestConfig {
   to: string;
   riskProfile: RiskProfileName;
   startingEquity: number;
+  /** Same cap as AutotradeConfig.maxConcurrentPositions, own value here — a
+   *  backtest is a self-contained hypothetical, not coupled to the live
+   *  account's current setting (mirrors startingEquity's existing convention). */
+  maxConcurrentPositions: number;
   screenerConfig?: Partial<ScreenerConfig>;
   optionsDecisionConfig?: Partial<OptionsDecisionConfig>;
 }
@@ -637,6 +641,7 @@ export async function simulateOptionsBacktest(
         consecutiveLosses,
         openRisk: runningRisk,
         openPositionsCount: runningCount,
+        maxConcurrentPositions: cfg.maxConcurrentPositions,
         correlatedNotional: correlated,
       };
       const result = evaluateOptionsRiskCheck(

@@ -287,6 +287,7 @@ export async function runPaperExecution(
       consecutiveLosses,
       openRisk: runningRisk,
       openPositionsCount: runningCount,
+      maxConcurrentPositions: config.maxConcurrentPositions,
       correlatedNotional: correlated,
     };
     const result = evaluateRiskCheck(signal, ctx, profile);

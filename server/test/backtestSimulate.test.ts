@@ -48,6 +48,7 @@ function baseConfig(overrides: Partial<BacktestConfig> = {}): BacktestConfig {
     to: '2024-03-01',
     riskProfile: 'MODERATE',
     startingEquity: STARTING_EQUITY,
+    maxConcurrentPositions: 2,
     screenerConfig: RELAXED,
     ...overrides,
   };
@@ -266,9 +267,9 @@ describe('simulateBacktest', () => {
   it('blocks a same-day candidate via max_trades_per_day once enough positions have filled today', () => {
     const original = { ...RISK_PROFILES.MODERATE };
     // Generous on every other cap so max_trades_per_day is unambiguously the
-    // one doing the blocking below.
+    // one doing the blocking below. maxConcurrentPositions is a BacktestConfig
+    // field now (passed to baseConfig() below), not part of RISK_PROFILES.
     Object.assign(RISK_PROFILES.MODERATE, {
-      maxConcurrentPositions: 100,
       maxAggregateOpenRiskPct: 100,
       maxCorrelatedExposurePct: 100,
       maxDailyDrawdownPct: 100,
@@ -300,7 +301,7 @@ describe('simulateBacktest', () => {
       ]);
       const report = simulateBacktest(
         historyBySymbol,
-        baseConfig({ symbols: ['TDAYA', 'TDAYD'], from: day0, to: day2 }),
+        baseConfig({ symbols: ['TDAYA', 'TDAYD'], from: day0, to: day2, maxConcurrentPositions: 100 }),
       );
       // Only TDAYA's trade should exist — TDAYD's first-ever eligible signal
       // (day1) is blocked by max_trades_per_day, not approved as a second

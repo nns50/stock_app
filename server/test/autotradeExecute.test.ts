@@ -56,6 +56,7 @@ describe('attemptPaperEntry', () => {
       consecutiveLosses: 0,
       openRisk: 0,
       openPositionsCount: 0,
+      maxConcurrentPositions: 2,
       correlatedNotional: 0,
     },
     RISK_PROFILES.MODERATE,
@@ -159,11 +160,12 @@ describe('runPaperExecution', () => {
   });
 
   it('threads same-batch approvals into the running risk/count for the NEXT candidate in the same call', async () => {
-    // AGGRESSIVE has room for 3, but the aggregate-open-risk cap (4.5% = $4500)
-    // is what should bind once two $1500-risk positions (1.5% each) are already
-    // running — proving the SECOND approval's risk is counted before the THIRD
-    // candidate is evaluated, not just the pre-call snapshot.
-    setAutotradeConfig({ riskProfile: 'AGGRESSIVE' });
+    // maxConcurrentPositions raised to 3 so it's not what's binding here — the
+    // aggregate-open-risk cap (4.5% = $4500) is what should bind once two
+    // $1500-risk positions (1.5% each) are already running — proving the
+    // SECOND approval's risk is counted before the THIRD candidate is
+    // evaluated, not just the pre-call snapshot.
+    setAutotradeConfig({ riskProfile: 'AGGRESSIVE', maxConcurrentPositions: 3 });
     mockGetProvider.mockReturnValue(quoteReturning({ AAA: 100, BBB: 100, CCC: 100 }) as never);
     // 1.5% risk/trade * $100k = $1500 budget each; $10 stop distance -> 150 shares, $1500 risk.
     const sig = (sym: string) => signal({ symbol: sym, entry: 100, stop: 90, target: 130 });

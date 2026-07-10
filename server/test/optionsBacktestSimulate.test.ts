@@ -53,6 +53,7 @@ function baseConfig(overrides: Partial<OptionsBacktestConfig> = {}): OptionsBack
     to: '2024-03-01',
     riskProfile: 'MODERATE',
     startingEquity: STARTING_EQUITY,
+    maxConcurrentPositions: 2,
     screenerConfig: RELAXED,
     ...overrides,
   };

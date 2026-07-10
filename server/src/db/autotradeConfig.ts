@@ -41,6 +41,13 @@ export interface AutotradeConfig {
    *  services/autotrading/riskCheck.ts) — set this manually. Null until set;
    *  the risk engine fails closed (blocks everything) while it's unset. */
   accountEquityUsd: number | null;
+  /** ONE combined budget for open positions — equity and options positions
+   *  share this same pool (see services/autotrading/optionsRiskCheck.ts's
+   *  header comment on why: the spec calls for one combined risk budget, not
+   *  separate pools). Used to live baked into RiskProfileParams, swinging with
+   *  MODERATE/AGGRESSIVE; now directly configurable so switching profile
+   *  doesn't silently change a cap the user explicitly set. */
+  maxConcurrentPositions: number;
 
   // --- Phase 8: live-trading gate (docs/AUTOTRADING_SPEC.md) -----------------
 
@@ -150,6 +157,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     killSwitch: false,
     riskProfile: 'MODERATE',
     accountEquityUsd: null,
+    maxConcurrentPositions: 2,
     liveTradingEnabled: false,
     liveEnabledAt: null,
     liveAccountId: null,
@@ -193,6 +201,13 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     const n = Number(v);
     return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
   };
+  // At least 1 — unlike posInt, 0 isn't a valid "unlimited" or "off" reading
+  // here; it would silently block every entry forever without the clarity of
+  // the kill switch, which already exists for that.
+  const posIntMin1 = (v: unknown, fallback: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 1 ? Math.floor(n) : fallback;
+  };
   const accountId =
     input.liveAccountId === null
       ? null
@@ -211,6 +226,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     riskProfile:
       input.riskProfile === 'AGGRESSIVE' || input.riskProfile === 'MODERATE' ? input.riskProfile : d.riskProfile,
     accountEquityUsd: equity,
+    maxConcurrentPositions: posIntMin1(input.maxConcurrentPositions, d.maxConcurrentPositions),
     liveTradingEnabled: typeof input.liveTradingEnabled === 'boolean' ? input.liveTradingEnabled : d.liveTradingEnabled,
     liveEnabledAt: enabledAt,
     liveAccountId: accountId,

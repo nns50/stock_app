@@ -198,12 +198,8 @@ export function evaluateOptionsRiskCheck(
   const tradesOk = ctx.tradesToday < profile.maxTradesPerDay;
   check('max_trades_per_day', tradesOk, `${ctx.tradesToday} placed vs ${profile.maxTradesPerDay}/day`);
 
-  const positionsOk = ctx.openPositionsCount < profile.maxConcurrentPositions;
-  check(
-    'max_concurrent_positions',
-    positionsOk,
-    `${ctx.openPositionsCount} open vs cap ${profile.maxConcurrentPositions}`,
-  );
+  const positionsOk = ctx.openPositionsCount < ctx.maxConcurrentPositions;
+  check('max_concurrent_positions', positionsOk, `${ctx.openPositionsCount} open vs cap ${ctx.maxConcurrentPositions}`);
 
   // The combined budget itself: ctx.openRisk already carries real equity
   // positions' risk PLUS anything (equity or options) approved earlier in
@@ -284,6 +280,7 @@ export async function runOptionsRiskCheck(
       consecutiveLosses: snapshot.consecutiveLosses,
       openRisk: runningRisk,
       openPositionsCount: runningCount,
+      maxConcurrentPositions: config.maxConcurrentPositions,
       correlatedNotional: correlated,
     };
     const result = evaluateOptionsRiskCheck(signal, ctx, profile);

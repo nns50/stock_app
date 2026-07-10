@@ -78,6 +78,7 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
     consecutiveLosses: 0,
     openRisk: 0,
     openPositionsCount: 0,
+    maxConcurrentPositions: 2,
     correlatedNotional: 0,
     ...overrides,
   };

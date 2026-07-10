@@ -51,6 +51,7 @@ function baseConfig(overrides: Partial<CombinedBacktestConfig> = {}): CombinedBa
     to: '2024-03-01',
     riskProfile: 'MODERATE',
     startingEquity: STARTING_EQUITY,
+    maxConcurrentPositions: 2,
     screenerConfig: RELAXED,
     ...overrides,
   };
@@ -152,9 +153,10 @@ describe('simulateCombinedBacktest', () => {
     const original = { ...RISK_PROFILES.MODERATE };
     beforeEach(() => {
       // Generous on every other cap so max_aggregate_open_risk is
-      // unambiguously the one doing the blocking below.
+      // unambiguously the one doing the blocking below. maxConcurrentPositions
+      // is a CombinedBacktestConfig field now (passed to baseConfig() at each
+      // call site below), not part of RISK_PROFILES.
       Object.assign(RISK_PROFILES.MODERATE, {
-        maxConcurrentPositions: 100,
         maxCorrelatedExposurePct: 100,
         maxDailyDrawdownPct: 100,
         maxTradesPerDay: 100,
@@ -203,7 +205,7 @@ describe('simulateCombinedBacktest', () => {
       const report = await simulateCombinedBacktest(
         historyBySymbol,
         contractsBySymbol,
-        baseConfig({ symbols: ['AAA', 'BBB'], from: day0, to: day3 }),
+        baseConfig({ symbols: ['AAA', 'BBB'], from: day0, to: day3, maxConcurrentPositions: 100 }),
       );
 
       // AAA's equity position opened successfully (it's the FIRST approval,
@@ -272,7 +274,7 @@ describe('simulateCombinedBacktest', () => {
       const report = await simulateCombinedBacktest(
         historyBySymbol,
         contractsBySymbol,
-        baseConfig({ symbols: ['BBB', 'AAA'], from: day0, to: day3 }),
+        baseConfig({ symbols: ['BBB', 'AAA'], from: day0, to: day3, maxConcurrentPositions: 100 }),
       );
 
       expect(report.optionsTrades.some((t) => t.symbol === 'BBB')).toBe(true);
@@ -377,9 +379,9 @@ describe('simulateCombinedBacktest', () => {
       const original = { ...RISK_PROFILES.MODERATE };
       // Generous on every other cap so max_aggregate_open_risk is
       // unambiguously the one doing the blocking (same convention as the
-      // "CRITICAL" describe block above).
+      // "CRITICAL" describe block above). maxConcurrentPositions is passed to
+      // baseConfig() below instead — see that block's comment for why.
       Object.assign(RISK_PROFILES.MODERATE, {
-        maxConcurrentPositions: 100,
         maxCorrelatedExposurePct: 100,
         maxDailyDrawdownPct: 100,
         maxTradesPerDay: 100,
@@ -425,6 +427,7 @@ describe('simulateCombinedBacktest', () => {
             symbols: ['AAA', 'BBB'],
             from: day0,
             to: day1,
+            maxConcurrentPositions: 100,
             optionsDecisionConfig: { strategyType: 'debit_spread' },
           }),
         );

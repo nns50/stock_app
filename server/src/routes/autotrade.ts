@@ -53,6 +53,8 @@ const configBody = z.object({
   /** Account equity the risk engine sizes against; null clears it (fails
    *  closed until set again). */
   accountEquityUsd: z.number().positive().nullable().optional(),
+  /** ONE combined open-position budget shared by equity + options. */
+  maxConcurrentPositions: z.number().int().min(1).optional(),
   // --- Phase 8: live trading -------------------------------------------------
   liveTradingEnabled: z.boolean().optional(),
   /** Required (and must exactly match LIVE_TRADING_CONFIRMATION_PHRASE) only
@@ -104,6 +106,7 @@ autotradeRouter.put(
     if (body.enabled !== undefined) patch.enabled = body.enabled;
     if (body.riskProfile !== undefined) patch.riskProfile = body.riskProfile;
     if (body.accountEquityUsd !== undefined) patch.accountEquityUsd = body.accountEquityUsd;
+    if (body.maxConcurrentPositions !== undefined) patch.maxConcurrentPositions = body.maxConcurrentPositions;
     if (body.liveMaxOrderUsd !== undefined) patch.liveMaxOrderUsd = body.liveMaxOrderUsd;
     if (body.liveMaxDailyLossUsd !== undefined) patch.liveMaxDailyLossUsd = body.liveMaxDailyLossUsd;
     if (body.liveMaxOrdersPerDay !== undefined) patch.liveMaxOrdersPerDay = body.liveMaxOrdersPerDay;
@@ -450,6 +453,7 @@ const backtestBodyBase = z.object({
   to: dateStr,
   riskProfile: z.enum(['MODERATE', 'AGGRESSIVE']),
   startingEquity: z.number().positive(),
+  maxConcurrentPositions: z.number().int().min(1),
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   decisionConfig: z.record(z.string(), z.unknown()).optional(),
 });
@@ -474,6 +478,7 @@ autotradeRouter.post(
       to: body.to,
       riskProfile: body.riskProfile,
       startingEquity: body.startingEquity,
+      maxConcurrentPositions: body.maxConcurrentPositions,
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
     });
@@ -492,6 +497,7 @@ autotradeRouter.post(
       splitDate: body.splitDate,
       riskProfile: body.riskProfile,
       startingEquity: body.startingEquity,
+      maxConcurrentPositions: body.maxConcurrentPositions,
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
     });
@@ -510,6 +516,7 @@ const optionsBacktestBodyBase = z.object({
   to: dateStr,
   riskProfile: z.enum(['MODERATE', 'AGGRESSIVE']),
   startingEquity: z.number().positive(),
+  maxConcurrentPositions: z.number().int().min(1),
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   optionsDecisionConfig: z.record(z.string(), z.unknown()).optional(),
 });
@@ -534,6 +541,7 @@ autotradeRouter.post(
       to: body.to,
       riskProfile: body.riskProfile,
       startingEquity: body.startingEquity,
+      maxConcurrentPositions: body.maxConcurrentPositions,
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
     });
@@ -552,6 +560,7 @@ autotradeRouter.post(
       splitDate: body.splitDate,
       riskProfile: body.riskProfile,
       startingEquity: body.startingEquity,
+      maxConcurrentPositions: body.maxConcurrentPositions,
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
     });
@@ -588,6 +597,7 @@ const combinedBacktestBodyBase = z.object({
   to: dateStr,
   riskProfile: z.enum(['MODERATE', 'AGGRESSIVE']),
   startingEquity: z.number().positive(),
+  maxConcurrentPositions: z.number().int().min(1),
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   decisionConfig: z.record(z.string(), z.unknown()).optional(),
   optionsDecisionConfig: z.record(z.string(), z.unknown()).optional(),
@@ -613,6 +623,7 @@ autotradeRouter.post(
       to: body.to,
       riskProfile: body.riskProfile,
       startingEquity: body.startingEquity,
+      maxConcurrentPositions: body.maxConcurrentPositions,
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
@@ -632,6 +643,7 @@ autotradeRouter.post(
       splitDate: body.splitDate,
       riskProfile: body.riskProfile,
       startingEquity: body.startingEquity,
+      maxConcurrentPositions: body.maxConcurrentPositions,
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,

@@ -1056,6 +1056,8 @@ export interface AutotradeConfig {
   killSwitch: boolean;
   riskProfile: AutotradeRiskProfile;
   accountEquityUsd: number | null;
+  /** ONE combined open-position budget shared by equity + options. */
+  maxConcurrentPositions: number;
 
   // --- Phase 8: live trading ---
   liveTradingEnabled: boolean;
@@ -1301,6 +1303,7 @@ export interface BacktestRequest {
   to: string;
   riskProfile: AutotradeRiskProfile;
   startingEquity: number;
+  maxConcurrentPositions: number;
 }
 
 export interface WalkForwardRequest extends BacktestRequest {
@@ -1367,6 +1370,7 @@ export interface OptionsBacktestRequest {
   to: string;
   riskProfile: AutotradeRiskProfile;
   startingEquity: number;
+  maxConcurrentPositions: number;
   optionsDecisionConfig?: { strategyType?: AutotradeOptionsStrategyType };
 }
 
@@ -1411,6 +1415,7 @@ export interface CombinedBacktestRequest {
   to: string;
   riskProfile: AutotradeRiskProfile;
   startingEquity: number;
+  maxConcurrentPositions: number;
   optionsDecisionConfig?: { strategyType?: AutotradeOptionsStrategyType };
 }
 
