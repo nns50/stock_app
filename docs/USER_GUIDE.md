@@ -681,7 +681,10 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   and R-multiple — stock and option positions both render here, with option contract
   details (strike/type/expiration) shown inline. This is the dedicated place to see your
   real autotrade fills at a glance; they also appear, unmarked, mixed in with your manual
-  trades on the Positions/Journal pages and the Trade page's Orders panel.
+  trades on the Positions/Journal pages and the Trade page's Orders panel. Kept accurate
+  every cycle by a broker-truth check (diffs against what Webull actually shows open) as
+  a backstop for anything a specific order's own status doesn't catch on its own — no
+  separate setup needed, unlike the general Webull position sync under Settings.
 - **Live options trading** — a checkbox nested under **Live trading** above (only shown
   once live trading itself is enabled) that lets the loop place real **single-leg**
   (long call/put) and **debit-spread** options orders through Webull — no second

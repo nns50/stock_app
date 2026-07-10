@@ -26,6 +26,7 @@ vi.mock('../src/services/autotrading/liveOptionsExecute', () => ({
   checkLiveOptionsExits: vi.fn(),
   reconcileLiveOptionsOrders: vi.fn(),
 }));
+vi.mock('../src/providers/webull/positions', () => ({ runWebullPositionsSync: vi.fn() }));
 vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/autotrading/executionGuards')>();
   return { ...actual, checkSessionWindow: vi.fn(), getMarketAtrPct: vi.fn() };
@@ -57,6 +58,7 @@ import {
   checkLiveOptionsExits,
   reconcileLiveOptionsOrders,
 } from '../src/services/autotrading/liveOptionsExecute';
+import { runWebullPositionsSync } from '../src/providers/webull/positions';
 import { checkSessionWindow, getMarketAtrPct } from '../src/services/autotrading/executionGuards';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { runAutotradeLoopTick, startAutotradeLoop, stopAutotradeLoop } from '../src/services/autotrading/loop';
@@ -82,6 +84,7 @@ const mockSyncEquity = vi.mocked(syncAccountEquityFromBroker);
 const mockLiveOptionsExecute = vi.mocked(runLiveOptionsExecution);
 const mockCheckLiveOptionsExits = vi.mocked(checkLiveOptionsExits);
 const mockReconcileLiveOptions = vi.mocked(reconcileLiveOptionsOrders);
+const mockPositionsSync = vi.mocked(runWebullPositionsSync);
 const mockSessionWindow = vi.mocked(checkSessionWindow);
 const mockMarketAtr = vi.mocked(getMarketAtrPct);
 const mockLogEvent = vi.mocked(logAutotradeEvent);
@@ -170,6 +173,15 @@ beforeEach(() => {
   mockLiveExecute.mockReset();
   mockReconcileLive.mockReset().mockResolvedValue([]);
   mockSyncEquity.mockReset().mockResolvedValue({ ok: false, error: 'No liveAccountId configured' });
+  mockPositionsSync.mockReset().mockResolvedValue({
+    ok: true,
+    accountId: 'ACC1',
+    closed: 0,
+    closedSymbols: [],
+    imported: 0,
+    skipped: 0,
+    unmapped: 0,
+  });
   mockLiveOptionsExecute.mockReset();
   mockCheckLiveOptionsExits.mockReset().mockResolvedValue([]);
   mockReconcileLiveOptions.mockReset().mockResolvedValue([]);
@@ -256,6 +268,46 @@ describe('runAutotradeLoopTick', () => {
 
   it('a broker hiccup during the equity sync does not stop exits, reconcile, or entries from running', async () => {
     mockSyncEquity.mockRejectedValue(new Error('Webull timeout'));
+    mockCheckExits.mockResolvedValue([{ symbol: 'AAPL', closed: true }]);
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(summary.exitsClosed).toBe(1);
+    expect(summary.ranEntries).toBe(true);
+    expect(summary.entriesOpened).toBe(1);
+  });
+
+  it('backstops reconcileLiveOrders with a live position-truth sync against liveAccountId, every tick', async () => {
+    // liveAccountId set but liveTradingEnabled left off — proves this runs
+    // independent of whether live entries are actually active, same as the
+    // equity sync above (the account id alone is enough; nothing here places
+    // an order).
+    setAutotradeConfig({ enabled: false, liveAccountId: 'ACC1' });
+    const summary = await runAutotradeLoopTick();
+    expect(mockPositionsSync).toHaveBeenCalledTimes(1);
+    expect(mockPositionsSync).toHaveBeenCalledWith('ACC1');
+    expect(summary.ranEntries).toBe(false);
+  });
+
+  it('skips the live position-truth sync when no liveAccountId is configured', async () => {
+    setAutotradeConfig({ enabled: false }); // default beforeEach state: liveAccountId null
+    await runAutotradeLoopTick();
+    expect(mockPositionsSync).not.toHaveBeenCalled();
+  });
+
+  it('a broker hiccup during the live position-truth sync does not stop exits, reconcile, or entries from running', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockPositionsSync.mockRejectedValue(new Error('Webull timeout'));
     mockCheckExits.mockResolvedValue([{ symbol: 'AAPL', closed: true }]);
     mockScreen.mockResolvedValue({
       generatedAt: Date.now(),

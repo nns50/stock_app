@@ -16,6 +16,7 @@ import { runLiveExecution, reconcileLiveOrders, syncAccountEquityFromBroker } fr
 import { runLiveOptionsExecution, checkLiveOptionsExits, reconcileLiveOptionsOrders } from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures } from './liveFailureAlert';
 import { checkSessionWindow, checkVolatility, defaultVolatilityFilterConfig, getMarketAtrPct } from './executionGuards';
+import { runWebullPositionsSync } from '../../providers/webull/positions';
 
 // ---------------------------------------------------------------------------
 // The autonomous execution loop (docs/AUTOTRADING_SPEC.md — EXECUTION LOOP):
@@ -27,9 +28,10 @@ import { checkSessionWindow, checkVolatility, defaultVolatilityFilterConfig, get
 // alive on its own.
 //
 // The background timer ticks unconditionally — exit-checking, live-order
-// reconcile, and the equity sync from the broker (below) must run every cycle
-// regardless of any gate, so the outer loop() no longer gates on those;
-// runAutotradeLoopTick() does its own, more granular gating.
+// reconcile, the live position-truth backstop, and the equity sync from the
+// broker (below) must run every cycle regardless of any gate, so the outer
+// loop() no longer gates on those; runAutotradeLoopTick() does its own, more
+// granular gating.
 //
 // Phase 8: paper and live execution are INDEPENDENT — screening/deciding runs
 // once per cycle whenever EITHER is active, then each of runPaperExecution()/
@@ -232,6 +234,27 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     const exitOutcomes = await checkPaperExits();
     const optionsExitOutcomes = await checkOptionsPaperExits();
     const liveReconcileOutcomes = await reconcileLiveOrders();
+    // Backstop for the order-based reconcile just above: reconcileLiveOrders()
+    // only detects an exit via the SPECIFIC bracket order it placed and is
+    // tracking (webullOrderStatus() on that one order's idempotencyKey) — an
+    // ambiguous broker response (both exit legs reporting FILLED) or a close
+    // that happened some other way (e.g. Webull-side auto-liquidation) leaves
+    // the position open rather than guessing, by design. This diffs autotrade's
+    // OWN liveAccountId against Webull's actual live holdings the same way
+    // webullPositionsScheduler.ts's background sync does for the Positions
+    // page — reusing that exact, already-tested logic — so autotrade's live
+    // positions tile stays accurate WITHOUT depending on that separate,
+    // independently-configured Settings-page feature also being set up for
+    // the same account (confirmed missing in practice: the two account-id
+    // fields are entered independently and nothing keeps them in sync).
+    // No-ops when liveAccountId isn't set; caught so a broker hiccup here
+    // can't take down anything else in this tick.
+    try {
+      const liveCfg = getAutotradeConfig();
+      if (liveCfg.liveAccountId) await runWebullPositionsSync(liveCfg.liveAccountId);
+    } catch (e) {
+      console.error('[autotrade-loop] live position-truth sync failed:', (e as Error).message);
+    }
     // Reconcile before checking for NEW triggers: catches up on anything an
     // earlier cycle already placed (an entry that filled, an exit that
     // filled) so a position closed by reconcile this same tick is already

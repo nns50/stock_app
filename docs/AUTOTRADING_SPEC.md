@@ -937,6 +937,35 @@ starts.
      `routes/positions.ts` into `services/quotes.ts` so both routes share one
      stock/option price-resolution implementation instead of two.
 
+     **Fixed (2026-07-10) — the Live positions table could go permanently stale,
+     independent of `webullPositionsScheduler.ts`.** Reported after live use: entries
+     and closes that both showed correctly on the Positions page were missing/stuck on
+     the Auto-Trade page's own Live positions table, and a manual refresh didn't help —
+     confirming it wasn't a display/polling issue but the underlying `positions` rows
+     themselves. Root cause: `reconcileLiveOrders()` only detects an exit via the
+     *specific* bracket order it placed and is tracking — by design, per the reviewer-2
+     finding above, two exit legs both reporting FILLED is left open rather than
+     guessed, and any close that happens some other way (Webull-side auto-liquidation,
+     an unattributable broker response) is never detected at all. The Positions page
+     stayed accurate only because `webullPositionsScheduler.ts`'s background sync
+     independently diffs the journal against Webull's actual holdings and closes the
+     gap — but that scheduler's account id is a *separate* Settings-page field from
+     `AutotradeConfig.liveAccountId`, entered independently, with nothing keeping them
+     in sync; autotrade's own live positions silently had no such backstop unless a
+     user happened to also configure that unrelated feature for the same account.
+     `runAutotradeLoopTick()` now calls `runWebullPositionsSync(liveAccountId)` itself,
+     right after `reconcileLiveOrders()` each cycle — the exact same, already-tested
+     diff-and-close/import logic the scheduler uses, reused wholesale rather than
+     duplicated, but driven by autotrade's own correctly-configured account instead of
+     depending on a separate feature also being set up. Order-based reconcile still runs
+     first and stays authoritative when it *can* attribute a fill (a real broker price,
+     not an estimate); this is purely a backstop for what it can't. No-ops when
+     `liveAccountId` isn't set; wrapped in its own try/catch so a broker hiccup here
+     can't take down exits, reconcile, or entries. Options live positions
+     (`autotrade_live_options_positions`) are a separate table this doesn't cover — they
+     have no equivalent backstop yet, a known gap for a future look, not something this
+     fix addresses.
+
      **Follow-up, added 2026-07-04 — autotrade-specific alerting.** Before this, the
      only way to learn a live order had fired, or that the kill switch had engaged,
      was to have the Auto-Trade page open. Both events now push a best-effort
