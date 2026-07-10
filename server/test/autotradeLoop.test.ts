@@ -247,6 +247,10 @@ describe('runAutotradeLoopTick', () => {
     setAutotradeConfig({ enabled: false }); // paper off, live never configured either
     const summary = await runAutotradeLoopTick();
     expect(mockSyncEquity).toHaveBeenCalledTimes(1);
+    // log: false — mark-to-market drifts the balance on nearly every tick, so
+    // the automatic sync must not flood Recent Activity with an equity_synced
+    // entry every cycle the way the manual "Sync from Webull" button does.
+    expect(mockSyncEquity).toHaveBeenCalledWith({ log: false });
     expect(summary.ranEntries).toBe(false);
   });
 

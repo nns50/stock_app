@@ -252,6 +252,19 @@ describe('syncAccountEquityFromBroker', () => {
     const events = listAutotradeEvents({ stage: 'config' });
     expect(events.find((e) => e.action === 'equity_synced')).toBeUndefined();
   });
+
+  it('{ log: false } still syncs the value but skips the journal entry, even though it changed', async () => {
+    // The automatic per-tick sync (loop.ts) passes this — net liquidation
+    // drifts with mark-to-market on nearly every once-a-minute check, so
+    // logging on every change there would flood Recent Activity with noise.
+    setAutotradeConfig({ liveAccountId: 'ACC1', accountEquityUsd: 50_000 });
+    mockAccountState.mockResolvedValue({ ...okAccountState, netLiquidationUsd: 74_123.45 });
+    const result = await syncAccountEquityFromBroker({ log: false });
+    expect(result).toMatchObject({ ok: true, previousEquityUsd: 50_000, netLiquidationUsd: 74_123.45 });
+    expect(getAutotradeConfig().accountEquityUsd).toBe(74_123.45); // still synced
+    const events = listAutotradeEvents({ stage: 'config' });
+    expect(events.find((e) => e.action === 'equity_synced')).toBeUndefined(); // but not journaled
+  });
 });
 
 describe('attemptLiveEntry', () => {

@@ -250,8 +250,16 @@ export interface EquitySyncResult {
  * liveTradingEnabled/either kill switch — those gate order placement, not
  * reading a balance, so equity can be synced and reviewed before ever going
  * live.
+ *
+ * `opts.log` (default true) gates the `equity_synced` journal entry on an
+ * actual change. Left on for the manual "Sync from Webull" button — an
+ * occasional, deliberate action worth a record. The automatic per-tick sync
+ * (loop.ts) passes `log: false`: net liquidation value drifts with mark-to-
+ * market on essentially every check once a minute, so logging on any change
+ * there would flood the Recent Activity feed's fixed-size window with equity
+ * noise, crowding out the screen/decide/execute events it exists to surface.
  */
-export async function syncAccountEquityFromBroker(): Promise<EquitySyncResult> {
+export async function syncAccountEquityFromBroker(opts?: { log?: boolean }): Promise<EquitySyncResult> {
   const cfg = getAutotradeConfig();
   const accountId = cfg.liveAccountId;
   if (!accountId) {
@@ -266,7 +274,7 @@ export async function syncAccountEquityFromBroker(): Promise<EquitySyncResult> {
 
   const previousEquityUsd = cfg.accountEquityUsd;
   const next = setAutotradeConfig({ accountEquityUsd: acct.netLiquidationUsd });
-  if (next.accountEquityUsd !== previousEquityUsd) {
+  if ((opts?.log ?? true) && next.accountEquityUsd !== previousEquityUsd) {
     logAutotradeEvent({
       stage: 'config',
       action: 'equity_synced',
