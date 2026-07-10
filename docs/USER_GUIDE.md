@@ -72,6 +72,17 @@ with its primary actions on the right.
 sort by any column — click a header to sort, click again to flip the direction (blanks
 always sort last).
 
+**Collapsible tiles:** most titled sections — across Today, Screener, Watchlist, Options,
+Trade, Positions, Journal, Alerts, Auto-Trade, Settings, and this guide's companion About
+page — click the header (the ▾/▸ chevron) to collapse or expand it, handy for hiding
+sections you don't need right now. Each tile remembers its own collapsed/expanded state
+in your browser (per tile, not per page), so it stays that way next time you load the
+page. A handful of sections are deliberately left as plain, always-open cards instead —
+primary content you're actively working in (an order form, an option chain, a strategy's
+leg builder), transient results tied to a single click (a dry-run preview, a "just
+triggered" banner), and sections that already have their own show/hide toggle (Screener's
+"Filtered out" and "Skipped" lists).
+
 **Keyboard shortcuts:** press `?` anytime for the cheat sheet. Quick-nav GitHub-style —
 `g` then `t`/`s`/`w`/`o`/`p`/`j`/`a` jumps to Today / Screener / Watch / Options /
 Positions / Journal / Alerts. `n` opens **Log trade** from anywhere, `⌘K` opens the
@@ -99,11 +110,9 @@ If the app ever looks out of date, check that the footer build matches the lates
 
 Your at-a-glance morning screen.
 
-- **Collapsible tiles:** click a tile's header (the ▾/▸ chevron) to collapse or expand
-  it — handy for hiding sections you don't check every day. Each tile remembers its own
-  collapsed/expanded state in your browser, so it stays that way next time you load the
-  page. Applies to **Today's setups**, **Market movers**, **Needs attention**,
-  **Watchlist**, **Upcoming expirations**, and **Latest screener snapshot**.
+- **Collapsible tiles:** every section below — **Today's setups**, **Market movers**,
+  **Needs attention**, **Watchlist**, **Upcoming expirations**, and **Latest screener
+  snapshot** — collapses independently (see "The interface" above).
 - **Stat tiles:** Open P&L, Unrealized, Open positions, Gross exposure, and **Needs
   attention** (a count that turns amber when something wants a decision).
 - **Today's setups** — a morning shortlist that **auto-scans once** when you first land

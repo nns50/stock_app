@@ -11,7 +11,7 @@ import {
 } from 'recharts';
 import { client } from '../api/client';
 import { fmtNum, fmtSignedUsd, fmtUsd, pnlClass } from '../lib/format';
-import { Card, ErrorState, Field, NumberInput, StatTile } from './ui';
+import { Card, CollapsibleCard, ErrorState, Field, NumberInput, StatTile } from './ui';
 import { useNavigate } from 'react-router-dom';
 import { isPlaceableStructure, strategyToOrder } from '../lib/tradePrefill';
 import type { StrategyAnalysis, StrategyLeg } from '../api/types';
@@ -250,14 +250,16 @@ export function StrategyBuilder() {
               />
             </div>
 
-            <Card className="p-3">
-              <div className="flex items-center justify-between mb-1 text-xs text-slate-400">
-                <span>Payoff at expiration</span>
-                <span>
+            <CollapsibleCard
+              id="strategyBuilder.payoff"
+              title="Payoff at expiration"
+              action={
+                <span className="text-xs text-slate-400">
                   Breakevens:{' '}
                   {result.breakevens.length ? result.breakevens.map((b) => `$${fmtNum(b)}`).join(', ') : '—'}
                 </span>
-              </div>
+              }
+            >
               <ResponsiveContainer width="100%" height={300}>
                 <ComposedChart data={result.payoff} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
                   <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="2 4" vertical={false} />
@@ -302,10 +304,9 @@ export function StrategyBuilder() {
                   ))}
                 </ComposedChart>
               </ResponsiveContainer>
-            </Card>
+            </CollapsibleCard>
 
-            <Card className="p-3">
-              <div className="text-xs text-slate-400 mb-1">Combined Greeks (per the position)</div>
+            <CollapsibleCard id="strategyBuilder.greeks" title="Combined Greeks (per the position)">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm tabular-nums">
                 <div>
                   <span className="text-slate-500">Δ </span>
@@ -324,7 +325,7 @@ export function StrategyBuilder() {
                   {fmtNum(result.greeks.vega, 3)}
                 </div>
               </div>
-            </Card>
+            </CollapsibleCard>
           </div>
         )}
       </div>

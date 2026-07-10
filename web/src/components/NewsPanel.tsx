@@ -1,7 +1,7 @@
 import { ExternalLink } from 'lucide-react';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
-import { Card, Spinner } from './ui';
+import { CollapsibleCard, Spinner } from './ui';
 
 function timeAgo(iso?: string): string {
   if (!iso) return '';
@@ -21,10 +21,14 @@ export function NewsPanel({ symbol }: { symbol: string }) {
   const items = news.data?.news ?? [];
 
   return (
-    <Card className="p-4">
-      <h3 className="font-medium text-sm mb-3 text-slate-200">
-        News <span className="text-[10px] uppercase tracking-wide text-slate-500 font-normal">Yahoo</span>
-      </h3>
+    <CollapsibleCard
+      id="symbol.news"
+      title={
+        <span>
+          News <span className="text-[10px] uppercase tracking-wide text-slate-500 font-normal">Yahoo</span>
+        </span>
+      }
+    >
       {news.loading ? (
         <Spinner />
       ) : items.length === 0 ? (
@@ -45,6 +49,6 @@ export function NewsPanel({ symbol }: { symbol: string }) {
           ))}
         </ul>
       )}
-    </Card>
+    </CollapsibleCard>
   );
 }

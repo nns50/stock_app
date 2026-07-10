@@ -5,7 +5,7 @@ import { useAsync, useSort } from '../lib/hooks';
 import { fmtNum, fmtPct, fmtUsd } from '../lib/format';
 import {
   Badge,
-  Card,
+  CollapsibleCard,
   EmptyState,
   ErrorState,
   PageHeader,
@@ -164,16 +164,12 @@ export default function PositionsPage() {
         onChange={setStatusFilter}
       />
 
-      {data.loading && !data.data ? (
-        <Card>
+      <CollapsibleCard id="positions.table" title="Positions">
+        {data.loading && !data.data ? (
           <SkeletonTable rows={6} cols={11} />
-        </Card>
-      ) : data.error ? (
-        <Card>
+        ) : data.error ? (
           <ErrorState error={data.error} onRetry={reload} />
-        </Card>
-      ) : data.data && data.data.positions.length === 0 ? (
-        <Card>
+        ) : data.data && data.data.positions.length === 0 ? (
           <EmptyState
             title="No positions yet"
             hint="Log your stock and option trades to track live P&L, realized vs unrealized, and build your journal."
@@ -183,47 +179,47 @@ export default function PositionsPage() {
               </button>
             }
           />
-        </Card>
-      ) : (
-        <Card className="overflow-auto max-h-[70vh]">
-          <table className="w-full table-zebra">
-            <thead className="sticky-thead">
-              <tr>
-                <SortTh label="Symbol" k="symbol" active={sortKey} dir={sortDir} onSort={onSort} />
-                <SortTh label="Side" k="side" active={sortKey} dir={sortDir} onSort={onSort} />
-                <SortTh label="Qty" k="qty" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                <SortTh label="Entry" k="entry" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                <SortTh label="Price" k="price" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                <SortTh label="Cost basis" k="cost" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                <SortTh label="Realized" k="realized" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                <SortTh
-                  label="Unrealized"
-                  k="unrealized"
-                  active={sortKey}
-                  dir={sortDir}
-                  onSort={onSort}
-                  align="right"
-                />
-                <SortTh label="Total P&L" k="total" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                <SortTh label="Return" k="return" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                <th className="th text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedPositions.map((row) => (
-                <PositionRow
-                  key={row.position.id}
-                  row={row}
-                  events={eventsBySym.get(row.position.symbol.toUpperCase())}
-                  onExit={setExitPos}
-                  onEdit={setEditPos}
-                  onDelete={remove}
-                />
-              ))}
-            </tbody>
-          </table>
-        </Card>
-      )}
+        ) : (
+          <div className="overflow-auto max-h-[70vh]">
+            <table className="w-full table-zebra">
+              <thead className="sticky-thead">
+                <tr>
+                  <SortTh label="Symbol" k="symbol" active={sortKey} dir={sortDir} onSort={onSort} />
+                  <SortTh label="Side" k="side" active={sortKey} dir={sortDir} onSort={onSort} />
+                  <SortTh label="Qty" k="qty" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                  <SortTh label="Entry" k="entry" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                  <SortTh label="Price" k="price" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                  <SortTh label="Cost basis" k="cost" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                  <SortTh label="Realized" k="realized" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                  <SortTh
+                    label="Unrealized"
+                    k="unrealized"
+                    active={sortKey}
+                    dir={sortDir}
+                    onSort={onSort}
+                    align="right"
+                  />
+                  <SortTh label="Total P&L" k="total" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                  <SortTh label="Return" k="return" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                  <th className="th text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedPositions.map((row) => (
+                  <PositionRow
+                    key={row.position.id}
+                    row={row}
+                    events={eventsBySym.get(row.position.symbol.toUpperCase())}
+                    onExit={setExitPos}
+                    onEdit={setEditPos}
+                    onDelete={remove}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CollapsibleCard>
 
       <RiskSizingModal open={sizerOpen} onClose={() => setSizerOpen(false)} />
       <ExitModal position={exitPos} onClose={() => setExitPos(null)} onSaved={reload} />
