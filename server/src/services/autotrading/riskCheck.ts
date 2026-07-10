@@ -178,6 +178,10 @@ export interface RiskCheckContext {
   /** Open risk PLUS any signal already approved earlier in the same batch. */
   openRisk: number;
   openPositionsCount: number;
+  /** User-configured cap (AutotradeConfig.maxConcurrentPositions) — ONE
+   *  combined budget shared by equity + options, not a profile preset (see
+   *  riskProfiles.ts). Sourced from config the same way `equity` already is. */
+  maxConcurrentPositions: number;
   correlatedNotional: number;
 }
 
@@ -271,12 +275,8 @@ export function evaluateRiskCheck(
   const tradesOk = ctx.tradesToday < profile.maxTradesPerDay;
   check('max_trades_per_day', tradesOk, `${ctx.tradesToday} placed vs ${profile.maxTradesPerDay}/day`);
 
-  const positionsOk = ctx.openPositionsCount < profile.maxConcurrentPositions;
-  check(
-    'max_concurrent_positions',
-    positionsOk,
-    `${ctx.openPositionsCount} open vs cap ${profile.maxConcurrentPositions}`,
-  );
+  const positionsOk = ctx.openPositionsCount < ctx.maxConcurrentPositions;
+  check('max_concurrent_positions', positionsOk, `${ctx.openPositionsCount} open vs cap ${ctx.maxConcurrentPositions}`);
 
   // CRITICAL: distinct from the daily halt, which only reacts to REALIZED
   // losses after trades close. This is the pre-trade check — sum(size × stop
@@ -350,6 +350,7 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
       consecutiveLosses: snapshot.consecutiveLosses,
       openRisk: runningRisk,
       openPositionsCount: runningCount,
+      maxConcurrentPositions: config.maxConcurrentPositions,
       correlatedNotional: correlated,
     };
     const result = evaluateRiskCheck(signal, ctx, profile);

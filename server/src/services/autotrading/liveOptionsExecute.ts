@@ -588,6 +588,7 @@ export async function runLiveOptionsExecution(
       consecutiveLosses,
       openRisk: runningRisk,
       openPositionsCount: runningCount,
+      maxConcurrentPositions: cfg.maxConcurrentPositions,
       correlatedNotional: correlated,
     };
     const result = evaluateOptionsRiskCheck(signal, ctx, profile);

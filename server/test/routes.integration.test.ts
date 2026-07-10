@@ -883,6 +883,7 @@ describe('autotrade backtest routes (integration)', () => {
     to: '2024-03-01',
     riskProfile: 'MODERATE',
     startingEquity: 100_000,
+    maxConcurrentPositions: 2,
   };
 
   it('runs a plain backtest and reports the real-estate exclusion, with no trades', async () => {
@@ -963,6 +964,7 @@ describe('autotrade options backtest routes (integration)', () => {
     to: '2024-03-01',
     riskProfile: 'MODERATE',
     startingEquity: 100_000,
+    maxConcurrentPositions: 2,
   };
 
   it('runs a plain options backtest and reports the real-estate exclusion, with no trades', async () => {
@@ -1037,6 +1039,7 @@ describe('autotrade combined backtest routes (integration)', () => {
     to: '2024-03-01',
     riskProfile: 'MODERATE',
     startingEquity: 100_000,
+    maxConcurrentPositions: 2,
   };
 
   it('runs a plain combined backtest and reports the real-estate exclusion, with no trades in either book', async () => {

@@ -14,7 +14,6 @@ export interface RiskProfileParams {
   stepDownAfterLosses: number;
   /** % cut to risk-per-trade once step-down is active. */
   stepDownSizeCutPct: number;
-  maxConcurrentPositions: number;
   /** % of equity — sum(size × stop distance) across open + proposed positions. */
   maxAggregateOpenRiskPct: number;
   /** % of equity — capital (not risk) in statistically-correlated tickers. */
@@ -22,13 +21,17 @@ export interface RiskProfileParams {
   maxTradesPerDay: number;
 }
 
+// maxConcurrentPositions used to live here (2 for MODERATE, 3 for AGGRESSIVE)
+// but is now a directly user-configurable field on AutotradeConfig instead —
+// see RiskCheckContext.maxConcurrentPositions — since switching risk profile
+// silently changing a position-count cap the user had explicitly set would be
+// a surprising side effect, not a preset the user asked to bundle in.
 export const RISK_PROFILES: Record<RiskProfileName, RiskProfileParams> = {
   MODERATE: {
     riskPerTradePct: 1,
     maxDailyDrawdownPct: 3,
     stepDownAfterLosses: 2,
     stepDownSizeCutPct: 50,
-    maxConcurrentPositions: 2,
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
     maxTradesPerDay: 6,
@@ -38,7 +41,6 @@ export const RISK_PROFILES: Record<RiskProfileName, RiskProfileParams> = {
     maxDailyDrawdownPct: 5,
     stepDownAfterLosses: 2,
     stepDownSizeCutPct: 50,
-    maxConcurrentPositions: 3,
     maxAggregateOpenRiskPct: 4.5,
     maxCorrelatedExposurePct: 10,
     maxTradesPerDay: 10,

@@ -25,7 +25,8 @@ import { daysToExpiration } from '../../options/blackScholes';
 // each other's), so a combined figure here would misrepresent what's
 // actually enforced. The CAP numbers themselves (maxConcurrentPositions,
 // maxAggregateOpenRisk, etc.) are shared, not duplicated — both pools are
-// governed by the same active risk profile.
+// governed by the same config (maxConcurrentPositions directly; the rest via
+// the active risk profile).
 //
 // Phase 13: options paper positions are the OPPOSITE case from live — since
 // phase 12 made the equity/options combined budget real (runPaperExecution()
@@ -135,7 +136,7 @@ export function getAutotradeDashboard(): AutotradeDashboard {
 
     openPositions: snapshot.openPositions,
     openPositionsCount: snapshot.openPositionsCount + optionsSnapshot.openPositionsCount,
-    maxConcurrentPositions: profile.maxConcurrentPositions,
+    maxConcurrentPositions: config.maxConcurrentPositions,
 
     openRisk: snapshot.openRisk + optionsSnapshot.openRisk,
     maxAggregateOpenRisk: (profile.maxAggregateOpenRiskPct / 100) * equity,

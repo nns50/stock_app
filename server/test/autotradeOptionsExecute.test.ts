@@ -123,6 +123,7 @@ describe('attemptOptionsPaperEntry', () => {
       consecutiveLosses: 0,
       openRisk: 0,
       openPositionsCount: 0,
+      maxConcurrentPositions: 2,
       correlatedNotional: 0,
     },
     RISK_PROFILES.MODERATE,
@@ -203,6 +204,7 @@ describe('attemptOptionsPaperEntry', () => {
         consecutiveLosses: 0,
         openRisk: 0,
         openPositionsCount: 0,
+        maxConcurrentPositions: 2,
         correlatedNotional: 0,
       },
       RISK_PROFILES.MODERATE,
@@ -354,7 +356,7 @@ describe('runOptionsPaperExecution', () => {
   });
 
   it('threads same-batch approvals into the running risk/count for the NEXT candidate in the same call', async () => {
-    setAutotradeConfig({ riskProfile: 'AGGRESSIVE' });
+    setAutotradeConfig({ riskProfile: 'AGGRESSIVE', maxConcurrentPositions: 3 });
     // 1.5% of $100k = $1500 risk budget/trade; a $10-premium contract ->
     // riskPerUnit = 10*100 = $1000/contract -> suggestedQuantity=1, risk=$1000/contract.
     mockGetProvider.mockReturnValue(

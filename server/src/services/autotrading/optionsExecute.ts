@@ -386,6 +386,7 @@ export async function runOptionsPaperExecution(
       consecutiveLosses,
       openRisk: runningRisk,
       openPositionsCount: runningCount,
+      maxConcurrentPositions: config.maxConcurrentPositions,
       correlatedNotional: correlated,
     };
     const result = evaluateOptionsRiskCheck(signal, ctx, profile);

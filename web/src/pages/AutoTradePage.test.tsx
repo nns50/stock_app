@@ -39,6 +39,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     killSwitch: false,
     riskProfile: 'MODERATE',
     accountEquityUsd: 100_000,
+    maxConcurrentPositions: 2,
     liveTradingEnabled: false,
     liveEnabledAt: null,
     liveAccountId: null,
@@ -172,7 +173,7 @@ describe('AutoTradePage', () => {
 
     const equityInput = screen.getByPlaceholderText('e.g. 25000');
     fireEvent.change(equityInput, { target: { value: '50000' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save account equity' }));
 
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ accountEquityUsd: 50_000, confirmAggressive: undefined }),

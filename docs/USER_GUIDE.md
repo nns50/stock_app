@@ -624,18 +624,22 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   "Paper trading" below), the active **risk profile** (`Moderate`, the conservative
   default, or `Aggressive`; switching to
   Aggressive always pops a confirmation dialog explaining what it raises — per-trade
-  risk, the daily drawdown halt, concurrent positions, max aggregate open risk,
-  correlated-ticker exposure, and the daily trade cap — never a silent dropdown change),
+  risk, the daily drawdown halt, max aggregate open risk, correlated-ticker exposure,
+  and the daily trade cap — never a silent dropdown change),
   the **options strategy** the loop builds (`Single leg` — a long call/put, uncapped
   upside, the default — or `Debit spread` — the same long leg plus a further
   out-of-the-money short leg that caps both max loss and max gain; switch anytime, no
-  confirmation needed, unlike the risk-profile change above), and **account equity ($)**
+  confirmation needed, unlike the risk-profile change above), **account equity ($)**
   — what the risk engine sizes trades and computes its % caps against. Type it in
   manually, or click **Sync from Webull** to pull your live account's net liquidation
   value instead (needs a Webull account ID set under **Live trading** below first — the
   sync itself doesn't require live trading to be enabled). Until equity is set one way
   or the other, the risk engine blocks every trade (fails closed rather than guessing).
-  Syncing is on-demand only — there's no automatic background refresh yet. The
+  Syncing is on-demand only — there's no automatic background refresh yet. And
+  **max concurrent positions** — ONE combined open-position budget shared by stocks and
+  options together (a stock position and an option position draw from the same pool);
+  independent of the risk profile, so switching Moderate ↔ Aggressive never silently
+  changes this — set it directly and it applies to paper and live trading alike. The
   **kill switch** button above these settings is a separate, sticky emergency halt —
   engaging it (one click, no confirmation needed, mirroring the same button on the
   **Trade** page) blocks all new entries immediately, regardless of the enabled toggle
@@ -707,7 +711,8 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   polling (off/10s/30s/1m/5m) — defaults to **every 1 minute**, same as everywhere else in
   this app that offers polling; pick **Off** if you'd rather refresh by hand.
 - **Monitoring** — a real-time panel reading the loop's current state directly: active
-  **risk profile**, **open positions** vs. the profile's concurrent-position cap,
+  **risk profile**, **open positions** vs. the configured concurrent-position cap
+  (Configuration's "max concurrent positions," not the risk profile — see above),
   **aggregate open risk** used vs. its $ cap, today's **day P&L** vs. the $ level that
   would trigger the daily-drawdown halt, **trades today** vs. the daily cap, and the
   **consecutive-loss streak** vs. the count that triggers step-down sizing. Every figure
@@ -792,8 +797,9 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   gets screened, regardless of whether the loop itself is enabled.
 - **Backtest & walk-forward** — the validation gate every strategy configuration has to
   clear before it's allowed anywhere near a paper or live order. Give it a symbol list,
-  a date range, a starting equity, and (independently of the Configuration card above)
-  a risk profile, and it replays Screen → Decision → Risk Check day by day over
+  a date range, a starting equity, a max-concurrent-positions cap, and (independently of
+  the Configuration card above, same as the other three) a risk profile, and it replays
+  Screen → Decision → Risk Check day by day over
   historical daily bars — the exact same logic the live loop above uses, so a backtest
   can't tell you something the live system wouldn't actually do. Leave **Out-of-sample
   split** blank for a single-window run, or set it to split the range into an

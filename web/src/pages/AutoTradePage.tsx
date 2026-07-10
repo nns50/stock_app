@@ -1337,6 +1337,7 @@ export default function AutoTradePage() {
   const [riskProfile, setRiskProfile] = useState<AutotradeRiskProfile>('MODERATE');
   const [optionsStrategyType, setOptionsStrategyType] = useState<AutotradeOptionsStrategyType>('single_leg');
   const [equityDraft, setEquityDraft] = useState<number | undefined>();
+  const [maxPositionsDraft, setMaxPositionsDraft] = useState<number | undefined>();
   const [liveAccountIdDraft, setLiveAccountIdDraft] = useState('');
   const [liveMaxOrderUsdDraft, setLiveMaxOrderUsdDraft] = useState<number | undefined>();
   const [liveMaxDailyLossUsdDraft, setLiveMaxDailyLossUsdDraft] = useState<number | undefined>();
@@ -1361,6 +1362,7 @@ export default function AutoTradePage() {
     setRiskProfile(config.data.riskProfile);
     setOptionsStrategyType(config.data.optionsStrategyType);
     setEquityDraft(config.data.accountEquityUsd ?? undefined);
+    setMaxPositionsDraft(config.data.maxConcurrentPositions);
     setLiveAccountIdDraft(config.data.liveAccountId ?? '');
     setLiveMaxOrderUsdDraft(config.data.liveMaxOrderUsd);
     setLiveMaxDailyLossUsdDraft(config.data.liveMaxDailyLossUsd);
@@ -1382,12 +1384,13 @@ export default function AutoTradePage() {
     enabled?: boolean;
     riskProfile?: AutotradeRiskProfile;
     accountEquityUsd?: number | null;
+    maxConcurrentPositions?: number;
     optionsStrategyType?: AutotradeOptionsStrategyType;
   }) => {
     if (patch.riskProfile === 'AGGRESSIVE' && riskProfile !== 'AGGRESSIVE') {
       const ok = await confirm({
         title: 'Switch to AGGRESSIVE?',
-        body: 'Aggressive raises per-trade risk, the daily drawdown halt, concurrent positions, max aggregate open risk, correlated-ticker exposure, and the daily trade cap. This should be a deliberate choice, not a default.',
+        body: 'Aggressive raises per-trade risk, the daily drawdown halt, max aggregate open risk, correlated-ticker exposure, and the daily trade cap. This should be a deliberate choice, not a default. (Max concurrent positions is set separately, below, and isn’t affected by this switch.)',
         confirmLabel: 'Switch to Aggressive',
         danger: true,
       });
@@ -1401,6 +1404,7 @@ export default function AutoTradePage() {
       setEnabled(saved.enabled);
       setRiskProfile(saved.riskProfile);
       setOptionsStrategyType(saved.optionsStrategyType);
+      setMaxPositionsDraft(saved.maxConcurrentPositions);
       config.reload(); // keeps config.data — the equity-not-set warning's source of truth — fresh
       refreshLiveData(); // risk profile / equity changes shift the dashboard's caps, and get journaled
       toast('Auto-trading settings saved', { type: 'success' });
@@ -1620,6 +1624,7 @@ export default function AutoTradePage() {
   const [btSplitDate, setBtSplitDate] = useState('');
   const [btRiskProfile, setBtRiskProfile] = useState<AutotradeRiskProfile>('MODERATE');
   const [btEquity, setBtEquity] = useState<number | undefined>(100_000);
+  const [btMaxPositions, setBtMaxPositions] = useState<number | undefined>(3);
   const [btBusy, setBtBusy] = useState(false);
   const [btErr, setBtErr] = useState<string>();
   const [btResult, setBtResult] = useState<BacktestRunResponse>();
@@ -1642,8 +1647,8 @@ export default function AutoTradePage() {
       setBtErr('Enter at least one symbol');
       return;
     }
-    if (!btFrom || !btTo || !btEquity) {
-      setBtErr('From, to, and starting equity are required');
+    if (!btFrom || !btTo || !btEquity || !btMaxPositions) {
+      setBtErr('From, to, starting equity, and max concurrent positions are required');
       return;
     }
     setBtBusy(true);
@@ -1652,7 +1657,14 @@ export default function AutoTradePage() {
     setBtWfResult(undefined);
     setBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
     try {
-      const body = { symbols, from: btFrom, to: btTo, riskProfile: btRiskProfile, startingEquity: btEquity };
+      const body = {
+        symbols,
+        from: btFrom,
+        to: btTo,
+        riskProfile: btRiskProfile,
+        startingEquity: btEquity,
+        maxConcurrentPositions: btMaxPositions,
+      };
       if (btSplitDate) {
         setBtWfResult(await client.runAutotradeWalkForward({ ...body, splitDate: btSplitDate }));
       } else {
@@ -1686,8 +1698,8 @@ export default function AutoTradePage() {
       setOptBtErr('Enter at least one symbol');
       return;
     }
-    if (!btFrom || !btTo || !btEquity) {
-      setOptBtErr('From, to, and starting equity are required');
+    if (!btFrom || !btTo || !btEquity || !btMaxPositions) {
+      setOptBtErr('From, to, starting equity, and max concurrent positions are required');
       return;
     }
     setOptBtBusy(true);
@@ -1702,6 +1714,7 @@ export default function AutoTradePage() {
         to: btTo,
         riskProfile: btRiskProfile,
         startingEquity: btEquity,
+        maxConcurrentPositions: btMaxPositions,
         // Same Options strategy setting the Configuration card + paper loop
         // use above — a human backtesting wants the SAME shape they've
         // configured live, not a hidden separate default.
@@ -1740,8 +1753,8 @@ export default function AutoTradePage() {
       setCombinedBtErr('Enter at least one symbol');
       return;
     }
-    if (!btFrom || !btTo || !btEquity) {
-      setCombinedBtErr('From, to, and starting equity are required');
+    if (!btFrom || !btTo || !btEquity || !btMaxPositions) {
+      setCombinedBtErr('From, to, starting equity, and max concurrent positions are required');
       return;
     }
     setCombinedBtBusy(true);
@@ -1756,6 +1769,7 @@ export default function AutoTradePage() {
         to: btTo,
         riskProfile: btRiskProfile,
         startingEquity: btEquity,
+        maxConcurrentPositions: btMaxPositions,
         optionsDecisionConfig: { strategyType: optionsStrategyType },
       };
       if (btSplitDate) {
@@ -1885,6 +1899,7 @@ export default function AutoTradePage() {
                   <NumberInput value={equityDraft} onChange={setEquityDraft} placeholder="e.g. 25000" />
                   <button
                     className="btn-ghost shrink-0"
+                    aria-label="Save account equity"
                     onClick={() => saveConfig({ accountEquityUsd: equityDraft ?? null })}
                     disabled={equityDraft === (config.data?.accountEquityUsd ?? undefined)}
                   >
@@ -1898,6 +1913,26 @@ export default function AutoTradePage() {
                   title={!config.data?.liveAccountId ? 'Set a Webull account ID under Live trading first' : undefined}
                 >
                   {equitySyncBusy ? 'Syncing…' : 'Sync from Webull (net liquidation value)'}
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Max concurrent positions"
+              hint="ONE combined budget for open positions — a stock position and an option position draw from the same pool. Applies to paper and live, equity and options alike."
+            >
+              <div className="flex gap-2">
+                <NumberInput value={maxPositionsDraft} onChange={setMaxPositionsDraft} min={1} step={1} />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save max concurrent positions"
+                  onClick={() => maxPositionsDraft != null && saveConfig({ maxConcurrentPositions: maxPositionsDraft })}
+                  disabled={
+                    maxPositionsDraft == null ||
+                    maxPositionsDraft < 1 ||
+                    maxPositionsDraft === config.data?.maxConcurrentPositions
+                  }
+                >
+                  Save
                 </button>
               </div>
             </Field>
@@ -2414,6 +2449,9 @@ export default function AutoTradePage() {
           </Field>
           <Field label="Starting equity ($)">
             <NumberInput value={btEquity} onChange={setBtEquity} placeholder="e.g. 100000" />
+          </Field>
+          <Field label="Max concurrent positions" hint="Independent of the live Configuration cap above.">
+            <NumberInput value={btMaxPositions} onChange={setBtMaxPositions} min={1} step={1} placeholder="e.g. 3" />
           </Field>
           <div className="flex gap-2 flex-wrap">
             <button className="btn-primary" onClick={runBacktest} disabled={btBusy}>
