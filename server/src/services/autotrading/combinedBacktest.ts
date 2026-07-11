@@ -105,6 +105,15 @@ export interface CombinedBacktestConfig extends Partial<BacktestRiskParams> {
    *  on the options leg (which already force-closes via its own separate
    *  time-exit). Omitted or 0 disables it. */
   maxHoldDays?: number;
+  /** Trailing stop / breakeven / partial profit-taking for the EQUITY leg
+   *  only — mirrors backtest.ts's own fields exactly (same defaults, same
+   *  R-multiple-of-original-stop-distance semantics). No effect on the
+   *  options leg. */
+  breakevenTriggerRMultiple?: number;
+  trailStartRMultiple?: number;
+  trailStopRMultiple?: number;
+  partialExitRMultiple?: number;
+  partialExitPct?: number;
   screenerConfig?: Partial<ScreenerConfig>;
   decisionConfig?: Partial<DecisionConfig>;
   optionsDecisionConfig?: Partial<OptionsDecisionConfig>;
@@ -132,6 +141,13 @@ interface OpenEquityPosition {
   entryPrice: number;
   stop: number;
   target: number;
+  /** Snapshot of `stop` at fill time, never mutated again — mirrors
+   *  backtest.ts's own OpenPosition.initialStop. */
+  initialStop: number;
+  /** Best (most favorable) bar CLOSE seen since entry — mirrors
+   *  backtest.ts's own OpenPosition.bestPrice. */
+  bestPrice: number;
+  partialExitTaken: boolean;
   quantity: number;
   riskAmount: number;
   notional: number;
@@ -252,6 +268,9 @@ export async function simulateCombinedBacktest(
           entryPrice: candles![idx].open,
           stop: p.signal.stop,
           target: p.signal.target,
+          initialStop: p.signal.stop,
+          bestPrice: candles![idx].open,
+          partialExitTaken: false,
           quantity: p.quantity,
           riskAmount: p.riskAmount,
           notional: p.notional,
@@ -275,6 +294,7 @@ export async function simulateCombinedBacktest(
         continue;
       }
       const long = pos.side === 'buy';
+      const sign = long ? 1 : -1;
       const stopHit = long ? bar.low <= pos.stop : bar.high >= pos.stop;
       const targetHit = long ? bar.high >= pos.target : bar.low <= pos.target;
       const maxHoldDays = cfg.maxHoldDays ?? 0;
@@ -282,7 +302,6 @@ export async function simulateCombinedBacktest(
       if (stopHit || targetHit || timeHit) {
         const exitReason: SimulatedTrade['exitReason'] = stopHit ? 'stop' : targetHit ? 'target' : 'time_exit';
         const exitPrice = stopHit ? pos.stop : targetHit ? pos.target : bar.close;
-        const sign = long ? 1 : -1;
         const pnl = (exitPrice - pos.entryPrice) * pos.quantity * sign;
         equityTrades.push({
           symbol: pos.symbol,
@@ -301,6 +320,59 @@ export async function simulateCombinedBacktest(
         dailyEquityPnl += pnl;
         equity += pnl;
       } else {
+        // Trailing stop / breakeven / partial profit-taking — mirrors
+        // backtest.ts's own identical equity-leg logic (bar CLOSE, not
+        // intrabar high/low; see its own comment for why).
+        const initialStopDistance = Math.abs(pos.entryPrice - pos.initialStop);
+        if (initialStopDistance > 0) {
+          const rMultiple = long
+            ? (bar.close - pos.entryPrice) / initialStopDistance
+            : (pos.entryPrice - bar.close) / initialStopDistance;
+
+          const partialExitRMultiple = cfg.partialExitRMultiple ?? 0;
+          if (partialExitRMultiple > 0 && !pos.partialExitTaken && rMultiple >= partialExitRMultiple) {
+            const closeQty = Math.floor(pos.quantity * ((cfg.partialExitPct ?? 0) / 100));
+            if (closeQty > 0 && closeQty < pos.quantity) {
+              const partialPnl = (bar.close - pos.entryPrice) * closeQty * sign;
+              equityTrades.push({
+                symbol: pos.symbol,
+                side: pos.side,
+                signalDate: pos.signalDate,
+                entryDate: pos.entryDate,
+                entryPrice: pos.entryPrice,
+                exitDate: day,
+                exitPrice: bar.close,
+                exitReason: 'partial_exit',
+                quantity: closeQty,
+                pnl: partialPnl,
+                rMultiple: pos.riskAmount > 0 ? partialPnl / pos.riskAmount : 0,
+              });
+              equityClosedPnls.push(partialPnl);
+              dailyEquityPnl += partialPnl;
+              equity += partialPnl;
+              pos.quantity -= closeQty;
+              pos.partialExitTaken = true;
+            }
+          }
+
+          pos.bestPrice = long ? Math.max(pos.bestPrice, bar.close) : Math.min(pos.bestPrice, bar.close);
+
+          const breakevenTriggerRMultiple = cfg.breakevenTriggerRMultiple ?? 0;
+          const trailStartRMultiple = cfg.trailStartRMultiple ?? 0;
+          const trailStopRMultiple = cfg.trailStopRMultiple ?? 0;
+          let candidateStop = pos.stop;
+          if (breakevenTriggerRMultiple > 0 && rMultiple >= breakevenTriggerRMultiple) {
+            candidateStop = long ? Math.max(candidateStop, pos.entryPrice) : Math.min(candidateStop, pos.entryPrice);
+          }
+          if (trailStartRMultiple > 0 && trailStopRMultiple > 0 && rMultiple >= trailStartRMultiple) {
+            const trailDistance = trailStopRMultiple * initialStopDistance;
+            const trailingCandidate = long ? pos.bestPrice - trailDistance : pos.bestPrice + trailDistance;
+            candidateStop = long
+              ? Math.max(candidateStop, trailingCandidate)
+              : Math.min(candidateStop, trailingCandidate);
+          }
+          pos.stop = candidateStop;
+        }
         stillOpenEquity.push(pos);
       }
     }

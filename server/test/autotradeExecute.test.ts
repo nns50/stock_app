@@ -396,4 +396,103 @@ describe('checkPaperExits', () => {
       expect(outcomes[0].position!.exitPrice).toBe(110);
     });
   });
+
+  describe('trailing stop / breakeven / partial profit-taking', () => {
+    // openPos() defaults: entryPrice 100, stopPrice 95, targetPrice 110, quantity 10
+    // -> initialStopDistance = 5, so 1R = a $5 favorable move.
+
+    it('does nothing when all five fields are left at their defaults (0/50)', async () => {
+      const pos = openPos();
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 109 }) as never); // ~1.8R, well inside stop/target
+      await checkPaperExits();
+      const after = listPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
+      expect(after.stopPrice).toBe(95);
+      expect(after.quantity).toBe(10);
+    });
+
+    it('moves the stop to breakeven once the trigger R-multiple is reached', async () => {
+      setAutotradeConfig({ breakevenTriggerRMultiple: 1 });
+      const pos = openPos();
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as never); // exactly 1R
+      await checkPaperExits();
+      const after = listPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
+      expect(after.stopPrice).toBe(100);
+    });
+
+    it('never loosens an already-ratcheted stop when price pulls back below the trigger', async () => {
+      setAutotradeConfig({ breakevenTriggerRMultiple: 1 });
+      const pos = openPos();
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 106 }) as never); // 1.2R -> ratchets to breakeven
+      await checkPaperExits();
+      expect(listPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!.stopPrice).toBe(100);
+
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 101 }) as never); // pulls back to 0.2R
+      await checkPaperExits();
+      expect(listPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!.stopPrice).toBe(100); // unchanged, not reverted to 95
+    });
+
+    it('trails the stop behind the best price once past the trailing-start R-multiple', async () => {
+      setAutotradeConfig({ trailStartRMultiple: 1, trailStopRMultiple: 0.5 });
+      const pos = openPos();
+      // 109 (1.8R) — comfortably past the 1R trailing-start trigger, but below
+      // the 110 target so the position doesn't just close outright.
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 109 }) as never);
+      await checkPaperExits();
+      const after = listPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
+      expect(after.stopPrice).toBe(106.5); // 109 - (0.5*5)
+    });
+
+    it('ratchets the trailing stop against the best price seen, not a later pullback', async () => {
+      setAutotradeConfig({ trailStartRMultiple: 1, trailStopRMultiple: 0.5 });
+      const pos = openPos();
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 109 }) as never); // best price 109 -> stop 106.5
+      await checkPaperExits();
+      expect(listPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!.stopPrice).toBe(106.5);
+
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 107 }) as never); // pulls back, still above the stop
+      await checkPaperExits();
+      // Best price stays 109 (never decreases), so the trailing candidate is still 106.5 either way.
+      expect(listPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!.stopPrice).toBe(106.5);
+    });
+
+    it('closes the configured percentage once at the partial-exit trigger, leaving the rest open', async () => {
+      setAutotradeConfig({ partialExitRMultiple: 1, partialExitPct: 50 });
+      const pos = openPos();
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as never); // exactly 1R
+      const outcomes = await checkPaperExits();
+
+      expect(outcomes[0].closed).toBe(false); // the position itself stays open
+      const after = listPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
+      expect(after.quantity).toBe(5); // half of 10
+      expect(after.partialExitTaken).toBe(true);
+      expect(after.status).toBe('open');
+
+      const events = listAutotradeEvents({ symbol: 'AAPL', stage: 'execution' });
+      const partial = events.find((e) => e.action === 'paper_partial_exit')!;
+      expect(JSON.parse(partial.detail!)).toMatchObject({ quantity: 5, exitPrice: 105, pnl: 25 });
+    });
+
+    it('does not re-fire the partial exit on a later cycle once already taken', async () => {
+      setAutotradeConfig({ partialExitRMultiple: 1, partialExitPct: 50 });
+      const pos = openPos();
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as never);
+      await checkPaperExits();
+      expect(listPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!.quantity).toBe(5);
+
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 109 }) as never); // still well short of the 110 target
+      await checkPaperExits();
+      const after = listPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
+      expect(after.quantity).toBe(5); // unchanged — no second partial exit
+    });
+
+    it('lets a stop/target hit take priority over breakeven/trailing/partial-exit management', async () => {
+      setAutotradeConfig({ breakevenTriggerRMultiple: 1, partialExitRMultiple: 1, partialExitPct: 50 });
+      openPos();
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 110 }) as never); // hits the target outright
+      const outcomes = await checkPaperExits();
+      expect(outcomes[0].closed).toBe(true);
+      expect(outcomes[0].position!.exitReason).toBe('target');
+      expect(outcomes[0].position!.quantity).toBe(10); // the full original size, not partially reduced first
+    });
+  });
 });

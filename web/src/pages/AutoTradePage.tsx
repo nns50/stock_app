@@ -1421,6 +1421,11 @@ export default function AutoTradePage() {
   const [stopAtrMultipleDraft, setStopAtrMultipleDraft] = useState<number | undefined>();
   const [targetRMultipleDraft, setTargetRMultipleDraft] = useState<number | undefined>();
   const [maxHoldDaysDraft, setMaxHoldDaysDraft] = useState<number | undefined>();
+  const [breakevenTriggerRMultipleDraft, setBreakevenTriggerRMultipleDraft] = useState<number | undefined>();
+  const [trailStartRMultipleDraft, setTrailStartRMultipleDraft] = useState<number | undefined>();
+  const [trailStopRMultipleDraft, setTrailStopRMultipleDraft] = useState<number | undefined>();
+  const [partialExitRMultipleDraft, setPartialExitRMultipleDraft] = useState<number | undefined>();
+  const [partialExitPctDraft, setPartialExitPctDraft] = useState<number | undefined>();
   const [sessionBufferMinutesDraft, setSessionBufferMinutesDraft] = useState<number | undefined>();
   const [earningsBlackoutDaysDraft, setEarningsBlackoutDaysDraft] = useState<number | undefined>();
   const [correlationLookbackDaysDraft, setCorrelationLookbackDaysDraft] = useState<number | undefined>();
@@ -1467,6 +1472,11 @@ export default function AutoTradePage() {
     setStopAtrMultipleDraft(config.data.stopAtrMultiple);
     setTargetRMultipleDraft(config.data.targetRMultiple);
     setMaxHoldDaysDraft(config.data.maxHoldDays);
+    setBreakevenTriggerRMultipleDraft(config.data.breakevenTriggerRMultiple);
+    setTrailStartRMultipleDraft(config.data.trailStartRMultiple);
+    setTrailStopRMultipleDraft(config.data.trailStopRMultiple);
+    setPartialExitRMultipleDraft(config.data.partialExitRMultiple);
+    setPartialExitPctDraft(config.data.partialExitPct);
     setSessionBufferMinutesDraft(config.data.sessionBufferMinutes);
     setEarningsBlackoutDaysDraft(config.data.earningsBlackoutDays);
     setCorrelationLookbackDaysDraft(config.data.correlationLookbackDays);
@@ -1510,6 +1520,11 @@ export default function AutoTradePage() {
     stopAtrMultiple?: number;
     targetRMultiple?: number;
     maxHoldDays?: number;
+    breakevenTriggerRMultiple?: number;
+    trailStartRMultiple?: number;
+    trailStopRMultiple?: number;
+    partialExitRMultiple?: number;
+    partialExitPct?: number;
     sessionBufferMinutes?: number;
     earningsBlackoutDays?: number;
     correlationLookbackDays?: number;
@@ -1551,6 +1566,11 @@ export default function AutoTradePage() {
       setStopAtrMultipleDraft(saved.stopAtrMultiple);
       setTargetRMultipleDraft(saved.targetRMultiple);
       setMaxHoldDaysDraft(saved.maxHoldDays);
+      setBreakevenTriggerRMultipleDraft(saved.breakevenTriggerRMultiple);
+      setTrailStartRMultipleDraft(saved.trailStartRMultiple);
+      setTrailStopRMultipleDraft(saved.trailStopRMultiple);
+      setPartialExitRMultipleDraft(saved.partialExitRMultiple);
+      setPartialExitPctDraft(saved.partialExitPct);
       setSessionBufferMinutesDraft(saved.sessionBufferMinutes);
       setEarningsBlackoutDaysDraft(saved.earningsBlackoutDays);
       setCorrelationLookbackDaysDraft(saved.correlationLookbackDays);
@@ -2488,6 +2508,131 @@ export default function AutoTradePage() {
                   onClick={() => maxHoldDaysDraft != null && saveConfig({ maxHoldDays: maxHoldDaysDraft })}
                   disabled={
                     maxHoldDaysDraft == null || maxHoldDaysDraft < 0 || maxHoldDaysDraft === config.data?.maxHoldDays
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Breakeven trigger (R-multiple)"
+              hint="Once unrealized gain reaches this many R, move the stop to exactly the entry price — a one-time move, never applied if it would loosen the current stop. 0 disables it. Paper and backtest only; live positions are untouched."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={breakevenTriggerRMultipleDraft}
+                  onChange={setBreakevenTriggerRMultipleDraft}
+                  min={0}
+                  step={0.1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save breakeven trigger"
+                  onClick={() =>
+                    breakevenTriggerRMultipleDraft != null &&
+                    saveConfig({ breakevenTriggerRMultiple: breakevenTriggerRMultipleDraft })
+                  }
+                  disabled={
+                    breakevenTriggerRMultipleDraft == null ||
+                    breakevenTriggerRMultipleDraft < 0 ||
+                    breakevenTriggerRMultipleDraft === config.data?.breakevenTriggerRMultiple
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Trailing start (R-multiple)"
+              hint="Once unrealized gain reaches this many R, start trailing the stop (see trailing distance below) behind the best price seen since entry. 0 disables trailing — independent of the breakeven trigger above."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={trailStartRMultipleDraft}
+                  onChange={setTrailStartRMultipleDraft}
+                  min={0}
+                  step={0.1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save trailing start"
+                  onClick={() =>
+                    trailStartRMultipleDraft != null && saveConfig({ trailStartRMultiple: trailStartRMultipleDraft })
+                  }
+                  disabled={
+                    trailStartRMultipleDraft == null ||
+                    trailStartRMultipleDraft < 0 ||
+                    trailStartRMultipleDraft === config.data?.trailStartRMultiple
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Trailing distance (R-multiple)"
+              hint="Once trailing is active, the stop trails this many R (in the position's own original risk-distance terms) behind the best price seen — ratcheting only favorably, same as the breakeven trigger. Meaningless if trailing start above is 0."
+            >
+              <div className="flex gap-2">
+                <NumberInput value={trailStopRMultipleDraft} onChange={setTrailStopRMultipleDraft} min={0} step={0.1} />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save trailing distance"
+                  onClick={() =>
+                    trailStopRMultipleDraft != null && saveConfig({ trailStopRMultiple: trailStopRMultipleDraft })
+                  }
+                  disabled={
+                    trailStopRMultipleDraft == null ||
+                    trailStopRMultipleDraft < 0 ||
+                    trailStopRMultipleDraft === config.data?.trailStopRMultiple
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Partial exit trigger (R-multiple)"
+              hint="Once unrealized gain reaches this many R, close the percentage below once — the rest keeps running toward its original target (or continues trailing). 0 disables it."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={partialExitRMultipleDraft}
+                  onChange={setPartialExitRMultipleDraft}
+                  min={0}
+                  step={0.1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save partial exit trigger"
+                  onClick={() =>
+                    partialExitRMultipleDraft != null && saveConfig({ partialExitRMultiple: partialExitRMultipleDraft })
+                  }
+                  disabled={
+                    partialExitRMultipleDraft == null ||
+                    partialExitRMultipleDraft < 0 ||
+                    partialExitRMultipleDraft === config.data?.partialExitRMultiple
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Partial exit size (%)"
+              hint="% of the position closed at the partial-exit trigger above. Only meaningful when that trigger is nonzero."
+            >
+              <div className="flex gap-2">
+                <NumberInput value={partialExitPctDraft} onChange={setPartialExitPctDraft} min={0} max={100} step={1} />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save partial exit size"
+                  onClick={() => partialExitPctDraft != null && saveConfig({ partialExitPct: partialExitPctDraft })}
+                  disabled={
+                    partialExitPctDraft == null ||
+                    partialExitPctDraft < 0 ||
+                    partialExitPctDraft > 100 ||
+                    partialExitPctDraft === config.data?.partialExitPct
                   }
                 >
                   Save

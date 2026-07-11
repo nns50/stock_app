@@ -1949,6 +1949,72 @@ it at the current price.
 - Web: a new **Max hold time (days)** field on the Configuration card, right
   after Target (R-multiple).
 
+**Follow-up (2026-07-11) — trailing stop, breakeven, and partial
+profit-taking, the last item in the "do everything except PDT" batch. PAPER
+and BACKTEST equity positions only — LIVE is deliberately untouched.**
+Equity positions previously had a fixed stop/target for their whole life;
+this adds five new `AutotradeConfig` fields (`breakevenTriggerRMultiple`,
+`trailStartRMultiple`, `trailStopRMultiple`, `partialExitRMultiple`,
+`partialExitPct` — all default to 0/disabled, `partialExitPct` defaults to
+50 for whenever its trigger gets turned on) so an open position can move its
+own stop to breakeven, trail it behind the best price seen, and/or scale out
+part of the position once, all measured in R-multiples of the position's
+OWN original stop distance (a snapshot frozen at entry — `initialStopPrice`
+in `execute.ts`, `initialStop` in `backtest.ts`/`combinedBacktest.ts` —
+never the current, possibly-already-ratcheted stop, or every later R-multiple
+reading would be inflated relative to what it should be).
+
+- **Paper** (`execute.ts`): `checkPaperExits()`'s stop/target/time-exit
+  checks are unchanged and still take priority; only once all three are
+  ruled out does `applyPositionManagement()` get a turn. `stopPrice` is now
+  MUTABLE while a position is open — `autotrade_paper_positions` gained
+  `initial_stop_price` (frozen snapshot), `best_price_since_entry` (the
+  running high/low-water mark trailing ratchets against), and
+  `partial_exit_taken` (so the one-time partial-exit trigger doesn't re-fire
+  every cycle). A partial exit reduces `quantity` in place — this table
+  stays one row per position, not a split position/exits table; the
+  partial fill itself is only journaled as an `autotradeEvent`
+  (`paper_partial_exit`), not a second structured row. `riskAmount` stays
+  fixed at its original full-size value for the position's whole life, same
+  R-multiple-denominator reasoning as `initialStopPrice`.
+- **Backtest** (`backtest.ts`, and `combinedBacktest.ts`'s duplicated equity
+  leg): the five fields are their own top-level `BacktestConfig` fields,
+  same "self-contained hypothesis, not part of the risk-params bundle"
+  treatment as `maxHoldDays` above. Triggers are evaluated against the bar's
+  CLOSE, deliberately NOT the intrabar high/low the stop/target check itself
+  uses — these are dynamic R-multiple triggers, not a fixed price level that
+  can legitimately be "hit" intrabar, so using the intrabar extreme here
+  would let backtest detect a trigger a real paper check (one point-in-time
+  quote per cycle) never could, overstating this specific feature's
+  backtested performance. A partial exit pushes a SEPARATE `SimulatedTrade`
+  row (`exitReason: 'partial_exit'`) for just the closed slice and keeps the
+  position (reduced `quantity`, unchanged `initialStop`/`riskAmount`) in
+  `openPositions` for a LATER trade row when it eventually fully closes —
+  the one case where `report.trades.length` no longer equals the number of
+  round-trip logical trades.
+- **Live — deliberately scoped OUT, and NOT confirmed with the user (a
+  scope-narrowing question didn't reach them; proceeded with the
+  conservative default rather than guessing in the riskier direction).**
+  Researching this surfaced that it's a strictly larger unknown than
+  max-hold-days' own live piece above, not the same kind: `replaceIntent`
+  (`services/trading/replaceOrder.ts`) categorically refuses to touch ANY
+  bracket at all (`isComboOrder(rec)` — a pure no-op, never even reaches
+  Webull), no individual bracket leg's own `client_order_id` is durably
+  persisted anywhere (each is generated fresh inline in
+  `providers/webull/orders.ts` and discarded), and — worst of all for a
+  partial exit specifically — the only plausible live design (cancel the
+  whole resting bracket, place a partial close, then place a NEW bracket
+  sized to the remainder) has a genuinely dangerous failure mode
+  max-hold-days' own cancel-and-close never had: a real window where the
+  remaining position sits with NO resting stop at all if the third step
+  fails after the first two succeed. Live equity positions keep their fixed
+  stop/target for life, exactly as before this change. Revisit once the
+  user can weigh in on this specific, elevated risk directly.
+- Web: five new fields on the Configuration card, right after Max hold time
+  (days) — **Breakeven trigger (R-multiple)**, **Trailing start
+  (R-multiple)**, **Trailing distance (R-multiple)**, **Partial exit trigger
+  (R-multiple)**, and **Partial exit size (%)**.
+
 ### CRITICAL: MAX AGGREGATE OPEN RISK
 This is distinct from the daily drawdown halt. The daily halt only reacts to
 REALIZED losses after trades close. Max aggregate open risk is a PRE-TRADE

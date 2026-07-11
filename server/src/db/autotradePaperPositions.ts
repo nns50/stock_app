@@ -5,9 +5,21 @@ import { db } from './index';
 // (docs/AUTOTRADING_SPEC.md — "Paper execution loop"). Deliberately separate
 // from db/positions.ts (the human's real trading journal) — see the resolved
 // decision in the spec on why. One row per round trip: open fields are always
-// set; exit fields are null until closed, then set on the SAME row (no
-// partial fills/exits anywhere in this engine — decide.ts, riskCheck.ts, and
-// backtest.ts's SimulatedTrade are all single entry -> single exit already).
+// set; exit fields are null until closed, then set on the SAME row.
+//
+// Trailing stop / breakeven / partial profit-taking (added 2026-07-11):
+// stopPrice is now MUTABLE while a position is open (ratchetPaperPositionStop)
+// — it always reflects the CURRENT effective stop, which is what
+// checkPaperExits() checks against. initialStopPrice is a snapshot taken once
+// at open and never touched again, so R-multiple triggers stay stable no
+// matter how far stopPrice has since ratcheted. A partial exit
+// (partialClosePaperPosition) reduces `quantity` in place and sets
+// partialExitTaken — the row stays 'open' with reduced size; the partial
+// fill itself is only journaled as an autotradeEvent, not a second row here
+// (this table remains one row per position, not a split position/exits
+// table — riskAmount stays fixed at its original full-size value throughout,
+// same convention as db/positions.ts's own remainingQuantity-vs-original-risk
+// split).
 // ---------------------------------------------------------------------------
 
 export type PaperSide = 'buy' | 'sell';
@@ -47,6 +59,15 @@ export interface PaperPosition {
   exitPrice: number | null;
   exitAt: number | null;
   exitReason: PaperExitReason | null;
+  /** Snapshot of stopPrice at open — never mutated again. Null only for a
+   *  row that predates this feature. */
+  initialStopPrice: number | null;
+  /** Running high-water (long) / low-water (short) mark since entry, for the
+   *  trailing-stop calculation. Null only for a row that predates this
+   *  feature (or hasn't been checked even once yet). */
+  bestPriceSinceEntry: number | null;
+  /** Whether the one-time partial-exit trigger has already fired. */
+  partialExitTaken: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -74,6 +95,9 @@ interface Row {
   exit_price: number | null;
   exit_at: number | null;
   exit_reason: PaperExitReason | null;
+  initial_stop_price: number | null;
+  best_price_since_entry: number | null;
+  partial_exit_taken: number;
   created_at: number;
   updated_at: number;
 }
@@ -95,20 +119,27 @@ function map(r: Row): PaperPosition {
     exitPrice: r.exit_price,
     exitAt: r.exit_at,
     exitReason: r.exit_reason,
+    initialStopPrice: r.initial_stop_price,
+    bestPriceSinceEntry: r.best_price_since_entry,
+    partialExitTaken: r.partial_exit_taken === 1,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
 }
 
-/** Record a new paper fill — the execution stage's synthetic order placement. */
+/** Record a new paper fill — the execution stage's synthetic order placement.
+ *  initial_stop_price and best_price_since_entry are seeded from stopPrice/
+ *  entryPrice respectively, so trailing/breakeven/partial-exit logic has a
+ *  stable baseline from the very first check cycle. */
 export function openPaperPosition(input: OpenPaperPositionInput): PaperPosition {
   const now = Date.now();
   const info = db
     .prepare(
       `INSERT INTO autotrade_paper_positions
          (symbol, side, quantity, entry_price, entry_at, stop_price, target_price,
-          risk_amount, risk_profile, rationale, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+          risk_amount, risk_profile, rationale, status, initial_stop_price,
+          best_price_since_entry, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`,
     )
     .run(
       input.symbol.toUpperCase(),
@@ -121,6 +152,8 @@ export function openPaperPosition(input: OpenPaperPositionInput): PaperPosition 
       input.riskAmount,
       input.riskProfile,
       input.rationale,
+      input.stopPrice,
+      input.entryPrice,
       now,
       now,
     );
@@ -149,6 +182,67 @@ export function closePaperPosition(id: number, input: ClosePaperPositionInput): 
   if (info.changes === 0) return null;
   const row = db.prepare('SELECT * FROM autotrade_paper_positions WHERE id = ?').get(id) as Row;
   return map(row);
+}
+
+/** Ratchet an open position's CURRENT effective stop (breakeven move or
+ *  trailing) — an unconditional set, trusting the caller (execute.ts) to
+ *  have already confirmed `newStopPrice` is more favorable than the
+ *  existing one; this is a thin setter, not where that comparison lives.
+ *  Never touches initial_stop_price. No-op (returns null) if `id` isn't
+ *  open. */
+export function ratchetPaperPositionStop(id: number, newStopPrice: number): PaperPosition | null {
+  const now = Date.now();
+  const info = db
+    .prepare(`UPDATE autotrade_paper_positions SET stop_price = ?, updated_at = ? WHERE id = ? AND status = 'open'`)
+    .run(newStopPrice, now, id);
+  if (info.changes === 0) return null;
+  return map(db.prepare('SELECT * FROM autotrade_paper_positions WHERE id = ?').get(id) as Row);
+}
+
+/** Record the best (most favorable) price seen since entry — the running
+ *  high-water mark (long) / low-water mark (short) the trailing-stop
+ *  calculation ratchets against. Unconditional set, trusting the caller to
+ *  have already taken the max/min against the current value. No-op
+ *  (returns null) if `id` isn't open. */
+export function updatePaperPositionBestPrice(id: number, price: number): PaperPosition | null {
+  const now = Date.now();
+  const info = db
+    .prepare(
+      `UPDATE autotrade_paper_positions SET best_price_since_entry = ?, updated_at = ? WHERE id = ? AND status = 'open'`,
+    )
+    .run(price, now, id);
+  if (info.changes === 0) return null;
+  return map(db.prepare('SELECT * FROM autotrade_paper_positions WHERE id = ?').get(id) as Row);
+}
+
+export interface PartialClosePaperPositionInput {
+  /** Shares/units closed — must be strictly less than the position's current
+   *  quantity (a full close belongs to closePaperPosition instead). */
+  quantity: number;
+  exitPrice: number;
+}
+
+/** Scale out of an open position: reduces quantity in place and marks
+ *  partial_exit_taken so the trigger doesn't re-fire next cycle. The
+ *  position stays 'open' with the remainder — riskAmount is deliberately
+ *  left untouched (it's the ORIGINAL full-size dollar risk, the R-multiple
+ *  denominator for the life of the trade, same convention as
+ *  db/positions.ts's remainingQuantity-vs-original-risk split). The closed
+ *  slice itself isn't written anywhere structured beyond the caller's own
+ *  journal event — this table stays one row per position, not a split
+ *  position/exits table. No-op (returns null) if `id` isn't open or
+ *  `quantity` isn't strictly less than the current quantity. */
+export function partialClosePaperPosition(id: number, input: PartialClosePaperPositionInput): PaperPosition | null {
+  const now = Date.now();
+  const info = db
+    .prepare(
+      `UPDATE autotrade_paper_positions
+       SET quantity = quantity - ?, partial_exit_taken = 1, updated_at = ?
+       WHERE id = ? AND status = 'open' AND ? < quantity`,
+    )
+    .run(input.quantity, now, id, input.quantity);
+  if (info.changes === 0) return null;
+  return map(db.prepare('SELECT * FROM autotrade_paper_positions WHERE id = ?').get(id) as Row);
 }
 
 /** All currently-open paper positions, oldest first — what the loop checks

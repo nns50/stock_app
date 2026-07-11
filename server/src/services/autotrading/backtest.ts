@@ -134,6 +134,18 @@ export interface BacktestConfig extends Partial<BacktestRiskParams> {
    *  existed). Own value here, not read from live config — same
    *  self-contained-hypothesis convention as maxConcurrentPositions above. */
   maxHoldDays?: number;
+  /** Trailing stop / breakeven / partial profit-taking — own top-level
+   *  fields, same self-contained-hypothesis convention as maxHoldDays
+   *  above. All default to 0/disabled if omitted. See AutotradeConfig's own
+   *  doc comment for what each one does; backtest applies the identical
+   *  logic execute.ts uses for paper, against daily bars instead of a live
+   *  quote (see simulateBacktest's own doc comment on why bar CLOSE, not
+   *  intrabar high/low, is used for these triggers specifically). */
+  breakevenTriggerRMultiple?: number;
+  trailStartRMultiple?: number;
+  trailStopRMultiple?: number;
+  partialExitRMultiple?: number;
+  partialExitPct?: number;
   screenerConfig?: Partial<ScreenerConfig>;
   decisionConfig?: Partial<DecisionConfig>;
 }
@@ -146,7 +158,14 @@ export interface SimulatedTrade {
   entryPrice: number;
   exitDate: string;
   exitPrice: number;
-  exitReason: 'stop' | 'target' | 'time_exit' | 'end_of_period';
+  /** 'partial_exit' is the ONE case where this isn't the position's final
+   *  exit — a partial-exit trade's symbol/entryDate keeps recurring in a
+   *  LATER trade row (stop/target/time_exit/end_of_period) for the same
+   *  logical position's remainder. Nothing links the two rows explicitly
+   *  beyond that repeated symbol+entryDate — same minimal shape as every
+   *  other exitReason, just used twice for one logical trade instead of
+   *  once. */
+  exitReason: 'stop' | 'target' | 'time_exit' | 'partial_exit' | 'end_of_period';
   quantity: number;
   pnl: number;
   rMultiple: number;
@@ -179,8 +198,21 @@ interface OpenPosition {
    *  not a re-parse of entryDate every day this position stays open. */
   entryDateMs: number;
   entryPrice: number;
+  /** CURRENT effective stop — mutated in place by breakeven/trailing. */
   stop: number;
   target: number;
+  /** Snapshot of `stop` at fill time, never mutated again — the R-multiple
+   *  denominator for breakeven/trailing/partial-exit triggers, immune to how
+   *  far `stop` has since ratcheted (mirrors execute.ts's own
+   *  initialStopPrice). */
+  initialStop: number;
+  /** Best (most favorable) bar CLOSE seen since entry — long: running max;
+   *  short: running min. The trailing-stop calculation ratchets against
+   *  this (mirrors execute.ts's own bestPriceSinceEntry). */
+  bestPrice: number;
+  /** Whether the one-time partial-exit trigger has already fired for this
+   *  position. */
+  partialExitTaken: boolean;
   quantity: number;
   riskAmount: number;
   notional: number;
@@ -311,6 +343,9 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
           entryPrice: candles![idx].open,
           stop: p.signal.stop,
           target: p.signal.target,
+          initialStop: p.signal.stop,
+          bestPrice: candles![idx].open,
+          partialExitTaken: false,
           quantity: p.quantity,
           riskAmount: p.riskAmount,
           notional: p.notional,
@@ -334,6 +369,7 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
         continue;
       }
       const long = pos.side === 'buy';
+      const sign = long ? 1 : -1;
       const stopHit = long ? bar.low <= pos.stop : bar.high >= pos.stop;
       const targetHit = long ? bar.high >= pos.target : bar.low <= pos.target;
       const maxHoldDays = cfg.maxHoldDays ?? 0;
@@ -345,7 +381,6 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
         // today's bar close, the same "what actually happened today" price a real
         // end-of-day force-close would realize.
         const exitPrice = stopHit ? pos.stop : targetHit ? pos.target : bar.close;
-        const sign = long ? 1 : -1;
         const pnl = (exitPrice - pos.entryPrice) * pos.quantity * sign;
         trades.push({
           symbol: pos.symbol,
@@ -364,6 +399,64 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
         dailyPnl += pnl;
         equity += pnl;
       } else {
+        // Trailing stop / breakeven / partial profit-taking — mirrors
+        // execute.ts's own applyPositionManagement, against the bar's CLOSE
+        // rather than intrabar high/low (unlike the stop/target check
+        // above): these are dynamic R-multiple triggers, not a fixed price
+        // level that can legitimately be "hit" intrabar — using the
+        // intrabar extreme here would let backtest detect a trigger a real
+        // paper/live check (one point-in-time quote per cycle) never could,
+        // overstating this specific feature's backtested performance.
+        const initialStopDistance = Math.abs(pos.entryPrice - pos.initialStop);
+        if (initialStopDistance > 0) {
+          const rMultiple = long
+            ? (bar.close - pos.entryPrice) / initialStopDistance
+            : (pos.entryPrice - bar.close) / initialStopDistance;
+
+          const partialExitRMultiple = cfg.partialExitRMultiple ?? 0;
+          if (partialExitRMultiple > 0 && !pos.partialExitTaken && rMultiple >= partialExitRMultiple) {
+            const closeQty = Math.floor(pos.quantity * ((cfg.partialExitPct ?? 0) / 100));
+            if (closeQty > 0 && closeQty < pos.quantity) {
+              const partialPnl = (bar.close - pos.entryPrice) * closeQty * sign;
+              trades.push({
+                symbol: pos.symbol,
+                side: pos.side,
+                signalDate: pos.signalDate,
+                entryDate: pos.entryDate,
+                entryPrice: pos.entryPrice,
+                exitDate: day,
+                exitPrice: bar.close,
+                exitReason: 'partial_exit',
+                quantity: closeQty,
+                pnl: partialPnl,
+                rMultiple: pos.riskAmount > 0 ? partialPnl / pos.riskAmount : 0,
+              });
+              closedPnls.push(partialPnl);
+              dailyPnl += partialPnl;
+              equity += partialPnl;
+              pos.quantity -= closeQty;
+              pos.partialExitTaken = true;
+            }
+          }
+
+          pos.bestPrice = long ? Math.max(pos.bestPrice, bar.close) : Math.min(pos.bestPrice, bar.close);
+
+          const breakevenTriggerRMultiple = cfg.breakevenTriggerRMultiple ?? 0;
+          const trailStartRMultiple = cfg.trailStartRMultiple ?? 0;
+          const trailStopRMultiple = cfg.trailStopRMultiple ?? 0;
+          let candidateStop = pos.stop;
+          if (breakevenTriggerRMultiple > 0 && rMultiple >= breakevenTriggerRMultiple) {
+            candidateStop = long ? Math.max(candidateStop, pos.entryPrice) : Math.min(candidateStop, pos.entryPrice);
+          }
+          if (trailStartRMultiple > 0 && trailStopRMultiple > 0 && rMultiple >= trailStartRMultiple) {
+            const trailDistance = trailStopRMultiple * initialStopDistance;
+            const trailingCandidate = long ? pos.bestPrice - trailDistance : pos.bestPrice + trailDistance;
+            candidateStop = long
+              ? Math.max(candidateStop, trailingCandidate)
+              : Math.min(candidateStop, trailingCandidate);
+          }
+          pos.stop = candidateStop;
+        }
         stillOpen.push(pos);
       }
     }

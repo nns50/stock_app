@@ -89,6 +89,12 @@ const configBody = z.object({
   earningsBlackoutDays: z.number().int().nonnegative().optional(),
   // --- Max hold time (0 disables) --------------------------------------------
   maxHoldDays: z.number().int().nonnegative().optional(),
+  // --- Trailing stop / breakeven / partial profit-taking (0 disables each) --
+  breakevenTriggerRMultiple: z.number().nonnegative().optional(),
+  trailStartRMultiple: z.number().nonnegative().optional(),
+  trailStopRMultiple: z.number().nonnegative().optional(),
+  partialExitRMultiple: z.number().nonnegative().optional(),
+  partialExitPct: z.number().min(0).max(100).optional(),
   // --- Correlation methodology (feeds maxCorrelatedExposurePct above) -------
   correlationLookbackDays: z.number().int().min(1).optional(),
   correlationThreshold: z.number().min(0).max(1).optional(),
@@ -164,6 +170,13 @@ autotradeRouter.put(
     if (body.sessionBufferMinutes !== undefined) patch.sessionBufferMinutes = body.sessionBufferMinutes;
     if (body.earningsBlackoutDays !== undefined) patch.earningsBlackoutDays = body.earningsBlackoutDays;
     if (body.maxHoldDays !== undefined) patch.maxHoldDays = body.maxHoldDays;
+    if (body.breakevenTriggerRMultiple !== undefined) {
+      patch.breakevenTriggerRMultiple = body.breakevenTriggerRMultiple;
+    }
+    if (body.trailStartRMultiple !== undefined) patch.trailStartRMultiple = body.trailStartRMultiple;
+    if (body.trailStopRMultiple !== undefined) patch.trailStopRMultiple = body.trailStopRMultiple;
+    if (body.partialExitRMultiple !== undefined) patch.partialExitRMultiple = body.partialExitRMultiple;
+    if (body.partialExitPct !== undefined) patch.partialExitPct = body.partialExitPct;
     if (body.correlationLookbackDays !== undefined) patch.correlationLookbackDays = body.correlationLookbackDays;
     if (body.correlationThreshold !== undefined) patch.correlationThreshold = body.correlationThreshold;
     if (body.liveMaxOrderUsd !== undefined) patch.liveMaxOrderUsd = body.liveMaxOrderUsd;
@@ -578,6 +591,11 @@ const backtestBodyBase = z.object({
   startingEquity: z.number().positive(),
   maxConcurrentPositions: z.number().int().min(1),
   maxHoldDays: z.number().int().nonnegative().optional(),
+  breakevenTriggerRMultiple: z.number().nonnegative().optional(),
+  trailStartRMultiple: z.number().nonnegative().optional(),
+  trailStopRMultiple: z.number().nonnegative().optional(),
+  partialExitRMultiple: z.number().nonnegative().optional(),
+  partialExitPct: z.number().min(0).max(100).optional(),
   ...backtestRiskParamsSchema,
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   decisionConfig: z.record(z.string(), z.unknown()).optional(),
@@ -605,6 +623,11 @@ autotradeRouter.post(
       startingEquity: body.startingEquity,
       maxConcurrentPositions: body.maxConcurrentPositions,
       maxHoldDays: body.maxHoldDays,
+      breakevenTriggerRMultiple: body.breakevenTriggerRMultiple,
+      trailStartRMultiple: body.trailStartRMultiple,
+      trailStopRMultiple: body.trailStopRMultiple,
+      partialExitRMultiple: body.partialExitRMultiple,
+      partialExitPct: body.partialExitPct,
       ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
@@ -626,6 +649,11 @@ autotradeRouter.post(
       startingEquity: body.startingEquity,
       maxConcurrentPositions: body.maxConcurrentPositions,
       maxHoldDays: body.maxHoldDays,
+      breakevenTriggerRMultiple: body.breakevenTriggerRMultiple,
+      trailStartRMultiple: body.trailStartRMultiple,
+      trailStopRMultiple: body.trailStopRMultiple,
+      partialExitRMultiple: body.partialExitRMultiple,
+      partialExitPct: body.partialExitPct,
       ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
@@ -731,6 +759,11 @@ const combinedBacktestBodyBase = z.object({
   startingEquity: z.number().positive(),
   maxConcurrentPositions: z.number().int().min(1),
   maxHoldDays: z.number().int().nonnegative().optional(),
+  breakevenTriggerRMultiple: z.number().nonnegative().optional(),
+  trailStartRMultiple: z.number().nonnegative().optional(),
+  trailStopRMultiple: z.number().nonnegative().optional(),
+  partialExitRMultiple: z.number().nonnegative().optional(),
+  partialExitPct: z.number().min(0).max(100).optional(),
   ...backtestRiskParamsSchema,
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   decisionConfig: z.record(z.string(), z.unknown()).optional(),
@@ -759,6 +792,11 @@ autotradeRouter.post(
       startingEquity: body.startingEquity,
       maxConcurrentPositions: body.maxConcurrentPositions,
       maxHoldDays: body.maxHoldDays,
+      breakevenTriggerRMultiple: body.breakevenTriggerRMultiple,
+      trailStartRMultiple: body.trailStartRMultiple,
+      trailStopRMultiple: body.trailStopRMultiple,
+      partialExitRMultiple: body.partialExitRMultiple,
+      partialExitPct: body.partialExitPct,
       ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
@@ -781,6 +819,11 @@ autotradeRouter.post(
       startingEquity: body.startingEquity,
       maxConcurrentPositions: body.maxConcurrentPositions,
       maxHoldDays: body.maxHoldDays,
+      breakevenTriggerRMultiple: body.breakevenTriggerRMultiple,
+      trailStartRMultiple: body.trailStartRMultiple,
+      trailStopRMultiple: body.trailStopRMultiple,
+      partialExitRMultiple: body.partialExitRMultiple,
+      partialExitPct: body.partialExitPct,
       ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
