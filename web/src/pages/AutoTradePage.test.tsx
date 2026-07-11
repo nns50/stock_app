@@ -53,6 +53,8 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     stopAtrMultiple: 1.5,
     targetRMultiple: 2,
     sessionBufferMinutes: 15,
+    correlationLookbackDays: 30,
+    correlationThreshold: 0.7,
     liveTradingEnabled: false,
     liveEnabledAt: null,
     liveAccountId: null,

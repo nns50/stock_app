@@ -579,7 +579,12 @@ export async function runLiveOptionsExecution(
       outcomes.push({ symbol, ok: false, reason: 'Already has an open live options position' });
       continue;
     }
-    const { amount: correlated } = await correlatedNotional(signal.symbol, runningPositions);
+    const { amount: correlated } = await correlatedNotional(
+      signal.symbol,
+      runningPositions,
+      cfg.correlationLookbackDays,
+      cfg.correlationThreshold,
+    );
     const ctx: RiskCheckContext = {
       equity,
       dailyPnl,
@@ -596,6 +601,7 @@ export async function runLiveOptionsExecution(
       maxAggregateOpenRiskPct: cfg.maxAggregateOpenRiskPct,
       maxCorrelatedExposurePct: cfg.maxCorrelatedExposurePct,
       maxTradesPerDay: cfg.maxTradesPerDay,
+      correlationThreshold: cfg.correlationThreshold,
     };
     const result = evaluateOptionsRiskCheck(signal, ctx);
     if (!result.ok) {

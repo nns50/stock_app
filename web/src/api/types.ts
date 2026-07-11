@@ -1077,6 +1077,11 @@ export interface AutotradeConfig {
   targetRMultiple: number;
   sessionBufferMinutes: number;
 
+  // --- Correlation methodology (feeds maxCorrelatedExposurePct above) ---
+  correlationLookbackDays: number;
+  /** |Pearson r| at or above this counts as "correlated". 0-1, not a percentage. */
+  correlationThreshold: number;
+
   // --- Phase 8: live trading ---
   liveTradingEnabled: boolean;
   liveEnabledAt: number | null;
@@ -1344,6 +1349,8 @@ export interface BacktestRiskParams {
   maxAggregateOpenRiskPct?: number;
   maxCorrelatedExposurePct?: number;
   maxTradesPerDay?: number;
+  correlationLookbackDays?: number;
+  correlationThreshold?: number;
 }
 
 export interface BacktestRequest extends BacktestRiskParams {

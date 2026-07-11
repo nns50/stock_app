@@ -1848,6 +1848,33 @@ For a plain-English explanation of what each of these seven fields (plus
 [`docs/AUTOTRADE_RISK_SETTINGS.md`](./AUTOTRADE_RISK_SETTINGS.md) — this section
 stays the engineering-level record of *why* each decision was made.
 
+**Follow-up (2026-07-11) — the correlation methodology itself is now
+configurable too, not just the exposure cap it feeds.** Prompted by a direct
+follow-up question ("what else can and needs to be added or fixed to best
+improve the app's functionality and accuracy specifically for the auto
+trading and tracking") — the two remaining fixed constants,
+`CORRELATION_LOOKBACK_DAYS` (30 trading days) and `CORRELATION_THRESHOLD`
+(`|r| ≥ 0.7`), moved from `services/autotrading/riskProfiles.ts` (now deleted
+entirely — its whole remaining purpose was these two constants) onto
+`AutotradeConfig` as `correlationLookbackDays`/`correlationThreshold`, each
+defaulting to the old constant's value so an untouched config's behavior
+doesn't change. Unlike `maxCorrelatedExposurePct` (the % cap this feeds
+into), these govern *how* correlation is measured, not a risk-tolerance
+dial — still its own pair of editable fields on the Auto-Trade page, right
+below "max correlated exposure." `correlatedNotional()` (`riskCheck.ts`) and
+its two backtest counterparts (`backtestCorrelatedNotional()` in
+`backtest.ts`, reused by `combinedBacktest.ts`; `optionsBacktest.ts`'s own
+byte-for-byte duplicate) now take `lookbackDays`/`threshold` as explicit
+trailing parameters instead of reading the module constants directly — the
+same "pure function, config threaded in by the caller" convention the other
+seven fields already followed. Backtesting resolves them the same way as
+those seven: added to both `LEGACY_BACKTEST_RISK_DEFAULTS` bundles
+(identical 30/0.7 in MODERATE and AGGRESSIVE, since they were never
+profile-specific even before this change) and to `resolveBacktestRiskParams`,
+so a backtest request can override them field-by-field exactly like the
+other seven, even though no UI exposes a per-backtest override for any of
+the nine today.
+
 ### CRITICAL: MAX AGGREGATE OPEN RISK
 This is distinct from the daily drawdown halt. The daily halt only reacts to
 REALIZED losses after trades close. Max aggregate open risk is a PRE-TRADE

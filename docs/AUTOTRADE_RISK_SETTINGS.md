@@ -48,10 +48,14 @@ header if it's collapsed). Top to bottom, you'll find:
   **max daily drawdown**, **step-down after (consecutive losses)**, **step-down size
   cut**, **max aggregate open risk**, **max correlated exposure**, and **max trades
   per day**.
+- Two **correlation-methodology** fields right below max correlated exposure:
+  **correlation lookback (days)** and **correlation threshold (|r|)** — they define
+  *how* two tickers count as "correlated" for that cap, rather than adding a new cap
+  of their own.
 
-Each of the eight numeric settings (max concurrent positions plus the seven risk
-fields) has its own input box and its own **Save** button — you can change one
-without touching any of the others.
+Each of the ten numeric settings (max concurrent positions, the seven risk fields,
+and the two correlation-methodology fields) has its own input box and its own
+**Save** button — you can change one without touching any of the others.
 
 ## 2. The cheat sheet
 
@@ -66,6 +70,8 @@ without touching any of the others.
 | **Max aggregate open risk (%)** | How much can ALL open positions lose at once, combined? | 2% | % of equity |
 | **Max correlated exposure (%)** | How much capital can sit in similarly-moving tickers? | 6% | % of equity |
 | **Max trades per day** | How many new positions can open in one day? | 6 | count |
+| **Correlation lookback (days)** | How many days of price history define "correlated"? | 30 | trading days |
+| **Correlation threshold (\|r\|)** | How similar do two tickers' moves have to be to count as "correlated"? | 0.7 | Pearson r (0-1) |
 
 Every default above matches the app's original `MODERATE` preset, so if you've never
 touched these fields, nothing about how the loop behaves has changed — they're just
@@ -195,10 +201,11 @@ Stocks and options share this one budget too, same as max concurrent positions.
 aggregate open risk (which is about *how much you could lose*), this one is about
 *how much capital* (not risk — the full position value) is already sitting in
 tickers that are statistically correlated with a new candidate — meaning their daily
-price moves have tracked each other closely (a correlation of 0.7 or higher) over the
-last 30 trading days. If that already-correlated capital exceeds this percentage of
-your account, the new, similarly-moving trade is blocked, even though it would be a
-"different" symbol.
+price moves have tracked each other closely, by default a correlation of 0.7 or
+higher over the last 30 trading days (both numbers are their own editable settings,
+covered right after this one). If that already-correlated capital exceeds this
+percentage of your account, the new, similarly-moving trade is blocked, even though
+it would be a "different" symbol.
 
 *Example:* $100,000 account, 6% max correlated exposure → **$6,000 cap**. You hold a
 $5,000 position in one semiconductor stock, and a candidate in a second
@@ -214,6 +221,30 @@ blocked by this check just because it's "correlated with itself."
 **Note:** unlike the other checks, this one doesn't currently have its own tile on
 the Monitoring dashboard — see [§7](#7-quick-answers-for-common-situations) for where
 to actually see it in action.
+
+### Correlation lookback (days) & correlation threshold (|r|)
+
+**The two dials that decide what "correlated" even means, for the check above.**
+Neither one is a cap by itself — they control the math max correlated exposure runs
+against every candidate.
+
+- **Correlation lookback (days)** — how many trading days of daily price returns are
+  compared between two symbols. A shorter window reacts faster to a recent,
+  possibly-temporary co-movement; a longer one only counts a more established
+  relationship.
+- **Correlation threshold (|r|)** — how closely two symbols' daily returns have to
+  move together to count as "correlated" at all, as a Pearson correlation coefficient
+  from 0 (no relationship) to 1 (move in perfect lockstep). Raising it makes the check
+  *stricter* (fewer pairs qualify, so less capital counts against the cap); lowering
+  it makes it *looser* (more pairs qualify).
+
+*Example:* lowering the threshold from the default 0.7 to 0.5 means two tickers that
+only loosely track each other now count as "correlated" — capital already sitting in
+the second one starts counting against the max-correlated-exposure cap above, where
+it wouldn't have at the stricter default.
+
+Both default to the values the loop always used before they were configurable (30
+days, 0.7), so leaving them untouched changes nothing.
 
 ### Max trades per day
 
@@ -314,6 +345,13 @@ self-contained "what if," the same way its `starting equity` and
 `max concurrent positions` fields are already independent of your real account. If
 you want a backtest that matches your current live settings exactly, you'd need to
 pick the values by hand — there's no "copy from live config" button today.
+
+The **correlation lookback/threshold** settings are folded into that same
+self-contained bundle now too — previously, backtests always measured correlation
+with the same fixed 30-day/0.7 numbers as live trading, since those were global
+constants rather than part of the risk-profile bundle; today they resolve the same
+way the other seven fields do (the bundle's value, unless overridden), even though
+there's no dedicated input for them in the backtest tool yet either.
 
 ---
 

@@ -376,7 +376,12 @@ export async function runOptionsPaperExecution(
       outcomes.push({ symbol, ok: false, reason: 'Already has an open options paper position' });
       continue;
     }
-    const { amount: correlated } = await correlatedNotional(signal.symbol, runningPositions);
+    const { amount: correlated } = await correlatedNotional(
+      signal.symbol,
+      runningPositions,
+      config.correlationLookbackDays,
+      config.correlationThreshold,
+    );
     const ctx: RiskCheckContext = {
       equity,
       dailyPnl,
@@ -393,6 +398,7 @@ export async function runOptionsPaperExecution(
       maxAggregateOpenRiskPct: config.maxAggregateOpenRiskPct,
       maxCorrelatedExposurePct: config.maxCorrelatedExposurePct,
       maxTradesPerDay: config.maxTradesPerDay,
+      correlationThreshold: config.correlationThreshold,
     };
     const result = evaluateOptionsRiskCheck(signal, ctx);
     const contracts =

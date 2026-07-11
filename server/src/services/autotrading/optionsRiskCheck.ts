@@ -267,7 +267,12 @@ export async function runOptionsRiskCheck(
   ];
 
   for (const signal of signals) {
-    const { amount: correlated } = await correlatedNotional(signal.symbol, runningPositions);
+    const { amount: correlated } = await correlatedNotional(
+      signal.symbol,
+      runningPositions,
+      config.correlationLookbackDays,
+      config.correlationThreshold,
+    );
     const ctx: RiskCheckContext = {
       equity: snapshot.equity ?? 0,
       dailyPnl: snapshot.dailyPnl,
@@ -284,6 +289,7 @@ export async function runOptionsRiskCheck(
       maxAggregateOpenRiskPct: config.maxAggregateOpenRiskPct,
       maxCorrelatedExposurePct: config.maxCorrelatedExposurePct,
       maxTradesPerDay: config.maxTradesPerDay,
+      correlationThreshold: config.correlationThreshold,
     };
     const result = evaluateOptionsRiskCheck(signal, ctx);
     results.push(result);

@@ -86,6 +86,9 @@ const configBody = z.object({
   stopAtrMultiple: z.number().positive().optional(),
   targetRMultiple: z.number().positive().optional(),
   sessionBufferMinutes: z.number().int().nonnegative().optional(),
+  // --- Correlation methodology (feeds maxCorrelatedExposurePct above) -------
+  correlationLookbackDays: z.number().int().min(1).optional(),
+  correlationThreshold: z.number().min(0).max(1).optional(),
   // --- Phase 8: live trading -------------------------------------------------
   liveTradingEnabled: z.boolean().optional(),
   /** Required (and must exactly match LIVE_TRADING_CONFIRMATION_PHRASE) only
@@ -156,6 +159,8 @@ autotradeRouter.put(
     if (body.stopAtrMultiple !== undefined) patch.stopAtrMultiple = body.stopAtrMultiple;
     if (body.targetRMultiple !== undefined) patch.targetRMultiple = body.targetRMultiple;
     if (body.sessionBufferMinutes !== undefined) patch.sessionBufferMinutes = body.sessionBufferMinutes;
+    if (body.correlationLookbackDays !== undefined) patch.correlationLookbackDays = body.correlationLookbackDays;
+    if (body.correlationThreshold !== undefined) patch.correlationThreshold = body.correlationThreshold;
     if (body.liveMaxOrderUsd !== undefined) patch.liveMaxOrderUsd = body.liveMaxOrderUsd;
     if (body.liveMaxDailyLossUsd !== undefined) patch.liveMaxDailyLossUsd = body.liveMaxDailyLossUsd;
     if (body.liveMaxOrdersPerDay !== undefined) patch.liveMaxOrdersPerDay = body.liveMaxOrdersPerDay;
@@ -516,7 +521,7 @@ const dateStr = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD')
   .refine(isValidCalendarDate, { message: 'Not a valid calendar date' });
-// Optional per-request overrides for the seven risk-check parameters — when
+// Optional per-request overrides for the nine risk-check parameters — when
 // omitted, a backtest falls back field-by-field to riskProfile's OLD
 // MODERATE/AGGRESSIVE preset bundle (see backtest.ts's
 // resolveBacktestRiskParams/LEGACY_BACKTEST_RISK_DEFAULTS). Shared across all
@@ -529,10 +534,12 @@ const backtestRiskParamsSchema = {
   maxAggregateOpenRiskPct: z.number().min(0).max(100).optional(),
   maxCorrelatedExposurePct: z.number().min(0).max(100).optional(),
   maxTradesPerDay: z.number().int().nonnegative().optional(),
+  correlationLookbackDays: z.number().int().min(1).optional(),
+  correlationThreshold: z.number().min(0).max(1).optional(),
 };
-/** Pulls the seven optional risk-param overrides off an already-parsed
+/** Pulls the nine optional risk-param overrides off an already-parsed
  *  backtest body, for spreading into a runXBacktest({...}) call — avoids
- *  repeating all seven field names at each of the six call sites below. */
+ *  repeating all nine field names at each of the six call sites below. */
 function backtestRiskParamsFrom(body: {
   riskPerTradePct?: number;
   maxDailyDrawdownPct?: number;
@@ -541,6 +548,8 @@ function backtestRiskParamsFrom(body: {
   maxAggregateOpenRiskPct?: number;
   maxCorrelatedExposurePct?: number;
   maxTradesPerDay?: number;
+  correlationLookbackDays?: number;
+  correlationThreshold?: number;
 }) {
   return {
     riskPerTradePct: body.riskPerTradePct,
@@ -550,6 +559,8 @@ function backtestRiskParamsFrom(body: {
     maxAggregateOpenRiskPct: body.maxAggregateOpenRiskPct,
     maxCorrelatedExposurePct: body.maxCorrelatedExposurePct,
     maxTradesPerDay: body.maxTradesPerDay,
+    correlationLookbackDays: body.correlationLookbackDays,
+    correlationThreshold: body.correlationThreshold,
   };
 }
 const backtestBodyBase = z.object({

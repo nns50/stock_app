@@ -452,7 +452,14 @@ export async function simulateCombinedBacktest(
     for (const score of equityCandidates) {
       const signal = generateSignal({ ...score, discoverySource: 'universe' }, decisionCfg);
       if (!signal) continue;
-      const correlated = backtestCorrelatedNotional(signal.symbol, dayMs, runningPositions, historyBySymbol);
+      const correlated = backtestCorrelatedNotional(
+        signal.symbol,
+        dayMs,
+        runningPositions,
+        historyBySymbol,
+        riskParams.correlationLookbackDays,
+        riskParams.correlationThreshold,
+      );
       const ctx: RiskCheckContext = {
         equity,
         dailyPnl,
@@ -608,7 +615,14 @@ export async function simulateCombinedBacktest(
         }
       }
 
-      const correlated = backtestCorrelatedNotional(candidate.symbol, dayMs, runningPositions, historyBySymbol);
+      const correlated = backtestCorrelatedNotional(
+        candidate.symbol,
+        dayMs,
+        runningPositions,
+        historyBySymbol,
+        riskParams.correlationLookbackDays,
+        riskParams.correlationThreshold,
+      );
       const ctx: RiskCheckContext = {
         equity,
         dailyPnl,
