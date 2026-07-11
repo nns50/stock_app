@@ -20,7 +20,6 @@ import {
 } from './optionsDecide';
 import { evaluateOptionsRiskCheck } from './optionsRiskCheck';
 import { RiskCheckContext } from './riskCheck';
-import { CORRELATION_LOOKBACK_DAYS, CORRELATION_THRESHOLD } from './riskProfiles';
 import { RiskProfileName, OptionsStrategyType } from '../../db/autotradeConfig';
 import { getHistoricalOptionContracts } from './optionsHistoricalData';
 import { getHistoricalBars } from './historicalData';
@@ -302,6 +301,8 @@ function optionsBacktestCorrelatedNotional(
   asOfMs: number,
   positions: { symbol: string; notional: number }[],
   historyBySymbol: Map<string, Candle[]>,
+  lookbackDays: number,
+  threshold: number,
 ): number {
   if (positions.length === 0) return 0;
   const closesUpTo = (symbol: string): number[] | null => {
@@ -309,7 +310,7 @@ function optionsBacktestCorrelatedNotional(
     if (!candles) return null;
     const idx = indexAsOf(candles, asOfMs);
     if (idx < 1) return null;
-    const start = Math.max(0, idx - CORRELATION_LOOKBACK_DAYS);
+    const start = Math.max(0, idx - lookbackDays);
     return candles.slice(start, idx + 1).map((c) => c.close);
   };
 
@@ -321,7 +322,7 @@ function optionsBacktestCorrelatedNotional(
   for (const pos of positions) {
     const posCloses = closesUpTo(pos.symbol);
     const r = posCloses ? pearsonCorrelation(candidateReturns, dailyReturns(posCloses)) : null;
-    if (r !== null && Math.abs(r) >= CORRELATION_THRESHOLD) amount += pos.notional;
+    if (r !== null && Math.abs(r) >= threshold) amount += pos.notional;
   }
   return amount;
 }
@@ -642,7 +643,14 @@ export async function simulateOptionsBacktest(
         }
       }
 
-      const correlated = optionsBacktestCorrelatedNotional(candidate.symbol, dayMs, runningPositions, historyBySymbol);
+      const correlated = optionsBacktestCorrelatedNotional(
+        candidate.symbol,
+        dayMs,
+        runningPositions,
+        historyBySymbol,
+        riskParams.correlationLookbackDays,
+        riskParams.correlationThreshold,
+      );
       const ctx: RiskCheckContext = {
         equity,
         dailyPnl,

@@ -127,6 +127,23 @@ export interface AutotradeConfig {
    *  signal shouldn't react to. */
   sessionBufferMinutes: number;
 
+  // --- Correlation methodology (docs/AUTOTRADING_SPEC.md — RESOLVED
+  // DECISIONS). Formerly riskProfiles.ts's CORRELATION_LOOKBACK_DAYS/
+  // CORRELATION_THRESHOLD — that file's entire remaining purpose was these
+  // two constants, so it's deleted now that they've moved here too (added
+  // 2026-07-11, same day/reasoning as the screening/decision thresholds
+  // above). Unlike maxCorrelatedExposurePct (the % cap this feeds into),
+  // these govern HOW correlation is measured, not a risk-tolerance dial —
+  // still tunable, just a different kind of knob. Defaults match the old
+  // constants exactly. -------------------------------------------------------
+
+  /** Trading days of daily-return history compared when measuring
+   *  correlation between two symbols. */
+  correlationLookbackDays: number;
+  /** |Pearson r| at or above this counts as "correlated" for
+   *  maxCorrelatedExposurePct's purposes. 0-1, not a percentage. */
+  correlationThreshold: number;
+
   // --- Phase 8: live-trading gate (docs/AUTOTRADING_SPEC.md) -----------------
 
   /** Master on/off for the loop placing REAL orders through Webull. False by
@@ -273,6 +290,8 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     stopAtrMultiple: 1.5,
     targetRMultiple: 2,
     sessionBufferMinutes: 15,
+    correlationLookbackDays: 30,
+    correlationThreshold: 0.7,
     liveTradingEnabled: false,
     liveEnabledAt: null,
     liveAccountId: null,
@@ -336,6 +355,12 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     const n = Number(v);
     return Number.isFinite(n) && n > 0 ? n : fallback;
   };
+  // A Pearson-r threshold, not a percentage — clamps to [0, 1] like pct()
+  // clamps to [0, 100], same "clamp, don't reject" semantics.
+  const unitInterval = (v: unknown, fallback: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : fallback;
+  };
   const accountId =
     input.liveAccountId === null
       ? null
@@ -368,6 +393,8 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     stopAtrMultiple: posDecimal(input.stopAtrMultiple, d.stopAtrMultiple),
     targetRMultiple: posDecimal(input.targetRMultiple, d.targetRMultiple),
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
+    correlationLookbackDays: posIntMin1(input.correlationLookbackDays, d.correlationLookbackDays),
+    correlationThreshold: unitInterval(input.correlationThreshold, d.correlationThreshold),
     liveTradingEnabled: typeof input.liveTradingEnabled === 'boolean' ? input.liveTradingEnabled : d.liveTradingEnabled,
     liveEnabledAt: enabledAt,
     liveAccountId: accountId,

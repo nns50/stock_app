@@ -665,11 +665,12 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   across every open position plus the one being proposed, distinct from the daily
   drawdown halt, which only reacts to realized losses after a trade closes), **max
   correlated exposure** (% of equity cap on capital, not risk, already concentrated in
-  tickers statistically correlated — |r| ≥ 0.7 over 30 trading days — with a
-  candidate), and **max trades per day** (a hard cap on new entries, paper and live,
-  stocks and options, all combined). Every field here applies to paper and live
-  trading alike, and each has its own **Save** button, so you can change one without
-  touching the rest. For a plain-English walkthrough of each of these — with worked
+  tickers statistically correlated with a candidate — by default |r| ≥ 0.7 over 30
+  trading days, both now their own **correlation lookback (days)** and **correlation
+  threshold (|r|)** fields right below it), and **max trades per day** (a hard cap on
+  new entries, paper and live, stocks and options, all combined). Every field here
+  applies to paper and live trading alike, and each has its own **Save** button, so
+  you can change one without touching the rest. For a plain-English walkthrough of each of these — with worked
   examples and guidance on what to change when nothing's trading — see
   **[Auto-Trade Risk Settings](./AUTOTRADE_RISK_SETTINGS.md)**. A second group of fields
   governs the automated loop's own **screening and decision thresholds** — a

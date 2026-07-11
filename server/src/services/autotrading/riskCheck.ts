@@ -5,7 +5,6 @@ import { computeRiskSizing, RiskSizingResult } from '../riskSizing';
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { logAutotradeEvent, listAutotradeEvents } from '../../db/autotradeEvents';
-import { CORRELATION_LOOKBACK_DAYS, CORRELATION_THRESHOLD } from './riskProfiles';
 import { TradeSignal } from './decide';
 
 // ---------------------------------------------------------------------------
@@ -124,11 +123,15 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
 }
 
 /** Capital (across `positions`) statistically correlated with `symbol` —
- *  |Pearson r| ≥ CORRELATION_THRESHOLD over CORRELATION_LOOKBACK_DAYS of daily
- *  returns. A position whose correlation can't be computed (fetch failure,
- *  too little history) is excluded from the sum, not assumed correlated —
- *  the CRITICAL aggregate-risk check independently covers the "many positions
- *  at once" gap risk this cap is layered on top of. */
+ *  |Pearson r| ≥ `threshold` over `lookbackDays` of daily returns (both
+ *  directly user-configured — AutotradeConfig.correlationThreshold/
+ *  correlationLookbackDays — passed explicitly rather than read here, same
+ *  reasoning as every other risk-check field: this stays a pure function of
+ *  its arguments, not implicitly coupled to live config). A position whose
+ *  correlation can't be computed (fetch failure, too little history) is
+ *  excluded from the sum, not assumed correlated — the CRITICAL
+ *  aggregate-risk check independently covers the "many positions at once"
+ *  gap risk this cap is layered on top of. */
 /** Exported for reuse by the Phase 6 paper execution loop (execute.ts), which
  *  needs the same live-fetching correlation check against its own running
  *  paper-portfolio state — not a from-scratch reimplementation (see
@@ -137,6 +140,8 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
 export async function correlatedNotional(
   symbol: string,
   positions: { symbol: string; notional: number }[],
+  lookbackDays: number,
+  threshold: number,
 ): Promise<{ amount: number; correlations: { symbol: string; r: number | null }[] }> {
   if (positions.length === 0) return { amount: 0, correlations: [] };
   const provider = getProvider();
@@ -145,7 +150,7 @@ export async function correlatedNotional(
   await Promise.all(
     symbols.map(async (s) => {
       try {
-        const candles = await provider.getCandles(s, 'daily', { limit: CORRELATION_LOOKBACK_DAYS + 1 });
+        const candles = await provider.getCandles(s, 'daily', { limit: lookbackDays + 1 });
         closesBySymbol.set(
           s,
           candles.map((c) => c.close),
@@ -165,7 +170,7 @@ export async function correlatedNotional(
     const posCloses = closesBySymbol.get(pos.symbol);
     const r = candidateReturns && posCloses ? pearsonCorrelation(candidateReturns, dailyReturns(posCloses)) : null;
     correlations.push({ symbol: pos.symbol, r });
-    if (r !== null && Math.abs(r) >= CORRELATION_THRESHOLD) amount += pos.notional;
+    if (r !== null && Math.abs(r) >= threshold) amount += pos.notional;
   }
   return { amount, correlations };
 }
@@ -196,6 +201,10 @@ export interface RiskCheckContext {
   maxAggregateOpenRiskPct: number;
   maxCorrelatedExposurePct: number;
   maxTradesPerDay: number;
+  /** For the max_correlated_exposure check's own display string below — the
+   *  actual correlation computation already happened before this context was
+   *  built (see correlatedNotional()'s own lookbackDays/threshold params). */
+  correlationThreshold: number;
 }
 
 export interface RiskCheckRule {
@@ -318,7 +327,7 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   check(
     'max_correlated_exposure',
     correlatedOk,
-    `${usd(ctx.correlatedNotional)} already correlated vs cap ${usd(correlatedCap)} (${ctx.maxCorrelatedExposurePct}% of equity, |r| ≥ ${CORRELATION_THRESHOLD})`,
+    `${usd(ctx.correlatedNotional)} already correlated vs cap ${usd(correlatedCap)} (${ctx.maxCorrelatedExposurePct}% of equity, |r| ≥ ${ctx.correlationThreshold})`,
   );
 
   const ok = checks.every((c) => c.passed);
@@ -352,7 +361,12 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
   const runningPositions = [...snapshot.openPositions];
 
   for (const signal of signals) {
-    const { amount: correlated } = await correlatedNotional(signal.symbol, runningPositions);
+    const { amount: correlated } = await correlatedNotional(
+      signal.symbol,
+      runningPositions,
+      config.correlationLookbackDays,
+      config.correlationThreshold,
+    );
     const ctx: RiskCheckContext = {
       equity: snapshot.equity ?? 0,
       dailyPnl: snapshot.dailyPnl,
@@ -369,6 +383,7 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
       maxAggregateOpenRiskPct: config.maxAggregateOpenRiskPct,
       maxCorrelatedExposurePct: config.maxCorrelatedExposurePct,
       maxTradesPerDay: config.maxTradesPerDay,
+      correlationThreshold: config.correlationThreshold,
     };
     const result = evaluateRiskCheck(signal, ctx);
     results.push(result);

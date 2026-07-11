@@ -3,7 +3,6 @@ import { ScreenerConfig, SymbolScore, scoreSymbol } from '../../indicators/scree
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } from './decide';
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
-import { CORRELATION_LOOKBACK_DAYS, CORRELATION_THRESHOLD } from './riskProfiles';
 import { RiskProfileName } from '../../db/autotradeConfig';
 import { defaultAutotradeScreenerConfig } from './screen';
 import { isExcluded } from '../../db/autotradeExclusions';
@@ -59,6 +58,12 @@ const LEGACY_BACKTEST_RISK_DEFAULTS: Record<RiskProfileName, BacktestRiskParams>
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
     maxTradesPerDay: 6,
+    // Never actually profile-specific (riskProfiles.ts's own header comment:
+    // "both profiles always shared these") — included here anyway so
+    // resolveBacktestRiskParams has exactly one bundle-lookup mechanism for
+    // all nine fields, not eight from this table plus two special-cased.
+    correlationLookbackDays: 30,
+    correlationThreshold: 0.7,
   },
   AGGRESSIVE: {
     riskPerTradePct: 1.5,
@@ -68,6 +73,8 @@ const LEGACY_BACKTEST_RISK_DEFAULTS: Record<RiskProfileName, BacktestRiskParams>
     maxAggregateOpenRiskPct: 4.5,
     maxCorrelatedExposurePct: 10,
     maxTradesPerDay: 10,
+    correlationLookbackDays: 30,
+    correlationThreshold: 0.7,
   },
 };
 
@@ -79,12 +86,14 @@ export interface BacktestRiskParams {
   maxAggregateOpenRiskPct: number;
   maxCorrelatedExposurePct: number;
   maxTradesPerDay: number;
+  correlationLookbackDays: number;
+  correlationThreshold: number;
 }
 
 /** Resolves each risk param from an explicit override on `cfg`, falling back
  *  to riskProfile's legacy bundle field-by-field — so a caller can loosen
  *  just ONE number (e.g. maxAggregateOpenRiskPct) without having to also
- *  specify the other six. */
+ *  specify the other eight. */
 export function resolveBacktestRiskParams(
   cfg: Partial<BacktestRiskParams> & { riskProfile: RiskProfileName },
 ): BacktestRiskParams {
@@ -97,6 +106,8 @@ export function resolveBacktestRiskParams(
     maxAggregateOpenRiskPct: cfg.maxAggregateOpenRiskPct ?? d.maxAggregateOpenRiskPct,
     maxCorrelatedExposurePct: cfg.maxCorrelatedExposurePct ?? d.maxCorrelatedExposurePct,
     maxTradesPerDay: cfg.maxTradesPerDay ?? d.maxTradesPerDay,
+    correlationLookbackDays: cfg.correlationLookbackDays ?? d.correlationLookbackDays,
+    correlationThreshold: cfg.correlationThreshold ?? d.correlationThreshold,
   };
 }
 
@@ -208,6 +219,8 @@ export function backtestCorrelatedNotional(
   asOfMs: number,
   positions: { symbol: string; notional: number }[],
   historyBySymbol: Map<string, Candle[]>,
+  lookbackDays: number,
+  threshold: number,
 ): number {
   if (positions.length === 0) return 0;
   const closesUpTo = (symbol: string): number[] | null => {
@@ -215,7 +228,7 @@ export function backtestCorrelatedNotional(
     if (!candles) return null;
     const idx = indexAsOf(candles, asOfMs);
     if (idx < 1) return null;
-    const start = Math.max(0, idx - CORRELATION_LOOKBACK_DAYS);
+    const start = Math.max(0, idx - lookbackDays);
     return candles.slice(start, idx + 1).map((c) => c.close);
   };
 
@@ -227,7 +240,7 @@ export function backtestCorrelatedNotional(
   for (const pos of positions) {
     const posCloses = closesUpTo(pos.symbol);
     const r = posCloses ? pearsonCorrelation(candidateReturns, dailyReturns(posCloses)) : null;
-    if (r !== null && Math.abs(r) >= CORRELATION_THRESHOLD) amount += pos.notional;
+    if (r !== null && Math.abs(r) >= threshold) amount += pos.notional;
   }
   return amount;
 }
@@ -371,7 +384,14 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
       // snapshot here would let several mutually-correlated candidates all
       // clear this cap on the same day, understating exactly the correlated-
       // cluster risk this check exists to catch.
-      const correlated = backtestCorrelatedNotional(signal.symbol, dayMs, runningPositions, historyBySymbol);
+      const correlated = backtestCorrelatedNotional(
+        signal.symbol,
+        dayMs,
+        runningPositions,
+        historyBySymbol,
+        riskParams.correlationLookbackDays,
+        riskParams.correlationThreshold,
+      );
       const ctx: RiskCheckContext = {
         equity,
         dailyPnl,

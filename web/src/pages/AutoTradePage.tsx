@@ -1421,6 +1421,8 @@ export default function AutoTradePage() {
   const [stopAtrMultipleDraft, setStopAtrMultipleDraft] = useState<number | undefined>();
   const [targetRMultipleDraft, setTargetRMultipleDraft] = useState<number | undefined>();
   const [sessionBufferMinutesDraft, setSessionBufferMinutesDraft] = useState<number | undefined>();
+  const [correlationLookbackDaysDraft, setCorrelationLookbackDaysDraft] = useState<number | undefined>();
+  const [correlationThresholdDraft, setCorrelationThresholdDraft] = useState<number | undefined>();
   const [liveAccountIdDraft, setLiveAccountIdDraft] = useState('');
   const [liveMaxOrderUsdDraft, setLiveMaxOrderUsdDraft] = useState<number | undefined>();
   const [liveMaxDailyLossUsdDraft, setLiveMaxDailyLossUsdDraft] = useState<number | undefined>();
@@ -1463,6 +1465,8 @@ export default function AutoTradePage() {
     setStopAtrMultipleDraft(config.data.stopAtrMultiple);
     setTargetRMultipleDraft(config.data.targetRMultiple);
     setSessionBufferMinutesDraft(config.data.sessionBufferMinutes);
+    setCorrelationLookbackDaysDraft(config.data.correlationLookbackDays);
+    setCorrelationThresholdDraft(config.data.correlationThreshold);
     setLiveAccountIdDraft(config.data.liveAccountId ?? '');
     setLiveMaxOrderUsdDraft(config.data.liveMaxOrderUsd);
     setLiveMaxDailyLossUsdDraft(config.data.liveMaxDailyLossUsd);
@@ -1502,6 +1506,8 @@ export default function AutoTradePage() {
     stopAtrMultiple?: number;
     targetRMultiple?: number;
     sessionBufferMinutes?: number;
+    correlationLookbackDays?: number;
+    correlationThreshold?: number;
     optionsStrategyType?: AutotradeOptionsStrategyType;
     autoPromoteMoversEnabled?: boolean;
     autoPromoteThreshold?: number;
@@ -1539,6 +1545,8 @@ export default function AutoTradePage() {
       setStopAtrMultipleDraft(saved.stopAtrMultiple);
       setTargetRMultipleDraft(saved.targetRMultiple);
       setSessionBufferMinutesDraft(saved.sessionBufferMinutes);
+      setCorrelationLookbackDaysDraft(saved.correlationLookbackDays);
+      setCorrelationThresholdDraft(saved.correlationThreshold);
       setAutoPromoteMoversEnabled(saved.autoPromoteMoversEnabled);
       setAutoPromoteThresholdDraft(saved.autoPromoteThreshold);
       setAutoPromoteWindowDaysDraft(saved.autoPromoteWindowDays);
@@ -2245,7 +2253,7 @@ export default function AutoTradePage() {
             </Field>
             <Field
               label="Max correlated exposure (%)"
-              hint="Cap on capital (not risk) already concentrated in tickers statistically correlated with a candidate (|r| ≥ 0.7 over 30 trading days) — guards against several correlated names getting stopped out together."
+              hint="Cap on capital (not risk) already concentrated in tickers statistically correlated with a candidate, per the correlation lookback/threshold settings below — guards against several correlated names getting stopped out together."
             >
               <div className="flex gap-2">
                 <NumberInput
@@ -2267,6 +2275,63 @@ export default function AutoTradePage() {
                     maxCorrelatedExposurePctDraft < 0 ||
                     maxCorrelatedExposurePctDraft > 100 ||
                     maxCorrelatedExposurePctDraft === config.data?.maxCorrelatedExposurePct
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Correlation lookback (trading days)"
+              hint="How many trading days of daily-return history are compared when measuring correlation between two symbols, for the max correlated exposure cap above."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={correlationLookbackDaysDraft}
+                  onChange={setCorrelationLookbackDaysDraft}
+                  min={1}
+                  step={1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save correlation lookback"
+                  onClick={() =>
+                    correlationLookbackDaysDraft != null &&
+                    saveConfig({ correlationLookbackDays: correlationLookbackDaysDraft })
+                  }
+                  disabled={
+                    correlationLookbackDaysDraft == null ||
+                    correlationLookbackDaysDraft < 1 ||
+                    correlationLookbackDaysDraft === config.data?.correlationLookbackDays
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Correlation threshold (|r|)"
+              hint="|Pearson r| at or above this counts two tickers as 'correlated' for the max correlated exposure cap above. 0-1, not a percentage."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={correlationThresholdDraft}
+                  onChange={setCorrelationThresholdDraft}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save correlation threshold"
+                  onClick={() =>
+                    correlationThresholdDraft != null && saveConfig({ correlationThreshold: correlationThresholdDraft })
+                  }
+                  disabled={
+                    correlationThresholdDraft == null ||
+                    correlationThresholdDraft < 0 ||
+                    correlationThresholdDraft > 1 ||
+                    correlationThresholdDraft === config.data?.correlationThreshold
                   }
                 >
                   Save

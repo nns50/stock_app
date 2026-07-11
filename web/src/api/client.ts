@@ -443,6 +443,8 @@ export const client = {
     stopAtrMultiple?: number;
     targetRMultiple?: number;
     sessionBufferMinutes?: number;
+    correlationLookbackDays?: number;
+    correlationThreshold?: number;
     liveTradingEnabled?: boolean;
     confirmLiveTrading?: string;
     liveAccountId?: string | null;
