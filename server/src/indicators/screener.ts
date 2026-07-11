@@ -147,23 +147,50 @@ function fmtNum(v: number | null, digits = 2): string {
   return v === null ? '—' : v.toFixed(digits);
 }
 
-/** Build the indicator snapshot from candles + (optional) live quote. */
+/** The candle-only (quote-independent) piece of computeIndicators — SMA/RSI/
+ *  ATR only ever depend on historical bars, never the live quote, so a
+ *  caller re-scoring the SAME symbol on an UNCHANGED latest candle (screen.ts's
+ *  every-60s tick — a daily bar only actually changes once a day) can cache
+ *  and reuse this exact result, rather than recomputing smaSeries/rsiSeries/
+ *  atrSeries (the heaviest part of scoring) on every tick regardless. */
+export interface CandleIndicators {
+  maShort: number | null;
+  maLong: number | null;
+  rsiVal: number | null;
+  atrVal: number | null;
+}
+
+export function computeCandleIndicators(candles: Candle[], cfg: ScreenerConfig): CandleIndicators | null {
+  if (candles.length < 2) return null;
+  const closes = candles.map((c) => c.close);
+  return {
+    maShort: latest(smaSeries(closes, cfg.maShort)),
+    maLong: latest(smaSeries(closes, cfg.maLong)),
+    rsiVal: latest(rsiSeries(closes, cfg.rsiPeriod)),
+    atrVal: latest(atrSeries(candles, cfg.atrPeriod)),
+  };
+}
+
+/** Build the indicator snapshot from candles + (optional) live quote.
+ *  `cachedCandleIndicators`, when passed, must already be this exact
+ *  candles array's own computeCandleIndicators() result — skips
+ *  recomputing SMA/RSI/ATR, but every quote-dependent field below (price,
+ *  change%, volume, gap) is still derived fresh every call regardless,
+ *  since those genuinely change on every live quote tick and must never be
+ *  served stale. */
 export function computeIndicators(
   candles: Candle[],
   quote: Quote | undefined,
   cfg: ScreenerConfig,
+  cachedCandleIndicators?: CandleIndicators,
 ): IndicatorSnapshot | null {
   if (candles.length < 2) return null;
-  const closes = candles.map((c) => c.close);
   const volumes = candles.map((c) => c.volume);
   const last = candles[candles.length - 1];
   const prev = candles[candles.length - 2];
   const price = quote?.last ?? last.close;
 
-  const maShort = latest(smaSeries(closes, cfg.maShort));
-  const maLong = latest(smaSeries(closes, cfg.maLong));
-  const rsiVal = latest(rsiSeries(closes, cfg.rsiPeriod));
-  const atrVal = latest(atrSeries(candles, cfg.atrPeriod));
+  const { maShort, maLong, rsiVal, atrVal } = cachedCandleIndicators ?? computeCandleIndicators(candles, cfg)!;
 
   const changePct = quote?.changePct ?? percentChange(last.close, prev.close);
   const avgVolume = quote?.avgVolume ?? meanOfLast(volumes.slice(0, -1), 20) ?? meanOfLast(volumes, 20);
@@ -272,8 +299,9 @@ export function scoreSymbol(
   candles: Candle[],
   quote: Quote | undefined,
   cfg: ScreenerConfig,
+  cachedCandleIndicators?: CandleIndicators,
 ): SymbolScore {
-  const ind = computeIndicators(candles, quote, cfg);
+  const ind = computeIndicators(candles, quote, cfg, cachedCandleIndicators);
   if (!ind) {
     return {
       symbol,
