@@ -198,7 +198,18 @@ describe('AutoTradePage', () => {
 
     const equityInput = screen.getByPlaceholderText('e.g. 25000');
     fireEvent.change(equityInput, { target: { value: '50000' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save account equity' }));
+
+    // NumberInput buffers its own `text` state and re-syncs it from the
+    // `value` prop via a useEffect (see components/ui.tsx) — the Save
+    // button's disabled state depends on that prop having actually reached
+    // the parent's equityDraft, which is not guaranteed to have settled by
+    // the very next synchronous line under CI-level scheduling/load (the
+    // same class of flake TradePage's own auto-refresh tests hit; see that
+    // file's history). Wait for the observable consequence — the button
+    // actually becoming enabled — instead of assuming it settled synchronously.
+    const saveButton = screen.getByRole('button', { name: 'Save account equity' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
 
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ accountEquityUsd: 50_000, confirmAggressive: undefined }),

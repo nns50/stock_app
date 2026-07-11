@@ -416,7 +416,14 @@ export default function ScreenerPage() {
                   Save snapshot
                 </button>
               )}
-              {result && <RefreshBar onRefresh={run} lastUpdated={result.generatedAt} loading={running} />}
+              {result && (
+                <RefreshBar
+                  onRefresh={run}
+                  lastUpdated={result.generatedAt}
+                  loading={running}
+                  defaultIntervalMs={null}
+                />
+              )}
             </>
           }
         />
