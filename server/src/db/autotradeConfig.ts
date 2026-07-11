@@ -155,6 +155,40 @@ export interface AutotradeConfig {
    *  (which already force-close via its own separate time-exit). */
   maxHoldDays: number;
 
+  // --- Trailing stop / breakeven / partial profit-taking (docs/
+  // AUTOTRADING_SPEC.md — RESOLVED DECISIONS, added 2026-07-11). PAPER and
+  // BACKTEST equity positions only for now — LIVE equity positions are
+  // untouched (see the spec's own writeup on why: modifying/partially
+  // closing a resting live bracket has no existing precedent and a
+  // meaningfully worse failure mode than maxHoldDays' own live force-close
+  // did). All five default to 0/disabled, so an untouched config's behavior
+  // doesn't change. R-multiples here are measured against the position's
+  // OWN original stop distance (fixed at entry), never a value that moves
+  // as the stop itself ratchets. ---------------------------------------------
+
+  /** Once unrealized gain reaches this many R, move the stop to exactly the
+   *  entry price (breakeven) — a one-time ratchet, never applied if it would
+   *  LOOSEN the current stop. 0 disables it. */
+  breakevenTriggerRMultiple: number;
+  /** Once unrealized gain reaches this many R, begin trailing the stop (see
+   *  trailStopRMultiple) behind the best price seen since entry. 0 disables
+   *  trailing entirely — breakevenTriggerRMultiple above works independently
+   *  of this. */
+  trailStartRMultiple: number;
+  /** Once trailing is active, the stop trails this many R (in the
+   *  position's own original risk-distance terms, i.e. × |entry − original
+   *  stop|) behind the best price seen since entry — ratcheting only
+   *  favorably, same as breakevenTriggerRMultiple. Meaningless if
+   *  trailStartRMultiple is 0. */
+  trailStopRMultiple: number;
+  /** Once unrealized gain reaches this many R, close partialExitPct% of the
+   *  position once — the rest keeps running toward its original target (or
+   *  continues trailing). 0 disables it. */
+  partialExitRMultiple: number;
+  /** % of the position closed at the partialExitRMultiple trigger. Only
+   *  meaningful when partialExitRMultiple is nonzero. */
+  partialExitPct: number;
+
   // --- Correlation methodology (docs/AUTOTRADING_SPEC.md — RESOLVED
   // DECISIONS). Formerly riskProfiles.ts's CORRELATION_LOOKBACK_DAYS/
   // CORRELATION_THRESHOLD — that file's entire remaining purpose was these
@@ -320,6 +354,11 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
     maxHoldDays: 0,
+    breakevenTriggerRMultiple: 0,
+    trailStartRMultiple: 0,
+    trailStopRMultiple: 0,
+    partialExitRMultiple: 0,
+    partialExitPct: 50,
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
     liveTradingEnabled: false,
@@ -425,6 +464,11 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
     earningsBlackoutDays: posInt(input.earningsBlackoutDays, d.earningsBlackoutDays),
     maxHoldDays: posInt(input.maxHoldDays, d.maxHoldDays),
+    breakevenTriggerRMultiple: nonNeg(input.breakevenTriggerRMultiple, d.breakevenTriggerRMultiple),
+    trailStartRMultiple: nonNeg(input.trailStartRMultiple, d.trailStartRMultiple),
+    trailStopRMultiple: nonNeg(input.trailStopRMultiple, d.trailStopRMultiple),
+    partialExitRMultiple: nonNeg(input.partialExitRMultiple, d.partialExitRMultiple),
+    partialExitPct: pct(input.partialExitPct, d.partialExitPct),
     correlationLookbackDays: posIntMin1(input.correlationLookbackDays, d.correlationLookbackDays),
     correlationThreshold: unitInterval(input.correlationThreshold, d.correlationThreshold),
     liveTradingEnabled: typeof input.liveTradingEnabled === 'boolean' ? input.liveTradingEnabled : d.liveTradingEnabled,

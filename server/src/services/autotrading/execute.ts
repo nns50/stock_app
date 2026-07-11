@@ -9,6 +9,9 @@ import {
   listOpenPaperPositions,
   listPaperPositions,
   openPaperPosition,
+  partialClosePaperPosition,
+  ratchetPaperPositionStop,
+  updatePaperPositionBestPrice,
   PaperExitReason,
   PaperPosition,
 } from '../../db/autotradePaperPositions';
@@ -348,9 +351,15 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
  * as backtest.ts's own conservative ordering): maxHoldDays, if configured
  * (0 = disabled). Closes at the CURRENT quote, not a declared level — unlike
  * stop/target, a time-exit has no predetermined price to close at.
+ *
+ * When none of those three fire, applyPositionManagement (below) gets a
+ * chance to scale out part of the position and/or ratchet its stop —
+ * breakeven and trailing, PAPER only (see AutotradeConfig's own doc comment
+ * on why LIVE equity positions don't get this).
  */
 export async function checkPaperExits(): Promise<ExitCheckOutcome[]> {
-  const { maxHoldDays } = getAutotradeConfig();
+  const cfg = getAutotradeConfig();
+  const { maxHoldDays } = cfg;
   const open = listOpenPaperPositions();
   return mapPool(open, 6, async (pos): Promise<ExitCheckOutcome> => {
     let last: number;
@@ -364,7 +373,10 @@ export async function checkPaperExits(): Promise<ExitCheckOutcome[]> {
     const stopHit = long ? last <= pos.stopPrice : last >= pos.stopPrice;
     const targetHit = long ? last >= pos.targetPrice : last <= pos.targetPrice;
     const timeHit = !stopHit && !targetHit && maxHoldDays > 0 && Date.now() - pos.entryAt >= maxHoldDays * MS_PER_DAY;
-    if (!stopHit && !targetHit && !timeHit) return { symbol: pos.symbol, closed: false };
+    if (!stopHit && !targetHit && !timeHit) {
+      applyPositionManagement(pos, last, cfg);
+      return { symbol: pos.symbol, closed: false };
+    }
 
     const exitReason: PaperExitReason = stopHit ? 'stop' : targetHit ? 'target' : 'time_exit';
     const exitPrice = stopHit ? pos.stopPrice : targetHit ? pos.targetPrice : last;
@@ -381,4 +393,80 @@ export async function checkPaperExits(): Promise<ExitCheckOutcome[]> {
     }
     return { symbol: pos.symbol, closed: !!closed, position: closed ?? undefined };
   });
+}
+
+/**
+ * Trailing stop / breakeven / partial profit-taking — only reached once
+ * stop/target/time-exit have all already been ruled out for this cycle.
+ * Unrealized gain is measured in R-multiples of the position's OWN
+ * `initialStopPrice` (a snapshot frozen at open), never the current,
+ * possibly-already-ratcheted `stopPrice` — otherwise a stop that's already
+ * trailed partway would make every subsequent R-multiple reading larger
+ * than it should be, since the "risk" denominator would keep shrinking as
+ * the stop it's derived from moves. Silently a no-op for a row that
+ * predates this feature (initialStopPrice/bestPriceSinceEntry null) or
+ * whose stop distance is degenerate (zero) — nothing to ratchet against.
+ */
+function applyPositionManagement(pos: PaperPosition, last: number, cfg: ReturnType<typeof getAutotradeConfig>): void {
+  if (pos.initialStopPrice == null) return;
+  const long = pos.side === 'buy';
+  const initialStopDistance = Math.abs(pos.entryPrice - pos.initialStopPrice);
+  if (!(initialStopDistance > 0)) return;
+
+  const rMultiple = long
+    ? (last - pos.entryPrice) / initialStopDistance
+    : (pos.entryPrice - last) / initialStopDistance;
+
+  // Partial exit — one-time, checked first (a scale-out is the "bigger"
+  // action; breakeven/trailing below just adjust where the remainder's stop
+  // sits). partialExitTaken guards against re-firing every cycle once done.
+  if (cfg.partialExitRMultiple > 0 && !pos.partialExitTaken && rMultiple >= cfg.partialExitRMultiple) {
+    const closeQty = Math.floor(pos.quantity * (cfg.partialExitPct / 100));
+    // Skip (retried next cycle) rather than force an edge case: 0 rounds to
+    // nothing to close; the full quantity belongs to a real exit, not a
+    // scale-out that's supposed to leave a remainder running.
+    if (closeQty > 0 && closeQty < pos.quantity) {
+      const updated = partialClosePaperPosition(pos.id, { quantity: closeQty, exitPrice: last });
+      if (updated) {
+        const pnl = (last - pos.entryPrice) * closeQty * (long ? 1 : -1);
+        logAutotradeEvent({
+          symbol: pos.symbol,
+          stage: 'execution',
+          action: 'paper_partial_exit',
+          detail: { quantity: closeQty, exitPrice: last, pnl, rMultiple },
+          riskProfile: pos.riskProfile,
+        });
+      }
+    }
+  }
+
+  // Best price seen since entry — the high-water (long) / low-water (short)
+  // mark trailing ratchets against. Cheap bookkeeping; no journal entry.
+  const priorBest = pos.bestPriceSinceEntry ?? pos.entryPrice;
+  const bestPrice = long ? Math.max(priorBest, last) : Math.min(priorBest, last);
+  if (bestPrice !== priorBest) updatePaperPositionBestPrice(pos.id, bestPrice);
+
+  // Breakeven and trailing both just propose a candidate stop; only the
+  // MOST favorable of {current stop, breakeven candidate, trailing
+  // candidate} ever gets written — this is what guarantees neither one can
+  // ever loosen the stop, without needing separate "already applied" flags.
+  let candidateStop = pos.stopPrice;
+  if (cfg.breakevenTriggerRMultiple > 0 && rMultiple >= cfg.breakevenTriggerRMultiple) {
+    candidateStop = long ? Math.max(candidateStop, pos.entryPrice) : Math.min(candidateStop, pos.entryPrice);
+  }
+  if (cfg.trailStartRMultiple > 0 && cfg.trailStopRMultiple > 0 && rMultiple >= cfg.trailStartRMultiple) {
+    const trailDistance = cfg.trailStopRMultiple * initialStopDistance;
+    const trailingCandidate = long ? bestPrice - trailDistance : bestPrice + trailDistance;
+    candidateStop = long ? Math.max(candidateStop, trailingCandidate) : Math.min(candidateStop, trailingCandidate);
+  }
+  if (candidateStop !== pos.stopPrice) {
+    ratchetPaperPositionStop(pos.id, candidateStop);
+    logAutotradeEvent({
+      symbol: pos.symbol,
+      stage: 'execution',
+      action: 'paper_stop_ratcheted',
+      detail: { from: pos.stopPrice, to: candidateStop, rMultiple },
+      riskProfile: pos.riskProfile,
+    });
+  }
 }

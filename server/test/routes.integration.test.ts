@@ -569,6 +569,11 @@ describe('autotrade config routes (integration)', () => {
       stopAtrMultiple: 2,
       targetRMultiple: 3,
       maxHoldDays: 10,
+      breakevenTriggerRMultiple: 1,
+      trailStartRMultiple: 1.5,
+      trailStopRMultiple: 0.5,
+      partialExitRMultiple: 2,
+      partialExitPct: 75,
       earningsBlackoutDays: 3,
       sessionBufferMinutes: 30,
       correlationLookbackDays: 45,
@@ -583,6 +588,11 @@ describe('autotrade config routes (integration)', () => {
       stopAtrMultiple: number;
       targetRMultiple: number;
       maxHoldDays: number;
+      breakevenTriggerRMultiple: number;
+      trailStartRMultiple: number;
+      trailStopRMultiple: number;
+      partialExitRMultiple: number;
+      partialExitPct: number;
       earningsBlackoutDays: number;
       sessionBufferMinutes: number;
       correlationLookbackDays: number;
@@ -596,6 +606,11 @@ describe('autotrade config routes (integration)', () => {
       stopAtrMultiple: 2,
       targetRMultiple: 3,
       maxHoldDays: 10,
+      breakevenTriggerRMultiple: 1,
+      trailStartRMultiple: 1.5,
+      trailStopRMultiple: 0.5,
+      partialExitRMultiple: 2,
+      partialExitPct: 75,
       earningsBlackoutDays: 3,
       sessionBufferMinutes: 30,
       correlationLookbackDays: 45,

@@ -403,6 +403,74 @@ describe('autotrade config persistence', () => {
     });
   });
 
+  describe('trailing stop / breakeven / partial profit-taking', () => {
+    it('all five default to 0/disabled, except partialExitPct which defaults to 50', () => {
+      const d = defaultAutotradeConfig();
+      expect(d.breakevenTriggerRMultiple).toBe(0);
+      expect(d.trailStartRMultiple).toBe(0);
+      expect(d.trailStopRMultiple).toBe(0);
+      expect(d.partialExitRMultiple).toBe(0);
+      expect(d.partialExitPct).toBe(50);
+    });
+
+    it('persists a patch and round-trips', () => {
+      const cfg = setAutotradeConfig({
+        breakevenTriggerRMultiple: 1,
+        trailStartRMultiple: 1.5,
+        trailStopRMultiple: 0.5,
+        partialExitRMultiple: 2,
+        partialExitPct: 75,
+      });
+      expect(cfg).toMatchObject({
+        breakevenTriggerRMultiple: 1,
+        trailStartRMultiple: 1.5,
+        trailStopRMultiple: 0.5,
+        partialExitRMultiple: 2,
+        partialExitPct: 75,
+      });
+      expect(getAutotradeConfig()).toMatchObject({ breakevenTriggerRMultiple: 1, partialExitPct: 75 });
+    });
+
+    it('allows exactly 0 for the four R-multiple fields but rejects negative to the default', () => {
+      expect(setAutotradeConfig({ breakevenTriggerRMultiple: 0 }).breakevenTriggerRMultiple).toBe(0);
+      setAutotradeConfig({
+        breakevenTriggerRMultiple: 1,
+        trailStartRMultiple: 1,
+        trailStopRMultiple: 1,
+        partialExitRMultiple: 1,
+      });
+      const cfg = setAutotradeConfig({
+        // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+        breakevenTriggerRMultiple: -1,
+        // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+        trailStartRMultiple: -1,
+        // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+        trailStopRMultiple: -1,
+        // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+        partialExitRMultiple: -1,
+      });
+      const d = defaultAutotradeConfig();
+      expect(cfg.breakevenTriggerRMultiple).toBe(d.breakevenTriggerRMultiple);
+      expect(cfg.trailStartRMultiple).toBe(d.trailStartRMultiple);
+      expect(cfg.trailStopRMultiple).toBe(d.trailStopRMultiple);
+      expect(cfg.partialExitRMultiple).toBe(d.partialExitRMultiple);
+    });
+
+    it('clamps partialExitPct to [0, 100] rather than rejecting out-of-range values', () => {
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize clamp
+      expect(setAutotradeConfig({ partialExitPct: 150 }).partialExitPct).toBe(100);
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize clamp
+      expect(setAutotradeConfig({ partialExitPct: -10 }).partialExitPct).toBe(0);
+      expect(setAutotradeConfig({ partialExitPct: 0 }).partialExitPct).toBe(0); // exactly 0 is valid, not a fallback trigger
+    });
+
+    it('allows R-multiple fields to be fractional, not just integers', () => {
+      const cfg = setAutotradeConfig({ breakevenTriggerRMultiple: 0.5, trailStopRMultiple: 0.25 });
+      expect(cfg.breakevenTriggerRMultiple).toBe(0.5);
+      expect(cfg.trailStopRMultiple).toBe(0.25);
+    });
+  });
+
   describe('earnings blackout', () => {
     it('defaults to 0 (disabled)', () => {
       expect(defaultAutotradeConfig().earningsBlackoutDays).toBe(0);

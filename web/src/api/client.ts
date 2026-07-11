@@ -443,6 +443,11 @@ export const client = {
     stopAtrMultiple?: number;
     targetRMultiple?: number;
     maxHoldDays?: number;
+    breakevenTriggerRMultiple?: number;
+    trailStartRMultiple?: number;
+    trailStopRMultiple?: number;
+    partialExitRMultiple?: number;
+    partialExitPct?: number;
     sessionBufferMinutes?: number;
     earningsBlackoutDays?: number;
     correlationLookbackDays?: number;

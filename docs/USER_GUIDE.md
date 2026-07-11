@@ -699,7 +699,21 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   backstop against a position that's just drifting sideways forever. Defaults to
   **0 (disabled)**, so leaving it untouched changes nothing; unlike the seven fields
   above, it has no manual-preview equivalent — there's nothing to preview about how
-  long a position stays open before it's even entered.
+  long a position stays open before it's even entered. Five more fields manage an
+  already-open **paper or backtest** equity position the same way a discretionary
+  trader might (**live positions are untouched — still a fixed stop/target for
+  life**): **breakeven trigger** (once unrealized gain reaches this many R, move the
+  stop to exactly the entry price — a one-time move, never applied if it would
+  loosen the current stop), **trailing start** and **trailing distance** (once gain
+  reaches the trailing-start R-multiple, the stop trails the trailing-distance R
+  behind the best price seen since entry, ratcheting only favorably — independent of
+  the breakeven trigger), and **partial exit trigger** with **partial exit size (%)**
+  (once gain reaches the trigger, close that percentage of the position once — the
+  rest keeps running toward its original target or continues trailing). All five
+  default to **0 (disabled)**, except partial exit size, which defaults to 50% for
+  whenever its trigger gets turned on — so leaving them untouched changes nothing.
+  R-multiples here are always measured against the position's own original stop
+  distance, fixed at entry, even after the stop itself has since moved.
   **Auto-promote recurring movers** (on by default) grows your universe automatically:
   a symbol Webull's premarket movers surface that also clears screening on **3 distinct
   days within a 10-day window** (both tunable, along with a **50-symbol lifetime cap** on

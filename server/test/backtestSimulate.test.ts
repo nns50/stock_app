@@ -181,6 +181,113 @@ describe('simulateBacktest', () => {
     expect(report.trades[0].exitPrice).toBe(106);
   });
 
+  describe('trailing stop / breakeven / partial profit-taking', () => {
+    // entry ~100, stop ~97, target ~106 (per warmupThrough's own math) ->
+    // initialStopDistance ~3, so 1R = a $3 favorable close.
+
+    it('moves the stop to breakeven once the trigger R-multiple is reached, provable via a later stop-hit at the new level', () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const day2 = d(signalDay, 2); // close 104 -> ~1.33R, past the 1R breakeven trigger
+      const day3 = d(signalDay, 3); // low 99 -- would NOT hit the original stop (97) but WOULD hit a breakeven stop (100)
+      const history = new Map([
+        [
+          'TEST',
+          [
+            ...warmupThrough(signalDay),
+            bar(entryDay),
+            bar(day2, { open: 101, high: 105, low: 100, close: 104 }),
+            bar(day3, { open: 100, high: 101, low: 99, close: 99.5 }),
+          ],
+        ],
+      ]);
+      const report = simulateBacktest(history, baseConfig({ from: signalDay, to: day3, breakevenTriggerRMultiple: 1 }));
+      expect(report.trades).toHaveLength(1);
+      expect(report.trades[0].exitReason).toBe('stop');
+      expect(report.trades[0].exitPrice).toBe(100); // the RATCHETED (breakeven) stop, not the original 97
+    });
+
+    it('trails the stop behind the best close once past the trailing-start R-multiple', () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const day2 = d(signalDay, 2); // close 104 -> best price 104; trail distance 0.5*3=1.5 -> stop 102.5
+      const day3 = d(signalDay, 3); // low 102 -- would NOT hit the original stop (97) but WOULD hit the trailed stop (102.5)
+      const history = new Map([
+        [
+          'TEST',
+          [
+            ...warmupThrough(signalDay),
+            bar(entryDay),
+            bar(day2, { open: 101, high: 105, low: 100, close: 104 }),
+            bar(day3, { open: 103, high: 104, low: 102, close: 103 }),
+          ],
+        ],
+      ]);
+      const report = simulateBacktest(
+        history,
+        baseConfig({ from: signalDay, to: day3, trailStartRMultiple: 1, trailStopRMultiple: 0.5 }),
+      );
+      expect(report.trades).toHaveLength(1);
+      expect(report.trades[0].exitReason).toBe('stop');
+      expect(report.trades[0].exitPrice).toBe(102.5);
+    });
+
+    it('closes the configured percentage as a separate trade row at the partial-exit trigger, then closes the remainder normally later', () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const day2 = d(signalDay, 2); // close 104 -> ~1.33R, past the 1R partial-exit trigger
+      const targetDay = d(signalDay, 3); // hits the 106 target for the remainder
+      const history = new Map([
+        [
+          'TEST',
+          [
+            ...warmupThrough(signalDay),
+            bar(entryDay),
+            bar(day2, { open: 101, high: 105, low: 100, close: 104 }),
+            bar(targetDay, { open: 104, high: 107, low: 103, close: 106 }),
+          ],
+        ],
+      ]);
+      const report = simulateBacktest(
+        history,
+        baseConfig({ from: signalDay, to: targetDay, partialExitRMultiple: 1, partialExitPct: 50 }),
+      );
+      expect(report.trades).toHaveLength(2);
+      const [partial, final] = report.trades;
+      expect(partial.exitReason).toBe('partial_exit');
+      expect(partial.exitDate).toBe(day2);
+      expect(partial.exitPrice).toBe(104);
+      expect(partial.quantity).toBe(166); // floor(333 * 0.5) -- 333 is this fixture's own known sized quantity
+      expect(final.exitReason).toBe('target');
+      expect(final.exitDate).toBe(targetDay);
+      expect(final.quantity).toBe(167); // the remainder: 333 - 166
+      expect(final.exitPrice).toBe(106);
+    });
+
+    it('never fires any of the five when all are left at their defaults (0)', () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const day2 = d(signalDay, 2);
+      const day3 = d(signalDay, 3);
+      const history = new Map([
+        [
+          'TEST',
+          [
+            ...warmupThrough(signalDay),
+            bar(entryDay),
+            bar(day2, { open: 101, high: 105, low: 100, close: 104 }),
+            bar(day3, { open: 100, high: 101, low: 99, close: 99.5 }),
+          ],
+        ],
+      ]);
+      // Same bars as the breakeven test above, but with none of the five fields set —
+      // the low of 99 on day3 must NOT close at a ratcheted stop that was never applied.
+      const report = simulateBacktest(history, baseConfig({ from: signalDay, to: day3 }));
+      expect(report.trades).toHaveLength(1);
+      expect(report.trades[0].exitReason).toBe('end_of_period'); // rode to the end, stop never moved from 97
+    });
+  });
+
   it('assumes the stop hit first (conservative) when a single bar could have hit both', () => {
     const signalDay = '2024-03-01';
     const entryDay = d(signalDay, 1);

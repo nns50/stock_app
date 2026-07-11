@@ -39,6 +39,20 @@ CREATE TABLE IF NOT EXISTS alerts (
 // autotrade_paper_positions DDL, factored out so the fresh-create (SCHEMA) and
 // the migration that widens exit_reason share one definition (added
 // 2026-07-11 for the 'time_exit' value — max-hold-days force-close).
+//
+// initial_stop_price / best_price_since_entry / partial_exit_taken (added
+// 2026-07-11, trailing stop / breakeven / partial profit-taking — paper and
+// backtest only, see AutotradeConfig's own doc comment on why LIVE is
+// untouched): stop_price itself is now MUTABLE (ratcheted toward breakeven
+// or trailed, never loosened) once a position is open, so R-multiple
+// triggers need a snapshot of the ORIGINAL stop distance that never changes
+// — initial_stop_price is that snapshot, set once at open and never
+// touched again. best_price_since_entry is the running high-water mark (a
+// long) / low-water mark (a short) the trailing calculation ratchets
+// against — nullable for pre-existing rows (both fields), which simply
+// never trail/ratchet again once this migrates (nothing to backfill: their
+// history before this feature existed is unrecoverable, and they'll close
+// out normally via stop/target/time-exit regardless).
 const AUTOTRADE_PAPER_POSITIONS_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS autotrade_paper_positions (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,6 +70,9 @@ CREATE TABLE IF NOT EXISTS autotrade_paper_positions (
   exit_price    REAL,
   exit_at       INTEGER,
   exit_reason   TEXT CHECK(exit_reason IN ('stop','target','time_exit','manual') OR exit_reason IS NULL),
+  initial_stop_price      REAL,          -- snapshot of stop_price at open; never mutated again
+  best_price_since_entry  REAL,          -- running high/low-water mark since entry
+  partial_exit_taken      INTEGER NOT NULL DEFAULT 0,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );`;
@@ -643,6 +660,22 @@ function migrate(): void {
   rebuildAlertsTable(db);
 
   rebuildAutotradePaperPositionsTable(db);
+
+  // autotrade_paper_positions gained trailing-stop/breakeven/partial-exit
+  // tracking (added AFTER the rebuild above, so a table that just got
+  // rebuilt already has these from AUTOTRADE_PAPER_POSITIONS_TABLE_SQL and
+  // these three checks correctly no-op for it).
+  const appCols = db.prepare('PRAGMA table_info(autotrade_paper_positions)').all() as { name: string }[];
+  const hasApp = (c: string) => appCols.some((col) => col.name === c);
+  if (!hasApp('initial_stop_price')) {
+    db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN initial_stop_price REAL');
+  }
+  if (!hasApp('best_price_since_entry')) {
+    db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN best_price_since_entry REAL');
+  }
+  if (!hasApp('partial_exit_taken')) {
+    db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN partial_exit_taken INTEGER NOT NULL DEFAULT 0');
+  }
 
   // autotrade_options_paper_positions gained a debit-spread shape (Task #69):
   // a kind discriminator plus the short leg's contract/strike/entry/exit.

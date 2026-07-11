@@ -1084,6 +1084,16 @@ export interface AutotradeConfig {
    *  (IV rank already proxies for an approaching print there). */
   earningsBlackoutDays: number;
 
+  // --- Trailing stop / breakeven / partial profit-taking (PAPER and
+  // BACKTEST equity positions only — LIVE is untouched). All default to
+  // 0/disabled. R-multiples are measured against the position's own
+  // original stop distance, fixed at entry. ---------------------------------
+  breakevenTriggerRMultiple: number;
+  trailStartRMultiple: number;
+  trailStopRMultiple: number;
+  partialExitRMultiple: number;
+  partialExitPct: number;
+
   // --- Correlation methodology (feeds maxCorrelatedExposurePct above) ---
   correlationLookbackDays: number;
   /** |Pearson r| at or above this counts as "correlated". 0-1, not a percentage. */
@@ -1370,6 +1380,13 @@ export interface BacktestRequest extends BacktestRiskParams {
   /** Force-close a position open this many CALENDAR days without a stop/
    *  target hit. Omitted or 0 disables it. */
   maxHoldDays?: number;
+  /** Trailing stop / breakeven / partial profit-taking — mirrors
+   *  AutotradeConfig's own fields. Omitted or 0 disables each. */
+  breakevenTriggerRMultiple?: number;
+  trailStartRMultiple?: number;
+  trailStopRMultiple?: number;
+  partialExitRMultiple?: number;
+  partialExitPct?: number;
 }
 
 export interface WalkForwardRequest extends BacktestRequest {
@@ -1485,6 +1502,13 @@ export interface CombinedBacktestRequest extends BacktestRiskParams {
   /** Force-close an EQUITY leg position open this many CALENDAR days without
    *  a stop/target hit. Omitted or 0 disables it; no effect on the options leg. */
   maxHoldDays?: number;
+  /** Trailing stop / breakeven / partial profit-taking for the EQUITY leg
+   *  only — mirrors AutotradeConfig's own fields. Omitted or 0 disables each. */
+  breakevenTriggerRMultiple?: number;
+  trailStartRMultiple?: number;
+  trailStopRMultiple?: number;
+  partialExitRMultiple?: number;
+  partialExitPct?: number;
   optionsDecisionConfig?: { strategyType?: AutotradeOptionsStrategyType };
 }
 

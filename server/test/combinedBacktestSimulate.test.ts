@@ -147,6 +147,33 @@ describe('simulateCombinedBacktest', () => {
     expect(report.optionsTrades).toEqual([]);
   });
 
+  it('moves the EQUITY leg stop to breakeven once the trigger R-multiple is reached, provable via a later stop-hit at the new level', async () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const day2 = d(signalDay, 2); // close 104 -> ~1.33R, past the 1R breakeven trigger
+    const day3 = d(signalDay, 3); // low 99 -- would NOT hit the original stop (97) but WOULD hit a breakeven stop (100)
+    const historyBySymbol = new Map([
+      [
+        'AAA',
+        [
+          ...warmupThrough(signalDay),
+          equityBar(entryDay),
+          equityBar(day2, { open: 101, high: 105, low: 100, close: 104 }),
+          equityBar(day3, { open: 100, high: 101, low: 99, close: 99.5 }),
+        ],
+      ],
+    ]);
+    const report = await simulateCombinedBacktest(
+      historyBySymbol,
+      new Map(),
+      baseConfig({ symbols: ['AAA'], from: signalDay, to: day3, breakevenTriggerRMultiple: 1 }),
+    );
+    expect(report.equityTrades).toHaveLength(1);
+    expect(report.equityTrades[0].exitReason).toBe('stop');
+    expect(report.equityTrades[0].exitPrice).toBe(100); // the RATCHETED (breakeven) stop, not the original 97
+    expect(report.optionsTrades).toEqual([]);
+  });
+
   it('opens and force-closes an options-only position — the options leg is unaffected by combining', async () => {
     const signalDay = '2024-03-01';
     const entryDay = d(signalDay, 1);
