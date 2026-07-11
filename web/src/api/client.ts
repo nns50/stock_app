@@ -442,6 +442,7 @@ export const client = {
     maxMarketAtrPct?: number;
     stopAtrMultiple?: number;
     targetRMultiple?: number;
+    maxHoldDays?: number;
     sessionBufferMinutes?: number;
     correlationLookbackDays?: number;
     correlationThreshold?: number;

@@ -4,16 +4,24 @@ import { getTradingConfig } from '../../db/trading';
 import { AccountState, evaluateGuardrails, OrderIntent, blockingFailures, TradingConfig } from '../trading/guardrails';
 import { marketOpenContext } from '../trading/marketHours';
 import { webullAccountState } from '../../providers/webull/accountState';
-import { newClientOrderId, webullPlaceOrder, webullOrderStatus } from '../../providers/webull/orders';
+import {
+  newClientOrderId,
+  webullPlaceOrder,
+  webullOrderStatus,
+  webullCancelOrder,
+} from '../../providers/webull/orders';
 import { mapWebullStatus } from '../trading/reconcile';
 import { createIntent, transitionIntent, countTodaysOrders, getIntent, OrderIntentRecord } from '../../db/orders';
 import { canTransition, isTerminal } from '../trading/orderLifecycle';
 import {
   recordLiveOrder,
+  recordLiveExitOrder,
   setLiveOrderPositionId,
   listPendingLiveOrders,
   countLiveOrdersSince,
   pendingLiveOrdersRisk,
+  getLiveOrder,
+  LiveOrderMeta,
 } from '../../db/autotradeLiveOrders';
 // DB-layer reads only (NOT the options execution service) -- so the combined
 // live budget can fold in the options book without a liveExecute <-> options
@@ -603,14 +611,7 @@ export async function reconcileLiveOrders(): Promise<LiveReconcileOutcome[]> {
       continue;
     }
 
-    const changed = reconcileOneLiveOrder(
-      intent,
-      meta.stopPrice,
-      meta.targetPrice,
-      meta.riskAmount,
-      meta.riskProfile,
-      broker,
-    );
+    const changed = reconcileOneLiveOrder(intent, meta, broker);
     outcomes.push({ intentId: intent.id, symbol: meta.symbol, ...changed });
   }
   return outcomes;
@@ -618,14 +619,14 @@ export async function reconcileLiveOrders(): Promise<LiveReconcileOutcome[]> {
 
 function reconcileOneLiveOrder(
   intent: OrderIntentRecord,
-  stopPrice: number,
-  targetPrice: number,
-  riskAmount: number,
-  riskProfile: string,
+  meta: LiveOrderMeta,
   broker: Awaited<ReturnType<typeof webullOrderStatus>>,
 ): { changed: boolean; action?: 'entry_filled' | 'exit_filled'; error?: string } {
+  const { stopPrice, targetPrice, riskAmount, riskProfile } = meta;
   // The MASTER (entry) leg's own status, same field reconcileIntent() already
-  // uses for a non-bracket order.
+  // uses for a non-bracket order. Also this table's ROLE='exit' order's own
+  // (and only) status -- a time-exit closing order is never a bracket, so
+  // its fill is exactly this simple, same as a plain non-bracket order.
   const masterTarget = broker.status ? mapWebullStatus(broker.status) : undefined;
   if (
     masterTarget &&
@@ -652,6 +653,18 @@ function reconcileOneLiveOrder(
       // reconcile.ts's recordFillAsPosition, deliberately does) would leave
       // a real fill permanently invisible with no trace anywhere.
       try {
+        if (meta.role === 'exit') {
+          // A time-exit closing order — meta.positionId is known upfront
+          // (recordLiveExitOrder), unlike an entry's positionId which is
+          // null until THIS materialization sets it.
+          const recorded = materializeTimeExitFill(
+            meta.positionId!,
+            intent,
+            broker.filledPrice ?? intent.limitPrice ?? 0,
+            riskProfile,
+          );
+          return recorded ? { changed: true, action: 'exit_filled' } : { changed: false };
+        }
         materializeEntryFill(
           intent,
           stopPrice,
@@ -667,11 +680,17 @@ function reconcileOneLiveOrder(
         logAutotradeEvent({
           symbol: intent.symbol,
           stage: 'execution',
-          action: 'live_entry_materialization_failed',
+          action: meta.role === 'exit' ? 'live_time_exit_materialization_failed' : 'live_entry_materialization_failed',
           detail: { intentId: intent.id, error: message },
           riskProfile,
         });
-        return { changed: true, error: `Broker fill recorded but failed to materialize a Position: ${message}` };
+        return {
+          changed: true,
+          error:
+            meta.role === 'exit'
+              ? `Broker fill recorded but failed to materialize the close: ${message}`
+              : `Broker fill recorded but failed to materialize a Position: ${message}`,
+        };
       }
     }
     return { changed: true };
@@ -683,8 +702,10 @@ function reconcileOneLiveOrder(
   // FILLED; anything else (including two legs BOTH reporting FILLED, which
   // shouldn't happen under normal OCO semantics but isn't ruled out given
   // this response shape is unconfirmed) leaves the position open rather
-  // than guessing.
-  if (intent.state === 'filled' && intent.isBracket && broker.legs) {
+  // than guessing. Entry rows only — a role='exit' order is never a bracket
+  // (checkLiveEquityTimeExits places a plain close), so it has no exit legs
+  // of its own to look for here.
+  if (meta.role === 'entry' && intent.state === 'filled' && intent.isBracket && broker.legs) {
     const filledExitLegs = broker.legs.filter((l) => l.comboType && l.comboType !== 'MASTER' && l.status === 'FILLED');
     if (filledExitLegs.length > 1) {
       logAutotradeEvent({
@@ -779,4 +800,321 @@ function materializeExitFill(intent: OrderIntentRecord, exitPrice: number, riskP
     riskProfile,
   });
   return true;
+}
+
+/** Record an exit against `positionId` for a FILLED time-exit closing order
+ *  (checkLiveEquityTimeExits' own fresh order — never a bracket leg, so this
+ *  is simpler than materializeExitFill: the position to close is known
+ *  upfront, not inferred from sourceIntentId). Returns false (a no-op) if the
+ *  position is already closed — defensive against a double-reconcile of the
+ *  same fill, same as materializeExitFill. */
+function materializeTimeExitFill(
+  positionId: number,
+  intent: OrderIntentRecord,
+  exitPrice: number,
+  riskProfile: string,
+): boolean {
+  const position = listPositions({ status: 'open', symbol: intent.symbol }).find(
+    (p) => p.id === positionId && isAutotradePosition(p),
+  );
+  if (!position) return false;
+  const closed = addExit(position.id, {
+    quantity: position.remainingQuantity,
+    exitPrice,
+    exitDate: etDateStr(),
+    sourceIntentId: intent.id,
+  });
+  if (!closed) return false;
+  logAutotradeEvent({
+    symbol: intent.symbol,
+    stage: 'execution',
+    action: 'live_time_exit_closed',
+    detail: { exitPrice, pnl: realizedPnlOf(closed), positionId },
+    riskProfile,
+  });
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// maxHoldDays force-close (added 2026-07-11) — the one exception to "equity's
+// live exits are 100% broker-bracket-driven" (see reconcileLiveOrders' own
+// header comment). A position that's been open longer than maxHoldDays
+// without its stop or target firing needs an ACTIVE close: cancel the
+// resting bracket's exit legs, then place a fresh closing order — there is
+// no existing precedent for this in the codebase (unlike options, equity
+// entries are NEVER placed without a bracket, so this is genuinely new
+// broker-order-cancellation surface).
+//
+// UNCONFIRMED AGAINST A REAL ACCOUNT, same posture as WebullOrderLeg's own
+// "best-effort... not yet probe-confirmed" caveat this mechanism builds on
+// top of. Specifically unconfirmed: whether cancelling by the MASTER leg's
+// own client_order_id (intent.idempotencyKey) — the only id this codebase
+// durably tracks for a bracket; Webull's own combo_order_id is generated
+// fresh per-place in providers/webull/orders.ts and never persisted —
+// actually reaches the still-resting STOP_LOSS/STOP_PROFIT legs once the
+// MASTER itself is already terminal ('filled'). The working theory, per this
+// codebase's own "combo" framing of a bracket (buildOrderRequest emits ONE
+// client_combo_order_id grouping all three legs), is that it does. This
+// function never trusts that theory blindly: it always re-polls immediately
+// after cancelling and verifies every non-MASTER leg is no longer resting
+// before proceeding — anything short of that fails closed (position left
+// open, retried next cycle) rather than risking a double-close. A real live
+// trade should be used to confirm this behavior before fully trusting it,
+// exactly as WebullOrderLeg's own header already asks for bracket-fill
+// detection in general.
+// ---------------------------------------------------------------------------
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+interface BracketCancelOutcome {
+  ok: boolean;
+  reason?: string;
+  /** A bracket leg was found FILLED on the post-cancel re-poll — it raced the
+   *  cancel attempt. Left alone deliberately: the next normal
+   *  reconcileLiveOrders() pass will materialize this as an ordinary stop/
+   *  target exit, exactly as if maxHoldDays had never fired this cycle. */
+  raced?: boolean;
+}
+
+async function cancelLiveBracketExitLegs(intent: OrderIntentRecord, accountId: string): Promise<BracketCancelOutcome> {
+  const cancel = await webullCancelOrder(accountId, intent.idempotencyKey);
+  if (!cancel.ok) {
+    return { ok: false, reason: `Broker cancel rejected: ${cancel.error}` };
+  }
+
+  const status = await webullOrderStatus(accountId, intent.idempotencyKey);
+  if (!status.ok || !status.found || !status.legs) {
+    return {
+      ok: false,
+      reason: `Could not verify bracket state after cancel: ${status.error ?? 'no legs in the response'}`,
+    };
+  }
+
+  const exitLegs = status.legs.filter((l) => l.comboType && l.comboType !== 'MASTER');
+  if (exitLegs.some((l) => l.status === 'FILLED')) {
+    return { ok: false, raced: true, reason: 'A bracket leg filled before the cancel took effect' };
+  }
+  const stillWorking = exitLegs.filter((l) => l.status !== 'CANCELLED' && l.status !== 'FILLED');
+  if (stillWorking.length > 0) {
+    return {
+      ok: false,
+      reason: `Exit leg(s) still show as working after cancel: ${stillWorking
+        .map((l) => `${l.comboType ?? '?'}=${l.status ?? '?'}`)
+        .join(', ')}`,
+    };
+  }
+  return { ok: true };
+}
+
+export interface LiveEquityTimeExitOutcome {
+  symbol: string;
+  positionId: number;
+  /** A fresh closing order was successfully PLACED — mirrors
+   *  LiveOptionsExitCheckOutcome's own `requested` naming: this is NOT "the
+   *  position is now closed" (that only happens once the order later fills
+   *  and reconcileLiveOrders() materializes it). */
+  requested: boolean;
+  reason?: string;
+  intentId?: number;
+}
+
+/** Places a fresh MARKETABLE-LIMIT closing order for `pos` — never a bracket
+ *  (mirrors liveOptionsExecute.ts's own "no bracket, ever" time-exit close).
+ *  Guardrails run against a FRESH account state, same as attemptLiveEntry —
+ *  in particular the naked_short check: a same-or-smaller-quantity closing
+ *  sell against the account's ACTUAL current holding (currentPositionQty,
+ *  read fresh from the broker) never computes a negative resultingQty, so
+ *  this needs no override the way options' single-leg close does (options'
+ *  account-state read doesn't reflect contract holdings the way equity's
+ *  reflects share holdings). */
+async function placeLiveEquityTimeExitClose(
+  pos: Position,
+  accountId: string,
+  riskProfile: string,
+): Promise<LiveEquityTimeExitOutcome> {
+  const symbol = pos.symbol.toUpperCase();
+  let last: number;
+  try {
+    last = (await getProvider().getQuote(symbol)).last;
+  } catch (err) {
+    return { symbol, positionId: pos.id, requested: false, reason: `Quote fetch failed: ${(err as Error).message}` };
+  }
+  if (!Number.isFinite(last) || last <= 0) {
+    return { symbol, positionId: pos.id, requested: false, reason: `Invalid quote price: ${last}` };
+  }
+
+  const closeSide: 'buy' | 'sell' = pos.side === 'long' ? 'sell' : 'buy';
+  const buffer = 1 + (closeSide === 'buy' ? 1 : -1) * (MARKETABLE_LIMIT_BUFFER_PCT / 100);
+  const limitPrice = Math.round(last * buffer * 100) / 100;
+
+  const intent: OrderIntent = {
+    symbol,
+    assetKind: 'stock',
+    side: closeSide,
+    openClose: 'close',
+    quantity: pos.remainingQuantity,
+    orderType: 'limit',
+    limitPrice,
+    referencePrice: last,
+  };
+
+  const liveCfg = buildLiveTradingConfig(getAutotradeConfig());
+  const acct = await webullAccountState(accountId, symbol);
+  if (!acct.ok || !acct.state) {
+    return { symbol, positionId: pos.id, requested: false, reason: acct.error ?? 'Could not load account state' };
+  }
+  const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
+  const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
+
+  const clientOrderId = newClientOrderId();
+  const intentRec = createIntent(intent, clientOrderId);
+
+  if (!guardrails.ok) {
+    const reasons = blockingFailures(guardrails)
+      .map((c) => `${c.rule}: ${c.detail}`)
+      .join('; ');
+    transitionIntent(intentRec.id, 'rejected', { detail: `blocked: ${reasons}` });
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_time_exit_blocked',
+      detail: { reasons, positionId: pos.id },
+      riskProfile,
+    });
+    return {
+      symbol,
+      positionId: pos.id,
+      requested: false,
+      reason: `Guardrails blocked: ${reasons}`,
+      intentId: intentRec.id,
+    };
+  }
+
+  transitionIntent(intentRec.id, 'validated', { detail: 'guardrails passed (live time-exit)' });
+  transitionIntent(intentRec.id, 'confirmed', {
+    detail: 'autotrade — no per-order confirmation, per confirmed design',
+  });
+  transitionIntent(intentRec.id, 'submitted', { detail: `submitting (cid ${clientOrderId})` });
+
+  const broker = await webullPlaceOrder(accountId, intent, clientOrderId);
+  if (!broker.ok) {
+    transitionIntent(intentRec.id, 'rejected', { detail: `broker rejected: ${broker.error}` });
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_time_exit_failed',
+      detail: { reason: broker.error, positionId: pos.id },
+      riskProfile,
+    });
+    return {
+      symbol,
+      positionId: pos.id,
+      requested: false,
+      reason: `Broker rejected: ${broker.error}`,
+      intentId: intentRec.id,
+    };
+  }
+
+  transitionIntent(intentRec.id, 'acknowledged', {
+    brokerOrderId: broker.orderId,
+    detail: `broker accepted${broker.orderId ? ` (order ${broker.orderId})` : ''}`,
+  });
+  recordLiveExitOrder({ intentId: intentRec.id, symbol, riskProfile, positionId: pos.id });
+  logAutotradeEvent({
+    symbol,
+    stage: 'execution',
+    action: 'live_time_exit_placed',
+    detail: { quantity: intent.quantity, limitPrice, orderId: broker.orderId, positionId: pos.id },
+    riskProfile,
+  });
+  await dispatchNotifications([
+    {
+      title: symbol,
+      message: `Autotrade LIVE closing ${symbol} (max hold time reached): ${intent.quantity} @ ~$${limitPrice.toFixed(2)}`,
+    },
+  ]);
+  return { symbol, positionId: pos.id, requested: true, intentId: intentRec.id };
+}
+
+/**
+ * Check every open live equity position against maxHoldDays (0 = disabled)
+ * and force-close whichever has overstayed: cancel its resting bracket exit
+ * legs, verify they're actually clear, then place a fresh closing order. See
+ * the module-level comment above for why this is fundamentally riskier than
+ * every other exit path in this file, and what specifically is unconfirmed.
+ *
+ * A position with an exit order ALREADY in flight (pending, per
+ * listPendingLiveOrders()'s role='exit' rows) is skipped — maxHoldDays
+ * doesn't un-trigger within the same day, so without this guard every tick
+ * would attempt ANOTHER cancel+close for the same still-closing position
+ * (mirrors checkLiveOptionsExits' identical guard).
+ */
+export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutcome[]> {
+  // The deploy-level master gate, checked FIRST — mirrors checkLiveOptionsExits'
+  // own reasoning: this places a brand-new real order (and cancels a resting
+  // one), so it needs the same check attemptLiveEntry's own entry path gets.
+  if (!config.trading.placeEnabled) return [];
+  const cfg = getAutotradeConfig();
+  if (!cfg.liveAccountId) return [];
+  if (cfg.maxHoldDays <= 0) return [];
+
+  const open = listAutotradeLivePositions({ status: 'open' });
+  if (open.length === 0) return [];
+
+  const pendingExitPositionIds = new Set(
+    listPendingLiveOrders()
+      .filter((o) => o.role === 'exit' && o.positionId !== null)
+      .map((o) => o.positionId!),
+  );
+
+  const outcomes: LiveEquityTimeExitOutcome[] = [];
+  for (const pos of open) {
+    if (pendingExitPositionIds.has(pos.id)) continue;
+    if (Date.now() - pos.createdAt < cfg.maxHoldDays * MS_PER_DAY) continue;
+
+    if (pos.sourceIntentId === null) {
+      outcomes.push({
+        symbol: pos.symbol,
+        positionId: pos.id,
+        requested: false,
+        reason: 'No source intent on this position — cannot locate its bracket to cancel',
+      });
+      continue;
+    }
+    const entryIntent = getIntent(pos.sourceIntentId);
+    if (!entryIntent) {
+      outcomes.push({
+        symbol: pos.symbol,
+        positionId: pos.id,
+        requested: false,
+        reason: `Source intent ${pos.sourceIntentId} not found`,
+      });
+      continue;
+    }
+    const riskProfile = getLiveOrder(pos.sourceIntentId)?.riskProfile ?? cfg.riskProfile;
+
+    // Re-fetch fresh config for EACH triggered position, same reasoning as
+    // checkLiveOptionsExits' own per-position refresh — this loop awaits real
+    // broker round-trips between positions, and a kill switch engaged
+    // mid-loop must stop the NEXT position's cancel/close immediately, not
+    // just the next cycle.
+    const freshAccountId = getAutotradeConfig().liveAccountId;
+    if (!freshAccountId) continue;
+
+    const cancelled = await cancelLiveBracketExitLegs(entryIntent, freshAccountId);
+    if (!cancelled.ok) {
+      logAutotradeEvent({
+        symbol: pos.symbol,
+        stage: 'execution',
+        action: 'live_time_exit_cancel_failed',
+        detail: { positionId: pos.id, reason: cancelled.reason, raced: cancelled.raced ?? false },
+        riskProfile,
+      });
+      outcomes.push({ symbol: pos.symbol, positionId: pos.id, requested: false, reason: cancelled.reason });
+      continue;
+    }
+
+    outcomes.push(await placeLiveEquityTimeExitClose(pos, freshAccountId, riskProfile));
+  }
+  return outcomes;
 }

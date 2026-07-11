@@ -127,6 +127,19 @@ export interface AutotradeConfig {
    *  signal shouldn't react to. */
   sessionBufferMinutes: number;
 
+  // --- Max hold time (docs/AUTOTRADING_SPEC.md — RESOLVED DECISIONS, added
+  // 2026-07-11). Unlike its neighbors above, this DOES have a backtest
+  // equivalent (a daily-bar replay can track "days since entry" same as wall-
+  // clock time) — see backtest.ts's own maxHoldDays handling. -----------------
+
+  /** Force-close a position that's been open this many CALENDAR days without
+   *  its stop or target firing — a backstop against a position that's just
+   *  drifting sideways forever. 0 disables this check (hold until stop/
+   *  target/manual close, same as before this existed). Applies to paper,
+   *  live, and backtest equity positions alike; has no effect on options
+   *  (which already force-close via its own separate time-exit). */
+  maxHoldDays: number;
+
   // --- Correlation methodology (docs/AUTOTRADING_SPEC.md — RESOLVED
   // DECISIONS). Formerly riskProfiles.ts's CORRELATION_LOOKBACK_DAYS/
   // CORRELATION_THRESHOLD — that file's entire remaining purpose was these
@@ -290,6 +303,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     stopAtrMultiple: 1.5,
     targetRMultiple: 2,
     sessionBufferMinutes: 15,
+    maxHoldDays: 0,
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
     liveTradingEnabled: false,
@@ -393,6 +407,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     stopAtrMultiple: posDecimal(input.stopAtrMultiple, d.stopAtrMultiple),
     targetRMultiple: posDecimal(input.targetRMultiple, d.targetRMultiple),
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
+    maxHoldDays: posInt(input.maxHoldDays, d.maxHoldDays),
     correlationLookbackDays: posIntMin1(input.correlationLookbackDays, d.correlationLookbackDays),
     correlationThreshold: unitInterval(input.correlationThreshold, d.correlationThreshold),
     liveTradingEnabled: typeof input.liveTradingEnabled === 'boolean' ? input.liveTradingEnabled : d.liveTradingEnabled,

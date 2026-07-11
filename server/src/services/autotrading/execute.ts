@@ -333,6 +333,8 @@ export interface ExitCheckOutcome {
   position?: PaperPosition;
 }
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
 /**
  * Check every open paper position against a fresh quote for a stop/target
  * hit, closing (at the declared stop/target LEVEL, not the observed quote —
@@ -341,8 +343,14 @@ export interface ExitCheckOutcome {
  * high/low range like a completed daily bar, so — unlike the backtest — a
  * long's stop (below entry) and target (above entry) can never both be
  * "hit" by the same quote; there's no tie to break.
+ *
+ * A third trigger, checked last (stop and target both take priority, same
+ * as backtest.ts's own conservative ordering): maxHoldDays, if configured
+ * (0 = disabled). Closes at the CURRENT quote, not a declared level — unlike
+ * stop/target, a time-exit has no predetermined price to close at.
  */
 export async function checkPaperExits(): Promise<ExitCheckOutcome[]> {
+  const { maxHoldDays } = getAutotradeConfig();
   const open = listOpenPaperPositions();
   return mapPool(open, 6, async (pos): Promise<ExitCheckOutcome> => {
     let last: number;
@@ -355,10 +363,11 @@ export async function checkPaperExits(): Promise<ExitCheckOutcome[]> {
     const long = pos.side === 'buy';
     const stopHit = long ? last <= pos.stopPrice : last >= pos.stopPrice;
     const targetHit = long ? last >= pos.targetPrice : last <= pos.targetPrice;
-    if (!stopHit && !targetHit) return { symbol: pos.symbol, closed: false };
+    const timeHit = !stopHit && !targetHit && maxHoldDays > 0 && Date.now() - pos.entryAt >= maxHoldDays * MS_PER_DAY;
+    if (!stopHit && !targetHit && !timeHit) return { symbol: pos.symbol, closed: false };
 
-    const exitReason: PaperExitReason = stopHit ? 'stop' : 'target';
-    const exitPrice = stopHit ? pos.stopPrice : pos.targetPrice;
+    const exitReason: PaperExitReason = stopHit ? 'stop' : targetHit ? 'target' : 'time_exit';
+    const exitPrice = stopHit ? pos.stopPrice : targetHit ? pos.targetPrice : last;
     const closed = closePaperPosition(pos.id, { exitPrice, exitReason });
     if (closed) {
       const pnl = (exitPrice - pos.entryPrice) * pos.quantity * (long ? 1 : -1);

@@ -52,6 +52,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     maxMarketAtrPct: 5,
     stopAtrMultiple: 1.5,
     targetRMultiple: 2,
+    maxHoldDays: 0,
     sessionBufferMinutes: 15,
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,

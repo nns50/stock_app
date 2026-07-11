@@ -1075,6 +1075,9 @@ export interface AutotradeConfig {
   maxMarketAtrPct: number;
   stopAtrMultiple: number;
   targetRMultiple: number;
+  /** Force-close a position open this many CALENDAR days without a stop/
+   *  target hit. 0 disables it (hold until stop/target/manual close). */
+  maxHoldDays: number;
   sessionBufferMinutes: number;
 
   // --- Correlation methodology (feeds maxCorrelatedExposurePct above) ---
@@ -1360,6 +1363,9 @@ export interface BacktestRequest extends BacktestRiskParams {
   riskProfile: AutotradeRiskProfile;
   startingEquity: number;
   maxConcurrentPositions: number;
+  /** Force-close a position open this many CALENDAR days without a stop/
+   *  target hit. Omitted or 0 disables it. */
+  maxHoldDays?: number;
 }
 
 export interface WalkForwardRequest extends BacktestRequest {
@@ -1472,6 +1478,9 @@ export interface CombinedBacktestRequest extends BacktestRiskParams {
   riskProfile: AutotradeRiskProfile;
   startingEquity: number;
   maxConcurrentPositions: number;
+  /** Force-close an EQUITY leg position open this many CALENDAR days without
+   *  a stop/target hit. Omitted or 0 disables it; no effect on the options leg. */
+  maxHoldDays?: number;
   optionsDecisionConfig?: { strategyType?: AutotradeOptionsStrategyType };
 }
 

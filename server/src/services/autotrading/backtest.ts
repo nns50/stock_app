@@ -40,6 +40,12 @@ export const TIMEFRAME: Timeframe = 'daily';
  *  default) have a full warmup window on the very first simulated day. */
 export const WARMUP_PADDING_DAYS = 100;
 
+/** For the maxHoldDays check below — dayMs/entryDateMs are both UTC-midnight
+ *  timestamps of a trading day, so a plain subtraction in ms needs this to
+ *  compare against a day count. Exported for reuse by combinedBacktest.ts's
+ *  own equity-leg maxHoldDays check. */
+export const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
 /** riskProfile's old MODERATE/AGGRESSIVE bundles — every field here used to
  *  live in riskProfiles.ts's now-removed RISK_PROFILES table, back when
  *  switching riskProfile implied all seven together. That's gone from the
@@ -122,6 +128,12 @@ export interface BacktestConfig extends Partial<BacktestRiskParams> {
    *  backtest is a self-contained hypothetical, not coupled to the live
    *  account's current setting (mirrors startingEquity's existing convention). */
   maxConcurrentPositions: number;
+  /** Force-close a position open this many CALENDAR days without a stop/
+   *  target hit — mirrors AutotradeConfig.maxHoldDays for paper/live.
+   *  Omitted or 0 disables it (matches every position's behavior before this
+   *  existed). Own value here, not read from live config — same
+   *  self-contained-hypothesis convention as maxConcurrentPositions above. */
+  maxHoldDays?: number;
   screenerConfig?: Partial<ScreenerConfig>;
   decisionConfig?: Partial<DecisionConfig>;
 }
@@ -134,7 +146,7 @@ export interface SimulatedTrade {
   entryPrice: number;
   exitDate: string;
   exitPrice: number;
-  exitReason: 'stop' | 'target' | 'end_of_period';
+  exitReason: 'stop' | 'target' | 'time_exit' | 'end_of_period';
   quantity: number;
   pnl: number;
   rMultiple: number;
@@ -162,6 +174,10 @@ interface OpenPosition {
   side: 'buy' | 'sell';
   signalDate: string;
   entryDate: string;
+  /** ms epoch of entryDate — captured once at fill time so the maxHoldDays
+   *  check below is a plain subtraction against the current bar's own dayMs,
+   *  not a re-parse of entryDate every day this position stays open. */
+  entryDateMs: number;
   entryPrice: number;
   stop: number;
   target: number;
@@ -291,6 +307,7 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
           side: p.signal.side,
           signalDate: p.signalDate,
           entryDate: day,
+          entryDateMs: dayMs,
           entryPrice: candles![idx].open,
           stop: p.signal.stop,
           target: p.signal.target,
@@ -319,10 +336,15 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
       const long = pos.side === 'buy';
       const stopHit = long ? bar.low <= pos.stop : bar.high >= pos.stop;
       const targetHit = long ? bar.high >= pos.target : bar.low <= pos.target;
-      if (stopHit || targetHit) {
+      const maxHoldDays = cfg.maxHoldDays ?? 0;
+      const timeHit = !stopHit && !targetHit && maxHoldDays > 0 && dayMs - pos.entryDateMs >= maxHoldDays * MS_PER_DAY;
+      if (stopHit || targetHit || timeHit) {
         // Conservative: if both could have happened in one bar, assume the stop hit first.
-        const exitReason: SimulatedTrade['exitReason'] = stopHit ? 'stop' : 'target';
-        const exitPrice = stopHit ? pos.stop : pos.target;
+        const exitReason: SimulatedTrade['exitReason'] = stopHit ? 'stop' : targetHit ? 'target' : 'time_exit';
+        // A time-exit has no declared level to close at (unlike stop/target) — closes at
+        // today's bar close, the same "what actually happened today" price a real
+        // end-of-day force-close would realize.
+        const exitPrice = stopHit ? pos.stop : targetHit ? pos.target : bar.close;
         const sign = long ? 1 : -1;
         const pnl = (exitPrice - pos.entryPrice) * pos.quantity * sign;
         trades.push({

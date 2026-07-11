@@ -1875,6 +1875,61 @@ so a backtest request can override them field-by-field exactly like the
 other seven, even though no UI exposes a per-backtest override for any of
 the nine today.
 
+**Follow-up (2026-07-11) — max hold time for equity positions, the largest
+single change in the "do everything except PDT" batch (the same direct
+follow-up question that prompted the correlation-methodology change above).**
+Equity positions previously held forever until their stop or target hit —
+options already had a time-based force-close (`AUTOTRADE_TIME_EXIT_DAYS`),
+equity had no analog. New `AutotradeConfig.maxHoldDays` (default 0 —
+disabled, so an untouched config's behavior doesn't change): once a position
+has been open this many CALENDAR days without a stop/target hit, force-close
+it at the current price.
+
+- **Paper** (`execute.ts`): `checkPaperExits()` gained a third trigger,
+  checked last (stop and target keep priority), closing at the current quote
+  — a time-exit has no declared level to close at, unlike stop/target.
+- **Backtest** (`backtest.ts`, and `combinedBacktest.ts`'s duplicated equity
+  leg): `maxHoldDays` is its OWN top-level `BacktestConfig` field, not part
+  of the seven/nine-field risk-params bundle above (it's a position-
+  management parameter, not a pre-trade risk-check gate) — mirrors
+  `maxConcurrentPositions`'s own "self-contained hypothesis" treatment.
+  Closes at the bar's CLOSE (the "what actually happened today" price),
+  tagged a new `exitReason: 'time_exit'`.
+- **Live — by far the riskiest piece, and the reason this took a direct
+  question back to the user before proceeding.** Every OTHER equity live
+  exit is 100% broker-side BRACKET-driven (`reconcileLiveOrders()` only ever
+  *observes* a fill, never places one) — there was no existing mechanism to
+  force-close a live position early, because there was never a reason to
+  build one before. Implementing this meant new, genuinely unconfirmed
+  broker-order-cancellation code: `checkLiveEquityTimeExits()`
+  (`liveExecute.ts`) cancels the resting bracket via
+  `webullCancelOrder(accountId, entryIntent.idempotencyKey)` — the MASTER
+  leg's own id, the only id this codebase durably tracks for a bracket
+  (Webull's own `combo_order_id` is generated fresh per-place in
+  `providers/webull/orders.ts` and never persisted) — even though that leg
+  is already terminal (`filled`). The working theory, per this codebase's
+  own "combo" framing of a bracket (one `client_combo_order_id` grouping all
+  three legs), is that this reaches the whole combo, not just the
+  already-filled leg. **This is unconfirmed against a real account**, same
+  posture as `WebullOrderLeg`'s own "best-effort... not yet probe-confirmed"
+  caveat this mechanism builds directly on top of. It never trusts the
+  theory blindly: it always re-polls immediately after cancelling and
+  requires every non-MASTER leg to unambiguously show as no longer
+  resting before proceeding — a leg that raced the cancel and already
+  filled, or one still ambiguously "working," both fail closed (position
+  left open, retried next cycle) rather than risk a double-close. Only once
+  verified clear does it place a fresh MARKETABLE-LIMIT closing order (never
+  a bracket) — `autotrade_live_orders` gained a `role` column (`'entry'` |
+  `'exit'`, migrated via a plain `ALTER TABLE ... ADD COLUMN`, mirroring
+  `autotrade_live_options_orders`'s existing split) so this new closing order
+  can be tracked and reconciled the same way an options time-exit close
+  already is. **A real live trade should be used to confirm the
+  cancel-then-verify behavior before fully trusting it** — flagged
+  explicitly to the user as part of the decision to build this now rather
+  than deferring it.
+- Web: a new **Max hold time (days)** field on the Configuration card, right
+  after Target (R-multiple).
+
 ### CRITICAL: MAX AGGREGATE OPEN RISK
 This is distinct from the daily drawdown halt. The daily halt only reacts to
 REALIZED losses after trades close. Max aggregate open risk is a PRE-TRADE

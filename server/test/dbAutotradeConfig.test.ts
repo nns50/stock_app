@@ -383,6 +383,55 @@ describe('autotrade config persistence', () => {
     });
   });
 
+  describe('max hold time', () => {
+    it('defaults to 0 (disabled)', () => {
+      expect(defaultAutotradeConfig().maxHoldDays).toBe(0);
+    });
+
+    it('persists a patch and round-trips', () => {
+      const cfg = setAutotradeConfig({ maxHoldDays: 10 });
+      expect(cfg.maxHoldDays).toBe(10);
+      expect(getAutotradeConfig().maxHoldDays).toBe(10);
+    });
+
+    it('allows exactly 0 (disables the check) but rejects negative to the default', () => {
+      expect(setAutotradeConfig({ maxHoldDays: 0 }).maxHoldDays).toBe(0);
+      setAutotradeConfig({ maxHoldDays: 10 });
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+      const cfg = setAutotradeConfig({ maxHoldDays: -5 });
+      expect(cfg.maxHoldDays).toBe(defaultAutotradeConfig().maxHoldDays);
+    });
+  });
+
+  describe('correlation methodology (formerly riskProfiles.ts constants)', () => {
+    it('defaults match the old hardcoded constants exactly', () => {
+      const d = defaultAutotradeConfig();
+      expect(d.correlationLookbackDays).toBe(30);
+      expect(d.correlationThreshold).toBe(0.7);
+    });
+
+    it('persists a patch and round-trips', () => {
+      const cfg = setAutotradeConfig({ correlationLookbackDays: 45, correlationThreshold: 0.6 });
+      expect(cfg).toMatchObject({ correlationLookbackDays: 45, correlationThreshold: 0.6 });
+      expect(getAutotradeConfig()).toMatchObject({ correlationLookbackDays: 45, correlationThreshold: 0.6 });
+    });
+
+    it('rejects a correlationLookbackDays below 1, failing closed to the default', () => {
+      setAutotradeConfig({ correlationLookbackDays: 20 });
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+      const cfg = setAutotradeConfig({ correlationLookbackDays: 0 });
+      expect(cfg.correlationLookbackDays).toBe(defaultAutotradeConfig().correlationLookbackDays);
+    });
+
+    it('clamps correlationThreshold to [0, 1] rather than rejecting out-of-range values', () => {
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize clamp
+      expect(setAutotradeConfig({ correlationThreshold: 1.5 }).correlationThreshold).toBe(1);
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize clamp
+      expect(setAutotradeConfig({ correlationThreshold: -0.5 }).correlationThreshold).toBe(0);
+      expect(setAutotradeConfig({ correlationThreshold: 0 }).correlationThreshold).toBe(0); // exactly 0 is valid, not a fallback trigger
+    });
+  });
+
   describe('movers auto-promotion', () => {
     it('defaults to enabled, 3 within 10 days, cap 50', () => {
       const d = defaultAutotradeConfig();

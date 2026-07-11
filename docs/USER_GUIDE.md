@@ -687,7 +687,13 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   are most distorted). All six default to the values the loop always used before they
   were configurable, so leaving them untouched changes nothing; the manual Screen/
   Decision preview below defaults to these same saved values too (so it previews what
-  the loop would actually do), though it has no UI to override them ad hoc today.
+  the loop would actually do), though it has no UI to override them ad hoc today. A
+  related but separate **max hold time (days)** setting forces a position closed at
+  the day's price after it's been open this many calendar days without its stop or
+  target firing — a backstop against a position that's just drifting sideways
+  forever. Defaults to **0 (disabled)**, so leaving it untouched changes nothing;
+  unlike the six fields above, it has no manual-preview equivalent — there's nothing
+  to preview about how long a position stays open before it's even entered.
   **Auto-promote recurring movers** (on by default) grows your universe automatically:
   a symbol Webull's premarket movers surface that also clears screening on **3 distinct
   days within a 10-day window** (both tunable, along with a **50-symbol lifetime cap** on

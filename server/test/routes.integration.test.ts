@@ -568,7 +568,10 @@ describe('autotrade config routes (integration)', () => {
       maxMarketAtrPct: 8,
       stopAtrMultiple: 2,
       targetRMultiple: 3,
+      maxHoldDays: 10,
       sessionBufferMinutes: 30,
+      correlationLookbackDays: 45,
+      correlationThreshold: 0.6,
     });
     await put('/api/autotrade/config', { accountEquityUsd: 30_000 });
 
@@ -578,7 +581,10 @@ describe('autotrade config routes (integration)', () => {
       maxMarketAtrPct: number;
       stopAtrMultiple: number;
       targetRMultiple: number;
+      maxHoldDays: number;
       sessionBufferMinutes: number;
+      correlationLookbackDays: number;
+      correlationThreshold: number;
       accountEquityUsd: number;
     };
     expect(final).toMatchObject({
@@ -587,7 +593,10 @@ describe('autotrade config routes (integration)', () => {
       maxMarketAtrPct: 8,
       stopAtrMultiple: 2,
       targetRMultiple: 3,
+      maxHoldDays: 10,
       sessionBufferMinutes: 30,
+      correlationLookbackDays: 45,
+      correlationThreshold: 0.6,
       accountEquityUsd: 30_000,
     });
   });

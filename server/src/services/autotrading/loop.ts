@@ -13,7 +13,12 @@ import {
   getOptionsPaperPortfolioSnapshot,
   optionsSeedForEquity,
 } from './optionsExecute';
-import { runLiveExecution, reconcileLiveOrders, syncAccountEquityFromBroker } from './liveExecute';
+import {
+  runLiveExecution,
+  reconcileLiveOrders,
+  syncAccountEquityFromBroker,
+  checkLiveEquityTimeExits,
+} from './liveExecute';
 import {
   runLiveOptionsExecution,
   checkLiveOptionsExits,
@@ -86,6 +91,12 @@ export interface LoopTickSummary {
    *  outcome) — closing here is a broker round-trip, not instantaneous, so
    *  "closed" isn't known until a LATER liveOptionsPositionsClosed. */
   liveOptionsExitsRequested: number;
+  /** Live EQUITY closing orders newly PLACED this cycle (maxHoldDays firing) —
+   *  always runs. Mirrors liveOptionsExitsRequested's own semantics exactly:
+   *  a count of orders actually REQUESTED (checkLiveEquityTimeExits() only
+   *  reports a position it actually attempted to close), not "closed" —
+   *  that's a later liveOrdersReconciled/livePositionsClosed. */
+  liveTimeExitsRequested: number;
   candidatesScreened: number;
   candidatesPassedVolatility: number;
   signalsGenerated: number;
@@ -161,6 +172,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     liveOptionsOrdersReconciled: 0,
     liveOptionsPositionsClosed: 0,
     liveOptionsExitsRequested: 0,
+    liveTimeExitsRequested: 0,
     candidatesScreened: 0,
     candidatesPassedVolatility: 0,
     signalsGenerated: 0,
@@ -278,6 +290,14 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     } catch (e) {
       console.error('[autotrade-loop] live position-truth sync failed:', (e as Error).message);
     }
+    // Runs after the reconcile/sync above for the same reason checkLiveOptionsExits
+    // runs after ITS OWN reconcile/sync below: a position closed (or found
+    // already closed) by either of those this same tick shouldn't also get a
+    // wasted maxHoldDays cancel-and-close attempt here. Not wrapped in its own
+    // try/catch, matching checkLiveOptionsExits' own call site below — an
+    // unexpected throw here surfaces the same way an unexpected throw there
+    // would (caught by this function's own outer try, below).
+    const liveEquityTimeExitOutcomes = await checkLiveEquityTimeExits();
     // Reconcile before checking for NEW triggers: catches up on anything an
     // earlier cycle already placed (an entry that filled, an exit that
     // filled) so a position closed by reconcile this same tick is already
@@ -333,6 +353,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       liveOptionsOrdersReconciled: liveOptionsReconcileOutcomes.length,
       liveOptionsPositionsClosed: liveOptionsReconcileOutcomes.filter((o) => o.action === 'exit_filled').length,
       liveOptionsExitsRequested: liveOptionsExitOutcomes.filter((o) => o.requested).length,
+      liveTimeExitsRequested: liveEquityTimeExitOutcomes.filter((o) => o.requested).length,
     };
 
     const config = getAutotradeConfig();

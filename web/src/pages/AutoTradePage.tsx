@@ -1420,6 +1420,7 @@ export default function AutoTradePage() {
   const [maxMarketAtrPctDraft, setMaxMarketAtrPctDraft] = useState<number | undefined>();
   const [stopAtrMultipleDraft, setStopAtrMultipleDraft] = useState<number | undefined>();
   const [targetRMultipleDraft, setTargetRMultipleDraft] = useState<number | undefined>();
+  const [maxHoldDaysDraft, setMaxHoldDaysDraft] = useState<number | undefined>();
   const [sessionBufferMinutesDraft, setSessionBufferMinutesDraft] = useState<number | undefined>();
   const [correlationLookbackDaysDraft, setCorrelationLookbackDaysDraft] = useState<number | undefined>();
   const [correlationThresholdDraft, setCorrelationThresholdDraft] = useState<number | undefined>();
@@ -1464,6 +1465,7 @@ export default function AutoTradePage() {
     setMaxMarketAtrPctDraft(config.data.maxMarketAtrPct);
     setStopAtrMultipleDraft(config.data.stopAtrMultiple);
     setTargetRMultipleDraft(config.data.targetRMultiple);
+    setMaxHoldDaysDraft(config.data.maxHoldDays);
     setSessionBufferMinutesDraft(config.data.sessionBufferMinutes);
     setCorrelationLookbackDaysDraft(config.data.correlationLookbackDays);
     setCorrelationThresholdDraft(config.data.correlationThreshold);
@@ -1505,6 +1507,7 @@ export default function AutoTradePage() {
     maxMarketAtrPct?: number;
     stopAtrMultiple?: number;
     targetRMultiple?: number;
+    maxHoldDays?: number;
     sessionBufferMinutes?: number;
     correlationLookbackDays?: number;
     correlationThreshold?: number;
@@ -1544,6 +1547,7 @@ export default function AutoTradePage() {
       setMaxMarketAtrPctDraft(saved.maxMarketAtrPct);
       setStopAtrMultipleDraft(saved.stopAtrMultiple);
       setTargetRMultipleDraft(saved.targetRMultiple);
+      setMaxHoldDaysDraft(saved.maxHoldDays);
       setSessionBufferMinutesDraft(saved.sessionBufferMinutes);
       setCorrelationLookbackDaysDraft(saved.correlationLookbackDays);
       setCorrelationThresholdDraft(saved.correlationThreshold);
@@ -2462,6 +2466,24 @@ export default function AutoTradePage() {
                     targetRMultipleDraft == null ||
                     targetRMultipleDraft <= 0 ||
                     targetRMultipleDraft === config.data?.targetRMultiple
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Max hold time (days)"
+              hint="Force-close a position after this many calendar days if neither the stop nor target has been hit yet. 0 disables this check (hold until stop/target/manual close, as before this existed)."
+            >
+              <div className="flex gap-2">
+                <NumberInput value={maxHoldDaysDraft} onChange={setMaxHoldDaysDraft} min={0} step={1} />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save max hold time"
+                  onClick={() => maxHoldDaysDraft != null && saveConfig({ maxHoldDays: maxHoldDaysDraft })}
+                  disabled={
+                    maxHoldDaysDraft == null || maxHoldDaysDraft < 0 || maxHoldDaysDraft === config.data?.maxHoldDays
                   }
                 >
                   Save

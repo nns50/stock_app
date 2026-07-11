@@ -374,5 +374,22 @@ key becomes `client_order_id`.
   are skipped (defined-risk). NB: the docs scrape only serialized the SINGLE + COVERED_STOCK
   examples, so the VERTICAL order-level shape is **inferred from COVERED_STOCK and confirmed via a
   live preview** before placing.
+- **Cancelling a resting bracket post-fill (2026-07-11, autotrade's maxHoldDays
+  force-close — UNCONFIRMED, needs a real live trade):** every prior use of Cancel
+  (above) targets an order still working/unfilled. This is new, different territory:
+  `autotrading/liveExecute.ts`'s `checkLiveEquityTimeExits()` calls
+  `webullCancelOrder(accountId, entryIntent.idempotencyKey)` — the MASTER leg's own
+  client_order_id — AFTER that leg is already `filled`, on the working theory that
+  cancelling by any one id belonging to the `client_combo_order_id` group reaches the
+  whole combo, including the still-resting STOP_LOSS/STOP_PROFIT legs. Never trusted
+  blindly: always re-polls Order Detail/Open Orders immediately after and requires
+  every non-MASTER leg to unambiguously show as no longer resting before proceeding —
+  anything short of that (including a leg that raced the cancel and already filled)
+  fails closed, leaving the position open for the next cycle to retry. If a real
+  account confirms this doesn't work as theorized, the fallback would be resolving
+  each leg's own broker-assigned `order_id` from Order Detail and cancelling by that
+  instead (untried — no confirmed evidence Webull's cancel endpoint accepts an
+  `order_id` in place of `client_order_id`).
 - **Next:** confirm a real option fill + a real vertical preview; COVERED_STOCK (stock+option) and
-  IRON_CONDOR (4-leg) strategies; options brackets / OTOCO.
+  IRON_CONDOR (4-leg) strategies; options brackets / OTOCO; the post-fill bracket-cancel
+  behavior above against a real account.
