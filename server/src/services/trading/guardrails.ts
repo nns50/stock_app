@@ -142,7 +142,13 @@ export function defaultTradingConfig(): TradingConfig {
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
-const usd = (n: number): string => `$${round2(n).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+// Cached formatter instead of calling toLocaleString(locale, options) fresh
+// every time — that re-parses the options and builds a new ICU formatter on
+// EVERY call. Same output (same options object shape, including the implicit
+// max-3-decimals default from omitting maximumFractionDigits), reusing one
+// Intl.NumberFormat via .format().
+const usdFormatter = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2 });
+const usd = (n: number): string => `$${usdFormatter.format(round2(n))}`;
 
 /** Effective per-unit price for valuation: limit, else stop, else reference. */
 function unitPrice(intent: OrderIntent): number | undefined {
