@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { Candle } from '../src/providers/types';
 import {
+  candleIndicatorsAt,
   computeCandleIndicators,
+  computeCandleIndicatorSeries,
   computeIndicators,
   defaultScreenerConfig,
   resolveScreenerConfig,
@@ -152,5 +154,62 @@ describe('computeCandleIndicators — cacheable, quote-independent piece of comp
     const wrongCache = computeCandleIndicators(downtrend, cfg)!; // deliberately mismatched
     const viaWrongCache = scoreSymbol('UP', uptrend, quote, cfg, wrongCache);
     expect(viaWrongCache).not.toEqual(fresh);
+  });
+});
+
+describe('computeCandleIndicatorSeries / candleIndicatorsAt — precomputed-once lookup for a backtest day-loop', () => {
+  const cfg = defaultScreenerConfig();
+  // A longer, varied series (not a pure monotonic trend) so RSI/ATR genuinely
+  // move around across indices, not just settle at an extreme.
+  const wobble = candlesFromCloses(Array.from({ length: 120 }, (_, i) => 100 + Math.sin(i / 5) * 15 + i * 0.3));
+
+  it('matches computeCandleIndicators(candles.slice(0, i + 1)) at every index — the causal-prefix property the whole optimization relies on', () => {
+    const series = computeCandleIndicatorSeries(wobble, cfg);
+    // Sample across the array: right at the edge of insufficient history,
+    // just past every configured warmup period, and deep into the series.
+    const sampleIndices = [0, 1, cfg.maShort - 1, cfg.maShort, cfg.maLong, cfg.rsiPeriod, 60, 90, wobble.length - 1];
+    for (const i of sampleIndices) {
+      const viaSeries = candleIndicatorsAt(series, i);
+      const viaFresh = computeCandleIndicators(wobble.slice(0, i + 1), cfg);
+      expect(viaSeries).toEqual(viaFresh);
+    }
+  });
+
+  it('returns null for an out-of-range index', () => {
+    const series = computeCandleIndicatorSeries(wobble, cfg);
+    expect(candleIndicatorsAt(series, -1)).toBeNull();
+    expect(candleIndicatorsAt(series, wobble.length)).toBeNull();
+  });
+
+  it('computeIndicators with asOfIndex + a precomputed series matches computing fresh on a truncated history, at several points in time', () => {
+    const series = computeCandleIndicatorSeries(wobble, cfg);
+    for (const i of [30, 60, 90, wobble.length - 1]) {
+      const cached = candleIndicatorsAt(series, i)!;
+      const viaAsOfIndex = computeIndicators(wobble, undefined, cfg, cached, i);
+      const viaTruncatedHistory = computeIndicators(wobble.slice(0, i + 1), undefined, cfg);
+      expect(viaAsOfIndex).toEqual(viaTruncatedHistory);
+    }
+  });
+
+  it('scoreSymbol with asOfIndex + a precomputed series matches computing fresh on a truncated history', () => {
+    const series = computeCandleIndicatorSeries(wobble, cfg);
+    const i = 75;
+    const cached = candleIndicatorsAt(series, i)!;
+    const viaAsOfIndex = scoreSymbol('WOBBLE', wobble, undefined, cfg, cached, i);
+    const viaTruncatedHistory = scoreSymbol('WOBBLE', wobble.slice(0, i + 1), undefined, cfg);
+    expect(viaAsOfIndex).toEqual(viaTruncatedHistory);
+  });
+
+  it('an asOfIndex pointing at a DIFFERENT day than the cache changes the result — proving asOfIndex is genuinely wired in, not silently ignored', () => {
+    const series = computeCandleIndicatorSeries(wobble, cfg);
+    const at40 = scoreSymbol('WOBBLE', wobble, undefined, cfg, candleIndicatorsAt(series, 40)!, 40);
+    const at41 = scoreSymbol('WOBBLE', wobble, undefined, cfg, candleIndicatorsAt(series, 41)!, 41);
+    expect(at41).not.toEqual(at40);
+  });
+
+  it('omitting asOfIndex still defaults to the full array (unchanged behavior for every existing caller)', () => {
+    const withoutIndex = scoreSymbol('WOBBLE', wobble, undefined, cfg);
+    const withExplicitLastIndex = scoreSymbol('WOBBLE', wobble, undefined, cfg, undefined, wobble.length - 1);
+    expect(withoutIndex).toEqual(withExplicitLastIndex);
   });
 });

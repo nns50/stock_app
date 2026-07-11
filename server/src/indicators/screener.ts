@@ -171,29 +171,90 @@ export function computeCandleIndicators(candles: Candle[], cfg: ScreenerConfig):
   };
 }
 
+export interface CandleIndicatorSeries {
+  maShort: (number | null)[];
+  maLong: (number | null)[];
+  rsi: (number | null)[];
+  atr: (number | null)[];
+}
+
+/** Precomputes the full SMA/RSI/ATR series over the ENTIRE candles array in a
+ *  single O(n) pass each. A caller that needs the candle-indicator snapshot at
+ *  MANY different "as of index i" points over the SAME candles array — a
+ *  backtest's day-by-day walk-forward loop, one lookup per simulated day — can
+ *  compute this ONCE up front, then read each day's answer via the O(1)
+ *  candleIndicatorsAt() lookup below, instead of re-slicing history and
+ *  recomputing computeCandleIndicators() from scratch on every single
+ *  simulated day (the O(days²) cost this replaces).
+ *
+ *  This is mathematically IDENTICAL to calling computeCandleIndicators()
+ *  fresh on candles.slice(0, i + 1) for every i: smaSeries/rsiSeries/
+ *  atrSeries are all already causal — index i's value depends only on
+ *  candles[0..i], never anything after it (a fixed trailing window for SMA;
+ *  a forward-only Wilder recurrence seeded from a fixed start for RSI/ATR).
+ *  Verified in screener.test.ts. */
+export function computeCandleIndicatorSeries(candles: Candle[], cfg: ScreenerConfig): CandleIndicatorSeries {
+  const closes = candles.map((c) => c.close);
+  return {
+    maShort: smaSeries(closes, cfg.maShort),
+    maLong: smaSeries(closes, cfg.maLong),
+    rsi: rsiSeries(closes, cfg.rsiPeriod),
+    atr: atrSeries(candles, cfg.atrPeriod),
+  };
+}
+
+/** O(1) lookup of the candle-indicator snapshot at index `i` of a precomputed
+ *  computeCandleIndicatorSeries() result. Null whenever computeCandleIndicators
+ *  itself would be — out of range, or fewer than 2 candles through `i` — a
+ *  still-warming-up index short of that (e.g. i < maLong's period) instead
+ *  returns an object with those individual fields null, same as
+ *  computeCandleIndicators would for a too-short-but-still-≥2 history. */
+export function candleIndicatorsAt(series: CandleIndicatorSeries, i: number): CandleIndicators | null {
+  if (i < 1 || i >= series.maShort.length) return null;
+  return { maShort: series.maShort[i], maLong: series.maLong[i], rsiVal: series.rsi[i], atrVal: series.atr[i] };
+}
+
 /** Build the indicator snapshot from candles + (optional) live quote.
- *  `cachedCandleIndicators`, when passed, must already be this exact
- *  candles array's own computeCandleIndicators() result — skips
- *  recomputing SMA/RSI/ATR, but every quote-dependent field below (price,
- *  change%, volume, gap) is still derived fresh every call regardless,
- *  since those genuinely change on every live quote tick and must never be
- *  served stale. */
+ *
+ *  `cachedCandleIndicators`, when passed, must already be the correct
+ *  computeCandleIndicators() (or candleIndicatorsAt()) result as of
+ *  `asOfIndex` — skips recomputing SMA/RSI/ATR, but every quote-dependent
+ *  field below (price, change%, volume, gap) is still derived fresh every
+ *  call regardless, since those genuinely change on every live quote tick
+ *  and must never be served stale.
+ *
+ *  `asOfIndex` (default candles.length - 1, i.e. "the whole array" — the
+ *  original behavior, unchanged for any caller that omits it) lets a caller
+ *  treat `candles` as a fixed FULL history and simulate "as of this earlier
+ *  day" without slicing it down first — a backtest's day-by-day loop needs
+ *  exactly this to avoid an O(n) array copy on every single simulated day. */
 export function computeIndicators(
   candles: Candle[],
   quote: Quote | undefined,
   cfg: ScreenerConfig,
   cachedCandleIndicators?: CandleIndicators,
+  asOfIndex?: number,
 ): IndicatorSnapshot | null {
-  if (candles.length < 2) return null;
-  const volumes = candles.map((c) => c.volume);
-  const last = candles[candles.length - 1];
-  const prev = candles[candles.length - 2];
+  const end = asOfIndex ?? candles.length - 1;
+  if (end < 1 || end >= candles.length) return null;
+  const last = candles[end];
+  const prev = candles[end - 1];
   const price = quote?.last ?? last.close;
 
-  const { maShort, maLong, rsiVal, atrVal } = cachedCandleIndicators ?? computeCandleIndicators(candles, cfg)!;
+  // Only reached when the caller didn't already supply a cache — falls back
+  // to computing fresh over exactly the bars through `end` (never the full
+  // array beyond it, which would leak future bars into a backtest's "as of
+  // today" score).
+  const candleIndicators = cachedCandleIndicators ?? computeCandleIndicators(candles.slice(0, end + 1), cfg);
+  if (!candleIndicators) return null;
+  const { maShort, maLong, rsiVal, atrVal } = candleIndicators;
 
   const changePct = quote?.changePct ?? percentChange(last.close, prev.close);
-  const avgVolume = quote?.avgVolume ?? meanOfLast(volumes.slice(0, -1), 20) ?? meanOfLast(volumes, 20);
+  // The 20 bars immediately preceding `end` (today excluded) — bounded
+  // window instead of mapping/slicing the full candles array, matching
+  // meanOfLast(volumes.slice(0, -1), 20)'s original semantics exactly.
+  const priorVolumes = candles.slice(Math.max(0, end - 20), end).map((c) => c.volume);
+  const avgVolume = quote?.avgVolume ?? meanOfLast(priorVolumes, 20);
   const volume = quote?.volume ?? last.volume;
   const relVol = avgVolume ? relativeVolume(volume, avgVolume) : null;
   const openForGap = quote?.open ?? last.open;
@@ -293,15 +354,18 @@ const LABELS: Record<IndicatorKey, string> = {
   trend: 'Trend',
 };
 
-/** Score a single symbol; returns the full transparent breakdown. */
+/** Score a single symbol; returns the full transparent breakdown.
+ *  `cachedCandleIndicators`/`asOfIndex` pass straight through to
+ *  computeIndicators — see its own doc comment. */
 export function scoreSymbol(
   symbol: string,
   candles: Candle[],
   quote: Quote | undefined,
   cfg: ScreenerConfig,
   cachedCandleIndicators?: CandleIndicators,
+  asOfIndex?: number,
 ): SymbolScore {
-  const ind = computeIndicators(candles, quote, cfg, cachedCandleIndicators);
+  const ind = computeIndicators(candles, quote, cfg, cachedCandleIndicators, asOfIndex);
   if (!ind) {
     return {
       symbol,

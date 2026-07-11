@@ -1,5 +1,12 @@
 import { Candle, Timeframe } from '../../providers/types';
-import { ScreenerConfig, SymbolScore, scoreSymbol } from '../../indicators/screener';
+import {
+  candleIndicatorsAt,
+  CandleIndicatorSeries,
+  computeCandleIndicatorSeries,
+  ScreenerConfig,
+  SymbolScore,
+  scoreSymbol,
+} from '../../indicators/screener';
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } from './decide';
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
@@ -341,6 +348,19 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
   // only ever advances forward.
   const indexCursor = new Map<string, number>();
 
+  // SMA/RSI/ATR over each symbol's FULL history, computed ONCE up front
+  // (single O(n) pass each) rather than re-sliced-and-recomputed from
+  // scratch for every one of the (up to hundreds of) simulated days below —
+  // the O(days²) cost this whole precompute step exists to eliminate. Safe
+  // because smaSeries/rsiSeries/atrSeries are causal (index i depends only
+  // on candles[0..i]), so candleIndicatorsAt(series, idx) is mathematically
+  // identical to computeCandleIndicators(candles.slice(0, idx + 1), cfg) —
+  // see computeCandleIndicatorSeries's own doc comment.
+  const candleIndicatorSeriesBySymbol = new Map<string, CandleIndicatorSeries>();
+  for (const [symbol, candles] of historyBySymbol) {
+    candleIndicatorSeriesBySymbol.set(symbol, computeCandleIndicatorSeries(candles, screenerCfg));
+  }
+
   // The running win/loss streak, maintained incrementally instead of calling
   // computeStreaksAndDrawdown(closedPnls) (an O(closedPnls.length) rescan)
   // every single day — mirrors that function's own per-element logic
@@ -511,8 +531,9 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
       const idx = indexAsOf(candles, dayMs, indexCursor.get(symbol) ?? 0);
       if (idx >= 0) indexCursor.set(symbol, idx);
       if (idx < 1 || candles[idx].time !== dayMs) continue; // needs a bar dated exactly today
-      const history = candles.slice(0, idx + 1);
-      const score = scoreSymbol(symbol, history, undefined, screenerCfg);
+      const series = candleIndicatorSeriesBySymbol.get(symbol)!;
+      const cached = candleIndicatorsAt(series, idx) ?? undefined;
+      const score = scoreSymbol(symbol, candles, undefined, screenerCfg, cached, idx);
       if (!score.passedFilters) continue;
       const signal = generateSignal({ ...score, discoverySource: 'universe' }, decisionCfg);
       if (signal) candidates.push({ score, signal });
