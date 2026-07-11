@@ -506,10 +506,16 @@ CREATE INDEX IF NOT EXISTS idx_autotrade_events_symbol ON autotrade_events(symbo
 CREATE INDEX IF NOT EXISTS idx_autotrade_events_stage ON autotrade_events(stage);
 CREATE INDEX IF NOT EXISTS idx_autotrade_events_created ON autotrade_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_backtest_fetch_log_lookup ON backtest_fetch_log(symbol, timeframe);
-CREATE INDEX IF NOT EXISTS idx_autotrade_paper_positions_status ON autotrade_paper_positions(symbol, status);
-CREATE INDEX IF NOT EXISTS idx_autotrade_options_paper_positions_status ON autotrade_options_paper_positions(symbol, status);
+-- status-leading: listOpenXxxPositions() queries WHERE status = 'open' with
+-- no symbol filter (every autotrade loop tick), which a symbol-leading index
+-- can't serve without a full scan. status still pairs with symbol here so
+-- the OTHER query shape (hasOpenXxxPosition: WHERE symbol = ? AND status = ?)
+-- stays just as well served -- SQLite can seek a multi-column equality index
+-- regardless of which order the columns appear in the WHERE clause.
+CREATE INDEX IF NOT EXISTS idx_autotrade_paper_positions_status ON autotrade_paper_positions(status, symbol);
+CREATE INDEX IF NOT EXISTS idx_autotrade_options_paper_positions_status ON autotrade_options_paper_positions(status, symbol);
 CREATE INDEX IF NOT EXISTS idx_autotrade_live_orders_symbol ON autotrade_live_orders(symbol);
-CREATE INDEX IF NOT EXISTS idx_autotrade_live_options_positions_status ON autotrade_live_options_positions(symbol, status);
+CREATE INDEX IF NOT EXISTS idx_autotrade_live_options_positions_status ON autotrade_live_options_positions(status, symbol);
 CREATE INDEX IF NOT EXISTS idx_autotrade_live_options_orders_symbol ON autotrade_live_options_orders(symbol);
 CREATE INDEX IF NOT EXISTS idx_backtest_option_contracts_lookup ON backtest_option_contracts(underlying, expiration);
 CREATE INDEX IF NOT EXISTS idx_backtest_option_contracts_fetch_log_lookup ON backtest_option_contracts_fetch_log(underlying);
@@ -723,6 +729,32 @@ function migrate(): void {
   // Must run AFTER the ADD COLUMNs above so the explicit-column copy finds them.
   rebuildAutotradeLiveOrdersTable(db);
   rebuildAutotradeLiveOptionsOrdersTable(db);
+
+  // Reorder the three open-position "status" indexes to lead with status —
+  // listOpenXxxPositions() queries WHERE status = 'open' with no symbol
+  // filter, on every autotrade loop tick, which a symbol-leading index can't
+  // serve without a full table scan. A fresh DB already gets the new order
+  // straight from SCHEMA above, so this only ever does real work once, on a
+  // DB carrying the old (symbol, status) definition.
+  reorderStatusLeadingIndex(db, 'idx_autotrade_paper_positions_status', 'autotrade_paper_positions');
+  reorderStatusLeadingIndex(db, 'idx_autotrade_options_paper_positions_status', 'autotrade_options_paper_positions');
+  reorderStatusLeadingIndex(db, 'idx_autotrade_live_options_positions_status', 'autotrade_live_options_positions');
+}
+
+/**
+ * Drop and recreate `indexName` as `(status, symbol)` when its stored
+ * definition still shows the old `(symbol, status)` order. CREATE INDEX IF
+ * NOT EXISTS in SCHEMA can't fix this on its own — an index with a matching
+ * name already exists on any pre-existing DB, so it silently no-ops rather
+ * than picking up the new column order. Exported + db-injectable for the
+ * migration test, same convention as the rebuildXxxTable functions above.
+ */
+export function reorderStatusLeadingIndex(database: Database.Database, indexName: string, tableName: string): void {
+  const row = database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name = ?").get(indexName) as
+    | { sql: string | null }
+    | undefined;
+  if (!row?.sql || /\(\s*status\s*,/i.test(row.sql)) return; // already status-leading, or doesn't exist yet
+  database.exec(`DROP INDEX ${indexName}; CREATE INDEX ${indexName} ON ${tableName}(status, symbol);`);
 }
 
 /**
@@ -808,7 +840,7 @@ export function rebuildAutotradePaperPositionsTable(database: Database.Database)
              exit_reason, created_at, updated_at
       FROM autotrade_paper_positions_old;
     DROP TABLE autotrade_paper_positions_old;
-    CREATE INDEX IF NOT EXISTS idx_autotrade_paper_positions_status ON autotrade_paper_positions(symbol, status);
+    CREATE INDEX IF NOT EXISTS idx_autotrade_paper_positions_status ON autotrade_paper_positions(status, symbol);
   `);
 }
 
