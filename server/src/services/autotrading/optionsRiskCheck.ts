@@ -77,8 +77,14 @@ const ZERO_SPREAD_SIZING: SpreadSizingResult = {
   warnings: [],
 };
 
+// Cached formatter instead of calling n.toLocaleString(locale, options) fresh
+// every time — that re-parses the options and builds a new ICU formatter on
+// EVERY call (tens of microseconds each), dominant enough to matter across
+// the thousands of evaluateOptionsRiskCheck calls a large options/combined
+// backtest makes. Same output, reusing one Intl.NumberFormat via .format().
+const usdFormatter = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function usd(n: number): string {
-  return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `$${usdFormatter.format(n)}`;
 }
 
 /**

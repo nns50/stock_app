@@ -47,8 +47,12 @@ function etDateStr(ms: number = Date.now()): string {
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
+// Cached formatter instead of calling n.toLocaleString(locale, options) fresh
+// every time — that re-parses the options and builds a new ICU formatter on
+// EVERY call. Same output, reusing one Intl.NumberFormat via .format().
+const usdFormatter = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function usd(n: number): string {
-  return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `$${usdFormatter.format(n)}`;
 }
 
 function alreadyAlertedToday(pool: HaltPool, today: string): boolean {
