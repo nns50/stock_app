@@ -569,6 +569,7 @@ describe('autotrade config routes (integration)', () => {
       stopAtrMultiple: 2,
       targetRMultiple: 3,
       maxHoldDays: 10,
+      earningsBlackoutDays: 3,
       sessionBufferMinutes: 30,
       correlationLookbackDays: 45,
       correlationThreshold: 0.6,
@@ -582,6 +583,7 @@ describe('autotrade config routes (integration)', () => {
       stopAtrMultiple: number;
       targetRMultiple: number;
       maxHoldDays: number;
+      earningsBlackoutDays: number;
       sessionBufferMinutes: number;
       correlationLookbackDays: number;
       correlationThreshold: number;
@@ -594,6 +596,7 @@ describe('autotrade config routes (integration)', () => {
       stopAtrMultiple: 2,
       targetRMultiple: 3,
       maxHoldDays: 10,
+      earningsBlackoutDays: 3,
       sessionBufferMinutes: 30,
       correlationLookbackDays: 45,
       correlationThreshold: 0.6,

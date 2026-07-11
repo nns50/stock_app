@@ -7,6 +7,7 @@ import { isExcluded } from '../../db/autotradeExclusions';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { mapPool } from '../../util/async';
 import { classifySector } from './realEstateClassifier';
+import { getSymbolEvents } from '../events';
 
 // ---------------------------------------------------------------------------
 // The Research & Screen stage (docs/AUTOTRADING_SPEC.md — EXECUTION LOOP,
@@ -92,6 +93,23 @@ export interface RunScreenOptions {
   /** Bypass universe/movers discovery and scan exactly these symbols instead
    *  (mirrors the manual screener's `symbols` override in routes/screener.ts). */
   symbols?: string[];
+  /** Skip a candidate whose next known earnings date falls within this many
+   *  CALENDAR days (today counts as day 0) — 0 or omitted disables the
+   *  check. Read from AutotradeConfig.earningsBlackoutDays by the caller
+   *  (loop.ts / the manual Screen+Decision routes), same convention as
+   *  config.filters.minRelVol above. */
+  earningsBlackoutDays?: number;
+}
+
+/** Whether `earningsDate` (YYYY-MM-DD) falls within `blackoutDays` calendar
+ *  days from now, inclusive of today — a pure calendar-date comparison, not
+ *  a fractional-hours one, so the window's meaning doesn't shift with what
+ *  time of day the loop happens to run. */
+function withinEarningsBlackout(earningsDate: string, blackoutDays: number, now: number = Date.now()): boolean {
+  const todayMs = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T00:00:00Z`);
+  const earningsMs = Date.parse(`${earningsDate}T00:00:00Z`);
+  const diffDays = Math.round((earningsMs - todayMs) / (24 * 60 * 60 * 1000));
+  return diffDays >= 0 && diffDays <= blackoutDays;
 }
 
 export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<ScreenResult> {
@@ -110,6 +128,17 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
   const excluded: { symbol: string; reason: string }[] = [];
   const skipped: { symbol: string; reason: string }[] = [];
   const errors: { symbol: string; message: string }[] = [];
+
+  // One batched lookup for every candidate up front — getSymbolEvents()
+  // itself batches into a single Yahoo quote call per cycle of cache misses,
+  // so this is no more expensive scanning 120 symbols than 1. Skipped
+  // entirely when the check is disabled (the common case for anyone who
+  // hasn't opted in) rather than paying for a lookup nothing will use.
+  const earningsBlackoutDays = opts.earningsBlackoutDays ?? 0;
+  const earningsBySymbol =
+    earningsBlackoutDays > 0
+      ? new Map((await getSymbolEvents(symbols)).map((e) => [e.symbol, e]))
+      : new Map<string, { earningsDate?: string }>();
 
   await mapPool(symbols, 6, async (symbol) => {
     // Real-estate exclusion runs FIRST, before any scoring — a listed or
@@ -142,6 +171,19 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
       skipped.push({ symbol, reason: 'sector/industry could not be determined this cycle' });
       logAutotradeEvent({ symbol, stage: 'screen', action: 'skipped_unknown_sector' });
       return;
+    }
+
+    // Earnings blackout — an unknown earnings date does NOT block (see
+    // RunScreenOptions' own doc comment on why this fails OPEN, unlike the
+    // real-estate checks above).
+    if (earningsBlackoutDays > 0) {
+      const earningsDate = earningsBySymbol.get(symbol)?.earningsDate;
+      if (earningsDate && withinEarningsBlackout(earningsDate, earningsBlackoutDays)) {
+        const reason = `Earnings ${earningsDate} is within the ${earningsBlackoutDays}-day blackout window`;
+        excluded.push({ symbol, reason });
+        logAutotradeEvent({ symbol, stage: 'screen', action: 'excluded_earnings', detail: { reason, earningsDate } });
+        return;
+      }
     }
 
     try {

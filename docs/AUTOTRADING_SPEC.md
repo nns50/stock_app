@@ -302,6 +302,25 @@ this list as decisions change — don't let it drift from what's actually built.
   date is exactly the kind of thing that already shows up as an elevated IV rank, which is
   what this filter is actually checking. **Confirmed with the user** (2026-07-03) — the
   recommended 70 was accepted as-is.
+  - **Follow-up (2026-07-11) — equity gained an explicit earnings-date check; the
+    decision above for OPTIONS is unchanged.** Revisits the earnings example from the
+    original ask, this time for equity specifically — which has no IV-rank concept at
+    all, so the reasoning above (an approaching print already shows up as elevated IV
+    rank) has nothing to attach to there. New `AutotradeConfig.earningsBlackoutDays`
+    (0 default, disabled): `screen.ts`'s own per-candidate loop (`runAutotradeScreen()`)
+    skips an equity candidate whose next known earnings date —
+    `services/events.ts`'s existing `getSymbolEvents()`, already used by the manual
+    pages' `EarningsBadge` — falls within this many calendar days, mirroring the
+    real-estate exclusion's screening-stage gate structure. Unlike that check, an
+    UNKNOWN earnings date does NOT block: `events.ts`'s lookup hits Yahoo directly and
+    is cached for only an hour (vs. the sector classifier's 30 days), so failing
+    closed here would risk starving the loop of candidates during ordinary Yahoo
+    flakiness, not just correctly excluding a genuine match. Options entries are
+    deliberately left untouched — the confirmed reasoning above still holds for them.
+    Scoped to blocking NEW entries only, not closing positions already open as their
+    earnings approaches — a materially larger change (there's no existing hook that
+    loops over open positions for any reason other than a stop/target/time-exit check)
+    that wasn't confirmed as in scope for this pass.
 - **Options assignment/expiration handling: close-only, no roll — confirmed with the
   user (2026-07-03).** The original ask offered close-or-roll. Rolling means the loop has to
   pick a *new* contract (strike + expiration), which is a second entry decision — it would

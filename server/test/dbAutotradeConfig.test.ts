@@ -403,6 +403,26 @@ describe('autotrade config persistence', () => {
     });
   });
 
+  describe('earnings blackout', () => {
+    it('defaults to 0 (disabled)', () => {
+      expect(defaultAutotradeConfig().earningsBlackoutDays).toBe(0);
+    });
+
+    it('persists a patch and round-trips', () => {
+      const cfg = setAutotradeConfig({ earningsBlackoutDays: 3 });
+      expect(cfg.earningsBlackoutDays).toBe(3);
+      expect(getAutotradeConfig().earningsBlackoutDays).toBe(3);
+    });
+
+    it('allows exactly 0 (disables the check) but rejects negative to the default', () => {
+      expect(setAutotradeConfig({ earningsBlackoutDays: 0 }).earningsBlackoutDays).toBe(0);
+      setAutotradeConfig({ earningsBlackoutDays: 3 });
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+      const cfg = setAutotradeConfig({ earningsBlackoutDays: -1 });
+      expect(cfg.earningsBlackoutDays).toBe(defaultAutotradeConfig().earningsBlackoutDays);
+    });
+  });
+
   describe('correlation methodology (formerly riskProfiles.ts constants)', () => {
     it('defaults match the old hardcoded constants exactly', () => {
       const d = defaultAutotradeConfig();

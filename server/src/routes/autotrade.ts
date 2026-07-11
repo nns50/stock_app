@@ -86,6 +86,7 @@ const configBody = z.object({
   stopAtrMultiple: z.number().positive().optional(),
   targetRMultiple: z.number().positive().optional(),
   sessionBufferMinutes: z.number().int().nonnegative().optional(),
+  earningsBlackoutDays: z.number().int().nonnegative().optional(),
   // --- Max hold time (0 disables) --------------------------------------------
   maxHoldDays: z.number().int().nonnegative().optional(),
   // --- Correlation methodology (feeds maxCorrelatedExposurePct above) -------
@@ -161,6 +162,7 @@ autotradeRouter.put(
     if (body.stopAtrMultiple !== undefined) patch.stopAtrMultiple = body.stopAtrMultiple;
     if (body.targetRMultiple !== undefined) patch.targetRMultiple = body.targetRMultiple;
     if (body.sessionBufferMinutes !== undefined) patch.sessionBufferMinutes = body.sessionBufferMinutes;
+    if (body.earningsBlackoutDays !== undefined) patch.earningsBlackoutDays = body.earningsBlackoutDays;
     if (body.maxHoldDays !== undefined) patch.maxHoldDays = body.maxHoldDays;
     if (body.correlationLookbackDays !== undefined) patch.correlationLookbackDays = body.correlationLookbackDays;
     if (body.correlationThreshold !== undefined) patch.correlationThreshold = body.correlationThreshold;
@@ -379,6 +381,7 @@ autotradeRouter.post(
     const result = await runAutotradeScreen({
       config: screenerConfigOverride(config, body.config as Partial<ScreenerConfig> | undefined),
       symbols: body.symbols,
+      earningsBlackoutDays: config.earningsBlackoutDays,
     });
     res.json(result);
   }),
@@ -405,6 +408,7 @@ autotradeRouter.post(
     const screen = await runAutotradeScreen({
       config: screenerConfigOverride(config, body.config as Partial<ScreenerConfig> | undefined),
       symbols: body.symbols,
+      earningsBlackoutDays: config.earningsBlackoutDays,
     });
     const decision = runAutotradeDecision(
       screen.candidates,

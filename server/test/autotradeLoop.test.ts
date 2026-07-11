@@ -549,7 +549,10 @@ describe('runAutotradeLoopTick', () => {
     await runAutotradeLoopTick();
 
     expect(mockSessionWindow).toHaveBeenCalledWith(30);
-    expect(mockScreen).toHaveBeenCalledWith({ config: { filters: { minRelVol: 3 } } });
+    expect(mockScreen).toHaveBeenCalledWith({
+      config: { filters: { minRelVol: 3 } },
+      earningsBlackoutDays: 0,
+    });
     expect(mockDecide).toHaveBeenCalledWith([candidate('AAPL', 2)], { stopAtrMultiple: 2.5, targetRMultiple: 3 });
   });
 

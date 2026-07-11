@@ -126,6 +126,21 @@ export interface AutotradeConfig {
    *  the opening auction and closing imbalance both distort prices in ways a
    *  signal shouldn't react to. */
   sessionBufferMinutes: number;
+  /** Skip an EQUITY candidate whose next known earnings date falls within
+   *  this many calendar days (today counts as day 0) — an unattended loop
+   *  has no way to react to an earnings-driven overnight gap the way stop-
+   *  loss sizing assumes. 0 (default) disables this check. Options entries
+   *  are NOT gated by this — see docs/AUTOTRADING_SPEC.md's 2026-07-03
+   *  resolved decision on why an approaching print already shows up as
+   *  elevated IV rank there. An unknown earnings date (fetch failed, or
+   *  Yahoo has nothing for this symbol) does NOT block — unlike the real-
+   *  estate exclusion's fail-closed "unknown = skip," this check is a risk-
+   *  reduction nice-to-have, not a compliance rule, and the underlying
+   *  lookup (services/events.ts) is far more likely to be rate-limited or
+   *  momentarily unavailable than the 30-day-cached sector classification
+   *  is — failing closed here would silently starve the loop of candidates
+   *  during ordinary Yahoo flakiness. */
+  earningsBlackoutDays: number;
 
   // --- Max hold time (docs/AUTOTRADING_SPEC.md — RESOLVED DECISIONS, added
   // 2026-07-11). Unlike its neighbors above, this DOES have a backtest
@@ -303,6 +318,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     stopAtrMultiple: 1.5,
     targetRMultiple: 2,
     sessionBufferMinutes: 15,
+    earningsBlackoutDays: 0,
     maxHoldDays: 0,
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
@@ -407,6 +423,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     stopAtrMultiple: posDecimal(input.stopAtrMultiple, d.stopAtrMultiple),
     targetRMultiple: posDecimal(input.targetRMultiple, d.targetRMultiple),
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
+    earningsBlackoutDays: posInt(input.earningsBlackoutDays, d.earningsBlackoutDays),
     maxHoldDays: posInt(input.maxHoldDays, d.maxHoldDays),
     correlationLookbackDays: posIntMin1(input.correlationLookbackDays, d.correlationLookbackDays),
     correlationThreshold: unitInterval(input.correlationThreshold, d.correlationThreshold),
