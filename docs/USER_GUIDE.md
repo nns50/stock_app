@@ -751,10 +751,12 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   (three in a row — a bad price, a broker/account problem, a config error, so no live
   trades are getting through), you get one alert naming the count and the latest reason,
   then at most one reminder an hour while it persists, reset the moment an order gets
-  through. All are best-effort: with no webhook configured, nothing is sent and nothing
-  fails. Paper trading and a daily-drawdown halt don't push a notification yet — paper
-  carries no real financial exposure, and the halt isn't currently tracked as a one-time
-  state transition.
+  through. The **daily-drawdown halt** also notifies — paper, live, and live options
+  each alert independently the first time that book's day crosses its own halt level,
+  at most once per (ET) trading day per book, so a rough day in one doesn't drown out or
+  suppress a rough day in another; releasing the next day (a fresh day's P&L starting
+  over) needs no alert of its own, same reasoning as the kill switch's release. All are
+  best-effort: with no webhook configured, nothing is sent and nothing fails.
 - **Refresh** (top of the page, next to the title) — Monitoring, Paper trading, and
   Recent activity all reflect state the background loop can change on its own, every
   minute, with nothing clicked — unlike Configuration, the exclusion list, and the

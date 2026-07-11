@@ -20,6 +20,7 @@ import {
   syncLiveOptionsPositionsFromBroker,
 } from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures } from './liveFailureAlert';
+import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
 import { checkSessionWindow, checkVolatility, defaultVolatilityFilterConfig, getMarketAtrPct } from './executionGuards';
 import { runWebullPositionsSync } from '../../providers/webull/positions';
 import { processMoversForPromotion } from './moversPromotion';
@@ -451,6 +452,10 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // stages (which run before every early return) and the entry stages.
     // Best-effort, throttled, and never throws.
     await maybeAlertLiveOrderFailures();
+    // Same reasoning, same placement: the halt is recomputed from state that's
+    // already current by this point regardless of which return path the tick
+    // took above. Best-effort, throttled to once per pool per day, never throws.
+    await maybeAlertDailyDrawdownHalt();
   }
 }
 
