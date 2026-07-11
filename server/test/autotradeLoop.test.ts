@@ -39,6 +39,15 @@ vi.mock('../src/db/autotradeEvents', () => ({
   // journal; no live failures in these tests -> empty -> no alert.
   listAutotradeEvents: vi.fn(() => []),
 }));
+// maybeAlertDailyDrawdownHalt (also called in the loop tick's finally) reads
+// the dashboard snapshot — a real call would pull in execute.ts's own mocked
+// (and incomplete) exports via dashboard.ts's own imports. dashboard.ts has
+// its own full coverage (autotradeDashboard.test.ts); stubbed here to a
+// harmless "no cap configured" shape so these orchestration-focused tests
+// don't need to know anything about it.
+vi.mock('../src/services/autotrading/dashboard', () => ({
+  getAutotradeDashboard: vi.fn(() => ({ equity: null, dailyDrawdownHaltLevel: 0 })),
+}));
 
 import { runAutotradeScreen } from '../src/services/autotrading/screen';
 import { runAutotradeDecision } from '../src/services/autotrading/decide';

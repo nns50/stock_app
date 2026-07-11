@@ -1133,6 +1133,25 @@ starts.
      journaled so the throttle survives a restart. Best-effort like the rest, through the
      same `dispatchNotifications()` path.
 
+     **Follow-up, added 2026-07-11 — daily-drawdown-halt alerting.** Closes the other gap
+     the paragraph above deliberately left open. `services/autotrading/dailyHaltAlert.ts`'s
+     `maybeAlertDailyDrawdownHalt()`, called the same way as
+     `maybeAlertLiveOrderFailures()` (once per tick, from the `finally`) — since the halt
+     is recomputed fresh on every risk-check rather than a persisted state, "already
+     alerted for today" is what's tracked instead of "just tripped": a `daily_halt_alerted`
+     marker event (journaled the same restart-safe way) records the (ET) trading day and
+     which of the three independent pools — paper, live, live options — it covers, since
+     `dashboard.ts`'s own header comment already establishes those as three separate daily
+     P&Ls against the one shared % cap. Reads `getAutotradeDashboard()` directly rather
+     than re-deriving the numbers — the exact figures already computed there, not a second
+     implementation. Alerts once per pool per day the first time that pool's `dailyPnl` is
+     found at or past its halt level; the next day's fresh P&L naturally clears the
+     throttle (no explicit "un-halt" notification, mirroring the kill-switch's
+     release-doesn't-alert convention). Paper is included despite the "no real financial
+     exposure" reasoning above — the loop runs unattended, and a config/strategy having a
+     bad-enough paper day to trip its own configured cap is worth knowing without having
+     the page open, the same way the live case is.
+
      **Follow-up, added 2026-07-09 — sub-penny bracket price rejected every live
      order.** Confirmed in production: every live entry attempt failed with Webull's
      `Price increment should be 0.01 when price is equal to or greater than 0.9999`
