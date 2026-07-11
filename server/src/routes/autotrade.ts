@@ -79,6 +79,13 @@ const configBody = z.object({
   maxAggregateOpenRiskPct: z.number().min(0).max(100).optional(),
   maxCorrelatedExposurePct: z.number().min(0).max(100).optional(),
   maxTradesPerDay: z.number().int().nonnegative().optional(),
+  // --- Screening/decision thresholds ------------------------------------------
+  minRelVol: z.number().nonnegative().optional(),
+  maxTickerAtrPct: z.number().min(0).max(100).optional(),
+  maxMarketAtrPct: z.number().min(0).max(100).optional(),
+  stopAtrMultiple: z.number().positive().optional(),
+  targetRMultiple: z.number().positive().optional(),
+  sessionBufferMinutes: z.number().int().nonnegative().optional(),
   // --- Phase 8: live trading -------------------------------------------------
   liveTradingEnabled: z.boolean().optional(),
   /** Required (and must exactly match LIVE_TRADING_CONFIRMATION_PHRASE) only
@@ -143,6 +150,12 @@ autotradeRouter.put(
     if (body.maxAggregateOpenRiskPct !== undefined) patch.maxAggregateOpenRiskPct = body.maxAggregateOpenRiskPct;
     if (body.maxCorrelatedExposurePct !== undefined) patch.maxCorrelatedExposurePct = body.maxCorrelatedExposurePct;
     if (body.maxTradesPerDay !== undefined) patch.maxTradesPerDay = body.maxTradesPerDay;
+    if (body.minRelVol !== undefined) patch.minRelVol = body.minRelVol;
+    if (body.maxTickerAtrPct !== undefined) patch.maxTickerAtrPct = body.maxTickerAtrPct;
+    if (body.maxMarketAtrPct !== undefined) patch.maxMarketAtrPct = body.maxMarketAtrPct;
+    if (body.stopAtrMultiple !== undefined) patch.stopAtrMultiple = body.stopAtrMultiple;
+    if (body.targetRMultiple !== undefined) patch.targetRMultiple = body.targetRMultiple;
+    if (body.sessionBufferMinutes !== undefined) patch.sessionBufferMinutes = body.sessionBufferMinutes;
     if (body.liveMaxOrderUsd !== undefined) patch.liveMaxOrderUsd = body.liveMaxOrderUsd;
     if (body.liveMaxDailyLossUsd !== undefined) patch.liveMaxDailyLossUsd = body.liveMaxDailyLossUsd;
     if (body.liveMaxOrdersPerDay !== undefined) patch.liveMaxOrdersPerDay = body.liveMaxOrdersPerDay;
@@ -333,6 +346,19 @@ autotradeRouter.delete(
 
 // ---- Research & Screen ------------------------------------------------------
 
+/** Defaults minRelVol to the persisted config's value — so the manual preview
+ *  matches what the automated loop actually does — while still letting an ad
+ *  hoc request override it (a caller-supplied filters.minRelVol wins, since
+ *  it's spread last). */
+function screenerConfigOverride(config: AutotradeConfig, requested?: Partial<ScreenerConfig>): Partial<ScreenerConfig> {
+  return { ...requested, filters: { minRelVol: config.minRelVol, ...requested?.filters } };
+}
+
+/** Same reasoning as screenerConfigOverride, for stopAtrMultiple/targetRMultiple. */
+function decisionConfigOverride(config: AutotradeConfig, requested?: Partial<DecisionConfig>): Partial<DecisionConfig> {
+  return { stopAtrMultiple: config.stopAtrMultiple, targetRMultiple: config.targetRMultiple, ...requested };
+}
+
 const screenBody = z.object({
   config: z.record(z.string(), z.unknown()).optional(),
   symbols: z.array(z.string().min(1)).optional(),
@@ -341,8 +367,9 @@ autotradeRouter.post(
   '/screen',
   asyncHandler(async (req, res) => {
     const body = parseBody(screenBody, req);
+    const config = getAutotradeConfig();
     const result = await runAutotradeScreen({
-      config: body.config as Partial<ScreenerConfig> | undefined,
+      config: screenerConfigOverride(config, body.config as Partial<ScreenerConfig> | undefined),
       symbols: body.symbols,
     });
     res.json(result);
@@ -366,14 +393,16 @@ autotradeRouter.post(
   '/decide',
   asyncHandler(async (req, res) => {
     const body = parseBody(decideBody, req);
+    const config = getAutotradeConfig();
     const screen = await runAutotradeScreen({
-      config: body.config as Partial<ScreenerConfig> | undefined,
+      config: screenerConfigOverride(config, body.config as Partial<ScreenerConfig> | undefined),
       symbols: body.symbols,
     });
-    const decision = runAutotradeDecision(screen.candidates, body.decision as Partial<DecisionConfig> | undefined);
-    const optionsDecision = await runOptionsDecision(screen.candidates, {
-      strategyType: getAutotradeConfig().optionsStrategyType,
-    });
+    const decision = runAutotradeDecision(
+      screen.candidates,
+      decisionConfigOverride(config, body.decision as Partial<DecisionConfig> | undefined),
+    );
+    const optionsDecision = await runOptionsDecision(screen.candidates, { strategyType: config.optionsStrategyType });
     res.json({ screen, decision, optionsDecision });
   }),
 );

@@ -310,6 +310,79 @@ describe('autotrade config persistence', () => {
     });
   });
 
+  describe('screening/decision thresholds (formerly hardcoded constants across screen.ts/executionGuards.ts/decide.ts/loop.ts)', () => {
+    it('defaults match the old hardcoded constants exactly', () => {
+      const d = defaultAutotradeConfig();
+      expect(d.minRelVol).toBe(1.5);
+      expect(d.maxTickerAtrPct).toBe(15);
+      expect(d.maxMarketAtrPct).toBe(5);
+      expect(d.stopAtrMultiple).toBe(1.5);
+      expect(d.targetRMultiple).toBe(2);
+      expect(d.sessionBufferMinutes).toBe(15);
+    });
+
+    it('persists a patch and round-trips', () => {
+      const cfg = setAutotradeConfig({
+        minRelVol: 3,
+        maxTickerAtrPct: 25,
+        maxMarketAtrPct: 8,
+        stopAtrMultiple: 2,
+        targetRMultiple: 3,
+        sessionBufferMinutes: 30,
+      });
+      expect(cfg).toMatchObject({
+        minRelVol: 3,
+        maxTickerAtrPct: 25,
+        maxMarketAtrPct: 8,
+        stopAtrMultiple: 2,
+        targetRMultiple: 3,
+        sessionBufferMinutes: 30,
+      });
+      expect(getAutotradeConfig()).toMatchObject({ minRelVol: 3, stopAtrMultiple: 2, sessionBufferMinutes: 30 });
+    });
+
+    it('minRelVol allows exactly 0 (disables the relative-volume filter) but rejects negative to the default', () => {
+      expect(setAutotradeConfig({ minRelVol: 0 }).minRelVol).toBe(0);
+      setAutotradeConfig({ minRelVol: 3 });
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+      const cfg = setAutotradeConfig({ minRelVol: -1 });
+      expect(cfg.minRelVol).toBe(defaultAutotradeConfig().minRelVol);
+    });
+
+    it('clamps maxTickerAtrPct/maxMarketAtrPct like every other pct field (0-100, negative clamps not rejects)', () => {
+      const negative = setAutotradeConfig({ maxTickerAtrPct: -5 });
+      expect(negative.maxTickerAtrPct).toBe(0);
+      const over = setAutotradeConfig({ maxMarketAtrPct: 500 });
+      expect(over.maxMarketAtrPct).toBe(100);
+    });
+
+    it('rejects a zero or negative stopAtrMultiple/targetRMultiple, failing closed to the default (a stop/target must be real)', () => {
+      setAutotradeConfig({ stopAtrMultiple: 2, targetRMultiple: 3 });
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+      const zero = setAutotradeConfig({ stopAtrMultiple: 0, targetRMultiple: 0 });
+      expect(zero.stopAtrMultiple).toBe(defaultAutotradeConfig().stopAtrMultiple);
+      expect(zero.targetRMultiple).toBe(defaultAutotradeConfig().targetRMultiple);
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+      const negative = setAutotradeConfig({ stopAtrMultiple: -1, targetRMultiple: -1 });
+      expect(negative.stopAtrMultiple).toBe(defaultAutotradeConfig().stopAtrMultiple);
+      expect(negative.targetRMultiple).toBe(defaultAutotradeConfig().targetRMultiple);
+    });
+
+    it('keeps stopAtrMultiple/targetRMultiple fractional precision, unlike the integer count fields', () => {
+      const cfg = setAutotradeConfig({ stopAtrMultiple: 1.75, targetRMultiple: 2.25 });
+      expect(cfg.stopAtrMultiple).toBe(1.75);
+      expect(cfg.targetRMultiple).toBe(2.25);
+    });
+
+    it('allows sessionBufferMinutes of exactly 0 (no buffer) but rejects negative to the default', () => {
+      expect(setAutotradeConfig({ sessionBufferMinutes: 0 }).sessionBufferMinutes).toBe(0);
+      setAutotradeConfig({ sessionBufferMinutes: 20 });
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+      const cfg = setAutotradeConfig({ sessionBufferMinutes: -5 });
+      expect(cfg.sessionBufferMinutes).toBe(defaultAutotradeConfig().sessionBufferMinutes);
+    });
+  });
+
   describe('movers auto-promotion', () => {
     it('defaults to enabled, 3 within 10 days, cap 50', () => {
       const d = defaultAutotradeConfig();

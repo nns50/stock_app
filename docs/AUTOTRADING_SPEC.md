@@ -1899,6 +1899,35 @@ Implement a recurring cycle with these stages, each clearly separated:
 - Volatility filter — skip new entries if broad-market or ticker-level
   volatility is outside a defined range
 
+**Follow-up, added 2026-07-11 — screening/decision thresholds are now
+configurable too.** The bullets above (plus the screener's own relative-volume
+floor, and the ATR-multiple stop/target sizing decide.ts implements the "hard
+stop-loss" requirement with) shipped as hardcoded constants — `minRelVol`
+(`screen.ts`'s `defaultAutotradeScreenerConfig()`), `maxTickerAtrPct`/
+`maxMarketAtrPct` (`executionGuards.ts`'s `defaultVolatilityFilterConfig()`),
+`stopAtrMultiple`/`targetRMultiple` (`decide.ts`'s `defaultDecisionConfig()`),
+and the session buffer minutes (`loop.ts`'s own `SESSION_BUFFER_MINUTES`
+constant, now deleted). Same treatment as the risk-check parameters' own
+2026-07-10 follow-up above, for the same reason: no dial existed at all for
+any of these. Moved onto `AutotradeConfig` directly (`minRelVol`,
+`maxTickerAtrPct`, `maxMarketAtrPct`, `stopAtrMultiple`, `targetRMultiple`,
+`sessionBufferMinutes`), each defaulting to its old hardcoded value.
+`loop.ts` threads them through explicitly on every tick instead of calling
+the now-unchanged `default*Config()` functions directly; those functions
+keep their old hardcoded return values as the fallback backtesting still
+uses (via `screenerConfig`/`decisionConfig` request overrides, unaffected by
+live config — same "self-contained hypothesis" precedent as
+`maxConcurrentPositions` and the risk-check parameters). The manual Screen/
+Decision preview routes now default `minRelVol`/`stopAtrMultiple`/
+`targetRMultiple` to the live persisted config too (previously always the
+hardcoded value, regardless of what the loop was actually configured to
+do), while still honoring an explicit per-request override the same way
+they always did. `maxTickerAtrPct`/`maxMarketAtrPct`/`sessionBufferMinutes`
+have no manual-preview or backtest equivalent at all — the volatility/session
+guards only ever applied to the unattended loop (executionGuards.ts's own
+header comment on why), and a historical daily-bar replay has no real-time
+session clock to simulate.
+
 ### EXECUTION SAFETY
 - Idempotent order placement (safe to retry without double-filling)
 - Explicit handling for partial fills, rejected orders, and broker API

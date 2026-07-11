@@ -1069,6 +1069,14 @@ export interface AutotradeConfig {
   maxCorrelatedExposurePct: number;
   maxTradesPerDay: number;
 
+  // --- Screening/decision thresholds ---
+  minRelVol: number;
+  maxTickerAtrPct: number;
+  maxMarketAtrPct: number;
+  stopAtrMultiple: number;
+  targetRMultiple: number;
+  sessionBufferMinutes: number;
+
   // --- Phase 8: live trading ---
   liveTradingEnabled: boolean;
   liveEnabledAt: number | null;

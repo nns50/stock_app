@@ -671,7 +671,22 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   trading alike, and each has its own **Save** button, so you can change one without
   touching the rest. For a plain-English walkthrough of each of these — with worked
   examples and guidance on what to change when nothing's trading — see
-  **[Auto-Trade Risk Settings](./AUTOTRADE_RISK_SETTINGS.md)**.
+  **[Auto-Trade Risk Settings](./AUTOTRADE_RISK_SETTINGS.md)**. A second group of fields
+  governs the automated loop's own **screening and decision thresholds** — a
+  structurally different category from the risk-sizing fields above (these gate what
+  counts as a candidate and how it's priced, not how an approved signal is sized or
+  capped): **min relative volume** (a candidate's volume must be at least this many
+  times its own average to pass the screener), **max ticker ATR** and **max market
+  ATR** (skip a candidate whose own volatility is too high, or skip every new entry
+  this cycle if SPY's own volatility is too high — stricter than the manual Screen/
+  Decision preview below, since an unattended loop has no one to override a bad read),
+  **stop distance** and **target** (the stop sits this many ATRs from entry; the target
+  sits stop-distance × this further out, as a reward:risk multiple), and **session
+  buffer** (no new entries within this many minutes of the open or close, when prices
+  are most distorted). All six default to the values the loop always used before they
+  were configurable, so leaving them untouched changes nothing; the manual Screen/
+  Decision preview below defaults to these same saved values too (so it previews what
+  the loop would actually do), though it has no UI to override them ad hoc today.
   **Auto-promote recurring movers** (on by default) grows your universe automatically:
   a symbol Webull's premarket movers surface that also clears screening on **3 distinct
   days within a 10-day window** (both tunable, along with a **50-symbol lifetime cap** on

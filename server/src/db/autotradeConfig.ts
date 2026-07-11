@@ -84,6 +84,49 @@ export interface AutotradeConfig {
   /** Max entries (paper + live combined) risk-check will approve per day. */
   maxTradesPerDay: number;
 
+  // --- Screening/decision thresholds (docs/AUTOTRADING_SPEC.md — RESEARCH &
+  // SCREEN / DECISION). Same treatment, extraction, and reasoning as the
+  // risk-check parameters above, added 2026-07-11: these lived as hardcoded
+  // constants (screen.ts's defaultAutotradeScreenerConfig(),
+  // executionGuards.ts's defaultVolatilityFilterConfig(), decide.ts's
+  // defaultDecisionConfig(), loop.ts's SESSION_BUFFER_MINUTES) with no way to
+  // tune them at all — a structurally different category from the risk-check
+  // fields (these gate what counts as a candidate and how it's priced, not
+  // how a signal is sized/capped once found). Defaults below match those
+  // constants exactly, so an untouched config's behavior doesn't change.
+  // loop.ts threads these through explicitly on every tick; the manual
+  // Screen/Decision preview routes (routes/autotrade.ts) default to them too
+  // (so the preview matches what the loop would actually do) but can still
+  // be overridden ad hoc per request, same convention as before. Backtesting
+  // keeps using screen.ts's/decide.ts's own static legacy defaults unless a
+  // request explicitly overrides via its existing screenerConfig/
+  // decisionConfig fields — mirrors the risk-check fields' own backtest
+  // treatment exactly. maxTickerAtrPct/maxMarketAtrPct/sessionBufferMinutes
+  // have no backtest equivalent at all (a historical daily-bar replay has no
+  // real-time session clock or same-day volatility guard to simulate).
+
+  /** Screener's relative-volume floor (× average volume) — auto-trade leans
+   *  harder on "unusual volume" than the manual screener's general-purpose
+   *  default. 0 disables this specific filter (every relative-volume reading
+   *  passes). */
+  minRelVol: number;
+  /** Skip a candidate whose own ATR% (of price) exceeds this — the loop's
+   *  own per-ticker volatility guard, stricter than what the human-reviewed
+   *  manual Screen/Decision preview applies (executionGuards.ts's header
+   *  comment on why: an unattended loop has no one to override a bad read). */
+  maxTickerAtrPct: number;
+  /** Skip ALL new entries this cycle if the broad-market proxy's (SPY) own
+   *  ATR% exceeds this. */
+  maxMarketAtrPct: number;
+  /** Stop distance = this × the candidate's own ATR. */
+  stopAtrMultiple: number;
+  /** Target distance = stop distance × this (a reward:risk multiple). */
+  targetRMultiple: number;
+  /** No new entries within this many minutes of the session open or close —
+   *  the opening auction and closing imbalance both distort prices in ways a
+   *  signal shouldn't react to. */
+  sessionBufferMinutes: number;
+
   // --- Phase 8: live-trading gate (docs/AUTOTRADING_SPEC.md) -----------------
 
   /** Master on/off for the loop placing REAL orders through Webull. False by
@@ -224,6 +267,12 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
     maxTradesPerDay: 6,
+    minRelVol: 1.5,
+    maxTickerAtrPct: 15,
+    maxMarketAtrPct: 5,
+    stopAtrMultiple: 1.5,
+    targetRMultiple: 2,
+    sessionBufferMinutes: 15,
     liveTradingEnabled: false,
     liveEnabledAt: null,
     liveAccountId: null,
@@ -278,6 +327,15 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     const n = Number(v);
     return Number.isFinite(n) && n >= 1 ? Math.floor(n) : fallback;
   };
+  // A positive (non-zero), fraction-preserving number — like posIntMin1 but
+  // keeps decimal precision (ATR/R multiples are routinely fractional, e.g.
+  // 1.5× ATR), and unlike nonNeg/pct, 0 is never valid here: a zero stop
+  // distance or zero-R target is meaningless, and this app requires a real
+  // stop on every position.
+  const posDecimal = (v: unknown, fallback: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+  };
   const accountId =
     input.liveAccountId === null
       ? null
@@ -304,6 +362,12 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     maxAggregateOpenRiskPct: pct(input.maxAggregateOpenRiskPct, d.maxAggregateOpenRiskPct),
     maxCorrelatedExposurePct: pct(input.maxCorrelatedExposurePct, d.maxCorrelatedExposurePct),
     maxTradesPerDay: posInt(input.maxTradesPerDay, d.maxTradesPerDay),
+    minRelVol: nonNeg(input.minRelVol, d.minRelVol),
+    maxTickerAtrPct: pct(input.maxTickerAtrPct, d.maxTickerAtrPct),
+    maxMarketAtrPct: pct(input.maxMarketAtrPct, d.maxMarketAtrPct),
+    stopAtrMultiple: posDecimal(input.stopAtrMultiple, d.stopAtrMultiple),
+    targetRMultiple: posDecimal(input.targetRMultiple, d.targetRMultiple),
+    sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
     liveTradingEnabled: typeof input.liveTradingEnabled === 'boolean' ? input.liveTradingEnabled : d.liveTradingEnabled,
     liveEnabledAt: enabledAt,
     liveAccountId: accountId,
