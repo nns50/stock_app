@@ -11,7 +11,6 @@ import { getHistoricalOptionContracts } from './optionsHistoricalData';
 import { OptionContractRef } from './polygonOptionsClient';
 import { impliedVol, bsGreeks, yearsToExpiration, daysToExpiration } from '../../options/blackScholes';
 import { computeIvContext } from '../ivRank';
-import { computeStreaksAndDrawdown } from '../pnl';
 import {
   addDays,
   backtestCorrelatedNotional,
@@ -249,7 +248,33 @@ export async function simulateCombinedBacktest(
   let openOptions: OpenOptionPosition[] = [];
   let pendingOptions: PendingOptionEntry[] = [];
 
-  for (const day of tradingDays) {
+  // Running win/loss streaks, maintained incrementally instead of calling
+  // computeStreaksAndDrawdown(...) (an O(closedPnls.length) rescan) every
+  // single day — mirrors that function's own per-element logic exactly,
+  // updated at the same points each closedPnls array is appended to.
+  const equityStreak: { type: 'win' | 'loss' | 'none'; count: number } = { type: 'none', count: 0 };
+  const optionsStreak: { type: 'win' | 'loss' | 'none'; count: number } = { type: 'none', count: 0 };
+  function recordStreak(streak: { type: 'win' | 'loss' | 'none'; count: number }, pnl: number): void {
+    const t = pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'none';
+    if (t === 'none') {
+      streak.type = 'none';
+      streak.count = 0;
+    } else if (t === streak.type) {
+      streak.count += 1;
+    } else {
+      streak.type = t;
+      streak.count = 1;
+    }
+  }
+
+  for (let dayIndex = 0; dayIndex < tradingDays.length; dayIndex++) {
+    const day = tradingDays[dayIndex];
+    // Yield to the event loop periodically — this simulation is entirely
+    // synchronous CPU work otherwise (every "await" below resolves off an
+    // already-populated in-memory memo, not real I/O), so a large request
+    // would otherwise block every other request — including the live
+    // autotrade loop's own tick — for the simulation's whole duration.
+    if (dayIndex > 0 && dayIndex % 20 === 0) await new Promise((resolve) => setImmediate(resolve));
     const dayMs = Date.parse(`${day}T00:00:00Z`);
 
     // 1) Fill yesterday's approved EQUITY entries at today's open.
@@ -317,6 +342,7 @@ export async function simulateCombinedBacktest(
           rMultiple: pos.riskAmount > 0 ? pnl / pos.riskAmount : 0,
         });
         equityClosedPnls.push(pnl);
+        recordStreak(equityStreak, pnl);
         dailyEquityPnl += pnl;
         equity += pnl;
       } else {
@@ -348,6 +374,7 @@ export async function simulateCombinedBacktest(
                 rMultiple: pos.riskAmount > 0 ? partialPnl / pos.riskAmount : 0,
               });
               equityClosedPnls.push(partialPnl);
+              recordStreak(equityStreak, partialPnl);
               dailyEquityPnl += partialPnl;
               equity += partialPnl;
               pos.quantity -= closeQty;
@@ -482,6 +509,7 @@ export async function simulateCombinedBacktest(
           rMultiple: pos.riskAmount > 0 ? pnl / pos.riskAmount : 0,
         });
         optionsClosedPnls.push(pnl);
+        recordStreak(optionsStreak, pnl);
         dailyOptionsPnl += pnl;
         equity += pnl;
       } else {
@@ -495,8 +523,6 @@ export async function simulateCombinedBacktest(
     // MAX of each book's own streak (see file header).
     const dailyPnl = dailyEquityPnl + dailyOptionsPnl;
     const tradesToday = equityFilledToday + optionsFilledToday;
-    const equityStreak = computeStreaksAndDrawdown(equityClosedPnls).currentStreak;
-    const optionsStreak = computeStreaksAndDrawdown(optionsClosedPnls).currentStreak;
     const equityLossStreak = equityStreak.type === 'loss' ? equityStreak.count : 0;
     const optionsLossStreak = optionsStreak.type === 'loss' ? optionsStreak.count : 0;
     const consecutiveLosses = Math.max(equityLossStreak, optionsLossStreak);
