@@ -36,4 +36,20 @@ describe('RefreshBar', () => {
     fireEvent.click(screen.getByRole('button', { name: /Refresh/ }));
     expect(onRefresh).toHaveBeenCalledTimes(1);
   });
+
+  it('a page whose refresh is heavier can opt out of auto-refresh by default', () => {
+    const onRefresh = vi.fn();
+    render(<RefreshBar onRefresh={onRefresh} lastUpdated={null} defaultIntervalMs={null} />);
+    expect(intervalSelect()).toHaveValue('off');
+    vi.advanceTimersByTime(120_000);
+    expect(onRefresh).not.toHaveBeenCalled();
+  });
+
+  it('a page can opt into a different non-default cadence too', () => {
+    const onRefresh = vi.fn();
+    render(<RefreshBar onRefresh={onRefresh} lastUpdated={null} defaultIntervalMs={10_000} />);
+    expect(intervalSelect()).toHaveValue('10000');
+    vi.advanceTimersByTime(10_000);
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
 });

@@ -11,20 +11,26 @@ const INTERVALS: { label: string; ms: number | null }[] = [
 ];
 
 /**
- * Manual Refresh button + polling interval (default 1m) + last-updated
- * indicator. Provider calls are cached server-side, so polling at the
- * default cadence doesn't risk rate limits.
+ * Manual Refresh button + polling interval (default 1m, unless overridden) +
+ * last-updated indicator. The 1m default assumes a single cheap server-side
+ * read — provider calls are cached, so polling at that cadence doesn't risk
+ * rate limits — but that assumption doesn't hold for every consumer (e.g. the
+ * Screener re-runs an up-to-500-symbol external-provider scan), so a page
+ * whose own refresh is heavier can pass `defaultIntervalMs` to start Off (or
+ * any other cadence) instead of inheriting a one-size-fits-all default.
  */
 export function RefreshBar({
   onRefresh,
   lastUpdated,
   loading,
+  defaultIntervalMs = 60_000,
 }: {
   onRefresh: () => void;
   lastUpdated: number | null;
   loading?: boolean;
+  defaultIntervalMs?: number | null;
 }) {
-  const [intervalMs, setIntervalMs] = useState<number | null>(60_000);
+  const [intervalMs, setIntervalMs] = useState<number | null>(defaultIntervalMs);
   usePolling(onRefresh, intervalMs);
 
   return (
