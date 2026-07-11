@@ -280,11 +280,14 @@ be blocked:
 - **Trades today** vs. max trades per day
 - **Consecutive losses** vs. the step-down trigger
 
-The one exception is **max correlated exposure** — it has no dashboard tile today.
-To see it in action, use **Run screen** and read the **approved/blocked** badge on
-individual candidates; a block from this specific rule shows the correlated dollar
-amount and the cap in its detail text, or check the **Recent activity** feed for a
-`risk_check` / `blocked` entry.
+**Max correlated exposure** is the one exception — since it's relative to a specific
+candidate rather than one portfolio-wide number ([§4](#4-every-setting-one-at-a-time)
+explains why), its tile shows the **last candidate actually checked** instead of a
+live gauge: symbol, $ amount, how long ago, and a red **BLOCKED** flag if that's what
+stopped it. It reads "no candidate checked yet" until the loop (or a manual **Run
+screen**) has evaluated at least one — running a screen also gives you a fuller,
+per-candidate **approved/blocked** badge if you want more than just the latest one, or
+check the **Recent activity** feed for a `risk_check` / `blocked` entry.
 
 **"I want the loop to trade more."** In rough order of how likely each one is to be
 the actual bottleneck: raise **max aggregate open risk** first (per

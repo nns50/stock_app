@@ -1154,6 +1154,28 @@ function MonitoringDashboard({ dash }: { dash: AutotradeDashboard }) {
             sub={stepDownActive ? 'step-down active' : `of ${dash.stepDownAfterLosses} to step-down`}
             valueClass={stepDownActive ? 'text-bear' : undefined}
           />
+          <StatTile
+            label="Correlated exposure"
+            value={
+              dash.lastCorrelatedExposureCheck?.correlatedNotional != null
+                ? fmtUsd(dash.lastCorrelatedExposureCheck.correlatedNotional)
+                : '—'
+            }
+            sub={
+              dash.lastCorrelatedExposureCheck ? (
+                <>
+                  of {fmtUsd(dash.maxCorrelatedExposure)} cap — {dash.lastCorrelatedExposureCheck.symbol},{' '}
+                  {ago(dash.lastCorrelatedExposureCheck.checkedAt)}
+                  {dash.lastCorrelatedExposureCheck.passed === false && (
+                    <span className="text-bear font-semibold"> BLOCKED</span>
+                  )}
+                </>
+              ) : (
+                `of ${fmtUsd(dash.maxCorrelatedExposure)} cap — no candidate checked yet`
+              )
+            }
+            valueClass={dash.lastCorrelatedExposureCheck?.passed === false ? 'text-bear' : undefined}
+          />
         </div>
       </div>
 

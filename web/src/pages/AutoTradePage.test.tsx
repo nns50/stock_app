@@ -81,6 +81,8 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     maxConcurrentPositions: 2,
     openRisk: 0,
     maxAggregateOpenRisk: 2_000,
+    maxCorrelatedExposure: 6_000,
+    lastCorrelatedExposureCheck: null,
     dailyPnl: 0,
     dailyDrawdownHaltLevel: -3_000,
     tradesToday: 0,
@@ -1598,6 +1600,52 @@ describe('AutoTradePage', () => {
       vi.spyOn(client, 'autotradeDashboard').mockRejectedValue(new Error('dashboard unavailable'));
       renderPage();
       expect(await screen.findByText('dashboard unavailable')).toBeInTheDocument();
+    });
+
+    it('shows "no candidate checked yet" for correlated exposure before any risk-check has run', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({ maxCorrelatedExposure: 6_000, lastCorrelatedExposureCheck: null }),
+      );
+      renderPage();
+      expect(await screen.findByText(/of \$6,000\.00 cap — no candidate checked yet/)).toBeInTheDocument();
+    });
+
+    it('shows the last correlated-exposure reading — symbol, amount, and how long ago', async () => {
+      // Real time, not fake timers — react-testing-library's findBy/waitFor polling
+      // relies on real setTimeout, and freezing the clock hangs it (and, since fake
+      // timers are a global toggle, every test after it in this file too).
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          maxCorrelatedExposure: 6_000,
+          lastCorrelatedExposureCheck: {
+            symbol: 'MSFT',
+            checkedAt: Date.now() - 3 * 60 * 1000, // 3 minutes ago
+            passed: true,
+            correlatedNotional: 1_500,
+          },
+        }),
+      );
+      renderPage();
+      expect(await screen.findByText('$1,500.00')).toBeInTheDocument();
+      expect(screen.getByText(/of \$6,000\.00 cap — MSFT, 3m ago/)).toBeInTheDocument();
+      expect(screen.queryByText('BLOCKED')).toBeNull();
+    });
+
+    it('flags a BLOCKED correlated-exposure reading in red', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          maxCorrelatedExposure: 6_000,
+          lastCorrelatedExposureCheck: {
+            symbol: 'NVDA',
+            checkedAt: Date.now(),
+            passed: false,
+            correlatedNotional: 8_200.5,
+          },
+        }),
+      );
+      renderPage();
+      expect(await screen.findByText('$8,200.50')).toBeInTheDocument();
+      expect(screen.getByText('BLOCKED')).toBeInTheDocument();
     });
 
     it('shows the equity/options breakdown for the combined open-positions and aggregate-risk tiles', async () => {
