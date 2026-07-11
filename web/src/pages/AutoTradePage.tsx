@@ -821,6 +821,8 @@ interface LiveTradingSectionProps {
   setLiveProbationSizeMultiplierDraft: (v: number | undefined) => void;
   liveCapsBusy: boolean;
   onSaveLiveCaps: () => void;
+  suggestLiveCapsBusy: boolean;
+  onSuggestLiveCaps: () => void;
   confirmLiveText: string;
   setConfirmLiveText: (v: string) => void;
   confirmPhrase: string;
@@ -870,7 +872,21 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
       </div>
 
       <div>
-        <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-2">Live guardrail caps</h4>
+        <div className="flex items-center justify-between mb-2">
+          <h4 className="text-xs uppercase tracking-wide text-slate-400">Live guardrail caps</h4>
+          <button
+            className="btn-ghost text-xs"
+            onClick={p.onSuggestLiveCaps}
+            disabled={p.suggestLiveCapsBusy || p.config.accountEquityUsd == null}
+            title={
+              p.config.accountEquityUsd == null
+                ? 'Set account equity in Configuration above first'
+                : 'Fills the fields below from account equity — review before saving, doesn’t save by itself.'
+            }
+          >
+            {p.suggestLiveCapsBusy ? 'Suggesting…' : 'Suggest from equity'}
+          </button>
+        </div>
         <div className="grid sm:grid-cols-3 gap-3">
           <Field label="Max order ($)">
             <NumberInput value={p.liveMaxOrderUsdDraft} onChange={p.setLiveMaxOrderUsdDraft} placeholder="e.g. 20000" />
@@ -1522,6 +1538,24 @@ export default function AutoTradePage() {
   const [liveCapsBusy, setLiveCapsBusy] = useState(false);
   const [liveEnableBusy, setLiveEnableBusy] = useState(false);
   const [liveOptionsSaveBusy, setLiveOptionsSaveBusy] = useState(false);
+  const [suggestLiveCapsBusy, setSuggestLiveCapsBusy] = useState(false);
+
+  // Fills the draft fields only — it never saves by itself, so a suggestion
+  // is always reviewed (and can be tweaked or ignored) before it takes effect.
+  const applySuggestedLiveCaps = async () => {
+    setSuggestLiveCapsBusy(true);
+    try {
+      const suggested = await client.suggestAutotradeLiveCaps();
+      setLiveMaxOrderUsdDraft(suggested.liveMaxOrderUsd);
+      setLiveMaxDailyLossUsdDraft(suggested.liveMaxDailyLossUsd);
+      setLiveMaxOrdersPerDayDraft(suggested.liveMaxOrdersPerDay);
+      toast('Suggested caps filled in below — review, then Save live-trading settings.', { type: 'info' });
+    } catch (e) {
+      toast((e as Error).message || 'Could not suggest live caps', { type: 'error' });
+    } finally {
+      setSuggestLiveCapsBusy(false);
+    }
+  };
 
   const saveLiveCaps = async () => {
     setLiveCapsBusy(true);
@@ -2316,6 +2350,8 @@ export default function AutoTradePage() {
             setLiveProbationSizeMultiplierDraft={setLiveProbationSizeMultiplierDraft}
             liveCapsBusy={liveCapsBusy}
             onSaveLiveCaps={saveLiveCaps}
+            suggestLiveCapsBusy={suggestLiveCapsBusy}
+            onSuggestLiveCaps={applySuggestedLiveCaps}
             confirmLiveText={confirmLiveText}
             setConfirmLiveText={setConfirmLiveText}
             confirmPhrase={LIVE_TRADING_CONFIRMATION_PHRASE}

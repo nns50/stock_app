@@ -1876,6 +1876,33 @@ describe('AutoTradePage', () => {
       );
     });
 
+    it('"Suggest from equity" fills the live guardrail fields without saving them', async () => {
+      const suggest = vi
+        .spyOn(client, 'suggestAutotradeLiveCaps')
+        .mockResolvedValue({ liveMaxOrderUsd: 25_000, liveMaxDailyLossUsd: 5_000, liveMaxOrdersPerDay: 10 });
+      const setConfig = vi.spyOn(client, 'setAutotradeConfig');
+      renderPage();
+      await screen.findByText('VNQ');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Suggest from equity' }));
+
+      await waitFor(() => expect(suggest).toHaveBeenCalled());
+      await waitFor(() => expect(screen.getByPlaceholderText('e.g. 20000')).toHaveValue('25000'));
+      await waitFor(() => expect(screen.getByPlaceholderText('e.g. 3000')).toHaveValue('5000'));
+      // "e.g. 6" is shared with the options live-caps "Max orders/day" field below it —
+      // the equity one (this button's field) renders first in the DOM.
+      await waitFor(() => expect(screen.getAllByPlaceholderText('e.g. 6')[0]).toHaveValue('10'));
+      expect(setConfig).not.toHaveBeenCalled();
+    });
+
+    it('disables "Suggest from equity" until account equity is set', async () => {
+      vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture({ accountEquityUsd: null }));
+      renderPage();
+      await screen.findByText('VNQ');
+
+      expect(screen.getByRole('button', { name: 'Suggest from equity' })).toBeDisabled();
+    });
+
     it('surfaces the paper track record for review — not an enforced gate, just informational', async () => {
       vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({
         positions: [

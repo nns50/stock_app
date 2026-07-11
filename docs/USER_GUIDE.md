@@ -692,7 +692,12 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   Set a **Webull account ID** (server-side only — unlike the Trade page, never sourced
   from your browser) and the **live guardrail caps**: max order size ($), max daily loss
   ($), max orders/day, fat-finger %, and whether to allow naked-short exposure (leave
-  unchecked — this app only takes defined-risk positions by default). A **probation**
+  unchecked — this app only takes defined-risk positions by default). **Suggest from
+  equity** fills the first three of those from your account equity and the configured
+  daily-drawdown %/max-trades-per-day (25% of equity for the order cap, matching those
+  two settings exactly for the other two) — a starting point only, so it fills the
+  fields without saving them; review or edit before clicking **Save live-trading
+  settings** below. Needs account equity set first (Configuration, above). A **probation**
   setting cuts position size (e.g. to half) for the first N live trades after you enable
   it, on top of whatever the configured risk-per-trade % and any loss-streak step-down
   already produce — save these before enabling. Your **paper track record** (trade count, win rate, date

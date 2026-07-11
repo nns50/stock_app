@@ -1101,6 +1101,16 @@ export interface AutotradeConfig {
   autoPromoteMaxSymbols: number;
 }
 
+/** A starting-point suggestion for the live-only guardrail caps, derived from
+ *  the current account equity and the already-configured maxDailyDrawdownPct/
+ *  maxTradesPerDay — not an enforced value, just what the "Suggest" button
+ *  offers to fill the fields below with. */
+export interface SuggestedLiveCaps {
+  liveMaxOrderUsd: number;
+  liveMaxDailyLossUsd: number;
+  liveMaxOrdersPerDay: number;
+}
+
 export interface EquitySyncResult {
   ok: boolean;
   accountId?: string;

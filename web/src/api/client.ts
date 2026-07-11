@@ -98,6 +98,7 @@ import type {
   AutotradeLivePosition,
   LiveOptionsPosition,
   AutotradeDashboard,
+  SuggestedLiveCaps,
 } from './types';
 
 export class ApiError extends Error {
@@ -511,4 +512,5 @@ export const client = {
   setAutotradeKillSwitch: (on: boolean) =>
     api<AutotradeConfig>('/autotrade/kill-switch', { method: 'POST', body: JSON.stringify({ on }) }),
   syncAutotradeEquity: () => api<EquitySyncResult>('/autotrade/sync-equity', { method: 'POST' }),
+  suggestAutotradeLiveCaps: () => api<SuggestedLiveCaps>('/autotrade/live-caps/suggest'),
 };
