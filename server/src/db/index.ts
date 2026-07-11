@@ -208,6 +208,15 @@ CREATE TABLE IF NOT EXISTS autotrade_config (
   updated_at  INTEGER NOT NULL
 );
 
+-- The automated loop's most recently COMPLETED tick's diagnostics (candidates
+-- screened, entries opened, why it skipped, etc.) — previously computed fresh
+-- every 60s and discarded the moment the next tick overwrote it in memory.
+CREATE TABLE IF NOT EXISTS autotrade_last_tick (
+  id          INTEGER PRIMARY KEY CHECK(id = 1),   -- singleton row
+  summary     TEXT NOT NULL,           -- JSON LoopTickSummary
+  updated_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS autotrade_exclusions (
   symbol      TEXT PRIMARY KEY,
   reason      TEXT,

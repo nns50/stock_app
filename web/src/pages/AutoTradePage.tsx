@@ -1110,6 +1110,38 @@ function MonitoringDashboard({ dash }: { dash: AutotradeDashboard }) {
 
   return (
     <div className="space-y-4">
+      <div className="rounded-lg border border-ink-600 bg-ink-800/40 p-3">
+        <div className="flex items-center justify-between mb-1">
+          <h4 className="text-xs uppercase tracking-wide text-slate-400">Last cycle</h4>
+          {dash.lastTick && <span className="text-[11px] text-slate-500">{ago(dash.lastTick.ranAt)}</span>}
+        </div>
+        {!dash.lastTick ? (
+          <p className="text-xs text-slate-500">The automated loop hasn&apos;t run yet.</p>
+        ) : (
+          <div className="space-y-1 text-xs text-slate-400">
+            {dash.lastTick.summary.skippedReason && (
+              <p className="text-amber-400">{dash.lastTick.summary.skippedReason}</p>
+            )}
+            <p>
+              {dash.lastTick.summary.candidatesScreened} screened → {dash.lastTick.summary.candidatesPassedVolatility}{' '}
+              passed volatility → {dash.lastTick.summary.signalsGenerated} signals
+              {dash.lastTick.summary.optionsSignalsGenerated > 0 &&
+                ` (+${dash.lastTick.summary.optionsSignalsGenerated} options)`}
+            </p>
+            <p>
+              Opened: {dash.lastTick.summary.entriesOpened} equity + {dash.lastTick.summary.optionsEntriesOpened}{' '}
+              options paper, {dash.lastTick.summary.liveEntriesOpened} equity +{' '}
+              {dash.lastTick.summary.liveOptionsEntriesOpened} options live
+            </p>
+            <p>
+              Exits: {dash.lastTick.summary.exitsClosed}/{dash.lastTick.summary.exitsChecked} equity,{' '}
+              {dash.lastTick.summary.optionsExitsClosed}/{dash.lastTick.summary.optionsExitsChecked} options
+              {dash.lastTick.summary.moversAutoPromoted > 0 &&
+                ` · ${dash.lastTick.summary.moversAutoPromoted} movers promoted`}
+            </p>
+          </div>
+        )}
+      </div>
       <div>
         <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-2">Paper</h4>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">

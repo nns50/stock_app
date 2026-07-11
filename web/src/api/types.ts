@@ -1516,6 +1516,9 @@ export interface LoopTickSummary {
   optionsExitsClosed: number;
   liveOrdersReconciled: number;
   livePositionsClosed: number;
+  liveOptionsOrdersReconciled: number;
+  liveOptionsPositionsClosed: number;
+  liveOptionsExitsRequested: number;
   candidatesScreened: number;
   candidatesPassedVolatility: number;
   signalsGenerated: number;
@@ -1528,10 +1531,19 @@ export interface LoopTickSummary {
   entriesOpened: number;
   optionsEntriesOpened: number;
   liveEntriesOpened: number;
+  liveOptionsEntriesOpened: number;
   /** Movers-sourced symbols newly added to the persistent universe this cycle
    *  (0 on most cycles — a symbol needs several distinct days of recurrence
    *  first; see the About page / docs/AUTOTRADING_SPEC.md). */
   moversAutoPromoted: number;
+}
+
+/** The automated loop's most recently completed tick, persisted rather than
+ *  recomputed — see server/src/db/autotradeLastTick.ts's header comment. */
+export interface LastTickRecord {
+  summary: LoopTickSummary;
+  /** Epoch ms the tick that produced this summary finished. */
+  ranAt: number;
 }
 
 // --- Phase 12: options paper execution ---
@@ -1637,6 +1649,9 @@ export interface AutotradeDashboard {
   killSwitch: boolean;
   riskProfile: AutotradeRiskProfile;
   equity: number | null;
+  /** The automated loop's most recently completed cycle, or null before the
+   *  loop has ever run. */
+  lastTick: LastTickRecord | null;
   /** Equity paper positions only — see openOptionsPositions below for the
    *  options side of this SAME combined pool. */
   openPositions: PaperPosition[];

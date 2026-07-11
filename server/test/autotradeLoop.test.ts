@@ -75,6 +75,7 @@ import { processMoversForPromotion } from '../src/services/autotrading/moversPro
 import { checkSessionWindow, getMarketAtrPct } from '../src/services/autotrading/executionGuards';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { runAutotradeLoopTick, startAutotradeLoop, stopAutotradeLoop } from '../src/services/autotrading/loop';
+import { getLastTick } from '../src/db/autotradeLastTick';
 import { ScreenCandidate } from '../src/services/autotrading/screen';
 import { TradeSignal } from '../src/services/autotrading/decide';
 import { initDb } from '../src/db';
@@ -546,6 +547,34 @@ describe('runAutotradeLoopTick', () => {
     expect(mockSessionWindow).toHaveBeenCalledWith(30);
     expect(mockScreen).toHaveBeenCalledWith({ config: { filters: { minRelVol: 3 } } });
     expect(mockDecide).toHaveBeenCalledWith([candidate('AAPL', 2)], { stopAtrMultiple: 2.5, targetRMultiple: 3 });
+  });
+
+  it('persists the completed tick as the "last tick" snapshot, retrievable via getLastTick()', async () => {
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+    const summary = await runAutotradeLoopTick();
+    const last = getLastTick();
+
+    expect(last).not.toBeNull();
+    expect(last?.summary).toEqual(summary);
+  });
+
+  it('persists a SKIPPED tick too — the skip reason is exactly what a stuck loop needs surfaced', async () => {
+    setAutotradeConfig({ enabled: false, liveTradingEnabled: false });
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(summary.skippedReason).toBe('Neither paper nor live auto-trading is active');
+    expect(getLastTick()?.summary.skippedReason).toBe('Neither paper nor live auto-trading is active');
   });
 
   it('runs options paper execution alongside equity, seeding equity with options’ own pre-existing snapshot', async () => {

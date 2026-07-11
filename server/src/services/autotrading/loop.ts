@@ -1,5 +1,6 @@
 import { config } from '../../config';
 import { getAutotradeConfig, AutotradeConfig } from '../../db/autotradeConfig';
+import { saveLastTick } from '../../db/autotradeLastTick';
 import { getTradingConfig } from '../../db/trading';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { runAutotradeScreen, ScreenCandidate } from './screen';
@@ -247,6 +248,11 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
   tickInFlight = true;
   const abortController = new AbortController();
   tickAbortController = abortController;
+  // Declared here (not just inside the try below) so the finally block can
+  // persist it regardless of which of the try block's several return points
+  // actually ran — undefined only if something threw before it was ever
+  // built, in which case there's nothing meaningful yet to persist.
+  let summary: LoopTickSummary | undefined;
   try {
     const exitOutcomes = await checkPaperExits();
     const optionsExitOutcomes = await checkOptionsPaperExits();
@@ -316,7 +322,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     } catch (e) {
       console.error('[autotrade-loop] equity sync failed:', (e as Error).message);
     }
-    const summary: LoopTickSummary = {
+    summary = {
       ...emptySummary(),
       exitsChecked: exitOutcomes.length,
       exitsClosed: exitOutcomes.filter((o) => o.closed).length,
@@ -456,6 +462,12 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
   } finally {
     tickInFlight = false;
     if (tickAbortController === abortController) tickAbortController = null;
+    // Persist the "last completed tick" snapshot regardless of which return
+    // path was taken (including the abort check further up) — undefined only
+    // if something threw before `summary` was ever built (see its own
+    // declaration comment above), in which case there's nothing meaningful
+    // yet to overwrite the previous tick's snapshot with.
+    if (summary) saveLastTick(summary);
     // Post-tick: surface a SYSTEMIC run of live-order rejections through the
     // notifier. In `finally` so it runs no matter which return path the tick
     // took — live-order failures are journaled by BOTH the exit/reconcile

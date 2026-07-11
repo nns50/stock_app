@@ -1949,6 +1949,28 @@ session clock to simulate.
 - Single kill switch (button/endpoint) that flattens all positions and
   disables auto-trading immediately
 
+**Follow-up, added 2026-07-11 — the last tick's diagnostics are now
+persisted, not discarded.** `runAutotradeLoopTick()` (`loop.ts`) always
+computed a full `LoopTickSummary` every cycle — candidates screened, signals
+generated, entries opened, exactly why it skipped — but only ever returned
+it to whichever caller triggered that one tick (the background timer, or a
+manual "run once"); nothing kept it around, so "why isn't anything trading"
+was answerable only by reading Recent Activity's full journal, one event at
+a time. `db/autotradeLastTick.ts` adds a singleton-row table
+(`autotrade_last_tick`), same upsert shape as `db/autotradeConfig.ts`'s own
+config row, storing the JSON summary plus when it finished. `summary` is now
+declared before `runAutotradeLoopTick()`'s try block (not inside it) so the
+existing `finally` — already the home for the post-tick alert checks — can
+persist it regardless of which of the function's several return points
+actually fired, undefined only if something threw before a summary was ever
+built. `getAutotradeDashboard()` (`dashboard.ts`) surfaces it as `lastTick`,
+read directly rather than recomputed (this is the one dashboard figure with
+no live-state equivalent to derive it from — it's a record of a PAST cycle,
+not current state). The Monitoring UI shows it as a "Last cycle" summary
+above the existing stat tiles: the screen → volatility → signals funnel,
+entries opened per book, exits checked/closed, and the skip reason in place
+of the funnel on a cycle that placed nothing.
+
 Confirm the exact broker API I'll be integrating with (Alpaca, IBKR, etc.)
 before wiring anything to a live connection.
 

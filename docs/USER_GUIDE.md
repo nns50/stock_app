@@ -779,7 +779,15 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   covers all three: a manual **Refresh** always works, and an **Auto** dropdown controls
   polling (off/10s/30s/1m/5m) — defaults to **every 1 minute**, same as everywhere else in
   this app that offers polling; pick **Off** if you'd rather refresh by hand.
-- **Monitoring** — a real-time panel reading the loop's current state directly: active
+- **Monitoring** — a **Last cycle** summary sits at the top: when the automated loop
+  most recently ran, how many candidates it screened → passed the volatility filter →
+  turned into signals (equity and options), how many paper/live entries it opened, how
+  many exits it checked/closed, and any movers promoted that cycle — persisted from the
+  actual last tick (not recomputed), so it reads "hasn't run yet" only before the loop's
+  very first cycle, and survives the page being closed and reopened. If that cycle
+  didn't place any entries, the exact reason (kill switch engaged, market closed,
+  within the session buffer, etc.) shows first, in place of the funnel. Below that, a
+  real-time panel reads the loop's current state directly: active
   **risk profile**, **open positions** vs. the configured concurrent-position cap
   (Configuration's "max concurrent positions," not the risk profile — see above),
   **aggregate open risk** used vs. its $ cap, today's **day P&L** vs. the $ level that

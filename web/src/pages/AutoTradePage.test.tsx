@@ -82,6 +82,7 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     killSwitch: false,
     riskProfile: 'MODERATE',
     equity: 100_000,
+    lastTick: null,
     openPositions: [],
     openPositionsCount: 0,
     maxConcurrentPositions: 2,
@@ -1652,6 +1653,56 @@ describe('AutoTradePage', () => {
       renderPage();
       expect(await screen.findByText('$8,200.50')).toBeInTheDocument();
       expect(screen.getByText('BLOCKED')).toBeInTheDocument();
+    });
+
+    it('shows "hasn\'t run yet" for the last cycle before the loop has ever run', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture({ lastTick: null }));
+      renderPage();
+      expect(await screen.findByText(/The automated loop hasn.t run yet/)).toBeInTheDocument();
+    });
+
+    it("shows the last cycle's funnel, entries, and exits once the loop has run", async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          lastTick: {
+            ranAt: Date.now() - 30_000,
+            summary: loopSummaryFixture({
+              candidatesScreened: 12,
+              candidatesPassedVolatility: 7,
+              signalsGenerated: 3,
+              optionsSignalsGenerated: 1,
+              entriesOpened: 2,
+              optionsEntriesOpened: 1,
+              liveEntriesOpened: 0,
+              liveOptionsEntriesOpened: 0,
+              exitsChecked: 5,
+              exitsClosed: 2,
+              optionsExitsChecked: 1,
+              optionsExitsClosed: 1,
+              moversAutoPromoted: 1,
+            }),
+          },
+        }),
+      );
+      renderPage();
+      expect(
+        await screen.findByText(/12 screened → 7 passed volatility → 3 signals \(\+1 options\)/),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/Opened: 2 equity \+ 1 options paper, 0 equity \+ 0 options live/)).toBeInTheDocument();
+      expect(screen.getByText(/Exits: 2\/5 equity, 1\/1 options · 1 movers promoted/)).toBeInTheDocument();
+    });
+
+    it('surfaces a skip reason from the last cycle prominently', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          lastTick: {
+            ranAt: Date.now(),
+            summary: loopSummaryFixture({ ranEntries: false, skippedReason: 'Market is closed' }),
+          },
+        }),
+      );
+      renderPage();
+      expect(await screen.findByText('Market is closed')).toBeInTheDocument();
     });
 
     it('shows the equity/options breakdown for the combined open-positions and aggregate-risk tiles', async () => {
