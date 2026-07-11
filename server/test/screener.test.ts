@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { Candle } from '../src/providers/types';
-import { defaultScreenerConfig, resolveScreenerConfig, scoreSymbol } from '../src/indicators/screener';
+import {
+  computeCandleIndicators,
+  computeIndicators,
+  defaultScreenerConfig,
+  resolveScreenerConfig,
+  scoreSymbol,
+} from '../src/indicators/screener';
+import { Quote } from '../src/providers/types';
 
 function candlesFromCloses(closes: number[], volume = 1_000_000): Candle[] {
   let prev = closes[0];
@@ -102,5 +109,48 @@ describe('scoreSymbol — filters', () => {
     const r = scoreSymbol('SHORT', candlesFromCloses([100]), undefined, defaultScreenerConfig());
     expect(r.passedFilters).toBe(false);
     expect(r.components).toHaveLength(0);
+  });
+});
+
+describe('computeCandleIndicators — cacheable, quote-independent piece of computeIndicators', () => {
+  const cfg = defaultScreenerConfig();
+
+  it('matches the maShort/maLong/rsi/atr computeIndicators would derive on its own', () => {
+    const fresh = computeIndicators(uptrend, undefined, cfg);
+    const candleOnly = computeCandleIndicators(uptrend, cfg);
+    expect(candleOnly).toEqual({
+      maShort: fresh!.maShort,
+      maLong: fresh!.maLong,
+      rsiVal: fresh!.rsi,
+      atrVal: fresh!.atr,
+    });
+  });
+
+  it('returns null on insufficient history, same guard as computeIndicators', () => {
+    expect(computeCandleIndicators(candlesFromCloses([100]), cfg)).toBeNull();
+  });
+
+  it('computeIndicators given a matching cached result produces IDENTICAL output to computing fresh', () => {
+    const quote: Quote = { symbol: 'UP', last: 199, changePct: 1.2, volume: 5_000_000, avgVolume: 2_000_000 };
+    const fresh = computeIndicators(uptrend, quote, cfg);
+    const cached = computeCandleIndicators(uptrend, cfg)!;
+    const viaCache = computeIndicators(uptrend, quote, cfg, cached);
+    expect(viaCache).toEqual(fresh);
+  });
+
+  it('scoreSymbol given a matching cached result produces IDENTICAL output to computing fresh', () => {
+    const quote: Quote = { symbol: 'UP', last: 199, changePct: 1.2, volume: 5_000_000, avgVolume: 2_000_000 };
+    const fresh = scoreSymbol('UP', uptrend, quote, cfg);
+    const cached = computeCandleIndicators(uptrend, cfg)!;
+    const viaCache = scoreSymbol('UP', uptrend, quote, cfg, cached);
+    expect(viaCache).toEqual(fresh);
+  });
+
+  it('a stale/wrong cache would change the result — proving the cache genuinely feeds the computation, not silently ignored', () => {
+    const quote: Quote = { symbol: 'UP', last: 199, changePct: 1.2, volume: 5_000_000, avgVolume: 2_000_000 };
+    const fresh = scoreSymbol('UP', uptrend, quote, cfg);
+    const wrongCache = computeCandleIndicators(downtrend, cfg)!; // deliberately mismatched
+    const viaWrongCache = scoreSymbol('UP', uptrend, quote, cfg, wrongCache);
+    expect(viaWrongCache).not.toEqual(fresh);
   });
 });

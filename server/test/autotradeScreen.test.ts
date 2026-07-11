@@ -31,7 +31,7 @@ vi.mock('yahoo-finance2', () => ({
 import { initDb, db } from '../src/db';
 import { addExclusion } from '../src/db/autotradeExclusions';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
-import { runAutotradeScreen } from '../src/services/autotrading/screen';
+import { runAutotradeScreen, resetCandleIndicatorCache } from '../src/services/autotrading/screen';
 import { clearEventsCache } from '../src/services/events';
 import { getProvider } from '../src/providers';
 
@@ -52,6 +52,7 @@ beforeEach(() => {
   ).run(SECTORED, Date.now());
   earningsFixture.current = {};
   clearEventsCache();
+  resetCandleIndicatorCache();
 });
 
 describe('runAutotradeScreen', () => {
@@ -192,6 +193,105 @@ describe('runAutotradeScreen', () => {
       const spy = vi.spyOn(getProvider(), 'getQuotes').mockRejectedValueOnce(new Error('rate limited'));
       const result = await runAutotradeScreen({ symbols: ['SCRQ4'], config: { filters: RELAXED_FILTERS } });
       expect(result.errors.find((e) => e.symbol === 'SCRQ4')).toBeUndefined();
+      spy.mockRestore();
+    });
+  });
+
+  describe('candle-indicator caching (skips SMA/RSI/ATR recompute when the latest candle is unchanged)', () => {
+    function candlesFromCloses(closes: number[], lastTime: number) {
+      let prev = closes[0];
+      return closes.map((close, i) => {
+        const open = i === 0 ? close : prev;
+        prev = close;
+        return {
+          time: lastTime - (closes.length - 1 - i) * 86_400_000,
+          open,
+          high: Math.max(open, close) * 1.01,
+          low: Math.min(open, close) * 0.99,
+          close,
+          volume: 1_000_000,
+        };
+      });
+    }
+
+    it('reuses the cached indicators when a later call sees the SAME latest-candle timestamp', async () => {
+      const lastTime = Date.UTC(2026, 5, 1);
+      // Two DIFFERENT histories that both end on the same day (same lastTime)
+      // — an uptrend vs a downtrend, so their SMA/RSI/ATR clearly differ.
+      const uptrend = candlesFromCloses(
+        Array.from({ length: 60 }, (_, i) => 100 + i),
+        lastTime,
+      );
+      const downtrend = candlesFromCloses(
+        Array.from({ length: 60 }, (_, i) => 200 - i),
+        lastTime,
+      );
+
+      const spy = vi
+        .spyOn(getProvider(), 'getCandles')
+        .mockResolvedValueOnce(uptrend as never)
+        .mockResolvedValueOnce(downtrend as never);
+
+      const first = await runAutotradeScreen({ symbols: ['SCRCACHE'], config: { filters: RELAXED_FILTERS } });
+      const second = await runAutotradeScreen({ symbols: ['SCRCACHE'], config: { filters: RELAXED_FILTERS } });
+
+      const firstScore = first.candidates.find((c) => c.symbol === 'SCRCACHE')!;
+      const secondScore = second.candidates.find((c) => c.symbol === 'SCRCACHE')!;
+      // Second call fetched genuinely different (downtrend) candles, but its
+      // SMA/RSI/ATR still reflect the FIRST (uptrend) call — proving the
+      // cached candle-indicators were actually reused, not recomputed.
+      expect(secondScore.indicators.maShort).toBe(firstScore.indicators.maShort);
+      expect(secondScore.indicators.rsi).toBe(firstScore.indicators.rsi);
+      spy.mockRestore();
+    });
+
+    it('recomputes once the latest-candle timestamp actually changes', async () => {
+      const day1 = Date.UTC(2026, 5, 1);
+      const day2 = day1 + 86_400_000;
+      const closesDay1 = Array.from({ length: 60 }, (_, i) => 100 + i);
+      // Day 2 = day 1's history plus one genuinely new (and deliberately
+      // extreme) close, so a real recompute must shift the trailing SMA
+      // window — this isn't just the same closes shifted in time, which
+      // would coincidentally produce the same average either way.
+      const closesDay2 = [...closesDay1, 300];
+      const uptrend = candlesFromCloses(closesDay1, day1);
+      const uptrendNextDay = candlesFromCloses(closesDay2, day2);
+
+      const spy = vi
+        .spyOn(getProvider(), 'getCandles')
+        .mockResolvedValueOnce(uptrend as never)
+        .mockResolvedValueOnce(uptrendNextDay as never);
+
+      const first = await runAutotradeScreen({ symbols: ['SCRCACHE2'], config: { filters: RELAXED_FILTERS } });
+      const second = await runAutotradeScreen({ symbols: ['SCRCACHE2'], config: { filters: RELAXED_FILTERS } });
+
+      const firstScore = first.candidates.find((c) => c.symbol === 'SCRCACHE2')!;
+      const secondScore = second.candidates.find((c) => c.symbol === 'SCRCACHE2')!;
+      // A genuinely new trading day's candle shifts the trailing SMA window.
+      expect(secondScore.indicators.maShort).not.toBe(firstScore.indicators.maShort);
+      spy.mockRestore();
+    });
+
+    it('a different screener config (different maShort) is not served a cache hit computed under the old config', async () => {
+      const lastTime = Date.UTC(2026, 5, 1);
+      const uptrend = candlesFromCloses(
+        Array.from({ length: 60 }, (_, i) => 100 + i),
+        lastTime,
+      );
+      const spy = vi.spyOn(getProvider(), 'getCandles').mockResolvedValue(uptrend as never);
+
+      const withDefaultMa = await runAutotradeScreen({
+        symbols: ['SCRCACHE3'],
+        config: { filters: RELAXED_FILTERS },
+      });
+      const withDifferentMa = await runAutotradeScreen({
+        symbols: ['SCRCACHE3'],
+        config: { filters: RELAXED_FILTERS, maShort: 5 },
+      });
+
+      const a = withDefaultMa.candidates.find((c) => c.symbol === 'SCRCACHE3')!;
+      const b = withDifferentMa.candidates.find((c) => c.symbol === 'SCRCACHE3')!;
+      expect(b.indicators.maShort).not.toBe(a.indicators.maShort);
       spy.mockRestore();
     });
   });

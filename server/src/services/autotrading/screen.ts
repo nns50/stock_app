@@ -1,7 +1,15 @@
 import { getProvider } from '../../providers';
 import { webullConfigured } from '../../providers/webull/account';
 import { webullMovers } from '../../providers/webull/movers';
-import { defaultScreenerConfig, scoreSymbol, ScreenerConfig, SymbolScore } from '../../indicators/screener';
+import { Candle } from '../../providers/types';
+import {
+  CandleIndicators,
+  computeCandleIndicators,
+  defaultScreenerConfig,
+  scoreSymbol,
+  ScreenerConfig,
+  SymbolScore,
+} from '../../indicators/screener';
 import { listUniverseSymbols } from '../../db/universe';
 import { isExcluded } from '../../db/autotradeExclusions';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
@@ -112,6 +120,44 @@ function withinEarningsBlackout(earningsDate: string, blackoutDays: number, now:
   return diffDays >= 0 && diffDays <= blackoutDays;
 }
 
+// Cached SMA/RSI/ATR per symbol, keyed on the exact config fields that feed
+// computeCandleIndicators() plus the latest candle's own timestamp — a daily
+// bar only actually changes once a trading day, but this tick runs every 60s,
+// so most ticks can skip recomputing the heaviest part of scoring entirely.
+// Keying on the config fields (not just symbol) means a caller testing a
+// different maShort/maLong/rsiPeriod/atrPeriod (the manual Screen/Decision
+// routes accept a custom config override) simply misses the cache rather
+// than risking a stale-config hit — never silently serves a value computed
+// under different indicator settings.
+const candleIndicatorCache = new Map<string, { candleTime: number; indicators: CandleIndicators }>();
+
+function candleIndicatorCacheKey(symbol: string, cfg: ScreenerConfig): string {
+  return `${symbol}:${cfg.maShort}:${cfg.maLong}:${cfg.rsiPeriod}:${cfg.atrPeriod}`;
+}
+
+/** computeCandleIndicators(), reusing the previous tick's result when this
+ *  symbol's latest candle hasn't actually changed since then. */
+function cachedCandleIndicatorsFor(
+  symbol: string,
+  candles: Candle[],
+  cfg: ScreenerConfig,
+): CandleIndicators | undefined {
+  if (candles.length === 0) return undefined;
+  const candleTime = candles[candles.length - 1].time;
+  const key = candleIndicatorCacheKey(symbol, cfg);
+  const cached = candleIndicatorCache.get(key);
+  if (cached && cached.candleTime === candleTime) return cached.indicators;
+  const fresh = computeCandleIndicators(candles, cfg);
+  if (fresh) candleIndicatorCache.set(key, { candleTime, indicators: fresh });
+  return fresh ?? undefined;
+}
+
+/** Test-only: clears the module-level cache so tests don't leak state into
+ *  each other across runs. */
+export function resetCandleIndicatorCache(): void {
+  candleIndicatorCache.clear();
+}
+
 export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<ScreenResult> {
   const cfg = resolveAutotradeScreenerConfig(opts.config);
   const provider = getProvider();
@@ -207,7 +253,7 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
         provider.getCandles(symbol, 'daily', { limit: 120 }),
         provider.getQuote(symbol).catch(() => undefined),
       ]);
-      const score = scoreSymbol(symbol, candles, quote, cfg);
+      const score = scoreSymbol(symbol, candles, quote, cfg, cachedCandleIndicatorsFor(symbol, candles, cfg));
       if (score.passedFilters) {
         candidates.push({ ...score, discoverySource: fromMovers.has(symbol) ? 'movers' : 'universe' });
         logAutotradeEvent({
