@@ -931,9 +931,10 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   profit factor, average R, return, max drawdown, win/loss streaks), an equity curve,
   and the full trade-by-trade list. This tool doesn't render a pass/fail verdict —
   reviewing in-sample vs. out-of-sample and deciding whether a configuration held up is
-  yours to make, same as the eventual live-trading flag. At most 50 symbols per run; if
-  one symbol's historical data can't be fetched (bad ticker, provider rate limit), it's
-  called out separately and excluded — the rest of the run still completes.
+  yours to make, same as the eventual live-trading flag. At most 50 symbols per run and a
+  3-year maximum date span; if one symbol's historical data can't be fetched (bad ticker,
+  provider rate limit), it's called out separately and excluded — the rest of the run
+  still completes.
   **Run options backtest** / **Run options walk-forward** replays the identical
   symbols/dates/profile/equity through the options overlay instead — single leg or debit
   spread, whichever the **Options strategy** setting above is set to, gated by the same
