@@ -9,6 +9,7 @@ import { LiveOptionsPosition } from '../../db/autotradeLiveOptionsPositions';
 import { getLiveOptionsPortfolioSnapshot, getOptionsProbationStatus } from './liveOptionsExecute';
 import { daysToExpiration } from '../../options/blackScholes';
 import { listAutotradeEvents } from '../../db/autotradeEvents';
+import { getLastTick, LastTickRecord } from '../../db/autotradeLastTick';
 
 // ---------------------------------------------------------------------------
 // Phase 7 (docs/AUTOTRADING_SPEC.md — MONITORING & KILL SWITCH): a read-only
@@ -72,6 +73,14 @@ export interface AutotradeDashboard {
    *  0 in that case, mirroring how the risk engine itself fails closed until
    *  equity is set (see riskCheck.ts's equity_configured check). */
   equity: number | null;
+
+  /** The automated loop's most recently completed cycle — candidates
+   *  screened, entries opened, exactly why it skipped, etc. Null before the
+   *  loop has ever run. See db/autotradeLastTick.ts's header comment for why
+   *  this is persisted rather than recomputed: it isn't derivable from
+   *  current state at all (it's a record of what a PAST tick did), unlike
+   *  every other figure in this dashboard. */
+  lastTick: LastTickRecord | null;
 
   /** Equity paper positions only — see openOptionsPositions below for the
    *  options side of this SAME combined pool. */
@@ -206,6 +215,7 @@ export function getAutotradeDashboard(): AutotradeDashboard {
     killSwitch: config.killSwitch,
     riskProfile: config.riskProfile,
     equity: config.accountEquityUsd,
+    lastTick: getLastTick(),
 
     openPositions: snapshot.openPositions,
     openPositionsCount: snapshot.openPositionsCount + optionsSnapshot.openPositionsCount,

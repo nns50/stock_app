@@ -4,6 +4,7 @@ import { setAutotradeConfig, setAutotradeKillSwitch } from '../src/db/autotradeC
 import { openPaperPosition } from '../src/db/autotradePaperPositions';
 import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
+import { saveLastTick } from '../src/db/autotradeLastTick';
 import { getAutotradeDashboard } from '../src/services/autotrading/dashboard';
 
 // Unit coverage for the Phase 7 dashboard snapshot (docs/AUTOTRADING_SPEC.md —
@@ -18,7 +19,8 @@ beforeEach(() => {
     'DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_options_paper_positions; ' +
       'DELETE FROM autotrade_config; DELETE FROM autotrade_events; ' +
       'DELETE FROM position_exits; DELETE FROM positions; DELETE FROM autotrade_live_orders; ' +
-      'DELETE FROM autotrade_live_options_orders; DELETE FROM order_events; DELETE FROM order_intents;',
+      'DELETE FROM autotrade_live_options_orders; DELETE FROM order_events; DELETE FROM order_intents; ' +
+      'DELETE FROM autotrade_last_tick;',
   );
 });
 
@@ -75,6 +77,7 @@ describe('getAutotradeDashboard', () => {
     expect(dash.killSwitch).toBe(false);
     expect(dash.riskProfile).toBe('MODERATE');
     expect(dash.equity).toBeNull();
+    expect(dash.lastTick).toBeNull(); // the loop has never run
     expect(dash.openPositions).toEqual([]);
     expect(dash.openPositionsCount).toBe(0);
     expect(dash.maxConcurrentPositions).toBe(2); // MODERATE
@@ -98,6 +101,35 @@ describe('getAutotradeDashboard', () => {
     const dash = getAutotradeDashboard();
     expect(dash.enabled).toBe(true);
     expect(dash.killSwitch).toBe(true);
+  });
+
+  it('surfaces the persisted last-tick snapshot directly — a read, not a second implementation', () => {
+    saveLastTick({
+      ranEntries: true,
+      exitsChecked: 3,
+      exitsClosed: 1,
+      optionsExitsChecked: 0,
+      optionsExitsClosed: 0,
+      liveOrdersReconciled: 0,
+      livePositionsClosed: 0,
+      liveOptionsOrdersReconciled: 0,
+      liveOptionsPositionsClosed: 0,
+      liveOptionsExitsRequested: 0,
+      candidatesScreened: 7,
+      candidatesPassedVolatility: 4,
+      signalsGenerated: 2,
+      optionsSignalsGenerated: 0,
+      optionsCandidatesConsidered: 0,
+      entriesOpened: 1,
+      optionsEntriesOpened: 0,
+      liveEntriesOpened: 0,
+      liveOptionsEntriesOpened: 0,
+      moversAutoPromoted: 0,
+    });
+    const dash = getAutotradeDashboard();
+    expect(dash.lastTick).not.toBeNull();
+    expect(dash.lastTick?.summary).toMatchObject({ candidatesScreened: 7, signalsGenerated: 2, entriesOpened: 1 });
+    expect(dash.lastTick?.ranAt).toBeGreaterThan(0);
   });
 
   it('computes $ caps from equity and the active MODERATE profile', () => {
