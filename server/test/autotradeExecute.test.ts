@@ -336,4 +336,64 @@ describe('checkPaperExits', () => {
     expect(await checkPaperExits()).toEqual([]);
     expect(mockGetProvider).not.toHaveBeenCalled();
   });
+
+  describe('maxHoldDays', () => {
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+    it('force-closes at the current quote once a position has been open maxHoldDays, with neither stop nor target hit', async () => {
+      setAutotradeConfig({ maxHoldDays: 5 });
+      const pos = openPos();
+      db.prepare('UPDATE autotrade_paper_positions SET entry_at = ? WHERE id = ?').run(
+        Date.now() - 6 * MS_PER_DAY,
+        pos.id,
+      );
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as never); // between stop (95) and target (110)
+
+      const outcomes = await checkPaperExits();
+
+      expect(outcomes[0].closed).toBe(true);
+      expect(outcomes[0].position!.exitReason).toBe('time_exit');
+      expect(outcomes[0].position!.exitPrice).toBe(102); // the CURRENT quote, not a declared level
+    });
+
+    it('leaves a position open when maxHoldDays is configured but not yet elapsed', async () => {
+      setAutotradeConfig({ maxHoldDays: 5 });
+      const pos = openPos();
+      db.prepare('UPDATE autotrade_paper_positions SET entry_at = ? WHERE id = ?').run(
+        Date.now() - 2 * MS_PER_DAY,
+        pos.id,
+      );
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as never);
+
+      const outcomes = await checkPaperExits();
+      expect(outcomes[0].closed).toBe(false);
+      expect(hasOpenPaperPosition('AAPL')).toBe(true);
+    });
+
+    it('never fires when maxHoldDays is 0 (disabled), no matter how old the position is', async () => {
+      const pos = openPos(); // beforeEach leaves maxHoldDays at its default (0)
+      db.prepare('UPDATE autotrade_paper_positions SET entry_at = ? WHERE id = ?').run(
+        Date.now() - 3650 * MS_PER_DAY,
+        pos.id,
+      );
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as never);
+
+      const outcomes = await checkPaperExits();
+      expect(outcomes[0].closed).toBe(false);
+    });
+
+    it('still lets a stop/target hit take priority over an elapsed maxHoldDays', async () => {
+      setAutotradeConfig({ maxHoldDays: 5 });
+      const pos = openPos();
+      db.prepare('UPDATE autotrade_paper_positions SET entry_at = ? WHERE id = ?').run(
+        Date.now() - 30 * MS_PER_DAY,
+        pos.id,
+      );
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 115 }) as never); // above target
+
+      const outcomes = await checkPaperExits();
+      expect(outcomes[0].position!.exitReason).toBe('target');
+      expect(outcomes[0].position!.exitPrice).toBe(110);
+    });
+  });
 });

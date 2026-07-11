@@ -11,7 +11,7 @@ import { db } from './index';
 // ---------------------------------------------------------------------------
 
 export type PaperSide = 'buy' | 'sell';
-export type PaperExitReason = 'stop' | 'target' | 'manual';
+export type PaperExitReason = 'stop' | 'target' | 'time_exit' | 'manual';
 
 export interface OpenPaperPositionInput {
   symbol: string;

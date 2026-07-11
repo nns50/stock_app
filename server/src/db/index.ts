@@ -36,6 +36,30 @@ CREATE TABLE IF NOT EXISTS alerts (
   updated_at        INTEGER NOT NULL
 );`;
 
+// autotrade_paper_positions DDL, factored out so the fresh-create (SCHEMA) and
+// the migration that widens exit_reason share one definition (added
+// 2026-07-11 for the 'time_exit' value — max-hold-days force-close).
+const AUTOTRADE_PAPER_POSITIONS_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS autotrade_paper_positions (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol        TEXT NOT NULL,
+  side          TEXT NOT NULL CHECK(side IN ('buy','sell')),
+  quantity      REAL NOT NULL,
+  entry_price   REAL NOT NULL,
+  entry_at      INTEGER NOT NULL,       -- ms epoch (real time, not a backtest date)
+  stop_price    REAL NOT NULL,
+  target_price  REAL NOT NULL,
+  risk_amount   REAL NOT NULL,          -- $ risked at entry, for R-multiple stats
+  risk_profile  TEXT NOT NULL,
+  rationale     TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+  exit_price    REAL,
+  exit_at       INTEGER,
+  exit_reason   TEXT CHECK(exit_reason IN ('stop','target','time_exit','manual') OR exit_reason IS NULL),
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);`;
+
 // order_intents DDL, factored out so the fresh-create (SCHEMA) and the migration
 // that rebuilds older tables share one definition. `order_type` has NO CHECK:
 // stop orders (stop_loss / stop_loss_limit) joined the original market/limit set,
@@ -307,25 +331,7 @@ CREATE TABLE IF NOT EXISTS backtest_option_contracts_fetch_log (
 -- split positions/exits table: the auto-trading engine (decide.ts,
 -- riskCheck.ts, backtest.ts's SimulatedTrade) never models partial fills or
 -- partial exits, so there's nothing a second table would need to hold.
-CREATE TABLE IF NOT EXISTS autotrade_paper_positions (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  symbol        TEXT NOT NULL,
-  side          TEXT NOT NULL CHECK(side IN ('buy','sell')),
-  quantity      REAL NOT NULL,
-  entry_price   REAL NOT NULL,
-  entry_at      INTEGER NOT NULL,       -- ms epoch (real time, not a backtest date)
-  stop_price    REAL NOT NULL,
-  target_price  REAL NOT NULL,
-  risk_amount   REAL NOT NULL,          -- $ risked at entry, for R-multiple stats
-  risk_profile  TEXT NOT NULL,
-  rationale     TEXT NOT NULL,
-  status        TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
-  exit_price    REAL,
-  exit_at       INTEGER,
-  exit_reason   TEXT CHECK(exit_reason IN ('stop','target','manual') OR exit_reason IS NULL),
-  created_at    INTEGER NOT NULL,
-  updated_at    INTEGER NOT NULL
-);
+${AUTOTRADE_PAPER_POSITIONS_TABLE_SQL}
 
 -- Phase 12 (options paper execution): the options counterpart to
 -- autotrade_paper_positions. Separate table, not a shared/unioned one — a
@@ -394,14 +400,25 @@ CREATE TABLE IF NOT EXISTS autotrade_sector_cache (
 -- take-profit), so the stop/target are ALSO enforced by the broker directly
 -- -- this table is bookkeeping for OUR OWN tracking, not the sole mechanism
 -- protecting the position the way autotrade_paper_positions's polling is.
+-- role (added 2026-07-11, max-hold-days force-close): 'entry' (the original
+-- bracket order, sole use of this table until now) or 'exit' -- a SEPARATE
+-- closing order this loop places itself once maxHoldDays elapses without a
+-- stop/target hit, mirroring autotrade_live_options_orders's own role split
+-- (equity's own bracket has no such precedent -- every OTHER equity exit is
+-- still 100% broker-bracket-driven; this is the one exception). An 'exit'
+-- row has no real stop/target/risk of its own (it's closing, not sizing a
+-- new position) but the columns stay NOT NULL for a pre-existing DB's sake,
+-- so it stores 0 rather than NULL -- see recordLiveExitOrder.
 CREATE TABLE IF NOT EXISTS autotrade_live_orders (
   intent_id     INTEGER PRIMARY KEY REFERENCES order_intents(id),
   symbol        TEXT NOT NULL,
+  role          TEXT NOT NULL DEFAULT 'entry',
   stop_price    REAL NOT NULL,
   target_price  REAL NOT NULL,
   risk_amount   REAL NOT NULL,
   risk_profile  TEXT NOT NULL,
-  position_id   INTEGER,              -- set once the entry fill materializes into positions
+  position_id   INTEGER,              -- entry: set once the fill materializes into positions.
+                                       -- exit: known upfront (the position this order will close).
   created_at    INTEGER NOT NULL
 );
 
@@ -625,6 +642,8 @@ function migrate(): void {
 
   rebuildAlertsTable(db);
 
+  rebuildAutotradePaperPositionsTable(db);
+
   // autotrade_options_paper_positions gained a debit-spread shape (Task #69):
   // a kind discriminator plus the short leg's contract/strike/entry/exit.
   const oppCols = db.prepare('PRAGMA table_info(autotrade_options_paper_positions)').all() as { name: string }[];
@@ -659,6 +678,14 @@ function migrate(): void {
   }
   if (!hasAlo('short_strike')) db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN short_strike REAL');
   if (!hasAlo('expiration')) db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN expiration TEXT');
+
+  // autotrade_live_orders gained a role split (max-hold-days force-close):
+  // every existing row IS an entry (the only kind this table held before),
+  // so backfilling the default onto old rows is exactly correct, not a guess.
+  const aloEquityCols = db.prepare('PRAGMA table_info(autotrade_live_orders)').all() as { name: string }[];
+  if (!aloEquityCols.some((c) => c.name === 'role')) {
+    db.exec("ALTER TABLE autotrade_live_orders ADD COLUMN role TEXT NOT NULL DEFAULT 'entry'");
+  }
 }
 
 /**
@@ -715,6 +742,36 @@ export function rebuildAlertsTable(database: Database.Database): void {
              last_value, trigger_message, last_triggered_at, created_at, updated_at
       FROM alerts_old;
     DROP TABLE alerts_old;
+  `);
+}
+
+/**
+ * Rebuild `autotrade_paper_positions` when its exit_reason CHECK predates
+ * 'time_exit' (max-hold-days force-close, added 2026-07-11). SQLite can't
+ * widen a CHECK in place, so copy rows through a fresh table — same
+ * rename/create/copy/drop dance as rebuildAlertsTable, plus re-creating the
+ * one index this table has (rebuildAlertsTable/rebuildOrderIntentsTable have
+ * none, so neither needed this step). Guarded on 'time_exit' already being in
+ * the stored CHECK text, so it runs once and no-ops on a fresh DB.
+ */
+export function rebuildAutotradePaperPositionsTable(database: Database.Database): void {
+  const row = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='autotrade_paper_positions'")
+    .get() as { sql: string | null } | undefined;
+  if (!row?.sql || /time_exit/i.test(row.sql)) return;
+
+  database.exec(`
+    ALTER TABLE autotrade_paper_positions RENAME TO autotrade_paper_positions_old;
+    ${AUTOTRADE_PAPER_POSITIONS_TABLE_SQL}
+    INSERT INTO autotrade_paper_positions (id, symbol, side, quantity, entry_price, entry_at, stop_price,
+                        target_price, risk_amount, risk_profile, rationale, status, exit_price, exit_at,
+                        exit_reason, created_at, updated_at)
+      SELECT id, symbol, side, quantity, entry_price, entry_at, stop_price,
+             target_price, risk_amount, risk_profile, rationale, status, exit_price, exit_at,
+             exit_reason, created_at, updated_at
+      FROM autotrade_paper_positions_old;
+    DROP TABLE autotrade_paper_positions_old;
+    CREATE INDEX IF NOT EXISTS idx_autotrade_paper_positions_status ON autotrade_paper_positions(symbol, status);
   `);
 }
 

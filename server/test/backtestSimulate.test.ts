@@ -114,6 +114,73 @@ describe('simulateBacktest', () => {
     expect(t.rMultiple).toBeCloseTo(2, 5); // target is always exactly 2R by construction (targetRMultiple: 2)
   });
 
+  it('force-closes at the bar CLOSE once maxHoldDays elapses with neither stop nor target hit', () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const day2 = d(signalDay, 2); // 1 calendar day since entry — not enough yet (maxHoldDays: 2)
+    const day3 = d(signalDay, 3); // 2 calendar days since entry — triggers
+    const history = new Map([
+      [
+        'TEST',
+        [
+          ...warmupThrough(signalDay),
+          bar(entryDay),
+          bar(day2, { open: 100, high: 101, low: 99, close: 100 }),
+          bar(day3, { open: 100, high: 101, low: 99, close: 101 }),
+        ],
+      ],
+    ]);
+    const report = simulateBacktest(history, baseConfig({ from: signalDay, to: day3, maxHoldDays: 2 }));
+    expect(report.trades).toHaveLength(1);
+    const t = report.trades[0];
+    expect(t.exitReason).toBe('time_exit');
+    expect(t.exitDate).toBe(day3);
+    expect(t.exitPrice).toBe(101); // day3's bar CLOSE, not a declared stop/target level
+  });
+
+  it('never force-closes on maxHoldDays when omitted (0/disabled)', () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const day2 = d(signalDay, 2);
+    const day3 = d(signalDay, 3);
+    const history = new Map([
+      [
+        'TEST',
+        [
+          ...warmupThrough(signalDay),
+          bar(entryDay),
+          bar(day2, { open: 100, high: 101, low: 99, close: 100 }),
+          bar(day3, { open: 100, high: 101, low: 99, close: 101 }),
+        ],
+      ],
+    ]);
+    const report = simulateBacktest(history, baseConfig({ from: signalDay, to: day3 }));
+    expect(report.trades).toHaveLength(1);
+    expect(report.trades[0].exitReason).toBe('end_of_period'); // rode to period end, not force-closed
+  });
+
+  it('still lets a stop/target hit take priority over an elapsed maxHoldDays', () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const day2 = d(signalDay, 2);
+    const targetDay = d(signalDay, 3);
+    const history = new Map([
+      [
+        'TEST',
+        [
+          ...warmupThrough(signalDay),
+          bar(entryDay),
+          bar(day2, { open: 100, high: 101, low: 99, close: 100 }),
+          bar(targetDay, { open: 101, high: 107, low: 100, close: 106 }),
+        ],
+      ],
+    ]);
+    const report = simulateBacktest(history, baseConfig({ from: signalDay, to: targetDay, maxHoldDays: 2 }));
+    expect(report.trades).toHaveLength(1);
+    expect(report.trades[0].exitReason).toBe('target');
+    expect(report.trades[0].exitPrice).toBe(106);
+  });
+
   it('assumes the stop hit first (conservative) when a single bar could have hit both', () => {
     const signalDay = '2024-03-01';
     const entryDay = d(signalDay, 1);

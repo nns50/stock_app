@@ -86,6 +86,8 @@ const configBody = z.object({
   stopAtrMultiple: z.number().positive().optional(),
   targetRMultiple: z.number().positive().optional(),
   sessionBufferMinutes: z.number().int().nonnegative().optional(),
+  // --- Max hold time (0 disables) --------------------------------------------
+  maxHoldDays: z.number().int().nonnegative().optional(),
   // --- Correlation methodology (feeds maxCorrelatedExposurePct above) -------
   correlationLookbackDays: z.number().int().min(1).optional(),
   correlationThreshold: z.number().min(0).max(1).optional(),
@@ -159,6 +161,7 @@ autotradeRouter.put(
     if (body.stopAtrMultiple !== undefined) patch.stopAtrMultiple = body.stopAtrMultiple;
     if (body.targetRMultiple !== undefined) patch.targetRMultiple = body.targetRMultiple;
     if (body.sessionBufferMinutes !== undefined) patch.sessionBufferMinutes = body.sessionBufferMinutes;
+    if (body.maxHoldDays !== undefined) patch.maxHoldDays = body.maxHoldDays;
     if (body.correlationLookbackDays !== undefined) patch.correlationLookbackDays = body.correlationLookbackDays;
     if (body.correlationThreshold !== undefined) patch.correlationThreshold = body.correlationThreshold;
     if (body.liveMaxOrderUsd !== undefined) patch.liveMaxOrderUsd = body.liveMaxOrderUsd;
@@ -570,6 +573,7 @@ const backtestBodyBase = z.object({
   riskProfile: z.enum(['MODERATE', 'AGGRESSIVE']),
   startingEquity: z.number().positive(),
   maxConcurrentPositions: z.number().int().min(1),
+  maxHoldDays: z.number().int().nonnegative().optional(),
   ...backtestRiskParamsSchema,
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   decisionConfig: z.record(z.string(), z.unknown()).optional(),
@@ -596,6 +600,7 @@ autotradeRouter.post(
       riskProfile: body.riskProfile,
       startingEquity: body.startingEquity,
       maxConcurrentPositions: body.maxConcurrentPositions,
+      maxHoldDays: body.maxHoldDays,
       ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
@@ -616,6 +621,7 @@ autotradeRouter.post(
       riskProfile: body.riskProfile,
       startingEquity: body.startingEquity,
       maxConcurrentPositions: body.maxConcurrentPositions,
+      maxHoldDays: body.maxHoldDays,
       ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
@@ -720,6 +726,7 @@ const combinedBacktestBodyBase = z.object({
   riskProfile: z.enum(['MODERATE', 'AGGRESSIVE']),
   startingEquity: z.number().positive(),
   maxConcurrentPositions: z.number().int().min(1),
+  maxHoldDays: z.number().int().nonnegative().optional(),
   ...backtestRiskParamsSchema,
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   decisionConfig: z.record(z.string(), z.unknown()).optional(),
@@ -747,6 +754,7 @@ autotradeRouter.post(
       riskProfile: body.riskProfile,
       startingEquity: body.startingEquity,
       maxConcurrentPositions: body.maxConcurrentPositions,
+      maxHoldDays: body.maxHoldDays,
       ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
@@ -768,6 +776,7 @@ autotradeRouter.post(
       riskProfile: body.riskProfile,
       startingEquity: body.startingEquity,
       maxConcurrentPositions: body.maxConcurrentPositions,
+      maxHoldDays: body.maxHoldDays,
       ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,

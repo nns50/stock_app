@@ -119,6 +119,34 @@ describe('simulateCombinedBacktest', () => {
     expect(report.optionsTrades).toEqual([]);
   });
 
+  it('force-closes an EQUITY leg position at the bar close once maxHoldDays elapses with neither stop nor target hit', async () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const day2 = d(signalDay, 2); // 1 calendar day since entry — not enough yet (maxHoldDays: 2)
+    const day3 = d(signalDay, 3); // 2 calendar days since entry — triggers
+    const historyBySymbol = new Map([
+      [
+        'AAA',
+        [
+          ...warmupThrough(signalDay),
+          equityBar(entryDay),
+          equityBar(day2, { open: 100, high: 101, low: 99, close: 100 }),
+          equityBar(day3, { open: 100, high: 101, low: 99, close: 101 }),
+        ],
+      ],
+    ]);
+    const report = await simulateCombinedBacktest(
+      historyBySymbol,
+      new Map(),
+      baseConfig({ symbols: ['AAA'], from: signalDay, to: day3, maxHoldDays: 2 }),
+    );
+    expect(report.equityTrades).toHaveLength(1);
+    expect(report.equityTrades[0].exitReason).toBe('time_exit');
+    expect(report.equityTrades[0].exitDate).toBe(day3);
+    expect(report.equityTrades[0].exitPrice).toBe(101);
+    expect(report.optionsTrades).toEqual([]);
+  });
+
   it('opens and force-closes an options-only position — the options leg is unaffected by combining', async () => {
     const signalDay = '2024-03-01';
     const entryDay = d(signalDay, 1);

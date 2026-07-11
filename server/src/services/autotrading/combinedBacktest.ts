@@ -19,6 +19,7 @@ import {
   EquityPoint,
   indexAsOf,
   loadBacktestHistory,
+  MS_PER_DAY,
   resolveBacktestRiskParams,
   SimulatedTrade,
   toISO,
@@ -99,6 +100,11 @@ export interface CombinedBacktestConfig extends Partial<BacktestRiskParams> {
    *  account's current setting (mirrors startingEquity's existing convention).
    *  ONE combined budget shared by both legs, same as the live loop. */
   maxConcurrentPositions: number;
+  /** Force-close an EQUITY leg position open this many CALENDAR days without
+   *  a stop/target hit — mirrors backtest.ts's own maxHoldDays. Has no effect
+   *  on the options leg (which already force-closes via its own separate
+   *  time-exit). Omitted or 0 disables it. */
+  maxHoldDays?: number;
   screenerConfig?: Partial<ScreenerConfig>;
   decisionConfig?: Partial<DecisionConfig>;
   optionsDecisionConfig?: Partial<OptionsDecisionConfig>;
@@ -121,6 +127,8 @@ interface OpenEquityPosition {
   side: 'buy' | 'sell';
   signalDate: string;
   entryDate: string;
+  /** ms epoch of entryDate — mirrors backtest.ts's own OpenPosition field. */
+  entryDateMs: number;
   entryPrice: number;
   stop: number;
   target: number;
@@ -240,6 +248,7 @@ export async function simulateCombinedBacktest(
           side: p.signal.side,
           signalDate: p.signalDate,
           entryDate: day,
+          entryDateMs: dayMs,
           entryPrice: candles![idx].open,
           stop: p.signal.stop,
           target: p.signal.target,
@@ -268,9 +277,11 @@ export async function simulateCombinedBacktest(
       const long = pos.side === 'buy';
       const stopHit = long ? bar.low <= pos.stop : bar.high >= pos.stop;
       const targetHit = long ? bar.high >= pos.target : bar.low <= pos.target;
-      if (stopHit || targetHit) {
-        const exitReason: SimulatedTrade['exitReason'] = stopHit ? 'stop' : 'target';
-        const exitPrice = stopHit ? pos.stop : pos.target;
+      const maxHoldDays = cfg.maxHoldDays ?? 0;
+      const timeHit = !stopHit && !targetHit && maxHoldDays > 0 && dayMs - pos.entryDateMs >= maxHoldDays * MS_PER_DAY;
+      if (stopHit || targetHit || timeHit) {
+        const exitReason: SimulatedTrade['exitReason'] = stopHit ? 'stop' : targetHit ? 'target' : 'time_exit';
+        const exitPrice = stopHit ? pos.stop : targetHit ? pos.target : bar.close;
         const sign = long ? 1 : -1;
         const pnl = (exitPrice - pos.entryPrice) * pos.quantity * sign;
         equityTrades.push({
