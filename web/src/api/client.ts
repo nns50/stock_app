@@ -444,6 +444,7 @@ export const client = {
     targetRMultiple?: number;
     maxHoldDays?: number;
     sessionBufferMinutes?: number;
+    earningsBlackoutDays?: number;
     correlationLookbackDays?: number;
     correlationThreshold?: number;
     liveTradingEnabled?: boolean;

@@ -682,18 +682,24 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   this cycle if SPY's own volatility is too high — stricter than the manual Screen/
   Decision preview below, since an unattended loop has no one to override a bad read),
   **stop distance** and **target** (the stop sits this many ATRs from entry; the target
-  sits stop-distance × this further out, as a reward:risk multiple), and **session
+  sits stop-distance × this further out, as a reward:risk multiple), **session
   buffer** (no new entries within this many minutes of the open or close, when prices
-  are most distorted). All six default to the values the loop always used before they
-  were configurable, so leaving them untouched changes nothing; the manual Screen/
-  Decision preview below defaults to these same saved values too (so it previews what
-  the loop would actually do), though it has no UI to override them ad hoc today. A
-  related but separate **max hold time (days)** setting forces a position closed at
-  the day's price after it's been open this many calendar days without its stop or
-  target firing — a backstop against a position that's just drifting sideways
-  forever. Defaults to **0 (disabled)**, so leaving it untouched changes nothing;
-  unlike the six fields above, it has no manual-preview equivalent — there's nothing
-  to preview about how long a position stays open before it's even entered.
+  are most distorted), and **earnings blackout** (skip an equity candidate whose next
+  known earnings date falls within this many calendar days — an unattended loop can't
+  react to an earnings-driven overnight gap the way ATR-based stop sizing assumes;
+  options entries are unaffected, since an approaching print already shows up as
+  elevated IV rank there instead). All seven default to the values the loop always
+  used before they were configurable (earnings blackout's own "before" is simply never
+  checking — 0 disables it), so leaving them untouched changes nothing; the manual
+  Screen/Decision preview
+  below defaults to these same saved values too (so it previews what the loop would
+  actually do), though it has no UI to override them ad hoc today. A related but
+  separate **max hold time (days)** setting forces a position closed at the day's price
+  after it's been open this many calendar days without its stop or target firing — a
+  backstop against a position that's just drifting sideways forever. Defaults to
+  **0 (disabled)**, so leaving it untouched changes nothing; unlike the seven fields
+  above, it has no manual-preview equivalent — there's nothing to preview about how
+  long a position stays open before it's even entered.
   **Auto-promote recurring movers** (on by default) grows your universe automatically:
   a symbol Webull's premarket movers surface that also clears screening on **3 distinct
   days within a 10-day window** (both tunable, along with a **50-symbol lifetime cap** on

@@ -54,6 +54,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     targetRMultiple: 2,
     maxHoldDays: 0,
     sessionBufferMinutes: 15,
+    earningsBlackoutDays: 0,
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
     liveTradingEnabled: false,

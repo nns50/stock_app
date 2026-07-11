@@ -1422,6 +1422,7 @@ export default function AutoTradePage() {
   const [targetRMultipleDraft, setTargetRMultipleDraft] = useState<number | undefined>();
   const [maxHoldDaysDraft, setMaxHoldDaysDraft] = useState<number | undefined>();
   const [sessionBufferMinutesDraft, setSessionBufferMinutesDraft] = useState<number | undefined>();
+  const [earningsBlackoutDaysDraft, setEarningsBlackoutDaysDraft] = useState<number | undefined>();
   const [correlationLookbackDaysDraft, setCorrelationLookbackDaysDraft] = useState<number | undefined>();
   const [correlationThresholdDraft, setCorrelationThresholdDraft] = useState<number | undefined>();
   const [liveAccountIdDraft, setLiveAccountIdDraft] = useState('');
@@ -1467,6 +1468,7 @@ export default function AutoTradePage() {
     setTargetRMultipleDraft(config.data.targetRMultiple);
     setMaxHoldDaysDraft(config.data.maxHoldDays);
     setSessionBufferMinutesDraft(config.data.sessionBufferMinutes);
+    setEarningsBlackoutDaysDraft(config.data.earningsBlackoutDays);
     setCorrelationLookbackDaysDraft(config.data.correlationLookbackDays);
     setCorrelationThresholdDraft(config.data.correlationThreshold);
     setLiveAccountIdDraft(config.data.liveAccountId ?? '');
@@ -1509,6 +1511,7 @@ export default function AutoTradePage() {
     targetRMultiple?: number;
     maxHoldDays?: number;
     sessionBufferMinutes?: number;
+    earningsBlackoutDays?: number;
     correlationLookbackDays?: number;
     correlationThreshold?: number;
     optionsStrategyType?: AutotradeOptionsStrategyType;
@@ -1549,6 +1552,7 @@ export default function AutoTradePage() {
       setTargetRMultipleDraft(saved.targetRMultiple);
       setMaxHoldDaysDraft(saved.maxHoldDays);
       setSessionBufferMinutesDraft(saved.sessionBufferMinutes);
+      setEarningsBlackoutDaysDraft(saved.earningsBlackoutDays);
       setCorrelationLookbackDaysDraft(saved.correlationLookbackDays);
       setCorrelationThresholdDraft(saved.correlationThreshold);
       setAutoPromoteMoversEnabled(saved.autoPromoteMoversEnabled);
@@ -2511,6 +2515,33 @@ export default function AutoTradePage() {
                     sessionBufferMinutesDraft == null ||
                     sessionBufferMinutesDraft < 0 ||
                     sessionBufferMinutesDraft === config.data?.sessionBufferMinutes
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Earnings blackout (days)"
+              hint="Skip an equity candidate whose next known earnings date falls within this many calendar days — an unattended loop can't react to an earnings-driven overnight gap. 0 disables this check. Options entries are unaffected (IV rank already covers this there)."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={earningsBlackoutDaysDraft}
+                  onChange={setEarningsBlackoutDaysDraft}
+                  min={0}
+                  step={1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save earnings blackout"
+                  onClick={() =>
+                    earningsBlackoutDaysDraft != null && saveConfig({ earningsBlackoutDays: earningsBlackoutDaysDraft })
+                  }
+                  disabled={
+                    earningsBlackoutDaysDraft == null ||
+                    earningsBlackoutDaysDraft < 0 ||
+                    earningsBlackoutDaysDraft === config.data?.earningsBlackoutDays
                   }
                 >
                   Save

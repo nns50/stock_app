@@ -3,7 +3,13 @@ import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 // classifySector falls back to Yahoo fundamentals for any symbol not seeded in
 // `universe` — mock the library so those calls resolve to a plain non-RE
 // sector instead of hitting the network (same approach as
-// autotradeRealEstateClassifier.test.ts / yahooProvider.test.ts).
+// autotradeRealEstateClassifier.test.ts / yahooProvider.test.ts). `quote` is
+// ALSO mocked here (getSymbolEvents' own dependency, services/events.ts) so
+// the earnings-blackout tests below can control each symbol's earnings date
+// without hitting the network either — vi.hoisted so the mutable map is
+// reachable both from inside the hoisted vi.mock factory and from each test.
+const earningsFixture = vi.hoisted(() => ({ current: {} as Record<string, { earningsTimestamp?: Date }> }));
+
 vi.mock('yahoo-finance2', () => ({
   default: class FakeYahoo {
     constructor(_opts?: unknown) {}
@@ -15,6 +21,10 @@ vi.mock('yahoo-finance2', () => ({
         assetProfile: { sector: 'Technology', industry: 'Software' },
       };
     }
+    async quote(symbols: string | string[]) {
+      const arr = Array.isArray(symbols) ? symbols : [symbols];
+      return arr.map((s) => ({ symbol: s, ...earningsFixture.current[s.toUpperCase()] }));
+    }
   },
 }));
 
@@ -22,6 +32,7 @@ import { initDb, db } from '../src/db';
 import { addExclusion } from '../src/db/autotradeExclusions';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { runAutotradeScreen } from '../src/services/autotrading/screen';
+import { clearEventsCache } from '../src/services/events';
 
 beforeAll(() => initDb());
 
@@ -38,6 +49,8 @@ beforeEach(() => {
   db.prepare(
     "INSERT INTO universe (symbol, name, sector, added_at) VALUES (?, 'Sectored RE Co', 'Real Estate', ?)",
   ).run(SECTORED, Date.now());
+  earningsFixture.current = {};
+  clearEventsCache();
 });
 
 describe('runAutotradeScreen', () => {
@@ -93,5 +106,75 @@ describe('runAutotradeScreen', () => {
   it('reports discovery counts', async () => {
     const result = await runAutotradeScreen({ symbols: [NORMAL, 'SCRNORM2'] });
     expect(result.discovery.scannedCount).toBe(2);
+  });
+
+  describe('earnings blackout', () => {
+    function daysFromNow(n: number): string {
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() + n);
+      return d.toISOString().slice(0, 10);
+    }
+
+    it('does not exclude anyone when earningsBlackoutDays is omitted (0/disabled), even with earnings today', async () => {
+      earningsFixture.current.SCREARN1 = { earningsTimestamp: new Date(daysFromNow(0)) };
+      const result = await runAutotradeScreen({ symbols: ['SCREARN1'], config: { filters: RELAXED_FILTERS } });
+      expect(result.excluded).toHaveLength(0);
+      expect(result.candidates).toHaveLength(1);
+    });
+
+    it('excludes a candidate whose earnings date is today (day 0 of the window)', async () => {
+      earningsFixture.current.SCREARN2 = { earningsTimestamp: new Date(daysFromNow(0)) };
+      const result = await runAutotradeScreen({
+        symbols: ['SCREARN2'],
+        config: { filters: RELAXED_FILTERS },
+        earningsBlackoutDays: 3,
+      });
+      expect(result.candidates).toHaveLength(0);
+      expect(result.excluded[0]).toMatchObject({ symbol: 'SCREARN2' });
+      expect(result.excluded[0].reason).toMatch(/blackout/i);
+    });
+
+    it('excludes a candidate whose earnings date is a few days out but still inside the window', async () => {
+      earningsFixture.current.SCREARN3 = { earningsTimestamp: new Date(daysFromNow(2)) };
+      const result = await runAutotradeScreen({
+        symbols: ['SCREARN3'],
+        config: { filters: RELAXED_FILTERS },
+        earningsBlackoutDays: 3,
+      });
+      expect(result.candidates).toHaveLength(0);
+      expect(result.excluded.find((e) => e.symbol === 'SCREARN3')).toBeDefined();
+    });
+
+    it('does not exclude a candidate whose earnings date is beyond the window', async () => {
+      earningsFixture.current.SCREARN4 = { earningsTimestamp: new Date(daysFromNow(10)) };
+      const result = await runAutotradeScreen({
+        symbols: ['SCREARN4'],
+        config: { filters: RELAXED_FILTERS },
+        earningsBlackoutDays: 3,
+      });
+      expect(result.excluded).toHaveLength(0);
+      expect(result.candidates).toHaveLength(1);
+    });
+
+    it('does not exclude (fails open) when the earnings date is unknown', async () => {
+      // No earningsFixture entry at all for this symbol -> the mocked quote()
+      // returns a bare {symbol}, same shape a real "Yahoo has nothing" response
+      // resolves to.
+      const result = await runAutotradeScreen({
+        symbols: ['SCREARN5'],
+        config: { filters: RELAXED_FILTERS },
+        earningsBlackoutDays: 3,
+      });
+      expect(result.excluded).toHaveLength(0);
+      expect(result.candidates).toHaveLength(1);
+    });
+
+    it('journals an excluded_earnings event with the earnings date', async () => {
+      earningsFixture.current.SCREARN6 = { earningsTimestamp: new Date(daysFromNow(1)) };
+      await runAutotradeScreen({ symbols: ['SCREARN6'], earningsBlackoutDays: 3 });
+      const events = listAutotradeEvents({ stage: 'screen', symbol: 'SCREARN6' });
+      expect(events[0].action).toBe('excluded_earnings');
+      expect(JSON.parse(events[0].detail!)).toMatchObject({ earningsDate: daysFromNow(1) });
+    });
   });
 });

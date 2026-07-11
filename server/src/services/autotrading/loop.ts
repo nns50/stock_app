@@ -372,7 +372,10 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       return summary;
     }
 
-    const screenResult = await runAutotradeScreen({ config: { filters: { minRelVol: config.minRelVol } } });
+    const screenResult = await runAutotradeScreen({
+      config: { filters: { minRelVol: config.minRelVol } },
+      earningsBlackoutDays: config.earningsBlackoutDays,
+    });
     summary.candidatesScreened = screenResult.candidates.length;
 
     // Movers auto-promotion: runs against the full screened set (before the

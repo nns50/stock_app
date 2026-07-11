@@ -1079,6 +1079,10 @@ export interface AutotradeConfig {
    *  target hit. 0 disables it (hold until stop/target/manual close). */
   maxHoldDays: number;
   sessionBufferMinutes: number;
+  /** Skip an equity candidate whose next known earnings date falls within
+   *  this many calendar days. 0 disables it. Options entries are unaffected
+   *  (IV rank already proxies for an approaching print there). */
+  earningsBlackoutDays: number;
 
   // --- Correlation methodology (feeds maxCorrelatedExposurePct above) ---
   correlationLookbackDays: number;
