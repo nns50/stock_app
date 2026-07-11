@@ -136,9 +136,32 @@ function exitsFor(positionId: number): PositionExit[] {
   ).map(mapExit);
 }
 
-function mapPosition(row: PositionRow): Position {
-  const exits = exitsFor(row.id);
-  const closedQty = exits.reduce((s, e) => s + e.quantity, 0);
+/** One query for every id instead of one per id — for listPositions() below,
+ *  which otherwise fetches each returned position's own exits separately. */
+function exitsForMany(positionIds: number[]): Map<number, PositionExit[]> {
+  const byPosition = new Map<number, PositionExit[]>();
+  if (positionIds.length === 0) return byPosition;
+  const rows = db
+    .prepare(
+      `SELECT * FROM position_exits WHERE position_id IN (${positionIds.map(() => '?').join(',')}) ORDER BY exit_date, id`,
+    )
+    .all(...positionIds) as ExitRow[];
+  for (const r of rows) {
+    const exit = mapExit(r);
+    const arr = byPosition.get(exit.positionId);
+    if (arr) arr.push(exit);
+    else byPosition.set(exit.positionId, [exit]);
+  }
+  return byPosition;
+}
+
+/** `exits`, when passed, must already be this row's own — a caller batching
+ *  many rows (listPositions()) supplies its own pre-fetched slice instead of
+ *  letting this function fetch it itself, one query per row. Omitted (the
+ *  single-position callers below), it falls back to that one-off fetch. */
+function mapPosition(row: PositionRow, exits?: PositionExit[]): Position {
+  const resolvedExits = exits ?? exitsFor(row.id);
+  const closedQty = resolvedExits.reduce((s, e) => s + e.quantity, 0);
   return {
     id: row.id,
     assetType: row.asset_type,
@@ -163,7 +186,7 @@ function mapPosition(row: PositionRow): Position {
     sourceIntentId: row.source_intent_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    exits,
+    exits: resolvedExits,
     remainingQuantity: Math.max(0, row.quantity - closedQty),
   };
 }
@@ -190,7 +213,9 @@ export function listPositions(filter: PositionFilter = {}): Position[] {
     params.push(filter.assetType);
   }
   const sql = `SELECT * FROM positions ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY entry_date DESC, id DESC`;
-  return (db.prepare(sql).all(...params) as PositionRow[]).map(mapPosition);
+  const rows = db.prepare(sql).all(...params) as PositionRow[];
+  const exitsByPosition = exitsForMany(rows.map((r) => r.id));
+  return rows.map((row) => mapPosition(row, exitsByPosition.get(row.id) ?? []));
 }
 
 export function getPosition(id: number): Position | undefined {

@@ -502,8 +502,17 @@ CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_exits_position ON position_exits(position_id);
 CREATE INDEX IF NOT EXISTS idx_picks_snapshot ON screener_picks(snapshot_id);
 CREATE INDEX IF NOT EXISTS idx_order_events_intent ON order_events(intent_id);
+-- Serves countTodaysOrders' WHERE state = 'submitted' AND created_at >= ? --
+-- hit on every order placement/preview -- which otherwise full-scans a
+-- table that only ever grows (no retention).
+CREATE INDEX IF NOT EXISTS idx_order_events_state_created ON order_events(state, created_at);
 CREATE INDEX IF NOT EXISTS idx_autotrade_events_symbol ON autotrade_events(symbol);
-CREATE INDEX IF NOT EXISTS idx_autotrade_events_stage ON autotrade_events(stage);
+-- stage pairs with id (not a standalone column) so a WHERE stage = ? ORDER
+-- BY id DESC LIMIT N read (services/autotrading/dashboard.ts, hit on every
+-- dashboard poll) can walk the index directly in id order instead of
+-- collecting every row for that stage -- an ever-growing set, since nothing
+-- prunes this table -- before it can sort and cut to N.
+CREATE INDEX IF NOT EXISTS idx_autotrade_events_stage ON autotrade_events(stage, id);
 CREATE INDEX IF NOT EXISTS idx_autotrade_events_created ON autotrade_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_backtest_fetch_log_lookup ON backtest_fetch_log(symbol, timeframe);
 -- status-leading: listOpenXxxPositions() queries WHERE status = 'open' with
@@ -739,6 +748,7 @@ function migrate(): void {
   reorderStatusLeadingIndex(db, 'idx_autotrade_paper_positions_status', 'autotrade_paper_positions');
   reorderStatusLeadingIndex(db, 'idx_autotrade_options_paper_positions_status', 'autotrade_options_paper_positions');
   reorderStatusLeadingIndex(db, 'idx_autotrade_live_options_positions_status', 'autotrade_live_options_positions');
+  reorderAutotradeEventsStageIndex(db);
 }
 
 /**
@@ -755,6 +765,23 @@ export function reorderStatusLeadingIndex(database: Database.Database, indexName
     | undefined;
   if (!row?.sql || /\(\s*status\s*,/i.test(row.sql)) return; // already status-leading, or doesn't exist yet
   database.exec(`DROP INDEX ${indexName}; CREATE INDEX ${indexName} ON ${tableName}(status, symbol);`);
+}
+
+/**
+ * Reorder autotrade_events' stage index from (stage) to (stage, id) — see
+ * the SCHEMA comment above idx_autotrade_events_stage for why. Same
+ * reasoning as reorderStatusLeadingIndex above (CREATE INDEX IF NOT EXISTS
+ * can't fix an existing same-named index), just a different target shape,
+ * so it's its own small function rather than a shared generic one.
+ */
+export function reorderAutotradeEventsStageIndex(database: Database.Database): void {
+  const row = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_autotrade_events_stage'")
+    .get() as { sql: string | null } | undefined;
+  if (!row?.sql || /\(\s*stage\s*,\s*id\s*\)/i.test(row.sql)) return;
+  database.exec(
+    'DROP INDEX idx_autotrade_events_stage; CREATE INDEX idx_autotrade_events_stage ON autotrade_events(stage, id);',
+  );
 }
 
 /**

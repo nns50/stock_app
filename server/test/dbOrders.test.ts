@@ -4,6 +4,7 @@ import {
   createIntent,
   transitionIntent,
   getIntent,
+  getIntents,
   getEvents,
   listIntents,
   countTodaysOrders,
@@ -104,6 +105,20 @@ describe('order intents persistence', () => {
       'acknowledged',
       'filled',
     ]);
+  });
+
+  it('getIntents batches a lookup for many ids into one query, keyed by id', () => {
+    const a = createIntent(stockBuy, 'key-batch-a');
+    const b = createIntent(stockBuy, 'key-batch-b');
+    const map = getIntents([a.id, b.id, 999_999]); // a nonexistent id is just absent, not an error
+    expect(map.size).toBe(2);
+    expect(map.get(a.id)!.idempotencyKey).toBe('key-batch-a');
+    expect(map.get(b.id)!.idempotencyKey).toBe('key-batch-b');
+    expect(map.has(999_999)).toBe(false);
+  });
+
+  it('getIntents returns an empty map for an empty id list (no query)', () => {
+    expect(getIntents([]).size).toBe(0);
   });
 
   it('rejects an illegal transition and leaves state + audit untouched', () => {

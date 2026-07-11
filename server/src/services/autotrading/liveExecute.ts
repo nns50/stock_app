@@ -11,7 +11,14 @@ import {
   webullCancelOrder,
 } from '../../providers/webull/orders';
 import { mapWebullStatus } from '../trading/reconcile';
-import { createIntent, transitionIntent, countTodaysOrders, getIntent, OrderIntentRecord } from '../../db/orders';
+import {
+  createIntent,
+  transitionIntent,
+  countTodaysOrders,
+  getIntent,
+  getIntents,
+  OrderIntentRecord,
+} from '../../db/orders';
 import { canTransition, isTerminal } from '../trading/orderLifecycle';
 import {
   recordLiveOrder,
@@ -601,9 +608,10 @@ export async function reconcileLiveOrders(): Promise<LiveReconcileOutcome[]> {
   if (!accountId) return [];
 
   const pending = listPendingLiveOrders();
+  const intentsById = getIntents(pending.map((p) => p.intentId));
   const outcomes: LiveReconcileOutcome[] = [];
   for (const meta of pending) {
-    const intent = getIntent(meta.intentId);
+    const intent = intentsById.get(meta.intentId);
     if (!intent) continue;
     const broker = await webullOrderStatus(accountId, intent.idempotencyKey);
     if (!broker.ok || !broker.found) {

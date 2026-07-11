@@ -12,7 +12,7 @@ import {
 import { marketOpenContext } from '../trading/marketHours';
 import { webullAccountState, webullAccountType } from '../../providers/webull/accountState';
 import { newClientOrderId, webullPlaceOrder, webullOrderStatus } from '../../providers/webull/orders';
-import { createIntent, transitionIntent, countTodaysOrders, getIntent, OrderIntentRecord } from '../../db/orders';
+import { createIntent, transitionIntent, countTodaysOrders, getIntents, OrderIntentRecord } from '../../db/orders';
 import { canTransition, isTerminal } from '../trading/orderLifecycle';
 import { mapWebullStatus } from '../trading/reconcile';
 import {
@@ -872,9 +872,10 @@ export async function reconcileLiveOptionsOrders(): Promise<LiveOptionsReconcile
   if (!accountId) return [];
 
   const pending = listPendingLiveOptionsOrders();
+  const intentsById = getIntents(pending.map((p) => p.intentId));
   const outcomes: LiveOptionsReconcileOutcome[] = [];
   for (const meta of pending) {
-    const intent = getIntent(meta.intentId);
+    const intent = intentsById.get(meta.intentId);
     if (!intent) continue;
     const broker = await webullOrderStatus(accountId, intent.idempotencyKey);
     if (!broker.ok || !broker.found) {
