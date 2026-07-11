@@ -427,7 +427,7 @@ CREATE TABLE IF NOT EXISTS autotrade_sector_cache (
 -- new position) but the columns stay NOT NULL for a pre-existing DB's sake,
 -- so it stores 0 rather than NULL -- see recordLiveExitOrder.
 CREATE TABLE IF NOT EXISTS autotrade_live_orders (
-  intent_id     INTEGER PRIMARY KEY REFERENCES order_intents(id),
+  intent_id     INTEGER PRIMARY KEY REFERENCES order_intents(id) ON DELETE CASCADE,
   symbol        TEXT NOT NULL,
   role          TEXT NOT NULL DEFAULT 'entry',
   stop_price    REAL NOT NULL,
@@ -476,7 +476,7 @@ CREATE TABLE IF NOT EXISTS autotrade_live_options_positions (
 );
 
 CREATE TABLE IF NOT EXISTS autotrade_live_options_orders (
-  intent_id             INTEGER PRIMARY KEY REFERENCES order_intents(id),
+  intent_id             INTEGER PRIMARY KEY REFERENCES order_intents(id) ON DELETE CASCADE,
   symbol                TEXT NOT NULL,
   role                  TEXT NOT NULL CHECK(role IN ('entry','exit')),
   kind                  TEXT NOT NULL DEFAULT 'single_leg',
@@ -719,6 +719,10 @@ function migrate(): void {
   if (!aloEquityCols.some((c) => c.name === 'role')) {
     db.exec("ALTER TABLE autotrade_live_orders ADD COLUMN role TEXT NOT NULL DEFAULT 'entry'");
   }
+
+  // Must run AFTER the ADD COLUMNs above so the explicit-column copy finds them.
+  rebuildAutotradeLiveOrdersTable(db);
+  rebuildAutotradeLiveOptionsOrdersTable(db);
 }
 
 /**
@@ -805,6 +809,83 @@ export function rebuildAutotradePaperPositionsTable(database: Database.Database)
       FROM autotrade_paper_positions_old;
     DROP TABLE autotrade_paper_positions_old;
     CREATE INDEX IF NOT EXISTS idx_autotrade_paper_positions_status ON autotrade_paper_positions(symbol, status);
+  `);
+}
+
+/**
+ * Rebuild `autotrade_live_orders` when its intent_id FK predates ON DELETE
+ * CASCADE. Without the cascade, a row left behind here (e.g. by a test that
+ * didn't clean up after itself) blocks any DELETE FROM order_intents with a
+ * FOREIGN KEY constraint error, even for an unrelated intent -- order_events
+ * already cascades off order_intents the same way; this table and the
+ * options-side sibling below were the two that didn't. Guarded on the stored
+ * FK text lacking CASCADE, so it runs once and no-ops on a fresh DB.
+ */
+export function rebuildAutotradeLiveOrdersTable(database: Database.Database): void {
+  const row = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='autotrade_live_orders'")
+    .get() as { sql: string | null } | undefined;
+  if (!row?.sql || /ON DELETE CASCADE/i.test(row.sql)) return;
+
+  database.exec(`
+    ALTER TABLE autotrade_live_orders RENAME TO autotrade_live_orders_old;
+    CREATE TABLE autotrade_live_orders (
+      intent_id     INTEGER PRIMARY KEY REFERENCES order_intents(id) ON DELETE CASCADE,
+      symbol        TEXT NOT NULL,
+      role          TEXT NOT NULL DEFAULT 'entry',
+      stop_price    REAL NOT NULL,
+      target_price  REAL NOT NULL,
+      risk_amount   REAL NOT NULL,
+      risk_profile  TEXT NOT NULL,
+      position_id   INTEGER,
+      created_at    INTEGER NOT NULL
+    );
+    INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount,
+                        risk_profile, position_id, created_at)
+      SELECT intent_id, symbol, role, stop_price, target_price, risk_amount,
+             risk_profile, position_id, created_at
+      FROM autotrade_live_orders_old;
+    DROP TABLE autotrade_live_orders_old;
+    CREATE INDEX IF NOT EXISTS idx_autotrade_live_orders_symbol ON autotrade_live_orders(symbol);
+  `);
+}
+
+/**
+ * Rebuild `autotrade_live_options_orders` for the same reason as
+ * rebuildAutotradeLiveOrdersTable above -- see that function's header.
+ */
+export function rebuildAutotradeLiveOptionsOrdersTable(database: Database.Database): void {
+  const row = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='autotrade_live_options_orders'")
+    .get() as { sql: string | null } | undefined;
+  if (!row?.sql || /ON DELETE CASCADE/i.test(row.sql)) return;
+
+  database.exec(`
+    ALTER TABLE autotrade_live_options_orders RENAME TO autotrade_live_options_orders_old;
+    CREATE TABLE autotrade_live_options_orders (
+      intent_id             INTEGER PRIMARY KEY REFERENCES order_intents(id) ON DELETE CASCADE,
+      symbol                TEXT NOT NULL,
+      role                  TEXT NOT NULL CHECK(role IN ('entry','exit')),
+      kind                  TEXT NOT NULL DEFAULT 'single_leg',
+      side                  TEXT CHECK(side IN ('call','put') OR side IS NULL),
+      contract_symbol       TEXT,
+      strike                REAL,
+      short_contract_symbol TEXT,
+      short_strike          REAL,
+      expiration            TEXT,
+      risk_amount   REAL,
+      risk_profile  TEXT NOT NULL,
+      position_id   INTEGER,
+      created_at    INTEGER NOT NULL
+    );
+    INSERT INTO autotrade_live_options_orders (intent_id, symbol, role, kind, side, contract_symbol, strike,
+                        short_contract_symbol, short_strike, expiration, risk_amount, risk_profile, position_id,
+                        created_at)
+      SELECT intent_id, symbol, role, kind, side, contract_symbol, strike,
+             short_contract_symbol, short_strike, expiration, risk_amount, risk_profile, position_id, created_at
+      FROM autotrade_live_options_orders_old;
+    DROP TABLE autotrade_live_options_orders_old;
+    CREATE INDEX IF NOT EXISTS idx_autotrade_live_options_orders_symbol ON autotrade_live_options_orders(symbol);
   `);
 }
 

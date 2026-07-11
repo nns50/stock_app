@@ -18,8 +18,8 @@ import {
 beforeAll(() => initDb());
 beforeEach(() => {
   db.exec(
-    'DELETE FROM autotrade_live_options_orders; DELETE FROM autotrade_live_options_positions; ' +
-      'DELETE FROM order_events; DELETE FROM order_intents;',
+    'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; ' +
+      'DELETE FROM autotrade_live_options_positions; DELETE FROM order_events; DELETE FROM order_intents;',
   );
 });
 
