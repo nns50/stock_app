@@ -1,5 +1,12 @@
 import { Candle } from '../../providers/types';
-import { ScreenerConfig, SymbolScore, scoreSymbol } from '../../indicators/screener';
+import {
+  candleIndicatorsAt,
+  CandleIndicatorSeries,
+  computeCandleIndicatorSeries,
+  ScreenerConfig,
+  SymbolScore,
+  scoreSymbol,
+} from '../../indicators/screener';
 import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } from './decide';
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
 import { evaluateOptionsRiskCheck } from './optionsRiskCheck';
@@ -267,6 +274,20 @@ export async function simulateCombinedBacktest(
     }
   }
 
+  // SMA/RSI/ATR over each symbol's FULL history, computed ONCE up front
+  // (single O(n) pass each) instead of re-sliced-and-recomputed from scratch
+  // for every simulated day below (the O(days²) cost this precompute step
+  // eliminates) — see computeCandleIndicatorSeries's own doc comment for why
+  // this is mathematically identical to the original per-day recompute.
+  const candleIndicatorSeriesBySymbol = new Map<string, CandleIndicatorSeries>();
+  for (const [symbol, candles] of historyBySymbol) {
+    candleIndicatorSeriesBySymbol.set(symbol, computeCandleIndicatorSeries(candles, screenerCfg));
+  }
+  // Per-symbol resume point for the scoring loop's own indexAsOf call below —
+  // mirrors backtest.ts's identical indexCursor (dayMs only increases across
+  // this loop, so each symbol's answer only ever advances forward).
+  const scoringIndexCursor = new Map<string, number>();
+
   for (let dayIndex = 0; dayIndex < tradingDays.length; dayIndex++) {
     const day = tradingDays[dayIndex];
     // Yield to the event loop periodically — this simulation is entirely
@@ -533,10 +554,16 @@ export async function simulateCombinedBacktest(
     const openOptionsSymbols = new Set([...openOptions.map((p) => p.symbol), ...pendingOptions.map((p) => p.symbol)]);
     const scoresToday = new Map<string, { score: SymbolScore; underlyingClose: number; history: Candle[] }>();
     for (const [symbol, candles] of historyBySymbol) {
-      const idx = indexAsOf(candles, dayMs);
+      const idx = indexAsOf(candles, dayMs, scoringIndexCursor.get(symbol) ?? 0);
+      if (idx >= 0) scoringIndexCursor.set(symbol, idx);
       if (idx < 1 || candles[idx].time !== dayMs) continue;
+      // Still sliced (rather than passed as the full array) — computeIvContext
+      // below needs this exact "history through today" view for its realized-
+      // vol fallback; only the indicator computation itself is de-duplicated.
       const history = candles.slice(0, idx + 1);
-      const score = scoreSymbol(symbol, history, undefined, screenerCfg);
+      const series = candleIndicatorSeriesBySymbol.get(symbol)!;
+      const cached = candleIndicatorsAt(series, idx) ?? undefined;
+      const score = scoreSymbol(symbol, candles, undefined, screenerCfg, cached, idx);
       if (!score.passedFilters) continue;
       scoresToday.set(symbol, { score, underlyingClose: candles[idx].close, history });
     }
