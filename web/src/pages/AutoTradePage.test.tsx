@@ -1932,7 +1932,15 @@ describe('AutoTradePage', () => {
       fireEvent.change(screen.getByLabelText('type to confirm enabling live trading'), {
         target: { value: 'ENABLE LIVE TRADING' },
       });
-      fireEvent.click(screen.getByRole('button', { name: 'Enable live trading' }));
+
+      // Same class of race as AutoTradePage's own equity-save test above —
+      // the button's disabled state depends on two separate field updates
+      // having actually propagated, which isn't guaranteed by the very next
+      // synchronous line under CI-level scheduling/load. Wait for the
+      // observable consequence instead of assuming synchronous settling.
+      const enableButton = screen.getByRole('button', { name: 'Enable live trading' });
+      await waitFor(() => expect(enableButton).not.toBeDisabled());
+      fireEvent.click(enableButton);
 
       await waitFor(() =>
         expect(setConfig).toHaveBeenCalledWith({
@@ -2320,13 +2328,16 @@ describe('AutoTradePage', () => {
   });
 });
 
-// Only setInterval/clearInterval are faked — not setTimeout, which React's own
+// setInterval/clearInterval/Date are faked — not setTimeout, which React's own
 // scheduler relies on (in this jsdom environment) to flush the initial async
 // config/dashboard load; faking it too hangs the very first findByText.
-// usePolling only ever calls setInterval, so this is enough to control it.
+// usePolling only ever calls setInterval, so faking that (plus Date, so
+// Date.now() advances in lockstep with advanceTimersByTimeAsync — the
+// equity-sync throttle below is a real wall-clock check) is enough to
+// control this describe block's tests.
 describe('AutoTradePage account-equity auto-refresh', () => {
   beforeEach(() => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -2350,6 +2361,13 @@ describe('AutoTradePage account-equity auto-refresh', () => {
     });
     renderPage();
     await screen.findByText('VNQ');
+    // Ensure config.data (liveAccountId in particular — the tick's own gate
+    // condition) has actually settled before advancing the fake timer: config
+    // loads via its own separate useAsync call from the positions data
+    // findByText('VNQ') above waits on, and React's re-render scheduling
+    // relies on the REAL (un-faked) setTimeout, so there's no guarantee it's
+    // settled yet just because the positions text appeared.
+    await waitFor(() => expect(screen.getByRole('button', { name: /Sync from Webull/ })).not.toBeDisabled());
     expect(sync).not.toHaveBeenCalled();
 
     await act(() => vi.advanceTimersByTimeAsync(60_000));
