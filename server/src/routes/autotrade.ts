@@ -35,6 +35,7 @@ import {
 } from '../services/pnl';
 import { getProvider } from '../providers';
 import { dispatchNotifications } from '../services/notifier';
+import { suggestLiveCaps } from '../services/autotrading/liveCaps';
 
 export const autotradeRouter = Router();
 
@@ -42,6 +43,20 @@ export const autotradeRouter = Router();
 
 autotradeRouter.get('/config', (_req, res) => {
   res.json(getAutotradeConfig());
+});
+
+/** Suggested starting values for the live-only guardrail caps (liveCaps.ts),
+ *  derived from the current account equity and the already-configured
+ *  maxDailyDrawdownPct/maxTradesPerDay — a starting point the UI offers next
+ *  to those fields, not an enforced value; the caller can accept, edit, or
+ *  ignore it entirely. Fails closed (400) rather than suggesting a
+ *  meaningless $0 cap when equity hasn't been set yet. */
+autotradeRouter.get('/live-caps/suggest', (_req, res) => {
+  const config = getAutotradeConfig();
+  if (config.accountEquityUsd == null) {
+    throw new HttpError(400, 'Set account equity before requesting suggested live caps.');
+  }
+  res.json(suggestLiveCaps(config.accountEquityUsd, config.maxDailyDrawdownPct, config.maxTradesPerDay));
 });
 
 const configBody = z.object({

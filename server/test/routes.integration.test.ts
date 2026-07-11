@@ -805,6 +805,27 @@ describe('autotrade config routes (integration)', () => {
       expect(res.status).toBe(200);
     });
   });
+
+  it('GET /live-caps/suggest fails closed (400) when account equity is not set', async () => {
+    const res = await fetch(`${base}/api/autotrade/live-caps/suggest`);
+    expect(res.status).toBe(400);
+  });
+
+  it('GET /live-caps/suggest derives caps from equity and the configured drawdown/trade-count fields', async () => {
+    await put('/api/autotrade/config', {
+      accountEquityUsd: 100_000,
+      maxDailyDrawdownPct: 5,
+      maxTradesPerDay: 10,
+    });
+    const res = await fetch(`${base}/api/autotrade/live-caps/suggest`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      liveMaxOrderUsd: number;
+      liveMaxDailyLossUsd: number;
+      liveMaxOrdersPerDay: number;
+    };
+    expect(body).toEqual({ liveMaxOrderUsd: 25_000, liveMaxDailyLossUsd: 5_000, liveMaxOrdersPerDay: 10 });
+  });
 });
 
 describe('autotrade options risk-check route (integration)', () => {
