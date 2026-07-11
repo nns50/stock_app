@@ -6,7 +6,7 @@ import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
 import { RiskProfileName } from '../../db/autotradeConfig';
 import { defaultAutotradeScreenerConfig } from './screen';
 import { isExcluded } from '../../db/autotradeExclusions';
-import { classifySector } from './realEstateClassifier';
+import { classifySector, buildUniverseSectorMap } from './realEstateClassifier';
 import { getHistoricalBars } from './historicalData';
 import { computeStreaksAndDrawdown } from '../pnl';
 import { mapPool } from '../../util/async';
@@ -659,12 +659,13 @@ async function filterEligibleSymbols(
 ): Promise<{ eligible: string[]; excluded: { symbol: string; reason: string }[] }> {
   const eligible: string[] = [];
   const excluded: { symbol: string; reason: string }[] = [];
+  const universeSectorBySymbol = buildUniverseSectorMap();
   await mapPool(symbols, 6, async (symbol) => {
     if (isExcluded(symbol)) {
       excluded.push({ symbol, reason: 'On the real-estate exclusion list' });
       return;
     }
-    const classification = await classifySector(symbol);
+    const classification = await classifySector(symbol, universeSectorBySymbol);
     if (classification.outcome === 'real_estate') {
       excluded.push({
         symbol,

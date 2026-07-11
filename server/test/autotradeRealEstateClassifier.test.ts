@@ -27,7 +27,7 @@ vi.mock('yahoo-finance2', () => {
 });
 
 import { initDb, db } from '../src/db';
-import { classifySector } from '../src/services/autotrading/realEstateClassifier';
+import { classifySector, buildUniverseSectorMap } from '../src/services/autotrading/realEstateClassifier';
 
 beforeAll(() => initDb());
 
@@ -108,6 +108,37 @@ describe('real estate sector/industry classifier', () => {
       );
       await classifySector('FAILX');
       expect(state.callCounts.FAILX).toBe(callsAfterFirst + 1); // retried this time
+    });
+  });
+
+  describe('universeSectorBySymbol (hoisted lookup — avoids a fresh listUniverse() scan per symbol)', () => {
+    it('buildUniverseSectorMap() maps only symbols that have a sector', () => {
+      db.prepare(
+        "INSERT INTO universe (symbol, name, sector, added_at) VALUES ('MAPRE', 'Map RE Co', 'Real Estate', ?)",
+      ).run(Date.now());
+      db.prepare(
+        "INSERT INTO universe (symbol, name, sector, added_at) VALUES ('MAPNOSEC', 'No Sector Co', NULL, ?)",
+      ).run(Date.now());
+      const map = buildUniverseSectorMap();
+      expect(map.get('MAPRE')).toBe('Real Estate');
+      expect(map.has('MAPNOSEC')).toBe(false);
+      db.exec("DELETE FROM universe WHERE symbol IN ('MAPRE', 'MAPNOSEC')");
+    });
+
+    it('classifySector uses the passed map instead of querying the DB, with no network call', async () => {
+      // MAPTECH is deliberately absent from both `universe` and the Yahoo
+      // fixture's PROFILES — if this fell through to a DB lookup or a
+      // network fetch it would return 'unknown', not 'clear'.
+      const map = new Map([['MAPTECH', 'Technology']]);
+      const r = await classifySector('MAPTECH', map);
+      expect(r).toMatchObject({ outcome: 'clear', sector: 'Technology', source: 'universe' });
+      expect(state.callCounts.MAPTECH).toBeUndefined();
+    });
+
+    it('falls through to fundamentals when the passed map has no entry for the symbol', async () => {
+      const map = new Map([['SOMEOTHER', 'Technology']]);
+      const r = await classifySector('TECHX', map);
+      expect(r).toMatchObject({ outcome: 'clear', source: 'fundamentals' });
     });
   });
 });

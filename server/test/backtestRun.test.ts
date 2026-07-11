@@ -7,7 +7,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // coverage in autotradeRealEstateClassifier.test.ts; getHistoricalBars's own
 // caching logic already has dedicated coverage in historicalData.test.ts.
 vi.mock('../src/db/autotradeExclusions', () => ({ isExcluded: vi.fn() }));
-vi.mock('../src/services/autotrading/realEstateClassifier', () => ({ classifySector: vi.fn() }));
+vi.mock('../src/services/autotrading/realEstateClassifier', () => ({
+  classifySector: vi.fn(),
+  buildUniverseSectorMap: vi.fn(() => new Map()),
+}));
 vi.mock('../src/services/autotrading/historicalData', () => ({ getHistoricalBars: vi.fn() }));
 
 import { isExcluded } from '../src/db/autotradeExclusions';
