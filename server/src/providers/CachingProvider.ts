@@ -42,9 +42,29 @@ export class CachingProvider implements MarketDataProvider {
     return upper.map((s) => this.quoteCache.get(s)).filter((q): q is Quote => q !== undefined);
   }
 
-  getCandles(symbol: string, timeframe: Timeframe, query?: CandleQuery): Promise<Candle[]> {
-    const key = `${symbol.toUpperCase()}:${timeframe}:${query?.limit ?? ''}:${query?.start ?? ''}:${query?.end ?? ''}`;
-    return this.candleCache.getOrLoad(key, () => this.base.getCandles(symbol, timeframe, query));
+  async getCandles(symbol: string, timeframe: Timeframe, query?: CandleQuery): Promise<Candle[]> {
+    // A start/end range is its own exact cache entry — rare, mostly backtest
+    // usage, not the every-60s hot path the plain-limit branch below exists for.
+    if (query?.start != null || query?.end != null) {
+      const key = `${symbol.toUpperCase()}:${timeframe}:${query.limit ?? ''}:${query.start ?? ''}:${query.end ?? ''}`;
+      return this.candleCache.getOrLoad(key, () => this.base.getCandles(symbol, timeframe, query));
+    }
+    // Plain "last N bars" queries share ONE cache entry per symbol+timeframe
+    // regardless of the requested limit, instead of keying on limit too — the
+    // autotrade loop asks for the same symbol's recent daily candles under at
+    // least three different limits within one tick (screen, options-decision,
+    // correlation risk-check), which used to mean three separate upstream
+    // fetches for identical data. A cached array shorter than the newly
+    // requested limit is refetched (replacing the entry) rather than served
+    // short; each caller still gets back exactly the limit it asked for.
+    const key = `${symbol.toUpperCase()}:${timeframe}`;
+    const cached = this.candleCache.get(key);
+    if (cached && (query?.limit == null || cached.length >= query.limit)) {
+      return query?.limit == null ? cached : cached.slice(-query.limit);
+    }
+    const fetched = await this.base.getCandles(symbol, timeframe, query);
+    this.candleCache.set(key, fetched);
+    return fetched;
   }
 
   getOptionsExpirations(symbol: string): Promise<string[]> {

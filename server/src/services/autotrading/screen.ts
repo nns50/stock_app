@@ -6,7 +6,7 @@ import { listUniverseSymbols } from '../../db/universe';
 import { isExcluded } from '../../db/autotradeExclusions';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { mapPool } from '../../util/async';
-import { classifySector } from './realEstateClassifier';
+import { classifySector, buildUniverseSectorMap } from './realEstateClassifier';
 import { getSymbolEvents } from '../events';
 
 // ---------------------------------------------------------------------------
@@ -140,6 +140,22 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
       ? new Map((await getSymbolEvents(symbols)).map((e) => [e.symbol, e]))
       : new Map<string, { earningsDate?: string }>();
 
+  // Both hoisted out of the per-symbol loop below: buildUniverseSectorMap()
+  // is one query instead of one PER symbol (up to 507 full-table re-scans a
+  // tick, otherwise); the quotes warm-up is one batched provider call
+  // instead of up to 507 individual ones — same pattern routes/screener.ts
+  // already uses. Best-effort: a failure here just means the per-symbol
+  // getQuote() call below falls through to its own individual fetch, exactly
+  // as it did before this warm-up existed.
+  const universeSectorBySymbol = buildUniverseSectorMap();
+  if (provider.getQuotes) {
+    try {
+      await provider.getQuotes(symbols);
+    } catch {
+      /* best-effort cache warm-up only */
+    }
+  }
+
   await mapPool(symbols, 6, async (symbol) => {
     // Real-estate exclusion runs FIRST, before any scoring — a listed or
     // classified RE symbol never reaches Decision/Risk Check, per the spec.
@@ -150,7 +166,7 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
       return;
     }
 
-    const classification = await classifySector(symbol);
+    const classification = await classifySector(symbol, universeSectorBySymbol);
     if (classification.outcome === 'real_estate') {
       const reason = `Classified as real estate (${classification.sector ?? classification.industry ?? 'sector match'})`;
       excluded.push({ symbol, reason });

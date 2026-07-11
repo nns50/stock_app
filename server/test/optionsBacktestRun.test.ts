@@ -6,7 +6,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // and never re-testing simulateOptionsBacktest's own day-by-day logic
 // (already covered in optionsBacktestSimulate.test.ts).
 vi.mock('../src/db/autotradeExclusions', () => ({ isExcluded: vi.fn() }));
-vi.mock('../src/services/autotrading/realEstateClassifier', () => ({ classifySector: vi.fn() }));
+vi.mock('../src/services/autotrading/realEstateClassifier', () => ({
+  classifySector: vi.fn(),
+  buildUniverseSectorMap: vi.fn(() => new Map()),
+}));
 vi.mock('../src/services/autotrading/historicalData', () => ({ getHistoricalBars: vi.fn() }));
 vi.mock('../src/services/autotrading/optionsHistoricalData', () => ({ getHistoricalOptionContracts: vi.fn() }));
 

@@ -74,6 +74,21 @@ function writeCache(symbol: string, outcome: ClassificationOutcome, sector?: str
 }
 
 /**
+ * Pre-built once by a caller about to classify many symbols in a loop
+ * (screen.ts's every-60s universe scan, backtest.ts's upfront eligibility
+ * filter) and passed to classifySector below — avoids re-querying and
+ * re-sorting the whole universe table (SELECT * ... ORDER BY symbol) on
+ * every single symbol, which is what listUniverse() does per call.
+ */
+export function buildUniverseSectorMap(): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const u of listUniverse()) {
+    if (u.sector) map.set(u.symbol, u.sector);
+  }
+  return map;
+}
+
+/**
  * Classify a symbol as real estate, clear, or unknown. Checks the seeded
  * `universe.sector` first (free, no network); then the durable cache; for
  * symbols outside both — the common case for screened small/mid-cap gappers,
@@ -84,12 +99,22 @@ function writeCache(symbol: string, outcome: ClassificationOutcome, sector?: str
  * should be skipped for this cycle (and re-tried once the negative-cache TTL
  * expires), not waved through as confirmed non-real-estate just because the
  * check couldn't run.
+ *
+ * `universeSectorBySymbol` lets a caller looping over many symbols pass a
+ * map built once via buildUniverseSectorMap() instead of paying for a fresh
+ * listUniverse() call per symbol; omitted, it falls back to the same
+ * single-symbol lookup this function has always done.
  */
-export async function classifySector(symbol: string): Promise<SectorClassification> {
+export async function classifySector(
+  symbol: string,
+  universeSectorBySymbol?: Map<string, string>,
+): Promise<SectorClassification> {
   const upper = symbol.toUpperCase();
-  const inUniverse = listUniverse().find((u) => u.symbol === upper);
-  if (inUniverse?.sector) {
-    return classify(inUniverse.sector, undefined, 'universe');
+  const universeSector = universeSectorBySymbol
+    ? universeSectorBySymbol.get(upper)
+    : listUniverse().find((u) => u.symbol === upper)?.sector;
+  if (universeSector) {
+    return classify(universeSector, undefined, 'universe');
   }
 
   const cached = readCache(upper);

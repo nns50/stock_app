@@ -33,6 +33,7 @@ import { addExclusion } from '../src/db/autotradeExclusions';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { runAutotradeScreen } from '../src/services/autotrading/screen';
 import { clearEventsCache } from '../src/services/events';
+import { getProvider } from '../src/providers';
 
 beforeAll(() => initDb());
 
@@ -175,6 +176,23 @@ describe('runAutotradeScreen', () => {
       const events = listAutotradeEvents({ stage: 'screen', symbol: 'SCREARN6' });
       expect(events[0].action).toBe('excluded_earnings');
       expect(JSON.parse(events[0].detail!)).toMatchObject({ earningsDate: daysFromNow(1) });
+    });
+  });
+
+  describe('quote batching (avoids one getQuote() upstream call per symbol)', () => {
+    it('warms the quote cache with one batched getQuotes() call up front', async () => {
+      const spy = vi.spyOn(getProvider(), 'getQuotes');
+      await runAutotradeScreen({ symbols: ['SCRQ1', 'SCRQ2', 'SCRQ3'], config: { filters: RELAXED_FILTERS } });
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0][0].sort()).toEqual(['SCRQ1', 'SCRQ2', 'SCRQ3']);
+      spy.mockRestore();
+    });
+
+    it('a getQuotes() failure does not fail the screen — falls through to per-symbol getQuote()', async () => {
+      const spy = vi.spyOn(getProvider(), 'getQuotes').mockRejectedValueOnce(new Error('rate limited'));
+      const result = await runAutotradeScreen({ symbols: ['SCRQ4'], config: { filters: RELAXED_FILTERS } });
+      expect(result.errors.find((e) => e.symbol === 'SCRQ4')).toBeUndefined();
+      spy.mockRestore();
     });
   });
 });
