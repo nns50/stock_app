@@ -101,6 +101,21 @@ export function getIntent(id: number): OrderIntentRecord | undefined {
   return r ? mapIntent(r) : undefined;
 }
 
+/** Batched form of getIntent — one query for the whole set instead of one
+ *  per id, for callers reconciling a list of pending orders (liveExecute.ts /
+ *  liveOptionsExecute.ts) rather than looking up a single known id. Ids not
+ *  found are simply absent from the returned map. */
+export function getIntents(ids: number[]): Map<number, OrderIntentRecord> {
+  const map = new Map<number, OrderIntentRecord>();
+  const uniq = Array.from(new Set(ids));
+  if (uniq.length === 0) return map;
+  const rows = db
+    .prepare(`SELECT * FROM order_intents WHERE id IN (${uniq.map(() => '?').join(',')})`)
+    .all(...uniq) as IntentRow[];
+  for (const r of rows) map.set(r.id, mapIntent(r));
+  return map;
+}
+
 /**
  * True when an order was placed as a multi-order combo — a multi-leg option
  * strategy (vertical / covered / iron condor) OR a bracket (a MASTER entry plus
