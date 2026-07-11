@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { client } from '../api/client';
 import { contractToOrder } from '../lib/tradePrefill';
@@ -18,7 +18,12 @@ import {
   ScoreBar,
   Spinner,
 } from '../components/ui';
-import { StrategyBuilder } from '../components/StrategyBuilder';
+// Lazy-loaded: it (and the recharts payload it drags in, ~92kB gzip) is only
+// needed on the non-default "strategy" tab, not the chain view most visits
+// use — see the .then() adapter below since it's a named, not default, export.
+const StrategyBuilder = lazy(() =>
+  import('../components/StrategyBuilder').then((m) => ({ default: m.StrategyBuilder })),
+);
 import type {
   AlertPreset,
   EntryCandidate,
@@ -138,7 +143,11 @@ export default function OptionsPage() {
       {tab === 'chain' && <ChainView symbol={activeSymbol} expiration={expiration} />}
       {tab === 'entry' && <EntryScanView symbol={activeSymbol} expiration={expiration} />}
       {tab === 'exit' && <ExitRulesView />}
-      {tab === 'strategy' && <StrategyBuilder />}
+      {tab === 'strategy' && (
+        <Suspense fallback={<Spinner label="Loading strategy builder…" />}>
+          <StrategyBuilder />
+        </Suspense>
+      )}
     </div>
   );
 }

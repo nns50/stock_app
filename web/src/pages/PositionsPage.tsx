@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { client } from '../api/client';
 import { useAsync, useSort } from '../lib/hooks';
@@ -228,109 +228,122 @@ export default function PositionsPage() {
   );
 }
 
-function PositionRow({
-  row,
-  events,
-  onExit,
-  onEdit,
-  onDelete,
-}: {
-  row: PositionWithPnl;
-  events?: SymbolEvents;
-  onExit: (p: Position) => void;
-  onEdit: (p: Position) => void;
-  onDelete: (id: number) => void;
-}) {
-  const p = row.position;
-  const { pnl } = row;
-  const isOption = p.assetType === 'option';
-  return (
-    <tr className="border-b border-ink-700/50 hover:bg-ink-700/30">
-      <td className="td">
-        <Link to={`/symbol/${p.symbol}`} className="font-semibold hover:text-accent">
-          {p.symbol}
-        </Link>
-        {isOption && (
-          <span className="ml-2 text-xs text-slate-500">
-            {fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : 'P'} {p.expiration}
-          </span>
-        )}
-        {p.status === 'open' && events?.earningsDate && (
-          <span className="ml-2">
-            <EarningsBadge events={events} warnWithin={p.assetType === 'option' ? 10 : 7} />
-          </span>
-        )}
-        {p.status === 'closed' && (
-          <span className="ml-2">
-            <Badge>closed</Badge>
-          </span>
-        )}
-        {p.status === 'open' && (p.stopPrice != null || p.targetPrice != null || pnl.rMultiple != null) && (
-          <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums flex flex-wrap gap-x-2">
-            {p.stopPrice != null && (
-              <span className="text-bear" title="Stop level (distance from current price)">
-                SL {fmtNum(p.stopPrice)}
-                {row.price != null && ` ${fmtNum(Math.abs((row.price - p.stopPrice) / row.price) * 100, 0)}%`}
-              </span>
-            )}
-            {p.targetPrice != null && (
-              <span className="text-bull" title="Target level (distance from current price)">
-                TP {fmtNum(p.targetPrice)}
-                {row.price != null && ` ${fmtNum(Math.abs((row.price - p.targetPrice) / row.price) * 100, 0)}%`}
-              </span>
-            )}
-            {pnl.rMultiple != null && (
-              <span
-                className={pnl.rMultiple >= 0 ? 'text-bull' : 'text-bear'}
-                title="Current open P&L in R (vs initial risk)"
-              >
-                {pnl.rMultiple >= 0 ? '+' : ''}
-                {fmtNum(pnl.rMultiple, 2)}R
-              </span>
-            )}
-          </div>
-        )}
-      </td>
-      <td className="td">
-        <span className={p.side === 'long' ? 'text-bull' : 'text-bear'}>{p.side}</span>
-      </td>
-      <td className="td text-right">
-        {p.remainingQuantity}
-        {p.remainingQuantity !== p.quantity && <span className="text-slate-500">/{p.quantity}</span>}
-      </td>
-      <td className="td text-right">{fmtUsd(p.entryPrice)}</td>
-      <td className="td text-right">
-        {pnl.currentPrice === null ? <span className="text-slate-600">—</span> : fmtUsd(pnl.currentPrice)}
-        {row.stale && (
-          <span className="ml-1 chip bg-amber-500/15 text-amber-400" title="last-known cached price">
-            stale
-          </span>
-        )}
-      </td>
-      <td className="td text-right text-slate-400">{fmtUsd(pnl.costBasis)}</td>
-      <td className="td text-right">
-        <PnL value={pnl.realizedPnl} />
-      </td>
-      <td className="td text-right">{pnl.unrealizedPnl === null ? '—' : <PnL value={pnl.unrealizedPnl} />}</td>
-      <td className="td text-right">
-        <PnL value={pnl.totalPnl} className="font-semibold" />
-      </td>
-      <td className="td text-right">
-        <PnL value={pnl.returnPct} format={fmtPct} />
-      </td>
-      <td className="td text-right whitespace-nowrap">
-        {p.status === 'open' && (
-          <button className="text-xs text-accent hover:underline mr-2" onClick={() => onExit(p)}>
-            exit
+const PositionRow = memo(
+  function PositionRow({
+    row,
+    events,
+    onExit,
+    onEdit,
+    onDelete,
+  }: {
+    row: PositionWithPnl;
+    events?: SymbolEvents;
+    onExit: (p: Position) => void;
+    onEdit: (p: Position) => void;
+    onDelete: (id: number) => void;
+  }) {
+    const p = row.position;
+    const { pnl } = row;
+    const isOption = p.assetType === 'option';
+    return (
+      <tr className="border-b border-ink-700/50 hover:bg-ink-700/30">
+        <td className="td">
+          <Link to={`/symbol/${p.symbol}`} className="font-semibold hover:text-accent">
+            {p.symbol}
+          </Link>
+          {isOption && (
+            <span className="ml-2 text-xs text-slate-500">
+              {fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : 'P'} {p.expiration}
+            </span>
+          )}
+          {p.status === 'open' && events?.earningsDate && (
+            <span className="ml-2">
+              <EarningsBadge events={events} warnWithin={p.assetType === 'option' ? 10 : 7} />
+            </span>
+          )}
+          {p.status === 'closed' && (
+            <span className="ml-2">
+              <Badge>closed</Badge>
+            </span>
+          )}
+          {p.status === 'open' && (p.stopPrice != null || p.targetPrice != null || pnl.rMultiple != null) && (
+            <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums flex flex-wrap gap-x-2">
+              {p.stopPrice != null && (
+                <span className="text-bear" title="Stop level (distance from current price)">
+                  SL {fmtNum(p.stopPrice)}
+                  {row.price != null && ` ${fmtNum(Math.abs((row.price - p.stopPrice) / row.price) * 100, 0)}%`}
+                </span>
+              )}
+              {p.targetPrice != null && (
+                <span className="text-bull" title="Target level (distance from current price)">
+                  TP {fmtNum(p.targetPrice)}
+                  {row.price != null && ` ${fmtNum(Math.abs((row.price - p.targetPrice) / row.price) * 100, 0)}%`}
+                </span>
+              )}
+              {pnl.rMultiple != null && (
+                <span
+                  className={pnl.rMultiple >= 0 ? 'text-bull' : 'text-bear'}
+                  title="Current open P&L in R (vs initial risk)"
+                >
+                  {pnl.rMultiple >= 0 ? '+' : ''}
+                  {fmtNum(pnl.rMultiple, 2)}R
+                </span>
+              )}
+            </div>
+          )}
+        </td>
+        <td className="td">
+          <span className={p.side === 'long' ? 'text-bull' : 'text-bear'}>{p.side}</span>
+        </td>
+        <td className="td text-right">
+          {p.remainingQuantity}
+          {p.remainingQuantity !== p.quantity && <span className="text-slate-500">/{p.quantity}</span>}
+        </td>
+        <td className="td text-right">{fmtUsd(p.entryPrice)}</td>
+        <td className="td text-right">
+          {pnl.currentPrice === null ? <span className="text-slate-600">—</span> : fmtUsd(pnl.currentPrice)}
+          {row.stale && (
+            <span className="ml-1 chip bg-amber-500/15 text-amber-400" title="last-known cached price">
+              stale
+            </span>
+          )}
+        </td>
+        <td className="td text-right text-slate-400">{fmtUsd(pnl.costBasis)}</td>
+        <td className="td text-right">
+          <PnL value={pnl.realizedPnl} />
+        </td>
+        <td className="td text-right">{pnl.unrealizedPnl === null ? '—' : <PnL value={pnl.unrealizedPnl} />}</td>
+        <td className="td text-right">
+          <PnL value={pnl.totalPnl} className="font-semibold" />
+        </td>
+        <td className="td text-right">
+          <PnL value={pnl.returnPct} format={fmtPct} />
+        </td>
+        <td className="td text-right whitespace-nowrap">
+          {p.status === 'open' && (
+            <button className="text-xs text-accent hover:underline mr-2" onClick={() => onExit(p)}>
+              exit
+            </button>
+          )}
+          <button className="text-xs text-slate-400 hover:text-slate-200 mr-2" onClick={() => onEdit(p)}>
+            journal
           </button>
-        )}
-        <button className="text-xs text-slate-400 hover:text-slate-200 mr-2" onClick={() => onEdit(p)}>
-          journal
-        </button>
-        <button className="text-xs text-slate-500 hover:text-bear" onClick={() => onDelete(p.id)}>
-          del
-        </button>
-      </td>
-    </tr>
-  );
-}
+          <button className="text-xs text-slate-500 hover:text-bear" onClick={() => onDelete(p.id)}>
+            del
+          </button>
+        </td>
+      </tr>
+    );
+  },
+  // Every ~60s poll tick hands this page a brand-new object graph even when
+  // nothing changed (the fetch layer never preserves row identity), so a
+  // plain identity-based memo would never skip a render. Comparing content
+  // instead — but only for row/events, deliberately not onExit/onEdit/
+  // onDelete: those close over this page's own state (e.g. remove()'s
+  // "Undo" needs the position data at delete time), but that state is the
+  // SAME data this row's own (content-compared) prop is drawn from, so a
+  // row whose content is unchanged would resolve identically either way.
+  (prev, next) =>
+    JSON.stringify(prev.row) === JSON.stringify(next.row) &&
+    JSON.stringify(prev.events) === JSON.stringify(next.events),
+);
