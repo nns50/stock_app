@@ -1016,6 +1016,17 @@ describe('autotrade backtest routes (integration)', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects a backtest request spanning more than 3 years', async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, from: '2020-01-01', to: '2024-01-01' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/cannot exceed/i);
+  });
+
+  it('accepts a backtest request spanning exactly 3 years', async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, from: '2021-01-01', to: '2024-01-01' });
+    expect(res.status).toBe(200);
+  });
+
   it('rejects a backtest request with an empty symbols list', async () => {
     const res = await post('/api/autotrade/backtest', { ...baseBody, symbols: [] });
     expect(res.status).toBe(400);
@@ -1097,6 +1108,12 @@ describe('autotrade options backtest routes (integration)', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects an options backtest request spanning more than 3 years', async () => {
+    const res = await post('/api/autotrade/backtest-options', { ...baseBody, from: '2020-01-01', to: '2024-01-01' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/cannot exceed/i);
+  });
+
   it('rejects an options backtest request with an empty symbols list', async () => {
     const res = await post('/api/autotrade/backtest-options', { ...baseBody, symbols: [] });
     expect(res.status).toBe(400);
@@ -1171,6 +1188,12 @@ describe('autotrade combined backtest routes (integration)', () => {
   it('rejects a combined backtest request where to is before from', async () => {
     const res = await post('/api/autotrade/backtest-combined', { ...baseBody, from: '2024-03-01', to: '2024-01-01' });
     expect(res.status).toBe(400);
+  });
+
+  it('rejects a combined backtest request spanning more than 3 years', async () => {
+    const res = await post('/api/autotrade/backtest-combined', { ...baseBody, from: '2020-01-01', to: '2024-01-01' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/cannot exceed/i);
   });
 
   it('rejects a combined backtest request with an empty symbols list', async () => {

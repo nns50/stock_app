@@ -541,6 +541,18 @@ const dateStr = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD')
   .refine(isValidCalendarDate, { message: 'Not a valid calendar date' });
+
+/** No cap here previously meant a request could ask for an arbitrarily long
+ *  span — each engine's day-by-day simulation is synchronous-ish CPU work
+ *  (see backtest.ts/combinedBacktest.ts/optionsBacktest.ts's own periodic
+ *  yield-point comments), so an unbounded span risked tying up the server
+ *  for the whole request. 3 years is generous for a strategy-validation
+ *  tool (spans multiple market regimes) while keeping worst case bounded. */
+const MAX_BACKTEST_SPAN_DAYS = 1095;
+function withinMaxSpan(from: string, to: string): boolean {
+  const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / (24 * 60 * 60 * 1000);
+  return days <= MAX_BACKTEST_SPAN_DAYS;
+}
 // Optional per-request overrides for the nine risk-check parameters — when
 // omitted, a backtest falls back field-by-field to riskProfile's OLD
 // MODERATE/AGGRESSIVE preset bundle (see backtest.ts's
@@ -600,15 +612,21 @@ const backtestBodyBase = z.object({
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   decisionConfig: z.record(z.string(), z.unknown()).optional(),
 });
-const backtestBody = backtestBodyBase.refine((b) => b.from <= b.to, {
-  message: 'from must be on or before to',
-  path: ['from'],
-});
+const backtestBody = backtestBodyBase
+  .refine((b) => b.from <= b.to, { message: 'from must be on or before to', path: ['from'] })
+  .refine((b) => withinMaxSpan(b.from, b.to), {
+    message: `Span from from to to cannot exceed ${MAX_BACKTEST_SPAN_DAYS} days`,
+    path: ['to'],
+  });
 const walkForwardBody = backtestBodyBase
   .extend({ splitDate: dateStr })
   .refine((b) => b.from <= b.splitDate && b.splitDate < b.to, {
     message: 'splitDate must fall between from and to, leaving a non-empty out-of-sample window',
     path: ['splitDate'],
+  })
+  .refine((b) => withinMaxSpan(b.from, b.to), {
+    message: `Span from from to to cannot exceed ${MAX_BACKTEST_SPAN_DAYS} days`,
+    path: ['to'],
   });
 
 autotradeRouter.post(
@@ -678,15 +696,21 @@ const optionsBacktestBodyBase = z.object({
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   optionsDecisionConfig: z.record(z.string(), z.unknown()).optional(),
 });
-const optionsBacktestBody = optionsBacktestBodyBase.refine((b) => b.from <= b.to, {
-  message: 'from must be on or before to',
-  path: ['from'],
-});
+const optionsBacktestBody = optionsBacktestBodyBase
+  .refine((b) => b.from <= b.to, { message: 'from must be on or before to', path: ['from'] })
+  .refine((b) => withinMaxSpan(b.from, b.to), {
+    message: `Span from from to to cannot exceed ${MAX_BACKTEST_SPAN_DAYS} days`,
+    path: ['to'],
+  });
 const optionsWalkForwardBody = optionsBacktestBodyBase
   .extend({ splitDate: dateStr })
   .refine((b) => b.from <= b.splitDate && b.splitDate < b.to, {
     message: 'splitDate must fall between from and to, leaving a non-empty out-of-sample window',
     path: ['splitDate'],
+  })
+  .refine((b) => withinMaxSpan(b.from, b.to), {
+    message: `Span from from to to cannot exceed ${MAX_BACKTEST_SPAN_DAYS} days`,
+    path: ['to'],
   });
 
 autotradeRouter.post(
@@ -769,15 +793,21 @@ const combinedBacktestBodyBase = z.object({
   decisionConfig: z.record(z.string(), z.unknown()).optional(),
   optionsDecisionConfig: z.record(z.string(), z.unknown()).optional(),
 });
-const combinedBacktestBody = combinedBacktestBodyBase.refine((b) => b.from <= b.to, {
-  message: 'from must be on or before to',
-  path: ['from'],
-});
+const combinedBacktestBody = combinedBacktestBodyBase
+  .refine((b) => b.from <= b.to, { message: 'from must be on or before to', path: ['from'] })
+  .refine((b) => withinMaxSpan(b.from, b.to), {
+    message: `Span from from to to cannot exceed ${MAX_BACKTEST_SPAN_DAYS} days`,
+    path: ['to'],
+  });
 const combinedWalkForwardBody = combinedBacktestBodyBase
   .extend({ splitDate: dateStr })
   .refine((b) => b.from <= b.splitDate && b.splitDate < b.to, {
     message: 'splitDate must fall between from and to, leaving a non-empty out-of-sample window',
     path: ['splitDate'],
+  })
+  .refine((b) => withinMaxSpan(b.from, b.to), {
+    message: `Span from from to to cannot exceed ${MAX_BACKTEST_SPAN_DAYS} days`,
+    path: ['to'],
   });
 
 autotradeRouter.post(

@@ -26,7 +26,6 @@ import { getHistoricalBars } from './historicalData';
 import { OptionContractRef } from './polygonOptionsClient';
 import { impliedVol, bsGreeks, yearsToExpiration, daysToExpiration } from '../../options/blackScholes';
 import { computeIvContext } from '../ivRank';
-import { computeStreaksAndDrawdown } from '../pnl';
 
 // ---------------------------------------------------------------------------
 // The options counterpart to backtest.ts (docs/AUTOTRADING_SPEC.md, phase 11)
@@ -376,7 +375,32 @@ export async function simulateOptionsBacktest(
   let openPositions: OpenOptionPosition[] = [];
   let pendingEntries: PendingOptionEntry[] = [];
 
-  for (const day of tradingDays) {
+  // Running win/loss streak, maintained incrementally instead of calling
+  // computeStreaksAndDrawdown(closedPnls) (an O(closedPnls.length) rescan)
+  // every single day — mirrors that function's own per-element logic
+  // exactly, updated at the same point closedPnls itself is appended to.
+  const streak: { type: 'win' | 'loss' | 'none'; count: number } = { type: 'none', count: 0 };
+  function recordStreak(pnl: number): void {
+    const t = pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'none';
+    if (t === 'none') {
+      streak.type = 'none';
+      streak.count = 0;
+    } else if (t === streak.type) {
+      streak.count += 1;
+    } else {
+      streak.type = t;
+      streak.count = 1;
+    }
+  }
+
+  for (let dayIndex = 0; dayIndex < tradingDays.length; dayIndex++) {
+    const day = tradingDays[dayIndex];
+    // Yield to the event loop periodically — this simulation is entirely
+    // synchronous CPU work otherwise (every "await" below resolves off an
+    // already-populated in-memory memo, not real I/O), so a large request
+    // would otherwise block every other request — including the live
+    // autotrade loop's own tick — for the simulation's whole duration.
+    if (dayIndex > 0 && dayIndex % 20 === 0) await new Promise((resolve) => setImmediate(resolve));
     const dayMs = Date.parse(`${day}T00:00:00Z`);
     let dailyPnl = 0;
 
@@ -490,6 +514,7 @@ export async function simulateOptionsBacktest(
           rMultiple: pos.riskAmount > 0 ? pnl / pos.riskAmount : 0,
         });
         closedPnls.push(pnl);
+        recordStreak(pnl);
         dailyPnl += pnl;
         equity += pnl;
       } else {
@@ -501,7 +526,6 @@ export async function simulateOptionsBacktest(
     // 3) Screen equity candidates through today's close (the SAME gate
     // optionsDecide.ts's live path sits behind — an options signal only
     // ever considers a candidate the equity screener already approved).
-    const streak = computeStreaksAndDrawdown(closedPnls).currentStreak;
     const consecutiveLosses = streak.type === 'loss' ? streak.count : 0;
     const openSymbols = new Set([...openPositions.map((p) => p.symbol), ...pendingEntries.map((p) => p.symbol)]);
 

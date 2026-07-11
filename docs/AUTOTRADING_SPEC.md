@@ -698,7 +698,9 @@ starts.
    before `maxTradesPerDay` would). At the route layer, `from`/`to`/`splitDate` are now
    validated as real calendar dates (not just `YYYY-MM-DD`-shaped — a value like
    `2024-02-30` used to either 500 or silently roll to March 1st), `symbols` is capped
-   at 50 per run, and one symbol's historical-bar fetch failing (bad ticker, rate limit)
+   at 50 per run, the `from`-to-`to` span is capped at 3 years (2026-07-11 follow-up,
+   below — an unbounded span had no yield point in the day loop and could tie up the
+   whole server), and one symbol's historical-bar fetch failing (bad ticker, rate limit)
    no longer 500s the whole request — it's now reported per-symbol in a new
    `errors: {symbol, message}[]` on `BacktestReport`/`WalkForwardReport`, surfaced in the
    UI, while every other symbol's result still comes back normally.

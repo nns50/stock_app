@@ -239,12 +239,24 @@ export function addDays(dateStr: string, days: number): string {
   return toISO(d.getTime());
 }
 
-/** Index of the last candle with `time <= asOfMs`, or -1 if none. Exported
- *  for reuse by optionsBacktest.ts, which needs the identical "as of this
- *  simulated day" lookup for option contract bars, not just equity ones. */
-export function indexAsOf(candles: Candle[], asOfMs: number): number {
-  let idx = -1;
-  for (let i = 0; i < candles.length; i++) {
+/**
+ * Index of the last candle with `time <= asOfMs`, or -1 if none. Exported for
+ * reuse by optionsBacktest.ts, which needs the identical "as of this
+ * simulated day" lookup for option contract bars, not just equity ones.
+ *
+ * `fromIndex` (default 0, i.e. scan from the start — the original behavior,
+ * unchanged for any caller that omits it) lets a caller resume from its own
+ * previous result instead of rescanning from index 0 every time. Safe
+ * whenever asOfMs only increases across a caller's own sequence of calls for
+ * the SAME candles array (true for a backtest's day-by-day loop): since
+ * candles are time-sorted, the answer for a later asOfMs can never be
+ * earlier than the answer for an earlier one, so nothing before the
+ * previous result needs to be re-examined.
+ */
+export function indexAsOf(candles: Candle[], asOfMs: number, fromIndex = 0): number {
+  const start = Math.min(Math.max(fromIndex, 0), candles.length);
+  let idx = start > 0 ? start - 1 : -1;
+  for (let i = start; i < candles.length; i++) {
     if (candles[i].time <= asOfMs) idx = i;
     else break;
   }
@@ -318,10 +330,35 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
 
   const trades: SimulatedTrade[] = [];
   const equityCurve: EquityPoint[] = [];
-  const closedPnls: number[] = []; // chronological, for the consecutive-loss streak
+  const closedPnls: number[] = []; // chronological, for computeBacktestStats' own final summary
   let equity = cfg.startingEquity;
   let openPositions: OpenPosition[] = [];
   let pendingEntries: PendingEntry[] = [];
+
+  // Per-symbol resume point for indexAsOf, so a growing history isn't
+  // rescanned from index 0 on every one of the three lookups below, every
+  // day — dayMs only increases across this loop, so each symbol's answer
+  // only ever advances forward.
+  const indexCursor = new Map<string, number>();
+
+  // The running win/loss streak, maintained incrementally instead of calling
+  // computeStreaksAndDrawdown(closedPnls) (an O(closedPnls.length) rescan)
+  // every single day — mirrors that function's own per-element logic
+  // exactly, updated at the same two points closedPnls itself is appended to.
+  const streak: { type: 'win' | 'loss' | 'none'; count: number } = { type: 'none', count: 0 };
+  function recordClosedPnl(pnl: number): void {
+    closedPnls.push(pnl);
+    const t = pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'none';
+    if (t === 'none') {
+      streak.type = 'none';
+      streak.count = 0;
+    } else if (t === streak.type) {
+      streak.count += 1;
+    } else {
+      streak.type = t;
+      streak.count = 1;
+    }
+  }
 
   for (const day of tradingDays) {
     const dayMs = Date.parse(`${day}T00:00:00Z`);
@@ -332,7 +369,8 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
     const stillPending: PendingEntry[] = [];
     for (const p of pendingEntries) {
       const candles = historyBySymbol.get(p.symbol);
-      const idx = candles ? indexAsOf(candles, dayMs) : -1;
+      const idx = candles ? indexAsOf(candles, dayMs, indexCursor.get(p.symbol) ?? 0) : -1;
+      if (idx >= 0) indexCursor.set(p.symbol, idx);
       if (idx >= 0 && candles![idx].time === dayMs) {
         openPositions.push({
           symbol: p.symbol,
@@ -362,7 +400,8 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
     const stillOpen: OpenPosition[] = [];
     for (const pos of openPositions) {
       const candles = historyBySymbol.get(pos.symbol);
-      const idx = candles ? indexAsOf(candles, dayMs) : -1;
+      const idx = candles ? indexAsOf(candles, dayMs, indexCursor.get(pos.symbol) ?? 0) : -1;
+      if (idx >= 0) indexCursor.set(pos.symbol, idx);
       const bar = idx >= 0 && candles![idx].time === dayMs ? candles![idx] : null;
       if (!bar) {
         stillOpen.push(pos); // no data today — re-check tomorrow
@@ -395,7 +434,7 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
           pnl,
           rMultiple: pos.riskAmount > 0 ? pnl / pos.riskAmount : 0,
         });
-        closedPnls.push(pnl);
+        recordClosedPnl(pnl);
         dailyPnl += pnl;
         equity += pnl;
       } else {
@@ -431,7 +470,7 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
                 pnl: partialPnl,
                 rMultiple: pos.riskAmount > 0 ? partialPnl / pos.riskAmount : 0,
               });
-              closedPnls.push(partialPnl);
+              recordClosedPnl(partialPnl);
               dailyPnl += partialPnl;
               equity += partialPnl;
               pos.quantity -= closeQty;
@@ -463,14 +502,14 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
     openPositions = stillOpen;
 
     // 3) Screen + Decide + Risk-check for new signals, using data through today's close.
-    const streak = computeStreaksAndDrawdown(closedPnls).currentStreak;
     const consecutiveLosses = streak.type === 'loss' ? streak.count : 0;
     const openSymbols = new Set([...openPositions.map((p) => p.symbol), ...pendingEntries.map((p) => p.symbol)]);
 
     const candidates: { score: SymbolScore; signal: TradeSignal }[] = [];
     for (const [symbol, candles] of historyBySymbol) {
       if (openSymbols.has(symbol)) continue; // don't stack a second position in the same name
-      const idx = indexAsOf(candles, dayMs);
+      const idx = indexAsOf(candles, dayMs, indexCursor.get(symbol) ?? 0);
+      if (idx >= 0) indexCursor.set(symbol, idx);
       if (idx < 1 || candles[idx].time !== dayMs) continue; // needs a bar dated exactly today
       const history = candles.slice(0, idx + 1);
       const score = scoreSymbol(symbol, history, undefined, screenerCfg);
