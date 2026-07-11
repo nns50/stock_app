@@ -30,6 +30,7 @@ import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
 import { checkSessionWindow, checkVolatility, getMarketAtrPct, VolatilityFilterConfig } from './executionGuards';
 import { runWebullPositionsSync } from '../../providers/webull/positions';
 import { processMoversForPromotion } from './moversPromotion';
+import { checkForRecentSplits } from './splitCheck';
 
 // ---------------------------------------------------------------------------
 // The autonomous execution loop (docs/AUTOTRADING_SPEC.md — EXECUTION LOOP):
@@ -341,6 +342,15 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       await syncAccountEquityFromBroker({ log: false });
     } catch (e) {
       console.error('[autotrade-loop] equity sync failed:', (e as Error).message);
+    }
+    // Detection only (never adjusts a position's own quantity/price) — see
+    // splitCheck.ts's own header comment. Self-gated to once per ET day, so
+    // this is a no-op (no network call) on every other tick; caught so a
+    // Yahoo hiccup here can't take down anything else in this tick.
+    try {
+      await checkForRecentSplits();
+    } catch (e) {
+      console.error('[autotrade-loop] split check failed:', (e as Error).message);
     }
     summary = {
       ...emptySummary(),

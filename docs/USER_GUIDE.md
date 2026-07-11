@@ -797,8 +797,17 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   each alert independently the first time that book's day crosses its own halt level,
   at most once per (ET) trading day per book, so a rough day in one doesn't drown out or
   suppress a rough day in another; releasing the next day (a fresh day's P&L starting
-  over) needs no alert of its own, same reasoning as the kill switch's release. All are
-  best-effort: with no webhook configured, nothing is sent and nothing fails.
+  over) needs no alert of its own, same reasoning as the kill switch's release. A
+  **stock split** on a symbol with an open autotrade position (paper or live, stocks
+  or options) also notifies — checked at most once a day, since splits are rare and
+  the underlying lookup is Yahoo-only (real detection needs `MARKET_DATA_PROVIDER` on
+  Yahoo or not — this specific check always uses Yahoo regardless, the same
+  provider-agnostic convention the earnings/ex-dividend lookup already follows; it
+  simply never finds anything real if you're on Tradier or Webull for everything else,
+  same as it never does under the `mock` demo provider). This is detection only — it
+  does **not** adjust the position's own quantity or price; treat it as a prompt to go
+  check and fix that position yourself. All alerts here are best-effort: with no
+  webhook configured, nothing is sent and nothing fails.
 - **Refresh** (top of the page, next to the title) — Monitoring, Paper trading, and
   Recent activity all reflect state the background loop can change on its own, every
   minute, with nothing clicked — unlike Configuration, the exclusion list, and the

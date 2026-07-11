@@ -194,14 +194,29 @@ export class YahooProvider implements MarketDataProvider {
     const quotes: any[] = (res as any)?.quotes ?? [];
     const candles: Candle[] = quotes
       .filter((q) => q && q.open != null && q.close != null)
-      .map((q) => ({
-        time: new Date(q.date).getTime(),
-        open: round2(num(q.open) ?? 0),
-        high: round2(num(q.high) ?? 0),
-        low: round2(num(q.low) ?? 0),
-        close: round2(num(q.close) ?? 0),
-        volume: num(q.volume) ?? 0,
-      }));
+      .map((q) => {
+        const close = num(q.close) ?? 0;
+        const adjclose = num(q.adjclose);
+        // Split/dividend-adjust the WHOLE bar (open/high/low alike, not just
+        // close) by the same ratio Yahoo's own adjclose implies for this day.
+        // Unadjusted data shows a real corporate action as a fake overnight
+        // price cliff — this fed straight into ATR/RSI/SMA (indicators.ts),
+        // corrupting every indicator computed over it for as many bars as the
+        // lookback window, including the LIVE autotrade Screen stage's own
+        // candidate scoring, not just chart display. Falls back to no
+        // adjustment (factor 1) when adjclose is missing/zero rather than
+        // dividing by zero — older intraday intervals and some symbols don't
+        // carry it.
+        const factor = adjclose && close ? adjclose / close : 1;
+        return {
+          time: new Date(q.date).getTime(),
+          open: round2((num(q.open) ?? 0) * factor),
+          high: round2((num(q.high) ?? 0) * factor),
+          low: round2((num(q.low) ?? 0) * factor),
+          close: round2(close * factor),
+          volume: num(q.volume) ?? 0,
+        };
+      });
     candles.sort((a, b) => a.time - b.time);
     return candles.slice(-limit);
   }

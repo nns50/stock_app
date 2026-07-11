@@ -2015,6 +2015,67 @@ reading would be inflated relative to what it should be).
   (R-multiple)**, **Trailing distance (R-multiple)**, **Partial exit trigger
   (R-multiple)**, and **Partial exit size (%)**.
 
+**Follow-up (2026-07-11) — dividend/stock-split handling, the last item in
+the "do everything except PDT" batch. Split-detection only (Yahoo-only,
+paper/live equity + options), plus an unrelated, more urgent bug this
+research surfaced. NOT confirmed with the user (a scope-narrowing question
+didn't reach them, same tool-level issue as the trailing-stop follow-up
+above) — proceeded with the two most conservative, clearly-scoped pieces of
+several genuinely different options this could have meant, rather than the
+larger or lower-value ones.**
+
+Researching this found "dividend/stock-split handling" wasn't really one
+feature: a cash dividend needs no position-level adjustment at all for a
+long equity position (it's cash into the account, decoupled from
+quantity/cost-basis) — "handling" it would mean building a whole new
+income-tracking ledger this app has zero concept of today, a different and
+lower-value feature than splits for a day/swing-trading app that rarely
+holds through an ex-dividend date. **Not built.** A stock split DOES need
+position adjustment (quantity/entry/stop/target all rescale), but of the
+three configured providers only Yahoo (`yahoo-finance2`'s `chart()`/
+`historical()` modules, `events: 'split'`) exposes split history at all —
+Tradier and Webull have no evidence of an equivalent endpoint, and the
+`mock` provider can never produce a real one by construction. **Building
+auto-adjustment of open autotrade positions was also not attempted** — no
+mutation path exists today for autotrade paper/live positions' quantity or
+price at all (only the manual journal's `positions` table has one, via
+`PositionPatch`/`PATCH /positions/:id`, and even that isn't exposed in the
+web UI yet) — that's new schema and routes, not just new logic, a
+meaningfully bigger lift than detection.
+
+- **Unadjusted-candle bug (`providers/YahooProvider.ts`) — not what was
+  asked, but a more urgent, pre-existing correctness issue found while
+  researching this.** `getCandles()` read raw `open/high/low/close` from
+  Yahoo's `chart()` response and ignored the `adjclose` field the SAME
+  response already carries — meaning a real split showed up as a fake
+  overnight price cliff in this app's OWN candle data, feeding directly into
+  `indicators.ts`'s ATR/RSI/SMA/EMA (corrupting them for as many bars as
+  the lookback window) and, since `screen.ts`'s live Screen stage scores
+  candidates off this exact same live-provider call, corrupting real
+  autotrade entry/exit decisions for that symbol — not just chart display.
+  This was a latent bug independent of whether any split-handling feature
+  ever got built: it would fire the next time ANY screened symbol split,
+  whether or not detection existed. Fixed by computing a per-bar adjustment
+  factor (`adjclose / close`) and applying it to open/high/low/close alike
+  — falls back to no adjustment (factor 1) when `adjclose` is missing, so
+  existing behavior for data that never carried it is unchanged.
+- **Split detection (`services/splits.ts`, `services/autotrading/
+  splitCheck.ts`)** — mirrors `services/events.ts`'s own "standalone,
+  provider-agnostic, always Yahoo" convention exactly, for the same reason:
+  of the three configured providers, only Yahoo has this data at all.
+  `getRecentSplits()` is the sibling to `getSymbolEvents()` but
+  backward-looking (a split has to be caught AFTER it happens, not before) —
+  a fixed 7-day lookback, cached 12 hours (splits are rare; no per-request
+  config field for this, more ceremony than the feature's own value
+  justifies). `checkForRecentSplits()` gathers every symbol with an open
+  autotrade position (paper + live, equity + options — not the manual
+  journal, out of scope for this pass) and checks once per ET calendar day
+  (not every 60-second tick, unlike the stop/target-style checks — splits
+  don't need that cadence), journaling a `split_detected` event and
+  best-effort notifying any hit. **Detection only** — never touches the
+  position's own quantity/price; the notification message says so
+  explicitly and points the user to fix it manually.
+
 ### CRITICAL: MAX AGGREGATE OPEN RISK
 This is distinct from the daily drawdown halt. The daily halt only reacts to
 REALIZED losses after trades close. Max aggregate open risk is a PRE-TRADE
