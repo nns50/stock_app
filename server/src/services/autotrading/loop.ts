@@ -21,7 +21,7 @@ import {
 } from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures } from './liveFailureAlert';
 import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
-import { checkSessionWindow, checkVolatility, defaultVolatilityFilterConfig, getMarketAtrPct } from './executionGuards';
+import { checkSessionWindow, checkVolatility, getMarketAtrPct, VolatilityFilterConfig } from './executionGuards';
 import { runWebullPositionsSync } from '../../providers/webull/positions';
 import { processMoversForPromotion } from './moversPromotion';
 
@@ -54,8 +54,6 @@ import { processMoversForPromotion } from './moversPromotion';
 // ---------------------------------------------------------------------------
 
 const TICK_INTERVAL_SECONDS = 60;
-/** "No new entries in the first/last N minutes of the session" (spec). */
-const SESSION_BUFFER_MINUTES = 15;
 
 export interface LoopTickSummary {
   ranEntries: boolean;
@@ -127,9 +125,14 @@ export interface LoopTickSummary {
  *  narrower than the general screener (which a human previewing candidates
  *  may want to see regardless of ATR), specific to what the autonomous loop
  *  is allowed to act on. Journals each exclusion so it's visible in the
- *  activity feed like every other screen-stage decision. */
-function filterByVolatility(candidates: ScreenCandidate[], marketAtrPct: number | null): ScreenCandidate[] {
-  const cfg = defaultVolatilityFilterConfig();
+ *  activity feed like every other screen-stage decision. `cfg` comes from
+ *  the caller (config-derived) rather than being re-derived here, so there's
+ *  one source of truth for the cycle instead of two separate reads. */
+function filterByVolatility(
+  candidates: ScreenCandidate[],
+  marketAtrPct: number | null,
+  cfg: VolatilityFilterConfig,
+): ScreenCandidate[] {
   return candidates.filter((c) => {
     const check = checkVolatility(c.indicators.atrPct, marketAtrPct, cfg);
     if (!check.ok) {
@@ -336,13 +339,13 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       return summary;
     }
 
-    const session = checkSessionWindow(SESSION_BUFFER_MINUTES);
+    const session = checkSessionWindow(config.sessionBufferMinutes);
     if (!session.ok) {
       summary.skippedReason = session.reason;
       return summary;
     }
 
-    const screenResult = await runAutotradeScreen();
+    const screenResult = await runAutotradeScreen({ config: { filters: { minRelVol: config.minRelVol } } });
     summary.candidatesScreened = screenResult.candidates.length;
 
     // Movers auto-promotion: runs against the full screened set (before the
@@ -358,12 +361,19 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       console.error('[autotrade-loop] movers auto-promotion failed:', (e as Error).message);
     }
 
-    const volCfg = defaultVolatilityFilterConfig();
+    const volCfg: VolatilityFilterConfig = {
+      maxTickerAtrPct: config.maxTickerAtrPct,
+      maxMarketAtrPct: config.maxMarketAtrPct,
+      marketProxySymbol: 'SPY',
+    };
     const marketAtrPct = await getMarketAtrPct(volCfg.marketProxySymbol);
-    const passedVolatility = filterByVolatility(screenResult.candidates, marketAtrPct);
+    const passedVolatility = filterByVolatility(screenResult.candidates, marketAtrPct, volCfg);
     summary.candidatesPassedVolatility = passedVolatility.length;
 
-    const decision = runAutotradeDecision(passedVolatility);
+    const decision = runAutotradeDecision(passedVolatility, {
+      stopAtrMultiple: config.stopAtrMultiple,
+      targetRMultiple: config.targetRMultiple,
+    });
     summary.signalsGenerated = decision.signals.length;
 
     // Options decide (Phase 9) — run unconditionally alongside the equity

@@ -1383,6 +1383,12 @@ export default function AutoTradePage() {
   const [maxAggregateOpenRiskPctDraft, setMaxAggregateOpenRiskPctDraft] = useState<number | undefined>();
   const [maxCorrelatedExposurePctDraft, setMaxCorrelatedExposurePctDraft] = useState<number | undefined>();
   const [maxTradesPerDayDraft, setMaxTradesPerDayDraft] = useState<number | undefined>();
+  const [minRelVolDraft, setMinRelVolDraft] = useState<number | undefined>();
+  const [maxTickerAtrPctDraft, setMaxTickerAtrPctDraft] = useState<number | undefined>();
+  const [maxMarketAtrPctDraft, setMaxMarketAtrPctDraft] = useState<number | undefined>();
+  const [stopAtrMultipleDraft, setStopAtrMultipleDraft] = useState<number | undefined>();
+  const [targetRMultipleDraft, setTargetRMultipleDraft] = useState<number | undefined>();
+  const [sessionBufferMinutesDraft, setSessionBufferMinutesDraft] = useState<number | undefined>();
   const [liveAccountIdDraft, setLiveAccountIdDraft] = useState('');
   const [liveMaxOrderUsdDraft, setLiveMaxOrderUsdDraft] = useState<number | undefined>();
   const [liveMaxDailyLossUsdDraft, setLiveMaxDailyLossUsdDraft] = useState<number | undefined>();
@@ -1419,6 +1425,12 @@ export default function AutoTradePage() {
     setMaxAggregateOpenRiskPctDraft(config.data.maxAggregateOpenRiskPct);
     setMaxCorrelatedExposurePctDraft(config.data.maxCorrelatedExposurePct);
     setMaxTradesPerDayDraft(config.data.maxTradesPerDay);
+    setMinRelVolDraft(config.data.minRelVol);
+    setMaxTickerAtrPctDraft(config.data.maxTickerAtrPct);
+    setMaxMarketAtrPctDraft(config.data.maxMarketAtrPct);
+    setStopAtrMultipleDraft(config.data.stopAtrMultiple);
+    setTargetRMultipleDraft(config.data.targetRMultiple);
+    setSessionBufferMinutesDraft(config.data.sessionBufferMinutes);
     setLiveAccountIdDraft(config.data.liveAccountId ?? '');
     setLiveMaxOrderUsdDraft(config.data.liveMaxOrderUsd);
     setLiveMaxDailyLossUsdDraft(config.data.liveMaxDailyLossUsd);
@@ -1452,6 +1464,12 @@ export default function AutoTradePage() {
     maxAggregateOpenRiskPct?: number;
     maxCorrelatedExposurePct?: number;
     maxTradesPerDay?: number;
+    minRelVol?: number;
+    maxTickerAtrPct?: number;
+    maxMarketAtrPct?: number;
+    stopAtrMultiple?: number;
+    targetRMultiple?: number;
+    sessionBufferMinutes?: number;
     optionsStrategyType?: AutotradeOptionsStrategyType;
     autoPromoteMoversEnabled?: boolean;
     autoPromoteThreshold?: number;
@@ -1483,6 +1501,12 @@ export default function AutoTradePage() {
       setMaxAggregateOpenRiskPctDraft(saved.maxAggregateOpenRiskPct);
       setMaxCorrelatedExposurePctDraft(saved.maxCorrelatedExposurePct);
       setMaxTradesPerDayDraft(saved.maxTradesPerDay);
+      setMinRelVolDraft(saved.minRelVol);
+      setMaxTickerAtrPctDraft(saved.maxTickerAtrPct);
+      setMaxMarketAtrPctDraft(saved.maxMarketAtrPct);
+      setStopAtrMultipleDraft(saved.stopAtrMultiple);
+      setTargetRMultipleDraft(saved.targetRMultiple);
+      setSessionBufferMinutesDraft(saved.sessionBufferMinutes);
       setAutoPromoteMoversEnabled(saved.autoPromoteMoversEnabled);
       setAutoPromoteThresholdDraft(saved.autoPromoteThreshold);
       setAutoPromoteWindowDaysDraft(saved.autoPromoteWindowDays);
@@ -2231,6 +2255,143 @@ export default function AutoTradePage() {
                     maxTradesPerDayDraft == null ||
                     maxTradesPerDayDraft < 0 ||
                     maxTradesPerDayDraft === config.data?.maxTradesPerDay
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Min relative volume (×)"
+              hint="Screener's relative-volume floor — a candidate's volume must be at least this many times its average to pass. 0 disables this specific filter."
+            >
+              <div className="flex gap-2">
+                <NumberInput value={minRelVolDraft} onChange={setMinRelVolDraft} min={0} step={0.1} />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save min relative volume"
+                  onClick={() => minRelVolDraft != null && saveConfig({ minRelVol: minRelVolDraft })}
+                  disabled={minRelVolDraft == null || minRelVolDraft < 0 || minRelVolDraft === config.data?.minRelVol}
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Max ticker ATR (%)"
+              hint="Skip a candidate whose own ATR% (of price) exceeds this — the loop's own volatility guard, stricter than the manual Screen/Decision preview applies."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={maxTickerAtrPctDraft}
+                  onChange={setMaxTickerAtrPctDraft}
+                  min={0}
+                  max={100}
+                  step={1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save max ticker ATR"
+                  onClick={() => maxTickerAtrPctDraft != null && saveConfig({ maxTickerAtrPct: maxTickerAtrPctDraft })}
+                  disabled={
+                    maxTickerAtrPctDraft == null ||
+                    maxTickerAtrPctDraft < 0 ||
+                    maxTickerAtrPctDraft > 100 ||
+                    maxTickerAtrPctDraft === config.data?.maxTickerAtrPct
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Max market ATR (%)"
+              hint="Skip ALL new entries this cycle if SPY's own ATR% exceeds this — a broad-market volatility circuit breaker."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={maxMarketAtrPctDraft}
+                  onChange={setMaxMarketAtrPctDraft}
+                  min={0}
+                  max={100}
+                  step={1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save max market ATR"
+                  onClick={() => maxMarketAtrPctDraft != null && saveConfig({ maxMarketAtrPct: maxMarketAtrPctDraft })}
+                  disabled={
+                    maxMarketAtrPctDraft == null ||
+                    maxMarketAtrPctDraft < 0 ||
+                    maxMarketAtrPctDraft > 100 ||
+                    maxMarketAtrPctDraft === config.data?.maxMarketAtrPct
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Stop distance (× ATR)"
+              hint="Stop distance = this × the candidate's own ATR — e.g. 1.5 places the stop 1.5 ATRs away from entry."
+            >
+              <div className="flex gap-2">
+                <NumberInput value={stopAtrMultipleDraft} onChange={setStopAtrMultipleDraft} min={0} step={0.1} />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save stop distance"
+                  onClick={() => stopAtrMultipleDraft != null && saveConfig({ stopAtrMultiple: stopAtrMultipleDraft })}
+                  disabled={
+                    stopAtrMultipleDraft == null ||
+                    stopAtrMultipleDraft <= 0 ||
+                    stopAtrMultipleDraft === config.data?.stopAtrMultiple
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Target (R-multiple)"
+              hint="Target distance = stop distance × this — e.g. 2 places the target twice as far out as the stop (2R)."
+            >
+              <div className="flex gap-2">
+                <NumberInput value={targetRMultipleDraft} onChange={setTargetRMultipleDraft} min={0} step={0.1} />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save target R-multiple"
+                  onClick={() => targetRMultipleDraft != null && saveConfig({ targetRMultiple: targetRMultipleDraft })}
+                  disabled={
+                    targetRMultipleDraft == null ||
+                    targetRMultipleDraft <= 0 ||
+                    targetRMultipleDraft === config.data?.targetRMultiple
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Session buffer (minutes)"
+              hint="No new entries within this many minutes of the session open or close — the opening auction and closing imbalance both distort prices."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={sessionBufferMinutesDraft}
+                  onChange={setSessionBufferMinutesDraft}
+                  min={0}
+                  step={1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save session buffer"
+                  onClick={() =>
+                    sessionBufferMinutesDraft != null && saveConfig({ sessionBufferMinutes: sessionBufferMinutesDraft })
+                  }
+                  disabled={
+                    sessionBufferMinutesDraft == null ||
+                    sessionBufferMinutesDraft < 0 ||
+                    sessionBufferMinutesDraft === config.data?.sessionBufferMinutes
                   }
                 >
                   Save

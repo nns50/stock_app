@@ -227,6 +227,16 @@ beforeEach(() => {
     liveAccountId: null,
     liveOptionsEnabled: false,
     optionsStrategyType: 'single_leg',
+    // Same reasoning as optionsStrategyType above — a test further down that
+    // sets one of these to something non-default (to prove it's threaded
+    // through, not hardcoded) would otherwise leak into every test that runs
+    // after it in this file.
+    minRelVol: 1.5,
+    maxTickerAtrPct: 15,
+    maxMarketAtrPct: 5,
+    stopAtrMultiple: 1.5,
+    targetRMultiple: 2,
+    sessionBufferMinutes: 15,
   });
   setTradingConfig({ enabled: false, killSwitch: false });
   config.trading.placeEnabled = true; // env master gate ON — see placeOrder.test.ts's own convention
@@ -502,13 +512,40 @@ describe('runAutotradeLoopTick', () => {
     const summary = await runAutotradeLoopTick();
 
     expect(mockScreen).toHaveBeenCalledTimes(1);
-    expect(mockDecide).toHaveBeenCalledWith([candidate('AAPL', 2)]);
+    expect(mockDecide).toHaveBeenCalledWith([candidate('AAPL', 2)], { stopAtrMultiple: 1.5, targetRMultiple: 2 });
     expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed);
     expect(summary.ranEntries).toBe(true);
     expect(summary.candidatesScreened).toBe(1);
     expect(summary.candidatesPassedVolatility).toBe(1);
     expect(summary.signalsGenerated).toBe(1);
     expect(summary.entriesOpened).toBe(1);
+  });
+
+  it('threads the configured screening/decision thresholds through, not the hardcoded legacy defaults', async () => {
+    setAutotradeConfig({
+      minRelVol: 3,
+      maxTickerAtrPct: 25,
+      maxMarketAtrPct: 8,
+      stopAtrMultiple: 2.5,
+      targetRMultiple: 3,
+      sessionBufferMinutes: 30,
+    });
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+    await runAutotradeLoopTick();
+
+    expect(mockSessionWindow).toHaveBeenCalledWith(30);
+    expect(mockScreen).toHaveBeenCalledWith({ config: { filters: { minRelVol: 3 } } });
+    expect(mockDecide).toHaveBeenCalledWith([candidate('AAPL', 2)], { stopAtrMultiple: 2.5, targetRMultiple: 3 });
   });
 
   it('runs options paper execution alongside equity, seeding equity with options’ own pre-existing snapshot', async () => {
@@ -625,7 +662,10 @@ describe('runAutotradeLoopTick', () => {
     const summary = await runAutotradeLoopTick();
 
     // Equity decision still sees BOTH candidates — movers are unaffected there.
-    expect(mockDecide).toHaveBeenCalledWith([universeCandidate, moverCandidate]);
+    expect(mockDecide).toHaveBeenCalledWith([universeCandidate, moverCandidate], {
+      stopAtrMultiple: 1.5,
+      targetRMultiple: 2,
+    });
     // Options decision sees ONLY the universe-sourced one.
     expect(mockOptionsDecide).toHaveBeenCalledWith([universeCandidate], { strategyType: 'single_leg' });
     expect(summary.optionsCandidatesConsidered).toBe(1);
@@ -645,11 +685,33 @@ describe('runAutotradeLoopTick', () => {
 
     const summary = await runAutotradeLoopTick();
 
-    expect(mockDecide).toHaveBeenCalledWith([candidate('CALM', 2)]); // WILD excluded
+    expect(mockDecide).toHaveBeenCalledWith(
+      [candidate('CALM', 2)], // WILD excluded
+      { stopAtrMultiple: 1.5, targetRMultiple: 2 },
+    );
     expect(summary.candidatesScreened).toBe(2);
     expect(summary.candidatesPassedVolatility).toBe(1);
     const volEvent = mockLogEvent.mock.calls.find((c) => c[0].action === 'excluded_volatility');
     expect(volEvent?.[0].symbol).toBe('WILD');
+  });
+
+  it('a raised maxTickerAtrPct lets through a candidate the default 15% would have excluded', async () => {
+    setAutotradeConfig({ maxTickerAtrPct: 50 }); // WILD's 40% ATR now clears it
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('CALM', 2), candidate('WILD', 40)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 2, moversCount: 0, scannedCount: 2 },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('CALM'), signal('WILD')], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(summary.candidatesPassedVolatility).toBe(2); // neither excluded this time
+    expect(mockLogEvent.mock.calls.some((c) => c[0].action === 'excluded_volatility')).toBe(false);
   });
 
   it('excludes every candidate when the broad-market proxy is itself too volatile', async () => {
@@ -667,7 +729,7 @@ describe('runAutotradeLoopTick', () => {
 
     const summary = await runAutotradeLoopTick();
     expect(summary.candidatesPassedVolatility).toBe(0);
-    expect(mockDecide).toHaveBeenCalledWith([]);
+    expect(mockDecide).toHaveBeenCalledWith([], { stopAtrMultiple: 1.5, targetRMultiple: 2 });
   });
 
   it('does not throw when a candidate has no computable ATR — it is excluded, not crashed on', async () => {

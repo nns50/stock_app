@@ -437,6 +437,12 @@ export const client = {
     maxAggregateOpenRiskPct?: number;
     maxCorrelatedExposurePct?: number;
     maxTradesPerDay?: number;
+    minRelVol?: number;
+    maxTickerAtrPct?: number;
+    maxMarketAtrPct?: number;
+    stopAtrMultiple?: number;
+    targetRMultiple?: number;
+    sessionBufferMinutes?: number;
     liveTradingEnabled?: boolean;
     confirmLiveTrading?: string;
     liveAccountId?: string | null;

@@ -561,6 +561,37 @@ describe('autotrade config routes (integration)', () => {
     });
   });
 
+  it('persists the screening/decision thresholds (formerly hardcoded constants) and survives an unrelated save', async () => {
+    await put('/api/autotrade/config', {
+      minRelVol: 3,
+      maxTickerAtrPct: 25,
+      maxMarketAtrPct: 8,
+      stopAtrMultiple: 2,
+      targetRMultiple: 3,
+      sessionBufferMinutes: 30,
+    });
+    await put('/api/autotrade/config', { accountEquityUsd: 30_000 });
+
+    const final = (await getJson('/api/autotrade/config')) as {
+      minRelVol: number;
+      maxTickerAtrPct: number;
+      maxMarketAtrPct: number;
+      stopAtrMultiple: number;
+      targetRMultiple: number;
+      sessionBufferMinutes: number;
+      accountEquityUsd: number;
+    };
+    expect(final).toMatchObject({
+      minRelVol: 3,
+      maxTickerAtrPct: 25,
+      maxMarketAtrPct: 8,
+      stopAtrMultiple: 2,
+      targetRMultiple: 3,
+      sessionBufferMinutes: 30,
+      accountEquityUsd: 30_000,
+    });
+  });
+
   it('accountEquityUsd: null still explicitly clears it, distinct from omitting the field entirely', async () => {
     await put('/api/autotrade/config', { enabled: true, accountEquityUsd: 50_000 });
     const cleared = await put('/api/autotrade/config', { accountEquityUsd: null });
