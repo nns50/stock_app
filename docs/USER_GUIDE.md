@@ -645,10 +645,11 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   trading** below first — the sync itself doesn't require live trading to be enabled).
   Until equity is set one way or the other, the risk engine blocks every trade (fails
   closed rather than guessing). Once a Webull account ID is set, equity also **syncs
-  automatically every 1 minute** — the background execution loop (see "Configuration"
-  above) re-pulls it every cycle, so it self-heals even with the page closed; the
-  tile's own display catches up on the same cadence while the page is open, skipping a
-  refresh whenever the field has an unsaved manual edit so it never clobbers
+  automatically** — the background execution loop (see "Configuration" above) re-pulls
+  it every cycle regardless, so it self-heals even with the page closed; the tile's own
+  display piggybacks on this page's own **Auto** refresh (below), throttled to at most
+  once a minute even if you've picked a faster cadence, and skipping a refresh whenever
+  the field has an unsaved manual edit so it never clobbers
   in-progress typing.
   Every guardrail the risk engine actually enforces is its own directly-editable field
   below account equity, independent of the risk-profile label above — switching

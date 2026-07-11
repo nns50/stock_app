@@ -1,7 +1,7 @@
-import { ReactNode, useEffect, useState } from 'react';
+import { memo, ReactNode, useEffect, useRef, useState } from 'react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { client } from '../api/client';
-import { useAsync, usePolling } from '../lib/hooks';
+import { useAsync } from '../lib/hooks';
 import { useToast } from '../components/ToastContext';
 import { useConfirm } from '../components/ConfirmContext';
 import { RefreshBar } from '../components/RefreshBar';
@@ -363,98 +363,116 @@ function paperPnl(p: PaperPosition): number | null {
   return (p.exitPrice - p.entryPrice) * p.quantity * sign;
 }
 
-function PaperPositionsTable({ positions }: { positions: PaperPosition[] }) {
-  if (positions.length === 0) {
-    return (
-      <EmptyState
-        title="No paper trades yet"
-        hint='Enable auto-trading above, or click "Run one cycle now" below, to see paper fills here.'
-      />
-    );
-  }
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full">
-        <thead className="border-b border-ink-600/60">
-          <tr>
-            <th className="th">Symbol</th>
-            <th className="th">Side</th>
-            <th className="th">Status</th>
-            <th className="th">Entry</th>
-            <th className="th text-right">Entry $</th>
-            <th className="th text-right">Current $</th>
-            <th className="th">Exit</th>
-            <th className="th text-right">Exit $</th>
-            <th className="th">Reason</th>
-            <th className="th text-right">Qty</th>
-            <th className="th text-right">P&amp;L</th>
-            <th className="th text-right">R</th>
-          </tr>
-        </thead>
-        <tbody>
-          {positions.map((p) => {
-            const pnl = paperPnl(p);
-            const rMultiple = pnl !== null && p.riskAmount > 0 ? pnl / p.riskAmount : null;
-            return (
-              <tr key={p.id} className="border-b border-ink-700/50">
-                <td className="td font-semibold" title={p.rationale}>
-                  {p.symbol}
-                </td>
-                <td className="td">
-                  <Badge color={p.side === 'buy' ? 'green' : 'red'}>{p.side}</Badge>
-                </td>
-                <td className="td">
-                  <Badge color={p.status === 'open' ? 'blue' : 'slate'}>{p.status}</Badge>
-                </td>
-                <td className="td text-slate-400">{ago(p.entryAt)}</td>
-                <td className="td text-right tabular-nums">{fmtUsd(p.entryPrice)}</td>
-                <td className="td text-right tabular-nums">
-                  {p.status === 'open' && p.currentPrice !== null ? (
-                    <>
-                      {fmtUsd(p.currentPrice)}
-                      {p.stale && (
-                        <span className="chip bg-amber-500/15 text-amber-400 ml-1" title="last-known cached price">
-                          stale
-                        </span>
-                      )}
-                    </>
-                  ) : (
-                    '—'
-                  )}
-                </td>
-                <td className="td text-slate-400">{p.exitAt ? ago(p.exitAt) : '—'}</td>
-                <td className="td text-right tabular-nums">{p.exitPrice === null ? '—' : fmtUsd(p.exitPrice)}</td>
-                <td className="td">
-                  {p.exitReason ? (
-                    <Badge color={p.exitReason === 'target' ? 'green' : p.exitReason === 'stop' ? 'red' : 'slate'}>
-                      {p.exitReason}
-                    </Badge>
-                  ) : (
-                    '—'
-                  )}
-                </td>
-                <td className="td text-right tabular-nums">{p.quantity}</td>
-                <td
-                  className={cx('td text-right tabular-nums', pnl === null ? '' : pnl >= 0 ? 'text-bull' : 'text-bear')}
-                >
-                  {pnl === null ? '—' : fmtSignedUsd(pnl)}
-                </td>
-                <td
-                  className={cx(
-                    'td text-right tabular-nums',
-                    rMultiple === null ? '' : rMultiple >= 0 ? 'text-bull' : 'text-bear',
-                  )}
-                >
-                  {rMultiple === null ? '—' : `${fmtNum(rMultiple)}R`}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
+/** Every poll tick hands these tables a brand-new array/object graph even
+ *  when nothing actually changed (the fetch layer never preserves row
+ *  identity) — a plain React.memo keyed on prop identity would never skip a
+ *  render. Comparing serialized content instead of identity is deliberately
+ *  simple over hand-picking "the fields that matter": these position shapes
+ *  gain fields over time, and a hand-picked field list silently going stale
+ *  (missing a newly-relevant field) would mean a real change stops
+ *  re-rendering — a worse, quieter bug than the wasted re-renders this fixes. */
+function samePositions<T>(a: readonly T[], b: readonly T[]): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
 }
+
+const PaperPositionsTable = memo(
+  function PaperPositionsTable({ positions }: { positions: PaperPosition[] }) {
+    if (positions.length === 0) {
+      return (
+        <EmptyState
+          title="No paper trades yet"
+          hint='Enable auto-trading above, or click "Run one cycle now" below, to see paper fills here.'
+        />
+      );
+    }
+    return (
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead className="border-b border-ink-600/60">
+            <tr>
+              <th className="th">Symbol</th>
+              <th className="th">Side</th>
+              <th className="th">Status</th>
+              <th className="th">Entry</th>
+              <th className="th text-right">Entry $</th>
+              <th className="th text-right">Current $</th>
+              <th className="th">Exit</th>
+              <th className="th text-right">Exit $</th>
+              <th className="th">Reason</th>
+              <th className="th text-right">Qty</th>
+              <th className="th text-right">P&amp;L</th>
+              <th className="th text-right">R</th>
+            </tr>
+          </thead>
+          <tbody>
+            {positions.map((p) => {
+              const pnl = paperPnl(p);
+              const rMultiple = pnl !== null && p.riskAmount > 0 ? pnl / p.riskAmount : null;
+              return (
+                <tr key={p.id} className="border-b border-ink-700/50">
+                  <td className="td font-semibold" title={p.rationale}>
+                    {p.symbol}
+                  </td>
+                  <td className="td">
+                    <Badge color={p.side === 'buy' ? 'green' : 'red'}>{p.side}</Badge>
+                  </td>
+                  <td className="td">
+                    <Badge color={p.status === 'open' ? 'blue' : 'slate'}>{p.status}</Badge>
+                  </td>
+                  <td className="td text-slate-400">{ago(p.entryAt)}</td>
+                  <td className="td text-right tabular-nums">{fmtUsd(p.entryPrice)}</td>
+                  <td className="td text-right tabular-nums">
+                    {p.status === 'open' && p.currentPrice !== null ? (
+                      <>
+                        {fmtUsd(p.currentPrice)}
+                        {p.stale && (
+                          <span className="chip bg-amber-500/15 text-amber-400 ml-1" title="last-known cached price">
+                            stale
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
+                  <td className="td text-slate-400">{p.exitAt ? ago(p.exitAt) : '—'}</td>
+                  <td className="td text-right tabular-nums">{p.exitPrice === null ? '—' : fmtUsd(p.exitPrice)}</td>
+                  <td className="td">
+                    {p.exitReason ? (
+                      <Badge color={p.exitReason === 'target' ? 'green' : p.exitReason === 'stop' ? 'red' : 'slate'}>
+                        {p.exitReason}
+                      </Badge>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
+                  <td className="td text-right tabular-nums">{p.quantity}</td>
+                  <td
+                    className={cx(
+                      'td text-right tabular-nums',
+                      pnl === null ? '' : pnl >= 0 ? 'text-bull' : 'text-bear',
+                    )}
+                  >
+                    {pnl === null ? '—' : fmtSignedUsd(pnl)}
+                  </td>
+                  <td
+                    className={cx(
+                      'td text-right tabular-nums',
+                      rMultiple === null ? '' : rMultiple >= 0 ? 'text-bull' : 'text-bear',
+                    )}
+                  >
+                    {rMultiple === null ? '—' : `${fmtNum(rMultiple)}R`}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  },
+  (prev, next) => samePositions(prev.positions, next.positions),
+);
 
 /** The position's own $ value — entry cost, live mark, or exit value — as ONE
  *  unit: the raw premium for single_leg, or long-minus-short for a debit
@@ -507,268 +525,283 @@ function optionsPaperPnl(p: OptionsValueShape): number | null {
   return (exitValue - optionsPaperEntryValue(p)) * p.quantity * 100;
 }
 
-function OptionsPaperPositionsTable({ positions }: { positions: OptionsPaperPosition[] }) {
-  if (positions.length === 0) {
+const OptionsPaperPositionsTable = memo(
+  function OptionsPaperPositionsTable({ positions }: { positions: OptionsPaperPosition[] }) {
+    if (positions.length === 0) {
+      return (
+        <EmptyState
+          title="No options paper trades yet"
+          hint='Enable auto-trading above, or click "Run one cycle now" below, to see options paper fills here.'
+        />
+      );
+    }
     return (
-      <EmptyState
-        title="No options paper trades yet"
-        hint='Enable auto-trading above, or click "Run one cycle now" below, to see options paper fills here.'
-      />
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead className="border-b border-ink-600/60">
+            <tr>
+              <th className="th">Symbol</th>
+              <th className="th">Contract</th>
+              <th className="th">Status</th>
+              <th className="th">Entry</th>
+              <th className="th text-right">Entry $</th>
+              <th className="th text-right">Current $</th>
+              <th className="th">Exit</th>
+              <th className="th text-right">Exit $</th>
+              <th className="th">Reason</th>
+              <th className="th text-right">Qty</th>
+              <th className="th text-right">P&amp;L</th>
+              <th className="th text-right">R</th>
+            </tr>
+          </thead>
+          <tbody>
+            {positions.map((p) => {
+              const pnl = optionsPaperPnl(p);
+              const rMultiple = pnl !== null && p.riskAmount > 0 ? pnl / p.riskAmount : null;
+              const currentValue = optionsPaperCurrentValue(p);
+              const exitValue = optionsPaperExitValue(p);
+              return (
+                <tr key={p.id} className="border-b border-ink-700/50">
+                  <td className="td font-semibold" title={p.rationale}>
+                    {p.symbol}
+                  </td>
+                  <td className="td">
+                    <Badge color={p.side === 'call' ? 'green' : 'red'}>
+                      {p.side} {p.strike}
+                      {p.kind === 'debit_spread' ? `/${p.shortStrike}` : ''}
+                    </Badge>{' '}
+                    <span className="text-[11px] text-slate-500">{fmtDate(p.expiration)}</span>
+                  </td>
+                  <td className="td">
+                    <Badge color={p.status === 'open' ? 'blue' : 'slate'}>{p.status}</Badge>
+                  </td>
+                  <td className="td text-slate-400">{ago(p.entryAt)}</td>
+                  <td className="td text-right tabular-nums">{fmtUsd(optionsPaperEntryValue(p))}</td>
+                  <td className="td text-right tabular-nums">{currentValue === null ? '—' : fmtUsd(currentValue)}</td>
+                  <td className="td text-slate-400">{p.exitAt ? ago(p.exitAt) : '—'}</td>
+                  <td className="td text-right tabular-nums">{exitValue === null ? '—' : fmtUsd(exitValue)}</td>
+                  <td className="td">
+                    {p.exitReason ? (
+                      <Badge color={p.exitReason === 'time_exit' ? 'blue' : 'slate'}>
+                        {p.exitReason.replace('_', ' ')}
+                      </Badge>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
+                  <td className="td text-right tabular-nums">{p.quantity}</td>
+                  <td
+                    className={cx(
+                      'td text-right tabular-nums',
+                      pnl === null ? '' : pnl >= 0 ? 'text-bull' : 'text-bear',
+                    )}
+                  >
+                    {pnl === null ? '—' : fmtSignedUsd(pnl)}
+                  </td>
+                  <td
+                    className={cx(
+                      'td text-right tabular-nums',
+                      rMultiple === null ? '' : rMultiple >= 0 ? 'text-bull' : 'text-bear',
+                    )}
+                  >
+                    {rMultiple === null ? '—' : `${fmtNum(rMultiple)}R`}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     );
-  }
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full">
-        <thead className="border-b border-ink-600/60">
-          <tr>
-            <th className="th">Symbol</th>
-            <th className="th">Contract</th>
-            <th className="th">Status</th>
-            <th className="th">Entry</th>
-            <th className="th text-right">Entry $</th>
-            <th className="th text-right">Current $</th>
-            <th className="th">Exit</th>
-            <th className="th text-right">Exit $</th>
-            <th className="th">Reason</th>
-            <th className="th text-right">Qty</th>
-            <th className="th text-right">P&amp;L</th>
-            <th className="th text-right">R</th>
-          </tr>
-        </thead>
-        <tbody>
-          {positions.map((p) => {
-            const pnl = optionsPaperPnl(p);
-            const rMultiple = pnl !== null && p.riskAmount > 0 ? pnl / p.riskAmount : null;
-            const currentValue = optionsPaperCurrentValue(p);
-            const exitValue = optionsPaperExitValue(p);
-            return (
-              <tr key={p.id} className="border-b border-ink-700/50">
-                <td className="td font-semibold" title={p.rationale}>
-                  {p.symbol}
-                </td>
-                <td className="td">
-                  <Badge color={p.side === 'call' ? 'green' : 'red'}>
-                    {p.side} {p.strike}
-                    {p.kind === 'debit_spread' ? `/${p.shortStrike}` : ''}
-                  </Badge>{' '}
-                  <span className="text-[11px] text-slate-500">{fmtDate(p.expiration)}</span>
-                </td>
-                <td className="td">
-                  <Badge color={p.status === 'open' ? 'blue' : 'slate'}>{p.status}</Badge>
-                </td>
-                <td className="td text-slate-400">{ago(p.entryAt)}</td>
-                <td className="td text-right tabular-nums">{fmtUsd(optionsPaperEntryValue(p))}</td>
-                <td className="td text-right tabular-nums">{currentValue === null ? '—' : fmtUsd(currentValue)}</td>
-                <td className="td text-slate-400">{p.exitAt ? ago(p.exitAt) : '—'}</td>
-                <td className="td text-right tabular-nums">{exitValue === null ? '—' : fmtUsd(exitValue)}</td>
-                <td className="td">
-                  {p.exitReason ? (
-                    <Badge color={p.exitReason === 'time_exit' ? 'blue' : 'slate'}>
-                      {p.exitReason.replace('_', ' ')}
-                    </Badge>
-                  ) : (
-                    '—'
-                  )}
-                </td>
-                <td className="td text-right tabular-nums">{p.quantity}</td>
-                <td
-                  className={cx('td text-right tabular-nums', pnl === null ? '' : pnl >= 0 ? 'text-bull' : 'text-bear')}
-                >
-                  {pnl === null ? '—' : fmtSignedUsd(pnl)}
-                </td>
-                <td
-                  className={cx(
-                    'td text-right tabular-nums',
-                    rMultiple === null ? '' : rMultiple >= 0 ? 'text-bull' : 'text-bear',
-                  )}
-                >
-                  {rMultiple === null ? '—' : `${fmtNum(rMultiple)}R`}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+  },
+  (prev, next) => samePositions(prev.positions, next.positions),
+);
 
 /** REAL, live-money OPTIONS positions the autotrade loop itself placed
  *  (Task #70) — its own table (autotrade_live_options_positions), not the
  *  shared `positions` row LivePositionsTable below reads, since a debit
  *  spread has no column there for its second leg. Nothing here is
  *  simulated — mirrors OptionsPaperPositionsTable's rendering exactly. */
-function LiveOptionsPositionsTable({ positions }: { positions: LiveOptionsPosition[] }) {
-  if (positions.length === 0) {
+const LiveOptionsPositionsTable = memo(
+  function LiveOptionsPositionsTable({ positions }: { positions: LiveOptionsPosition[] }) {
+    if (positions.length === 0) {
+      return (
+        <EmptyState
+          title="No live options positions yet"
+          hint="Once live options trading places a real order and it fills, it shows up here."
+        />
+      );
+    }
     return (
-      <EmptyState
-        title="No live options positions yet"
-        hint="Once live options trading places a real order and it fills, it shows up here."
-      />
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead className="border-b border-ink-600/60">
+            <tr>
+              <th className="th">Symbol</th>
+              <th className="th">Contract</th>
+              <th className="th">Status</th>
+              <th className="th">Entry</th>
+              <th className="th text-right">Entry $</th>
+              <th className="th text-right">Current $</th>
+              <th className="th">Exit</th>
+              <th className="th text-right">Exit $</th>
+              <th className="th">Reason</th>
+              <th className="th text-right">Qty</th>
+              <th className="th text-right">P&amp;L</th>
+              <th className="th text-right">R</th>
+            </tr>
+          </thead>
+          <tbody>
+            {positions.map((p) => {
+              const pnl = optionsPaperPnl(p);
+              const rMultiple = pnl !== null && p.riskAmount > 0 ? pnl / p.riskAmount : null;
+              const currentValue = optionsPaperCurrentValue(p);
+              const exitValue = optionsPaperExitValue(p);
+              return (
+                <tr key={p.id} className="border-b border-ink-700/50">
+                  <td className="td font-semibold" title={p.rationale}>
+                    {p.symbol}
+                  </td>
+                  <td className="td">
+                    <Badge color={p.side === 'call' ? 'green' : 'red'}>
+                      {p.side} {p.strike}
+                      {p.kind === 'debit_spread' ? `/${p.shortStrike}` : ''}
+                    </Badge>{' '}
+                    <span className="text-[11px] text-slate-500">{fmtDate(p.expiration)}</span>
+                  </td>
+                  <td className="td">
+                    <Badge color={p.status === 'open' ? 'blue' : 'slate'}>{p.status}</Badge>
+                  </td>
+                  <td className="td text-slate-400">{ago(p.entryAt)}</td>
+                  <td className="td text-right tabular-nums">{fmtUsd(optionsPaperEntryValue(p))}</td>
+                  <td className="td text-right tabular-nums">{currentValue === null ? '—' : fmtUsd(currentValue)}</td>
+                  <td className="td text-slate-400">{p.exitAt ? ago(p.exitAt) : '—'}</td>
+                  <td className="td text-right tabular-nums">{exitValue === null ? '—' : fmtUsd(exitValue)}</td>
+                  <td className="td">
+                    {p.exitReason ? (
+                      <Badge color={p.exitReason === 'time_exit' ? 'blue' : 'slate'}>
+                        {p.exitReason.replace('_', ' ')}
+                      </Badge>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
+                  <td className="td text-right tabular-nums">{p.quantity}</td>
+                  <td
+                    className={cx(
+                      'td text-right tabular-nums',
+                      pnl === null ? '' : pnl >= 0 ? 'text-bull' : 'text-bear',
+                    )}
+                  >
+                    {pnl === null ? '—' : fmtSignedUsd(pnl)}
+                  </td>
+                  <td
+                    className={cx(
+                      'td text-right tabular-nums',
+                      rMultiple === null ? '' : rMultiple >= 0 ? 'text-bull' : 'text-bear',
+                    )}
+                  >
+                    {rMultiple === null ? '—' : `${fmtNum(rMultiple)}R`}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     );
-  }
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full">
-        <thead className="border-b border-ink-600/60">
-          <tr>
-            <th className="th">Symbol</th>
-            <th className="th">Contract</th>
-            <th className="th">Status</th>
-            <th className="th">Entry</th>
-            <th className="th text-right">Entry $</th>
-            <th className="th text-right">Current $</th>
-            <th className="th">Exit</th>
-            <th className="th text-right">Exit $</th>
-            <th className="th">Reason</th>
-            <th className="th text-right">Qty</th>
-            <th className="th text-right">P&amp;L</th>
-            <th className="th text-right">R</th>
-          </tr>
-        </thead>
-        <tbody>
-          {positions.map((p) => {
-            const pnl = optionsPaperPnl(p);
-            const rMultiple = pnl !== null && p.riskAmount > 0 ? pnl / p.riskAmount : null;
-            const currentValue = optionsPaperCurrentValue(p);
-            const exitValue = optionsPaperExitValue(p);
-            return (
-              <tr key={p.id} className="border-b border-ink-700/50">
-                <td className="td font-semibold" title={p.rationale}>
-                  {p.symbol}
-                </td>
-                <td className="td">
-                  <Badge color={p.side === 'call' ? 'green' : 'red'}>
-                    {p.side} {p.strike}
-                    {p.kind === 'debit_spread' ? `/${p.shortStrike}` : ''}
-                  </Badge>{' '}
-                  <span className="text-[11px] text-slate-500">{fmtDate(p.expiration)}</span>
-                </td>
-                <td className="td">
-                  <Badge color={p.status === 'open' ? 'blue' : 'slate'}>{p.status}</Badge>
-                </td>
-                <td className="td text-slate-400">{ago(p.entryAt)}</td>
-                <td className="td text-right tabular-nums">{fmtUsd(optionsPaperEntryValue(p))}</td>
-                <td className="td text-right tabular-nums">{currentValue === null ? '—' : fmtUsd(currentValue)}</td>
-                <td className="td text-slate-400">{p.exitAt ? ago(p.exitAt) : '—'}</td>
-                <td className="td text-right tabular-nums">{exitValue === null ? '—' : fmtUsd(exitValue)}</td>
-                <td className="td">
-                  {p.exitReason ? (
-                    <Badge color={p.exitReason === 'time_exit' ? 'blue' : 'slate'}>
-                      {p.exitReason.replace('_', ' ')}
-                    </Badge>
-                  ) : (
-                    '—'
-                  )}
-                </td>
-                <td className="td text-right tabular-nums">{p.quantity}</td>
-                <td
-                  className={cx('td text-right tabular-nums', pnl === null ? '' : pnl >= 0 ? 'text-bull' : 'text-bear')}
-                >
-                  {pnl === null ? '—' : fmtSignedUsd(pnl)}
-                </td>
-                <td
-                  className={cx(
-                    'td text-right tabular-nums',
-                    rMultiple === null ? '' : rMultiple >= 0 ? 'text-bull' : 'text-bear',
-                  )}
-                >
-                  {rMultiple === null ? '—' : `${fmtNum(rMultiple)}R`}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+  },
+  (prev, next) => samePositions(prev.positions, next.positions),
+);
 
 /** REAL, live-money positions the autotrade loop itself placed — the exact
  *  same `positions` table row a manual trade uses, filtered server-side to
  *  the `autotrade` tag (server/src/routes/autotrade.ts's /live-positions).
  *  Distinct from every paper table on this page: nothing here is simulated. */
-function LivePositionsTable({ positions }: { positions: AutotradeLivePosition[] }) {
-  if (positions.length === 0) {
+const LivePositionsTable = memo(
+  function LivePositionsTable({ positions }: { positions: AutotradeLivePosition[] }) {
+    if (positions.length === 0) {
+      return (
+        <EmptyState
+          title="No live positions yet"
+          hint="Once live trading places a real order and it fills, it shows up here."
+        />
+      );
+    }
     return (
-      <EmptyState
-        title="No live positions yet"
-        hint="Once live trading places a real order and it fills, it shows up here."
-      />
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead className="border-b border-ink-600/60">
+            <tr>
+              <th className="th">Symbol</th>
+              <th className="th">Side</th>
+              <th className="th">Status</th>
+              <th className="th">Entry</th>
+              <th className="th text-right">Entry $</th>
+              <th className="th text-right">Current $</th>
+              <th className="th text-right">Qty</th>
+              <th className="th text-right">P&amp;L</th>
+              <th className="th text-right">R</th>
+            </tr>
+          </thead>
+          <tbody>
+            {positions.map((p) => {
+              const isOption = p.assetType === 'option';
+              const qty = p.remainingQuantity === p.quantity ? p.quantity : `${p.remainingQuantity}/${p.quantity}`;
+              return (
+                <tr key={p.id} className="border-b border-ink-700/50">
+                  <td className="td font-semibold" title={p.notes ?? undefined}>
+                    {p.symbol}
+                    {isOption && (
+                      <span className="ml-2 text-xs font-normal text-slate-500">
+                        {fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : 'P'} {p.expiration}
+                      </span>
+                    )}
+                  </td>
+                  <td className="td">
+                    <Badge color={p.side === 'long' ? 'green' : 'red'}>{p.side}</Badge>
+                  </td>
+                  <td className="td">
+                    <Badge color={p.status === 'open' ? 'blue' : 'slate'}>{p.status}</Badge>
+                  </td>
+                  <td className="td text-slate-400">{fmtDate(p.entryDate)}</td>
+                  <td className="td text-right tabular-nums">{fmtUsd(p.entryPrice)}</td>
+                  <td className="td text-right tabular-nums">
+                    {p.currentPrice !== null ? (
+                      <>
+                        {fmtUsd(p.currentPrice)}
+                        {p.stale && (
+                          <span className="chip bg-amber-500/15 text-amber-400 ml-1" title="last-known cached price">
+                            stale
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
+                  <td className="td text-right tabular-nums">{qty}</td>
+                  <td className={cx('td text-right tabular-nums', p.pnl.totalPnl >= 0 ? 'text-bull' : 'text-bear')}>
+                    {fmtSignedUsd(p.pnl.totalPnl)}
+                  </td>
+                  <td
+                    className={cx(
+                      'td text-right tabular-nums',
+                      p.pnl.rMultiple === null ? '' : p.pnl.rMultiple >= 0 ? 'text-bull' : 'text-bear',
+                    )}
+                  >
+                    {p.pnl.rMultiple === null ? '—' : `${fmtNum(p.pnl.rMultiple)}R`}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     );
-  }
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full">
-        <thead className="border-b border-ink-600/60">
-          <tr>
-            <th className="th">Symbol</th>
-            <th className="th">Side</th>
-            <th className="th">Status</th>
-            <th className="th">Entry</th>
-            <th className="th text-right">Entry $</th>
-            <th className="th text-right">Current $</th>
-            <th className="th text-right">Qty</th>
-            <th className="th text-right">P&amp;L</th>
-            <th className="th text-right">R</th>
-          </tr>
-        </thead>
-        <tbody>
-          {positions.map((p) => {
-            const isOption = p.assetType === 'option';
-            const qty = p.remainingQuantity === p.quantity ? p.quantity : `${p.remainingQuantity}/${p.quantity}`;
-            return (
-              <tr key={p.id} className="border-b border-ink-700/50">
-                <td className="td font-semibold" title={p.notes ?? undefined}>
-                  {p.symbol}
-                  {isOption && (
-                    <span className="ml-2 text-xs font-normal text-slate-500">
-                      {fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : 'P'} {p.expiration}
-                    </span>
-                  )}
-                </td>
-                <td className="td">
-                  <Badge color={p.side === 'long' ? 'green' : 'red'}>{p.side}</Badge>
-                </td>
-                <td className="td">
-                  <Badge color={p.status === 'open' ? 'blue' : 'slate'}>{p.status}</Badge>
-                </td>
-                <td className="td text-slate-400">{fmtDate(p.entryDate)}</td>
-                <td className="td text-right tabular-nums">{fmtUsd(p.entryPrice)}</td>
-                <td className="td text-right tabular-nums">
-                  {p.currentPrice !== null ? (
-                    <>
-                      {fmtUsd(p.currentPrice)}
-                      {p.stale && (
-                        <span className="chip bg-amber-500/15 text-amber-400 ml-1" title="last-known cached price">
-                          stale
-                        </span>
-                      )}
-                    </>
-                  ) : (
-                    '—'
-                  )}
-                </td>
-                <td className="td text-right tabular-nums">{qty}</td>
-                <td className={cx('td text-right tabular-nums', p.pnl.totalPnl >= 0 ? 'text-bull' : 'text-bear')}>
-                  {fmtSignedUsd(p.pnl.totalPnl)}
-                </td>
-                <td
-                  className={cx(
-                    'td text-right tabular-nums',
-                    p.pnl.rMultiple === null ? '' : p.pnl.rMultiple >= 0 ? 'text-bull' : 'text-bear',
-                  )}
-                >
-                  {p.pnl.rMultiple === null ? '—' : `${fmtNum(p.pnl.rMultiple)}R`}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+  },
+  (prev, next) => samePositions(prev.positions, next.positions),
+);
 
 interface PaperTrackRecord {
   total: number;
@@ -1616,18 +1649,34 @@ export default function AutoTradePage() {
     }
   };
 
-  // Auto-refresh account equity from Webull every 1 minute instead of
-  // requiring the "Sync from Webull" button — mirrors what the loop tick
-  // already does server-side for accountEquityUsd itself (loop.ts), this just
-  // reflects that in the UI sooner than the next unrelated reload. Skipped
-  // when there's no live account to sync from (same gate as the button), or
-  // while equityDraft has an unsaved manual edit (equityDraft !== the last
-  // value we know the server has), so it never clobbers in-progress typing.
-  usePolling(() => {
-    if (!config.data?.liveAccountId) return;
-    if (equityDraft !== (config.data?.accountEquityUsd ?? undefined)) return;
-    void syncEquityFromBroker({ silent: true });
-  }, 60_000);
+  // Auto-refresh account equity from Webull instead of requiring the "Sync
+  // from Webull" button — mirrors what the loop tick already does
+  // server-side for accountEquityUsd itself (loop.ts), this just reflects
+  // that in the UI sooner than the next unrelated reload. Folded into
+  // refreshLiveDataAndMaybeSyncEquity below (RefreshBar's own tick) rather
+  // than a second, independently-phased 60s timer — that used to mean this
+  // page's "one refresh" (see the comment above refreshLiveData) actually
+  // fired twice as often as either timer alone suggested, on two
+  // uncoordinated schedules. Throttled to at most once every 60 REAL
+  // seconds regardless of RefreshBar's own chosen cadence, so picking a
+  // faster display-refresh interval doesn't also hit Webull that much more
+  // often. Skipped when there's no live account to sync from (same gate as
+  // the button), or while equityDraft has an unsaved manual edit
+  // (equityDraft !== the last value we know the server has), so it never
+  // clobbers in-progress typing.
+  const lastEquitySyncAttemptRef = useRef(0);
+  const refreshLiveDataAndMaybeSyncEquity = () => {
+    refreshLiveData();
+    const now = Date.now();
+    if (
+      config.data?.liveAccountId &&
+      equityDraft === (config.data?.accountEquityUsd ?? undefined) &&
+      now - lastEquitySyncAttemptRef.current >= 60_000
+    ) {
+      lastEquitySyncAttemptRef.current = now;
+      void syncEquityFromBroker({ silent: true }); // best-effort; its own success path calls refreshLiveData() again
+    }
+  };
 
   const [killBusy, setKillBusy] = useState(false);
   const toggleKillSwitch = async () => {
@@ -2021,7 +2070,7 @@ export default function AutoTradePage() {
           live trading below."
         actions={
           <RefreshBar
-            onRefresh={refreshLiveData}
+            onRefresh={refreshLiveDataAndMaybeSyncEquity}
             lastUpdated={liveDataLastUpdated}
             loading={
               dashboard.loading ||
