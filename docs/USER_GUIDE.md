@@ -767,7 +767,13 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   (Configuration's "max concurrent positions," not the risk profile — see above),
   **aggregate open risk** used vs. its $ cap, today's **day P&L** vs. the $ level that
   would trigger the daily-drawdown halt, **trades today** vs. the daily cap, and the
-  **consecutive-loss streak** vs. the count that triggers step-down sizing. Every figure
+  **consecutive-loss streak** vs. the count that triggers step-down sizing. A
+  **correlated exposure** tile is the one exception to "live gauge" above — correlation
+  is relative to a specific candidate, not a single portfolio-wide number, so instead it
+  shows the **last candidate actually risk-checked** against this cap: its symbol, the $
+  amount already correlated, how long ago, and a red **BLOCKED** flag if that check is
+  what stopped it — reading "no candidate checked yet" until the loop (or a manual **Run
+  screen**) has evaluated at least one. Every other figure
   is scoped to the loop's own paper positions (never your real ones) and is a direct read
   of the same numbers the risk engine itself checks before approving a trade — this panel
   can't show you something the risk engine would disagree with. A tile goes red once

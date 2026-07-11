@@ -1639,6 +1639,19 @@ export interface AutotradeDashboard {
   /** Combined equity + options paper risk $ (phase 13). */
   openRisk: number;
   maxAggregateOpenRisk: number;
+  /** $ cap only — unlike every other cap here, there's no matching live
+   *  "used" figure (correlation is relative to a specific candidate, not a
+   *  portfolio-wide instantaneous number). See lastCorrelatedExposureCheck. */
+  maxCorrelatedExposure: number;
+  /** The most recent risk-check reading for this rule (null before the loop
+   *  has risk-checked anything) — a point-in-time snapshot "as of the last
+   *  candidate checked", not a live gauge like the tiles above it. */
+  lastCorrelatedExposureCheck: {
+    symbol: string;
+    checkedAt: number;
+    passed: boolean;
+    correlatedNotional: number | null;
+  } | null;
   /** Combined equity + options today's realized paper P&L. */
   dailyPnl: number;
   dailyDrawdownHaltLevel: number;

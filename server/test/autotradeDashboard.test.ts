@@ -3,6 +3,7 @@ import { initDb, db } from '../src/db';
 import { setAutotradeConfig, setAutotradeKillSwitch } from '../src/db/autotradeConfig';
 import { openPaperPosition } from '../src/db/autotradePaperPositions';
 import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
+import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { getAutotradeDashboard } from '../src/services/autotrading/dashboard';
 
 // Unit coverage for the Phase 7 dashboard snapshot (docs/AUTOTRADING_SPEC.md —
@@ -278,6 +279,96 @@ describe('getAutotradeDashboard', () => {
       const enabled = getAutotradeDashboard();
       expect(enabled.probation.active).toBe(true);
       expect(enabled.probation.tradesRemaining).toBe(20);
+    });
+  });
+
+  describe('lastCorrelatedExposureCheck — the one cap with no live "used" figure', () => {
+    it('computes the $ cap from equity, same as maxAggregateOpenRisk, with no check logged yet', () => {
+      setAutotradeConfig({ accountEquityUsd: 100_000, maxCorrelatedExposurePct: 6 });
+      const dash = getAutotradeDashboard();
+      expect(dash.maxCorrelatedExposure).toBeCloseTo(6_000, 5);
+      expect(dash.lastCorrelatedExposureCheck).toBeNull();
+    });
+
+    it('reads the most recent risk-check event that reached the max_correlated_exposure rule', () => {
+      logAutotradeEvent({
+        symbol: 'MSFT',
+        stage: 'risk_check',
+        action: 'passed',
+        detail: {
+          checks: [
+            { rule: 'daily_drawdown_halt', passed: true, detail: 'ok' },
+            {
+              rule: 'max_correlated_exposure',
+              passed: true,
+              detail: '$1,500.00 already correlated vs cap $6,000.00 (6% of equity, |r| ≥ 0.7)',
+            },
+          ],
+        },
+      });
+      const dash = getAutotradeDashboard();
+      expect(dash.lastCorrelatedExposureCheck).toMatchObject({
+        symbol: 'MSFT',
+        passed: true,
+        correlatedNotional: 1500,
+      });
+    });
+
+    it('reflects a BLOCKED reading (the number a user troubleshooting "nothing is trading" needs)', () => {
+      logAutotradeEvent({
+        symbol: 'NVDA',
+        stage: 'risk_check',
+        action: 'blocked',
+        detail: {
+          checks: [
+            {
+              rule: 'max_correlated_exposure',
+              passed: false,
+              detail: '$8,200.50 already correlated vs cap $6,000.00 (6% of equity, |r| ≥ 0.7)',
+            },
+          ],
+        },
+      });
+      const dash = getAutotradeDashboard();
+      expect(dash.lastCorrelatedExposureCheck).toMatchObject({
+        symbol: 'NVDA',
+        passed: false,
+        correlatedNotional: 8200.5,
+      });
+    });
+
+    it('skips past a newer event that never reached the rule (an early equity/quantity block)', () => {
+      logAutotradeEvent({
+        symbol: 'OLDER',
+        stage: 'risk_check',
+        action: 'blocked',
+        detail: {
+          checks: [
+            {
+              rule: 'max_correlated_exposure',
+              passed: true,
+              detail: '$500.00 already correlated vs cap $6,000.00 (6% of equity, |r| ≥ 0.7)',
+            },
+          ],
+        },
+      });
+      // A later, newer event that short-circuited before max_correlated_exposure
+      // ever ran (e.g. equity_configured or quantity failed) — no such rule logged.
+      logAutotradeEvent({
+        symbol: 'NEWER',
+        stage: 'risk_check',
+        action: 'blocked',
+        detail: { checks: [{ rule: 'equity_configured', passed: false, detail: 'not set' }] },
+      });
+      const dash = getAutotradeDashboard();
+      expect(dash.lastCorrelatedExposureCheck).toMatchObject({ symbol: 'OLDER', correlatedNotional: 500 });
+    });
+
+    it('ignores non-risk_check events and events with unparseable detail, without throwing', () => {
+      logAutotradeEvent({ stage: 'config', action: 'kill_switch_engaged' });
+      logAutotradeEvent({ stage: 'risk_check', action: 'blocked', detail: 'not json' });
+      expect(() => getAutotradeDashboard()).not.toThrow();
+      expect(getAutotradeDashboard().lastCorrelatedExposureCheck).toBeNull();
     });
   });
 });

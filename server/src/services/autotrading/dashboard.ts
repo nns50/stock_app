@@ -8,6 +8,7 @@ import { getLivePortfolioSnapshot, getProbationStatus, ProbationStatus } from '.
 import { LiveOptionsPosition } from '../../db/autotradeLiveOptionsPositions';
 import { getLiveOptionsPortfolioSnapshot, getOptionsProbationStatus } from './liveOptionsExecute';
 import { daysToExpiration } from '../../options/blackScholes';
+import { listAutotradeEvents } from '../../db/autotradeEvents';
 
 // ---------------------------------------------------------------------------
 // Phase 7 (docs/AUTOTRADING_SPEC.md — MONITORING & KILL SWITCH): a read-only
@@ -40,6 +41,29 @@ import { daysToExpiration } from '../../options/blackScholes';
 // max, not sum, for the streak).
 // ---------------------------------------------------------------------------
 
+/** Unlike every other "used vs limit" figure in AutotradeDashboard, correlated
+ *  exposure has no portfolio-wide instantaneous value — it's relative to a
+ *  specific candidate (riskCheck.ts's correlatedNotional() compares ONE
+ *  symbol against the rest of the open book). Recomputing it live here would
+ *  mean either a second implementation (the header comment's whole point is
+ *  to avoid that) or real network calls on every dashboard poll (the same
+ *  rate-limit risk realEstateClassifier.ts's own header comment already
+ *  flags for a similar per-tick live lookup). Instead, this reads the most
+ *  recent risk-check event that actually ran this check — a pure journal
+ *  read, zero network calls, and by construction the exact number the risk
+ *  engine itself last computed. */
+export interface LastCorrelatedExposureCheck {
+  symbol: string;
+  /** Epoch ms this risk-check ran. */
+  checkedAt: number;
+  passed: boolean;
+  /** Parsed from the journaled detail string (see riskCheck.ts/
+   *  optionsRiskCheck.ts's `max_correlated_exposure` rule) — null only if
+   *  that ever fails to parse, which shouldn't happen since this app writes
+   *  the string it's reading. */
+  correlatedNotional: number | null;
+}
+
 export interface AutotradeDashboard {
   enabled: boolean;
   killSwitch: boolean;
@@ -64,6 +88,14 @@ export interface AutotradeDashboard {
   openRisk: number;
   /** $ cap = maxAggregateOpenRiskPct% of equity. Shared with live — see header. */
   maxAggregateOpenRisk: number;
+
+  /** $ cap = maxCorrelatedExposurePct% of equity. See lastCorrelatedExposureCheck
+   *  below for why this cap has no matching live "used" figure the way every
+   *  other one here does. */
+  maxCorrelatedExposure: number;
+  /** Null until the loop has risk-checked at least one signal past the
+   *  equity/quantity gates (see LastCorrelatedExposureCheck's doc comment). */
+  lastCorrelatedExposureCheck: LastCorrelatedExposureCheck | null;
 
   /** Combined equity + options today's (ET) realized paper P&L; negative is a loss. */
   dailyPnl: number;
@@ -117,6 +149,49 @@ export interface AutotradeDashboard {
   liveOptionsProbation: ProbationStatus;
 }
 
+interface RiskCheckRuleJson {
+  rule: string;
+  passed: boolean;
+  detail: string;
+}
+
+/** Extracts "$8,200.00" -> 8200 from a `max_correlated_exposure` rule's
+ *  detail string (see riskCheck.ts: `${usd(ctx.correlatedNotional)} already
+ *  correlated vs cap ...`) — the $ figure always comes first. */
+function parseCorrelatedNotional(detail: string): number | null {
+  const m = /^\$([\d,]+\.\d{2})/.exec(detail);
+  return m ? Number(m[1].replace(/,/g, '')) : null;
+}
+
+/** Walks the journal newest-first for the most recent risk-check that
+ *  actually reached the `max_correlated_exposure` rule — an equity-not-set
+ *  or too-small-to-size-one-unit block returns before that rule runs, so the
+ *  very latest event isn't guaranteed to have it (see riskCheck.ts's early
+ *  `blocked()` returns). 200 is comfortably more than one tick's worth of
+ *  candidates, so a `null` result genuinely means "hasn't run yet", not
+ *  "search gave up too early". */
+function getLastCorrelatedExposureCheck(): LastCorrelatedExposureCheck | null {
+  const events = listAutotradeEvents({ stage: 'risk_check', limit: 200 });
+  for (const event of events) {
+    if (!event.detail) continue;
+    let parsed: { checks?: RiskCheckRuleJson[] };
+    try {
+      parsed = JSON.parse(event.detail);
+    } catch {
+      continue;
+    }
+    const check = parsed.checks?.find((c) => c.rule === 'max_correlated_exposure');
+    if (!check) continue;
+    return {
+      symbol: event.symbol ?? '',
+      checkedAt: event.createdAt,
+      passed: check.passed,
+      correlatedNotional: parseCorrelatedNotional(check.detail),
+    };
+  }
+  return null;
+}
+
 export function getAutotradeDashboard(): AutotradeDashboard {
   const config = getAutotradeConfig();
   const equity = config.accountEquityUsd ?? 0;
@@ -138,6 +213,9 @@ export function getAutotradeDashboard(): AutotradeDashboard {
 
     openRisk: snapshot.openRisk + optionsSnapshot.openRisk,
     maxAggregateOpenRisk: (config.maxAggregateOpenRiskPct / 100) * equity,
+
+    maxCorrelatedExposure: (config.maxCorrelatedExposurePct / 100) * equity,
+    lastCorrelatedExposureCheck: getLastCorrelatedExposureCheck(),
 
     dailyPnl: snapshot.dailyPnl + optionsSnapshot.dailyPnl,
     dailyDrawdownHaltLevel: -(config.maxDailyDrawdownPct / 100) * equity,
