@@ -66,6 +66,17 @@ import { dispatchNotifications } from '../notifier';
 // not by this loop noticing a quote breach on its next tick — categorically
 // safer for real money than execute.ts's polling approach, which paper had no
 // alternative to (there's no real broker in a simulation to enforce anything).
+// The entry leg is DAY; the two exit legs are GTC (providers/webull/orders.ts's
+// bracketExit()) — an exit protecting an already-open position has to outlive
+// one trading session, unlike a still-unfilled entry. Fixes a real gap this
+// had until 2026-07-13: at DAY, an exit that didn't fill by the close got
+// cancelled by the broker with nothing here noticing or re-arming it, leaving
+// the position open with literally no resting stop. GTC isn't unlimited
+// either — Webull auto-expires it after 90 calendar days — so maxHoldDays
+// (below) is still worth setting as a backstop, just no longer the only thing
+// standing between an open position and an entire trading day of zero
+// downside protection. Options can't use the same fix — see
+// optionBracketExit()'s own doc comment for why.
 // ---------------------------------------------------------------------------
 
 /** Effective per-share/contract notional multiplier for a marketable limit —

@@ -2204,6 +2204,48 @@ of the funnel on a cycle that placed nothing.
 Confirm the exact broker API I'll be integrating with (Alpaca, IBKR, etc.)
 before wiring anything to a live connection.
 
+**Follow-up (2026-07-13) — live equity stop/target legs were expiring
+unfilled at the close, silently leaving the position unprotected. User bug
+report, confirmed and fixed.** A live entry is placed as a broker-side
+BRACKET (entry + linked STOP_LOSS + STOP_PROFIT legs, `liveExecute.ts`'s own
+header comment), and all three legs were placed `time_in_force: 'DAY'`
+(`providers/webull/orders.ts`). A DAY order unfilled at the close is
+cancelled by the broker — including the stop and target, not just the entry
+if it hadn't filled yet. Nothing in the reconcile loop (`reconcileLiveOrders`
+→ `reconcileOneLiveOrder`) checked for a CANCELLED/EXPIRED exit leg — it only
+ever watched for a FILLED one — so a position whose bracket expired this way
+just sat open with literally no resting stop, for as long as `maxHoldDays`
+allowed (0/disabled by default, i.e. potentially indefinitely), while the
+`positions` table kept showing its original stop/target as if still live —
+no schema field distinguishes "still resting at the broker" from "expired
+hours ago." Paper trading was never affected: `checkPaperExits()` re-checks
+price against the stop/target in-app every tick, independent of any broker
+order or TIF.
+
+Fixed by changing `bracketExit()`'s stock exit legs (stop-loss + take-profit)
+from DAY to GTC — confirmed against Webull's own API docs that stock equity
+orders support GTC on the sell side (their own trading-education pages state
+this explicitly), unlike single-leg OPTION orders, which are DAY-only on the
+sell side by broker restriction. The entry leg stays DAY (an unfilled entry
+shouldn't keep trying at a stale price for days — nothing to protect yet).
+GTC itself isn't unlimited: Webull auto-expires a GTC order after 90 calendar
+days, so `maxHoldDays` is still worth configuring as a backstop, just no
+longer the only thing standing between an open position and an entire
+trading day of zero downside protection.
+
+**Options are NOT fixed by this** — `optionBracketExit()`'s exit legs stay
+DAY, since Webull's sell-side-DAY-only restriction genuinely applies to
+options (confirmed in `docs/LIVE_TRADING_DESIGN.md`'s own API notes). A live
+options position's bracket can still expire unfilled at the close the exact
+same way stock's used to, with nothing detecting or re-arming it — a real,
+currently-unaddressed gap. A proper fix needs a fundamentally different
+approach (detect the gap, place a fresh bracket), which has its own
+dangerous failure mode already flagged in this doc's own trailing-stop-for-
+live deferral note above: a genuine window with NO resting stop at all if
+the replace step fails after the cancel step succeeds. Deliberately not
+attempted as part of this fix — revisit as its own, separately-discussed
+piece of work.
+
 ---
 
 ### Addendum: options trading scope (added after phases 1-7 shipped)
