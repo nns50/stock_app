@@ -236,7 +236,23 @@ export function buildWebullOrder(intent: OrderIntent, clientOrderId: string): We
 }
 
 /** One bracket exit leg (opposite side of the entry): a take-profit LIMIT or a
- *  stop-loss STOP_LOSS, sharing the entry's symbol / qty / session. */
+ *  stop-loss STOP_LOSS, sharing the entry's symbol / qty / session.
+ *
+ *  GTC, not DAY — unlike the entry leg (still DAY; a stale unfilled entry
+ *  shouldn't keep trying at yesterday's price), an exit leg is protecting an
+ *  ALREADY-open position. A DAY exit that doesn't fill by the close gets
+ *  cancelled by the broker at end of day, and nothing in this app currently
+ *  detects that or re-arms a fresh bracket — the position would then sit
+ *  fully unprotected (no resting stop) until it happens to hit maxHoldDays
+ *  (if that's even enabled; it defaults to off) or a human notices. Confirmed
+ *  against Webull's own API docs that stock equity orders support GTC on the
+ *  SELL side (unlike single-leg OPTION orders — optionBracketExit() below
+ *  stays DAY, since Webull restricts option sell-side orders to DAY-only;
+ *  GTC there isn't just untested, it's documented as unsupported). Webull
+ *  itself auto-expires a GTC order after 90 calendar days — not infinite —
+ *  so this doesn't replace maxHoldDays as a backstop, it just closes the
+ *  same-trading-day gap that previously left a position unprotected almost
+ *  immediately instead of after 90 days. */
 function bracketExit(
   intent: OrderIntent,
   comboType: 'STOP_PROFIT' | 'STOP_LOSS',
@@ -254,7 +270,7 @@ function bracketExit(
     side: intent.side === 'buy' ? 'SELL' : 'BUY', // exits close the entry
     quantity: String(intent.quantity),
     entrust_type: 'QTY',
-    time_in_force: 'DAY',
+    time_in_force: 'GTC',
     support_trading_session: SESSION_TO_WEBULL[intent.session ?? 'core'],
   };
   if (orderType === 'LIMIT') body.limit_price = priceStr(price);
@@ -264,7 +280,19 @@ function bracketExit(
 
 /** One OPTION bracket exit leg (opposite side, to close the entry): a take-profit
  *  LIMIT or a stop-loss STOP_LOSS on the same contract. INFERRED from the stock
- *  bracket + single-leg option bodies — confirm via Preview before placing. */
+ *  bracket + single-leg option bodies — confirm via Preview before placing.
+ *
+ *  Stays DAY (unlike bracketExit()'s stock exit legs, now GTC) — Webull
+ *  restricts OPTION sell-side orders to DAY-only, and an exit leg closing a
+ *  long option position IS a sell-side order. This is a real, currently-
+ *  unaddressed gap: a live options bracket's exit legs can still expire
+ *  unfilled at the close the same way stock's used to, with nothing
+ *  detecting or re-arming it. Fixing that needs a different approach (detect
+ *  the gap, place a fresh bracket) with its own failure modes — deliberately
+ *  not attempted here; see AUTOTRADING_SPEC.md's existing partial-exit-for-
+ *  live deferral note for why a naive cancel-then-replace has a real window
+ *  with no resting stop at all if the replace step fails after the cancel
+ *  succeeds. */
 function optionBracketExit(
   intent: OrderIntent,
   comboType: 'STOP_PROFIT' | 'STOP_LOSS',

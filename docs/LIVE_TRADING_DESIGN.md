@@ -299,12 +299,20 @@ before any mapper or submit path is built — same discipline as positions/quote
 order_type:"LIMIT"|"MARKET"|"STOP_LOSS"|"STOP_LOSS_LIMIT", side:"BUY"|"SELL"|"SHORT",
 quantity, limit_price?, stop_price?, time_in_force:"DAY"|"GTC", entrust_type:"QTY"|"AMOUNT",
 support_trading_session:"CORE"|"ALL"|"NIGHT" }`. Fractional via `entrust_type:"AMOUNT"` +
-`total_cash_amount`.
+`total_cash_amount`. **Unlike options below, stock GTC is NOT buy-side-only** — confirmed
+against Webull's own API docs, both sides support GTC for equities. `bracketExit()`
+(`providers/webull/orders.ts`) uses this: a stock bracket's SELL-side exit legs (stop-loss +
+take-profit, closing a long) are GTC, not DAY — fixed 2026-07-13 after DAY exit legs were
+found silently expiring unfilled at the close, leaving the position open with no resting
+stop and nothing detecting or re-arming it. GTC itself auto-expires after 90 calendar days
+(not unlimited), so `maxHoldDays` is still worth setting as a backstop.
 
 **Single-leg option order:** same unified endpoint with `instrument_type:"OPTION"`,
 `option_strategy:"SINGLE"`, and a **`legs`** array (strike / expiration / option type /
 side / quantity). Options support **LIMIT / STOP_LOSS / STOP_LOSS_LIMIT only** (no MARKET,
-no TRAILING, no SHORT); **sell-side is DAY-only** (GTC is buy-side only).
+no TRAILING, no SHORT); **sell-side is DAY-only** (GTC is buy-side only) — this DOES apply
+here, unlike stock above, so an options bracket's exit legs (`optionBracketExit()`) can't
+use the same GTC fix; they still expire DAY-TIF, a known, currently-unaddressed gap.
 
 **Mapping to our engine:** our `OrderIntent` (side/openClose/qty/orderType/limitPrice +
 option fields) covers the stock and single-leg-option bodies; `LIMIT`/`MARKET` map directly,

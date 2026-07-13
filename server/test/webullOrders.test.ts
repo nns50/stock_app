@@ -104,9 +104,27 @@ describe('webull stock order + preview', () => {
       client_order_id: 'CID-MASTER',
       side: 'BUY',
       limit_price: '10',
+      // Entry stays DAY — an unfilled entry shouldn't keep trying at a stale
+      // price for days. Unlike the exit legs below, this is a fresh order
+      // with no position to protect yet.
+      time_in_force: 'DAY',
     });
-    expect(tp).toMatchObject({ combo_type: 'STOP_PROFIT', side: 'SELL', order_type: 'LIMIT', limit_price: '12' });
-    expect(sl).toMatchObject({ combo_type: 'STOP_LOSS', side: 'SELL', order_type: 'STOP_LOSS', stop_price: '9' });
+    expect(tp).toMatchObject({
+      combo_type: 'STOP_PROFIT',
+      side: 'SELL',
+      order_type: 'LIMIT',
+      limit_price: '12',
+      // GTC, not DAY — see bracketExit()'s own doc comment: these legs
+      // protect an already-open position, so they must outlive one session.
+      time_in_force: 'GTC',
+    });
+    expect(sl).toMatchObject({
+      combo_type: 'STOP_LOSS',
+      side: 'SELL',
+      order_type: 'STOP_LOSS',
+      stop_price: '9',
+      time_in_force: 'GTC',
+    });
   });
 
   it('buildOrderRequest: a single-leg option bracket is MASTER (option) + STOP_PROFIT + STOP_LOSS option exits', () => {
@@ -135,6 +153,11 @@ describe('webull stock order + preview', () => {
       side: 'SELL',
       limit_price: '0.9',
       instrument_type: 'OPTION',
+      // Stays DAY, deliberately NOT GTC like the stock version — Webull
+      // restricts OPTION sell-side orders to DAY-only (see
+      // optionBracketExit()'s own doc comment); this is a real,
+      // currently-unaddressed gap for live options specifically.
+      time_in_force: 'DAY',
     });
     expect(sl).toMatchObject({
       combo_type: 'STOP_LOSS',
@@ -142,6 +165,7 @@ describe('webull stock order + preview', () => {
       side: 'SELL',
       stop_price: '0.3',
       instrument_type: 'OPTION',
+      time_in_force: 'DAY',
     });
     // Exit legs are OPTION legs on the same contract, opposite (SELL) side.
     expect((tp.legs as Array<Record<string, string>>)[0]).toMatchObject({
