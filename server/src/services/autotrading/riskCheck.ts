@@ -16,14 +16,20 @@ import { TradeSignal } from './decide';
 // statistical-correlation exposure cap. Pure evaluator + an async wrapper that
 // assembles real portfolio state; no orders are placed here.
 //
-// Known interim scope: daily P&L and the consecutive-loss streak are computed
-// from ALL closed positions in the journal (positions.ts), not auto-trading's
-// own trades specifically — there's no way to distinguish the two yet, since
-// nothing has executed an auto-trade (that's Phase 6). Concurrent-position
-// count and aggregate open risk are deliberately account-wide regardless of
-// source, mirroring how the live-trading guardrails (guardrails.ts) already
-// treat "the account" as one unified thing, not per-strategy-siloed — the
-// safer reading, since it can't understate real exposure.
+// getPortfolioSnapshot() below scopes daily P&L, the consecutive-loss streak,
+// and open-position risk to auto-trading's OWN positions (tagged 'autotrade'
+// — same filter liveExecute.ts's getLivePortfolioSnapshot() already uses),
+// not every position in the journal. This used to be deliberately
+// account-wide ("can't understate real exposure") back when auto-trading was
+// paper-only and live execution didn't exist yet to give that philosophy a
+// real, separately-enforced counterpart. Once live trading (Phase 8) shipped
+// its own autotrade-scoped runLiveExecution()/getLivePortfolioSnapshot(),
+// this function's account-wide reading stopped matching what actually gates
+// a real order — a user's own manually-placed trades could inflate this
+// preview's aggregate-risk/daily-drawdown figures well past what the live
+// loop itself was seeing, making the risk-check preview block candidates the
+// live loop would have approved. Scoping both to the same 'autotrade' tag
+// keeps them consistent.
 // ---------------------------------------------------------------------------
 
 const ZERO_SIZING: RiskSizingResult = {
@@ -83,6 +89,14 @@ const lastExitDate = (p: Position): string =>
         .slice(-1)[0]
     : p.entryDate;
 
+/** A position auto-trading itself placed, vs. one the user entered manually
+ *  from the Trade page — both live in the SAME `positions` table. Duplicated
+ *  from liveExecute.ts's own (unexported) isAutotradePosition rather than
+ *  imported — liveExecute.ts already imports FROM this file (RiskCheckResult/
+ *  evaluateRiskCheck), so importing the other way would be circular; same
+ *  small-pure-helper-duplication convention as etDateStr above. */
+const isAutotradePosition = (p: Position): boolean => p.tags.includes('autotrade');
+
 export interface OpenRiskItem {
   symbol: string;
   /** $ = |entry - stop| × remaining qty × multiplier. 0 if no stop was logged. */
@@ -94,9 +108,10 @@ export interface OpenRiskItem {
 export interface PortfolioSnapshot {
   /** Null when accountEquityUsd hasn't been configured yet. */
   equity: number | null;
-  /** Today's realized P&L across the whole journal (see interim-scope note above). */
+  /** Today's realized P&L across auto-trading's own closed positions only —
+   *  a manually-placed trade never counts here (see the file header). */
   dailyPnl: number;
-  /** Auto-trading's own order placements today (0 until Phase 6 executes any). */
+  /** Auto-trading's own order placements today. */
   tradesToday: number;
   /** Length of the current losing streak (0 if the last closed trade wasn't a loss). */
   consecutiveLosses: number;
@@ -110,6 +125,7 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
 
   const todayStr = etDateStr();
   const closedTrades = listPositions({ status: 'closed' })
+    .filter(isAutotradePosition)
     .map((p) => ({ date: lastExitDate(p), pnl: realizedPnlOf(p) }))
     .sort((a, b) => a.date.localeCompare(b.date));
   const dailyPnl = closedTrades.filter((t) => t.date === todayStr).reduce((s, t) => s + t.pnl, 0);
@@ -120,11 +136,13 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
     (e) => e.action === 'order_placed' && etDateStr(e.createdAt) === todayStr,
   ).length;
 
-  const openPositions: OpenRiskItem[] = listPositions({ status: 'open' }).map((p) => ({
-    symbol: p.symbol,
-    riskAmount: p.stopPrice != null ? Math.abs(p.entryPrice - p.stopPrice) * p.remainingQuantity * p.multiplier : 0,
-    notional: p.entryPrice * p.remainingQuantity * p.multiplier,
-  }));
+  const openPositions: OpenRiskItem[] = listPositions({ status: 'open' })
+    .filter(isAutotradePosition)
+    .map((p) => ({
+      symbol: p.symbol,
+      riskAmount: p.stopPrice != null ? Math.abs(p.entryPrice - p.stopPrice) * p.remainingQuantity * p.multiplier : 0,
+      notional: p.entryPrice * p.remainingQuantity * p.multiplier,
+    }));
 
   return { equity, dailyPnl, tradesToday, consecutiveLosses, openPositions };
 }

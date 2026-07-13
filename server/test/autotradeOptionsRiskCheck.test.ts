@@ -266,6 +266,7 @@ describe('runOptionsRiskCheck — batch orchestration', () => {
       entryPrice: 50,
       entryDate: '2026-01-01',
       stopPrice: 49,
+      tags: ['autotrade'],
     });
     createPosition({
       assetType: 'stock',
@@ -275,6 +276,7 @@ describe('runOptionsRiskCheck — batch orchestration', () => {
       entryPrice: 30,
       entryDate: '2026-01-01',
       stopPrice: 29,
+      tags: ['autotrade'],
     });
     // MODERATE's concurrent-position cap is 2 — already at capacity from equity alone.
     const results = await runOptionsRiskCheck([optionSignal({ symbol: 'AAPL' })]);
