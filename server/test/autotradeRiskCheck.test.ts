@@ -254,6 +254,7 @@ describe('runAutotradeRiskCheck — batch orchestration', () => {
       entryPrice: 50,
       entryDate: '2026-01-01',
       stopPrice: 48.5, // $1.5 stop distance * 1000 = $1500 risk
+      tags: ['autotrade'],
     });
     const results = await runAutotradeRiskCheck([signal({ symbol: 'AAPL' })]);
     expect(results[0].ok).toBe(false);
@@ -273,6 +274,7 @@ describe('runAutotradeRiskCheck — batch orchestration', () => {
       entryPrice: 50,
       entryDate: '2026-01-01',
       stopPrice: 49,
+      tags: ['autotrade'],
     });
     createPosition({
       assetType: 'stock',
@@ -282,11 +284,42 @@ describe('runAutotradeRiskCheck — batch orchestration', () => {
       entryPrice: 30,
       entryDate: '2026-01-01',
       stopPrice: 29,
+      tags: ['autotrade'],
     });
     // MODERATE's concurrent-position cap is 2 — already at capacity.
     const results = await runAutotradeRiskCheck([signal({ symbol: 'AAPL' })]);
     expect(results[0].ok).toBe(false);
     expect(results[0].checks.find((c) => c.rule === 'max_concurrent_positions')?.passed).toBe(false);
+  });
+
+  it('ignores manually-placed (non-autotrade) positions entirely — they never count toward concurrent-position or aggregate-risk', async () => {
+    // No 'autotrade' tag on either — same shape a human's own Trade-page
+    // entries would have. Two of them (MODERATE's concurrent-position cap is
+    // 2) each sized huge on risk too, specifically to prove neither is just
+    // under the radar: if these counted, they alone would blow both caps
+    // below on their own, the same confusion a real user hit in practice.
+    createPosition({
+      assetType: 'stock',
+      symbol: 'MANUAL1',
+      side: 'long',
+      quantity: 1000,
+      entryPrice: 50,
+      entryDate: '2026-01-01',
+      stopPrice: 40, // $10 stop distance * 1000 = $10,000 risk — 10% of equity alone
+    });
+    createPosition({
+      assetType: 'stock',
+      symbol: 'MANUAL2',
+      side: 'long',
+      quantity: 1000,
+      entryPrice: 30,
+      entryDate: '2026-01-01',
+      stopPrice: 25,
+    });
+    const results = await runAutotradeRiskCheck([signal({ symbol: 'AAPL' })]);
+    expect(results[0].ok).toBe(true);
+    expect(results[0].checks.find((c) => c.rule === 'max_concurrent_positions')?.passed).toBe(true);
+    expect(results[0].checks.find((c) => c.rule === 'max_aggregate_open_risk')?.passed).toBe(true);
   });
 
   it('accumulates risk sequentially across a batch — signals that would each pass alone can jointly exhaust the cap', async () => {
@@ -314,6 +347,7 @@ describe('runAutotradeRiskCheck — batch orchestration', () => {
       quantity: 10,
       entryPrice: 100,
       entryDate: '2026-01-01',
+      tags: ['autotrade'],
     });
     db.prepare("UPDATE positions SET status = 'closed' WHERE id = ?").run(p1.id);
     const today = etDateStr();
@@ -328,6 +362,7 @@ describe('runAutotradeRiskCheck — batch orchestration', () => {
       quantity: 10,
       entryPrice: 100,
       entryDate: '2026-01-01',
+      tags: ['autotrade'],
     });
     db.prepare("UPDATE positions SET status = 'closed' WHERE id = ?").run(p2.id);
     db.prepare(
@@ -356,6 +391,7 @@ describe('runAutotradeRiskCheck — batch orchestration', () => {
         quantity: 10,
         entryPrice: 100,
         entryDate: '2026-07-01',
+        tags: ['autotrade'],
       });
       db.prepare("UPDATE positions SET status = 'closed' WHERE id = ?").run(p1.id);
       db.prepare(

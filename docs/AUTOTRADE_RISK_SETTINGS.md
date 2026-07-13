@@ -125,6 +125,12 @@ represent.
 *Example:* set to 15, with 2 positions currently open → 13 slots free. This check
 alone would let a new trade through.
 
+**Only counts positions auto-trading itself placed.** A position you entered
+manually from the Trade page never counts toward this — or toward max aggregate
+open risk below, or the daily P&L/consecutive-loss figures either. The Auto page's
+Monitoring panel and this check both look at the same auto-trade-only figure, so
+what you see there is what's actually gating new entries.
+
 ### Risk per trade (%)
 
 **How much of your account one single trade is allowed to lose if its stop is hit.**
@@ -192,6 +198,16 @@ out **at the same time** (a broad market gap, for instance) for more than your d
 drawdown limit was ever meant to allow — since the daily halt only reacts *after* the
 damage is done, this is the check that prevents the damage from being too large in
 the first place.
+
+**This is risk, not cash — and it's auto-trade's own risk, not your account's whole
+activity.** Two things that look related but aren't: having enough buying power to
+afford a position doesn't mean there's room in this budget (cash and risk are
+checked independently); and a position you placed manually from the Trade page
+never counts toward this figure, even though it's real money in the same account.
+If the Monitoring panel's "Aggregate open risk" tile shows plenty of headroom but a
+candidate is still failing this check, it's almost always one of auto-trade's *own*
+positions using up the budget you haven't accounted for — not a bug, and not your
+manual trades either.
 
 Stocks and options share this one budget too, same as max concurrent positions.
 
@@ -319,6 +335,19 @@ stopped it. It reads "no candidate checked yet" until the loop (or a manual **Ru
 screen**) has evaluated at least one — running a screen also gives you a fuller,
 per-candidate **approved/blocked** badge if you want more than just the latest one, or
 check the **Recent activity** feed for a `risk_check` / `blocked` entry.
+
+**"The Monitoring panel shows plenty of headroom, but a candidate still fails
+`max_aggregate_open_risk` (or another check)."** First, make sure you're reading the
+right tile — the Auto-Trade page has a separate Paper/Live/Live options section, each
+with its *own* "Open positions"/"Aggregate open risk" pair; they track completely
+independent books, so the Paper section's numbers say nothing about what's blocking a
+Live entry. Once you've confirmed you're looking at the right section: every figure
+on this page — concurrent positions, aggregate open risk, daily P&L, consecutive
+losses — counts *only* positions auto-trading itself placed. A manually-placed trade
+from the Trade page is real money in the same account, but it was never auto-trade's
+decision, so it's deliberately excluded from all of these. It won't inflate the
+numbers you see here, and it won't get silently protected by them either — you're
+managing that position's risk yourself.
 
 **"I want the loop to trade more."** In rough order of how likely each one is to be
 the actual bottleneck: raise **max aggregate open risk** first (per
