@@ -2246,6 +2246,72 @@ the replace step fails after the cancel step succeeds. Deliberately not
 attempted as part of this fix — revisit as its own, separately-discussed
 piece of work.
 
+**Follow-up (2026-07-13, continued) — the Auto page's live-positions table
+was missing new opens/closes even though the general Positions page showed
+them correctly. User bug report, confirmed and fixed; a related
+duplicate-order risk was found and closed alongside it.** Two distinct gaps,
+both in how a real Webull position can enter the `positions` table:
+
+1. The normal path — `materializeEntryFill()`, reached once
+   `reconcileOneLiveOrder()` observes the entry leg's fill — tags the new row
+   `['live', 'autotrade']`. Both the Auto page's live-positions table
+   (`listAutotradeLivePositions()`) and `getLivePortfolioSnapshot()` filter on
+   that tag, by design (`Follow-up (2026-07-10)` above).
+2. A second, generic path exists purely as a backstop:
+   `runWebullPositionsSync()` → `importFromPreview()` →
+   `mapWebullPosition()` (`providers/webull/positions.ts`) periodically
+   imports whatever Webull reports as actually held, tagged `['webull']`
+   only, with no link back to the order intent that produced it. This exists
+   to catch positions the order-based reconcile path missed entirely — but
+   when it's what ends up creating the row (e.g. a missed/late order-status
+   poll let the sync backstop run before `reconcileOneLiveOrder` observed the
+   fill), the result is a real, live position that's tag-invisible to
+   everything autotrade-scoped: not on the Auto page, not counted in its
+   aggregate open risk or P&L. It was still visible on the general Positions
+   page, which has no such filter — matching exactly what was reported.
+
+While tracing this, a second, more serious issue surfaced: `runLiveExecution`'s
+`skipSymbols` "already holds this symbol" dedup check read from
+`snapshot.openPositions`, which is *also* tag-scoped to `'autotrade'` — so
+neither an orphaned position like the one above, nor a manually-placed one,
+would stop the loop from placing a genuine duplicate live order on a symbol
+already held. That risk is independent of whether the position is ever
+"adopted" back into autotrade's own accounting, so it needed its own fix
+regardless.
+
+Fixed both, deliberately kept separate in scope:
+
+- **Dedup (safety-critical, broadened beyond tag scope on purpose):**
+  `skipSymbols` now comes from `listPositions({ status: 'open' })` — every
+  open position for a symbol blocks a new entry, regardless of who or what
+  created it. A human's manual position and the entry-order sizing/risk
+  checks that decide what to skip.
+- **Orphan adoption (bookkeeping, stays tag-scoped elsewhere on purpose):**
+  new `adoptOrphanedLivePositions()` in `liveExecute.ts`, called every loop
+  tick right after `runWebullPositionsSync()`. Matches an open,
+  `'webull'`-only-tagged position against a still-pending autotrade ENTRY
+  order (`role: 'entry'`, `positionId: null`) for the same symbol, then
+  retags it (`'live'`, `'autotrade'` added) and backfills `stopPrice`/
+  `targetPrice` from that order's intended levels if the position doesn't
+  already have its own. It deliberately does **not** try to set
+  `sourceIntentId` — `PositionPatch` doesn't support patching it after
+  creation, and it isn't needed for correctness: an adopted position still
+  closes correctly through the same generic sync backstop that adopted it
+  (`closePositionsFromPreview`'s `isWebullTracked()` already accepts the
+  `'live'` tag on its own). Runs unconditionally each tick, so it also heals
+  any position already orphaned before this fix existed, not just new ones
+  going forward. `getPortfolioSnapshot()`'s own risk/P&L accounting is
+  deliberately left as-is (tag-scoped) — once adopted, a position is tagged
+  and counts normally; nothing needed to change there.
+
+**Options are NOT affected by the orphan-adoption gap** — confirmed live
+options positions (`autotrade_live_options_positions`) have no analogous
+generic-import backstop; `syncLiveOptionsPositionsFromBroker` only closes
+positions it already knows about, it never creates untracked ones. The
+dedup broadening applies to equities only for the same reason (there's
+nothing equivalent to broaden for options' own entry path, which was already
+scoped correctly).
+
 ---
 
 ### Addendum: options trading scope (added after phases 1-7 shipped)

@@ -35,6 +35,7 @@ import {
   reconcileLiveOrders,
   runLiveExecution,
   syncAccountEquityFromBroker,
+  adoptOrphanedLivePositions,
 } from '../src/services/autotrading/liveExecute';
 
 const mockGetProvider = vi.mocked(getProvider);
@@ -506,6 +507,138 @@ describe('runLiveExecution', () => {
     expect(outcomes[0].reason).toMatch(/unexpected error/i);
     expect(outcomes[1]).toMatchObject({ symbol: 'MSFT', ok: true }); // NOT aborted by AAPL's throw
     expect(mockPlaceOrder).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips a symbol with an open position that leaked in untagged (e.g. via the Webull position-sync backstop) — not just autotrade-tagged ones', async () => {
+    // Same shape mapWebullPosition() produces for an orphaned import: real
+    // shares held at the broker, but never routed through materializeEntryFill
+    // (no 'autotrade' tag, no sourceIntentId). Before the fix, runLiveExecution's
+    // skipSymbols only looked at snapshot.openPositions (tag-filtered), so this
+    // wouldn't have been recognized as "already held" at all.
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO positions (asset_type, symbol, side, quantity, entry_price, entry_date, fees, multiplier, status, tags, created_at, updated_at)
+       VALUES ('stock','AAPL','long',10,100,'2026-07-01',0,1,'open',?,?,?)`,
+    ).run(JSON.stringify(['webull']), now, now);
+
+    setAutotradeConfig({
+      accountEquityUsd: 100_000,
+      riskProfile: 'MODERATE',
+      liveAccountId: 'ACC1',
+      liveTradingEnabled: true,
+      liveEnabledAt: Date.now(),
+      liveMaxOrderUsd: 50_000,
+      liveMaxDailyLossUsd: 5_000,
+      liveMaxOrdersPerDay: 20,
+      killSwitch: false,
+    });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100, MSFT: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-3' });
+
+    const outcomes = await runLiveExecution([
+      { signal: signal({ symbol: 'AAPL' }) }, // already "held" via the untagged row above
+      { signal: signal({ symbol: 'MSFT' }) }, // genuinely free — must still go through
+    ]);
+
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', ok: false, reason: 'Already has an open live position' });
+    expect(outcomes[1]).toMatchObject({ symbol: 'MSFT', ok: true }); // not over-broadened to block everything
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1); // only MSFT ever reached the broker
+  });
+});
+
+describe('adoptOrphanedLivePositions', () => {
+  const okCtx = {
+    equity: 100_000,
+    dailyPnl: 0,
+    tradesToday: 0,
+    consecutiveLosses: 0,
+    openRisk: 0,
+    openPositionsCount: 0,
+    maxConcurrentPositions: 2,
+    correlatedNotional: 0,
+    riskPerTradePct: 1,
+    maxDailyDrawdownPct: 3,
+    stepDownAfterLosses: 2,
+    stepDownSizeCutPct: 50,
+    maxAggregateOpenRiskPct: 2,
+    maxCorrelatedExposurePct: 6,
+    maxTradesPerDay: 6,
+  };
+
+  /** A still-pending (not yet reconciled/materialized) autotrade entry order —
+   *  same setup listPendingLiveOrders' own describe block uses. */
+  async function pendingEntryFor(symbol: string) {
+    mockGetProvider.mockReturnValue(quoteReturning({ [symbol]: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: `WB-${symbol}` });
+    const result = evaluateRiskCheck(signal({ symbol }), okCtx);
+    await attemptLiveEntry(signal({ symbol }), result, 'MODERATE', liveConfig());
+  }
+
+  function insertOrphan(symbol: string, tags: string[], overrides: Partial<Record<string, unknown>> = {}) {
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO positions (asset_type, symbol, side, quantity, entry_price, entry_date, fees, multiplier, status, tags, stop_price, target_price, created_at, updated_at)
+       VALUES ('stock',?,'long',10,100,'2026-07-01',0,1,'open',?,?,?,?,?)`,
+    ).run(symbol, JSON.stringify(tags), overrides.stopPrice ?? null, overrides.targetPrice ?? null, now, now);
+  }
+
+  it('adopts an orphaned webull-only position that matches a pending autotrade entry, backfilling its missing stop/target', async () => {
+    await pendingEntryFor('AAPL'); // stop 95, target 110 (signal() fixture defaults)
+    insertOrphan('AAPL', ['webull']); // no stop/target of its own — mapWebullPosition() never sets these
+
+    const result = adoptOrphanedLivePositions();
+
+    expect(result).toEqual({ adopted: 1 });
+    const [pos] = listPositions({ status: 'open', symbol: 'AAPL' });
+    expect(pos.tags).toEqual(expect.arrayContaining(['webull', 'live', 'autotrade']));
+    expect(pos.stopPrice).toBe(95);
+    expect(pos.targetPrice).toBe(110);
+  });
+
+  it('leaves an orphan alone when no pending entry matches its symbol', async () => {
+    await pendingEntryFor('MSFT'); // pending, but for a DIFFERENT symbol
+    insertOrphan('AAPL', ['webull']);
+
+    const result = adoptOrphanedLivePositions();
+
+    expect(result).toEqual({ adopted: 0 });
+    const [pos] = listPositions({ status: 'open', symbol: 'AAPL' });
+    expect(pos.tags).toEqual(['webull']); // untouched
+  });
+
+  it('never touches a position already tagged autotrade, even with a matching pending entry', async () => {
+    await pendingEntryFor('AAPL');
+    insertOrphan('AAPL', ['live', 'autotrade']); // NOT the ['webull']-only shape this heals
+
+    const result = adoptOrphanedLivePositions();
+
+    expect(result).toEqual({ adopted: 0 });
+  });
+
+  it('does not overwrite an orphan that already has its own stop/target', async () => {
+    await pendingEntryFor('AAPL'); // stop 95, target 110
+    insertOrphan('AAPL', ['webull'], { stopPrice: 80, targetPrice: 130 }); // deliberately different
+
+    adoptOrphanedLivePositions();
+
+    const [pos] = listPositions({ status: 'open', symbol: 'AAPL' });
+    expect(pos.stopPrice).toBe(80); // kept, not replaced by the matched order's 95
+    expect(pos.targetPrice).toBe(130);
+  });
+
+  it('ignores a position without the webull tag, even if it matches a pending entry', async () => {
+    await pendingEntryFor('AAPL');
+    insertOrphan('AAPL', ['some-other-tag']); // not the specific leaked-import shape
+
+    const result = adoptOrphanedLivePositions();
+
+    expect(result).toEqual({ adopted: 0 });
+  });
+
+  it('is a no-op with no orphans or no pending entries at all', () => {
+    expect(adoptOrphanedLivePositions()).toEqual({ adopted: 0 });
   });
 });
 

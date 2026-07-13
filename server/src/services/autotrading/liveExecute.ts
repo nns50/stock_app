@@ -35,7 +35,7 @@ import {
 // service import cycle.
 import { pendingLiveOptionsOrdersRisk } from '../../db/autotradeLiveOptionsOrders';
 import { listOpenLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
-import { createPosition, listPositions, addExit, Position } from '../../db/positions';
+import { createPosition, listPositions, updatePosition, addExit, Position } from '../../db/positions';
 import { realizedPnlOf, initialRiskOf, computeStreaksAndDrawdown } from '../pnl';
 import { TradeSignal } from './decide';
 import { RiskCheckContext, RiskCheckResult, correlatedNotional, evaluateRiskCheck } from './riskCheck';
@@ -230,6 +230,65 @@ export function combinedLiveOpenRisk(): { risk: number; count: number } {
     risk: eq.openRisk + optPositionsRisk + pendingEq.risk + pendingOpt.risk,
     count: eq.openPositionsCount + optPositions.length + pendingEq.count + pendingOpt.count,
   };
+}
+
+/**
+ * Heal a position that leaked into the journal via the generic Webull
+ * position-sync backstop (providers/webull/positions.ts's importFromPreview,
+ * tagged ['webull'] only) instead of the normal materializeEntryFill() path
+ * below — e.g. because reconcileOneLiveOrder() failed to observe the fill
+ * (a missed/late order-status poll) before that backstop sync ran and
+ * imported the resulting real Webull holding as an untracked position.
+ *
+ * A position stuck this way is invisible to isAutotradePosition() — the Auto
+ * page's live-positions table, and getLivePortfolioSnapshot()'s own
+ * aggregate-risk/P&L accounting — even though it's real capital the loop
+ * itself is responsible for. runLiveExecution()'s skipSymbols check (above)
+ * is already broadened to not place a DUPLICATE order against it regardless
+ * of tag, so this function is about healing the bookkeeping, not preventing
+ * a double-entry — that's already covered.
+ *
+ * Matches an orphaned 'webull'-only-tagged open position against a still-
+ * pending, not-yet-materialized autotrade ENTRY order (role: 'entry',
+ * positionId: null) for the same symbol, then retags it and backfills a
+ * missing stop/target from that order's own intended levels. Deliberately
+ * does NOT set sourceIntentId (PositionPatch doesn't support patching it,
+ * and it isn't needed for correctness): materializeExitFill()'s own lookup
+ * needs it, but an adopted position still closes correctly via the SAME
+ * generic backstop that adopted it (closePositionsFromPreview's
+ * isWebullTracked() already accepts the 'live' tag on its own). Runs every
+ * tick (not just right after a fresh import), so it also heals any position
+ * already orphaned before this existed, not just new ones going forward.
+ */
+export function adoptOrphanedLivePositions(): { adopted: number } {
+  const orphans = listPositions({ status: 'open' }).filter((p) => p.tags.includes('webull') && !isAutotradePosition(p));
+  if (orphans.length === 0) return { adopted: 0 };
+  const pendingEntries = listPendingLiveOrders().filter((o) => o.role === 'entry' && o.positionId === null);
+  if (pendingEntries.length === 0) return { adopted: 0 };
+
+  let adopted = 0;
+  for (const p of orphans) {
+    const match = pendingEntries.find((o) => o.symbol === p.symbol);
+    if (!match) continue;
+    updatePosition(p.id, {
+      tags: Array.from(new Set([...p.tags, ...AUTOTRADE_TAGS])),
+      stopPrice: p.stopPrice ?? match.stopPrice,
+      targetPrice: p.targetPrice ?? match.targetPrice,
+    });
+    logAutotradeEvent({
+      symbol: p.symbol,
+      stage: 'execution',
+      action: 'live_position_adopted',
+      detail: {
+        positionId: p.id,
+        intentId: match.intentId,
+        reason: 'Webull position-sync import matched a pending autotrade entry order',
+      },
+      riskProfile: match.riskProfile,
+    });
+    adopted++;
+  }
+  return { adopted };
 }
 
 export interface ListAutotradeLivePositionsFilter {
@@ -510,8 +569,20 @@ export async function runLiveExecution(candidates: { signal: TradeSignal }[]): P
   // pairs). listPendingLiveOrders() covers all three states (its row persists
   // until the position both materializes and closes). attemptLiveEntry()
   // re-checks this authoritatively; this just avoids risk-checking a known dup.
+  //
+  // Deliberately ANY open position for the symbol here, not snapshot's own
+  // 'autotrade'-tag-filtered openPositions -- a real holding that leaked into
+  // the journal untagged (the generic Webull position-sync backstop importing
+  // a fill reconcile missed, before adoptOrphanedLivePositions() below can
+  // heal it) is still real shares in the same account; failing to recognize
+  // it here means placing a genuine duplicate real-money order for a symbol
+  // already held, not just a cosmetic dashboard gap. getLivePortfolioSnapshot's
+  // own tag-filtered openPositions is still correct for THIS function's risk/
+  // P&L accounting below (auto-trade's own performance, deliberately not
+  // conflated with a human's separate manual trading) -- only the dedup check
+  // needs the wider net.
   const skipSymbols = new Set([
-    ...snapshot.openPositions.map((p) => p.symbol),
+    ...listPositions({ status: 'open' }).map((p) => p.symbol),
     ...listPendingLiveOrders().map((o) => o.symbol),
   ]);
 

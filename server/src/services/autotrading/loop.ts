@@ -18,6 +18,7 @@ import {
   reconcileLiveOrders,
   syncAccountEquityFromBroker,
   checkLiveEquityTimeExits,
+  adoptOrphanedLivePositions,
 } from './liveExecute';
 import {
   runLiveOptionsExecution,
@@ -290,6 +291,19 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       if (liveCfg.liveAccountId) await runWebullPositionsSync(liveCfg.liveAccountId);
     } catch (e) {
       console.error('[autotrade-loop] live position-truth sync failed:', (e as Error).message);
+    }
+    // Runs right after the sync above so a position it just imported
+    // untracked (tagged 'webull' only) gets a chance to be healed the SAME
+    // tick, if it matches a pending autotrade entry — see the function's own
+    // doc comment for why this exists (reconcileLiveOrders() missing a fill
+    // before the sync above ran and imported it as an untagged orphan,
+    // invisible to the Auto page's live-positions table and its own risk/P&L
+    // accounting). Sync/DB-only, no broker calls of its own; caught so an
+    // unexpected DB error here can't take down anything else in this tick.
+    try {
+      adoptOrphanedLivePositions();
+    } catch (e) {
+      console.error('[autotrade-loop] adopting orphaned live positions failed:', (e as Error).message);
     }
     // Runs after the reconcile/sync above for the same reason checkLiveOptionsExits
     // runs after ITS OWN reconcile/sync below: a position closed (or found
