@@ -252,13 +252,19 @@ export function combinedLiveOpenRisk(): { risk: number; count: number } {
  * pending, not-yet-materialized autotrade ENTRY order (role: 'entry',
  * positionId: null) for the same symbol, then retags it and backfills a
  * missing stop/target from that order's own intended levels. Deliberately
- * does NOT set sourceIntentId (PositionPatch doesn't support patching it,
- * and it isn't needed for correctness): materializeExitFill()'s own lookup
- * needs it, but an adopted position still closes correctly via the SAME
- * generic backstop that adopted it (closePositionsFromPreview's
- * isWebullTracked() already accepts the 'live' tag on its own). Runs every
- * tick (not just right after a fresh import), so it also heals any position
- * already orphaned before this existed, not just new ones going forward.
+ * does NOT set sourceIntentId (PositionPatch doesn't support patching it
+ * post-creation) — an open, autotrade-tagged, sourceIntentId-less position is
+ * itself the signal materializeEntryFill() uses (see its own doc comment) to
+ * recognize "already adopted, link me instead of creating a duplicate" once
+ * reconcile's normal path eventually catches up and observes the same fill.
+ * That linking is what makes an adopted position closeable via the PRECISE
+ * bracket-exit-leg path (materializeExitFill(), now matched by
+ * autotrade_live_orders.positionId as well as sourceIntentId) instead of
+ * only the generic sync's own close-detection backstop, which prices an
+ * exit from an ESTIMATE (no fill to read a price from) rather than the
+ * broker's actual fill price. Runs every tick (not just right after a fresh
+ * import), so it also heals any position already orphaned before this
+ * existed, not just new ones going forward.
  */
 export function adoptOrphanedLivePositions(): { adopted: number } {
   const orphans = listPositions({ status: 'open' }).filter((p) => p.tags.includes('webull') && !isAutotradePosition(p));
@@ -811,7 +817,12 @@ function reconcileOneLiveOrder(
     if (exitLeg) {
       const fallbackPrice = exitLeg.comboType === 'STOP_LOSS' ? stopPrice : targetPrice;
       try {
-        const recorded = materializeExitFill(intent, exitLeg.filledPrice ?? fallbackPrice, riskProfile);
+        const recorded = materializeExitFill(
+          intent,
+          meta.positionId,
+          exitLeg.filledPrice ?? fallbackPrice,
+          riskProfile,
+        );
         return recorded ? { changed: true, action: 'exit_filled' } : { changed: false };
       } catch (err) {
         const message = (err as Error).message;
@@ -841,6 +852,37 @@ function materializeEntryFill(
   filledQty: number,
   filledPrice: number,
 ): void {
+  // This fill may belong to a position adoptOrphanedLivePositions() already
+  // adopted under this SAME intent, earlier: reconcile missed the fill on an
+  // earlier tick, the generic Webull position-sync backstop imported the real
+  // holding untagged, and adoption retagged it before THIS (later) tick's
+  // reconcile finally caught up and observed the broker-reported fill. An
+  // adopted orphan never has sourceIntentId set (adoption deliberately can't
+  // patch it post-creation — see adoptOrphanedLivePositions' own doc comment),
+  // so an open, autotrade-tagged, sourceIntentId-less position for this exact
+  // symbol is a reliable "already handled, just needs linking" signal — not
+  // some unrelated already-tracked position, which always has ITS OWN
+  // sourceIntentId set at creation. Skipping this check would create a
+  // genuine SECOND position for the SAME real fill; the generic sync's own
+  // close-detection half would then "clean up" the resulting doubled
+  // quantity by auto-closing the older (adopted) one with a FABRICATED
+  // estimated exit price, corrupting the journal with a trade that never
+  // happened. Link, don't duplicate.
+  const adopted = listPositions({ status: 'open', symbol: intent.symbol }).find(
+    (p) => isAutotradePosition(p) && p.sourceIntentId === null,
+  );
+  if (adopted) {
+    setLiveOrderPositionId(intent.id, adopted.id);
+    logAutotradeEvent({
+      symbol: intent.symbol,
+      stage: 'execution',
+      action: 'live_position_linked_to_adopted',
+      detail: { positionId: adopted.id, quantity: filledQty, entryPrice: filledPrice },
+      riskProfile,
+    });
+    return;
+  }
+
   const position = createPosition({
     assetType: 'stock',
     symbol: intent.symbol,
@@ -866,13 +908,21 @@ function materializeEntryFill(
 
 /** Record an exit against the open autotrade position this intent produced.
  *  Returns false (a no-op) if the position can't be found or is already
- *  closed — defensive against a double-reconcile of the same fill. Looks up
- *  the position via sourceIntentId (set on entry fill by materializeEntryFill)
- *  rather than autotrade_live_orders.positionId, which is a convenience
- *  cache, not the source of truth. */
-function materializeExitFill(intent: OrderIntentRecord, exitPrice: number, riskProfile: string): boolean {
+ *  closed — defensive against a double-reconcile of the same fill. Matches
+ *  EITHER sourceIntentId (set on entry fill by materializeEntryFill's normal
+ *  create path) OR autotrade_live_orders.positionId (also true for a
+ *  position materializeEntryFill LINKED to instead of creating, which never
+ *  gets a sourceIntentId — see that function's own doc comment) — the latter
+ *  alone would be sufficient since setLiveOrderPositionId is called on both
+ *  paths, but matching both is the more conservative change. */
+function materializeExitFill(
+  intent: OrderIntentRecord,
+  positionId: number | null,
+  exitPrice: number,
+  riskProfile: string,
+): boolean {
   const position = listPositions({ status: 'open', symbol: intent.symbol }).find(
-    (p) => p.sourceIntentId === intent.id && isAutotradePosition(p),
+    (p) => isAutotradePosition(p) && (p.sourceIntentId === intent.id || (positionId !== null && p.id === positionId)),
   );
   if (!position) return false;
   const closed = addExit(position.id, {
