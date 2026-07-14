@@ -233,14 +233,29 @@ export function combinedLiveOpenRisk(): { risk: number; count: number } {
 }
 
 /**
- * Heal a position that leaked into the journal via the generic Webull
- * position-sync backstop (providers/webull/positions.ts's importFromPreview,
- * tagged ['webull'] only) instead of the normal materializeEntryFill() path
- * below — e.g. because reconcileOneLiveOrder() failed to observe the fill
- * (a missed/late order-status poll) before that backstop sync ran and
- * imported the resulting real Webull holding as an untracked position.
+ * Heal a position autotrade genuinely opened but that ended up NOT tagged
+ * 'autotrade', via either of two known routes:
  *
- * A position stuck this way is invisible to isAutotradePosition() — the Auto
+ * 1. The generic Webull position-sync backstop (providers/webull/positions.ts's
+ *    importFromPreview, tagged ['webull'] only) beat reconcileOneLiveOrder()
+ *    to observing the fill and imported the real holding as an untracked
+ *    position — no sourceIntentId (that backstop doesn't set one), matched
+ *    below by SYMBOL against a still-pending entry order.
+ * 2. The GENERIC, human-Trade-page-shaped order reconcile
+ *    (services/trading/reconcile.ts's reconcileIntent/recordFillAsPosition)
+ *    observed the fill FIRST — reachable for an autotrade-placed order too,
+ *    since order_intents carries no "who placed this" column — and tagged the
+ *    resulting position plain ['live'], WITH sourceIntentId set (that path
+ *    does set it). Once that generic path transitions the intent to the
+ *    terminal 'filled' state, reconcileOneLiveOrder()'s own
+ *    `!isTerminal(intent.state)` guard permanently locks autotrade's own
+ *    reconcile out of ever reaching this intent again — reconcileIntent() now
+ *    refuses to touch an autotrade-owned intent at all (fixed at the source),
+ *    but that fix doesn't retroactively heal a position ALREADY stuck this
+ *    way, which is what this branch is for. Matched below by sourceIntentId
+ *    (exact, since it's already set correctly) rather than symbol.
+ *
+ * A position stuck either way is invisible to isAutotradePosition() — the Auto
  * page's live-positions table, and getLivePortfolioSnapshot()'s own
  * aggregate-risk/P&L accounting — even though it's real capital the loop
  * itself is responsible for. runLiveExecution()'s skipSymbols check (above)
@@ -248,39 +263,38 @@ export function combinedLiveOpenRisk(): { risk: number; count: number } {
  * of tag, so this function is about healing the bookkeeping, not preventing
  * a double-entry — that's already covered.
  *
- * Matches an orphaned 'webull'-only-tagged open position against a still-
- * pending, not-yet-materialized autotrade ENTRY order (role: 'entry',
- * positionId: null) for the same symbol, then retags it and backfills a
- * missing stop/target from that order's own intended levels. Deliberately
- * does NOT set sourceIntentId (PositionPatch doesn't support patching it
- * post-creation) — an open, autotrade-tagged, sourceIntentId-less position is
- * itself the signal materializeEntryFill() uses (see its own doc comment) to
- * recognize "already adopted, link me instead of creating a duplicate" once
- * reconcile's normal path eventually catches up and observes the same fill.
- * That linking is what makes an adopted position closeable via the PRECISE
- * bracket-exit-leg path (materializeExitFill(), now matched by
- * autotrade_live_orders.positionId as well as sourceIntentId) instead of
- * only the generic sync's own close-detection backstop, which prices an
- * exit from an ESTIMATE (no fill to read a price from) rather than the
- * broker's actual fill price. Runs every tick (not just right after a fresh
- * import), so it also heals any position already orphaned before this
- * existed, not just new ones going forward.
+ * Retags the matched position and backfills a missing stop/target from the
+ * order's own intended levels, and links autotrade_live_orders.positionId —
+ * needed here (unlike historically for route 1's orphans, which used to rely
+ * on materializeEntryFill() to link it once reconcile caught up) because
+ * route 2's intent is terminal and will NEVER be revisited by
+ * reconcileOneLiveOrder() again to do that linking itself. Harmless to also
+ * do eagerly for route 1. Runs every tick (not just right after a fresh
+ * import), so it also heals any position already stuck before this existed,
+ * not just new ones going forward.
  */
 export function adoptOrphanedLivePositions(): { adopted: number } {
-  const orphans = listPositions({ status: 'open' }).filter((p) => p.tags.includes('webull') && !isAutotradePosition(p));
+  const orphans = listPositions({ status: 'open' }).filter(
+    (p) =>
+      !isAutotradePosition(p) && (p.tags.includes('webull') || (p.tags.includes('live') && p.sourceIntentId !== null)),
+  );
   if (orphans.length === 0) return { adopted: 0 };
   const pendingEntries = listPendingLiveOrders().filter((o) => o.role === 'entry' && o.positionId === null);
   if (pendingEntries.length === 0) return { adopted: 0 };
 
   let adopted = 0;
   for (const p of orphans) {
-    const match = pendingEntries.find((o) => o.symbol === p.symbol);
+    const match =
+      p.sourceIntentId !== null
+        ? pendingEntries.find((o) => o.intentId === p.sourceIntentId)
+        : pendingEntries.find((o) => o.symbol === p.symbol);
     if (!match) continue;
     updatePosition(p.id, {
       tags: Array.from(new Set([...p.tags, ...AUTOTRADE_TAGS])),
       stopPrice: p.stopPrice ?? match.stopPrice,
       targetPrice: p.targetPrice ?? match.targetPrice,
     });
+    setLiveOrderPositionId(match.intentId, p.id);
     logAutotradeEvent({
       symbol: p.symbol,
       stage: 'execution',
@@ -288,7 +302,10 @@ export function adoptOrphanedLivePositions(): { adopted: number } {
       detail: {
         positionId: p.id,
         intentId: match.intentId,
-        reason: 'Webull position-sync import matched a pending autotrade entry order',
+        reason:
+          p.sourceIntentId !== null
+            ? "A generic order reconcile (not autotrade's own) materialized this fill first, tagging it plain 'live'"
+            : 'Webull position-sync import matched a pending autotrade entry order',
       },
       riskProfile: match.riskProfile,
     });

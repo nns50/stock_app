@@ -3,6 +3,7 @@ import { initDb, db } from '../src/db';
 import { config } from '../src/config';
 import { createIntent, getIntent, transitionIntent } from '../src/db/orders';
 import { addExit, createPosition, listPositions } from '../src/db/positions';
+import { recordLiveOrder } from '../src/db/autotradeLiveOrders';
 import { mapWebullStatus, reconcileAllWorking, reconcileIntent } from '../src/services/trading/reconcile';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
@@ -108,6 +109,35 @@ describe('reconcileIntent', () => {
     const r = await reconcileIntent(id, 'ACC1');
     expect(r).toMatchObject({ ok: true, changed: false });
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('defers entirely to autotrade for an autotrade-owned intent — no broker call, no state transition, no Position', async () => {
+    // Regression: order_intents has no "who placed this" column, so this
+    // generic reconcile used to be reachable for an autotrade-placed order
+    // too. If it observed the fill first, it transitioned the intent to the
+    // TERMINAL 'filled' state and recorded a plain ['live']-tagged Position —
+    // permanently locking autotrade's own reconcile out (its own
+    // !isTerminal(intent.state) guard) and leaving real, autotrade-opened
+    // capital invisible to isAutotradePosition() forever. Confirmed via a
+    // real user report (a live position that was genuinely autotrade-placed
+    // never showing on the Auto page).
+    const id = placedIntentId();
+    recordLiveOrder({
+      intentId: id,
+      symbol: 'AMC',
+      stopPrice: 1.7,
+      targetPrice: 2.2,
+      riskAmount: 20,
+      riskProfile: 'MODERATE',
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    const r = await reconcileIntent(id, 'ACC1');
+
+    expect(r).toEqual({ ok: true, changed: false, intent: expect.objectContaining({ id, state: 'acknowledged' }) });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(getIntent(id)?.state).toBe('acknowledged'); // untouched, not flipped to filled
+    expect(listPositions()).toHaveLength(0); // no plain ['live']-tagged Position recorded
   });
 
   it('records a filled OPEN order as a tracked Position (buy → long, at the fill price)', async () => {
@@ -402,5 +432,34 @@ describe('reconcileAllWorking', () => {
     const r = await reconcileAllWorking('ACC1');
     expect(r).toMatchObject({ ok: true, reconciled: 2, changed: 1 });
     expect(getIntent(filledId)?.state).toBe('filled');
+  });
+
+  it('skips an autotrade-owned intent mixed in with human ones — no broker call, no state change for it', async () => {
+    const autotradeId = working('cid-auto');
+    recordLiveOrder({
+      intentId: autotradeId,
+      symbol: 'AMC',
+      stopPrice: 1.7,
+      targetPrice: 2.2,
+      riskAmount: 20,
+      riskProfile: 'MODERATE',
+    });
+    const humanId = working(CID); // created second → higher id → reconciled first (newest-first)
+
+    // Only ONE broker pull pair is mocked — if the autotrade-owned intent
+    // wrongly reached the broker too, this would either throw (exhausted
+    // mock) or the assertions below would catch the wrong state.
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp([filledEnvelope]));
+
+    const r = await reconcileAllWorking('ACC1');
+    expect(r.reconciled).toBe(2); // both still counted as "working"
+    expect(r.results.find((x) => x.id === autotradeId)).toMatchObject({ changed: false });
+    expect(r.results.find((x) => x.id === humanId)).toMatchObject({ changed: true });
+    expect(getIntent(autotradeId)?.state).toBe('acknowledged'); // untouched
+    expect(getIntent(humanId)?.state).toBe('filled');
+    expect(listPositions()).toHaveLength(1); // only the human fill got recorded
+    expect(listPositions()[0].sourceIntentId).toBe(humanId);
   });
 });

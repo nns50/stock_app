@@ -2,6 +2,7 @@ import { OrderIntentRecord, getIntent, listIntents, transitionIntent } from '../
 import { Position, addExit, createPosition, listPositions } from '../../db/positions';
 import { OrderState, canTransition, isTerminal } from './orderLifecycle';
 import { WebullOrderStatus, webullOrderStatus } from '../../providers/webull/orders';
+import { isAutotradeIntent } from '../../db/autotradeLiveOrders';
 
 // ---------------------------------------------------------------------------
 // Reconcile an order intent's state with the broker (design §6 "status reconcile").
@@ -63,6 +64,30 @@ function hasOpenPositionForIntent(intent: OrderIntentRecord): boolean {
 export async function reconcileIntent(id: number, accountId: string): Promise<ReconcileResult> {
   const intent = getIntent(id);
   if (!intent) return { ok: false, changed: false, error: `No order intent ${id}.` };
+
+  // order_intents has no "who placed this" column (autotrade and the human
+  // Trade page share the one table — see db/autotradeLiveOrders.ts's own
+  // header comment), so without this guard this GENERIC reconcile — reached
+  // via a human's Trade-page Refresh/Refresh-all/Cancel/Replace, or the
+  // background Webull sync scheduler (services/webullPositionsScheduler.ts,
+  // on its own independent timer) — can observe an autotrade-placed order's
+  // fill before autotrade's OWN reconcile
+  // (autotrading/liveExecute.ts's reconcileLiveOrders/reconcileOneLiveOrder,
+  // on its own 60s loop tick) gets a turn. If it does, transitionIntent()
+  // below moves the intent to 'filled' — a TERMINAL state (no further
+  // transitions, orderLifecycle.ts) — and recordFillAsPosition() tags the
+  // resulting Position plain `['live']`. Because 'filled' is terminal,
+  // autotrade's own reconcile's `!isTerminal(intent.state)` guard then
+  // PERMANENTLY blocks it from ever materializing (or linking, see #266) the
+  // position itself: real, autotrade-opened capital left stuck invisible to
+  // isAutotradePosition() — the Auto page's live-positions table and its own
+  // risk/P&L accounting — forever. Confirmed via a real user report (a live
+  // position that was genuinely autotrade-placed, showing on Positions but
+  // never on the Auto page). Autotrade's own intents are exclusively its own
+  // reconcile's job from here on; this path defers entirely rather than just
+  // skipping recordFillAsPosition — transitioning the intent's STATE here
+  // would independently trip the same terminal-state lockout.
+  if (isAutotradeIntent(id)) return { ok: true, changed: false, intent };
 
   // A bracket's own `state` only ever reflects its MASTER (entry) leg — the
   // instant that fills it reads 'filled' and, since 'filled' is terminal,
