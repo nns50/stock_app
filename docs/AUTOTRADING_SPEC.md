@@ -2360,6 +2360,71 @@ on the Auto page) wasn't exactly reproduced by the sequence above, which
 predicts the correctly-linked position ends up visible. Continuing to
 investigate the exact SHPH case with the user.
 
+**Follow-up (2026-07-14, continued) — found the actual root cause of the
+SHPH report: a THIRD, distinct way an autotrade fill can end up untagged.
+Confirmed via direct evidence (the position's own tags, inspected in the
+UI) rather than further guessing, then fixed at the source.** The tell:
+SHPH's position had exactly `tags: ['live']` — no `'webull'`, no
+`'autotrade'` — which doesn't match either of the two shapes the fixes
+above already handle. Traced (with an exhaustive repo-wide sweep of every
+`createPosition`/`updatePosition` call site, not just the autotrade-side
+ones) to the ONE place in the codebase that writes that literal:
+`services/trading/reconcile.ts`'s `recordFillAsPosition()` — the generic,
+human-Trade-page-shaped order reconcile.
+
+Root cause: `order_intents` has no "who placed this" column — autotrade and
+the human Trade page share the one table. Autotrade's own reconcile
+(`autotrading/liveExecute.ts`'s `reconcileLiveOrders()`) watches its own
+orders via a side table on its own 60-second loop tick, but the GENERIC
+reconcile (`reconcile.ts`'s `reconcileIntent()`/`reconcileAllWorking()`) —
+reachable via a human's Trade-page Refresh/Refresh-all/Cancel/Replace, *or*
+the independently-scheduled background Webull sync
+(`webullPositionsScheduler.ts`, configurable down to a 60-second interval
+of its own) — polls **every** non-terminal intent with no way to know some
+of them are autotrade's. If it observed an autotrade-placed fill first, it
+transitioned the intent to the TERMINAL `filled` state and recorded a plain
+`['live']`-tagged position via `recordFillAsPosition()`. Because `filled`
+has no further transitions, autotrade's own reconcile's own
+`!isTerminal(intent.state)` guard then permanently locked it out of ever
+materializing (or linking) that position itself — real, autotrade-opened
+capital stuck invisible to `isAutotradePosition()` forever. This requires
+no bad input, just two independently-scheduled reconcile loops racing over
+one shared, unpartitioned table — entirely plausible in normal operation,
+not an edge case.
+
+Fixed at the source: `reconcileIntent()` now checks
+`isAutotradeIntent(id)` (`db/autotradeLiveOrders.ts`, already existed) as
+its very first step and, if true, returns immediately — no broker call, no
+state transition, nothing. Autotrade's own intents are exclusively its own
+reconcile's responsibility from here on; the generic path must defer
+*entirely*, not just skip `recordFillAsPosition()` — transitioning the
+intent's state here would independently trip the same terminal-state
+lockout even without recording a position.
+
+That prevents new occurrences, but doesn't retroactively heal a position
+already stuck this way (like the real SHPH one). `adoptOrphanedLivePositions()`
+is broadened with a second matching branch for exactly this shape: an open,
+non-`autotrade`-tagged position tagged `'live'` **with `sourceIntentId`
+set** (that path does set it, unlike the `'webull'`-import orphan) is
+matched by `sourceIntentId` directly (precise — no symbol lookup needed)
+against a still-pending autotrade entry, then retagged. Also now links
+`autotrade_live_orders.positionId` during adoption itself (not deferred to
+a later reconcile catching up, as the `'webull'`-orphan branch could rely
+on) — necessary here specifically, because THIS orphan's intent is
+terminal and will never be revisited by autotrade's own reconcile to do
+that linking otherwise. Since adoption runs unconditionally every loop
+tick, this means the already-affected SHPH position heals itself
+automatically once this ships — no manual fix needed on the account.
+
+Verified with dedicated tests at both layers: `reconcileIntent()`/
+`reconcileAllWorking()` now proven to skip an autotrade-owned intent (no
+broker call, no state change, no position — mixed in with a normal human
+order to confirm only the human one still reconciles), and
+`adoptOrphanedLivePositions()` proven to adopt the new orphan shape,
+matched precisely by `sourceIntentId` and NOT falsely matched by symbol
+alone. Confirmed both fail without the fix before confirming they pass
+with it.
+
 ---
 
 ### Addendum: options trading scope (added after phases 1-7 shipped)

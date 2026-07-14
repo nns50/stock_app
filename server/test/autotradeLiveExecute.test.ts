@@ -601,9 +601,17 @@ describe('adoptOrphanedLivePositions', () => {
   function insertOrphan(symbol: string, tags: string[], overrides: Partial<Record<string, unknown>> = {}) {
     const now = Date.now();
     db.prepare(
-      `INSERT INTO positions (asset_type, symbol, side, quantity, entry_price, entry_date, fees, multiplier, status, tags, stop_price, target_price, created_at, updated_at)
-       VALUES ('stock',?,'long',10,100,'2026-07-01',0,1,'open',?,?,?,?,?)`,
-    ).run(symbol, JSON.stringify(tags), overrides.stopPrice ?? null, overrides.targetPrice ?? null, now, now);
+      `INSERT INTO positions (asset_type, symbol, side, quantity, entry_price, entry_date, fees, multiplier, status, tags, stop_price, target_price, source_intent_id, created_at, updated_at)
+       VALUES ('stock',?,'long',10,100,'2026-07-01',0,1,'open',?,?,?,?,?,?)`,
+    ).run(
+      symbol,
+      JSON.stringify(tags),
+      overrides.stopPrice ?? null,
+      overrides.targetPrice ?? null,
+      overrides.sourceIntentId ?? null,
+      now,
+      now,
+    );
   }
 
   it('adopts an orphaned webull-only position that matches a pending autotrade entry, backfilling its missing stop/target', async () => {
@@ -661,6 +669,47 @@ describe('adoptOrphanedLivePositions', () => {
 
   it('is a no-op with no orphans or no pending entries at all', () => {
     expect(adoptOrphanedLivePositions()).toEqual({ adopted: 0 });
+  });
+
+  // Regression: a SECOND, distinct way a real autotrade fill can end up
+  // untagged — services/trading/reconcile.ts's generic (human-Trade-page-
+  // shaped) reconcile observing the fill before autotrade's own reconcile
+  // does, tagging the position plain ['live'] (with sourceIntentId already
+  // set, unlike the webull-import orphan shape above). Matched by
+  // sourceIntentId, not symbol, since it's already precise.
+  it('adopts a plain-"live"-tagged position with a matching sourceIntentId, matched precisely (not by symbol)', async () => {
+    await pendingEntryFor('AAPL');
+    const intentId = listIntents()[0].id;
+    insertOrphan('AAPL', ['live'], { sourceIntentId: intentId }); // no stop/target of its own
+
+    const result = adoptOrphanedLivePositions();
+
+    expect(result).toEqual({ adopted: 1 });
+    const [pos] = listPositions({ status: 'open', symbol: 'AAPL' });
+    expect(pos.tags).toEqual(expect.arrayContaining(['live', 'autotrade']));
+    expect(pos.stopPrice).toBe(95);
+    expect(pos.targetPrice).toBe(110);
+    expect(getLiveOrder(intentId)?.positionId).toBe(pos.id); // linked, unlike the webull-orphan path
+  });
+
+  it('does not adopt a plain-"live"-tagged position whose sourceIntentId matches no pending entry, even for the same symbol', async () => {
+    await pendingEntryFor('AAPL');
+    insertOrphan('AAPL', ['live'], { sourceIntentId: 999_999 }); // unrelated/stale intent id
+
+    const result = adoptOrphanedLivePositions();
+
+    expect(result).toEqual({ adopted: 0 });
+    const [pos] = listPositions({ status: 'open', symbol: 'AAPL' });
+    expect(pos.tags).toEqual(['live']); // untouched
+  });
+
+  it('ignores a plain-"live"-tagged position with no sourceIntentId at all', async () => {
+    await pendingEntryFor('AAPL');
+    insertOrphan('AAPL', ['live']); // sourceIntentId null — not this shape either
+
+    const result = adoptOrphanedLivePositions();
+
+    expect(result).toEqual({ adopted: 0 });
   });
 });
 
