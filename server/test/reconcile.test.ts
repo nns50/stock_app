@@ -4,6 +4,7 @@ import { config } from '../src/config';
 import { createIntent, getIntent, transitionIntent } from '../src/db/orders';
 import { addExit, createPosition, listPositions } from '../src/db/positions';
 import { recordLiveOrder } from '../src/db/autotradeLiveOrders';
+import { recordLiveOptionsEntryOrder } from '../src/db/autotradeLiveOptionsOrders';
 import { mapWebullStatus, reconcileAllWorking, reconcileIntent } from '../src/services/trading/reconcile';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
@@ -138,6 +139,46 @@ describe('reconcileIntent', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(getIntent(id)?.state).toBe('acknowledged'); // untouched, not flipped to filled
     expect(listPositions()).toHaveLength(0); // no plain ['live']-tagged Position recorded
+  });
+
+  it('also defers for an autotrade LIVE OPTIONS-owned intent — same race, separate side table', async () => {
+    // The options counterpart of the test above: liveOptionsExecute.ts places
+    // its own live orders into this SAME shared order_intents table, tracked
+    // via the PARALLEL db/autotradeLiveOptionsOrders.ts side table — equally
+    // exposed to the same race, and with no tag-based healing backstop of its
+    // own (autotrade_live_options_positions has no tags column at all), so
+    // preventing this from ever happening is the only guard for it.
+    const rec = createIntent(
+      intent({ assetKind: 'option', optionType: 'call', strike: 5, expiration: '2026-08-21' }),
+      'cid-options-auto',
+    );
+    transitionIntent(rec.id, 'validated');
+    transitionIntent(rec.id, 'confirmed');
+    transitionIntent(rec.id, 'submitted');
+    transitionIntent(rec.id, 'acknowledged', { brokerOrderId: 'WB-OPT-1' });
+    recordLiveOptionsEntryOrder({
+      intentId: rec.id,
+      symbol: 'AMC',
+      kind: 'single_leg',
+      side: 'call',
+      contractSymbol: 'AMC260821C00005000',
+      strike: 5,
+      expiration: '2026-08-21',
+      riskAmount: 20,
+      riskProfile: 'MODERATE',
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    const r = await reconcileIntent(rec.id, 'ACC1');
+
+    expect(r).toEqual({
+      ok: true,
+      changed: false,
+      intent: expect.objectContaining({ id: rec.id, state: 'acknowledged' }),
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(getIntent(rec.id)?.state).toBe('acknowledged');
+    expect(listPositions()).toHaveLength(0);
   });
 
   it('records a filled OPEN order as a tracked Position (buy → long, at the fill price)', async () => {
