@@ -337,7 +337,7 @@ export function optionsSeedForEquity(
     dailyPnl: snapshot.dailyPnl,
     consecutiveLosses: snapshot.consecutiveLosses,
     tradesToday: snapshot.tradesToday,
-    positions: snapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.riskAmount })),
+    positions: snapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.riskAmount, side: 'long' as const })),
   };
 }
 
@@ -363,9 +363,19 @@ export async function runOptionsPaperExecution(
   const consecutiveLosses = Math.max(optSnapshot.consecutiveLosses, eqSnapshot.consecutiveLosses);
   let runningRisk = optSnapshot.openRisk + eqSnapshot.openRisk;
   let runningCount = optSnapshot.openPositionsCount + eqSnapshot.openPositionsCount;
-  const runningPositions: { symbol: string; notional: number }[] = [
-    ...optSnapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.riskAmount })),
-    ...eqSnapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.entryPrice * p.quantity })),
+  // Options positions are always 'long' (this app only ever buys premium —
+  // see riskCheck.ts's correlatedNotional() doc comment); equity positions
+  // folded in here carry their REAL side so an options candidate (always
+  // effectively a 'long' bet, per candidateSide below) correctly nets
+  // against — rather than piles onto — an existing SHORT equity position in
+  // the same/correlated name.
+  const runningPositions: { symbol: string; notional: number; side: 'long' | 'short' }[] = [
+    ...optSnapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.riskAmount, side: 'long' as const })),
+    ...eqSnapshot.openPositions.map((p) => ({
+      symbol: p.symbol,
+      notional: p.entryPrice * p.quantity,
+      side: (p.side === 'buy' ? 'long' : 'short') as 'long' | 'short',
+    })),
   ];
   const skipSymbols = new Set(optSnapshot.openPositions.map((p) => p.symbol));
 
@@ -378,6 +388,7 @@ export async function runOptionsPaperExecution(
     }
     const { amount: correlated } = await correlatedNotional(
       signal.symbol,
+      'long', // options candidates are always a long-the-contract bet
       runningPositions,
       config.correlationLookbackDays,
       config.correlationThreshold,
@@ -420,7 +431,7 @@ export async function runOptionsPaperExecution(
     if (outcome.ok && outcome.position) {
       runningRisk += result.approvedRiskAmount;
       runningCount += 1;
-      runningPositions.push({ symbol, notional: result.approvedNotional });
+      runningPositions.push({ symbol, notional: result.approvedNotional, side: 'long' });
       skipSymbols.add(symbol);
     }
   }

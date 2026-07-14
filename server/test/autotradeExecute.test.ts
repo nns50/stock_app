@@ -72,6 +72,14 @@ describe('attemptPaperEntry', () => {
     expect(outcome.position!.status).toBe('open');
   });
 
+  it('opens a short paper position from a sell-side signal — no naked-short-style gate for paper (guardrails.ts is never in its path)', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 101.5 }) as never);
+    const shortSignal = signal({ side: 'sell', stop: 105, target: 90 });
+    const outcome = await attemptPaperEntry(shortSignal, okResult, 'MODERATE');
+    expect(outcome.ok).toBe(true);
+    expect(outcome.position!.side).toBe('sell');
+  });
+
   it('never fetches a quote or opens anything when the risk check did not pass', async () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 101.5 }) as never);
     const blocked: RiskCheckResult = { ...okResult, ok: false };

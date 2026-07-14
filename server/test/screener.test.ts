@@ -8,6 +8,7 @@ import {
   defaultScreenerConfig,
   resolveScreenerConfig,
   scoreSymbol,
+  scoreSymbolBothDirections,
 } from '../src/indicators/screener';
 import { Quote } from '../src/providers/types';
 
@@ -89,6 +90,40 @@ describe('scoreSymbol — direction awareness', () => {
     const r = scoreSymbol('UP', uptrend, undefined, resolveScreenerConfig({ direction: 'long' }));
     const trend = r.components.find((c) => c.key === 'trend')!;
     expect(trend.score).toBe(100);
+  });
+});
+
+describe('scoreSymbolBothDirections', () => {
+  it('matches calling scoreSymbol twice with direction overridden each way', () => {
+    const cfg = resolveScreenerConfig({ direction: 'long' }); // direction on cfg is irrelevant to this call
+    const both = scoreSymbolBothDirections('UP', uptrend, undefined, cfg);
+    const long = scoreSymbol('UP', uptrend, undefined, { ...cfg, direction: 'long' });
+    const short = scoreSymbol('UP', uptrend, undefined, { ...cfg, direction: 'short' });
+    expect(both.long).toEqual(long);
+    expect(both.short).toEqual(short);
+  });
+
+  it('ignores cfg.direction entirely — same result regardless of what it was set to', () => {
+    const asLong = scoreSymbolBothDirections('UP', uptrend, undefined, resolveScreenerConfig({ direction: 'long' }));
+    const asShort = scoreSymbolBothDirections('UP', uptrend, undefined, resolveScreenerConfig({ direction: 'short' }));
+    expect(asLong).toEqual(asShort);
+  });
+
+  it('an uptrend: long wins; a downtrend: short wins', () => {
+    const up = scoreSymbolBothDirections('UP', uptrend, undefined, defaultScreenerConfig());
+    expect(up.long.total).toBeGreaterThan(up.short.total);
+
+    const down = scoreSymbolBothDirections('DN', downtrend, undefined, defaultScreenerConfig());
+    expect(down.short.total).toBeGreaterThan(down.long.total);
+  });
+
+  it('falls back to the quote price (not 0) on both sides when history is insufficient', () => {
+    const quote = { symbol: 'X', last: 42, timestamp: 0 } as Quote;
+    const both = scoreSymbolBothDirections('X', [], quote, defaultScreenerConfig());
+    expect(both.long.price).toBe(42);
+    expect(both.short.price).toBe(42);
+    expect(both.long.passedFilters).toBe(false);
+    expect(both.short.passedFilters).toBe(false);
   });
 });
 

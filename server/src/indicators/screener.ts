@@ -366,15 +366,50 @@ export function scoreSymbol(
   asOfIndex?: number,
 ): SymbolScore {
   const ind = computeIndicators(candles, quote, cfg, cachedCandleIndicators, asOfIndex);
+  return scoreFromIndicators(symbol, ind, cfg, quote?.last ?? 0);
+}
+
+/** Score both directions for the same symbol from ONE indicator computation —
+ *  the indicators themselves (SMA/RSI/ATR/price/volume/gap) never depend on
+ *  `cfg.direction`; only the per-component SCORING math below does (a cheap,
+ *  already-computed-snapshot pass). Lets a caller that wants to know "is this
+ *  symbol a better long or short candidate right now" avoid computing
+ *  SMA/RSI/ATR series twice (scoreSymbol's own heaviest work) just to answer
+ *  a question that's cheap once the snapshot exists. `cfg.direction` itself
+ *  is ignored here — both directions are always scored regardless of what it
+ *  was set to, so callers can pass their existing single-direction config
+ *  unchanged. */
+export function scoreSymbolBothDirections(
+  symbol: string,
+  candles: Candle[],
+  quote: Quote | undefined,
+  cfg: ScreenerConfig,
+  cachedCandleIndicators?: CandleIndicators,
+  asOfIndex?: number,
+): { long: SymbolScore; short: SymbolScore } {
+  const ind = computeIndicators(candles, quote, cfg, cachedCandleIndicators, asOfIndex);
+  const fallbackPrice = quote?.last ?? 0;
+  return {
+    long: scoreFromIndicators(symbol, ind, { ...cfg, direction: 'long' }, fallbackPrice),
+    short: scoreFromIndicators(symbol, ind, { ...cfg, direction: 'short' }, fallbackPrice),
+  };
+}
+
+function scoreFromIndicators(
+  symbol: string,
+  ind: IndicatorSnapshot | null,
+  cfg: ScreenerConfig,
+  fallbackPrice: number,
+): SymbolScore {
   if (!ind) {
     return {
       symbol,
-      price: quote?.last ?? 0,
+      price: fallbackPrice,
       total: 0,
       passedFilters: false,
       filterReasons: ['insufficient price history'],
       components: [],
-      indicators: emptySnapshot(quote?.last ?? 0),
+      indicators: emptySnapshot(fallbackPrice),
     };
   }
 

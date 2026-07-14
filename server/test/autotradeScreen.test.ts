@@ -295,4 +295,119 @@ describe('runAutotradeScreen', () => {
       spy.mockRestore();
     });
   });
+
+  describe('directionMode', () => {
+    function trendCandles(closes: number[], lastTime: number) {
+      let prev = closes[0];
+      return closes.map((close, i) => {
+        const open = i === 0 ? close : prev;
+        prev = close;
+        return {
+          time: lastTime - (closes.length - 1 - i) * 86_400_000,
+          open,
+          high: Math.max(open, close) * 1.01,
+          low: Math.min(open, close) * 0.99,
+          close,
+          volume: 1_000_000,
+        };
+      });
+    }
+    const lastTime = Date.UTC(2026, 5, 1);
+    const uptrend = trendCandles(
+      Array.from({ length: 60 }, (_, i) => 100 + i),
+      lastTime,
+    );
+    const downtrend = trendCandles(
+      Array.from({ length: 60 }, (_, i) => 200 - i),
+      lastTime,
+    );
+
+    // getQuote is ALSO mocked (to undefined) in every test below, not just
+    // getCandles — scoreSymbol prefers quote?.last/changePct/etc. over the
+    // candle-derived equivalents whenever a quote is present (screener.ts's
+    // computeIndicators), so leaving it unmocked lets the test provider's own
+    // synthetic quote silently override the deliberately-crafted up/down
+    // candle trend these tests depend on. Matches screener.test.ts's own
+    // scoreSymbol(..., undefined, ...) convention for the same reason.
+    function mockCandles(bySymbol: (symbol: string) => typeof uptrend) {
+      const candles = vi.spyOn(getProvider(), 'getCandles').mockImplementation(async (s: string) => bySymbol(s) as never);
+      const quote = vi.spyOn(getProvider(), 'getQuote').mockResolvedValue(undefined as never);
+      return () => {
+        candles.mockRestore();
+        quote.mockRestore();
+      };
+    }
+
+    it("defaults to config.direction ('long') when directionMode is omitted — never considers the short side", async () => {
+      const restore = mockCandles(() => downtrend);
+      // screen.ts only enforces hard filters (price/volume/RSI-range/opt-in
+      // trend-alignment) — RELAXED_FILTERS has none of those tight enough to
+      // reject a candidate purely on a low score, so a downtrend still
+      // "passes" scored as a (weak) LONG when directionMode is omitted. What
+      // this test actually proves: omitting directionMode never even LOOKS at
+      // the short side, unlike 'both' mode scoring this exact same downtrend
+      // as 'short' with a much higher total (see the 'both' test below).
+      const longOnly = await runAutotradeScreen({ symbols: ['SCRDOWN'], config: { filters: RELAXED_FILTERS } });
+      const c = longOnly.candidates.find((c) => c.symbol === 'SCRDOWN')!;
+      expect(c.direction).toBe('long');
+
+      const both = await runAutotradeScreen({
+        symbols: ['SCRDOWN'],
+        config: { filters: RELAXED_FILTERS },
+        directionMode: 'both',
+      });
+      const bothC = both.candidates.find((c) => c.symbol === 'SCRDOWN')!;
+      expect(bothC.direction).toBe('short');
+      expect(bothC.total).toBeGreaterThan(c.total); // 'both' found the genuinely stronger setup long-only mode missed
+      restore();
+    });
+
+    it("directionMode:'short' scores every candidate as short, tagging the result 'short'", async () => {
+      const restore = mockCandles(() => downtrend);
+      const result = await runAutotradeScreen({
+        symbols: ['SCRSHORT'],
+        config: { filters: RELAXED_FILTERS },
+        directionMode: 'short',
+      });
+      const c = result.candidates.find((c) => c.symbol === 'SCRSHORT');
+      expect(c?.direction).toBe('short');
+      restore();
+    });
+
+    it("directionMode:'both' — an uptrend symbol qualifies long, a downtrend symbol qualifies short, in the SAME screen call", async () => {
+      const restore = mockCandles((symbol) => (symbol === 'SCRUP' ? uptrend : downtrend));
+
+      const result = await runAutotradeScreen({
+        symbols: ['SCRUP', 'SCRDN'],
+        config: { filters: RELAXED_FILTERS },
+        directionMode: 'both',
+      });
+
+      const up = result.candidates.find((c) => c.symbol === 'SCRUP');
+      const dn = result.candidates.find((c) => c.symbol === 'SCRDN');
+      expect(up?.direction).toBe('long');
+      expect(dn?.direction).toBe('short');
+      restore();
+    });
+
+    it("directionMode:'both' never emits two candidates (long AND short) for the same symbol", async () => {
+      const restore = mockCandles(() => uptrend);
+      const result = await runAutotradeScreen({
+        symbols: ['SCRONE'],
+        config: { filters: RELAXED_FILTERS },
+        directionMode: 'both',
+      });
+      expect(result.candidates.filter((c) => c.symbol === 'SCRONE')).toHaveLength(1);
+      restore();
+    });
+
+    it('journals the resolved direction on candidate_found', async () => {
+      const restore = mockCandles(() => downtrend);
+      await runAutotradeScreen({ symbols: ['SCRJRNL'], config: { filters: RELAXED_FILTERS }, directionMode: 'both' });
+      const events = listAutotradeEvents({ stage: 'screen', symbol: 'SCRJRNL' });
+      const found = events.find((e) => e.action === 'candidate_found');
+      expect(JSON.parse(found!.detail!)).toMatchObject({ direction: 'short' });
+      restore();
+    });
+  });
 });

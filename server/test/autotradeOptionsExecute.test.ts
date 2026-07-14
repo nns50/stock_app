@@ -610,7 +610,7 @@ describe('getOptionsPaperPortfolioSnapshot / optionsSeedForEquity', () => {
     const seed = optionsSeedForEquity(snapshot);
     expect(seed.openRisk).toBe(600);
     expect(seed.openPositionsCount).toBe(1);
-    expect(seed.positions).toEqual([{ symbol: 'AAA', notional: 600 }]);
+    expect(seed.positions).toEqual([{ symbol: 'AAA', notional: 600, side: 'long' }]);
   });
 
   it('is empty when there are no options paper positions at all', () => {
@@ -642,7 +642,7 @@ describe('getOptionsPaperPortfolioSnapshot / optionsSeedForEquity', () => {
     });
     const snapshot = getOptionsPaperPortfolioSnapshot();
     expect(snapshot.openRisk).toBe(400);
-    expect(optionsSeedForEquity(snapshot).positions).toEqual([{ symbol: 'SPRD', notional: 400 }]);
+    expect(optionsSeedForEquity(snapshot).positions).toEqual([{ symbol: 'SPRD', notional: 400, side: 'long' }]);
   });
 
   it("folds a closed debit spread's net-debit-based pnl into dailyPnl, reading its OWN persisted shortExitPrice", () => {

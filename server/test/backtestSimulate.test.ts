@@ -181,6 +181,61 @@ describe('simulateBacktest', () => {
     expect(report.trades[0].exitPrice).toBe(106);
   });
 
+  describe('directionMode', () => {
+    // A steady trend (not flat, unlike warmupThrough) so momentum/trend
+    // scoring genuinely differs between long and short — each bar has real
+    // high/low range so ATR stays nonzero throughout.
+    function trendThrough(signalDay: string, dir: 'up' | 'down'): Candle[] {
+      const step = dir === 'up' ? 0.5 : -0.5;
+      let price = 100;
+      const days: Candle[] = [];
+      for (let i = 60; i >= 0; i--) {
+        days.push(bar(d(signalDay, -i), { open: price, high: price + 1, low: price - 1, close: price }));
+        if (i > 0) price += step;
+      }
+      return days;
+    }
+
+    it("defaults to 'long' when directionMode is omitted — a downtrend still only ever produces a buy", () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const history = new Map([['DOWN', [...trendThrough(signalDay, 'down'), bar(entryDay, { open: 65 })]]]);
+      const report = simulateBacktest(history, baseConfig({ symbols: ['DOWN'], from: signalDay, to: entryDay }));
+      expect(report.trades).toHaveLength(1);
+      expect(report.trades[0].side).toBe('buy');
+    });
+
+    it("directionMode:'short' produces a sell trade on a downtrend", () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const history = new Map([['DOWN', [...trendThrough(signalDay, 'down'), bar(entryDay, { open: 65 })]]]);
+      const report = simulateBacktest(
+        history,
+        baseConfig({ symbols: ['DOWN'], from: signalDay, to: entryDay, directionMode: 'short' }),
+      );
+      expect(report.trades).toHaveLength(1);
+      expect(report.trades[0].side).toBe('sell');
+    });
+
+    it("directionMode:'both' produces a BUY on an uptrending symbol and a SELL on a downtrending symbol in the SAME backtest run", () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const history = new Map([
+        ['UP', [...trendThrough(signalDay, 'up'), bar(entryDay, { open: 135 })]],
+        ['DOWN', [...trendThrough(signalDay, 'down'), bar(entryDay, { open: 65 })]],
+      ]);
+      const report = simulateBacktest(
+        history,
+        baseConfig({ symbols: ['UP', 'DOWN'], from: signalDay, to: entryDay, directionMode: 'both' }),
+      );
+      expect(report.trades).toHaveLength(2);
+      const up = report.trades.find((t) => t.symbol === 'UP')!;
+      const down = report.trades.find((t) => t.symbol === 'DOWN')!;
+      expect(up.side).toBe('buy');
+      expect(down.side).toBe('sell');
+    });
+  });
+
   describe('trailing stop / breakeven / partial profit-taking', () => {
     // entry ~100, stop ~97, target ~106 (per warmupThrough's own math) ->
     // initialStopDistance ~3, so 1R = a $3 favorable close.

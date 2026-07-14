@@ -6,12 +6,13 @@ import {
   ScreenerConfig,
   SymbolScore,
   scoreSymbol,
+  scoreSymbolBothDirections,
 } from '../../indicators/screener';
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } from './decide';
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
 import { RiskProfileName } from '../../db/autotradeConfig';
-import { defaultAutotradeScreenerConfig } from './screen';
+import { defaultAutotradeScreenerConfig, pickDirection } from './screen';
 import { isExcluded } from '../../db/autotradeExclusions';
 import { classifySector, buildUniverseSectorMap } from './realEstateClassifier';
 import { getHistoricalBars } from './historicalData';
@@ -155,6 +156,16 @@ export interface BacktestConfig extends Partial<BacktestRiskParams> {
   partialExitPct?: number;
   screenerConfig?: Partial<ScreenerConfig>;
   decisionConfig?: Partial<DecisionConfig>;
+  /** 'long' (default, matches every backtest before this existed) | 'short' |
+   *  'both' — mirrors AutotradeConfig.tradeDirection/screen.ts's
+   *  RunScreenOptions.directionMode exactly: 'both' scores every candidate
+   *  as BOTH a long and a short each simulated day (scoreSymbolBothDirections)
+   *  and keeps whichever direction actually qualifies, per symbol — so a
+   *  backtest can be run against the SAME direction setting before it's ever
+   *  used live. Falls back to screenerConfig?.direction when omitted, same
+   *  "separate option, doesn't force picking a meaningless single
+   *  screenerConfig.direction" reasoning as the live/paper version. */
+  directionMode?: 'long' | 'short' | 'both';
 }
 
 export interface SimulatedTrade {
@@ -281,10 +292,18 @@ export function indexAsOf(candles: Candle[], asOfMs: number, fromIndex = 0): num
  *  a combined simulation correlating EITHER instrument type's candidate
  *  against a running list mixing both reuses this one implementation rather
  *  than a third copy. */
+/** `candidateSide`/`pos.side`: same opposite-side netting as riskCheck.ts's
+ *  live/paper correlatedNotional() (see its own doc comment for the full
+ *  reasoning) — a correlated position on the SAME side compounds risk
+ *  (additive), the OPPOSITE side partially hedges it (subtracted), net
+ *  floored at 0. Every caller that only ever holds one side (options) passes
+ *  the same side for everything, reducing to the original always-additive
+ *  sum unchanged. */
 export function backtestCorrelatedNotional(
   candidateSymbol: string,
+  candidateSide: 'long' | 'short',
   asOfMs: number,
-  positions: { symbol: string; notional: number }[],
+  positions: { symbol: string; notional: number; side: 'long' | 'short' }[],
   historyBySymbol: Map<string, Candle[]>,
   lookbackDays: number,
   threshold: number,
@@ -307,9 +326,9 @@ export function backtestCorrelatedNotional(
   for (const pos of positions) {
     const posCloses = closesUpTo(pos.symbol);
     const r = posCloses ? pearsonCorrelation(candidateReturns, dailyReturns(posCloses)) : null;
-    if (r !== null && Math.abs(r) >= threshold) amount += pos.notional;
+    if (r !== null && Math.abs(r) >= threshold) amount += pos.side === candidateSide ? pos.notional : -pos.notional;
   }
-  return amount;
+  return Math.max(0, amount);
 }
 
 /**
@@ -321,6 +340,7 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
   const riskParams = resolveBacktestRiskParams(cfg);
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
   const decisionCfg = { ...defaultDecisionConfig(), ...cfg.decisionConfig };
+  const directionMode = cfg.directionMode ?? screenerCfg.direction;
 
   const fromMs = Date.parse(`${cfg.from}T00:00:00Z`);
   const toMs = Date.parse(`${cfg.to}T00:00:00Z`);
@@ -533,10 +553,24 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
       if (idx < 1 || candles[idx].time !== dayMs) continue; // needs a bar dated exactly today
       const series = candleIndicatorSeriesBySymbol.get(symbol)!;
       const cached = candleIndicatorsAt(series, idx) ?? undefined;
-      const score = scoreSymbol(symbol, candles, undefined, screenerCfg, cached, idx);
-      if (!score.passedFilters) continue;
-      const signal = generateSignal({ ...score, discoverySource: 'universe' }, decisionCfg);
-      if (signal) candidates.push({ score, signal });
+      // 'both': score this symbol as a long AND a short from the same
+      // indicator computation and keep whichever direction (if either)
+      // qualifies — mirrors screen.ts's runAutotradeScreen() exactly, so a
+      // backtest run with directionMode:'both' simulates what the live loop
+      // would actually do with tradeDirection:'both'.
+      const picked =
+        directionMode === 'both'
+          ? pickDirection(scoreSymbolBothDirections(symbol, candles, undefined, screenerCfg, cached, idx))
+          : (() => {
+              const score = scoreSymbol(symbol, candles, undefined, { ...screenerCfg, direction: directionMode }, cached, idx);
+              return score.passedFilters ? { direction: directionMode, score } : null;
+            })();
+      if (!picked) continue;
+      const signal = generateSignal(
+        { ...picked.score, discoverySource: 'universe', direction: picked.direction },
+        decisionCfg,
+      );
+      if (signal) candidates.push({ score: picked.score, signal });
     }
     // Deterministic tie-break on exact score ties: fall back to symbol name, not
     // Map/candle-array insertion order (which depends on real fetch-completion
@@ -546,10 +580,13 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
 
     let runningRisk = openPositions.reduce((s, p) => s + p.riskAmount, 0);
     let runningCount = openPositions.length;
-    const runningPositions: { symbol: string; notional: number }[] = openPositions.map((p) => ({
-      symbol: p.symbol,
-      notional: p.notional,
-    }));
+    const runningPositions: { symbol: string; notional: number; side: 'long' | 'short' }[] = openPositions.map(
+      (p) => ({
+        symbol: p.symbol,
+        notional: p.notional,
+        side: p.side === 'buy' ? 'long' : 'short',
+      }),
+    );
 
     for (const { signal } of candidates) {
       // Threaded through runningPositions (open + already-approved-this-batch),
@@ -561,6 +598,7 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
       // cluster risk this check exists to catch.
       const correlated = backtestCorrelatedNotional(
         signal.symbol,
+        signal.side === 'buy' ? 'long' : 'short',
         dayMs,
         runningPositions,
         historyBySymbol,
@@ -596,7 +634,11 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
       });
       runningRisk += result.approvedRiskAmount;
       runningCount += 1;
-      runningPositions.push({ symbol: signal.symbol, notional: result.approvedNotional });
+      runningPositions.push({
+        symbol: signal.symbol,
+        notional: result.approvedNotional,
+        side: signal.side === 'buy' ? 'long' : 'short',
+      });
     }
 
     equityCurve.push({ date: day, equity });

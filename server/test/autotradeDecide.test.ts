@@ -37,13 +37,14 @@ function candidate(overrides: Partial<ScreenCandidate> = {}): ScreenCandidate {
     components: [],
     indicators: ind(),
     discoverySource: 'universe',
+    direction: 'long',
     ...overrides,
   };
 }
 
 describe('generateSignal', () => {
   it('computes an ATR-based stop and R-multiple target for a long', () => {
-    const signal = generateSignal(candidate(), { direction: 'long', stopAtrMultiple: 1.5, targetRMultiple: 2 });
+    const signal = generateSignal(candidate({ direction: 'long' }), { stopAtrMultiple: 1.5, targetRMultiple: 2 });
     expect(signal).not.toBeNull();
     expect(signal!.side).toBe('buy');
     expect(signal!.entry).toBe(100);
@@ -52,8 +53,8 @@ describe('generateSignal', () => {
     expect(signal!.rMultiple).toBe(2);
   });
 
-  it('mirrors the math for a short', () => {
-    const signal = generateSignal(candidate(), { direction: 'short', stopAtrMultiple: 1.5, targetRMultiple: 2 });
+  it('mirrors the math for a short — direction comes from the candidate, not cfg', () => {
+    const signal = generateSignal(candidate({ direction: 'short' }), { stopAtrMultiple: 1.5, targetRMultiple: 2 });
     expect(signal).not.toBeNull();
     expect(signal!.side).toBe('sell');
     expect(signal!.stop).toBe(100 + 1.5 * 4); // 106
@@ -68,8 +69,7 @@ describe('generateSignal', () => {
     // never an exact cent, so an unrounded stop/target here got the WHOLE
     // bracket order rejected by Webull's tick-size validation ("Price
     // increment should be 0.01...") on every single live entry attempt.
-    const signal = generateSignal(candidate({ price: 100, indicators: ind({ atr: 1.23456 }) }), {
-      direction: 'long',
+    const signal = generateSignal(candidate({ price: 100, direction: 'long', indicators: ind({ atr: 1.23456 }) }), {
       stopAtrMultiple: 1.5,
       targetRMultiple: 2,
     });
@@ -92,18 +92,23 @@ describe('generateSignal', () => {
 
   it('returns null when the computed stop would be at or below zero', () => {
     // price 2, atr 3, stopAtrMultiple 1.5 -> stop = 2 - 4.5 = negative
-    const c = candidate({ price: 2, indicators: ind({ price: 2, atr: 3 }) });
-    expect(generateSignal(c, { direction: 'long', stopAtrMultiple: 1.5, targetRMultiple: 2 })).toBeNull();
+    const c = candidate({ price: 2, direction: 'long', indicators: ind({ price: 2, atr: 3 }) });
+    expect(generateSignal(c, { stopAtrMultiple: 1.5, targetRMultiple: 2 })).toBeNull();
   });
 
   it('includes a human-readable rationale', () => {
-    const signal = generateSignal(candidate());
+    const signal = generateSignal(candidate({ direction: 'long' }));
     expect(signal!.rationale).toMatch(/Long breakout/);
     expect(signal!.rationale).toMatch(/ATR/);
   });
 
-  it('defaults to a long, 1.5x ATR stop, 2R target', () => {
-    expect(defaultDecisionConfig()).toEqual({ direction: 'long', stopAtrMultiple: 1.5, targetRMultiple: 2 });
+  it("mirrors the rationale wording for a short ('Short breakout')", () => {
+    const signal = generateSignal(candidate({ direction: 'short' }));
+    expect(signal!.rationale).toMatch(/Short breakout/);
+  });
+
+  it('defaults to a 1.5x ATR stop, 2R target', () => {
+    expect(defaultDecisionConfig()).toEqual({ stopAtrMultiple: 1.5, targetRMultiple: 2 });
   });
 });
 
@@ -127,5 +132,20 @@ describe('runAutotradeDecision', () => {
   it('applies a config patch (e.g. a tighter stop) across all candidates', () => {
     const result = runAutotradeDecision([candidate()], { stopAtrMultiple: 1 });
     expect(result.signals[0].stop).toBe(100 - 1 * 4); // 96, not the default 1.5x
+  });
+
+  it('produces both a buy signal and a sell signal from ONE batch when candidates have mixed direction', () => {
+    // The core promise of per-candidate direction: one decision cycle can
+    // hold a long on one symbol and a short on another, not just one global
+    // direction for the whole batch.
+    const result = runAutotradeDecision([
+      candidate({ symbol: 'LONGCO', direction: 'long' }),
+      candidate({ symbol: 'SHORTCO', direction: 'short' }),
+    ]);
+    expect(result.signals).toHaveLength(2);
+    const longSignal = result.signals.find((s) => s.symbol === 'LONGCO')!;
+    const shortSignal = result.signals.find((s) => s.symbol === 'SHORTCO')!;
+    expect(longSignal.side).toBe('buy');
+    expect(shortSignal.side).toBe('sell');
   });
 });
