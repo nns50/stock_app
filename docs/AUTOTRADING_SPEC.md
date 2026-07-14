@@ -2425,6 +2425,29 @@ matched precisely by `sourceIntentId` and NOT falsely matched by symbol
 alone. Confirmed both fail without the fix before confirming they pass
 with it.
 
+**Follow-up (2026-07-14, continued again) — the same race is possible on
+the LIVE OPTIONS side too; closed it there as well.** The prevention fix
+above (`isAutotradeIntent()` check in `reconcileIntent()`) only recognized
+intents tracked in the EQUITY side table
+(`db/autotradeLiveOrders.ts`) — but `autotrading/liveOptionsExecute.ts`
+places its own live option orders into the exact same shared
+`order_intents` table, tracked via a separate, parallel side table
+(`db/autotradeLiveOptionsOrders.ts`), invisible to that check. An
+autotrade-placed live option order was therefore still exposed to the
+identical race, with no tag-based healing backstop available for it at all
+(`autotrade_live_options_positions` has no `tags` column — options live
+positions were never looked up by tag in the first place). No evidence
+this has actually happened to a real position (unlike the equity case,
+which was confirmed against a real one), but it's the same latent gap,
+closed proactively rather than waiting for a matching report.
+
+Added `isAutotradeOptionsIntent()` (`db/autotradeLiveOptionsOrders.ts`,
+mirrors the equity-side function exactly) and check it alongside
+`isAutotradeIntent()` in `reconcileIntent()`'s existing guard. Verified
+with an analogous test (an autotrade-owned options intent, confirmed to
+get zero broker calls and zero state change from the generic reconcile;
+confirmed failing without the fix first).
+
 ---
 
 ### Addendum: options trading scope (added after phases 1-7 shipped)

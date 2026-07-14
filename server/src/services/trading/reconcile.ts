@@ -3,6 +3,7 @@ import { Position, addExit, createPosition, listPositions } from '../../db/posit
 import { OrderState, canTransition, isTerminal } from './orderLifecycle';
 import { WebullOrderStatus, webullOrderStatus } from '../../providers/webull/orders';
 import { isAutotradeIntent } from '../../db/autotradeLiveOrders';
+import { isAutotradeOptionsIntent } from '../../db/autotradeLiveOptionsOrders';
 
 // ---------------------------------------------------------------------------
 // Reconcile an order intent's state with the broker (design §6 "status reconcile").
@@ -87,7 +88,16 @@ export async function reconcileIntent(id: number, accountId: string): Promise<Re
   // reconcile's job from here on; this path defers entirely rather than just
   // skipping recordFillAsPosition — transitioning the intent's STATE here
   // would independently trip the same terminal-state lockout.
-  if (isAutotradeIntent(id)) return { ok: true, changed: false, intent };
+  //
+  // Checked for BOTH live paths — equity (liveExecute.ts, tracked in
+  // db/autotradeLiveOrders.ts) and options (liveOptionsExecute.ts, its own
+  // PARALLEL db/autotradeLiveOptionsOrders.ts side table) — since both place
+  // orders into this SAME shared order_intents table and are equally exposed
+  // to the same race. The options side has no tag-based healing mechanism
+  // equivalent to adoptOrphanedLivePositions() (its own live positions live
+  // in a separate table with no tags column at all), so preventing the race
+  // here is the only guard for it.
+  if (isAutotradeIntent(id) || isAutotradeOptionsIntent(id)) return { ok: true, changed: false, intent };
 
   // A bracket's own `state` only ever reflects its MASTER (entry) leg — the
   // instant that fills it reads 'filled' and, since 'filled' is terminal,

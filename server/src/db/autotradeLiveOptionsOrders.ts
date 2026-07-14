@@ -144,6 +144,20 @@ export function getLiveOptionsOrder(intentId: number): LiveOptionsOrderMeta | un
   return row ? mapRow(row) : undefined;
 }
 
+/** True when `intentId` was placed by autotrade's LIVE OPTIONS execution (vs.
+ *  the human Trade page) — mirrors autotradeLiveOrders.ts's own
+ *  isAutotradeIntent() for the equity side. Both live paths place orders into
+ *  the SAME shared order_intents table (no "who placed this" column there),
+ *  so services/trading/reconcile.ts's generic reconcile checks both this and
+ *  the equity-side isAutotradeIntent() before ever touching an intent — see
+ *  that fix's own history (2026-07-14) for why: skipping this check let the
+ *  generic path race an autotrade-placed order's own reconcile and win,
+ *  permanently locking autotrade's own reconcile out via the terminal-state
+ *  guard once it did. */
+export function isAutotradeOptionsIntent(intentId: number): boolean {
+  return getLiveOptionsOrder(intentId) !== undefined;
+}
+
 /** Link a now-materialized live options position back to the ENTRY intent
  *  that produced it (mirrors autotradeLiveOrders.ts's setLiveOrderPositionId). */
 export function setLiveOptionsOrderPositionId(intentId: number, positionId: number): void {
