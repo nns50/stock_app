@@ -2312,6 +2312,54 @@ dedup broadening applies to equities only for the same reason (there's
 nothing equivalent to broaden for options' own entry path, which was already
 scoped correctly).
 
+**Follow-up (2026-07-14) — a live position (SHPH) the loop opened still
+wasn't showing on the Auto page's live-positions table even after the fix
+above. User bug report; the exact scenario reported wasn't fully
+reproduced, but investigating it via a reproduction test (not just reading
+the code) surfaced a real, confirmed, more serious bug in the SAME
+interaction, fixed here.** `materializeEntryFill()` (the normal fill →
+`Position` path) had no awareness that `adoptOrphanedLivePositions()` might
+already have adopted the real position for this exact fill under a
+different route. Sequence that reproduces it: reconcile misses a fill on
+tick N (order-status lags the broker's own positions feed); the generic
+Webull sync backstop imports the orphan; adoption heals it the same tick
+(as designed). On tick N+1, reconcile's order-status poll finally reports
+FILLED — and `materializeEntryFill()`, with no way to know this fill was
+already handled, unconditionally created a **second** `Position` row for
+the same real shares. The generic sync's own close-detection half then saw
+the journal double-booked against a single real holding and "cleaned up"
+by auto-closing the *older* (adopted) position — with an ESTIMATED exit
+price, since there was no real sale to read one from. Net effect: a
+fabricated "closed trade" in the journal that never happened, at a price
+that was never real.
+
+This corrects an assumption in the entry directly above: adoption
+deliberately leaving `sourceIntentId` unset was reasoned to be fine because
+"an adopted position still closes correctly through the same generic sync
+backstop that adopted it" — true only in isolation; it didn't account for
+the normal reconcile path eventually catching up and duplicating first.
+
+Fixed in `materializeEntryFill()`: before creating a position, it now
+checks for an open, `autotrade`-tagged position for the same symbol with no
+`sourceIntentId` (adoption's own signature, since it can't patch that field
+— see `adoptOrphanedLivePositions()`'s doc comment) and links
+`autotrade_live_orders.position_id` to it instead of creating a duplicate.
+`materializeExitFill()` (the bracket-exit-leg path) is broadened to match a
+position by EITHER `sourceIntentId` (the normal path) OR the metadata
+table's own `positionId` (now also true for a linked position) — so a
+linked position still closes via the PRECISE broker fill price when its
+stop/target fires, not just the generic backstop's estimate. Verified with
+a dedicated reconcile+sync+adopt interaction test (confirmed failing
+without the fix — a genuine second position — before confirming it passes
+with the fix).
+
+Still open: this fix closes a real corruption bug in the adoption/reconcile
+interaction, but doesn't conclusively confirm it explains 100% of the SHPH
+report specifically — the reported symptom (nothing at all for the symbol
+on the Auto page) wasn't exactly reproduced by the sequence above, which
+predicts the correctly-linked position ends up visible. Continuing to
+investigate the exact SHPH case with the user.
+
 ---
 
 ### Addendum: options trading scope (added after phases 1-7 shipped)

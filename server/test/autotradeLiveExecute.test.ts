@@ -6,6 +6,7 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/providers/webull/orders')>();
   return { ...actual, webullPlaceOrder: vi.fn(), webullOrderStatus: vi.fn() };
 });
+vi.mock('../src/services/quotes', () => ({ priceMap: vi.fn() }));
 
 import { config } from '../src/config';
 import { getProvider } from '../src/providers';
@@ -37,6 +38,8 @@ import {
   syncAccountEquityFromBroker,
   adoptOrphanedLivePositions,
 } from '../src/services/autotrading/liveExecute';
+import { runWebullPositionsSync } from '../src/providers/webull/positions';
+import { priceMap } from '../src/services/quotes';
 
 const mockGetProvider = vi.mocked(getProvider);
 const mockAccountState = vi.mocked(webullAccountState);
@@ -91,7 +94,20 @@ function liveConfig(overrides: Partial<AutotradeConfig> = {}): AutotradeConfig {
   };
 }
 
+/** Mocks the raw broker positions-list fetch — providers/webull/positions.ts's
+ *  own fetchPositions(), one level below runWebullPositionsSync() — same
+ *  pattern as webullPositions.test.ts's own mockPositions() helper. */
+function mockBrokerPositions(rows: unknown) {
+  Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rows),
+  } as Response);
+}
+
 const origPlaceEnabled = config.trading.placeEnabled;
+const origWebull = { ...config.webull };
 
 beforeAll(() => initDb());
 beforeEach(() => {
@@ -111,9 +127,15 @@ beforeEach(() => {
   mockAccountState.mockReset();
   mockPlaceOrder.mockReset();
   mockOrderStatus.mockReset();
+  vi.mocked(priceMap).mockReset();
+  vi.mocked(priceMap).mockImplementation(
+    async (positions) => new Map(positions.map((p) => [p.id, { price: 100, stale: false, asOf: 0 }])),
+  );
 });
 afterEach(() => {
   config.trading.placeEnabled = origPlaceEnabled;
+  Object.assign(config.webull, origWebull);
+  vi.restoreAllMocks();
 });
 
 describe('buildLiveTradingConfig', () => {
@@ -978,6 +1000,108 @@ describe('reconcileLiveOrders', () => {
     );
     expect(ambiguousEvent).toBeDefined();
     expect(JSON.parse(ambiguousEvent!.detail!).legs).toEqual(expect.arrayContaining(['STOP_LOSS', 'STOP_PROFIT']));
+  });
+});
+
+describe('reconcileLiveOrders + adoptOrphanedLivePositions interaction', () => {
+  // Regression: reconcile's order-status poll can lag the broker's own
+  // positions feed by a tick or more. adoptOrphanedLivePositions() heals the
+  // resulting untagged orphan promptly — but until materializeEntryFill()
+  // learned to recognize an already-adopted position, reconcile catching up
+  // on a LATER tick created a genuine SECOND position for the same real
+  // fill. The generic Webull sync's own close-detection half then "cleaned
+  // up" the resulting doubled quantity by auto-closing the OLDER (adopted)
+  // position with a FABRICATED estimated exit price — a real trade that
+  // never happened, corrupting the journal.
+  it('links reconcile catching up late to the already-adopted position instead of creating a duplicate', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-9' });
+    const okResult = evaluateRiskCheck(signal(), {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      maxConcurrentPositions: 2,
+      correlatedNotional: 0,
+      riskPerTradePct: 1,
+      maxDailyDrawdownPct: 3,
+      stepDownAfterLosses: 2,
+      stepDownSizeCutPct: 50,
+      maxAggregateOpenRiskPct: 2,
+      maxCorrelatedExposurePct: 6,
+      maxTradesPerDay: 6,
+    });
+    await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
+    const intentId = listIntents()[0].id;
+
+    // Tick 1: order-status still working, but the broker's positions feed
+    // already shows the shares held — the generic sync backstop imports an
+    // orphan, and adoption heals it the same tick.
+    mockOrderStatus.mockResolvedValue({ ok: true, found: true, status: 'Working' } as WebullOrderStatus);
+    await reconcileLiveOrders();
+    expect(listPositions({ status: 'open' })).toHaveLength(0);
+
+    mockBrokerPositions([
+      { symbol: 'AAPL', quantity: okResult.sizing.suggestedQuantity, cost_price: 100, asset_type: 'stock' },
+    ]);
+    await runWebullPositionsSync('ACC1');
+    expect(adoptOrphanedLivePositions().adopted).toBe(1);
+
+    const adopted = listPositions({ status: 'open' });
+    expect(adopted).toHaveLength(1);
+    expect(adopted[0].tags).toEqual(expect.arrayContaining(['webull', 'live', 'autotrade']));
+    expect(adopted[0].sourceIntentId).toBeNull();
+    const adoptedId = adopted[0].id;
+
+    // Tick 2: order-status catches up and now reports FILLED.
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: okResult.sizing.suggestedQuantity,
+      filledPrice: 100.5,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    const outcomes = await reconcileLiveOrders();
+    expect(outcomes).toEqual([{ intentId, symbol: 'AAPL', changed: true, action: 'entry_filled' }]);
+
+    // No duplicate — still the SAME single position, now linked.
+    const afterReconcile = listPositions({ status: 'open' });
+    expect(afterReconcile).toHaveLength(1);
+    expect(afterReconcile[0].id).toBe(adoptedId);
+    expect(getLiveOrder(intentId)?.positionId).toBe(adoptedId);
+
+    const linkedEvent = listAutotradeEvents({ stage: 'execution', symbol: 'AAPL' }).find(
+      (e) => e.action === 'live_position_linked_to_adopted',
+    );
+    expect(linkedEvent).toBeDefined();
+
+    // The sync running again must not see a doubled quantity and must not
+    // false-close anything.
+    const syncAgain = await runWebullPositionsSync('ACC1');
+    expect(syncAgain.closed).toBe(0);
+    expect(syncAgain.imported).toBe(0);
+    expect(listPositions({ status: 'open' })).toHaveLength(1);
+    expect(listAutotradeLivePositions({ status: 'open' })).toHaveLength(1);
+
+    // And the bracket's exit leg still closes the LINKED position via the
+    // precise fill-price path, not just the generic estimated-price backstop.
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      legs: [{ comboType: 'STOP_PROFIT', status: 'FILLED', filledPrice: 110 }],
+    } as WebullOrderStatus);
+    const exitOutcomes = await reconcileLiveOrders();
+    expect(exitOutcomes).toEqual([{ intentId, symbol: 'AAPL', changed: true, action: 'exit_filled' }]);
+    expect(listPositions({ status: 'open' })).toHaveLength(0);
+    const closed = listPositions({ status: 'closed' })[0];
+    expect(closed.id).toBe(adoptedId);
+    expect(closed.exits[0].exitPrice).toBe(110); // the real broker fill price, not an estimate
   });
 });
 
