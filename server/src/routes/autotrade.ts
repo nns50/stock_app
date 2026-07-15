@@ -80,6 +80,7 @@ const configBody = z.object({
   maxCorrelatedExposurePct: z.number().min(0).max(100).optional(),
   maxTradesPerDay: z.number().int().nonnegative().optional(),
   // --- Screening/decision thresholds ------------------------------------------
+  tradeDirection: z.enum(['long', 'short', 'both']).optional(),
   minRelVol: z.number().nonnegative().optional(),
   maxTickerAtrPct: z.number().min(0).max(100).optional(),
   maxMarketAtrPct: z.number().min(0).max(100).optional(),
@@ -162,6 +163,7 @@ autotradeRouter.put(
     if (body.maxAggregateOpenRiskPct !== undefined) patch.maxAggregateOpenRiskPct = body.maxAggregateOpenRiskPct;
     if (body.maxCorrelatedExposurePct !== undefined) patch.maxCorrelatedExposurePct = body.maxCorrelatedExposurePct;
     if (body.maxTradesPerDay !== undefined) patch.maxTradesPerDay = body.maxTradesPerDay;
+    if (body.tradeDirection !== undefined) patch.tradeDirection = body.tradeDirection;
     if (body.minRelVol !== undefined) patch.minRelVol = body.minRelVol;
     if (body.maxTickerAtrPct !== undefined) patch.maxTickerAtrPct = body.maxTickerAtrPct;
     if (body.maxMarketAtrPct !== undefined) patch.maxMarketAtrPct = body.maxMarketAtrPct;
@@ -385,6 +387,12 @@ function decisionConfigOverride(config: AutotradeConfig, requested?: Partial<Dec
 const screenBody = z.object({
   config: z.record(z.string(), z.unknown()).optional(),
   symbols: z.array(z.string().min(1)).optional(),
+  /** Defaults to config.tradeDirection (what the loop would actually use) —
+   *  same "persisted config as base, request can still override for a
+   *  one-off preview" convention as earningsBlackoutDays/minRelVol above.
+   *  'both' is what makes this preview capable of showing a long candidate
+   *  and a short candidate together. */
+  directionMode: z.enum(['long', 'short', 'both']).optional(),
 });
 autotradeRouter.post(
   '/screen',
@@ -395,6 +403,7 @@ autotradeRouter.post(
       config: screenerConfigOverride(config, body.config as Partial<ScreenerConfig> | undefined),
       symbols: body.symbols,
       earningsBlackoutDays: config.earningsBlackoutDays,
+      directionMode: body.directionMode ?? config.tradeDirection,
     });
     res.json(result);
   }),
@@ -405,9 +414,9 @@ autotradeRouter.post(
 const decideBody = z.object({
   config: z.record(z.string(), z.unknown()).optional(),
   symbols: z.array(z.string().min(1)).optional(),
+  directionMode: z.enum(['long', 'short', 'both']).optional(),
   decision: z
     .object({
-      direction: z.enum(['long', 'short']).optional(),
       stopAtrMultiple: z.number().positive().optional(),
       targetRMultiple: z.number().positive().optional(),
     })
@@ -422,6 +431,7 @@ autotradeRouter.post(
       config: screenerConfigOverride(config, body.config as Partial<ScreenerConfig> | undefined),
       symbols: body.symbols,
       earningsBlackoutDays: config.earningsBlackoutDays,
+      directionMode: body.directionMode ?? config.tradeDirection,
     });
     const decision = runAutotradeDecision(
       screen.candidates,
@@ -611,6 +621,12 @@ const backtestBodyBase = z.object({
   ...backtestRiskParamsSchema,
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   decisionConfig: z.record(z.string(), z.unknown()).optional(),
+  /** Own value here, NOT read from live config if omitted — same
+   *  self-contained-hypothesis convention as every other backtest field
+   *  (maxConcurrentPositions, maxHoldDays, etc. — see BacktestConfig's own
+   *  doc comments). Falls back to 'long' via simulateBacktest's own
+   *  screenerCfg.direction default when omitted entirely. */
+  directionMode: z.enum(['long', 'short', 'both']).optional(),
 });
 const backtestBody = backtestBodyBase
   .refine((b) => b.from <= b.to, { message: 'from must be on or before to', path: ['from'] })
@@ -649,6 +665,7 @@ autotradeRouter.post(
       ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
+      directionMode: body.directionMode,
     });
     res.json({ report, stats: computeBacktestStats(report) });
   }),
@@ -675,6 +692,7 @@ autotradeRouter.post(
       ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
+      directionMode: body.directionMode,
     });
     res.json({
       inSample: { report: wf.inSample, stats: computeBacktestStats(wf.inSample) },

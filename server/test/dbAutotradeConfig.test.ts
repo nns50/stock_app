@@ -212,6 +212,34 @@ describe('autotrade config persistence', () => {
     });
   });
 
+  describe('trade direction mode', () => {
+    it("defaults to 'long'", () => {
+      expect(defaultAutotradeConfig().tradeDirection).toBe('long');
+      expect(getAutotradeConfig().tradeDirection).toBe('long');
+    });
+
+    it("persists 'short' and 'both' and round-trips", () => {
+      expect(setAutotradeConfig({ tradeDirection: 'short' }).tradeDirection).toBe('short');
+      expect(getAutotradeConfig().tradeDirection).toBe('short');
+      expect(setAutotradeConfig({ tradeDirection: 'both' }).tradeDirection).toBe('both');
+      expect(getAutotradeConfig().tradeDirection).toBe('both');
+    });
+
+    it("rejects an invalid value, failing closed to 'long'", () => {
+      setAutotradeConfig({ tradeDirection: 'both' });
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+      const cfg = setAutotradeConfig({ tradeDirection: 'sideways' });
+      expect(cfg.tradeDirection).toBe('long');
+    });
+
+    it('round-trips independently of unrelated patches', () => {
+      setAutotradeConfig({ tradeDirection: 'both' });
+      const cfg = setAutotradeConfig({ riskProfile: 'AGGRESSIVE' });
+      expect(cfg.tradeDirection).toBe('both');
+      expect(cfg.riskProfile).toBe('AGGRESSIVE');
+    });
+  });
+
   describe('options strategy type', () => {
     it("defaults to 'single_leg'", () => {
       expect(defaultAutotradeConfig().optionsStrategyType).toBe('single_leg');

@@ -1764,6 +1764,102 @@ on its own timeline regardless of this options work.
       the next tick (the rows stay pending). This completes the live-trading
       hardening deep-dive — every CONFIRMED audit finding is fixed, and the
       remaining items are documented tail-risk.
+15. **Equity bidirectional (long/short) trading — shipped (2026-07-15).**
+    Reported directly: the loop only ever traded one direction at a time —
+    every candidate in a given screen/decide/loop cycle was scored and signed
+    as either all-long or all-short, never a mix, even though the underlying
+    scoring engine has always been able to mirror its own math for either
+    side. Requested: score and trade **both** directions in the same cycle,
+    picking whichever side actually fits each candidate — plus a follow-up
+    phase (16, below) extending the same idea to options calls/puts.
+    - **Per-candidate scoring.** `indicators/screener.ts`'s new
+      `scoreSymbolBothDirections()` computes a symbol's indicators once (the
+      expensive part) and scores it as long AND short from that same
+      snapshot, reusing the existing direction-aware momentum/RSI math
+      unmodified (the mirroring the About page and User Guide already
+      documented). `services/autotrading/screen.ts`'s new `pickDirection()`
+      picks whichever side actually qualifies and scores higher (ties favor
+      long); `runAutotradeScreen` takes a `directionMode: 'long' | 'short' |
+      'both'` option — in `'both'` mode each candidate carries its own
+      resolved `direction`, so a single screen can return some symbols long
+      and others short. `services/autotrading/decide.ts`'s `generateSignal`
+      now reads the side straight off the candidate (`candidate.direction`)
+      instead of a single batch-wide `DecisionConfig.direction`, which is
+      removed — a signal's side was never meaningfully "configured" once
+      candidates can differ, only "read."
+    - **Config & routing.** `AutotradeConfig` gains `tradeDirection: 'long' |
+      'short' | 'both'` (default `'long'`, matching every cycle before this
+      phase exactly, so leaving it untouched changes nothing), routed
+      through `PUT /api/autotrade/config`. `POST /api/autotrade/screen` and
+      `/decide` accept an optional `directionMode` that defaults to the
+      saved `tradeDirection` when omitted (so the manual preview shows what
+      the loop would actually do), and the live loop
+      (`services/autotrading/loop.ts`) always passes its own
+      `config.tradeDirection` through. Backtesting keeps its established
+      self-contained-hypothesis convention instead: `BacktestConfig`'s own
+      `directionMode` does **not** fall back to the live config when
+      omitted — it defaults to `'long'` via the screener config's own
+      default — so a backtest run is reproducible from its own saved
+      parameters regardless of what the live loop is configured to trade
+      right now.
+    - **The risk asymmetry that shaped the scope.** An equity short carries
+      theoretically unlimited downside, unlike every position this app has
+      ever taken live before (long stock, long calls, long puts — always
+      capped at what was paid). A live equity short now runs into the same
+      `naked_short` guardrail (`services/trading/guardrails.ts`) the manual
+      Trade page has always enforced for human-placed short orders —
+      previously unreachable from autotrade, since autotrade never
+      generated a sell-to-open signal. `AutotradeConfig.liveAllowNakedShort`
+      (pre-existing, defaulted `false`) is now autotrade's own gate on it:
+      with `tradeDirection` set to `short` or `both` but
+      `liveAllowNakedShort` left off, the loop still screens, decides, and
+      risk-checks short candidates normally and opens them in **paper**
+      (a local simulation carries no real exposure, so it has no such
+      gate), but a live entry attempt is blocked at the guardrail with no
+      order sent to the broker — verified in
+      `test/autotradeLiveExecute.test.ts`. Options puts needed no equivalent
+      new gate: an autotrade options position is always long-the-contract
+      (buying a put to express a bearish thesis, same as buying a call for
+      a bullish one — see phase 9's existing "long put" flow in Research &
+      Screen), which is already defined-risk, so nothing changed for
+      options in this phase.
+    - **Bug found and fixed along the way: correlated-exposure netting.**
+      `riskCheck.ts`'s `correlatedNotional()` (and backtest's parallel
+      `backtestCorrelatedNotional()`) summed every correlated position's
+      full notional as risk added, regardless of which side it was on — so
+      a correlated position that was actually a **hedge** (opposite side
+      from the candidate) was double-counted as compounding risk instead of
+      recognized as a partial offset. Both now net by side: a correlated
+      position on the **same** side as the candidate still adds (byte-
+      identical to the pre-existing long-only behavior), one on the
+      **opposite** side subtracts, and the running total is floored at $0
+      (a hedge can reduce the counted exposure toward zero, never below
+      it, and never "banks" a credit against other, unrelated risk). Every
+      options-only call site (`optionsRiskCheck.ts`, `optionsExecute.ts`,
+      `liveOptionsExecute.ts`, `combinedBacktest.ts`'s options leg) passes a
+      constant `'long'` for both the candidate and every options position,
+      since options are always long-the-contract — this fix is a pure no-op
+      for every options-only path and only changes behavior where a real
+      opposite-side equity position exists. Covered by a dedicated
+      `test/correlatedNotional.test.ts`.
+    - **UI.** The Auto page's Configuration card gained a **Trade direction**
+      select (Long / Short / Both, saves immediately like the existing
+      options-strategy select) with an inline hint about the
+      `liveAllowNakedShort` interaction whenever it's not Long. The
+      Research & Screen candidates table gained a **Dir** column (a
+      long/short badge per row) — informative in every mode, but only
+      capable of differing row-to-row once Trade direction is Both.
+    - **Known gap, documented rather than built:** the Auto page's backtest
+      form has no control for `directionMode` yet — a UI-initiated backtest
+      always runs the engine's own `'long'` default regardless of the live
+      loop's saved `tradeDirection`, even though the backtest **engine**
+      (`simulateBacktest`) fully supports all three modes and is reachable
+      today via a direct `directionMode` field in the API request body. Left
+      out of this phase to keep it scoped; a form control is a natural
+      follow-up, not a blocker for anything above.
+    - **Scope boundary:** this phase is equity-only. Options calls/puts
+      per-candidate assignment, reusing this same directional read, is
+      phase 16 below.
 
 ---
 

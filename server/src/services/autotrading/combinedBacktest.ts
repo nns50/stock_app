@@ -574,9 +574,20 @@ export async function simulateCombinedBacktest(
     let runningRisk =
       openEquity.reduce((s, p) => s + p.riskAmount, 0) + openOptions.reduce((s, p) => s + p.riskAmount, 0);
     let runningCount = openEquity.length + openOptions.length;
-    const runningPositions: { symbol: string; notional: number }[] = [
-      ...openEquity.map((p) => ({ symbol: p.symbol, notional: p.notional })),
-      ...openOptions.map((p) => ({ symbol: p.symbol, notional: p.notional })),
+    // Equity keeps its real side (this combined engine doesn't yet support
+    // directionMode:'both' -- that lands together with options call/put
+    // direction-awareness, since both currently read the SAME single
+    // scoresToday scoring pass above); options positions are always 'long'
+    // (see riskCheck.ts's correlatedNotional() doc comment). Both sides
+    // reduce to the exact prior always-additive behavior when equity really
+    // is all long, as it always has been up to now.
+    const runningPositions: { symbol: string; notional: number; side: 'long' | 'short' }[] = [
+      ...openEquity.map((p) => ({
+        symbol: p.symbol,
+        notional: p.notional,
+        side: (p.side === 'buy' ? 'long' : 'short') as 'long' | 'short',
+      })),
+      ...openOptions.map((p) => ({ symbol: p.symbol, notional: p.notional, side: 'long' as const })),
     ];
 
     // 7) EQUITY decide + risk-check FIRST (same ordering as loop.ts).
@@ -586,10 +597,14 @@ export async function simulateCombinedBacktest(
       .sort((a, b) => b.total - a.total || a.symbol.localeCompare(b.symbol));
 
     for (const score of equityCandidates) {
-      const signal = generateSignal({ ...score, discoverySource: 'universe' }, decisionCfg);
+      const signal = generateSignal(
+        { ...score, discoverySource: 'universe', direction: screenerCfg.direction },
+        decisionCfg,
+      );
       if (!signal) continue;
       const correlated = backtestCorrelatedNotional(
         signal.symbol,
+        signal.side === 'buy' ? 'long' : 'short',
         dayMs,
         runningPositions,
         historyBySymbol,
@@ -619,7 +634,11 @@ export async function simulateCombinedBacktest(
       });
       runningRisk += result.approvedRiskAmount;
       runningCount += 1;
-      runningPositions.push({ symbol: signal.symbol, notional: result.approvedNotional });
+      runningPositions.push({
+        symbol: signal.symbol,
+        notional: result.approvedNotional,
+        side: signal.side === 'buy' ? 'long' : 'short',
+      });
     }
 
     // 8) OPTIONS decide + risk-check SECOND — continues the SAME ledger,
@@ -753,6 +772,7 @@ export async function simulateCombinedBacktest(
 
       const correlated = backtestCorrelatedNotional(
         candidate.symbol,
+        'long', // options candidates are always a long-the-contract bet
         dayMs,
         runningPositions,
         historyBySymbol,
@@ -845,7 +865,7 @@ export async function simulateCombinedBacktest(
       });
       runningRisk += result.approvedRiskAmount;
       runningCount += 1;
-      runningPositions.push({ symbol: candidate.symbol, notional: result.approvedNotional });
+      runningPositions.push({ symbol: candidate.symbol, notional: result.approvedNotional, side: 'long' });
     }
 
     equityCurve.push({ date: day, equity });

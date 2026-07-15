@@ -25,6 +25,7 @@ import type {
   AutotradeOptionsStrategyType,
   AutotradeRiskCheckResult,
   AutotradeRiskProfile,
+  AutotradeTradeDirectionMode,
   BacktestEquityPoint,
   BacktestRunResponse,
   BacktestStats,
@@ -1401,6 +1402,7 @@ export default function AutoTradePage() {
   const [killSwitch, setKillSwitch] = useState(false);
   const [riskProfile, setRiskProfile] = useState<AutotradeRiskProfile>('MODERATE');
   const [optionsStrategyType, setOptionsStrategyType] = useState<AutotradeOptionsStrategyType>('single_leg');
+  const [tradeDirection, setTradeDirection] = useState<AutotradeTradeDirectionMode>('long');
   const [equityDraft, setEquityDraft] = useState<number | undefined>();
   const [maxPositionsDraft, setMaxPositionsDraft] = useState<number | undefined>();
   const [riskPerTradePctDraft, setRiskPerTradePctDraft] = useState<number | undefined>();
@@ -1452,6 +1454,7 @@ export default function AutoTradePage() {
     setKillSwitch(config.data.killSwitch);
     setRiskProfile(config.data.riskProfile);
     setOptionsStrategyType(config.data.optionsStrategyType);
+    setTradeDirection(config.data.tradeDirection);
     setEquityDraft(config.data.accountEquityUsd ?? undefined);
     setMaxPositionsDraft(config.data.maxConcurrentPositions);
     setRiskPerTradePctDraft(config.data.riskPerTradePct);
@@ -1509,6 +1512,7 @@ export default function AutoTradePage() {
     maxAggregateOpenRiskPct?: number;
     maxCorrelatedExposurePct?: number;
     maxTradesPerDay?: number;
+    tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     maxTickerAtrPct?: number;
     maxMarketAtrPct?: number;
@@ -1547,6 +1551,7 @@ export default function AutoTradePage() {
       setEnabled(saved.enabled);
       setRiskProfile(saved.riskProfile);
       setOptionsStrategyType(saved.optionsStrategyType);
+      setTradeDirection(saved.tradeDirection);
       setMaxPositionsDraft(saved.maxConcurrentPositions);
       setRiskPerTradePctDraft(saved.riskPerTradePct);
       setMaxDailyDrawdownPctDraft(saved.maxDailyDrawdownPct);
@@ -2398,6 +2403,26 @@ export default function AutoTradePage() {
               </div>
             </Field>
             <Field
+              label="Trade direction"
+              hint={
+                tradeDirection === 'both'
+                  ? 'Screens every candidate as both a long and a short and takes whichever direction actually qualifies, per symbol — can hold a long on one stock and a short on another at once. Live shorts also need "Allow naked short" enabled below (a short\'s downside is unlimited, unlike a long); paper shorts work either way.'
+                  : tradeDirection === 'short'
+                    ? 'Only takes short setups. Live shorts also need "Allow naked short" enabled below (a short\'s downside is unlimited, unlike a long); paper shorts work either way.'
+                    : 'Only takes long setups (default) — unchanged original behavior.'
+              }
+            >
+              <select
+                className="input"
+                value={tradeDirection}
+                onChange={(e) => saveConfig({ tradeDirection: e.target.value as AutotradeTradeDirectionMode })}
+              >
+                <option value="long">Long only (default)</option>
+                <option value="short">Short only</option>
+                <option value="both">Both</option>
+              </select>
+            </Field>
+            <Field
               label="Min relative volume (×)"
               hint="Screener's relative-volume floor — a candidate's volume must be at least this many times its average to pass. 0 disables this specific filter."
             >
@@ -3060,6 +3085,7 @@ export default function AutoTradePage() {
                     <thead className="border-b border-ink-600/60">
                       <tr>
                         <th className="th">Symbol</th>
+                        <th className="th">Dir</th>
                         <th className="th text-right">Price</th>
                         <th className="th text-right">Score</th>
                         <th className="th text-right">Gap</th>
@@ -3091,6 +3117,9 @@ export default function AutoTradePage() {
                         return (
                           <tr key={c.symbol} className="border-b border-ink-700/50">
                             <td className="td font-semibold">{c.symbol}</td>
+                            <td className="td">
+                              <Badge color={c.direction === 'long' ? 'green' : 'red'}>{c.direction}</Badge>
+                            </td>
                             <td className="td text-right tabular-nums">{fmtUsd(c.price)}</td>
                             <td className="td text-right tabular-nums">{fmtNum(c.total, 1)}</td>
                             <td className="td text-right tabular-nums">

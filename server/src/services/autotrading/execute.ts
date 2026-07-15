@@ -230,7 +230,13 @@ export interface PaperPortfolioSeed {
    *  is the safe direction, not a correctness gap. */
   consecutiveLosses: number;
   tradesToday: number;
-  positions: { symbol: string; notional: number }[];
+  /** 'long' for every seed position — this seed exists for the combined
+   *  backtest's options-book cross-seeding (options positions are always
+   *  "long the contract," see riskCheck.ts's correlatedNotional() doc
+   *  comment on why call/put bullish/bearish direction-awareness is a
+   *  separate, not-yet-built concern), so a fixed 'long' here reproduces
+   *  the ORIGINAL always-additive correlatedNotional() math exactly. */
+  positions: { symbol: string; notional: number; side: 'long' }[];
 }
 
 const EMPTY_SEED: PaperPortfolioSeed = {
@@ -264,10 +270,11 @@ export async function runPaperExecution(
   const tradesToday = snapshot.tradesToday + seed.tradesToday;
   let runningRisk = snapshot.openRisk + seed.openRisk;
   let runningCount = snapshot.openPositionsCount + seed.openPositionsCount;
-  const runningPositions: { symbol: string; notional: number }[] = [
+  const runningPositions: { symbol: string; notional: number; side: 'long' | 'short' }[] = [
     ...snapshot.openPositions.map((p) => ({
       symbol: p.symbol,
       notional: p.entryPrice * p.quantity,
+      side: (p.side === 'buy' ? 'long' : 'short') as 'long' | 'short',
     })),
     ...seed.positions,
   ];
@@ -282,6 +289,7 @@ export async function runPaperExecution(
     }
     const { amount: correlated } = await correlatedNotional(
       signal.symbol,
+      signal.side === 'buy' ? 'long' : 'short',
       runningPositions,
       config.correlationLookbackDays,
       config.correlationThreshold,
@@ -322,7 +330,11 @@ export async function runPaperExecution(
     if (outcome.ok && outcome.position) {
       runningRisk += result.approvedRiskAmount;
       runningCount += 1;
-      runningPositions.push({ symbol, notional: outcome.position.entryPrice * outcome.position.quantity });
+      runningPositions.push({
+        symbol,
+        notional: outcome.position.entryPrice * outcome.position.quantity,
+        side: outcome.position.side === 'buy' ? 'long' : 'short',
+      });
       skipSymbols.add(symbol);
     }
   }

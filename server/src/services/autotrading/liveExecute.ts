@@ -580,10 +580,13 @@ export async function runLiveExecution(candidates: { signal: TradeSignal }[]): P
   const combined = combinedLiveOpenRisk();
   let runningRisk = combined.risk;
   let runningCount = combined.count;
-  const runningPositions: { symbol: string; notional: number }[] = snapshot.openPositions.map((p) => ({
-    symbol: p.symbol,
-    notional: p.entryPrice * p.quantity,
-  }));
+  const runningPositions: { symbol: string; notional: number; side: 'long' | 'short' }[] = snapshot.openPositions.map(
+    (p) => ({
+      symbol: p.symbol,
+      notional: p.entryPrice * p.quantity,
+      side: p.side,
+    }),
+  );
   // Skip a symbol that has an open position OR a still-working / not-yet-
   // materialized live order. A position row is created ONLY when a full fill
   // reconciles, so open positions alone miss an entry still resting or
@@ -618,6 +621,7 @@ export async function runLiveExecution(candidates: { signal: TradeSignal }[]): P
     }
     const { amount: correlated } = await correlatedNotional(
       signal.symbol,
+      signal.side === 'buy' ? 'long' : 'short',
       runningPositions,
       cfg.correlationLookbackDays,
       cfg.correlationThreshold,
@@ -673,7 +677,11 @@ export async function runLiveExecution(candidates: { signal: TradeSignal }[]): P
     if (outcome.ok) {
       runningRisk += result.approvedRiskAmount;
       runningCount += 1;
-      runningPositions.push({ symbol, notional: signal.entry * result.sizing.suggestedQuantity });
+      runningPositions.push({
+        symbol,
+        notional: signal.entry * result.sizing.suggestedQuantity,
+        side: signal.side === 'buy' ? 'long' : 'short',
+      });
       skipSymbols.add(symbol);
     }
   }

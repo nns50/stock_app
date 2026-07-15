@@ -267,14 +267,25 @@ export async function runOptionsRiskCheck(
     snapshot.openPositions.reduce((s, p) => s + p.riskAmount, 0) +
     approvedEquity.reduce((s, r) => s + r.approvedRiskAmount, 0);
   let runningCount = snapshot.openPositions.length + approvedEquity.length;
-  const runningPositions = [
-    ...snapshot.openPositions,
-    ...approvedEquity.map((r) => ({ symbol: r.symbol, notional: r.approvedNotional })),
+  // This is a manual PREVIEW endpoint (routes/autotrade.ts's /risk-check),
+  // not part of the live/paper execution path (that's evaluateRiskCheck/
+  // evaluateOptionsRiskCheck, called directly per-candidate — already
+  // side-aware, see liveExecute.ts/execute.ts). OpenRiskItem/RiskCheckResult
+  // carry no `side`, so a preview equity position's real long/short can't be
+  // threaded through here without a bigger plumbing change than a preview
+  // endpoint warrants — 'long' for every entry preserves this endpoint's
+  // EXISTING always-additive behavior exactly (correlatedNotional()'s own
+  // opposite-side netting is a no-op when everything on both sides is
+  // 'long'), rather than silently guessing at real equity positions' sides.
+  const runningPositions: { symbol: string; notional: number; side: 'long' }[] = [
+    ...snapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.notional, side: 'long' as const })),
+    ...approvedEquity.map((r) => ({ symbol: r.symbol, notional: r.approvedNotional, side: 'long' as const })),
   ];
 
   for (const signal of signals) {
     const { amount: correlated } = await correlatedNotional(
       signal.symbol,
+      'long',
       runningPositions,
       config.correlationLookbackDays,
       config.correlationThreshold,
@@ -313,7 +324,7 @@ export async function runOptionsRiskCheck(
     if (result.ok) {
       runningRisk += result.approvedRiskAmount;
       runningCount += 1;
-      runningPositions.push({ symbol: signal.symbol, notional: result.approvedNotional });
+      runningPositions.push({ symbol: signal.symbol, notional: result.approvedNotional, side: 'long' });
     }
   }
 

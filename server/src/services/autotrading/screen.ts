@@ -6,7 +6,9 @@ import {
   CandleIndicators,
   computeCandleIndicators,
   defaultScreenerConfig,
+  Direction,
   scoreSymbol,
+  scoreSymbolBothDirections,
   ScreenerConfig,
   SymbolScore,
 } from '../../indicators/screener';
@@ -32,6 +34,11 @@ export type DiscoverySource = 'universe' | 'movers';
 
 export interface ScreenCandidate extends SymbolScore {
   discoverySource: DiscoverySource;
+  /** Which side this candidate qualified as. In 'long'/'short' directionMode
+   *  this always matches that mode; in 'both' mode it's per-symbol — the
+   *  direction that actually passed filters (the stronger of the two, if
+   *  both did — see pickDirection()). */
+  direction: Direction;
 }
 
 export interface ScreenResult {
@@ -107,6 +114,38 @@ export interface RunScreenOptions {
    *  (loop.ts / the manual Screen+Decision routes), same convention as
    *  config.filters.minRelVol above. */
   earningsBlackoutDays?: number;
+  /** 'long' or 'short': scores every candidate as exactly that one direction
+   *  (config?.direction, if given, is ignored in favor of this — kept as a
+   *  SEPARATE option so a 'both' caller never has to also pick a meaningless
+   *  single config.direction). 'both': scores every candidate BOTH ways
+   *  (scoreSymbolBothDirections) and keeps whichever direction actually
+   *  passed filters per symbol (the stronger of the two if both did — see
+   *  pickDirection()) — this is what lets the loop hold a long on one symbol
+   *  and a short on another from the SAME cycle. Defaults to
+   *  config?.direction ?? 'long' — identical behavior to every caller that
+   *  existed before this option did. */
+  directionMode?: 'long' | 'short' | 'both';
+}
+
+/** Given both directions' scores for one symbol, pick which (if either)
+ *  qualifies as an actual candidate. Both passing is rare (the checks are
+ *  largely symmetric, so a genuinely two-sided setup is unusual) but not
+ *  impossible — deliberately never emits a candidate for BOTH directions on
+ *  the same symbol in the same cycle (proposing a stock as both a long and a
+ *  short setup at once is a contradiction downstream, not a genuine edge
+ *  case to preserve), so the stronger (higher total) side wins; an exact tie
+ *  favors long, arbitrarily but deterministically. */
+export function pickDirection(both: {
+  long: SymbolScore;
+  short: SymbolScore;
+}): { direction: Direction; score: SymbolScore } | null {
+  const { long, short } = both;
+  if (long.passedFilters && short.passedFilters) {
+    return long.total >= short.total ? { direction: 'long', score: long } : { direction: 'short', score: short };
+  }
+  if (long.passedFilters) return { direction: 'long', score: long };
+  if (short.passedFilters) return { direction: 'short', score: short };
+  return null;
 }
 
 /** Whether `earningsDate` (YYYY-MM-DD) falls within `blackoutDays` calendar
@@ -160,6 +199,10 @@ export function resetCandleIndicatorCache(): void {
 
 export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<ScreenResult> {
   const cfg = resolveAutotradeScreenerConfig(opts.config);
+  // Falls back to cfg.direction (itself defaulted 'long') when omitted —
+  // every existing caller that doesn't know about directionMode gets
+  // IDENTICAL behavior to before this option existed.
+  const directionMode = opts.directionMode ?? cfg.direction;
   const provider = getProvider();
   const { symbols, universeCount, moversCount, fromMovers } = opts.symbols?.length
     ? {
@@ -253,18 +296,36 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
         provider.getCandles(symbol, 'daily', { limit: 120 }),
         provider.getQuote(symbol).catch(() => undefined),
       ]);
-      const score = scoreSymbol(symbol, candles, quote, cfg, cachedCandleIndicatorsFor(symbol, candles, cfg));
-      if (score.passedFilters) {
-        candidates.push({ ...score, discoverySource: fromMovers.has(symbol) ? 'movers' : 'universe' });
+      const cachedIndicators = cachedCandleIndicatorsFor(symbol, candles, cfg);
+      // 'both': score each candidate as a long AND a short from the SAME
+      // indicator computation, then keep whichever direction (if either)
+      // actually qualifies — see pickDirection(). 'long'/'short': unchanged
+      // single-direction behavior, just reading directionMode instead of
+      // cfg.direction directly so a 'both' caller was never required to also
+      // pick a meaningless single cfg.direction.
+      const picked =
+        directionMode === 'both'
+          ? pickDirection(scoreSymbolBothDirections(symbol, candles, quote, cfg, cachedIndicators))
+          : (() => {
+              const score = scoreSymbol(symbol, candles, quote, { ...cfg, direction: directionMode }, cachedIndicators);
+              return score.passedFilters ? { direction: directionMode, score } : null;
+            })();
+      if (picked) {
+        candidates.push({
+          ...picked.score,
+          direction: picked.direction,
+          discoverySource: fromMovers.has(symbol) ? 'movers' : 'universe',
+        });
         logAutotradeEvent({
           symbol,
           stage: 'screen',
           action: 'candidate_found',
           detail: {
-            total: score.total,
-            price: score.price,
-            gapPct: score.indicators.gapPct,
-            relVolume: score.indicators.relVolume,
+            direction: picked.direction,
+            total: picked.score.total,
+            price: picked.score.price,
+            gapPct: picked.score.indicators.gapPct,
+            relVolume: picked.score.indicators.relVolume,
           },
         });
       }

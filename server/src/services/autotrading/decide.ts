@@ -1,4 +1,3 @@
-import { Direction } from '../../indicators/screener';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { ScreenCandidate } from './screen';
 
@@ -20,7 +19,6 @@ import { ScreenCandidate } from './screen';
 export type SignalSide = 'buy' | 'sell';
 
 export interface DecisionConfig {
-  direction: Direction;
   /** Stop distance = this many ATRs from entry. */
   stopAtrMultiple: number;
   /** Target distance = this many multiples of the stop distance (reward:risk). */
@@ -28,7 +26,7 @@ export interface DecisionConfig {
 }
 
 export function defaultDecisionConfig(): DecisionConfig {
-  return { direction: 'long', stopAtrMultiple: 1.5, targetRMultiple: 2 };
+  return { stopAtrMultiple: 1.5, targetRMultiple: 2 };
 }
 
 export interface TradeSignal {
@@ -56,6 +54,14 @@ const round2 = (n: number): number => Math.round(n * 100) / 100;
  * Turn one screened candidate into a trade signal, or null if a sound stop
  * can't be computed (no ATR — insufficient history — or the ATR-based stop
  * would land at or below zero). Pure: no I/O, no journaling (the caller logs).
+ *
+ * Long vs. short comes from `candidate.direction` — resolved PER-SYMBOL by
+ * the screen stage (screen.ts's runAutotradeScreen, driven by
+ * AutotradeConfig.tradeDirection), not a batch-wide setting here. This is
+ * what lets one decision batch contain both a long signal on one symbol and
+ * a short on another — DecisionConfig itself no longer carries a `direction`
+ * field (removed 2026-07-14 when this became per-candidate; it would only
+ * ever be stale/ignored now).
  */
 export function generateSignal(
   candidate: ScreenCandidate,
@@ -74,7 +80,7 @@ export function generateSignal(
   // single live entry attempt, not just an occasional one).
   const entry = round2(candidate.price);
   const stopDistance = cfg.stopAtrMultiple * atr;
-  const long = cfg.direction === 'long';
+  const long = candidate.direction === 'long';
   const stop = round2(long ? entry - stopDistance : entry + stopDistance);
   if (stop <= 0) return null;
 

@@ -677,7 +677,18 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   governs the automated loop's own **screening and decision thresholds** — a
   structurally different category from the risk-sizing fields above (these gate what
   counts as a candidate and how it's priced, not how an approved signal is sized or
-  capped): **min relative volume** (a candidate's volume must be at least this many
+  capped): **trade direction** (`Long`, `Short`, or `Both` — in `Both`, every
+  candidate is scored as long AND short from the same indicators and the loop trades
+  whichever side actually qualifies for *that* symbol, so a single cycle can open some
+  positions long and others short; it's never one exclusive mode applied to the whole
+  batch. A live **short** position carries theoretically unlimited downside, unlike
+  this app's long stock and long-option positions, so it stays gated by the existing
+  **Allow naked short** guardrail under Live trading, below — with Short or Both
+  selected but that box unchecked, the loop still screens, decides, and paper-trades
+  the short side normally, it just can't send a live short order to the broker. Options
+  entries are unaffected either way — an autotrade options position is always long the
+  contract, a put for a bearish read instead of a call, which is already defined-risk),
+  **min relative volume** (a candidate's volume must be at least this many
   times its own average to pass the screener), **max ticker ATR** and **max market
   ATR** (skip a candidate whose own volatility is too high, or skip every new entry
   this cycle if SPY's own volatility is too high — stricter than the manual Screen/
@@ -689,16 +700,17 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   known earnings date falls within this many calendar days — an unattended loop can't
   react to an earnings-driven overnight gap the way ATR-based stop sizing assumes;
   options entries are unaffected, since an approaching print already shows up as
-  elevated IV rank there instead). All seven default to the values the loop always
-  used before they were configurable (earnings blackout's own "before" is simply never
-  checking — 0 disables it), so leaving them untouched changes nothing; the manual
+  elevated IV rank there instead). All eight default to the values the loop always
+  used before they were configurable (trade direction to `Long`; earnings blackout's
+  own "before" is simply never checking — 0 disables it), so leaving them untouched
+  changes nothing; the manual
   Screen/Decision preview
   below defaults to these same saved values too (so it previews what the loop would
   actually do), though it has no UI to override them ad hoc today. A related but
   separate **max hold time (days)** setting forces a position closed at the day's price
   after it's been open this many calendar days without its stop or target firing — a
   backstop against a position that's just drifting sideways forever. Defaults to
-  **0 (disabled)**, so leaving it untouched changes nothing; unlike the seven fields
+  **0 (disabled)**, so leaving it untouched changes nothing; unlike the eight fields
   above, it has no manual-preview equivalent — there's nothing to preview about how
   long a position stays open before it's even entered. Five more fields manage an
   already-open **paper or backtest** equity position the same way a discretionary
@@ -734,8 +746,12 @@ phrase to turn it on, plus the guardrails and kill switches described below.
 - **Live trading** — configure and arm the loop to place **real** orders through Webull.
   Set a **Webull account ID** (server-side only — unlike the Trade page, never sourced
   from your browser) and the **live guardrail caps**: max order size ($), max daily loss
-  ($), max orders/day, fat-finger %, and whether to allow naked-short exposure (leave
-  unchecked — this app only takes defined-risk positions by default). **Suggest from
+  ($), max orders/day, fat-finger %, and whether to **allow naked-short exposure**
+  (leave unchecked unless **Trade direction** above is `Short` or `Both` — every other
+  position this app can take live is defined-risk (long stock, long calls, long puts),
+  so this stays off by default; check it only once you've deliberately decided you want
+  the loop opening real, uncapped-downside equity shorts, not just paper-trading them).
+  **Suggest from
   equity** fills the first three of those from your account equity and the configured
   daily-drawdown %/max-trades-per-day (25% of equity for the order cap, matching those
   two settings exactly for the other two) — a starting point only, so it fills the
@@ -887,9 +903,12 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   per candidate. Candidates are risk-checked in score order against a running total, so
   a batch of signals that would each pass alone can still correctly exhaust a shared cap
   (e.g. the position-count cap) partway through. This is read-only: running a screen
-  never places an order. An **Options** column shows a matching options trade alongside
-  the equity one — a long call (or, if the loop is configured for short equity signals, a
-  long put) on the same underlying, picked from its option chain's nearest expiration
+  never places an order. Each equity candidate's own **Dir** badge shows which side it
+  resolved to (`long`/`short`) — only ever mixed within one run's results when **Trade
+  direction** (Configuration, above) is set to `Both`. An **Options** column shows a
+  matching options trade alongside the equity one — a long call for a long candidate,
+  or a long put for a short one, on the same underlying, picked from its option chain's
+  nearest expiration
   7–60 days out. Only candidates from your **universe list** are considered for options
   (not Webull's premarket movers/gainers, which surface a different set of small-caps most
   days and so can't build the real IV-rank history below) — equity signals still cover the
@@ -924,7 +943,12 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   the Configuration card above, same as the other three) a risk profile, and it replays
   Screen → Decision → Risk Check day by day over
   historical daily bars — the exact same logic the live loop above uses, so a backtest
-  can't tell you something the live system wouldn't actually do. Leave **Out-of-sample
+  can't tell you something the live system wouldn't actually do. One exception today:
+  **trade direction** — the backtest engine can replay `Long`, `Short`, or `Both` just
+  like the live loop, but this form has no control for it yet, so a run from this page
+  always tests `Long`-only regardless of what **Trade direction** is set to in
+  Configuration above; testing `Short` or `Both` needs a direct API request (`directionMode`
+  on `POST /api/autotrade/backtest`) until a form control is added. Leave **Out-of-sample
   split** blank for a single-window run, or set it to split the range into an
   **in-sample** window (what the configuration was "tuned" on) and an **out-of-sample**
   window (unseen data) — a strategy that only performs in-sample is exactly what this

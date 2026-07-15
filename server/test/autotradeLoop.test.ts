@@ -552,8 +552,27 @@ describe('runAutotradeLoopTick', () => {
     expect(mockScreen).toHaveBeenCalledWith({
       config: { filters: { minRelVol: 3 } },
       earningsBlackoutDays: 0,
+      directionMode: 'long',
     });
     expect(mockDecide).toHaveBeenCalledWith([candidate('AAPL', 2)], { stopAtrMultiple: 2.5, targetRMultiple: 3 });
+  });
+
+  it("threads tradeDirection through to runAutotradeScreen's directionMode", async () => {
+    setAutotradeConfig({ tradeDirection: 'both' });
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+
+    await runAutotradeLoopTick();
+
+    expect(mockScreen).toHaveBeenCalledWith(expect.objectContaining({ directionMode: 'both' }));
   });
 
   it('persists the completed tick as the "last tick" snapshot, retrievable via getLastTick()', async () => {

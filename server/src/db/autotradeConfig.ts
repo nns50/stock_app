@@ -15,6 +15,25 @@ import { db } from './index';
 
 export type RiskProfileName = 'MODERATE' | 'AGGRESSIVE';
 
+/** Which side(s) of the market the equity screener/decision engine looks
+ *  for a setup in. 'long' (default) preserves the original behavior exactly
+ *  — the loop only ever screens for and takes long positions. 'short' scores
+ *  every candidate as a short instead. 'both' scores every candidate BOTH
+ *  ways (indicators/screener.ts's scoreSymbolBothDirections) and keeps
+ *  whichever direction actually qualifies PER SYMBOL — this is what lets the
+ *  loop hold a long on one symbol and a short on another from the same
+ *  cycle, rather than picking one global direction for the whole batch.
+ *  Equity-only: options direction (call vs put) is derived from the SAME
+ *  per-candidate read once this exists, not a separate setting.
+ *
+ *  A 'short'/'both' candidate reaching LIVE execution still has to clear
+ *  liveAllowNakedShort below — this setting decides what the loop LOOKS
+ *  for, not whether a live short order is actually allowed to place; paper
+ *  trading has no equivalent gate (services/trading/guardrails.ts is never
+ *  in its path), so enabling this alone is enough to see short paper
+ *  positions. */
+export type TradeDirectionMode = 'long' | 'short' | 'both';
+
 /** Which options strategy shape the loop builds (docs/AUTOTRADING_SPEC.md,
  *  phase 9/10's own deferred "debit spread" follow-up). 'single_leg' (long
  *  call/put) by default — a debit spread caps both max loss AND max gain, a
@@ -105,6 +124,10 @@ export interface AutotradeConfig {
   // have no backtest equivalent at all (a historical daily-bar replay has no
   // real-time session clock or same-day volatility guard to simulate).
 
+  /** 'long' | 'short' | 'both' — see TradeDirectionMode's own doc comment.
+   *  Defaults 'long', identical behavior to every config that predates this
+   *  field. */
+  tradeDirection: TradeDirectionMode;
   /** Screener's relative-volume floor (× average volume) — auto-trade leans
    *  harder on "unusual volume" than the manual screener's general-purpose
    *  default. 0 disables this specific filter (every relative-volume reading
@@ -346,6 +369,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
     maxTradesPerDay: 6,
+    tradeDirection: 'long',
     minRelVol: 1.5,
     maxTickerAtrPct: 15,
     maxMarketAtrPct: 5,
@@ -456,6 +480,10 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     maxAggregateOpenRiskPct: pct(input.maxAggregateOpenRiskPct, d.maxAggregateOpenRiskPct),
     maxCorrelatedExposurePct: pct(input.maxCorrelatedExposurePct, d.maxCorrelatedExposurePct),
     maxTradesPerDay: posInt(input.maxTradesPerDay, d.maxTradesPerDay),
+    tradeDirection:
+      input.tradeDirection === 'long' || input.tradeDirection === 'short' || input.tradeDirection === 'both'
+        ? input.tradeDirection
+        : d.tradeDirection,
     minRelVol: nonNeg(input.minRelVol, d.minRelVol),
     maxTickerAtrPct: pct(input.maxTickerAtrPct, d.maxTickerAtrPct),
     maxMarketAtrPct: pct(input.maxMarketAtrPct, d.maxMarketAtrPct),

@@ -352,6 +352,39 @@ describe('attemptLiveEntry', () => {
     expect(intents[0].state).toBe('rejected');
   });
 
+  it('blocks a short signal via the naked-short guardrail by default — tradeDirection alone is not enough to place a live short', async () => {
+    // Regression for the equity long+short feature: liveAllowNakedShort
+    // (defaults false, same as guardrails.ts's own default) is the ONLY
+    // thing standing between a short TradeSignal and a real broker order —
+    // AutotradeConfig.tradeDirection just decides what the loop LOOKS for,
+    // it doesn't bypass this real-money risk gate.
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    const shortSignal = signal({ side: 'sell', stop: 105, target: 90 });
+
+    const r = await attemptLiveEntry(shortSignal, okResult, 'MODERATE', liveConfig({ liveAllowNakedShort: false }));
+
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/Guardrails blocked/);
+    expect(r.reason).toMatch(/naked_short/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('places a short live order once liveAllowNakedShort is explicitly enabled', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SHORT' });
+    const shortSignal = signal({ side: 'sell', stop: 105, target: 90 });
+
+    const r = await attemptLiveEntry(shortSignal, okResult, 'MODERATE', liveConfig({ liveAllowNakedShort: true }));
+
+    expect(r.ok).toBe(true);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    expect(placedIntent.side).toBe('sell');
+    expect(placedIntent.bracket).toEqual({ takeProfitPrice: 90, stopLossPrice: 105 });
+  });
+
   it('places a bracket order (entry + linked stop + target) and records autotrade_live_orders metadata on success', async () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);

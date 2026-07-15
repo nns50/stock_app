@@ -228,7 +228,19 @@ $5,000 position in one semiconductor stock, and a candidate in a second
 semiconductor stock (moving in near lock-step with the first, historically) would add
 another $5,000 of position value → $10,000 total in correlated names, which exceeds
 the $6,000 cap, so it's blocked — protecting you from what looks like "two trades"
-but is really one bet, doubled.
+but is really one bet, doubled. That's the case when both positions are on the
+**same side** (both long, or both short) — the usual case, and the only one possible
+before the app could hold equity shorts at all.
+
+Now that positions can be long or short, a correlated position on the **opposite**
+side from the candidate is a **hedge**, not a doubled bet, so it's netted out instead
+of added: *same example, but your $5,000 semiconductor position is **short** and the
+new candidate is a **long** in the closely-correlated second name* — already-correlated
+exposure counts as $5,000 − $5,000 = **$0**, nowhere near the $6,000 cap, since the
+two positions partially offset each other's risk rather than compound it. The netted
+total is floored at $0 either way — a hedge can bring the counted exposure down to
+zero, never into negative territory that would then "shield" other, unrelated risk
+elsewhere.
 
 The candidate's own size never counts against itself here — only capital that's
 *already* committed to correlated names. A single, isolated first trade is never

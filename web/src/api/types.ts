@@ -1051,6 +1051,12 @@ export type AutotradeRiskProfile = 'MODERATE' | 'AGGRESSIVE';
 
 export type AutotradeOptionsStrategyType = 'single_leg' | 'debit_spread';
 
+/** 'long' (default): only long positions, unchanged original behavior.
+ *  'short': only short positions. 'both': screens every candidate as both a
+ *  long and a short and takes whichever direction actually qualifies, per
+ *  symbol — can hold a long on one symbol and a short on another at once. */
+export type AutotradeTradeDirectionMode = 'long' | 'short' | 'both';
+
 export interface AutotradeConfig {
   enabled: boolean;
   killSwitch: boolean;
@@ -1070,6 +1076,7 @@ export interface AutotradeConfig {
   maxTradesPerDay: number;
 
   // --- Screening/decision thresholds ---
+  tradeDirection: AutotradeTradeDirectionMode;
   minRelVol: number;
   maxTickerAtrPct: number;
   maxMarketAtrPct: number;
@@ -1162,6 +1169,10 @@ export interface AutotradeExclusion {
 
 export interface AutotradeCandidate extends SymbolScore {
   discoverySource: 'universe' | 'movers';
+  /** Which side this candidate qualified as — always matches the request's
+   *  directionMode for 'long'/'short'; per-symbol (the direction that
+   *  actually passed) for 'both'. */
+  direction: 'long' | 'short';
 }
 
 export interface AutotradeScreenResult {

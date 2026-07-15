@@ -556,9 +556,18 @@ export async function runLiveOptionsExecution(
   const combined = combinedLiveOpenRisk();
   let runningRisk = combined.risk;
   let runningCount = combined.count;
-  const runningPositions: { symbol: string; notional: number }[] = [
-    ...optSnapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.riskAmount })),
-    ...eqSnapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.entryPrice * p.quantity })),
+  // Options positions are always 'long' (see riskCheck.ts's
+  // correlatedNotional() doc comment); equity positions folded in here carry
+  // their REAL side so an options candidate (always effectively 'long', per
+  // candidateSide below) correctly nets against an existing SHORT equity
+  // position instead of piling onto it.
+  const runningPositions: { symbol: string; notional: number; side: 'long' | 'short' }[] = [
+    ...optSnapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.riskAmount, side: 'long' as const })),
+    ...eqSnapshot.openPositions.map((p) => ({
+      symbol: p.symbol,
+      notional: p.entryPrice * p.quantity,
+      side: p.side, // getLivePortfolioSnapshot() positions are already 'long'|'short'
+    })),
   ];
   // Skip a symbol with an open position OR a still-working / not-yet-
   // materialized ENTRY order — see attemptLiveOptionsEntry's idempotency guard
@@ -581,6 +590,7 @@ export async function runLiveOptionsExecution(
     }
     const { amount: correlated } = await correlatedNotional(
       signal.symbol,
+      'long', // options candidates are always a long-the-contract bet
       runningPositions,
       cfg.correlationLookbackDays,
       cfg.correlationThreshold,
@@ -628,7 +638,7 @@ export async function runLiveOptionsExecution(
     if (outcome.ok) {
       runningRisk += result.approvedRiskAmount;
       runningCount += 1;
-      runningPositions.push({ symbol, notional: result.approvedNotional });
+      runningPositions.push({ symbol, notional: result.approvedNotional, side: 'long' });
       skipSymbols.add(symbol);
     }
   }

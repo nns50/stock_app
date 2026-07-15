@@ -71,6 +71,7 @@ import type {
   EquitySyncResult,
   AutotradeRiskProfile,
   AutotradeOptionsStrategyType,
+  AutotradeTradeDirectionMode,
   AutotradeExclusion,
   AutotradeScreenResult,
   AutotradeDecideResponse,
@@ -437,6 +438,7 @@ export const client = {
     maxAggregateOpenRiskPct?: number;
     maxCorrelatedExposurePct?: number;
     maxTradesPerDay?: number;
+    tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     maxTickerAtrPct?: number;
     maxMarketAtrPct?: number;

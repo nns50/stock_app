@@ -156,7 +156,20 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
  *  correlation can't be computed (fetch failure, too little history) is
  *  excluded from the sum, not assumed correlated — the CRITICAL
  *  aggregate-risk check independently covers the "many positions at once"
- *  gap risk this cap is layered on top of. */
+ *  gap risk this cap is layered on top of.
+ *
+ *  `candidateSide`/`pos.side` (added 2026-07-14 for the equity long+short
+ *  feature): a correlated position on the SAME side as the candidate
+ *  compounds risk (a long AAPL and a long MSFT both drop together in a tech
+ *  selloff — additive, the original behavior). A correlated position on the
+ *  OPPOSITE side partially HEDGES the candidate instead (a long AAPL and a
+ *  SHORT MSFT move against each other in that same selloff — genuinely
+ *  different risk, not more of the same) — subtracted, not added. The net
+ *  is floored at 0: a hedge can cancel out correlated risk, it can't create
+ *  negative "risk" for the cap to compare against. Every existing caller
+ *  (options, paper/live equity before this feature) that only ever holds
+ *  one side passes the SAME side for every position and the candidate —
+ *  amount reduces to exactly the old always-additive sum, unchanged. */
 /** Exported for reuse by the Phase 6 paper execution loop (execute.ts), which
  *  needs the same live-fetching correlation check against its own running
  *  paper-portfolio state — not a from-scratch reimplementation (see
@@ -164,7 +177,8 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
  *  only because a backtest has no live network access during simulation). */
 export async function correlatedNotional(
   symbol: string,
-  positions: { symbol: string; notional: number }[],
+  candidateSide: 'long' | 'short',
+  positions: { symbol: string; notional: number; side: 'long' | 'short' }[],
   lookbackDays: number,
   threshold: number,
 ): Promise<{ amount: number; correlations: { symbol: string; r: number | null }[] }> {
@@ -195,9 +209,9 @@ export async function correlatedNotional(
     const posCloses = closesBySymbol.get(pos.symbol);
     const r = candidateReturns && posCloses ? pearsonCorrelation(candidateReturns, dailyReturns(posCloses)) : null;
     correlations.push({ symbol: pos.symbol, r });
-    if (r !== null && Math.abs(r) >= threshold) amount += pos.notional;
+    if (r !== null && Math.abs(r) >= threshold) amount += pos.side === candidateSide ? pos.notional : -pos.notional;
   }
-  return { amount, correlations };
+  return { amount: Math.max(0, amount), correlations };
 }
 
 export interface RiskCheckContext {
@@ -383,11 +397,25 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
   const results: RiskCheckResult[] = [];
   let runningRisk = snapshot.openPositions.reduce((s, p) => s + p.riskAmount, 0);
   let runningCount = snapshot.openPositions.length;
-  const runningPositions = [...snapshot.openPositions];
+  // OpenRiskItem carries no `side` — this manual preview endpoint
+  // (routes/autotrade.ts's /risk-check) can't distinguish an existing
+  // position's real long/short here, so every existing position is treated
+  // as 'long' (preserves this endpoint's original always-additive behavior
+  // for a 'buy' signal exactly; for a 'sell' signal being previewed,
+  // correlatedNotional() will now correctly net against these — accurate as
+  // long as the existing book actually is long, which is the same
+  // assumption this endpoint already made before per-signal direction
+  // existed at all). The real live/paper execution paths (liveExecute.ts /
+  // execute.ts) are fully side-aware; only this preview has the gap.
+  const runningPositions: (OpenRiskItem & { side: 'long' | 'short' })[] = snapshot.openPositions.map((p) => ({
+    ...p,
+    side: 'long',
+  }));
 
   for (const signal of signals) {
     const { amount: correlated } = await correlatedNotional(
       signal.symbol,
+      signal.side === 'buy' ? 'long' : 'short',
       runningPositions,
       config.correlationLookbackDays,
       config.correlationThreshold,
@@ -428,6 +456,7 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
         symbol: signal.symbol,
         riskAmount: result.approvedRiskAmount,
         notional: result.approvedNotional,
+        side: signal.side === 'buy' ? 'long' : 'short',
       });
     }
   }
