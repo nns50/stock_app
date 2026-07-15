@@ -330,7 +330,9 @@ describe('runAutotradeScreen', () => {
     // candle trend these tests depend on. Matches screener.test.ts's own
     // scoreSymbol(..., undefined, ...) convention for the same reason.
     function mockCandles(bySymbol: (symbol: string) => typeof uptrend) {
-      const candles = vi.spyOn(getProvider(), 'getCandles').mockImplementation(async (s: string) => bySymbol(s) as never);
+      const candles = vi
+        .spyOn(getProvider(), 'getCandles')
+        .mockImplementation(async (s: string) => bySymbol(s) as never);
       const quote = vi.spyOn(getProvider(), 'getQuote').mockResolvedValue(undefined as never);
       return () => {
         candles.mockRestore();

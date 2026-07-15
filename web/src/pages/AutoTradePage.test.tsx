@@ -47,6 +47,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
     maxTradesPerDay: 6,
+    tradeDirection: 'long',
     minRelVol: 1.5,
     maxTickerAtrPct: 15,
     maxMarketAtrPct: 5,
@@ -342,6 +343,7 @@ describe('AutoTradePage', () => {
               gapPct: 4.5,
             },
             discoverySource: 'movers',
+            direction: 'long',
           },
         ],
         excluded: [{ symbol: 'VNQ', reason: 'On the real-estate exclusion list' }],
@@ -458,6 +460,86 @@ describe('AutoTradePage', () => {
     expect(screen.getByText('2 contracts')).toBeInTheDocument();
   });
 
+  it('saves the selected Trade direction on change', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue(configFixture({ tradeDirection: 'both' }));
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByRole('combobox', { name: /^Trade direction\b/ }), { target: { value: 'both' } });
+
+    await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ tradeDirection: 'both' }));
+  });
+
+  it('shows a long/short badge per candidate — one of each from the SAME screen run', async () => {
+    function indicators() {
+      return {
+        price: 100,
+        changePct: null,
+        maShort: null,
+        maLong: null,
+        distShortPct: null,
+        distLongPct: null,
+        rsi: null,
+        atr: 3,
+        atrPct: null,
+        relVolume: null,
+        avgVolume: null,
+        volume: null,
+        gapPct: null,
+      };
+    }
+    const result: AutotradeDecideResponse = {
+      screen: {
+        generatedAt: Date.now(),
+        candidates: [
+          {
+            symbol: 'LONGCO',
+            price: 100,
+            total: 70,
+            passedFilters: true,
+            filterReasons: [],
+            components: [],
+            indicators: indicators(),
+            discoverySource: 'universe',
+            direction: 'long',
+          },
+          {
+            symbol: 'SHORTCO',
+            price: 50,
+            total: 65,
+            passedFilters: true,
+            filterReasons: [],
+            components: [],
+            indicators: indicators(),
+            discoverySource: 'universe',
+            direction: 'short',
+          },
+        ],
+        excluded: [],
+        skipped: [],
+        errors: [],
+        discovery: { universeCount: 2, moversCount: 0, scannedCount: 2 },
+      },
+      decision: { signals: [], skipped: [] },
+      optionsDecision: { signals: [], skipped: [] },
+    };
+    vi.spyOn(client, 'runAutotradeDecision').mockResolvedValue(result);
+    vi.spyOn(client, 'runAutotradeRiskCheck').mockResolvedValue({ results: [] });
+    vi.spyOn(client, 'runOptionsRiskCheck').mockResolvedValue({ results: [] });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run screen' }));
+
+    expect(await screen.findByText('Candidates (2)')).toBeInTheDocument();
+    const longRow = screen.getByText('LONGCO').closest('tr')!;
+    const shortRow = screen.getByText('SHORTCO').closest('tr')!;
+    expect(within(longRow).getByText('long')).toBeInTheDocument();
+    expect(within(shortRow).getByText('short')).toBeInTheDocument();
+  });
+
   it('renders a debit-spread options signal (both strikes, net debit, sized "spreads" not "contracts")', async () => {
     const result: AutotradeDecideResponse = {
       screen: {
@@ -486,6 +568,7 @@ describe('AutoTradePage', () => {
               gapPct: 4.5,
             },
             discoverySource: 'movers',
+            direction: 'long',
           },
         ],
         excluded: [],
@@ -587,6 +670,7 @@ describe('AutoTradePage', () => {
               gapPct: 4.5,
             },
             discoverySource: 'movers',
+            direction: 'long',
           },
         ],
         excluded: [],
@@ -639,6 +723,7 @@ describe('AutoTradePage', () => {
               gapPct: 2,
             },
             discoverySource: 'universe',
+            direction: 'long',
           },
         ],
         excluded: [],
@@ -726,6 +811,7 @@ describe('AutoTradePage', () => {
               gapPct: 1,
             },
             discoverySource: 'universe',
+            direction: 'long',
           },
         ],
         excluded: [],

@@ -527,6 +527,18 @@ describe('autotrade config routes (integration)', () => {
     expect(final.accountEquityUsd).toBe(20_000);
   });
 
+  it('persists tradeDirection and survives an unrelated save, mirroring optionsStrategyType', async () => {
+    await put('/api/autotrade/config', { tradeDirection: 'both' });
+    await put('/api/autotrade/config', { accountEquityUsd: 20_000 });
+
+    const final = (await getJson('/api/autotrade/config')) as {
+      tradeDirection: string;
+      accountEquityUsd: number;
+    };
+    expect(final.tradeDirection).toBe('both');
+    expect(final.accountEquityUsd).toBe(20_000);
+  });
+
   it('persists the risk-check parameters (formerly the riskProfile preset table) and survives an unrelated save', async () => {
     await put('/api/autotrade/config', {
       riskPerTradePct: 1.5,
@@ -1025,6 +1037,16 @@ describe('autotrade backtest routes (integration)', () => {
   it('accepts a backtest request spanning exactly 3 years', async () => {
     const res = await post('/api/autotrade/backtest', { ...baseBody, from: '2021-01-01', to: '2024-01-01' });
     expect(res.status).toBe(200);
+  });
+
+  it("accepts a valid directionMode ('both')", async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, directionMode: 'both' });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects an invalid directionMode', async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, directionMode: 'sideways' });
+    expect(res.status).toBe(400);
   });
 
   it('rejects a backtest request with an empty symbols list', async () => {

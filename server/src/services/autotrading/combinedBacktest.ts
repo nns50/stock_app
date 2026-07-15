@@ -597,7 +597,10 @@ export async function simulateCombinedBacktest(
       .sort((a, b) => b.total - a.total || a.symbol.localeCompare(b.symbol));
 
     for (const score of equityCandidates) {
-      const signal = generateSignal({ ...score, discoverySource: 'universe', direction: screenerCfg.direction }, decisionCfg);
+      const signal = generateSignal(
+        { ...score, discoverySource: 'universe', direction: screenerCfg.direction },
+        decisionCfg,
+      );
       if (!signal) continue;
       const correlated = backtestCorrelatedNotional(
         signal.symbol,

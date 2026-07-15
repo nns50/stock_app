@@ -562,7 +562,14 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
         directionMode === 'both'
           ? pickDirection(scoreSymbolBothDirections(symbol, candles, undefined, screenerCfg, cached, idx))
           : (() => {
-              const score = scoreSymbol(symbol, candles, undefined, { ...screenerCfg, direction: directionMode }, cached, idx);
+              const score = scoreSymbol(
+                symbol,
+                candles,
+                undefined,
+                { ...screenerCfg, direction: directionMode },
+                cached,
+                idx,
+              );
               return score.passedFilters ? { direction: directionMode, score } : null;
             })();
       if (!picked) continue;
@@ -580,13 +587,11 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
 
     let runningRisk = openPositions.reduce((s, p) => s + p.riskAmount, 0);
     let runningCount = openPositions.length;
-    const runningPositions: { symbol: string; notional: number; side: 'long' | 'short' }[] = openPositions.map(
-      (p) => ({
-        symbol: p.symbol,
-        notional: p.notional,
-        side: p.side === 'buy' ? 'long' : 'short',
-      }),
-    );
+    const runningPositions: { symbol: string; notional: number; side: 'long' | 'short' }[] = openPositions.map((p) => ({
+      symbol: p.symbol,
+      notional: p.notional,
+      side: p.side === 'buy' ? 'long' : 'short',
+    }));
 
     for (const { signal } of candidates) {
       // Threaded through runningPositions (open + already-approved-this-batch),
