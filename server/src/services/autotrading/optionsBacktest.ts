@@ -3,11 +3,13 @@ import {
   candleIndicatorsAt,
   CandleIndicatorSeries,
   computeCandleIndicatorSeries,
+  Direction,
   ScreenerConfig,
   scoreSymbol,
+  scoreSymbolBothDirections,
 } from '../../indicators/screener';
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
-import { defaultAutotradeScreenerConfig } from './screen';
+import { defaultAutotradeScreenerConfig, pickDirection } from './screen';
 import {
   addDays,
   BacktestRiskParams,
@@ -105,6 +107,16 @@ export interface OptionsBacktestConfig extends Partial<BacktestRiskParams> {
   maxConcurrentPositions: number;
   screenerConfig?: Partial<ScreenerConfig>;
   optionsDecisionConfig?: Partial<OptionsDecisionConfig>;
+  /** 'long' (default) | 'short' | 'both' — own value here, NOT read from live
+   *  config, same self-contained-hypothesis convention as
+   *  BacktestConfig.directionMode (backtest.ts). Call vs put is derived from
+   *  this SAME per-candidate read, mirroring how the live loop derives it
+   *  from ScreenCandidate.direction (optionsDecide.ts) — not a separate
+   *  options-only direction setting. In 'both' mode each underlying is
+   *  scored as both a long and a short candidate (scoreSymbolBothDirections)
+   *  and keeps whichever side actually qualifies, so one run can produce
+   *  both calls and puts. */
+  directionMode?: 'long' | 'short' | 'both';
 }
 
 export interface SimulatedOptionsTrade {
@@ -348,9 +360,18 @@ export async function simulateOptionsBacktest(
 ): Promise<OptionsBacktestReport> {
   const riskParams = resolveBacktestRiskParams(cfg);
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
-  const direction = cfg.optionsDecisionConfig?.direction ?? 'long';
-  const side: OptionsSignalSide = direction === 'long' ? 'call' : 'put';
-  const entryCfg = { ...defaultAutotradeEntryConfig(side), ...cfg.optionsDecisionConfig?.entryConfig, side };
+  const directionMode = cfg.directionMode ?? 'long';
+  const sideFor = (direction: Direction): OptionsSignalSide => (direction === 'long' ? 'call' : 'put');
+  const entryConfigFor = (side: OptionsSignalSide) => ({
+    ...defaultAutotradeEntryConfig(side),
+    ...cfg.optionsDecisionConfig?.entryConfig,
+    side,
+  });
+  // The DTE window doesn't vary by side (defaultAutotradeEntryConfig's
+  // minDaysToExpiration is the same for calls and puts) — read once,
+  // side-independent, for the already-open-position time-exit check below
+  // (which runs before that day's candidates, and so before any side, are known).
+  const exitMinDaysToExpiration = cfg.optionsDecisionConfig?.entryConfig?.minDaysToExpiration ?? 7;
   const strategyType: OptionsStrategyType = cfg.optionsDecisionConfig?.strategyType ?? 'single_leg';
 
   const fromMs = Date.parse(`${cfg.from}T00:00:00Z`);
@@ -501,7 +522,7 @@ export async function simulateOptionsBacktest(
         }
       }
       const dte = daysToExpiration(pos.expiration, new Date(dayMs));
-      if (dte <= (entryCfg.minDaysToExpiration ?? 7) || dte <= 0) {
+      if (dte <= exitMinDaysToExpiration || dte <= 0) {
         const exitPremium = bar.close;
         const shortExitPremium = shortBar?.close;
         const pnl = simulatedOptionsPnl(
@@ -549,7 +570,13 @@ export async function simulateOptionsBacktest(
     const consecutiveLosses = streak.type === 'loss' ? streak.count : 0;
     const openSymbols = new Set([...openPositions.map((p) => p.symbol), ...pendingEntries.map((p) => p.symbol)]);
 
-    const candidates: { symbol: string; total: number; underlyingClose: number; history: Candle[] }[] = [];
+    const candidates: {
+      symbol: string;
+      total: number;
+      underlyingClose: number;
+      history: Candle[];
+      direction: Direction;
+    }[] = [];
     for (const [symbol, candles] of historyBySymbol) {
       if (openSymbols.has(symbol)) continue;
       const idx = indexAsOf(candles, dayMs, scoringIndexCursor.get(symbol) ?? 0);
@@ -561,9 +588,34 @@ export async function simulateOptionsBacktest(
       const history = candles.slice(0, idx + 1);
       const series = candleIndicatorSeriesBySymbol.get(symbol)!;
       const cached = candleIndicatorsAt(series, idx) ?? undefined;
-      const score = scoreSymbol(symbol, candles, undefined, screenerCfg, cached, idx);
-      if (!score.passedFilters) continue;
-      candidates.push({ symbol, total: score.total, underlyingClose: candles[idx].close, history });
+      // 'both': score this symbol as a long AND a short from the same
+      // indicator computation and keep whichever direction (if either)
+      // qualifies — mirrors backtest.ts's simulateBacktest() exactly, so an
+      // options backtest run with directionMode:'both' derives call/put the
+      // same way the live loop would (optionsDecide.ts reading
+      // ScreenCandidate.direction).
+      const picked =
+        directionMode === 'both'
+          ? pickDirection(scoreSymbolBothDirections(symbol, candles, undefined, screenerCfg, cached, idx))
+          : (() => {
+              const score = scoreSymbol(
+                symbol,
+                candles,
+                undefined,
+                { ...screenerCfg, direction: directionMode },
+                cached,
+                idx,
+              );
+              return score.passedFilters ? { direction: directionMode, score } : null;
+            })();
+      if (!picked) continue;
+      candidates.push({
+        symbol,
+        total: picked.score.total,
+        underlyingClose: candles[idx].close,
+        history,
+        direction: picked.direction,
+      });
     }
     candidates.sort((a, b) => b.total - a.total || a.symbol.localeCompare(b.symbol));
 
@@ -575,6 +627,8 @@ export async function simulateOptionsBacktest(
     }));
 
     for (const candidate of candidates) {
+      const side = sideFor(candidate.direction);
+      const entryCfg = entryConfigFor(side);
       const contracts = contractsBySymbol.get(candidate.symbol) ?? [];
       const ref = pickReferenceContract(
         contracts,

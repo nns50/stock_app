@@ -25,10 +25,11 @@ const OPTIONS_CAPABLE_STATUS = {
   capabilities: { quotes: true, candles: true, options: true, fundamentals: true },
 };
 
-function candidate(symbol = 'AAPL', price = 100): ScreenCandidate {
+function candidate(symbol = 'AAPL', price = 100, direction: 'long' | 'short' = 'long'): ScreenCandidate {
   return {
     symbol,
     price,
+    direction,
     total: 70,
     passedFilters: true,
     filterReasons: [],
@@ -310,7 +311,7 @@ describe('generateOptionsSignal', () => {
       getOptionsChain: vi.fn(async () => chainFor(expiration, { mark: 3 })),
     } as unknown as ReturnType<typeof getProvider>);
 
-    const result = await generateOptionsSignal(candidate(), { ...defaultOptionsDecisionConfig(), direction: 'short' });
+    const result = await generateOptionsSignal(candidate('AAPL', 100, 'short'), defaultOptionsDecisionConfig());
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.signal.side).toBe('put');
   });
@@ -339,7 +340,7 @@ describe('generateOptionsSignal', () => {
         getOptionsChain: vi.fn(async () => spreadChainFor(expiration)),
       } as unknown as ReturnType<typeof getProvider>);
 
-      const result = await generateOptionsSignal(candidate(), {
+      const result = await generateOptionsSignal(candidate('AAPL', 100, 'long'), {
         ...defaultOptionsDecisionConfig(),
         strategyType: 'debit_spread',
       });
@@ -367,9 +368,8 @@ describe('generateOptionsSignal', () => {
         getOptionsChain: vi.fn(async () => spreadChainFor(expiration)),
       } as unknown as ReturnType<typeof getProvider>);
 
-      const result = await generateOptionsSignal(candidate(), {
+      const result = await generateOptionsSignal(candidate('AAPL', 100, 'short'), {
         ...defaultOptionsDecisionConfig(),
-        direction: 'short',
         strategyType: 'debit_spread',
       });
       expect(result.ok).toBe(true);
@@ -461,5 +461,21 @@ describe('runOptionsDecision', () => {
     expect(aaplEvents.some((e) => e.action === 'options_signal_generated')).toBe(true);
     const msftEvents = listAutotradeEvents({ stage: 'decision', symbol: 'MSFT' });
     expect(msftEvents.some((e) => e.action === 'no_options_signal')).toBe(true);
+  });
+
+  it('produces a call AND a put from ONE batch when candidates have mixed direction — the equity long/short + options follow-up', async () => {
+    fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 });
+    fillIvHistory('MSFT', 20, { min: 0.2, max: 0.6 });
+    const expiration = expirationDaysOut(21);
+    mockGetProvider.mockReturnValue({
+      getOptionsExpirations: vi.fn(async () => [expiration]),
+      getOptionsChain: vi.fn(async () => chainFor(expiration, { mark: 3 })),
+    } as unknown as ReturnType<typeof getProvider>);
+
+    const result = await runOptionsDecision([candidate('AAPL', 100, 'long'), candidate('MSFT', 100, 'short')]);
+    expect(result.skipped).toEqual([]);
+    expect(result.signals).toHaveLength(2);
+    const bySymbol = Object.fromEntries(result.signals.map((s) => [s.symbol, s.side]));
+    expect(bySymbol).toEqual({ AAPL: 'call', MSFT: 'put' });
   });
 });

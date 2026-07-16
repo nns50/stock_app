@@ -713,6 +713,12 @@ const optionsBacktestBodyBase = z.object({
   ...backtestRiskParamsSchema,
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   optionsDecisionConfig: z.record(z.string(), z.unknown()).optional(),
+  /** Own value here, NOT read from live config if omitted — same
+   *  self-contained-hypothesis convention as the equity /backtest route's
+   *  own directionMode. Falls back to 'long' via simulateOptionsBacktest's
+   *  own default when omitted entirely. Governs call vs put too — see
+   *  OptionsBacktestConfig's own doc comment. */
+  directionMode: z.enum(['long', 'short', 'both']).optional(),
 });
 const optionsBacktestBody = optionsBacktestBodyBase
   .refine((b) => b.from <= b.to, { message: 'from must be on or before to', path: ['from'] })
@@ -745,6 +751,7 @@ autotradeRouter.post(
       ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
+      directionMode: body.directionMode,
     });
     res.json({ report, stats: computeBacktestStats(report) });
   }),
@@ -765,6 +772,7 @@ autotradeRouter.post(
       ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
+      directionMode: body.directionMode,
     });
     res.json({
       inSample: { report: wf.inSample, stats: computeBacktestStats(wf.inSample) },
@@ -810,6 +818,12 @@ const combinedBacktestBodyBase = z.object({
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   decisionConfig: z.record(z.string(), z.unknown()).optional(),
   optionsDecisionConfig: z.record(z.string(), z.unknown()).optional(),
+  /** Own value here, NOT read from live config if omitted — same
+   *  self-contained-hypothesis convention as the equity /backtest route's
+   *  own directionMode. Falls back to 'long' via simulateCombinedBacktest's
+   *  own default when omitted entirely. Governs BOTH legs — see
+   *  CombinedBacktestConfig's own doc comment. */
+  directionMode: z.enum(['long', 'short', 'both']).optional(),
 });
 const combinedBacktestBody = combinedBacktestBodyBase
   .refine((b) => b.from <= b.to, { message: 'from must be on or before to', path: ['from'] })
@@ -849,6 +863,7 @@ autotradeRouter.post(
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
+      directionMode: body.directionMode,
     });
     res.json({ report, stats: combinedStats(report) });
   }),
@@ -876,6 +891,7 @@ autotradeRouter.post(
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
+      directionMode: body.directionMode,
     });
     res.json({
       inSample: { report: wf.inSample, stats: combinedStats(wf.inSample) },

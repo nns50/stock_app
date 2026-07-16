@@ -45,6 +45,21 @@ function warmupThrough(signalDay: string): Candle[] {
   return days;
 }
 
+/** A steady 60-day trend ending the day before `signalDay`, then the signal
+ *  day itself — same convention as backtestSimulate.test.ts's own
+ *  trendThrough(), needed (unlike warmupThrough's flat series) to make
+ *  scoreSymbolBothDirections() genuinely prefer one side over the other. */
+function trendThrough(signalDay: string, dir: 'up' | 'down'): Candle[] {
+  const step = dir === 'up' ? 0.5 : -0.5;
+  let price = 100;
+  const days: Candle[] = [];
+  for (let i = 60; i >= 0; i--) {
+    days.push(equityBar(d(signalDay, -i), { open: price, high: price + 1, low: price - 1, close: price }));
+    if (i > 0) price += step;
+  }
+  return days;
+}
+
 function baseConfig(overrides: Partial<OptionsBacktestConfig> = {}): OptionsBacktestConfig {
   return {
     symbols: ['TEST'],
@@ -73,8 +88,9 @@ function contractRef(
   contractType: 'call' | 'put',
   strike: number,
   expiration: string,
+  underlying = 'TEST',
 ): OptionContractRef {
-  return { ticker, underlying: 'TEST', contractType, strike, expiration };
+  return { ticker, underlying, contractType, strike, expiration };
 }
 
 function optionBar(day: string, premium: number, overrides: Partial<Omit<Candle, 'time'>> = {}): Candle {
@@ -399,11 +415,62 @@ describe('simulateOptionsBacktest', () => {
     const report = await simulateOptionsBacktest(
       historyBySymbol,
       contractsBySymbol,
-      baseConfig({ from: signalDay, to: entryDay, optionsDecisionConfig: { direction: 'short' } }),
+      baseConfig({ from: signalDay, to: entryDay, directionMode: 'short' }),
     );
     expect(report.trades).toHaveLength(1);
     expect(report.trades[0].side).toBe('put');
     expect(report.trades[0].contractTicker).toBe(PUT_TICKER);
+  });
+
+  it("directionMode:'both' produces a CALL on an uptrending underlying and a PUT on a downtrending one in the SAME run", async () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const expiration = d(signalDay, DTE_DAYS);
+    const T = yearsFor(DTE_DAYS);
+    const UP_TICKER = 'O:UP-CALL';
+    const DOWN_TICKER = 'O:DOWN-PUT';
+    // Must match trendThrough's own signal-day close exactly (100 +/- 60 *
+    // 0.5) — the candidate is scored (and its underlyingClose captured) on
+    // signalDay itself, not on the later entryDay fill.
+    const upSpot = 130;
+    const upStrike = 132;
+    const downSpot = 70;
+    const downStrike = 68;
+    const upPremium = premiumFor('call', upSpot, upStrike, T);
+    const downPremium = premiumFor('put', downSpot, downStrike, T);
+    mockContractBars({
+      [UP_TICKER]: [optionBar(signalDay, upPremium), optionBar(entryDay, upPremium, { open: upPremium })],
+      [DOWN_TICKER]: [optionBar(signalDay, downPremium), optionBar(entryDay, downPremium, { open: downPremium })],
+    });
+    const historyBySymbol = new Map([
+      ['UP', [...trendThrough(signalDay, 'up'), equityBar(entryDay)]],
+      ['DOWN', [...trendThrough(signalDay, 'down'), equityBar(entryDay)]],
+    ]);
+    const contractsBySymbol = new Map([
+      ['UP', [contractRef(UP_TICKER, 'call', upStrike, expiration, 'UP')]],
+      ['DOWN', [contractRef(DOWN_TICKER, 'put', downStrike, expiration, 'DOWN')]],
+    ]);
+
+    const report = await simulateOptionsBacktest(
+      historyBySymbol,
+      contractsBySymbol,
+      baseConfig({
+        symbols: ['UP', 'DOWN'],
+        from: signalDay,
+        to: entryDay,
+        directionMode: 'both',
+        // A real (non-flat) trend has genuine realized volatility, unlike
+        // warmupThrough's deliberately zero-variance series (rank 50 "by
+        // convention") — irrelevant to what this test is proving (per-
+        // candidate side selection), so the ceiling is relaxed here only.
+        optionsDecisionConfig: { entryConfig: { ivRankMax: 100 } },
+      }),
+    );
+    expect(report.trades).toHaveLength(2);
+    const up = report.trades.find((t) => t.symbol === 'UP')!;
+    const down = report.trades.find((t) => t.symbol === 'DOWN')!;
+    expect(up.side).toBe('call');
+    expect(down.side).toBe('put');
   });
 
   it('accumulates risk sequentially across a same-day batch — a later candidate can be blocked by earlier same-day approvals', async () => {
