@@ -1851,6 +1851,11 @@ export default function AutoTradePage() {
   const [btRiskProfile, setBtRiskProfile] = useState<AutotradeRiskProfile>('MODERATE');
   const [btEquity, setBtEquity] = useState<number | undefined>(100_000);
   const [btMaxPositions, setBtMaxPositions] = useState<number | undefined>(3);
+  // Own value here, NOT synced from Configuration's tradeDirection above —
+  // a backtest is a self-contained hypothesis, same reasoning as
+  // btRiskProfile being independent of the live risk profile. Shared by all
+  // three run buttons below, same as every other field in this form.
+  const [btDirectionMode, setBtDirectionMode] = useState<AutotradeTradeDirectionMode>('long');
   const [btBusy, setBtBusy] = useState(false);
   const [btErr, setBtErr] = useState<string>();
   const [btResult, setBtResult] = useState<BacktestRunResponse>();
@@ -1890,6 +1895,7 @@ export default function AutoTradePage() {
         riskProfile: btRiskProfile,
         startingEquity: btEquity,
         maxConcurrentPositions: btMaxPositions,
+        directionMode: btDirectionMode,
       };
       if (btSplitDate) {
         setBtWfResult(await client.runAutotradeWalkForward({ ...body, splitDate: btSplitDate }));
@@ -1945,6 +1951,7 @@ export default function AutoTradePage() {
         // use above — a human backtesting wants the SAME shape they've
         // configured live, not a hidden separate default.
         optionsDecisionConfig: { strategyType: optionsStrategyType },
+        directionMode: btDirectionMode,
       };
       if (btSplitDate) {
         setOptBtWfResult(await client.runOptionsWalkForward({ ...body, splitDate: btSplitDate }));
@@ -1997,6 +2004,7 @@ export default function AutoTradePage() {
         startingEquity: btEquity,
         maxConcurrentPositions: btMaxPositions,
         optionsDecisionConfig: { strategyType: optionsStrategyType },
+        directionMode: btDirectionMode,
       };
       if (btSplitDate) {
         setCombinedBtWfResult(await client.runCombinedWalkForward({ ...body, splitDate: btSplitDate }));
@@ -3323,6 +3331,20 @@ export default function AutoTradePage() {
             >
               <option value="MODERATE">Moderate</option>
               <option value="AGGRESSIVE">Aggressive</option>
+            </select>
+          </Field>
+          <Field
+            label="Backtest trade direction"
+            hint="Independent of the live Configuration's Trade direction above. In Both, each candidate is scored as long and short and the run trades whichever side qualifies — governs options call/put too."
+          >
+            <select
+              className="input"
+              value={btDirectionMode}
+              onChange={(e) => setBtDirectionMode(e.target.value as AutotradeTradeDirectionMode)}
+            >
+              <option value="long">Long only (default)</option>
+              <option value="short">Short only</option>
+              <option value="both">Both</option>
             </select>
           </Field>
           <Field label="Starting equity ($)">

@@ -939,20 +939,17 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   gets screened, regardless of whether the loop itself is enabled.
 - **Backtest & walk-forward** — the validation gate every strategy configuration has to
   clear before it's allowed anywhere near a paper or live order. Give it a symbol list,
-  a date range, a starting equity, a max-concurrent-positions cap, and (independently of
+  a date range, a starting equity, a max-concurrent-positions cap, a **backtest trade
+  direction** (`Long`/`Short`/`Both` — own value, independent of Configuration's own
+  **Trade direction** above, same self-contained-hypothesis reasoning as the risk profile
+  field next to it; in `Both`, each candidate is scored as long and short and the run
+  trades whichever side qualifies, and the options engines below derive each trade's
+  call/put from that same per-candidate resolved side, exactly like the live loop's
+  Options column does), and (independently of
   the Configuration card above, same as the other three) a risk profile, and it replays
   Screen → Decision → Risk Check day by day over
   historical daily bars — the exact same logic the live loop above uses, so a backtest
-  can't tell you something the live system wouldn't actually do. One exception today:
-  **trade direction** — all three engines below (equity, options, and combined) can
-  replay `Long`, `Short`, or `Both` just like the live loop — in `Both`, the options
-  engines derive each trade's call/put from that same per-candidate resolved side, exactly
-  like the live loop's Options column does — but none of the three forms has a control for
-  it yet, so a run from this page always tests `Long`-only regardless of what **Trade
-  direction** is set to in Configuration above; testing `Short` or `Both` needs a direct
-  API request (`directionMode` on `POST /api/autotrade/backtest`,
-  `/api/autotrade/backtest-options`, or `/api/autotrade/backtest-combined`) until a form
-  control is added. Leave **Out-of-sample
+  can't tell you something the live system wouldn't actually do. Leave **Out-of-sample
   split** blank for a single-window run, or set it to split the range into an
   **in-sample** window (what the configuration was "tuned" on) and an **out-of-sample**
   window (unseen data) — a strategy that only performs in-sample is exactly what this
