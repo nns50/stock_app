@@ -1060,16 +1060,28 @@ export async function cancelLiveBracketExitLegs(
   intent: OrderIntentRecord,
   accountId: string,
 ): Promise<BracketCancelOutcome> {
+  // A REJECTED cancel is not decisive on its own. Webull rejects with "Order
+  // can not be canceled" precisely when the order is ALREADY terminal — i.e.
+  // the exit legs are already cancelled/filled/expired and nothing is left to
+  // race a fresh close. Bailing on that rejection (as this originally did)
+  // strands a position that is in fact safe to close (the exact bug a human hit
+  // clicking Close on a position whose bracket was already gone). So don't
+  // decide from the cancel's own result — always re-poll the ACTUAL leg states
+  // below and decide from those. The cancel outcome only colours the failure
+  // message and the can't-verify fallback.
   const cancel = await webullCancelOrder(accountId, intent.idempotencyKey);
-  if (!cancel.ok) {
-    return { ok: false, reason: `Broker cancel rejected: ${cancel.error}` };
-  }
 
   const status = await webullOrderStatus(accountId, intent.idempotencyKey);
   if (!status.ok || !status.found || !status.legs) {
+    // Can't read the leg states, so we can't confirm nothing is resting — stay
+    // blocked either way, but name the rejected cancel when that's the cause so
+    // the human sees the real reason instead of a generic "couldn't verify".
+    const detail = status.error ?? 'no legs in the response';
     return {
       ok: false,
-      reason: `Could not verify bracket state after cancel: ${status.error ?? 'no legs in the response'}`,
+      reason: cancel.ok
+        ? `Could not verify bracket state after cancel: ${detail}`
+        : `Broker cancel rejected (${cancel.error}) and bracket state could not be verified: ${detail}`,
     };
   }
 
@@ -1079,13 +1091,20 @@ export async function cancelLiveBracketExitLegs(
   }
   const stillWorking = exitLegs.filter((l) => l.status !== 'CANCELLED' && l.status !== 'FILLED');
   if (stillWorking.length > 0) {
+    // The legs really ARE still resting — a fresh close could double-fill
+    // against them, so this genuinely blocks whether or not the cancel was
+    // accepted. Surface the rejected cancel when that's what happened.
+    const legList = stillWorking.map((l) => `${l.comboType ?? '?'}=${l.status ?? '?'}`).join(', ');
     return {
       ok: false,
-      reason: `Exit leg(s) still show as working after cancel: ${stillWorking
-        .map((l) => `${l.comboType ?? '?'}=${l.status ?? '?'}`)
-        .join(', ')}`,
+      reason: cancel.ok
+        ? `Exit leg(s) still show as working after cancel: ${legList}`
+        : `Broker cancel rejected (${cancel.error}); exit leg(s) still working: ${legList}`,
     };
   }
+  // No exit leg is resting anymore (all cancelled/terminal, none filled) — safe
+  // to place the close, even if the cancel call itself was rejected (that just
+  // means the legs were already gone before we asked).
   return { ok: true };
 }
 
