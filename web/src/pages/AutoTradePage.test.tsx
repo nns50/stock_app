@@ -59,6 +59,8 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     trailStopRMultiple: 0,
     partialExitRMultiple: 0,
     partialExitPct: 50,
+    optionsStopLossPct: 0,
+    optionsTakeProfitPct: 0,
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
     correlationLookbackDays: 30,
@@ -214,6 +216,45 @@ describe('AutoTradePage', () => {
 
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ accountEquityUsd: 50_000, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new options stop-loss % value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    // Shared with the take-profit field just below it — stop-loss renders first in the DOM.
+    const stopLossInput = screen.getAllByPlaceholderText('0 (disabled)')[0];
+    fireEvent.change(stopLossInput, { target: { value: '25' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save options stop-loss' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ optionsStopLossPct: 25, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new options take-profit % value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const takeProfitInput = screen.getAllByPlaceholderText('0 (disabled)')[1];
+    fireEvent.change(takeProfitInput, { target: { value: '50' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save options take-profit' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ optionsTakeProfitPct: 50, confirmAggressive: undefined }),
     );
   });
 
@@ -1216,6 +1257,87 @@ describe('AutoTradePage', () => {
     expect(screen.getAllByText('+$800.00').length).toBeGreaterThan(0);
   });
 
+  it('color-codes the options backtest exit-reason badge for stop-loss (red) and take-profit (green)', async () => {
+    const optResult: OptionsBacktestRunResponse = {
+      report: {
+        trades: [
+          {
+            symbol: 'AAPL',
+            side: 'call',
+            kind: 'single_leg',
+            contractTicker: 'O:AAPL240315C00200000',
+            strike: 200,
+            expiration: '2024-03-15',
+            signalDate: '2024-01-01',
+            entryDate: '2024-01-02',
+            entryPremium: 5,
+            exitDate: '2024-01-05',
+            exitPremium: 2,
+            exitReason: 'stop_loss',
+            contracts: 1,
+            pnl: -300,
+            rMultiple: -0.5,
+          },
+          {
+            symbol: 'MSFT',
+            side: 'put',
+            kind: 'single_leg',
+            contractTicker: 'O:MSFT240315P00300000',
+            strike: 300,
+            expiration: '2024-03-15',
+            signalDate: '2024-01-01',
+            entryDate: '2024-01-02',
+            entryPremium: 4,
+            exitDate: '2024-01-05',
+            exitPremium: 7,
+            exitReason: 'take_profit',
+            contracts: 1,
+            pnl: 300,
+            rMultiple: 0.5,
+          },
+        ],
+        equityCurve: [
+          { date: '2024-01-02', equity: 100_000 },
+          { date: '2024-01-05', equity: 100_000 },
+        ],
+        startingEquity: 100_000,
+        finalEquity: 100_000,
+        excludedSymbols: [],
+        errors: [],
+        skipped: [],
+      },
+      stats: {
+        totalTrades: 2,
+        wins: 1,
+        losses: 1,
+        winRate: 50,
+        avgWin: 300,
+        avgLoss: 300,
+        expectancy: 0,
+        profitFactor: 1,
+        totalPnl: 0,
+        returnPct: 0,
+        avgR: 0,
+        bestR: 0.5,
+        worstR: -0.5,
+        maxDrawdown: 0,
+        longestWinStreak: 1,
+        longestLossStreak: 1,
+      },
+    };
+    vi.spyOn(client, 'runOptionsBacktest').mockResolvedValue(optResult);
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl, msft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Run options backtest' }));
+
+    const stopLossBadge = await screen.findByText('stop loss');
+    expect(stopLossBadge.className).toMatch(/text-bear/);
+    const takeProfitBadge = screen.getByText('take profit');
+    expect(takeProfitBadge.className).toMatch(/text-bull/);
+  });
+
   it('runs a combined backtest and renders ONE stats grid plus both an equity trade and an options trade', async () => {
     const combinedResult: CombinedBacktestRunResponse = {
       report: {
@@ -1466,6 +1588,38 @@ describe('AutoTradePage', () => {
     expect(screen.getAllByText('+$300.00').length).toBeGreaterThan(0);
     expect(screen.getByText('1.50R')).toBeInTheDocument(); // 300 pnl / 200 risk
     expect(screen.getByText('put 90')).toBeInTheDocument();
+  });
+
+  it('color-codes the options paper exit-reason badge for stop-loss (red) and take-profit (green)', async () => {
+    vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({
+      positions: [
+        optionsPaperPosition({
+          id: 1,
+          symbol: 'AAPL',
+          status: 'closed',
+          entryPrice: 5,
+          exitPrice: 2,
+          exitAt: Date.now(),
+          exitReason: 'stop_loss',
+        }),
+        optionsPaperPosition({
+          id: 2,
+          symbol: 'MSFT',
+          status: 'closed',
+          entryPrice: 4,
+          exitPrice: 7,
+          exitAt: Date.now(),
+          exitReason: 'take_profit',
+        }),
+      ],
+    });
+    renderPage();
+    await screen.findByText('AAPL');
+
+    const stopLossBadge = screen.getByText('stop loss');
+    expect(stopLossBadge.className).toMatch(/text-bear/);
+    const takeProfitBadge = screen.getByText('take profit');
+    expect(takeProfitBadge.className).toMatch(/text-bull/);
   });
 
   it('shows the live current price and unrealized P&L for an OPEN options position, not a blank dash', async () => {

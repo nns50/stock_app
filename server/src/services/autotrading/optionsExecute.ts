@@ -35,16 +35,16 @@ import { mapPool } from '../../util/async';
 // the next equity OR options candidate's cap, and vice versa" true for the
 // actual unattended loop, not just the phase 10 preview route.
 //
-// Close-only automated exit (the confirmed design default): the only rule
-// wired here is options/exitRules.ts's timeExitDaysBeforeExpiry — "I do not
-// want the automated system holding options through expiration." A long
-// option has no numeric stop/target price the way a stock paper position
-// does (phase 10: sized by full premium paid, worst case = expires
-// worthless), so there is no P&L-based automated exit to mirror
-// checkPaperExits()'s stop/target check with — take-profit/stop-loss/
-// delta-drift stay human-review-only (services/positionExits.ts), matching
-// this codebase's established default (defaultExitConfig()) rather than a
-// new number guessed for this phase.
+// Close-only automated exit: originally just options/exitRules.ts's
+// timeExitDaysBeforeExpiry — "I do not want the automated system holding
+// options through expiration" — since a long option has no numeric stop/
+// target price the way a stock paper position does (phase 10: sized by full
+// premium paid, worst case = expires worthless). 2026-07-16 follow-up:
+// AutotradeConfig.optionsStopLossPct/optionsTakeProfitPct add a %-of-premium
+// P&L rule on top (0/unset disables each, so the original time-only
+// behavior is still the default) — see checkOptionsPaperExits() below for
+// the mechanics. Delta-drift stays human-review-only (services/
+// positionExits.ts) — no delta feed is wired into this automated loop.
 // ---------------------------------------------------------------------------
 
 /** The only exit rule this phase automates. Reuses exitRules.ts's own
@@ -445,55 +445,119 @@ export interface OptionsExitCheckOutcome {
   position?: OptionsPaperPosition;
 }
 
+/** Maps exitRules.ts's own kebab-case ExitTrigger.rule strings to this
+ *  table's snake_case exit_reason values — the same mapping convention
+ *  'time-exit' -> 'time_exit' already established. 'delta-drift' is never
+ *  reachable here (this phase never sets deltaMin/deltaMax), but is mapped
+ *  defensively rather than left to throw. */
+function exitReasonFor(activeRule: string): OptionsPaperExitReason {
+  switch (activeRule) {
+    case 'stop-loss':
+      return 'stop_loss';
+    case 'take-profit':
+      return 'take_profit';
+    default:
+      return 'time_exit';
+  }
+}
+
+/** Fetches the fresh mark(s) needed to price a close, single-leg or spread.
+ *  Shared by the up-front fetch (only attempted when a price-based rule is
+ *  actually configured — see checkOptionsPaperExits) and the on-trigger
+ *  fetch (the original design's "quote only once we know we're closing"). */
+async function fetchExitMarks(pos: OptionsPaperPosition): Promise<{ exitPrice: number; shortExitPrice?: number }> {
+  if (pos.kind === 'debit_spread') {
+    const [exitPrice, shortExitPrice] = await Promise.all([
+      fetchContractMark(pos.symbol, pos.expiration, pos.strike, pos.side),
+      fetchContractMark(pos.symbol, pos.expiration, pos.shortStrike!, pos.side),
+    ]);
+    return { exitPrice, shortExitPrice };
+  }
+  return { exitPrice: await fetchContractMark(pos.symbol, pos.expiration, pos.strike, pos.side) };
+}
+
 /**
  * Check every open options paper position for the time-exit trigger
- * (days-to-expiration <= AUTOTRADE_TIME_EXIT_DAYS) and close whichever fires
- * at a freshly-fetched contract mark. The ONLY automated exit rule this
- * phase wires (close-only, per the confirmed design default — no roll).
- * Unlike checkPaperExits()'s stop/target check, this needs no live quote to
- * evaluate the trigger itself (days-to-expiration is a pure function of the
- * expiration date and wall-clock time) — a quote is only fetched once a
- * position is confirmed about to be closed, to record a fair exit price.
- * A quote-fetch failure at that point leaves the position open for the next
- * cycle to retry, exactly like checkPaperExits() does for its own stop/
- * target checks — not closed at a synthetic/fallback price.
+ * (days-to-expiration <= AUTOTRADE_TIME_EXIT_DAYS) plus the configured
+ * stop-loss %/take-profit % (AutotradeConfig.optionsStopLossPct/
+ * optionsTakeProfitPct, 0/unset disables each — added 2026-07-16, PAPER only,
+ * mirroring checkPaperExits()'s equity stop/target and reusing the SAME
+ * exitRules.ts engine the human Options page's manual review already uses).
+ * A stop/take-profit rule needs a live mark to evaluate, unlike the DTE-only
+ * time-exit rule — so a fresh contract quote is fetched UP FRONT, every
+ * cycle, but ONLY when at least one price-based rule is actually configured
+ * (optionsStopLossPct/optionsTakeProfitPct nonzero). Left at their 0 default,
+ * this function is byte-for-byte the original design: no provider call at
+ * all until the quote-free time-exit trigger fires, then one fetch to price
+ * the close — so leaving these fields untouched changes nothing, including
+ * provider load. When a price rule IS configured but that cycle's mark fetch
+ * fails, evaluation degrades to quote-free/time-only for that position (the
+ * safety net still works; retried next cycle) rather than leaving an
+ * about-to-expire position stuck open just because a mark was momentarily
+ * unavailable. For a debit spread, both P&L rules are evaluated against the
+ * NET DEBIT (long leg premium minus short leg premium, at entry and now) —
+ * the same basis optionsPnl() already sizes P&L from — not the long leg's
+ * raw premium alone. Closing itself is unchanged: a spread closes both legs
+ * together or not at all.
  */
 export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[]> {
   const open = listOpenOptionsPaperPositions();
+  const cfg = getAutotradeConfig();
+  const priceRulesActive = cfg.optionsStopLossPct > 0 || cfg.optionsTakeProfitPct > 0;
   return mapPool(open, 6, async (pos): Promise<OptionsExitCheckOutcome> => {
+    let marks: { exitPrice: number; shortExitPrice?: number } | undefined;
+    if (priceRulesActive) {
+      marks = await fetchExitMarks(pos).catch(() => undefined);
+    }
+
+    const entryBasis = pos.kind === 'debit_spread' ? pos.entryPrice - (pos.shortEntryPrice ?? 0) : pos.entryPrice;
+    const currentBasis = !marks
+      ? null
+      : pos.kind === 'debit_spread'
+        ? marks.exitPrice - (marks.shortExitPrice ?? 0)
+        : marks.exitPrice;
+
     const ev = evaluateExit(
-      { entryPrice: pos.entryPrice, currentPrice: null, side: 'long', expiration: pos.expiration },
-      { timeExitDaysBeforeExpiry: AUTOTRADE_TIME_EXIT_DAYS },
+      { entryPrice: entryBasis, currentPrice: currentBasis, side: 'long', expiration: pos.expiration },
+      {
+        timeExitDaysBeforeExpiry: AUTOTRADE_TIME_EXIT_DAYS,
+        stopLossPct: cfg.optionsStopLossPct || undefined,
+        takeProfitPct: cfg.optionsTakeProfitPct || undefined,
+      },
     );
     if (!ev.triggered) return { symbol: pos.symbol, closed: false };
 
-    // A spread closes BOTH legs together or not at all — either quote
-    // fetch failing leaves the whole position open for the next cycle's
-    // retry, same as a single leg's own quote-fetch failure.
-    let exitPrice: number;
-    let shortExitPrice: number | undefined;
-    try {
-      if (pos.kind === 'debit_spread') {
-        [exitPrice, shortExitPrice] = await Promise.all([
-          fetchContractMark(pos.symbol, pos.expiration, pos.strike, pos.side),
-          fetchContractMark(pos.symbol, pos.expiration, pos.shortStrike!, pos.side),
-        ]);
-      } else {
-        exitPrice = await fetchContractMark(pos.symbol, pos.expiration, pos.strike, pos.side);
+    // Triggered without an up-front fetch (priceRulesActive was false, or it
+    // failed) -- fetch now, exactly like the original design's "quote only
+    // once we know we're closing."
+    if (!marks) {
+      try {
+        marks = await fetchExitMarks(pos);
+      } catch (err) {
+        return { symbol: pos.symbol, closed: false, reason: `Quote fetch failed: ${(err as Error).message}` };
       }
-    } catch (err) {
-      return { symbol: pos.symbol, closed: false, reason: `Quote fetch failed: ${(err as Error).message}` };
     }
 
-    const exitReason: OptionsPaperExitReason = 'time_exit';
-    const closed = closeOptionsPaperPosition(pos.id, { exitPrice, shortExitPrice, exitReason });
+    const exitReason = exitReasonFor(ev.activeRule!);
+    const closed = closeOptionsPaperPosition(pos.id, {
+      exitPrice: marks.exitPrice,
+      shortExitPrice: marks.shortExitPrice,
+      exitReason,
+    });
     if (closed) {
-      const pnl = optionsPnl(pos, exitPrice, shortExitPrice ?? null);
+      const pnl = optionsPnl(pos, marks.exitPrice, marks.shortExitPrice ?? null);
       logAutotradeEvent({
         symbol: pos.symbol,
         stage: 'execution',
         action: 'options_paper_position_closed',
-        detail: { exitReason, exitPrice, shortExitPrice, pnl, dte: ev.dte },
+        detail: {
+          exitReason,
+          exitPrice: marks.exitPrice,
+          shortExitPrice: marks.shortExitPrice,
+          pnl,
+          dte: ev.dte,
+          unrealizedPct: ev.unrealizedPct,
+        },
         riskProfile: pos.riskProfile,
       });
     }

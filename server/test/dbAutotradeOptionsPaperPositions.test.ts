@@ -57,6 +57,16 @@ describe('autotradeOptionsPaperPositions', () => {
     expect(closed!.exitAt).toBeGreaterThan(0);
   });
 
+  it('accepts stop_loss and take_profit as exit reasons', () => {
+    const a = openOptionsPaperPosition(input({ symbol: 'OPPKKK' }));
+    const closedA = closeOptionsPaperPosition(a.id, { exitPrice: 1.8, exitReason: 'stop_loss' });
+    expect(closedA!.exitReason).toBe('stop_loss');
+
+    const b = openOptionsPaperPosition(input({ symbol: 'OPPLLL' }));
+    const closedB = closeOptionsPaperPosition(b.id, { exitPrice: 5.2, exitReason: 'take_profit' });
+    expect(closedB!.exitReason).toBe('take_profit');
+  });
+
   it('closing an already-closed position is a no-op that returns null, not a double-close', () => {
     const opened = openOptionsPaperPosition(input());
     const first = closeOptionsPaperPosition(opened.id, { exitPrice: 1.2, exitReason: 'time_exit' });

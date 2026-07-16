@@ -243,7 +243,17 @@ function OptionsBacktestTradesTable({ trades }: { trades: SimulatedOptionsTrade[
               <td className="td text-slate-400">{fmtDate(t.exitDate)}</td>
               <td className="td text-right tabular-nums">{fmtUsd(backtestExitValue(t))}</td>
               <td className="td">
-                <Badge color={t.exitReason === 'end_of_period' ? 'slate' : 'blue'}>
+                <Badge
+                  color={
+                    t.exitReason === 'take_profit'
+                      ? 'green'
+                      : t.exitReason === 'stop_loss'
+                        ? 'red'
+                        : t.exitReason === 'end_of_period'
+                          ? 'slate'
+                          : 'blue'
+                  }
+                >
                   {t.exitReason.replace('_', ' ')}
                 </Badge>
               </td>
@@ -545,7 +555,17 @@ const OptionsPaperPositionsTable = memo(
                   <td className="td text-right tabular-nums">{exitValue === null ? '—' : fmtUsd(exitValue)}</td>
                   <td className="td">
                     {p.exitReason ? (
-                      <Badge color={p.exitReason === 'time_exit' ? 'blue' : 'slate'}>
+                      <Badge
+                        color={
+                          p.exitReason === 'take_profit'
+                            ? 'green'
+                            : p.exitReason === 'stop_loss'
+                              ? 'red'
+                              : p.exitReason === 'time_exit'
+                                ? 'blue'
+                                : 'slate'
+                        }
+                      >
                         {p.exitReason.replace('_', ' ')}
                       </Badge>
                     ) : (
@@ -1423,6 +1443,8 @@ export default function AutoTradePage() {
   const [trailStopRMultipleDraft, setTrailStopRMultipleDraft] = useState<number | undefined>();
   const [partialExitRMultipleDraft, setPartialExitRMultipleDraft] = useState<number | undefined>();
   const [partialExitPctDraft, setPartialExitPctDraft] = useState<number | undefined>();
+  const [optionsStopLossPctDraft, setOptionsStopLossPctDraft] = useState<number | undefined>();
+  const [optionsTakeProfitPctDraft, setOptionsTakeProfitPctDraft] = useState<number | undefined>();
   const [sessionBufferMinutesDraft, setSessionBufferMinutesDraft] = useState<number | undefined>();
   const [earningsBlackoutDaysDraft, setEarningsBlackoutDaysDraft] = useState<number | undefined>();
   const [correlationLookbackDaysDraft, setCorrelationLookbackDaysDraft] = useState<number | undefined>();
@@ -1475,6 +1497,8 @@ export default function AutoTradePage() {
     setTrailStopRMultipleDraft(config.data.trailStopRMultiple);
     setPartialExitRMultipleDraft(config.data.partialExitRMultiple);
     setPartialExitPctDraft(config.data.partialExitPct);
+    setOptionsStopLossPctDraft(config.data.optionsStopLossPct);
+    setOptionsTakeProfitPctDraft(config.data.optionsTakeProfitPct);
     setSessionBufferMinutesDraft(config.data.sessionBufferMinutes);
     setEarningsBlackoutDaysDraft(config.data.earningsBlackoutDays);
     setCorrelationLookbackDaysDraft(config.data.correlationLookbackDays);
@@ -1524,6 +1548,8 @@ export default function AutoTradePage() {
     trailStopRMultiple?: number;
     partialExitRMultiple?: number;
     partialExitPct?: number;
+    optionsStopLossPct?: number;
+    optionsTakeProfitPct?: number;
     sessionBufferMinutes?: number;
     earningsBlackoutDays?: number;
     correlationLookbackDays?: number;
@@ -1571,6 +1597,8 @@ export default function AutoTradePage() {
       setTrailStopRMultipleDraft(saved.trailStopRMultiple);
       setPartialExitRMultipleDraft(saved.partialExitRMultiple);
       setPartialExitPctDraft(saved.partialExitPct);
+      setOptionsStopLossPctDraft(saved.optionsStopLossPct);
+      setOptionsTakeProfitPctDraft(saved.optionsTakeProfitPct);
       setSessionBufferMinutesDraft(saved.sessionBufferMinutes);
       setEarningsBlackoutDaysDraft(saved.earningsBlackoutDays);
       setCorrelationLookbackDaysDraft(saved.correlationLookbackDays);
@@ -2677,6 +2705,66 @@ export default function AutoTradePage() {
                     partialExitPctDraft < 0 ||
                     partialExitPctDraft > 100 ||
                     partialExitPctDraft === config.data?.partialExitPct
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Options stop-loss (%)"
+              hint="Close a PAPER/BACKTEST options position once unrealized loss reaches this % of premium paid (net debit, for a spread). 0 disables it — LIVE options positions are unaffected and stay time-exit-only."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={optionsStopLossPctDraft}
+                  onChange={setOptionsStopLossPctDraft}
+                  min={0}
+                  max={100}
+                  step={1}
+                  placeholder="0 (disabled)"
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save options stop-loss"
+                  onClick={() =>
+                    optionsStopLossPctDraft != null && saveConfig({ optionsStopLossPct: optionsStopLossPctDraft })
+                  }
+                  disabled={
+                    optionsStopLossPctDraft == null ||
+                    optionsStopLossPctDraft < 0 ||
+                    optionsStopLossPctDraft > 100 ||
+                    optionsStopLossPctDraft === config.data?.optionsStopLossPct
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Options take-profit (%)"
+              hint="Close a PAPER/BACKTEST options position once unrealized gain reaches this % of premium paid (net debit, for a spread). 0 disables it — LIVE options positions are unaffected and stay time-exit-only."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={optionsTakeProfitPctDraft}
+                  onChange={setOptionsTakeProfitPctDraft}
+                  min={0}
+                  max={100}
+                  step={1}
+                  placeholder="0 (disabled)"
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save options take-profit"
+                  onClick={() =>
+                    optionsTakeProfitPctDraft != null && saveConfig({ optionsTakeProfitPct: optionsTakeProfitPctDraft })
+                  }
+                  disabled={
+                    optionsTakeProfitPctDraft == null ||
+                    optionsTakeProfitPctDraft < 0 ||
+                    optionsTakeProfitPctDraft > 100 ||
+                    optionsTakeProfitPctDraft === config.data?.optionsTakeProfitPct
                   }
                 >
                   Save

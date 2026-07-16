@@ -210,6 +210,132 @@ describe('simulateOptionsBacktest', () => {
     expect(t.pnl).toBeCloseTo((exitPremium - entryPremium) * t.contracts * 100, 5);
   });
 
+  describe('stop-loss / take-profit (2026-07-16)', () => {
+    it('closes via stop-loss once unrealized loss reaches the configured %, well before the time-exit window', async () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, 45); // far out -- time-exit can't fire
+      const T = yearsFor(60);
+      const entryPremium = premiumFor('call', 100, STRIKE, T);
+      const exitDay = d(signalDay, 2); // first day eligible (not the entry day itself)
+      const exitPremium = entryPremium * 0.4; // -60%, past a -50% stop
+      mockContractBars({
+        [CALL_TICKER]: [
+          optionBar(signalDay, entryPremium),
+          optionBar(entryDay, entryPremium, { open: entryPremium }),
+          optionBar(exitDay, exitPremium),
+        ],
+      });
+      const historyBySymbol = new Map([
+        ['TEST', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(exitDay)]],
+      ]);
+      const contractsBySymbol = new Map([['TEST', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]]]);
+
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        baseConfig({ from: signalDay, to: exitDay, optionsStopLossPct: 50 }),
+      );
+      expect(report.trades).toHaveLength(1);
+      expect(report.trades[0].exitReason).toBe('stop_loss');
+      expect(report.trades[0].exitDate).toBe(exitDay);
+    });
+
+    it('closes via take-profit once unrealized gain reaches the configured %, well before the time-exit window', async () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, 45);
+      const T = yearsFor(60);
+      const entryPremium = premiumFor('call', 100, STRIKE, T);
+      const exitDay = d(signalDay, 2);
+      const exitPremium = entryPremium * 1.6; // +60%, past a +50% target
+      mockContractBars({
+        [CALL_TICKER]: [
+          optionBar(signalDay, entryPremium),
+          optionBar(entryDay, entryPremium, { open: entryPremium }),
+          optionBar(exitDay, exitPremium),
+        ],
+      });
+      const historyBySymbol = new Map([
+        ['TEST', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(exitDay)]],
+      ]);
+      const contractsBySymbol = new Map([['TEST', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]]]);
+
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        baseConfig({ from: signalDay, to: exitDay, optionsTakeProfitPct: 50 }),
+      );
+      expect(report.trades).toHaveLength(1);
+      expect(report.trades[0].exitReason).toBe('take_profit');
+    });
+
+    it('leaves 0/omitted stop-loss and take-profit fully disabled — same trades as before this feature existed', async () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, 45);
+      const T = yearsFor(45);
+      const entryPremium = premiumFor('call', 100, STRIKE, T);
+      const exitDay = d(signalDay, 2);
+      const exitPremium = entryPremium * 0.4; // a -60% move that WOULD trigger a stop if one were configured
+      mockContractBars({
+        [CALL_TICKER]: [
+          optionBar(signalDay, entryPremium),
+          optionBar(entryDay, entryPremium, { open: entryPremium }),
+          optionBar(exitDay, exitPremium),
+        ],
+      });
+      const historyBySymbol = new Map([
+        ['TEST', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(exitDay)]],
+      ]);
+      const contractsBySymbol = new Map([['TEST', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]]]);
+
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        baseConfig({ from: signalDay, to: exitDay }), // no optionsStopLossPct/optionsTakeProfitPct
+      );
+      // Still force-closes at period end (exitDay is the last simulated day)
+      // -- the point is that neither price rule fired despite the big move,
+      // matching pre-feature behavior exactly (only 'end_of_period' could
+      // have closed it, not 'stop_loss').
+      expect(report.trades).toHaveLength(1);
+      expect(report.trades[0].exitReason).toBe('end_of_period');
+    });
+
+    it('treats an EXPLICIT 0 the same as omitted, not a 0%-loss/gain threshold that fires immediately', async () => {
+      // A route handler passes `optionsStopLossPct: body.optionsStopLossPct`
+      // through verbatim (routes/autotrade.ts), so a client explicitly
+      // sending 0 is a real, reachable input -- not just "field absent".
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, 45);
+      const T = yearsFor(45);
+      const entryPremium = premiumFor('call', 100, STRIKE, T);
+      const exitDay = d(signalDay, 2);
+      const exitPremium = entryPremium * 0.4; // a -60% move that WOULD trigger a stop if 0 meant "any loss"
+      mockContractBars({
+        [CALL_TICKER]: [
+          optionBar(signalDay, entryPremium),
+          optionBar(entryDay, entryPremium, { open: entryPremium }),
+          optionBar(exitDay, exitPremium),
+        ],
+      });
+      const historyBySymbol = new Map([
+        ['TEST', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(exitDay)]],
+      ]);
+      const contractsBySymbol = new Map([['TEST', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]]]);
+
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        baseConfig({ from: signalDay, to: exitDay, optionsStopLossPct: 0, optionsTakeProfitPct: 0 }),
+      );
+      expect(report.trades).toHaveLength(1);
+      expect(report.trades[0].exitReason).toBe('end_of_period');
+    });
+  });
+
   it('does not immediately re-exit a position on its own entry day, even if DTE is already at the exit threshold', async () => {
     const signalDay = '2024-03-01';
     const entryDay = d(signalDay, 1);
@@ -800,6 +926,63 @@ describe('simulateOptionsBacktest', () => {
       expect(t.exitReason).toBe('end_of_period');
       expect(t.exitPremium).toBe(longLast);
       expect(t.shortExitPremium).toBe(shortLast);
+    });
+
+    it('evaluates stop-loss/take-profit against the NET DEBIT, not the long leg premium alone', async () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      // DTE_DAYS (30d), not a longer expiration -- LONG_STRIKE/SHORT_STRIKE
+      // are calibrated for T=30d specifically (see this describe block's own
+      // header comment); a longer T drifts the short leg's delta outside
+      // SHORT_LEG_DELTA_BAND. 30 days is still comfortably far from the
+      // 7-day time-exit threshold for this test's purposes.
+      const expiration = d(signalDay, DTE_DAYS);
+      const T = yearsFor(DTE_DAYS);
+      const longEntry = premiumFor('call', 100, LONG_STRIKE, T);
+      const shortEntry = premiumFor('call', 100, SHORT_STRIKE, T);
+      const exitDay = d(signalDay, 2);
+      // Net debit at entry: longEntry - shortEntry. A long-leg-only read of
+      // the long leg's own entry/exit would see only a small move; the
+      // correct net-debit read moves the spread's own value by +60%, past a
+      // +50% take-profit. Short leg held steady (a safely-positive, already-
+      // known price) and the long leg solved for, rather than deriving the
+      // short leg's exit price algebraically — avoids risking a non-positive
+      // mock premium that impliedVol() can't solve.
+      const netDebitAtEntry = longEntry - shortEntry;
+      const shortExit = shortEntry;
+      const longExit = shortExit + netDebitAtEntry * 1.6;
+      mockContractBars({
+        [LONG_TICKER]: [
+          optionBar(signalDay, longEntry),
+          optionBar(entryDay, longEntry, { open: longEntry }),
+          optionBar(exitDay, longExit),
+        ],
+        [SHORT_TICKER]: [
+          optionBar(signalDay, shortEntry),
+          optionBar(entryDay, shortEntry, { open: shortEntry }),
+          optionBar(exitDay, shortExit),
+        ],
+      });
+      const historyBySymbol = new Map([
+        ['TEST', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(exitDay)]],
+      ]);
+      const contractsBySymbol = new Map([
+        [
+          'TEST',
+          [
+            contractRef(LONG_TICKER, 'call', LONG_STRIKE, expiration),
+            contractRef(SHORT_TICKER, 'call', SHORT_STRIKE, expiration),
+          ],
+        ],
+      ]);
+
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        spreadConfig({ from: signalDay, to: exitDay, optionsTakeProfitPct: 50 }),
+      );
+      expect(report.trades).toHaveLength(1);
+      expect(report.trades[0].exitReason).toBe('take_profit');
     });
   });
 });

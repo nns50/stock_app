@@ -526,6 +526,53 @@ describe('checkOptionsPaperExits', () => {
     expect(mockGetProvider).not.toHaveBeenCalled();
   });
 
+  describe('stop-loss / take-profit (2026-07-16)', () => {
+    it('closes via stop-loss once unrealized loss reaches the configured %, well outside the time-exit window', async () => {
+      setAutotradeConfig({ optionsStopLossPct: 50 });
+      openPos({ expiration: '2024-07-15', entryPrice: 3 }); // ~44 days out -- time-exit can't fire
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 1.4 } }) as never); // -53%
+      const outcomes = await checkOptionsPaperExits();
+      expect(outcomes[0].closed).toBe(true);
+      expect(outcomes[0].position!.exitReason).toBe('stop_loss');
+      expect(outcomes[0].position!.exitPrice).toBe(1.4);
+    });
+
+    it('closes via take-profit once unrealized gain reaches the configured %, well outside the time-exit window', async () => {
+      setAutotradeConfig({ optionsTakeProfitPct: 50 });
+      openPos({ expiration: '2024-07-15', entryPrice: 3 });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.6 } }) as never); // +53%
+      const outcomes = await checkOptionsPaperExits();
+      expect(outcomes[0].closed).toBe(true);
+      expect(outcomes[0].position!.exitReason).toBe('take_profit');
+    });
+
+    it('does not close when unrealized P&L is inside both configured bands', async () => {
+      setAutotradeConfig({ optionsStopLossPct: 50, optionsTakeProfitPct: 50 });
+      openPos({ expiration: '2024-07-15', entryPrice: 3 });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3.3 } }) as never); // +10%
+      const outcomes = await checkOptionsPaperExits();
+      expect(outcomes[0].closed).toBe(false);
+      expect(hasOpenOptionsPaperPosition('AAPL')).toBe(true);
+    });
+
+    it('fetches a quote every cycle once a price rule is configured, even outside the time-exit window', async () => {
+      setAutotradeConfig({ optionsStopLossPct: 50 });
+      openPos({ expiration: '2024-07-15', entryPrice: 3 });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3.3 } }) as never);
+      await checkOptionsPaperExits();
+      expect(mockGetProvider).toHaveBeenCalled();
+    });
+
+    it('degrades to quote-free time-exit-only evaluation when a price rule is configured but the mark fetch fails, rather than throwing', async () => {
+      setAutotradeConfig({ optionsStopLossPct: 50 });
+      openPos({ expiration: '2024-07-15', entryPrice: 3 }); // outside the time-exit window too
+      mockGetProvider.mockReturnValue({ getOptionsChain: vi.fn().mockRejectedValue(new Error('timeout')) } as never);
+      const outcomes = await checkOptionsPaperExits();
+      expect(outcomes[0].closed).toBe(false);
+      expect(hasOpenOptionsPaperPosition('AAPL')).toBe(true);
+    });
+  });
+
   describe('debit spreads', () => {
     function openSpreadPos(overrides: Partial<Parameters<typeof openOptionsPaperPosition>[0]> = {}) {
       return openOptionsPaperPosition({
@@ -586,6 +633,26 @@ describe('checkOptionsPaperExits', () => {
       const outcomes = await checkOptionsPaperExits();
       expect(outcomes[0].closed).toBe(false);
       expect(hasOpenOptionsPaperPosition('AAPL')).toBe(true);
+    });
+
+    it('evaluates stop-loss/take-profit against the NET DEBIT, not the long leg premium alone', async () => {
+      // Net debit at entry: 3 - 1 = 2. A long-leg-only read of entryPrice=3
+      // vs. currentPrice=3.6 would look like a mere +20% (no trigger at a
+      // 50% band); the correct net-debit read is entry 2 -> current
+      // (3.6 - 0.2) = 3.4, i.e. +70%, past the configured +50% take-profit.
+      setAutotradeConfig({ optionsTakeProfitPct: 50 });
+      openSpreadPos({ expiration: '2024-07-15', entryPrice: 3, shortEntryPrice: 1 });
+      mockGetProvider.mockReturnValue(
+        chainsFor({
+          AAPL: [
+            { side: 'call', strike: 100, mark: 3.6 },
+            { side: 'call', strike: 110, mark: 0.2 },
+          ],
+        }) as never,
+      );
+      const outcomes = await checkOptionsPaperExits();
+      expect(outcomes[0].closed).toBe(true);
+      expect(outcomes[0].position!.exitReason).toBe('take_profit');
     });
   });
 });

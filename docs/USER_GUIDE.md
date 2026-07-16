@@ -727,6 +727,14 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   whenever its trigger gets turned on — so leaving them untouched changes nothing.
   R-multiples here are always measured against the position's own original stop
   distance, fixed at entry, even after the stop itself has since moved.
+  Two more fields do the same for an already-open **paper or backtest options**
+  position (**live options positions are untouched — still time-exit only**, the
+  same scope boundary as the five equity fields above): **Options stop-loss (%)**
+  and **Options take-profit (%)** close the position once unrealized loss/gain
+  reaches that % of premium paid (net debit, for a spread). Both default to
+  **0 (disabled)** — leaving them untouched changes nothing, and the loop's only
+  automated options exit stays time-based (closing as expiration approaches, see
+  "Options paper positions" below).
   **Auto-promote recurring movers** (on by default) grows your universe automatically:
   a symbol Webull's premarket movers surface that also clears screening on **3 distinct
   days within a 10-day window** (both tunable, along with a **50-symbol lifetime cap** on
@@ -1004,13 +1012,19 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   vice versa, for the real running loop now, not just the preview risk-check. A spread
   fills and closes both legs together — its Contract column shows both strikes
   (`long/short`), and Entry/Current/Exit $ show the spread's net value (long leg minus
-  short leg), not a single premium. The only automated exit here is time-based — closing
-  a position as expiration approaches, matching "never hold an option through
-  expiration" — take-profit, stop-loss, and delta-drift stay human-review-only on the
-  Options page. Shows the same open/closed counts, realized/unrealized P&L, and full
-  trade history (contract, strike/expiration, entry, a live **Current $** for open
-  positions from a fresh contract quote, exit, reason, contracts, P&L, R) as equity's own
-  paper trading above.
+  short leg), not a single premium. Automated exits here are time-based (closing a
+  position as expiration approaches, matching "never hold an option through expiration")
+  plus optional price-based **stop-loss** and **take-profit** — % of premium paid (net
+  debit for a spread), set via **Options stop-loss (%)** / **Options take-profit (%)** in
+  Configuration; each defaults to 0 (disabled). Delta-drift still stays
+  human-review-only on the Options page. The exit-reason badge is color-coded (green
+  take-profit, red stop-loss, blue time-exit, slate end-of-period) in both this table and
+  the options backtest results below. These two price rules are **paper and backtest
+  only** — a live options position still exits on time only, the same scope boundary
+  the equity trailing-stop/breakeven fields below already have. Shows the same
+  open/closed counts, realized/unrealized P&L, and full trade history (contract,
+  strike/expiration, entry, a live **Current $** for open positions from a fresh
+  contract quote, exit, reason, contracts, P&L, R) as equity's own paper trading above.
 - **Recent activity** — a journal of what the screen, decision, and risk-check stages
   did and why (candidate found, excluded, signal generated, passed/blocked, a paper
   order placed or closed, a setting changed) — the same feed the execution loop above

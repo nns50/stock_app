@@ -13,7 +13,7 @@ import { db } from './index';
 
 export type OptionsPaperSide = 'call' | 'put';
 export type OptionsPaperKind = 'single_leg' | 'debit_spread';
-export type OptionsPaperExitReason = 'time_exit' | 'manual';
+export type OptionsPaperExitReason = 'time_exit' | 'stop_loss' | 'take_profit' | 'manual';
 
 export interface OpenOptionsPaperPositionInput {
   symbol: string;

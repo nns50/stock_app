@@ -355,8 +355,12 @@ ${AUTOTRADE_PAPER_POSITIONS_TABLE_SQL}
 -- long option is identified by contract (strike/expiration/side), not a
 -- buy/sell direction + stop/target price the way a stock paper position is,
 -- so the two shapes don't overlay cleanly onto one schema. exit_reason is
--- 'time_exit' (the only automated trigger phase 12 wires — see
--- options/exitRules.ts's timeExitDaysBeforeExpiry) or 'manual', mirroring
+-- 'time_exit' (phase 12's original automated trigger — see options/
+-- exitRules.ts's timeExitDaysBeforeExpiry), 'stop_loss'/'take_profit'
+-- (2026-07-16 follow-up — same exitRules.ts engine's %-of-premium rules,
+-- net debit for a spread; PAPER/BACKTEST only, mirroring
+-- autotrade_paper_positions's own live-exclusion for its analogous
+-- trailing-stop/breakeven/partial-exit fields), or 'manual', mirroring
 -- autotrade_paper_positions's own reserved-but-not-yet-used 'manual' value.
 -- kind/short_* (Task #69): a 'debit_spread' row reuses contract_symbol/strike/
 -- entry_price/exit_price for the LONG leg and adds the short_* columns for the
@@ -383,7 +387,7 @@ CREATE TABLE IF NOT EXISTS autotrade_options_paper_positions (
   exit_price             REAL,                 -- premium per share at exit; long leg for a spread
   short_exit_price       REAL,                 -- short leg's premium per share at exit (debit spreads only)
   exit_at                INTEGER,
-  exit_reason            TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL),
+  exit_reason            TEXT CHECK(exit_reason IN ('time_exit','stop_loss','take_profit','manual') OR exit_reason IS NULL),
   created_at             INTEGER NOT NULL,
   updated_at             INTEGER NOT NULL
 );
@@ -675,6 +679,7 @@ function migrate(): void {
   rebuildAlertsTable(db);
 
   rebuildAutotradePaperPositionsTable(db);
+  rebuildAutotradeOptionsPaperPositionsTable(db);
 
   // autotrade_paper_positions gained trailing-stop/breakeven/partial-exit
   // tracking (added AFTER the rebuild above, so a table that just got
@@ -868,6 +873,61 @@ export function rebuildAutotradePaperPositionsTable(database: Database.Database)
       FROM autotrade_paper_positions_old;
     DROP TABLE autotrade_paper_positions_old;
     CREATE INDEX IF NOT EXISTS idx_autotrade_paper_positions_status ON autotrade_paper_positions(status, symbol);
+  `);
+}
+
+/**
+ * Rebuild `autotrade_options_paper_positions` when its exit_reason CHECK
+ * predates 'stop_loss'/'take_profit' (options price-based exits, added
+ * 2026-07-16 — see AUTOTRADING_SPEC.md phase 17). Same rename/create/copy/
+ * drop dance as rebuildAutotradePaperPositionsTable above, plus re-creating
+ * the one index this table has. Guarded on 'stop_loss' already being in the
+ * stored CHECK text, so it runs once and no-ops on a fresh DB.
+ */
+export function rebuildAutotradeOptionsPaperPositionsTable(database: Database.Database): void {
+  const row = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='autotrade_options_paper_positions'")
+    .get() as { sql: string | null } | undefined;
+  if (!row?.sql || /stop_loss/i.test(row.sql)) return;
+
+  database.exec(`
+    ALTER TABLE autotrade_options_paper_positions RENAME TO autotrade_options_paper_positions_old;
+    CREATE TABLE autotrade_options_paper_positions (
+      id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol                 TEXT NOT NULL,
+      side                   TEXT NOT NULL CHECK(side IN ('call','put')),
+      kind                   TEXT NOT NULL DEFAULT 'single_leg',
+      contract_symbol        TEXT NOT NULL,
+      strike                 REAL NOT NULL,
+      short_contract_symbol  TEXT,
+      short_strike           REAL,
+      expiration             TEXT NOT NULL,
+      quantity               REAL NOT NULL,
+      entry_price            REAL NOT NULL,
+      short_entry_price      REAL,
+      entry_at               INTEGER NOT NULL,
+      risk_amount            REAL NOT NULL,
+      risk_profile           TEXT NOT NULL,
+      rationale              TEXT NOT NULL,
+      status                 TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+      exit_price             REAL,
+      short_exit_price       REAL,
+      exit_at                INTEGER,
+      exit_reason            TEXT CHECK(exit_reason IN ('time_exit','stop_loss','take_profit','manual') OR exit_reason IS NULL),
+      created_at             INTEGER NOT NULL,
+      updated_at             INTEGER NOT NULL
+    );
+    INSERT INTO autotrade_options_paper_positions (id, symbol, side, kind, contract_symbol, strike,
+                        short_contract_symbol, short_strike, expiration, quantity, entry_price,
+                        short_entry_price, entry_at, risk_amount, risk_profile, rationale, status,
+                        exit_price, short_exit_price, exit_at, exit_reason, created_at, updated_at)
+      SELECT id, symbol, side, kind, contract_symbol, strike,
+             short_contract_symbol, short_strike, expiration, quantity, entry_price,
+             short_entry_price, entry_at, risk_amount, risk_profile, rationale, status,
+             exit_price, short_exit_price, exit_at, exit_reason, created_at, updated_at
+      FROM autotrade_options_paper_positions_old;
+    DROP TABLE autotrade_options_paper_positions_old;
+    CREATE INDEX IF NOT EXISTS idx_autotrade_options_paper_positions_status ON autotrade_options_paper_positions(status, symbol);
   `);
 }
 

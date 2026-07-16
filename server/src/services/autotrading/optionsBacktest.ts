@@ -34,6 +34,7 @@ import { getHistoricalBars } from './historicalData';
 import { OptionContractRef } from './polygonOptionsClient';
 import { impliedVol, bsGreeks, yearsToExpiration, daysToExpiration } from '../../options/blackScholes';
 import { computeIvContext } from '../ivRank';
+import { evaluateExit } from '../../options/exitRules';
 
 // ---------------------------------------------------------------------------
 // The options counterpart to backtest.ts (docs/AUTOTRADING_SPEC.md, phase 11)
@@ -80,11 +81,15 @@ import { computeIvContext } from '../ivRank';
 //     backtest-only gap as OI/spread above, extended here with the same
 //     reasoning — NOT a change to the live/paper system, which still fails
 //     closed without 15 real samples exactly as phase 9 shipped it.
-//  5. Exit is TIME-BASED ONLY (exitRules.ts's timeExitDaysBeforeExpiry),
-//     matching phase 12's OWN already-scoped "close-only, time-based"
-//     automated-exit design — not the human Options page's fuller
-//     stop-loss/take-profit/delta-drift default config, which is for manual
-//     review, not automation.
+//  5. Exit was originally TIME-BASED ONLY (exitRules.ts's
+//     timeExitDaysBeforeExpiry), matching phase 12's own "close-only,
+//     time-based" automated-exit design. 2026-07-16 follow-up:
+//     OptionsBacktestConfig.optionsStopLossPct/optionsTakeProfitPct add a
+//     %-of-premium P&L rule on top (0/omitted disables each, so the
+//     original time-only behavior is still the default), reusing the SAME
+//     exitRules.ts engine and evaluated from the day's own bar close —
+//     no new cost, unlike paper/live which need a fresh quote fetch.
+//     Delta-drift stays out of scope (no delta feed changes this).
 //  6. Delta is recomputed via Black-Scholes directly (not entryRules.ts's
 //     evaluateContract()) for the same reason as #2 — evaluateContract()
 //     expects a live-shaped OptionContract this backtest cannot produce.
@@ -117,6 +122,14 @@ export interface OptionsBacktestConfig extends Partial<BacktestRiskParams> {
    *  and keeps whichever side actually qualifies, so one run can produce
    *  both calls and puts. */
   directionMode?: 'long' | 'short' | 'both';
+  /** Own value here, NOT read from live config if omitted — same
+   *  self-contained-hypothesis convention as every other backtest field.
+   *  Mirrors AutotradeConfig.optionsStopLossPct/optionsTakeProfitPct
+   *  (0/omitted disables each); reuses exitRules.ts's own %-of-premium
+   *  model (net debit for a spread), evaluated against the day's own bar
+   *  close alongside the existing time-exit check. */
+  optionsStopLossPct?: number;
+  optionsTakeProfitPct?: number;
 }
 
 export interface SimulatedOptionsTrade {
@@ -141,7 +154,7 @@ export interface SimulatedOptionsTrade {
   exitPremium: number;
   /** The short leg's exit premium — debit spreads only. */
   shortExitPremium?: number;
-  exitReason: 'time_exit' | 'expiration' | 'end_of_period';
+  exitReason: 'time_exit' | 'stop_loss' | 'take_profit' | 'expiration' | 'end_of_period';
   contracts: number;
   pnl: number;
   rMultiple: number;
@@ -344,6 +357,21 @@ function optionsBacktestCorrelatedNotional(
   return amount;
 }
 
+/** Maps exitRules.ts's own kebab-case ExitTrigger.rule strings to this
+ *  engine's snake_case exit reason values — same mapping convention as
+ *  optionsExecute.ts's own exitReasonFor() (deliberately duplicated, not
+ *  shared, matching this codebase's parallel-paper/backtest convention). */
+function exitReasonFor(activeRule: string): 'stop_loss' | 'take_profit' | 'time_exit' {
+  switch (activeRule) {
+    case 'stop-loss':
+      return 'stop_loss';
+    case 'take-profit':
+      return 'take_profit';
+    default:
+      return 'time_exit';
+  }
+}
+
 /**
  * Run the options simulation over already-loaded equity history and
  * pre-fetched contract reference data. Unlike backtest.ts's simulateBacktest
@@ -521,10 +549,26 @@ export async function simulateOptionsBacktest(
           continue;
         }
       }
-      const dte = daysToExpiration(pos.expiration, new Date(dayMs));
-      if (dte <= exitMinDaysToExpiration || dte <= 0) {
-        const exitPremium = bar.close;
-        const shortExitPremium = shortBar?.close;
+      const exitPremium = bar.close;
+      const shortExitPremium = shortBar?.close;
+      // Stop-loss/take-profit are evaluated from the SAME bar data just
+      // fetched above for the time-exit check — no new cost, unlike paper/
+      // live which need a fresh quote fetch. Net debit (long minus short
+      // premium) is the basis for a spread, at both entry and now — the
+      // same basis simulatedOptionsPnl() already sizes P&L from.
+      const entryBasis =
+        pos.kind === 'debit_spread' ? pos.entryPremium - (pos.shortEntryPremium ?? 0) : pos.entryPremium;
+      const currentBasis = pos.kind === 'debit_spread' ? exitPremium - (shortExitPremium ?? 0) : exitPremium;
+      const ev = evaluateExit(
+        { entryPrice: entryBasis, currentPrice: currentBasis, side: 'long', expiration: pos.expiration },
+        {
+          timeExitDaysBeforeExpiry: exitMinDaysToExpiration,
+          stopLossPct: cfg.optionsStopLossPct || undefined,
+          takeProfitPct: cfg.optionsTakeProfitPct || undefined,
+        },
+        new Date(dayMs),
+      );
+      if (ev.triggered) {
         const pnl = simulatedOptionsPnl(
           pos.kind,
           pos.entryPremium,
@@ -549,7 +593,7 @@ export async function simulateOptionsBacktest(
           exitDate: day,
           exitPremium,
           shortExitPremium,
-          exitReason: dte <= 0 ? 'expiration' : 'time_exit',
+          exitReason: ev.activeRule === 'time-exit' && ev.dte <= 0 ? 'expiration' : exitReasonFor(ev.activeRule!),
           contracts: pos.contracts,
           pnl,
           rMultiple: pos.riskAmount > 0 ? pnl / pos.riskAmount : 0,

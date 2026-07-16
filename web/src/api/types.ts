@@ -1131,6 +1131,10 @@ export interface AutotradeConfig {
   // --- Options strategy shape ---
   optionsStrategyType: AutotradeOptionsStrategyType;
 
+  // --- Options stop-loss / take-profit (PAPER + BACKTEST only; 0 disables) --
+  optionsStopLossPct: number;
+  optionsTakeProfitPct: number;
+
   // --- Movers auto-promotion ---
   autoPromoteMoversEnabled: boolean;
   autoPromoteThreshold: number;
@@ -1429,7 +1433,7 @@ export interface SimulatedOptionsTrade {
   exitDate: string;
   exitPremium: number;
   shortExitPremium?: number;
-  exitReason: 'time_exit' | 'expiration' | 'end_of_period';
+  exitReason: 'time_exit' | 'stop_loss' | 'take_profit' | 'expiration' | 'end_of_period';
   contracts: number;
   pnl: number;
   rMultiple: number;
@@ -1617,7 +1621,7 @@ export interface LastTickRecord {
 
 // --- Phase 12: options paper execution ---
 
-export type OptionsPaperExitReason = 'time_exit' | 'manual';
+export type OptionsPaperExitReason = 'time_exit' | 'stop_loss' | 'take_profit' | 'manual';
 
 export type OptionsPaperKind = 'single_leg' | 'debit_spread';
 
