@@ -208,15 +208,74 @@ describe('closeLivePosition', () => {
     expect(r).toMatchObject({ placed: true, bracketCancelled: true });
   });
 
-  it('never reaches placeOrder when the bracket cancel fails — position left untouched', async () => {
+  it('never reaches placeOrder when the cancel is rejected AND an exit leg still shows working', async () => {
     const entry = bracketEntryIntent();
     const pos = longStock({ sourceIntentId: entry.id });
     mockCancelOrder.mockResolvedValue({ ok: false, error: 'order already terminal' });
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      legs: [
+        { comboType: 'MASTER', status: 'FILLED' },
+        { comboType: 'STOP_LOSS', status: 'WORKING' },
+        { comboType: 'STOP_PROFIT', status: 'CANCELLED' },
+      ],
+    });
 
     const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
 
     expect(r).toMatchObject({ placed: false, reason: 'blocked' });
     expect(r.error).toMatch(/could not cancel the resting bracket/i);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('STILL closes when the cancel is rejected but the bracket legs are already terminal (the "Order can not be canceled" case)', async () => {
+    // Regression: a live position whose bracket was already gone could not be
+    // closed at all — the broker rejects the redundant cancel with "Order can
+    // not be canceled", which the old code treated as a hard block. With
+    // nothing left to race the close, it must proceed.
+    const entry = bracketEntryIntent();
+    const pos = longStock({ sourceIntentId: entry.id });
+    mockCancelOrder.mockResolvedValue({ ok: false, error: 'Order can not be canceled' });
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      legs: [
+        { comboType: 'MASTER', status: 'FILLED' },
+        { comboType: 'STOP_LOSS', status: 'CANCELLED' },
+        { comboType: 'STOP_PROFIT', status: 'CANCELLED' },
+      ],
+    });
+    mockAccountState.mockResolvedValue(accountStateWith(100) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE-CANCELREJECT' });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+
+    expect(r).toMatchObject({ placed: true, bracketCancelled: true });
+    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ side: 'sell', openClose: 'close', quantity: 100 });
+  });
+
+  it('places NOTHING and reports the position is already closing when a stop/target raced the cancel', async () => {
+    const entry = bracketEntryIntent();
+    const pos = longStock({ sourceIntentId: entry.id });
+    mockCancelOrder.mockResolvedValue({ ok: true });
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      legs: [
+        { comboType: 'MASTER', status: 'FILLED' },
+        { comboType: 'STOP_LOSS', status: 'FILLED' }, // raced — the stop filled
+        { comboType: 'STOP_PROFIT', status: 'CANCELLED' },
+      ],
+    });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+
+    expect(r).toMatchObject({ placed: false, reason: 'blocked' });
+    expect(r.error).toMatch(/already closing/i);
     expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 

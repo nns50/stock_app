@@ -120,6 +120,18 @@ export async function closeLivePosition(
     const entryIntent = getIntent(pos.sourceIntentId);
     if (entryIntent?.isBracket) {
       const cancelled = await cancelLiveBracketExitLegs(entryIntent, accountId);
+      if (cancelled.raced) {
+        // A resting stop/target filled while we were cancelling — the position
+        // is already closing on its own, so we deliberately place NOTHING (a
+        // fresh close would double-fill). Not a "couldn't cancel" failure.
+        return {
+          ok: true,
+          placed: false,
+          reason: 'blocked',
+          error:
+            'A resting stop or target order just filled — this position is already closing. Refresh in a moment to see it close.',
+        };
+      }
       if (!cancelled.ok) {
         return {
           ok: true,
