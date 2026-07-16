@@ -79,6 +79,9 @@ const configBody = z.object({
   maxAggregateOpenRiskPct: z.number().min(0).max(100).optional(),
   maxCorrelatedExposurePct: z.number().min(0).max(100).optional(),
   maxTradesPerDay: z.number().int().nonnegative().optional(),
+  // --- Regime-aware sizing (live + paper only; 0 disables) -------------------
+  regimeAtrThresholdPct: z.number().min(0).max(100).optional(),
+  regimeSizeCutPct: z.number().min(0).max(100).optional(),
   // --- Screening/decision thresholds ------------------------------------------
   tradeDirection: z.enum(['long', 'short', 'both']).optional(),
   minRelVol: z.number().nonnegative().optional(),
@@ -166,6 +169,8 @@ autotradeRouter.put(
     if (body.maxAggregateOpenRiskPct !== undefined) patch.maxAggregateOpenRiskPct = body.maxAggregateOpenRiskPct;
     if (body.maxCorrelatedExposurePct !== undefined) patch.maxCorrelatedExposurePct = body.maxCorrelatedExposurePct;
     if (body.maxTradesPerDay !== undefined) patch.maxTradesPerDay = body.maxTradesPerDay;
+    if (body.regimeAtrThresholdPct !== undefined) patch.regimeAtrThresholdPct = body.regimeAtrThresholdPct;
+    if (body.regimeSizeCutPct !== undefined) patch.regimeSizeCutPct = body.regimeSizeCutPct;
     if (body.tradeDirection !== undefined) patch.tradeDirection = body.tradeDirection;
     if (body.minRelVol !== undefined) patch.minRelVol = body.minRelVol;
     if (body.maxTickerAtrPct !== undefined) patch.maxTickerAtrPct = body.maxTickerAtrPct;

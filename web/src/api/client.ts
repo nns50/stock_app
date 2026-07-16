@@ -438,6 +438,8 @@ export const client = {
     maxAggregateOpenRiskPct?: number;
     maxCorrelatedExposurePct?: number;
     maxTradesPerDay?: number;
+    regimeAtrThresholdPct?: number;
+    regimeSizeCutPct?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     maxTickerAtrPct?: number;

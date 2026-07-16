@@ -5,6 +5,7 @@ import { computeRiskSizing, RiskSizingResult } from '../riskSizing';
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { logAutotradeEvent, listAutotradeEvents } from '../../db/autotradeEvents';
+import { getMarketAtrPct } from './executionGuards';
 import { TradeSignal } from './decide';
 
 // ---------------------------------------------------------------------------
@@ -244,6 +245,17 @@ export interface RiskCheckContext {
    *  actual correlation computation already happened before this context was
    *  built (see correlatedNotional()'s own lookbackDays/threshold params). */
   correlationThreshold: number;
+  /** Regime-aware sizing (2026-07-16, docs/AUTOTRADING_SPEC.md phase 18).
+   *  `marketAtrPct` is the SAME broad-market-proxy (SPY) ATR% reading
+   *  executionGuards.ts's checkVolatility() already gates entries on — null
+   *  when unknown (a fetch failure, or a caller that doesn't compute it, e.g.
+   *  every backtest engine), treated as "regime cut inactive," exactly like
+   *  checkVolatility() itself treats a null market reading as non-blocking.
+   *  `regimeAtrThresholdPct`/`regimeSizeCutPct` are the directly
+   *  user-configured AutotradeConfig fields (see their own doc comments). */
+  marketAtrPct: number | null;
+  regimeAtrThresholdPct: number;
+  regimeSizeCutPct: number;
 }
 
 export interface RiskCheckRule {
@@ -258,6 +270,9 @@ export interface RiskCheckResult {
   checks: RiskCheckRule[];
   sizing: RiskSizingResult;
   stepDownActive: boolean;
+  /** Regime-aware sizing cut active this check (2026-07-16) — see
+   *  RiskCheckContext.marketAtrPct's own doc comment. */
+  regimeActive: boolean;
   /** What this trade would add to running totals if approved (0 when blocked) —
    *  the batch orchestration accumulates these across signals. */
   approvedRiskAmount: number;
@@ -274,12 +289,13 @@ export interface RiskCheckResult {
 export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): RiskCheckResult {
   const checks: RiskCheckRule[] = [];
   const check = (rule: string, passed: boolean, detail: string) => checks.push({ rule, passed, detail });
-  const blocked = (sizing: RiskSizingResult, stepDownActive: boolean): RiskCheckResult => ({
+  const blocked = (sizing: RiskSizingResult, stepDownActive: boolean, regimeActive: boolean): RiskCheckResult => ({
     symbol: signal.symbol,
     ok: false,
     checks,
     sizing,
     stepDownActive,
+    regimeActive,
     approvedRiskAmount: 0,
     approvedNotional: 0,
   });
@@ -290,18 +306,27 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     equityOk,
     equityOk ? usd(ctx.equity) : 'account equity is not set — configure it before auto-trading can size positions',
   );
-  if (!equityOk) return blocked(ZERO_SIZING, false);
+  if (!equityOk) return blocked(ZERO_SIZING, false, false);
 
   const stepDownActive = ctx.consecutiveLosses >= ctx.stepDownAfterLosses;
-  const effectiveRiskPct = stepDownActive
-    ? ctx.riskPerTradePct * (1 - ctx.stepDownSizeCutPct / 100)
-    : ctx.riskPerTradePct;
+  const regimeActive = ctx.marketAtrPct != null && ctx.marketAtrPct > ctx.regimeAtrThresholdPct;
+  const effectiveRiskPct =
+    ctx.riskPerTradePct *
+    (stepDownActive ? 1 - ctx.stepDownSizeCutPct / 100 : 1) *
+    (regimeActive ? 1 - ctx.regimeSizeCutPct / 100 : 1);
   check(
     'step_down_sizing',
     true,
     stepDownActive
       ? `active — ${ctx.consecutiveLosses} consecutive losses, sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}% (${ctx.stepDownSizeCutPct}% cut)`
       : `inactive — ${ctx.consecutiveLosses} consecutive losses (triggers at ${ctx.stepDownAfterLosses})`,
+  );
+  check(
+    'regime_sizing',
+    true,
+    regimeActive
+      ? `active — market ATR ${ctx.marketAtrPct!.toFixed(1)}% exceeds ${ctx.regimeAtrThresholdPct}%, sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}% (${ctx.regimeSizeCutPct}% cut)`
+      : `inactive — market ATR ${ctx.marketAtrPct == null ? 'unavailable' : ctx.marketAtrPct.toFixed(1) + '%'} (triggers above ${ctx.regimeAtrThresholdPct}%)`,
   );
 
   const sizing = computeRiskSizing({
@@ -321,7 +346,7 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
       ? `${sizing.suggestedQuantity} shares`
       : 'risk budget is too small to size even one share at this stop distance',
   );
-  if (!qtyOk) return blocked(sizing, stepDownActive);
+  if (!qtyOk) return blocked(sizing, stepDownActive, regimeActive);
 
   const dailyHaltLevel = -(ctx.maxDailyDrawdownPct / 100) * ctx.equity;
   const haltOk = ctx.dailyPnl > dailyHaltLevel;
@@ -376,6 +401,7 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     checks,
     sizing,
     stepDownActive,
+    regimeActive,
     approvedRiskAmount: ok ? sizing.riskOfPosition : 0,
     approvedNotional: ok ? sizing.positionCost : 0,
   };
@@ -393,6 +419,13 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
 export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<RiskCheckResult[]> {
   const config = getAutotradeConfig();
   const snapshot = getPortfolioSnapshot();
+  // Fetched fresh here (rather than threaded in as a parameter, unlike the
+  // real execution paths — see loop.ts) since this is a self-contained manual
+  // preview endpoint that already independently re-fetches everything else
+  // (config, portfolio snapshot) rather than accepting it from a caller.
+  // 'SPY' matches loop.ts's own hardcoded proxy symbol — not actually
+  // user-configurable anywhere despite VolatilityFilterConfig's own field.
+  const marketAtrPct = await getMarketAtrPct('SPY');
 
   const results: RiskCheckResult[] = [];
   let runningRisk = snapshot.openPositions.reduce((s, p) => s + p.riskAmount, 0);
@@ -437,6 +470,9 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
       maxCorrelatedExposurePct: config.maxCorrelatedExposurePct,
       maxTradesPerDay: config.maxTradesPerDay,
       correlationThreshold: config.correlationThreshold,
+      marketAtrPct,
+      regimeAtrThresholdPct: config.regimeAtrThresholdPct,
+      regimeSizeCutPct: config.regimeSizeCutPct,
     };
     const result = evaluateRiskCheck(signal, ctx);
     results.push(result);

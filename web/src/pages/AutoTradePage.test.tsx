@@ -47,6 +47,8 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
     maxTradesPerDay: 6,
+    regimeAtrThresholdPct: 3,
+    regimeSizeCutPct: 0,
     tradeDirection: 'long',
     minRelVol: 1.5,
     maxTickerAtrPct: 15,
@@ -217,6 +219,45 @@ describe('AutoTradePage', () => {
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ accountEquityUsd: 50_000, confirmAggressive: undefined }),
     );
+  });
+
+  it('saves a new regime ATR threshold value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    // No shared placeholder to collide with (unlike the options stop-loss/
+    // take-profit fields below) — scope by the Field's own wrapping <label>.
+    const thresholdField = screen.getByText('Regime ATR threshold (%)').closest('label')!;
+    const thresholdInput = within(thresholdField).getByRole('textbox');
+    fireEvent.change(thresholdInput, { target: { value: '4' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save regime ATR threshold' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ regimeAtrThresholdPct: 4, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new regime size cut value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const sizeCutInput = screen.getByPlaceholderText('0 (no cut)');
+    fireEvent.change(sizeCutInput, { target: { value: '25' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save regime size cut' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ regimeSizeCutPct: 25, confirmAggressive: undefined }));
   });
 
   it('saves a new options stop-loss % value', async () => {

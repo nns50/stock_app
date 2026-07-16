@@ -140,6 +140,48 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
     });
   });
 
+  describe('regime-aware sizing (2026-07-16)', () => {
+    it('is inactive when marketAtrPct is null (unknown, e.g. a fetch failure)', () => {
+      const result = evaluateOptionsRiskCheck(
+        optionSignal(),
+        baseCtx({ marketAtrPct: null, regimeAtrThresholdPct: 3, regimeSizeCutPct: 30 }),
+      );
+      expect(result.regimeActive).toBe(false);
+      expect(result.sizing.suggestedQuantity).toBe(3); // full 1% sizing
+    });
+
+    it('cuts size by regimeSizeCutPct once marketAtrPct exceeds the threshold', () => {
+      const result = evaluateOptionsRiskCheck(
+        optionSignal(),
+        baseCtx({ marketAtrPct: 6, regimeAtrThresholdPct: 3, regimeSizeCutPct: 30 }),
+      );
+      expect(result.regimeActive).toBe(true);
+      // 1% * (1 - 30%) = 0.7% of 100,000 = $700 budget / $300 per contract = 2 contracts
+      expect(result.sizing.suggestedQuantity).toBe(2);
+    });
+
+    it('stacks multiplicatively with step-down sizing when both are active', () => {
+      const result = evaluateOptionsRiskCheck(
+        optionSignal(),
+        baseCtx({ consecutiveLosses: 2, marketAtrPct: 6, regimeAtrThresholdPct: 3, regimeSizeCutPct: 30 }),
+      );
+      expect(result.stepDownActive).toBe(true);
+      expect(result.regimeActive).toBe(true);
+      // 1% * (1 - 50%) * (1 - 30%) = 0.35% of 100,000 = $350 budget / $300 per contract = 1 contract
+      expect(result.sizing.suggestedQuantity).toBe(1);
+    });
+
+    it('cuts a debit spread exactly like a single leg', () => {
+      const result = evaluateOptionsRiskCheck(
+        spreadSignal(),
+        baseCtx({ marketAtrPct: 6, regimeAtrThresholdPct: 3, regimeSizeCutPct: 30 }),
+      );
+      expect(result.regimeActive).toBe(true);
+      // 0.7% of 100,000 = $700 budget / $200 per spread = 3 spreads (floor(3.5))
+      expect('suggestedContracts' in result.sizing && result.sizing.suggestedContracts).toBe(3);
+    });
+  });
+
   describe('daily drawdown halt', () => {
     it('blocks at or beyond the halt level (3% of 100k = -3000)', () => {
       const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ dailyPnl: -3000 }));
