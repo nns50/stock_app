@@ -16,6 +16,8 @@ import { priceMap } from '../services/quotes';
 import { aggregatePnl, computePositionPnl } from '../services/pnl';
 import { computeExposure, ExposureInput } from '../services/exposure';
 import { listUniverse } from '../db/universe';
+import { isWebullTracked } from '../providers/webull/positions';
+import { closeLivePosition } from '../services/trading/closePosition';
 
 export const positionsRouter = Router();
 
@@ -194,5 +196,34 @@ positionsRouter.delete(
   asyncHandler(async (req, res) => {
     if (!deleteExit(Number(req.params.exitId))) throw new HttpError(404, 'exit not found');
     res.json({ deleted: Number(req.params.exitId), position: getPosition(Number(req.params.id)) });
+  }),
+);
+
+// Close a REAL (broker-tracked) position for real: cancels any resting
+// bracket first, then places an actual closing order through the same
+// TRADING_ENABLED + type-to-confirm + guardrails pipeline the Trade page
+// uses (services/trading/closePosition.ts). Distinct from POST /:id/exits
+// above, which only ever writes a journal entry — the right action for a
+// manually-logged/paper-tracked position (there's nothing to place an order
+// against), but a silent no-op toward the broker for a live one. This route
+// is the fix: only reachable for a position isWebullTracked() considers
+// broker-attributable.
+const closeBody = z.object({
+  accountId: z.string().min(1).max(64),
+  confirmation: z.string().min(1).max(64),
+});
+positionsRouter.post(
+  '/:id/close',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(closeBody, req);
+    const pos = getPosition(Number(req.params.id));
+    if (!pos) throw new HttpError(404, 'position not found');
+    if (pos.status !== 'open' || pos.remainingQuantity <= 1e-9) {
+      throw new HttpError(409, 'position is already closed');
+    }
+    if (!isWebullTracked(pos)) {
+      throw new HttpError(400, 'not a broker-tracked position — use POST /:id/exits to record a manual exit instead');
+    }
+    res.json(await closeLivePosition(pos, body.accountId, body.confirmation));
   }),
 );

@@ -170,6 +170,79 @@ describe('positions + journal routes (integration)', () => {
   });
 });
 
+// closeLivePosition() itself (guardrails, bracket-cancel, autotrade
+// bookkeeping) is covered directly in closePosition.test.ts with mocked
+// Webull calls — these are route-layer-only: request validation and which
+// positions the route even lets through to it. TRADING_ENABLED isn't set in
+// this test process, so a broker-tracked position's close attempt fails fast
+// at placeOrder()'s own deploy-level master gate rather than making any real
+// network call — sufficient to prove the route reaches closeLivePosition
+// without crashing.
+describe('POST /positions/:id/close (integration)', () => {
+  it('404s for a position that does not exist', async () => {
+    const res = await post('/api/positions/999999/close', { accountId: 'ACC1', confirmation: 'SELL 1 X' });
+    expect(res.status).toBe(404);
+  });
+
+  it('409s for a position that is already closed', async () => {
+    const created = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-05-01',
+      tags: ['live'],
+    });
+    const pos = (await created.json()) as { id: number };
+    await post(`/api/positions/${pos.id}/exits`, { quantity: 10, exitPrice: 110, exitDate: '2026-05-10' });
+
+    const res = await post(`/api/positions/${pos.id}/close`, { accountId: 'ACC1', confirmation: 'SELL 10 AAPL' });
+    expect(res.status).toBe(409);
+  });
+
+  it('400s for a position that is not broker-tracked — points at the journal-only exit route instead', async () => {
+    const created = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-05-01',
+      // no tags, no sourceIntentId — a plain manually-logged trade
+    });
+    const pos = (await created.json()) as { id: number };
+
+    const res = await post(`/api/positions/${pos.id}/close`, { accountId: 'ACC1', confirmation: 'SELL 10 AAPL' });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toMatch(/exits/i);
+  });
+
+  it('reaches closeLivePosition for a broker-tracked position — a structured result, not a route-level rejection', async () => {
+    const created = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-05-01',
+      tags: ['live'],
+    });
+    const pos = (await created.json()) as { id: number };
+
+    const res = await post(`/api/positions/${pos.id}/close`, { accountId: 'ACC1', confirmation: 'SELL 10 AAPL' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; placed: boolean; reason: string };
+    // TRADING_ENABLED isn't set in this test process, so placeOrder()'s own
+    // deploy-level master gate fires first — proves the route reached
+    // closeLivePosition (a structured PlaceResult-shaped body, not a 4xx
+    // route-level rejection) without needing Webull configured at all.
+    expect(body.placed).toBe(false);
+    expect(body.reason).toBe('trading_disabled');
+  });
+});
+
 describe('alerts routes (integration)', () => {
   beforeEach(() => db.exec("DELETE FROM alerts; DELETE FROM settings WHERE key = 'alertScheduler';"));
 

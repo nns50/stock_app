@@ -5,7 +5,7 @@ import { useLocalStorage } from '../lib/hooks';
 import { CHECKLIST_SETTING_KEY, DEFAULT_CHECKLIST_RULES, rulesFromSetting } from '../lib/checklist';
 import { Field, Modal, NumberInput, Segmented } from './ui';
 import { useToast } from './ToastContext';
-import type { Position, RiskSizingResult } from '../api/types';
+import type { ClosePositionResult, Position, RiskSizingResult } from '../api/types';
 
 const GRADES = ['', 'A', 'B', 'C', 'D', 'F'];
 
@@ -531,6 +531,133 @@ export function ExitModal({
             <input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} />
           </Field>
           {error && <div className="text-bear text-sm">{error}</div>}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/** Manually close a REAL (broker-tracked) position — places an actual
+ *  closing order at the broker, gated by the same type-to-confirm phrase the
+ *  Trade page uses for any other live order (2026-07-16). Distinct from
+ *  ExitModal above: that one only ever writes a journal entry (the right
+ *  action for a manually-logged/paper-tracked position — there's no broker
+ *  order to place against it); this one is for a position PositionsPage.tsx
+ *  has determined is live (see its own isWebullTracked-mirroring check). */
+export function CloseModal({
+  position,
+  onClose,
+  onSaved,
+}: {
+  position: Position | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [accountId, setAccountId] = useLocalStorage('trade.accountId', '');
+  const [confirmText, setConfirmText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<ClosePositionResult>();
+  const { toast } = useToast();
+
+  // Re-sync when a different position is opened — confirmText/result must
+  // never leak from a previously-closed position into the next one (mirrors
+  // JournalEditModal's own re-sync-on-key-change pattern above).
+  const key = position?.id;
+  const [lastKey, setLastKey] = useState(key);
+  if (key !== lastKey) {
+    setLastKey(key);
+    setConfirmText('');
+    setResult(undefined);
+  }
+
+  const closeSide = position?.side === 'long' ? 'SELL' : 'BUY';
+  const phrase = position ? `${closeSide} ${position.remainingQuantity} ${position.symbol.toUpperCase()}` : '';
+  const armed = confirmText.trim().toUpperCase() === phrase;
+
+  const submit = async () => {
+    if (!position || !armed || !accountId.trim()) return;
+    setBusy(true);
+    try {
+      const r = await client.closePosition(position.id, accountId.trim(), confirmText.trim());
+      setResult(r);
+      if (r.placed) {
+        toast(`Close order placed for ${position.symbol}`, { type: 'success' });
+        onSaved();
+      }
+    } catch (e) {
+      setResult({ ok: false, placed: false, reason: 'account_error', error: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={!!position}
+      onClose={onClose}
+      title={position ? `Close ${position.symbol} — real order` : 'Close position'}
+      footer={
+        <>
+          <button className="btn-ghost" onClick={onClose}>
+            {result?.placed ? 'Done' : 'Cancel'}
+          </button>
+          {!result?.placed && (
+            <button
+              className="btn-primary !bg-bear !border-bear disabled:opacity-40"
+              disabled={busy || !armed || !accountId.trim()}
+              onClick={submit}
+            >
+              {busy ? 'Placing…' : 'Close position'}
+            </button>
+          )}
+        </>
+      }
+    >
+      {position && (
+        <div className="space-y-3">
+          <div className="text-sm text-slate-400">
+            {position.remainingQuantity} {position.assetType === 'option' ? 'contracts' : 'shares'} of{' '}
+            <span className="text-slate-200">{position.symbol}</span> ({position.side})
+            {position.sourceIntentId !== null && (
+              <span className="block text-xs text-slate-500 mt-1">
+                A resting stop/target order on this position, if any, is cancelled first automatically.
+              </span>
+            )}
+          </div>
+          <Field label="Webull cash account_id">
+            <input
+              className="input"
+              value={accountId}
+              onChange={(e) => setAccountId(e.target.value)}
+              placeholder="e.g. 12345678"
+            />
+          </Field>
+          <div className="rounded-md bg-bear/10 border border-bear/40 p-3 space-y-2">
+            <p className="text-xs text-slate-400">
+              This places a <b>real</b> closing order at your broker — a marketable limit near the current market price
+              when submitted, for your full remaining position. Type <code className="text-slate-200">{phrase}</code> to
+              arm. The server re-checks every guardrail, the kill switch, and <code>TRADING_ENABLED</code> before it
+              fires.
+            </p>
+            <input
+              className="input font-mono"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value.toUpperCase())}
+              placeholder={phrase}
+              aria-label="type to confirm closing this position"
+            />
+          </div>
+          {result &&
+            (result.placed ? (
+              <div className="rounded-md bg-bull/15 text-bull text-sm p-2">
+                ✓ Close order placed{result.broker?.orderId ? ` · broker order ${result.broker.orderId}` : ''}. It can
+                take a few minutes to fill and show here as closed.
+              </div>
+            ) : (
+              <div className="rounded-md bg-bear/15 text-bear text-sm p-2">
+                ✕ Not placed — {result.error || result.broker?.error || `reason: ${result.reason}`}
+              </div>
+            ))}
         </div>
       )}
     </Modal>

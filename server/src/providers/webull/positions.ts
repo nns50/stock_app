@@ -244,7 +244,7 @@ export async function importWebullPositions(accountId: string): Promise<ImportSu
  *  position (e.g. tracked at a different broker) is left alone even though
  *  it isn't in Webull's live list — closing it based on Webull's holdings
  *  would be a false positive. */
-function isWebullTracked(p: Position): boolean {
+export function isWebullTracked(p: Position): boolean {
   return p.tags.includes('webull') || p.tags.includes('live') || p.sourceIntentId !== null;
 }
 

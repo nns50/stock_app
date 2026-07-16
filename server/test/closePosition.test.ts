@@ -1,0 +1,302 @@
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+
+vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
+vi.mock('../src/providers/webull/accountState', () => ({ webullAccountState: vi.fn() }));
+vi.mock('../src/providers/webull/orders', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/providers/webull/orders')>();
+  return { ...actual, webullPlaceOrder: vi.fn(), webullOrderStatus: vi.fn(), webullCancelOrder: vi.fn() };
+});
+
+import { config } from '../src/config';
+import { getProvider } from '../src/providers';
+import { webullAccountState } from '../src/providers/webull/accountState';
+import { webullPlaceOrder, webullOrderStatus, webullCancelOrder } from '../src/providers/webull/orders';
+import { initDb, db } from '../src/db';
+import { setTradingConfig } from '../src/db/trading';
+import { createPosition, Position } from '../src/db/positions';
+import { createIntent } from '../src/db/orders';
+import { getLiveOrder } from '../src/db/autotradeLiveOrders';
+import { closeLivePosition } from '../src/services/trading/closePosition';
+
+const mockGetProvider = vi.mocked(getProvider);
+const mockAccountState = vi.mocked(webullAccountState);
+const mockPlaceOrder = vi.mocked(webullPlaceOrder);
+const mockOrderStatus = vi.mocked(webullOrderStatus);
+const mockCancelOrder = vi.mocked(webullCancelOrder);
+
+function quoteReturning(prices: Record<string, number>) {
+  return {
+    getQuote: vi.fn(async (symbol: string) => {
+      if (!(symbol in prices)) throw new Error(`no mock quote for ${symbol}`);
+      return { symbol, last: prices[symbol], timestamp: Date.now() };
+    }),
+    getOptionsChain: vi.fn(async () => ({
+      calls: [{ strike: 200, mark: 5, last: 5 }],
+      puts: [{ strike: 200, mark: 4, last: 4 }],
+    })),
+  };
+}
+
+function accountStateWith(currentPositionQty: number) {
+  return {
+    ok: true,
+    accountId: 'ACC1',
+    state: { buyingPowerUsd: 1_000_000, exposureUsd: 0, realizedPnlTodayUsd: 0, ordersToday: 0, currentPositionQty },
+  };
+}
+
+const origPlaceEnabled = config.trading.placeEnabled;
+
+beforeAll(() => initDb());
+beforeEach(() => {
+  db.exec(
+    'DELETE FROM autotrade_live_orders; DELETE FROM trading_config; ' +
+      'DELETE FROM order_events; DELETE FROM order_intents; DELETE FROM position_exits; DELETE FROM positions;',
+  );
+  config.trading.placeEnabled = true;
+  setTradingConfig({
+    enabled: true,
+    killSwitch: false,
+    maxOrderUsd: 100_000,
+    maxExposureUsd: 100_000,
+    maxSymbolPositionQty: 10_000,
+    maxDailyLossUsd: 100_000,
+  });
+  mockGetProvider.mockReset();
+  mockAccountState.mockReset();
+  mockPlaceOrder.mockReset();
+  mockOrderStatus.mockReset();
+  mockCancelOrder.mockReset();
+  mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+});
+afterEach(() => {
+  config.trading.placeEnabled = origPlaceEnabled;
+});
+
+function longStock(overrides: Partial<Parameters<typeof createPosition>[0]> = {}): Position {
+  return createPosition({
+    assetType: 'stock',
+    symbol: 'AAPL',
+    side: 'long',
+    quantity: 100,
+    entryPrice: 90,
+    entryDate: '2026-07-01',
+    tags: ['live', 'autotrade'],
+    ...overrides,
+  });
+}
+
+/** A real bracket entry intent, so pos.sourceIntentId -> getIntent().isBracket
+ *  reads true, matching how autotrade's own live equity entries are always
+ *  placed (see liveExecute.ts's own header comment). */
+function bracketEntryIntent(symbol = 'AAPL') {
+  return createIntent(
+    {
+      symbol,
+      assetKind: 'stock',
+      side: 'buy',
+      openClose: 'open',
+      quantity: 100,
+      orderType: 'limit',
+      limitPrice: 90,
+      bracket: { takeProfitPrice: 110, stopLossPrice: 85 },
+    },
+    `entry-${symbol}-${Math.random()}`,
+  );
+}
+
+describe('closeLivePosition', () => {
+  it('rejects an unconfirmed order — no broker call at all, not even a bracket cancel', async () => {
+    const entry = bracketEntryIntent();
+    const pos = longStock({ sourceIntentId: entry.id });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'nope');
+
+    expect(r).toMatchObject({ placed: false, reason: 'not_confirmed' });
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('closes a long with no bracket directly — sells the full remaining quantity, no cancel attempted', async () => {
+    const pos = longStock({ tags: ['live'] }); // no sourceIntentId -> nothing to cancel
+    mockAccountState.mockResolvedValue(accountStateWith(100) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE-1' });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ placed: true, reason: 'placed', bracketCancelled: undefined });
+    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({
+      symbol: 'AAPL',
+      side: 'sell',
+      openClose: 'close',
+      quantity: 100,
+    });
+  });
+
+  it('closes a short by BUYING to cover — confirmation phrase and order side both flip', async () => {
+    const pos = longStock({ side: 'short', tags: ['live'] });
+    mockAccountState.mockResolvedValue(accountStateWith(0) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE-2' });
+
+    const wrongPhrase = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+    expect(wrongPhrase).toMatchObject({ placed: false, reason: 'not_confirmed' });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'BUY 100 AAPL');
+    expect(r).toMatchObject({ placed: true });
+    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ side: 'buy', openClose: 'close', quantity: 100 });
+  });
+
+  it('cancels the resting bracket first when the entry intent has one, then places the close', async () => {
+    const entry = bracketEntryIntent();
+    const pos = longStock({ sourceIntentId: entry.id });
+    mockCancelOrder.mockResolvedValue({ ok: true });
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      legs: [
+        { comboType: 'MASTER', status: 'FILLED' },
+        { comboType: 'STOP_LOSS', status: 'CANCELLED' },
+        { comboType: 'STOP_PROFIT', status: 'CANCELLED' },
+      ],
+    });
+    mockAccountState.mockResolvedValue(accountStateWith(100) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE-3' });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+
+    expect(mockCancelOrder).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ placed: true, bracketCancelled: true });
+  });
+
+  it('never reaches placeOrder when the bracket cancel fails — position left untouched', async () => {
+    const entry = bracketEntryIntent();
+    const pos = longStock({ sourceIntentId: entry.id });
+    mockCancelOrder.mockResolvedValue({ ok: false, error: 'order already terminal' });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+
+    expect(r).toMatchObject({ placed: false, reason: 'blocked' });
+    expect(r.error).toMatch(/could not cancel the resting bracket/i);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('does not attempt a bracket cancel when the entry intent was never a bracket', async () => {
+    const entry = createIntent(
+      {
+        symbol: 'AAPL',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 100,
+        orderType: 'limit',
+        limitPrice: 90,
+      },
+      `entry-plain-${Math.random()}`,
+    );
+    const pos = longStock({ sourceIntentId: entry.id, tags: ['live'] });
+    mockAccountState.mockResolvedValue(accountStateWith(100) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE-4' });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ placed: true, bracketCancelled: undefined });
+  });
+
+  it('builds a marketable-limit OPTION closing order (sell to close a long call) from a fresh mark', async () => {
+    const pos = createPosition({
+      assetType: 'option',
+      symbol: 'NVDA',
+      side: 'long',
+      quantity: 2,
+      entryPrice: 4.5,
+      entryDate: '2026-07-01',
+      optionType: 'call',
+      strike: 200,
+      expiration: '2026-12-19',
+      tags: ['live'],
+    });
+    // currentPositionQty must reflect what's actually held (2 long contracts)
+    // — selling to close against a reported 0 would trip the naked-short
+    // guardrail, same reasoning liveOptionsExecute.ts's own
+    // currentPositionQtyOverride exists to avoid for the real path.
+    mockAccountState.mockResolvedValue(accountStateWith(2) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE-OPT' });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 2 NVDA');
+
+    expect(r).toMatchObject({ placed: true });
+    const placed = mockPlaceOrder.mock.calls[0][1];
+    expect(placed).toMatchObject({
+      symbol: 'NVDA',
+      assetKind: 'option',
+      side: 'sell',
+      openClose: 'close',
+      quantity: 2,
+      optionType: 'call',
+      strike: 200,
+      expiration: '2026-12-19',
+    });
+    // Mark is 5 (mocked); selling to close prices BELOW the mark to guarantee a fill.
+    expect(placed.limitPrice).toBeLessThan(5);
+  });
+
+  it('registers the exit with autotrade bookkeeping for an autotrade-tagged EQUITY position, so the maxHoldDays dedup guard sees it', async () => {
+    const pos = longStock({ tags: ['live', 'autotrade'] });
+    mockAccountState.mockResolvedValue(accountStateWith(100) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE-5' });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+
+    expect(r.placed).toBe(true);
+    const registered = getLiveOrder(r.intent!.id);
+    expect(registered).toMatchObject({ role: 'exit', positionId: pos.id, symbol: 'AAPL' });
+  });
+
+  it('does NOT register a plain (non-autotrade) live equity close — the generic order reconcile handles it instead', async () => {
+    const pos = longStock({ tags: ['live'] }); // no 'autotrade' tag
+    mockAccountState.mockResolvedValue(accountStateWith(100) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE-6' });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+
+    expect(r.placed).toBe(true);
+    expect(getLiveOrder(r.intent!.id)).toBeUndefined();
+  });
+
+  it('never registers an OPTIONS close with autotrade bookkeeping, even if the position were somehow tagged autotrade', async () => {
+    const pos = createPosition({
+      assetType: 'option',
+      symbol: 'NVDA',
+      side: 'long',
+      quantity: 1,
+      entryPrice: 4.5,
+      entryDate: '2026-07-01',
+      optionType: 'call',
+      strike: 200,
+      expiration: '2026-12-19',
+      tags: ['live', 'autotrade'],
+    });
+    mockAccountState.mockResolvedValue(accountStateWith(1) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE-OPT-2' });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 1 NVDA');
+
+    expect(r.placed).toBe(true);
+    expect(getLiveOrder(r.intent!.id)).toBeUndefined();
+  });
+
+  it('does not register anything when placement itself is blocked (e.g. kill switch)', async () => {
+    setTradingConfig({ enabled: true, killSwitch: true });
+    const pos = longStock({ tags: ['live', 'autotrade'] });
+    mockAccountState.mockResolvedValue(accountStateWith(100) as Awaited<ReturnType<typeof webullAccountState>>);
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+
+    expect(r).toMatchObject({ placed: false, reason: 'blocked' });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(getLiveOrder(r.intent!.id)).toBeUndefined();
+  });
+});

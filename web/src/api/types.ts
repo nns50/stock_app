@@ -313,6 +313,9 @@ export interface Position {
   checklist: ChecklistItem[];
   stopPrice: number | null;
   targetPrice: number | null;
+  /** The order_intents.id whose live fill produced this position — null for
+   *  a manually logged/imported trade. */
+  sourceIntentId: number | null;
   createdAt: number;
   updatedAt: number;
   exits: PositionExit[];
@@ -1046,6 +1049,14 @@ export interface PlaceResult {
   intent?: OrderIntentRecord;
   broker?: { ok: boolean; orderId?: string; error?: string };
   error?: string;
+}
+
+/** POST /positions/:id/close (2026-07-16) — manually close a REAL
+ *  (broker-tracked) position from the Positions page. Same shape as
+ *  PlaceResult (it's a thin wrapper around placeOrder() server-side) plus
+ *  whether a resting bracket had to be cancelled first. */
+export interface ClosePositionResult extends PlaceResult {
+  bracketCancelled?: boolean;
 }
 
 // --- auto-trading (docs/AUTOTRADING_SPEC.md) ---
