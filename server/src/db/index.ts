@@ -499,6 +499,11 @@ CREATE TABLE IF NOT EXISTS autotrade_live_options_orders (
   risk_amount   REAL,                 -- entry rows only (risk-checked $ amount); null for exit rows
   risk_profile  TEXT NOT NULL,
   position_id   INTEGER,              -- entry: set once the fill materializes a position; exit: known upfront (which position this closes)
+  -- Exit rows only (2026-07-16): why this closing order was placed, carried
+  -- through to closeLiveOptionsPosition() once the fill materializes so the
+  -- position's own stored exit_reason isn't hardcoded to 'time_exit' for a
+  -- manually-triggered close. Null for entry rows.
+  exit_reason   TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL),
   created_at    INTEGER NOT NULL
 );
 
@@ -731,6 +736,14 @@ function migrate(): void {
   }
   if (!hasAlo('short_strike')) db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN short_strike REAL');
   if (!hasAlo('expiration')) db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN expiration TEXT');
+  // Exit rows only (2026-07-16, manual close from the Auto page) -- why this
+  // closing order was placed, so materializeOptionsExitFill() doesn't have to
+  // hardcode 'time_exit' for every close regardless of what actually triggered it.
+  if (!hasAlo('exit_reason')) {
+    db.exec(
+      "ALTER TABLE autotrade_live_options_orders ADD COLUMN exit_reason TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL)",
+    );
+  }
 
   // autotrade_live_orders gained a role split (max-hold-days force-close):
   // every existing row IS an entry (the only kind this table held before),

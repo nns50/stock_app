@@ -2562,6 +2562,71 @@ describe('AutoTradePage', () => {
       expect(screen.getByText('$108.00')).toBeInTheDocument();
       expect(screen.getAllByText('+$80.00').length).toBeGreaterThan(0);
     });
+
+    describe('closing a live equity position (real order)', () => {
+      it('shows a close button only for an OPEN position, not a closed one', async () => {
+        vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({
+          positions: [
+            livePosition({ id: 1, symbol: 'AAPL', status: 'open' }),
+            livePosition({ id: 2, symbol: 'MSFT', status: 'closed', remainingQuantity: 0 }),
+          ],
+        });
+        renderPage();
+        await screen.findByText('AAPL');
+        expect(screen.getByText('MSFT')).toBeInTheDocument(); // closed row rendered too...
+        expect(screen.getAllByText('close')).toHaveLength(1); // ...but only the open one gets a close button
+      });
+
+      it('opens CloseModal for the clicked position, places the order once armed, and reloads the live positions list', async () => {
+        const list = vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({
+          positions: [livePosition({ id: 1, symbol: 'AAPL', status: 'open' })],
+        });
+        const closeSpy = vi
+          .spyOn(client, 'closePosition')
+          .mockResolvedValue({ ok: true, placed: true, reason: 'placed' });
+        renderPage();
+        await screen.findByText('AAPL');
+        const callsBeforeClose = list.mock.calls.length;
+
+        fireEvent.click(screen.getByText('close'));
+        expect(await screen.findByText(/Close AAPL — real order/)).toBeInTheDocument();
+        expect(screen.getByPlaceholderText('SELL 10 AAPL')).toBeInTheDocument(); // remainingQuantity: 10
+
+        fireEvent.change(screen.getByPlaceholderText('e.g. 12345678'), { target: { value: 'ACC1' } });
+        fireEvent.change(screen.getByLabelText('type to confirm closing this position'), {
+          target: { value: 'SELL 10 AAPL' },
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Close position' }));
+
+        await waitFor(() => expect(closeSpy).toHaveBeenCalledWith(1, 'ACC1', 'SELL 10 AAPL'));
+        expect(await screen.findByText(/Close order placed/)).toBeInTheDocument();
+        await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(callsBeforeClose));
+      });
+
+      it('shows the failure reason when the close is blocked', async () => {
+        vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({
+          positions: [livePosition({ id: 1, symbol: 'AAPL', status: 'open' })],
+        });
+        vi.spyOn(client, 'closePosition').mockResolvedValue({
+          ok: true,
+          placed: false,
+          reason: 'blocked',
+          error: 'kill switch engaged',
+        });
+        renderPage();
+        await screen.findByText('AAPL');
+
+        fireEvent.click(screen.getByText('close'));
+        await screen.findByText(/Close AAPL — real order/);
+        fireEvent.change(screen.getByPlaceholderText('e.g. 12345678'), { target: { value: 'ACC1' } });
+        fireEvent.change(screen.getByLabelText('type to confirm closing this position'), {
+          target: { value: 'SELL 10 AAPL' },
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Close position' }));
+
+        expect(await screen.findByText(/kill switch engaged/)).toBeInTheDocument();
+      });
+    });
   });
 
   describe('Task #70: Live options trading', () => {
@@ -2687,6 +2752,104 @@ describe('AutoTradePage', () => {
       renderPage();
       expect(await screen.findByText('● enabled')).toBeInTheDocument();
       expect(screen.getByText('1 / 2')).toBeInTheDocument();
+    });
+
+    describe('closing a live options position (real order)', () => {
+      it('shows a close button only for an OPEN position, not a closed one', async () => {
+        vi.spyOn(client, 'autotradeLiveOptionsPositions').mockResolvedValue({
+          positions: [
+            liveOptionsPosition({ id: 1, symbol: 'AAPL', status: 'open' }),
+            liveOptionsPosition({
+              id: 2,
+              symbol: 'MSFT',
+              status: 'closed',
+              exitReason: 'time_exit',
+              exitPrice: 4,
+              exitAt: Date.now(),
+            }),
+          ],
+        });
+        renderPage();
+        await screen.findByText('AAPL');
+        expect(screen.getByText('MSFT')).toBeInTheDocument(); // closed row rendered too...
+        expect(screen.getAllByText('close')).toHaveLength(1); // ...but only the open one gets a close button
+      });
+
+      it('opens CloseLiveOptionsPositionModal with the computed SELL phrase, gates submission on the exact phrase, and calls closeLiveOptionsPosition once armed', async () => {
+        vi.spyOn(client, 'autotradeLiveOptionsPositions').mockResolvedValue({
+          positions: [liveOptionsPosition({ id: 5, symbol: 'AAPL', quantity: 2, status: 'open' })],
+        });
+        const closeSpy = vi
+          .spyOn(client, 'closeLiveOptionsPosition')
+          .mockResolvedValue({ ok: true, placed: true, reason: 'placed' });
+        renderPage();
+        await screen.findByText('AAPL');
+
+        fireEvent.click(screen.getByText('close'));
+        expect(await screen.findByText(/Close AAPL options — real order/)).toBeInTheDocument();
+        const phraseInput = screen.getByLabelText('type to confirm closing this options position');
+        const submitButton = screen.getByRole('button', { name: 'Close position' });
+        expect(screen.getByPlaceholderText('SELL 2 AAPL')).toBeInTheDocument();
+        expect(submitButton).toBeDisabled();
+
+        fireEvent.change(phraseInput, { target: { value: 'SELL 2 AAP' } }); // one character short
+        fireEvent.change(screen.getByPlaceholderText('e.g. 12345678'), { target: { value: 'ACC1' } });
+        expect(submitButton).toBeDisabled();
+
+        fireEvent.change(phraseInput, { target: { value: 'SELL 2 AAPL' } });
+        expect(submitButton).not.toBeDisabled();
+        fireEvent.click(submitButton);
+
+        await waitFor(() => expect(closeSpy).toHaveBeenCalledWith(5, 'ACC1', 'SELL 2 AAPL'));
+        expect(await screen.findByText(/Close order placed/)).toBeInTheDocument();
+      });
+
+      it('shows the failure reason when the close is blocked', async () => {
+        vi.spyOn(client, 'autotradeLiveOptionsPositions').mockResolvedValue({
+          positions: [liveOptionsPosition({ id: 5, symbol: 'AAPL', quantity: 2, status: 'open' })],
+        });
+        vi.spyOn(client, 'closeLiveOptionsPosition').mockResolvedValue({
+          ok: true,
+          placed: false,
+          reason: 'blocked',
+          error: 'kill switch engaged',
+        });
+        renderPage();
+        await screen.findByText('AAPL');
+
+        fireEvent.click(screen.getByText('close'));
+        await screen.findByText(/Close AAPL options — real order/);
+        fireEvent.change(screen.getByPlaceholderText('e.g. 12345678'), { target: { value: 'ACC1' } });
+        fireEvent.change(screen.getByLabelText('type to confirm closing this options position'), {
+          target: { value: 'SELL 2 AAPL' },
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Close position' }));
+
+        expect(await screen.findByText(/kill switch engaged/)).toBeInTheDocument();
+      });
+
+      it("computes the SELL phrase from a debit spread's quantity, not a per-leg count", async () => {
+        vi.spyOn(client, 'autotradeLiveOptionsPositions').mockResolvedValue({
+          positions: [
+            liveOptionsPosition({
+              id: 9,
+              symbol: 'NVDA',
+              kind: 'debit_spread',
+              side: 'call',
+              strike: 200,
+              shortStrike: 210,
+              quantity: 3,
+              status: 'open',
+            }),
+          ],
+        });
+        renderPage();
+        await screen.findByText('NVDA');
+
+        fireEvent.click(screen.getByText('close'));
+        expect(await screen.findByText(/Close NVDA options — real order/)).toBeInTheDocument();
+        expect(screen.getByPlaceholderText('SELL 3 NVDA')).toBeInTheDocument();
+      });
     });
   });
 });

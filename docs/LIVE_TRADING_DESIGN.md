@@ -421,6 +421,37 @@ key becomes `client_order_id`.
   doesn't independently race it with a second cancel+close attempt — never needed for options,
   since autotrade's live options positions live in an entirely separate table never shown on the
   Positions page.
+- **Expanding manual close to autotrade's own live positions (shipped, 2026-07-16):** the
+  Positions-page close above only reaches positions returned by `GET /api/positions` — autotrade's own
+  live EQUITY positions (tagged `autotrade`, same generic `positions` table) already worked there
+  unchanged, so the Auto-Trade page's own live positions table just got a **close** button reusing the
+  exact same `CloseModal` / `closeLivePosition` / `POST /positions/:id/close` path, no new server code.
+  Autotrade's live OPTIONS positions, though, live in a separate table
+  (`autotrade_live_options_positions` — a debit spread's second leg has no column for it on `positions`),
+  so this needed its own service (`closeLiveOptionsAutotradePosition`), route
+  (`POST /api/autotrade/live-options-positions/:id/close`), and modal
+  (`CloseLiveOptionsPositionModal`, Auto-Trade page). Same confirmation-first, human-confirmed
+  `placeOrder()` pipeline as the equity case — never autotrade's own no-confirmation
+  `placeLiveOptionsExit` internals. Every autotrade options position is opened LONG, so the close is
+  always a sell: single_leg is a plain sell-to-close; debit_spread is a VERTICAL combo selling the long
+  leg and buying back the short leg, net-priced from BOTH legs' fresh marks. No bracket-cancel step —
+  autotrade's options signals never carry one. `placeOrder()` needed no changes: its own
+  `webullAccountState()` call already filters to the exact contract via `matchesInstrument()` for a
+  single-leg close, and a VERTICAL close skips the naked-short/position-size checks entirely as a
+  multi-leg order (`guardrails.ts`'s `isMultiLeg`) — so neither case needs the
+  `currentPositionQtyOverride` workaround `liveOptionsExecute.ts`'s own unfiltered 2-arg
+  `webullAccountState()` call requires for its autonomous exit path.
+- **`exit_reason` threaded from a manual close through to the closed position (shipped, 2026-07-16):**
+  unlike equity (whose `PositionExit` has no stored exit-reason field), a live options position's
+  `exitReason` IS a stored, UI-rendered field (the Auto-Trade page's Live options positions table
+  badge) — so a manually-closed position showing "time exit" would be a real, visible, incorrect label,
+  not just a cosmetic log imprecision. Fixed with a new nullable `exit_reason` column on
+  `autotrade_live_options_orders` (idempotent `ALTER TABLE`; pre-existing rows read `NULL`).
+  `recordLiveOptionsExitOrder`'s `exitReason` param is now REQUIRED, not defaulted, so both callers —
+  `checkLiveOptionsExits`' own time-exit trigger (`'time_exit'`) and the manual close above (`'manual'`)
+  — stay explicit about which one placed the order. `materializeOptionsExitFill` reads it back
+  (`meta.exitReason ?? 'time_exit'`, the fallback covering only a pre-migration pending row) once it
+  finally closes the position, instead of always hardcoding `'time_exit'`.
 - **Next:** confirm a real option fill + a real vertical preview; COVERED_STOCK (stock+option) and
   IRON_CONDOR (4-leg) strategies; options brackets / OTOCO; the post-fill bracket-cancel
   behavior above against a real account.

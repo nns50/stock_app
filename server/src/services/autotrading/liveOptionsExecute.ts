@@ -790,6 +790,7 @@ async function placeLiveOptionsExit(
     kind: pos.kind,
     riskProfile: pos.riskProfile,
     positionId: pos.id,
+    exitReason: 'time_exit',
   });
   logAutotradeEvent({
     symbol,
@@ -1026,7 +1027,13 @@ function materializeOptionsExitFill(
   filledPrice: number,
 ): 'exit_filled' | undefined {
   if (meta.positionId === null) return undefined;
-  const closed = closeLiveOptionsPosition(meta.positionId, { exitPrice: filledPrice, exitReason: 'time_exit' });
+  const closed = closeLiveOptionsPosition(meta.positionId, {
+    exitPrice: filledPrice,
+    // A pre-2026-07-16 pending row (from before this column existed) has no
+    // stored reason -- time_exit is the only trigger that existed back then,
+    // so it's the correct fallback, not a guess.
+    exitReason: meta.exitReason ?? 'time_exit',
+  });
   if (!closed) return undefined;
   logAutotradeEvent({
     symbol: intent.symbol,

@@ -536,6 +536,11 @@ export const client = {
     const qs = new URLSearchParams(params as Record<string, string>).toString();
     return api<{ positions: LiveOptionsPosition[] }>(`/autotrade/live-options-positions${qs ? `?${qs}` : ''}`);
   },
+  closeLiveOptionsPosition: (id: number, accountId: string, confirmation: string) =>
+    api<ClosePositionResult>(`/autotrade/live-options-positions/${id}/close`, {
+      method: 'POST',
+      body: JSON.stringify({ accountId, confirmation }),
+    }),
   autotradeDashboard: () => api<AutotradeDashboard>('/autotrade/dashboard'),
   setAutotradeKillSwitch: (on: boolean) =>
     api<AutotradeConfig>('/autotrade/kill-switch', { method: 'POST', body: JSON.stringify({ on }) }),

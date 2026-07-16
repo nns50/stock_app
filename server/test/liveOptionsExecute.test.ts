@@ -47,6 +47,7 @@ import {
   reconcileLiveOptionsOrders,
   syncLiveOptionsPositionsFromBroker,
 } from '../src/services/autotrading/liveOptionsExecute';
+import { closeLiveOptionsAutotradePosition } from '../src/services/trading/closePosition';
 
 const mockGetProvider = vi.mocked(getProvider);
 const mockPreviewPositions = vi.mocked(previewWebullPositions);
@@ -972,6 +973,48 @@ describe('reconcileLiveOptionsOrders', () => {
     const closedEvent = listAutotradeEvents({}).find((e) => e.action === 'live_options_position_closed')!;
     // (4.75 - 3) * 2 * 100 = 350
     expect(JSON.parse(closedEvent.detail!)).toMatchObject({ exitPrice: 4.75, pnl: 350 });
+  });
+
+  it('materializes a MANUALLY-triggered exit with exitReason "manual", not the time_exit fallback above', async () => {
+    // Regression coverage for the exit_reason column threaded through
+    // db/autotradeLiveOptionsOrders.ts (2026-07-16): a human clicking "close"
+    // on the Auto page goes through closeLiveOptionsAutotradePosition (the
+    // SAME production entrypoint the route uses), not checkLiveOptionsExits'
+    // own automatic trigger above — so the exit row it registers carries
+    // exitReason: 'manual', and that value must survive all the way through
+    // to the closed position's own stored field, not silently fall back to
+    // materializeOptionsExitFill's 'time_exit' default (which exists only for
+    // pre-migration rows that predate this column).
+    setAutotradeConfig(liveConfig());
+    setTradingConfig({
+      enabled: true,
+      killSwitch: false,
+      maxOrderUsd: 100_000,
+      maxExposureUsd: 100_000,
+      maxSymbolPositionQty: 10_000,
+      maxDailyLossUsd: 100_000,
+    });
+    const pos = openLivePosition({ expiration: '2030-01-18', entryPrice: 3, quantity: 2 });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.5 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-MANUAL-1' });
+
+    const closeResult = await closeLiveOptionsAutotradePosition(pos, 'ACC1', `SELL ${pos.quantity} AAPL`);
+    expect(closeResult.placed).toBe(true);
+
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: 2,
+      filledPrice: 4.5,
+    } as WebullOrderStatus);
+
+    const outcomes = await reconcileLiveOptionsOrders();
+    expect(outcomes.some((o) => o.action === 'exit_filled')).toBe(true);
+    expect(getLiveOptionsPosition(pos.id)).toMatchObject({ status: 'closed', exitReason: 'manual' });
   });
 
   it('reports no change when the broker status has not moved', async () => {

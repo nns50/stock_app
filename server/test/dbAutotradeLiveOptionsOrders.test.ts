@@ -115,6 +115,7 @@ describe('autotradeLiveOptionsOrders', () => {
       kind: 'debit_spread',
       riskProfile: 'MODERATE',
       positionId: 42,
+      exitReason: 'time_exit',
     });
     expect(rec).toMatchObject({
       role: 'exit',
@@ -123,7 +124,10 @@ describe('autotradeLiveOptionsOrders', () => {
       riskAmount: null,
       contractSymbol: null,
       strike: null,
+      exitReason: 'time_exit',
     });
+    // Round-trips through a fresh SELECT too, not just the INSERT's own echo.
+    expect(getLiveOptionsOrder(intentId)?.exitReason).toBe('time_exit');
   });
 
   it('setLiveOptionsOrderPositionId links an entry row to its materialized position', () => {
@@ -178,6 +182,7 @@ describe('autotradeLiveOptionsOrders', () => {
         kind: 'single_leg',
         riskProfile: 'MODERATE',
         positionId: pos.id,
+        exitReason: 'time_exit',
       });
       for (const state of ['validated', 'confirmed', 'submitted', 'acknowledged', 'filled'] as const) {
         transitionIntent(intentId, state);
@@ -194,6 +199,7 @@ describe('autotradeLiveOptionsOrders', () => {
         kind: 'single_leg',
         riskProfile: 'MODERATE',
         positionId: pos.id,
+        exitReason: 'time_exit',
       });
       for (const state of ['validated', 'confirmed', 'submitted', 'acknowledged', 'filled'] as const) {
         transitionIntent(intentId, state);
@@ -236,6 +242,7 @@ describe('autotradeLiveOptionsOrders', () => {
         kind: 'single_leg',
         riskProfile: 'MODERATE',
         positionId: 1,
+        exitReason: 'time_exit',
       });
       expect(countLiveOptionsOrdersSince(before)).toBe(1);
     });

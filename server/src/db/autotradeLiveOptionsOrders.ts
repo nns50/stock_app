@@ -1,4 +1,5 @@
 import { db } from './index';
+import { LiveOptionsExitReason } from './autotradeLiveOptionsPositions';
 
 // ---------------------------------------------------------------------------
 // Metadata for order_intents the AUTOTRADE loop placed for LIVE options
@@ -39,6 +40,10 @@ export interface LiveOptionsOrderMeta {
   /** Entry: set once the fill materializes a position. Exit: known upfront
    *  (which open position this order is meant to close). */
   positionId: number | null;
+  /** Exit rows only -- why this closing order was placed, carried through to
+   *  closeLiveOptionsPosition() once the fill materializes. Null for entry
+   *  rows, and for a pre-2026-07-16 exit row from before this column existed. */
+  exitReason: LiveOptionsExitReason | null;
   createdAt: number;
 }
 
@@ -56,6 +61,7 @@ interface Row {
   risk_amount: number | null;
   risk_profile: string;
   position_id: number | null;
+  exit_reason: LiveOptionsExitReason | null;
   created_at: number;
 }
 
@@ -74,6 +80,7 @@ function mapRow(r: Row): LiveOptionsOrderMeta {
     riskAmount: r.risk_amount,
     riskProfile: r.risk_profile,
     positionId: r.position_id,
+    exitReason: r.exit_reason,
     createdAt: r.created_at,
   };
 }
@@ -119,21 +126,33 @@ export function recordLiveOptionsEntryOrder(input: {
 }
 
 /** Record that `intentId` is an autotrade-placed LIVE OPTIONS closing order
- *  for the already-open `positionId`. */
+ *  for the already-open `positionId`. `exitReason` is required (not
+ *  defaulted) so both callers -- checkLiveOptionsExits' own time-exit
+ *  trigger and a human's manual close -- stay explicit about which one this
+ *  is, rather than one of them silently relying on a fallback. */
 export function recordLiveOptionsExitOrder(input: {
   intentId: number;
   symbol: string;
   kind: LiveOptionsOrderKind;
   riskProfile: string;
   positionId: number;
+  exitReason: LiveOptionsExitReason;
 }): LiveOptionsOrderMeta {
   const now = Date.now();
   db.prepare(
     `INSERT INTO autotrade_live_options_orders
        (intent_id, symbol, role, kind, side, contract_symbol, strike, short_contract_symbol, short_strike,
-        expiration, risk_amount, risk_profile, position_id, created_at)
-     VALUES (?, ?, 'exit', ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)`,
-  ).run(input.intentId, input.symbol.toUpperCase(), input.kind, input.riskProfile, input.positionId, now);
+        expiration, risk_amount, risk_profile, position_id, exit_reason, created_at)
+     VALUES (?, ?, 'exit', ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?)`,
+  ).run(
+    input.intentId,
+    input.symbol.toUpperCase(),
+    input.kind,
+    input.riskProfile,
+    input.positionId,
+    input.exitReason,
+    now,
+  );
   return getLiveOptionsOrder(input.intentId)!;
 }
 
