@@ -1,9 +1,10 @@
 import { lazy, memo, ReactNode, Suspense, useEffect, useRef, useState } from 'react';
 import { client } from '../api/client';
-import { useAsync } from '../lib/hooks';
+import { useAsync, useLocalStorage } from '../lib/hooks';
 import { useToast } from '../components/ToastContext';
 import { useConfirm } from '../components/ConfirmContext';
 import { RefreshBar } from '../components/RefreshBar';
+import { CloseModal } from '../components/PositionForms';
 import { ago, cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd, fmtUsd } from '../lib/format';
 import {
   Badge,
@@ -11,6 +12,7 @@ import {
   EmptyState,
   ErrorState,
   Field,
+  Modal,
   NumberInput,
   PageHeader,
   Spinner,
@@ -29,6 +31,7 @@ import type {
   BacktestEquityPoint,
   BacktestRunResponse,
   BacktestStats,
+  ClosePositionResult,
   CombinedBacktestRunResponse,
   CombinedWalkForwardResponse,
   LiveOptionsPosition,
@@ -37,6 +40,7 @@ import type {
   OptionsPaperPosition,
   OptionsWalkForwardResponse,
   PaperPosition,
+  Position,
   SimulatedOptionsTrade,
   SimulatedTrade,
   WalkForwardResponse,
@@ -600,13 +604,143 @@ const OptionsPaperPositionsTable = memo(
   (prev, next) => samePositions(prev.positions, next.positions),
 );
 
+/** Manually close a live options position autotrade itself opened
+ *  (2026-07-16) — places a REAL closing order through the same
+ *  TRADING_ENABLED + type-to-confirm + guardrails pipeline the Trade page
+ *  and the equity CloseModal (components/PositionForms.tsx) use. A separate
+ *  component from CloseModal rather than a reused one: LiveOptionsPosition's
+ *  shape has no overlap with Position (strike/shortStrike/kind/side:
+ *  'call'|'put' instead of remainingQuantity/side:'long'|'short'), so there's
+ *  nothing to share beyond the same visual pattern. */
+function CloseLiveOptionsPositionModal({
+  position,
+  onClose,
+  onSaved,
+}: {
+  position: LiveOptionsPosition | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [accountId, setAccountId] = useLocalStorage('trade.accountId', '');
+  const [confirmText, setConfirmText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<ClosePositionResult>();
+  const { toast } = useToast();
+
+  // Re-sync when a different position is opened — mirrors CloseModal's own
+  // re-sync-on-key-change pattern.
+  const key = position?.id;
+  const [lastKey, setLastKey] = useState(key);
+  if (key !== lastKey) {
+    setLastKey(key);
+    setConfirmText('');
+    setResult(undefined);
+  }
+
+  // Every autotrade options position is opened LONG (single_leg or
+  // debit_spread alike), so closing is always a sell — no long/short branch
+  // needed the way CloseModal's equity phrase has.
+  const phrase = position ? `SELL ${position.quantity} ${position.symbol.toUpperCase()}` : '';
+  const armed = confirmText.trim().toUpperCase() === phrase;
+
+  const submit = async () => {
+    if (!position || !armed || !accountId.trim()) return;
+    setBusy(true);
+    try {
+      const r = await client.closeLiveOptionsPosition(position.id, accountId.trim(), confirmText.trim());
+      setResult(r);
+      if (r.placed) {
+        toast(`Close order placed for ${position.symbol}`, { type: 'success' });
+        onSaved();
+      }
+    } catch (e) {
+      setResult({ ok: false, placed: false, reason: 'account_error', error: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={!!position}
+      onClose={onClose}
+      title={position ? `Close ${position.symbol} options — real order` : 'Close options position'}
+      footer={
+        <>
+          <button className="btn-ghost" onClick={onClose}>
+            {result?.placed ? 'Done' : 'Cancel'}
+          </button>
+          {!result?.placed && (
+            <button
+              className="btn-primary !bg-bear !border-bear disabled:opacity-40"
+              disabled={busy || !armed || !accountId.trim()}
+              onClick={submit}
+            >
+              {busy ? 'Placing…' : 'Close position'}
+            </button>
+          )}
+        </>
+      }
+    >
+      {position && (
+        <div className="space-y-3">
+          <div className="text-sm text-slate-400">
+            {position.quantity} {position.kind === 'debit_spread' ? 'spreads' : 'contracts'} of{' '}
+            <span className="text-slate-200">{position.symbol}</span> ({position.side} {position.strike}
+            {position.kind === 'debit_spread' ? `/${position.shortStrike}` : ''}, {fmtDate(position.expiration)})
+          </div>
+          <Field label="Webull cash account_id">
+            <input
+              className="input"
+              value={accountId}
+              onChange={(e) => setAccountId(e.target.value)}
+              placeholder="e.g. 12345678"
+            />
+          </Field>
+          <div className="rounded-md bg-bear/10 border border-bear/40 p-3 space-y-2">
+            <p className="text-xs text-slate-400">
+              This places a <b>real</b> closing order at your broker — a marketable limit near the current market price
+              when submitted, for the full position. Type <code className="text-slate-200">{phrase}</code> to arm. The
+              server re-checks every guardrail, the kill switch, and <code>TRADING_ENABLED</code> before it fires.
+            </p>
+            <input
+              className="input font-mono"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value.toUpperCase())}
+              placeholder={phrase}
+              aria-label="type to confirm closing this options position"
+            />
+          </div>
+          {result &&
+            (result.placed ? (
+              <div className="rounded-md bg-bull/15 text-bull text-sm p-2">
+                ✓ Close order placed{result.broker?.orderId ? ` · broker order ${result.broker.orderId}` : ''}. It can
+                take a few minutes to fill and show here as closed.
+              </div>
+            ) : (
+              <div className="rounded-md bg-bear/15 text-bear text-sm p-2">
+                ✕ Not placed — {result.error || result.broker?.error || `reason: ${result.reason}`}
+              </div>
+            ))}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 /** REAL, live-money OPTIONS positions the autotrade loop itself placed
  *  (Task #70) — its own table (autotrade_live_options_positions), not the
  *  shared `positions` row LivePositionsTable below reads, since a debit
  *  spread has no column there for its second leg. Nothing here is
  *  simulated — mirrors OptionsPaperPositionsTable's rendering exactly. */
 const LiveOptionsPositionsTable = memo(
-  function LiveOptionsPositionsTable({ positions }: { positions: LiveOptionsPosition[] }) {
+  function LiveOptionsPositionsTable({
+    positions,
+    onClose,
+  }: {
+    positions: LiveOptionsPosition[];
+    onClose: (p: LiveOptionsPosition) => void;
+  }) {
     if (positions.length === 0) {
       return (
         <EmptyState
@@ -632,6 +766,7 @@ const LiveOptionsPositionsTable = memo(
               <th className="th text-right">Qty</th>
               <th className="th text-right">P&amp;L</th>
               <th className="th text-right">R</th>
+              <th className="th text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -686,6 +821,13 @@ const LiveOptionsPositionsTable = memo(
                   >
                     {rMultiple === null ? '—' : `${fmtNum(rMultiple)}R`}
                   </td>
+                  <td className="td text-right">
+                    {p.status === 'open' && (
+                      <button className="text-xs text-bear hover:underline" onClick={() => onClose(p)}>
+                        close
+                      </button>
+                    )}
+                  </td>
                 </tr>
               );
             })}
@@ -702,7 +844,13 @@ const LiveOptionsPositionsTable = memo(
  *  the `autotrade` tag (server/src/routes/autotrade.ts's /live-positions).
  *  Distinct from every paper table on this page: nothing here is simulated. */
 const LivePositionsTable = memo(
-  function LivePositionsTable({ positions }: { positions: AutotradeLivePosition[] }) {
+  function LivePositionsTable({
+    positions,
+    onClose,
+  }: {
+    positions: AutotradeLivePosition[];
+    onClose: (p: AutotradeLivePosition) => void;
+  }) {
     if (positions.length === 0) {
       return (
         <EmptyState
@@ -725,6 +873,7 @@ const LivePositionsTable = memo(
               <th className="th text-right">Qty</th>
               <th className="th text-right">P&amp;L</th>
               <th className="th text-right">R</th>
+              <th className="th text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -774,6 +923,13 @@ const LivePositionsTable = memo(
                     )}
                   >
                     {p.pnl.rMultiple === null ? '—' : `${fmtNum(p.pnl.rMultiple)}R`}
+                  </td>
+                  <td className="td text-right">
+                    {p.status === 'open' && (
+                      <button className="text-xs text-bear hover:underline" onClick={() => onClose(p)}>
+                        close
+                      </button>
+                    )}
                   </td>
                 </tr>
               );
@@ -1400,6 +1556,15 @@ export default function AutoTradePage() {
   const dashboard = useAsync(() => client.autotradeDashboard(), []);
   const { toast } = useToast();
   const confirm = useConfirm();
+  // Manually close a REAL live position from this page — reuses the same
+  // CloseModal/POST /positions/:id/close the human Positions page uses for
+  // equity (autotrade's own live equity positions are the exact same
+  // `positions` table rows, just tag-filtered — see LivePositionsTable's own
+  // doc comment); live OPTIONS positions get their own modal + route below,
+  // since autotrade_live_options_positions is a structurally different table
+  // (debit spreads have a second leg) with no equity-shaped equivalent.
+  const [closeEquityPos, setCloseEquityPos] = useState<Position | null>(null);
+  const [closeOptionsPos, setCloseOptionsPos] = useState<LiveOptionsPosition | null>(null);
 
   // Monitoring, Paper trading, and Recent activity all reflect state the
   // background loop can change on its own, every 60s, with nothing the user
@@ -3113,7 +3278,7 @@ export default function AutoTradePage() {
                     />
                   </div>
                 )}
-                <LivePositionsTable positions={rows} />
+                <LivePositionsTable positions={rows} onClose={setCloseEquityPos} />
               </>
             );
           })()
@@ -3158,7 +3323,7 @@ export default function AutoTradePage() {
                     />
                   </div>
                 )}
-                <LiveOptionsPositionsTable positions={rows} />
+                <LiveOptionsPositionsTable positions={rows} onClose={setCloseOptionsPos} />
               </>
             );
           })()
@@ -3856,6 +4021,17 @@ export default function AutoTradePage() {
         reaches a real broker. Live trading (below) does place real orders once explicitly enabled — review backtest and
         paper-trading results first. See docs/AUTOTRADING_SPEC.md for the full plan.
       </p>
+
+      <CloseModal
+        position={closeEquityPos}
+        onClose={() => setCloseEquityPos(null)}
+        onSaved={() => livePositions.reload()}
+      />
+      <CloseLiveOptionsPositionModal
+        position={closeOptionsPos}
+        onClose={() => setCloseOptionsPos(null)}
+        onSaved={() => liveOptionsPositions.reload()}
+      />
     </div>
   );
 }

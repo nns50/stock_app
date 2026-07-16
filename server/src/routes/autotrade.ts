@@ -22,8 +22,13 @@ import { runCombinedBacktest, runCombinedWalkForwardBacktest } from '../services
 import { listPaperPositions, PaperPosition } from '../db/autotradePaperPositions';
 import { listOptionsPaperPositions, OptionsPaperPosition } from '../db/autotradeOptionsPaperPositions';
 import { listAutotradeLivePositions, syncAccountEquityFromBroker } from '../services/autotrading/liveExecute';
-import { listLiveOptionsPositions, LiveOptionsPosition } from '../db/autotradeLiveOptionsPositions';
+import {
+  listLiveOptionsPositions,
+  getLiveOptionsPosition,
+  LiveOptionsPosition,
+} from '../db/autotradeLiveOptionsPositions';
 import { Position } from '../db/positions';
+import { closeLiveOptionsAutotradePosition } from '../services/trading/closePosition';
 import { runAutotradeLoopTick } from '../services/autotrading/loop';
 import { getAutotradeDashboard } from '../services/autotrading/dashboard';
 import { resolveStockPrices, priceMap } from '../services/quotes';
@@ -1155,6 +1160,26 @@ autotradeRouter.get(
     const q = parseQuery(paperPositionsQuery, req);
     const positions = await withLiveOptionsPositionMarks(listLiveOptionsPositions(q));
     res.json({ positions });
+  }),
+);
+
+// Manually close a live options position autotrade itself opened — the
+// options counterpart to routes/positions.ts's POST /positions/:id/close.
+// Places a REAL closing order through the same TRADING_ENABLED + confirm-
+// phrase + guardrails pipeline the Trade page and the equity close route
+// use (services/trading/closePosition.ts's closeLiveOptionsAutotradePosition).
+const closeLiveOptionsBody = z.object({
+  accountId: z.string().min(1).max(64),
+  confirmation: z.string().min(1).max(64),
+});
+autotradeRouter.post(
+  '/live-options-positions/:id/close',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(closeLiveOptionsBody, req);
+    const pos = getLiveOptionsPosition(Number(param(req, 'id')));
+    if (!pos) throw new HttpError(404, 'live options position not found');
+    if (pos.status !== 'open') throw new HttpError(409, 'position is already closed');
+    res.json(await closeLiveOptionsAutotradePosition(pos, body.accountId, body.confirmation));
   }),
 );
 

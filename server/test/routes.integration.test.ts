@@ -10,6 +10,7 @@ import { addExit, createPosition } from '../src/db/positions';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { openPaperPosition } from '../src/db/autotradePaperPositions';
 import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
+import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
 import { getProvider } from '../src/providers';
 
 // End-to-end tests through the real Express app → routers → services → SQLite
@@ -1577,6 +1578,77 @@ describe('autotrade live positions route (integration)', () => {
   it('rejects an invalid status filter', async () => {
     const res = await fetch(`${base}/api/autotrade/live-positions?status=bogus`);
     expect(res.status).toBe(400);
+  });
+});
+
+// closeLiveOptionsAutotradePosition() itself (intent building for single_leg
+// vs debit_spread, unconditional exitReason:'manual' registration) is covered
+// directly in closePosition.test.ts with mocked Webull calls — these are
+// route-layer-only: request validation and which positions the route even
+// lets through to it. Same "TRADING_ENABLED isn't set in this test process"
+// reasoning as the equity POST /positions/:id/close suite above — a real
+// options chain fetch (getOptionsExpirations/getOptionsChain) still needs to
+// succeed to reach that gate, so the fixture uses a REAL contract, same as
+// the options-paper-execution route suite above.
+describe('autotrade live options positions close route (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_live_options_orders; DELETE FROM autotrade_live_options_positions;');
+  });
+
+  async function openLiveOptionsPos(overrides: Partial<Parameters<typeof createLiveOptionsPosition>[0]> = {}) {
+    const [expiration] = await getProvider().getOptionsExpirations('AAPL');
+    const chain = await getProvider().getOptionsChain('AAPL', expiration);
+    const contract = chain.calls[0];
+    return createLiveOptionsPosition({
+      symbol: 'AAPL',
+      side: 'call',
+      contractSymbol: contract.symbol,
+      strike: contract.strike,
+      expiration,
+      quantity: 1,
+      entryPrice: 0.01,
+      riskAmount: 1,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+      ...overrides,
+    });
+  }
+
+  it('404s for a live options position that does not exist', async () => {
+    const res = await post('/api/autotrade/live-options-positions/999999/close', {
+      accountId: 'ACC1',
+      confirmation: 'SELL 1 X',
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('409s for a live options position that is already closed', async () => {
+    const pos = await openLiveOptionsPos();
+    db.prepare("UPDATE autotrade_live_options_positions SET status = 'closed' WHERE id = ?").run(pos.id);
+
+    const res = await post(`/api/autotrade/live-options-positions/${pos.id}/close`, {
+      accountId: 'ACC1',
+      confirmation: `SELL ${pos.quantity} AAPL`,
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it('reaches closeLiveOptionsAutotradePosition for an open position — a structured result, not a route-level rejection', async () => {
+    const pos = await openLiveOptionsPos();
+
+    const res = await post(`/api/autotrade/live-options-positions/${pos.id}/close`, {
+      accountId: 'ACC1',
+      confirmation: `SELL ${pos.quantity} AAPL`,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; placed: boolean; reason: string };
+    // TRADING_ENABLED isn't set in this test process, so placeOrder()'s own
+    // deploy-level master gate fires first — proves the route reached
+    // closeLiveOptionsAutotradePosition (a structured PlaceResult-shaped
+    // body, not a 4xx route-level rejection) without needing Webull
+    // configured at all.
+    expect(body.placed).toBe(false);
+    expect(body.reason).toBe('trading_disabled');
   });
 });
 

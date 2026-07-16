@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
-vi.mock('../src/providers/webull/accountState', () => ({ webullAccountState: vi.fn() }));
+vi.mock('../src/providers/webull/accountState', () => ({ webullAccountState: vi.fn(), webullAccountType: vi.fn() }));
 vi.mock('../src/providers/webull/orders', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/providers/webull/orders')>();
   return { ...actual, webullPlaceOrder: vi.fn(), webullOrderStatus: vi.fn(), webullCancelOrder: vi.fn() };
@@ -9,17 +9,20 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
 
 import { config } from '../src/config';
 import { getProvider } from '../src/providers';
-import { webullAccountState } from '../src/providers/webull/accountState';
+import { webullAccountState, webullAccountType } from '../src/providers/webull/accountState';
 import { webullPlaceOrder, webullOrderStatus, webullCancelOrder } from '../src/providers/webull/orders';
 import { initDb, db } from '../src/db';
 import { setTradingConfig } from '../src/db/trading';
 import { createPosition, Position } from '../src/db/positions';
 import { createIntent } from '../src/db/orders';
 import { getLiveOrder } from '../src/db/autotradeLiveOrders';
-import { closeLivePosition } from '../src/services/trading/closePosition';
+import { getLiveOptionsOrder } from '../src/db/autotradeLiveOptionsOrders';
+import { createLiveOptionsPosition, LiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
+import { closeLivePosition, closeLiveOptionsAutotradePosition } from '../src/services/trading/closePosition';
 
 const mockGetProvider = vi.mocked(getProvider);
 const mockAccountState = vi.mocked(webullAccountState);
+const mockAccountType = vi.mocked(webullAccountType);
 const mockPlaceOrder = vi.mocked(webullPlaceOrder);
 const mockOrderStatus = vi.mocked(webullOrderStatus);
 const mockCancelOrder = vi.mocked(webullCancelOrder);
@@ -45,12 +48,46 @@ function accountStateWith(currentPositionQty: number) {
   };
 }
 
+/** A chain with an arbitrary set of call/put marks, keyed by strike — unlike
+ *  quoteReturning()'s single fixed strike, this lets a debit-spread test
+ *  supply BOTH legs' marks from the SAME mocked getOptionsChain(). */
+function chainWith(entries: Array<{ strike: number; type: 'call' | 'put'; mark: number }>) {
+  return {
+    getQuote: vi.fn(async () => {
+      throw new Error('unexpected getQuote call — options closes price off the chain, not a stock quote');
+    }),
+    getOptionsChain: vi.fn(async () => ({
+      calls: entries.filter((e) => e.type === 'call').map((e) => ({ strike: e.strike, mark: e.mark, last: e.mark })),
+      puts: entries.filter((e) => e.type === 'put').map((e) => ({ strike: e.strike, mark: e.mark, last: e.mark })),
+    })),
+  };
+}
+
+function openLiveOptionsPos(
+  overrides: Partial<Parameters<typeof createLiveOptionsPosition>[0]> = {},
+): LiveOptionsPosition {
+  return createLiveOptionsPosition({
+    symbol: 'NVDA',
+    side: 'call',
+    contractSymbol: 'NVDA-fixture',
+    strike: 200,
+    expiration: '2026-12-19',
+    quantity: 2,
+    entryPrice: 4.5,
+    riskAmount: 900,
+    riskProfile: 'MODERATE',
+    rationale: 'fixture',
+    ...overrides,
+  });
+}
+
 const origPlaceEnabled = config.trading.placeEnabled;
 
 beforeAll(() => initDb());
 beforeEach(() => {
   db.exec(
-    'DELETE FROM autotrade_live_orders; DELETE FROM trading_config; ' +
+    'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; ' +
+      'DELETE FROM autotrade_live_options_positions; DELETE FROM trading_config; ' +
       'DELETE FROM order_events; DELETE FROM order_intents; DELETE FROM position_exits; DELETE FROM positions;',
   );
   config.trading.placeEnabled = true;
@@ -64,6 +101,7 @@ beforeEach(() => {
   });
   mockGetProvider.mockReset();
   mockAccountState.mockReset();
+  mockAccountType.mockReset();
   mockPlaceOrder.mockReset();
   mockOrderStatus.mockReset();
   mockCancelOrder.mockReset();
@@ -298,5 +336,135 @@ describe('closeLivePosition', () => {
     expect(r).toMatchObject({ placed: false, reason: 'blocked' });
     expect(mockPlaceOrder).not.toHaveBeenCalled();
     expect(getLiveOrder(r.intent!.id)).toBeUndefined();
+  });
+});
+
+describe('closeLiveOptionsAutotradePosition', () => {
+  it('rejects an unconfirmed order — checked BEFORE building the intent, not just before placeOrder', async () => {
+    const pos = openLiveOptionsPos();
+
+    const r = await closeLiveOptionsAutotradePosition(pos, 'ACC1', 'nope');
+
+    expect(r).toMatchObject({ placed: false, reason: 'not_confirmed' });
+    // placeOrder() has its own independent confirmation re-check, so a
+    // not_confirmed result alone doesn't prove THIS function's own early
+    // check fired — mockGetProvider not being touched proves it returned
+    // before buildLiveOptionsCloseIntent() ever fetched a quote.
+    expect(mockGetProvider).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('builds a marketable-limit SINGLE_LEG closing order (always a sell) from a fresh mark', async () => {
+    const pos = openLiveOptionsPos({ side: 'call', strike: 200, quantity: 2, expiration: '2026-12-19' });
+    mockGetProvider.mockReturnValue(
+      chainWith([{ strike: 200, type: 'call', mark: 6 }]) as ReturnType<typeof getProvider>,
+    );
+    mockAccountState.mockResolvedValue(accountStateWith(2) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OPT-CLOSE-1' });
+
+    const r = await closeLiveOptionsAutotradePosition(pos, 'ACC1', 'SELL 2 NVDA');
+
+    expect(r).toMatchObject({ placed: true });
+    const placed = mockPlaceOrder.mock.calls[0][1];
+    expect(placed).toMatchObject({
+      symbol: 'NVDA',
+      assetKind: 'option',
+      side: 'sell',
+      openClose: 'close',
+      quantity: 2,
+      optionType: 'call',
+      strike: 200,
+      expiration: '2026-12-19',
+    });
+    // Selling to close prices BELOW the mark to guarantee a fill.
+    expect(placed.limitPrice).toBeLessThan(6);
+  });
+
+  it('builds a DEBIT_SPREAD closing order — fetches BOTH legs from the same chain, sells the spread net', async () => {
+    const pos = openLiveOptionsPos({
+      kind: 'debit_spread',
+      side: 'call',
+      strike: 200,
+      shortContractSymbol: 'NVDA-short',
+      shortStrike: 210,
+      shortEntryPrice: 1,
+      quantity: 3,
+    });
+    mockGetProvider.mockReturnValue(
+      chainWith([
+        { strike: 200, type: 'call', mark: 6 },
+        { strike: 210, type: 'call', mark: 2 },
+      ]) as ReturnType<typeof getProvider>,
+    );
+    mockAccountType.mockResolvedValue('MARGIN');
+    mockAccountState.mockResolvedValue(accountStateWith(3) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OPT-CLOSE-SPREAD' });
+
+    const r = await closeLiveOptionsAutotradePosition(pos, 'ACC1', 'SELL 3 NVDA');
+
+    expect(r).toMatchObject({ placed: true });
+    const placed = mockPlaceOrder.mock.calls[0][1];
+    expect(placed).toMatchObject({
+      symbol: 'NVDA',
+      assetKind: 'option',
+      side: 'sell',
+      openClose: 'close',
+      quantity: 3,
+      optionStrategy: 'VERTICAL',
+      optionLegs: [
+        { side: 'sell', optionType: 'call', strike: 200, expiration: pos.expiration },
+        { side: 'buy', optionType: 'call', strike: 210, expiration: pos.expiration },
+      ],
+    });
+    // Net value is 6 - 2 = 4; selling the spread to close prices BELOW that.
+    expect(placed.limitPrice).toBeLessThan(4);
+  });
+
+  it('registers exitReason "manual" UNCONDITIONALLY on success — every row here is autotrade\'s own', async () => {
+    const pos = openLiveOptionsPos();
+    mockGetProvider.mockReturnValue(
+      chainWith([{ strike: 200, type: 'call', mark: 6 }]) as ReturnType<typeof getProvider>,
+    );
+    mockAccountState.mockResolvedValue(accountStateWith(2) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OPT-CLOSE-2' });
+
+    const r = await closeLiveOptionsAutotradePosition(pos, 'ACC1', 'SELL 2 NVDA');
+
+    expect(r.placed).toBe(true);
+    const registered = getLiveOptionsOrder(r.intent!.id);
+    expect(registered).toMatchObject({
+      role: 'exit',
+      kind: 'single_leg',
+      positionId: pos.id,
+      symbol: 'NVDA',
+      exitReason: 'manual',
+    });
+  });
+
+  it('does not register anything when placement itself is blocked (e.g. kill switch)', async () => {
+    setTradingConfig({ enabled: true, killSwitch: true });
+    const pos = openLiveOptionsPos();
+    mockGetProvider.mockReturnValue(
+      chainWith([{ strike: 200, type: 'call', mark: 6 }]) as ReturnType<typeof getProvider>,
+    );
+    mockAccountState.mockResolvedValue(accountStateWith(2) as Awaited<ReturnType<typeof webullAccountState>>);
+
+    const r = await closeLiveOptionsAutotradePosition(pos, 'ACC1', 'SELL 2 NVDA');
+
+    expect(r).toMatchObject({ placed: false, reason: 'blocked' });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(getLiveOptionsOrder(r.intent!.id)).toBeUndefined();
+  });
+
+  it('rejects with account_error and never calls placeOrder when the contract has no usable quote', async () => {
+    const pos = openLiveOptionsPos();
+    // No matching strike in the mocked chain -> fetchContractMark() throws
+    // inside buildLiveOptionsCloseIntent(), before placeOrder() is ever reached.
+    mockGetProvider.mockReturnValue(chainWith([]) as ReturnType<typeof getProvider>);
+
+    const r = await closeLiveOptionsAutotradePosition(pos, 'ACC1', 'SELL 2 NVDA');
+
+    expect(r).toMatchObject({ placed: false, reason: 'account_error' });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 });

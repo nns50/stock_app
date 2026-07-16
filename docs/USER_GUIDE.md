@@ -814,7 +814,13 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   trades on the Positions/Journal pages and the Trade page's Orders panel. Kept accurate
   every cycle by a broker-truth check (diffs against what Webull actually shows open) as
   a backstop for anything a specific order's own status doesn't catch on its own — no
-  separate setup needed, unlike the general Webull position sync under Settings.
+  separate setup needed, unlike the general Webull position sync under Settings. Each open
+  row has a **close** button that places a **real** closing order for that position right
+  now (the same one the **Positions** page offers, since these are the same rows): it opens
+  a confirmation modal where you type `SELL <qty> <symbol>` (or `BUY …` for a short) to arm,
+  cancels any resting stop/target bracket first, then submits a marketable-limit order
+  through the identical guardrail + kill-switch checks as any other live order. It doesn't
+  wait for the automated exit — use it to bail out of a position on your own read.
 - **Live options trading** — a checkbox nested under **Live trading** above (only shown
   once live trading itself is enabled) that lets the loop place real **single-leg**
   (long call/put) and **debit-spread** options orders through Webull — no second
@@ -833,7 +839,13 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   options paper table. Kept accurate every cycle by the same kind of broker-truth
   backstop the equity table uses — for a spread, both legs have to be confirmed gone
   at the broker before it's marked closed; one leg missing on its own is left open
-  rather than guessed.
+  rather than guessed. Each open row also has a **close** button, the options
+  counterpart to the equity one above: type `SELL <qty> <symbol>` to arm, and it places
+  a real closing order right now — a sell-to-close for a single leg, or the whole spread
+  as one combo (selling the long leg, buying back the short) — through the same
+  guardrails and kill-switch checks. A close you trigger this way is recorded as a
+  **manual** exit (vs. the automated **time exit**), so the table's Reason badge tells
+  the two apart.
 - **Alerts** — a few loop events push a notification through whichever webhooks you've
   configured in [Settings → Server-side watching](#server-side-watching-alerts-with-the-app-closed)
   (Slack/Discord/generic) — the same destinations the price-alert poller uses, so

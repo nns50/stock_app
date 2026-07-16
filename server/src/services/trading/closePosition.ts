@@ -4,8 +4,10 @@ import { placeOrder, PlaceResult } from './placeOrder';
 import { getIntent } from '../../db/orders';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { recordLiveExitOrder, getLiveOrder } from '../../db/autotradeLiveOrders';
+import { recordLiveOptionsExitOrder } from '../../db/autotradeLiveOptionsOrders';
+import { LiveOptionsPosition } from '../../db/autotradeLiveOptionsPositions';
 import { cancelLiveBracketExitLegs, isAutotradePosition } from '../autotrading/liveExecute';
-import { fetchContractMark } from '../autotrading/optionsExecute';
+import { fetchContractMark, validPremium } from '../autotrading/optionsExecute';
 import { getProvider } from '../../providers';
 
 // ---------------------------------------------------------------------------
@@ -156,4 +158,129 @@ export async function closeLivePosition(
   }
 
   return { ...result, bracketCancelled };
+}
+
+// ---------------------------------------------------------------------------
+// Manually close a live options position autotrade itself opened (Auto page,
+// 2026-07-16) — same human-confirmed reasoning as closeLivePosition above,
+// applied to autotrade_live_options_positions instead of the generic
+// `positions` table (a structurally different table: a debit spread needs a
+// second leg's columns positions.ts has no room for — see that table's own
+// header comment). No bracket to cancel, ever: autotrade's options signals
+// never carry a price-based stop/target (liveOptionsExecute.ts's own header
+// comment), so every entry here is a plain order.
+// ---------------------------------------------------------------------------
+
+/** Mirrors liveOptionsExecute.ts's own placeLiveOptionsExit(): selling to
+ *  close prices BELOW the mark to guarantee a fill. Every autotrade options
+ *  position is opened LONG (single_leg or debit_spread alike — "an autotrade
+ *  options position is always long the contract, a put for a bearish read
+ *  instead of a call, which is already defined-risk"), so closing is always
+ *  a sell; unlike closeLivePosition's equity/single-leg-option intent
+ *  builder, there's no buy-to-close case to branch on here. */
+async function buildLiveOptionsCloseIntent(pos: LiveOptionsPosition): Promise<OrderIntent> {
+  const buffer = 1 - OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT / 100;
+
+  if (pos.kind === 'debit_spread') {
+    const [longMark, shortMark] = await Promise.all([
+      fetchContractMark(pos.symbol, pos.expiration, pos.strike, pos.side),
+      fetchContractMark(pos.symbol, pos.expiration, pos.shortStrike!, pos.side),
+    ]);
+    const netValue = longMark - shortMark;
+    const limitPrice = round2(netValue * buffer);
+    // A crossed/stale spread quote, or a net value the sell-side buffer
+    // rounds to <= 0, would otherwise reach the limit_price>0 guardrail and
+    // get blocked with no useful explanation — mirrors placeLiveOptionsExit's
+    // own premium guard, with a precise reason surfaced to the human instead.
+    if (!validPremium(limitPrice)) {
+      throw new Error(`No usable exit quote (net ${netValue}: long ${longMark}, short ${shortMark})`);
+    }
+    return {
+      symbol: pos.symbol,
+      assetKind: 'option',
+      side: 'sell', // selling the spread to close — net credit
+      openClose: 'close',
+      quantity: pos.quantity,
+      orderType: 'limit',
+      limitPrice,
+      referencePrice: netValue,
+      optionStrategy: 'VERTICAL',
+      optionLegs: [
+        { side: 'sell', optionType: pos.side, strike: pos.strike, expiration: pos.expiration }, // was bought — now sold
+        { side: 'buy', optionType: pos.side, strike: pos.shortStrike!, expiration: pos.expiration }, // was sold — now bought back
+      ],
+    };
+  }
+
+  const mark = await fetchContractMark(pos.symbol, pos.expiration, pos.strike, pos.side);
+  const limitPrice = round2(mark * buffer);
+  if (!validPremium(limitPrice)) {
+    throw new Error(`No usable exit quote (mark ${mark})`);
+  }
+  return {
+    symbol: pos.symbol,
+    assetKind: 'option',
+    side: 'sell',
+    openClose: 'close',
+    quantity: pos.quantity,
+    orderType: 'limit',
+    limitPrice,
+    referencePrice: mark,
+    optionType: pos.side,
+    strike: pos.strike,
+    expiration: pos.expiration,
+  };
+}
+
+/**
+ * Close `pos` (a live options position autotrade opened) for real. No
+ * bracket-cancel step (see module comment). `placeOrder()`'s own instrument-
+ * scoped webullAccountState() lookup already correctly isolates a single-leg
+ * close's naked_short check to this exact contract (strike/expiration/
+ * optionType, not a cross-instrument aggregate — see providers/webull/
+ * accountState.ts's matchesInstrument()); a debit spread skips that check
+ * entirely as a multi-leg order (guardrails.ts's isMultiLeg), so neither case
+ * needs an override the way liveOptionsExecute.ts's own autonomous exit path
+ * does for its unfiltered 2-arg webullAccountState() call.
+ */
+export async function closeLiveOptionsAutotradePosition(
+  pos: LiveOptionsPosition,
+  accountId: string,
+  confirmation: string,
+): Promise<ClosePositionResult> {
+  const expectedPhrase = `SELL ${pos.quantity} ${pos.symbol.toUpperCase()}`;
+  if (confirmation.trim().toUpperCase() !== expectedPhrase) {
+    return { ok: true, placed: false, reason: 'not_confirmed', error: 'Confirmation phrase did not match the order.' };
+  }
+
+  let intent: OrderIntent;
+  try {
+    intent = await buildLiveOptionsCloseIntent(pos);
+  } catch (err) {
+    return { ok: true, placed: false, reason: 'account_error', error: (err as Error).message };
+  }
+
+  const result = await placeOrder(intent, accountId, confirmation);
+
+  // Unlike closeLivePosition's equity case, this always registers,
+  // unconditionally: every row in autotrade_live_options_positions is
+  // autotrade's own by construction (a human's own options trades go
+  // through the generic `positions` table instead — see that table's header
+  // comment), so there's no "is this actually autotrade's" branch to take.
+  // Closes the same race against checkLiveOptionsExits' own time-exit
+  // trigger that closeLivePosition's equity registration closes for
+  // checkLiveEquityTimeExits, and lets materializeOptionsExitFill record the
+  // eventual fill against the RIGHT exitReason ('manual', not 'time_exit').
+  if (result.placed && result.intent) {
+    recordLiveOptionsExitOrder({
+      intentId: result.intent.id,
+      symbol: pos.symbol,
+      kind: pos.kind,
+      riskProfile: pos.riskProfile,
+      positionId: pos.id,
+      exitReason: 'manual',
+    });
+  }
+
+  return result;
 }
