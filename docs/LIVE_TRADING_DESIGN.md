@@ -398,19 +398,33 @@ key becomes `client_order_id`.
   each leg's own broker-assigned `order_id` from Order Detail and cancelling by that
   instead (untried — no confirmed evidence Webull's cancel endpoint accepts an
   `order_id` in place of `client_order_id`).
-  **Cancel-rejection handling (fixed 2026-07-16):** `cancelLiveBracketExitLegs` no
-  longer bails the moment the broker rejects the cancel. Webull rejects a cancel with
-  "Order can not be canceled" precisely when the order is ALREADY terminal — its exit
-  legs are gone, so there's nothing left to race a fresh close, and blocking on that
-  rejection stranded a position that was in fact safe to close (a human hit exactly
-  this clicking **Close** on a position whose bracket had already been cancelled). The
-  cancel's own result is no longer decisive: the function always re-polls the actual
-  leg states and decides from THOSE — proceeds only when no exit leg is still resting
-  (all cancelled/terminal, none filled), still fails closed when a leg genuinely shows
-  working, and reports the raced case when a stop/target filled first. Safe in every
-  case because a fresh close is placed only after the legs are confirmed no longer
-  resting, regardless of whether the cancel call itself was accepted. Applies to both
-  callers unchanged: the maxHoldDays force-close and the human Positions-page close.
+  **The theory above was WRONG — confirmed against a real account (2026-07-16).**
+  Cancelling by the MASTER's `client_order_id` does NOT reach the resting exit legs:
+  a bracket's STOP_LOSS/STOP_PROFIT legs each get their OWN `client_order_id` at
+  placement (`buildOrderRequest`), which was never persisted, and the master-id cancel
+  only ever touches the already-filled master. A human hit this exactly: a manual
+  **Close** got past the (now-benign) cancel step but the broker then rejected the
+  close order itself — _"this order cannot be entered because it will reverse an
+  existing position … cancel an open order"_ — because the stop/target were still
+  live. Cancelling them by hand in the Webull app unblocked the close.
+  **Rewritten to scan-and-cancel (`cancelLiveBracketExitLegs`, 2026-07-16):** it no
+  longer trusts the master-id cancel or the combo-status re-poll to find the exit legs.
+  Instead it reads the broker's live open orders (`listWebullOpenOrders` — a new
+  read-only, lenient-parsing list of every resting order) and finds the ones on THIS
+  symbol on the EXIT side (a long's stop/target are sells, the same side as the close),
+  cancels each by its OWN `client_order_id`, then RE-SCANS and confirms none remain
+  before letting the close through — exactly what the manual fix did. This is the
+  "resolve each leg's own id and cancel by that" fallback the note above anticipated,
+  driven off the open-orders list rather than persisted ids (so it also clears
+  already-open positions whose leg ids we never saved). Fail-closed throughout: it
+  places a close only after confirming no same-side order is still resting; if the
+  open-orders read fails, or an order still rests after cancel, or (best-effort, via the
+  combo status) an exit leg is seen FILLED, it blocks rather than risk a double-fill.
+  Side must be POSITIVELY parsed to be cancelled, so a wrong-side or unparseable order
+  is never touched. A one-line `console.warn` breadcrumb logs what the scan matched (and
+  a truncated raw sample when it matched nothing on a non-empty list) so the first live
+  run reveals any remaining field-name mismatch. Applies to both callers unchanged: the
+  maxHoldDays force-close and the human Positions-page close.
 - **Manually closing a REAL position from the Positions page (shipped, 2026-07-16):**
   `POST /api/positions/:id/close` (`services/trading/closePosition.ts`) — the human-confirmed
   counterpart to autotrade's own force-closes above. Fixes a real gap: the pre-existing

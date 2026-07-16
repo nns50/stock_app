@@ -4,13 +4,24 @@ vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
 vi.mock('../src/providers/webull/accountState', () => ({ webullAccountState: vi.fn(), webullAccountType: vi.fn() }));
 vi.mock('../src/providers/webull/orders', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/providers/webull/orders')>();
-  return { ...actual, webullPlaceOrder: vi.fn(), webullOrderStatus: vi.fn(), webullCancelOrder: vi.fn() };
+  return {
+    ...actual,
+    webullPlaceOrder: vi.fn(),
+    webullOrderStatus: vi.fn(),
+    webullCancelOrder: vi.fn(),
+    listWebullOpenOrders: vi.fn(),
+  };
 });
 
 import { config } from '../src/config';
 import { getProvider } from '../src/providers';
 import { webullAccountState, webullAccountType } from '../src/providers/webull/accountState';
-import { webullPlaceOrder, webullOrderStatus, webullCancelOrder } from '../src/providers/webull/orders';
+import {
+  webullPlaceOrder,
+  webullOrderStatus,
+  webullCancelOrder,
+  listWebullOpenOrders,
+} from '../src/providers/webull/orders';
 import { initDb, db } from '../src/db';
 import { setTradingConfig } from '../src/db/trading';
 import { createPosition, Position } from '../src/db/positions';
@@ -26,6 +37,22 @@ const mockAccountType = vi.mocked(webullAccountType);
 const mockPlaceOrder = vi.mocked(webullPlaceOrder);
 const mockOrderStatus = vi.mocked(webullOrderStatus);
 const mockCancelOrder = vi.mocked(webullCancelOrder);
+const mockOpenOrders = vi.mocked(listWebullOpenOrders);
+
+/** A resting broker open order (defaults to a working SELL on AAPL — a long's
+ *  bracket exit leg). */
+function openOrder(overrides: Partial<import('../src/providers/webull/orders').WebullOpenOrder> = {}) {
+  return {
+    clientOrderId: 'EXIT-1',
+    brokerOrderId: 'WB-EXIT-1',
+    symbol: 'AAPL',
+    side: 'sell' as const,
+    status: 'WORKING',
+    comboType: 'STOP_LOSS',
+    ...overrides,
+  };
+}
+const noOpenOrders = { ok: true as const, orders: [] };
 
 function quoteReturning(prices: Record<string, number>) {
   return {
@@ -105,7 +132,13 @@ beforeEach(() => {
   mockPlaceOrder.mockReset();
   mockOrderStatus.mockReset();
   mockCancelOrder.mockReset();
+  mockOpenOrders.mockReset();
   mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+  // Default: no resting orders at the broker, so a bracketed close finds nothing
+  // to cancel and proceeds. Tests exercising the cancel path override this.
+  mockOpenOrders.mockResolvedValue(noOpenOrders);
+  mockCancelOrder.mockResolvedValue({ ok: true });
+  mockOrderStatus.mockResolvedValue({ ok: true, found: false } as Awaited<ReturnType<typeof webullOrderStatus>>);
 });
 afterEach(() => {
   config.trading.placeEnabled = origPlaceEnabled;
@@ -185,82 +218,83 @@ describe('closeLivePosition', () => {
     expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ side: 'buy', openClose: 'close', quantity: 100 });
   });
 
-  it('cancels the resting bracket first when the entry intent has one, then places the close', async () => {
+  it('cancels the resting exit leg found in the broker open orders (by its OWN id), then places the close', async () => {
+    // The core of the ATAI fix: the stop/target legs each have their own
+    // client_order_id (not the entry's), so we recover them from the live
+    // open-orders list and cancel each by that id before closing.
     const entry = bracketEntryIntent();
     const pos = longStock({ sourceIntentId: entry.id });
+    mockOpenOrders
+      .mockResolvedValueOnce({ ok: true, orders: [openOrder({ clientOrderId: 'STOP-1' })] }) // scan finds the resting stop
+      .mockResolvedValueOnce(noOpenOrders); // re-scan after cancel: cleared
     mockCancelOrder.mockResolvedValue({ ok: true });
-    mockOrderStatus.mockResolvedValue({
-      ok: true,
-      found: true,
-      status: 'FILLED',
-      legs: [
-        { comboType: 'MASTER', status: 'FILLED' },
-        { comboType: 'STOP_LOSS', status: 'CANCELLED' },
-        { comboType: 'STOP_PROFIT', status: 'CANCELLED' },
-      ],
-    });
     mockAccountState.mockResolvedValue(accountStateWith(100) as Awaited<ReturnType<typeof webullAccountState>>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE-3' });
 
     const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
 
-    expect(mockCancelOrder).toHaveBeenCalledTimes(1);
-    expect(r).toMatchObject({ placed: true, bracketCancelled: true });
-  });
-
-  it('never reaches placeOrder when the cancel is rejected AND an exit leg still shows working', async () => {
-    const entry = bracketEntryIntent();
-    const pos = longStock({ sourceIntentId: entry.id });
-    mockCancelOrder.mockResolvedValue({ ok: false, error: 'order already terminal' });
-    mockOrderStatus.mockResolvedValue({
-      ok: true,
-      found: true,
-      status: 'FILLED',
-      legs: [
-        { comboType: 'MASTER', status: 'FILLED' },
-        { comboType: 'STOP_LOSS', status: 'WORKING' },
-        { comboType: 'STOP_PROFIT', status: 'CANCELLED' },
-      ],
-    });
-
-    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
-
-    expect(r).toMatchObject({ placed: false, reason: 'blocked' });
-    expect(r.error).toMatch(/could not cancel the resting bracket/i);
-    expect(mockPlaceOrder).not.toHaveBeenCalled();
-  });
-
-  it('STILL closes when the cancel is rejected but the bracket legs are already terminal (the "Order can not be canceled" case)', async () => {
-    // Regression: a live position whose bracket was already gone could not be
-    // closed at all — the broker rejects the redundant cancel with "Order can
-    // not be canceled", which the old code treated as a hard block. With
-    // nothing left to race the close, it must proceed.
-    const entry = bracketEntryIntent();
-    const pos = longStock({ sourceIntentId: entry.id });
-    mockCancelOrder.mockResolvedValue({ ok: false, error: 'Order can not be canceled' });
-    mockOrderStatus.mockResolvedValue({
-      ok: true,
-      found: true,
-      status: 'FILLED',
-      legs: [
-        { comboType: 'MASTER', status: 'FILLED' },
-        { comboType: 'STOP_LOSS', status: 'CANCELLED' },
-        { comboType: 'STOP_PROFIT', status: 'CANCELLED' },
-      ],
-    });
-    mockAccountState.mockResolvedValue(accountStateWith(100) as Awaited<ReturnType<typeof webullAccountState>>);
-    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE-CANCELREJECT' });
-
-    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
-
+    expect(mockCancelOrder).toHaveBeenCalledWith('ACC1', 'STOP-1'); // cancelled by the leg's OWN id
     expect(r).toMatchObject({ placed: true, bracketCancelled: true });
     expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ side: 'sell', openClose: 'close', quantity: 100 });
   });
 
-  it('places NOTHING and reports the position is already closing when a stop/target raced the cancel', async () => {
+  it('closes when the broker shows no resting exit order — the bracket was already gone', async () => {
     const entry = bracketEntryIntent();
     const pos = longStock({ sourceIntentId: entry.id });
+    mockOpenOrders.mockResolvedValue(noOpenOrders); // nothing resting
+    mockOrderStatus.mockResolvedValue({ ok: true, found: false }); // and no filled leg either
+    mockAccountState.mockResolvedValue(accountStateWith(100) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE-GONE' });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+
+    expect(mockCancelOrder).not.toHaveBeenCalled(); // nothing to cancel
+    expect(r).toMatchObject({ placed: true });
+    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ side: 'sell', openClose: 'close', quantity: 100 });
+  });
+
+  it('blocks the close (double-up risk) when a resting exit leg does not clear after cancel', async () => {
+    const entry = bracketEntryIntent();
+    const pos = longStock({ sourceIntentId: entry.id });
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [openOrder({ clientOrderId: 'STOP-STUCK' })] }); // both scans still show it
     mockCancelOrder.mockResolvedValue({ ok: true });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+
+    expect(r).toMatchObject({ placed: false, reason: 'blocked' });
+    expect(r.error).toMatch(/did not clear after cancel/i);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('blocks the close when the broker open orders cannot be read (fail closed)', async () => {
+    const entry = bracketEntryIntent();
+    const pos = longStock({ sourceIntentId: entry.id });
+    mockOpenOrders.mockResolvedValue({ ok: false, orders: [], error: 'Webull open-orders failed (500)' });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+
+    expect(r).toMatchObject({ placed: false, reason: 'blocked' });
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('only cancels EXIT-side orders — leaves an unrelated opposite-side resting order alone', async () => {
+    const entry = bracketEntryIntent(); // a long: exit side is SELL
+    const pos = longStock({ sourceIntentId: entry.id });
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [openOrder({ side: 'buy', clientOrderId: 'BUY-1' })] });
+    mockAccountState.mockResolvedValue(accountStateWith(100) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE-BUYLEFT' });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+
+    expect(mockCancelOrder).not.toHaveBeenCalled(); // the resting BUY is not a long's exit leg
+    expect(r).toMatchObject({ placed: true });
+  });
+
+  it('places NOTHING and reports the position is already closing when a stop/target raced (filled)', async () => {
+    const entry = bracketEntryIntent();
+    const pos = longStock({ sourceIntentId: entry.id });
+    mockOpenOrders.mockResolvedValue(noOpenOrders); // the filled leg is terminal — not in open orders
     mockOrderStatus.mockResolvedValue({
       ok: true,
       found: true,
