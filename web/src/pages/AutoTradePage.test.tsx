@@ -913,7 +913,12 @@ describe('AutoTradePage', () => {
 
     await waitFor(() =>
       expect(run).toHaveBeenCalledWith(
-        expect.objectContaining({ symbols: ['AAPL'], riskProfile: 'MODERATE', startingEquity: 100_000 }),
+        expect.objectContaining({
+          symbols: ['AAPL'],
+          riskProfile: 'MODERATE',
+          startingEquity: 100_000,
+          directionMode: 'long',
+        }),
       ),
     );
     expect(await screen.findByText('target')).toBeInTheDocument();
@@ -921,6 +926,51 @@ describe('AutoTradePage', () => {
     expect(screen.getByText('$106.00')).toBeInTheDocument(); // trade exit price
     expect(screen.getAllByText('+$300.00').length).toBeGreaterThan(0); // expectancy stat + trade pnl
     expect(screen.queryByRole('heading', { name: /In-sample/ })).toBeNull();
+  });
+
+  it('threads the selected Backtest trade direction into all three backtest run calls', async () => {
+    const eqRun = vi.spyOn(client, 'runAutotradeBacktest').mockResolvedValue(btRun());
+    const optRun = vi.spyOn(client, 'runOptionsBacktest').mockResolvedValue({
+      report: {
+        trades: [],
+        equityCurve: [],
+        startingEquity: 100_000,
+        finalEquity: 100_000,
+        excludedSymbols: [],
+        errors: [],
+        skipped: [],
+      },
+      stats: btRun().stats,
+    });
+    const combinedRun = vi.spyOn(client, 'runCombinedBacktest').mockResolvedValue({
+      report: {
+        equityTrades: [],
+        optionsTrades: [],
+        equityCurve: [],
+        startingEquity: 100_000,
+        finalEquity: 100_000,
+        excludedSymbols: [],
+        errors: [],
+        optionsSkipped: [],
+      },
+      stats: btRun().stats,
+    });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl' } });
+    fireEvent.change(screen.getByRole('combobox', { name: /^Backtest trade direction\b/ }), {
+      target: { value: 'both' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run backtest' }));
+    await waitFor(() => expect(eqRun).toHaveBeenCalledWith(expect.objectContaining({ directionMode: 'both' })));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run options backtest' }));
+    await waitFor(() => expect(optRun).toHaveBeenCalledWith(expect.objectContaining({ directionMode: 'both' })));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run combined backtest' }));
+    await waitFor(() => expect(combinedRun).toHaveBeenCalledWith(expect.objectContaining({ directionMode: 'both' })));
   });
 
   it('runs a walk-forward split once a split date is set, showing both windows', async () => {
