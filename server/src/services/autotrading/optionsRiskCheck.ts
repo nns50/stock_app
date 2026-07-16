@@ -1,6 +1,7 @@
 import { computeRiskSizing, computeSpreadSizing, RiskSizingResult, SpreadSizingResult } from '../riskSizing';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
+import { getMarketAtrPct } from './executionGuards';
 import { OptionsTradeSignal } from './optionsDecide';
 import {
   correlatedNotional,
@@ -100,12 +101,17 @@ function usd(n: number): string {
 export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCheckContext): OptionsRiskCheckResult {
   const checks: RiskCheckRule[] = [];
   const check = (rule: string, passed: boolean, detail: string) => checks.push({ rule, passed, detail });
-  const blocked = (sizing: OptionsSizingResult, stepDownActive: boolean): OptionsRiskCheckResult => ({
+  const blocked = (
+    sizing: OptionsSizingResult,
+    stepDownActive: boolean,
+    regimeActive: boolean,
+  ): OptionsRiskCheckResult => ({
     symbol: signal.symbol,
     ok: false,
     checks,
     sizing,
     stepDownActive,
+    regimeActive,
     approvedRiskAmount: 0,
     approvedNotional: 0,
   });
@@ -117,18 +123,27 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
     equityOk,
     equityOk ? usd(ctx.equity) : 'account equity is not set — configure it before auto-trading can size positions',
   );
-  if (!equityOk) return blocked(zeroSizing, false);
+  if (!equityOk) return blocked(zeroSizing, false, false);
 
   const stepDownActive = ctx.consecutiveLosses >= ctx.stepDownAfterLosses;
-  const effectiveRiskPct = stepDownActive
-    ? ctx.riskPerTradePct * (1 - ctx.stepDownSizeCutPct / 100)
-    : ctx.riskPerTradePct;
+  const regimeActive = ctx.marketAtrPct != null && ctx.marketAtrPct > ctx.regimeAtrThresholdPct;
+  const effectiveRiskPct =
+    ctx.riskPerTradePct *
+    (stepDownActive ? 1 - ctx.stepDownSizeCutPct / 100 : 1) *
+    (regimeActive ? 1 - ctx.regimeSizeCutPct / 100 : 1);
   check(
     'step_down_sizing',
     true,
     stepDownActive
       ? `active — ${ctx.consecutiveLosses} consecutive losses, sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}% (${ctx.stepDownSizeCutPct}% cut)`
       : `inactive — ${ctx.consecutiveLosses} consecutive losses (triggers at ${ctx.stepDownAfterLosses})`,
+  );
+  check(
+    'regime_sizing',
+    true,
+    regimeActive
+      ? `active — market ATR ${ctx.marketAtrPct!.toFixed(1)}% exceeds ${ctx.regimeAtrThresholdPct}%, sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}% (${ctx.regimeSizeCutPct}% cut)`
+      : `inactive — market ATR ${ctx.marketAtrPct == null ? 'unavailable' : ctx.marketAtrPct.toFixed(1) + '%'} (triggers above ${ctx.regimeAtrThresholdPct}%)`,
   );
 
   // Sizing itself is the one place single-leg and spread genuinely differ:
@@ -187,7 +202,7 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
       : 'risk budget is too small to size even one contract at this premium';
   }
   check('quantity', qtyOk, qtyDetail);
-  if (!qtyOk) return blocked(sizing, stepDownActive);
+  if (!qtyOk) return blocked(sizing, stepDownActive, regimeActive);
 
   const dailyHaltLevel = -(ctx.maxDailyDrawdownPct / 100) * ctx.equity;
   const haltOk = ctx.dailyPnl > dailyHaltLevel;
@@ -238,6 +253,7 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
     checks,
     sizing,
     stepDownActive,
+    regimeActive,
     approvedRiskAmount: ok ? riskOfPosition : 0,
     approvedNotional: ok ? positionNotional : 0,
   };
@@ -260,6 +276,9 @@ export async function runOptionsRiskCheck(
 ): Promise<OptionsRiskCheckResult[]> {
   const config = getAutotradeConfig();
   const snapshot = getPortfolioSnapshot();
+  // Self-fetched, same reasoning as runAutotradeRiskCheck's own — see that
+  // function's comment.
+  const marketAtrPct = await getMarketAtrPct('SPY');
   const approvedEquity = equityResults.filter((r) => r.ok);
 
   const results: OptionsRiskCheckResult[] = [];
@@ -307,6 +326,9 @@ export async function runOptionsRiskCheck(
       maxCorrelatedExposurePct: config.maxCorrelatedExposurePct,
       maxTradesPerDay: config.maxTradesPerDay,
       correlationThreshold: config.correlationThreshold,
+      marketAtrPct,
+      regimeAtrThresholdPct: config.regimeAtrThresholdPct,
+      regimeSizeCutPct: config.regimeSizeCutPct,
     };
     const result = evaluateOptionsRiskCheck(signal, ctx);
     results.push(result);

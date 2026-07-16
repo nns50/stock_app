@@ -351,6 +351,11 @@ export function optionsSeedForEquity(
  */
 export async function runOptionsPaperExecution(
   candidates: { signal: OptionsTradeSignal }[],
+  /** Regime-aware sizing (2026-07-16) — same market-ATR% reading loop.ts
+   *  already computed once this cycle for its volatility hard-cutoff, not
+   *  re-fetched here. Defaults to null (regime cut inactive) for any caller
+   *  that doesn't have/need one, e.g. a direct test call. */
+  marketAtrPct: number | null = null,
 ): Promise<OptionsExecutionOutcome[]> {
   const config = getAutotradeConfig();
   const equity = config.accountEquityUsd ?? 0;
@@ -410,6 +415,9 @@ export async function runOptionsPaperExecution(
       maxCorrelatedExposurePct: config.maxCorrelatedExposurePct,
       maxTradesPerDay: config.maxTradesPerDay,
       correlationThreshold: config.correlationThreshold,
+      marketAtrPct,
+      regimeAtrThresholdPct: config.regimeAtrThresholdPct,
+      regimeSizeCutPct: config.regimeSizeCutPct,
     };
     const result = evaluateOptionsRiskCheck(signal, ctx);
     const contracts =

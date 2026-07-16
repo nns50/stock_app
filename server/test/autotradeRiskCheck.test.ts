@@ -119,6 +119,59 @@ describe('evaluateRiskCheck — pure evaluator', () => {
     });
   });
 
+  describe('regime-aware sizing (2026-07-16)', () => {
+    it('is inactive when marketAtrPct is null (unknown, e.g. a fetch failure)', () => {
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({ marketAtrPct: null, regimeAtrThresholdPct: 3, regimeSizeCutPct: 30 }),
+      );
+      expect(result.regimeActive).toBe(false);
+      expect(result.sizing.suggestedQuantity).toBe(200); // full 1% sizing
+      expect(findCheck(result, 'regime_sizing').detail).toMatch(/inactive/);
+    });
+
+    it('is inactive at or below the threshold, not just comfortably under it', () => {
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({ marketAtrPct: 3, regimeAtrThresholdPct: 3, regimeSizeCutPct: 30 }),
+      );
+      expect(result.regimeActive).toBe(false);
+      expect(result.sizing.suggestedQuantity).toBe(200);
+    });
+
+    it('cuts size by regimeSizeCutPct once marketAtrPct exceeds the threshold', () => {
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({ marketAtrPct: 6, regimeAtrThresholdPct: 3, regimeSizeCutPct: 30 }),
+      );
+      expect(result.regimeActive).toBe(true);
+      // 1% * (1 - 30%) = 0.7% of 100,000 = 700 risk budget / $5 stop = 140 shares
+      expect(result.sizing.suggestedQuantity).toBe(140);
+      expect(result.sizing.riskOfPosition).toBe(700);
+      expect(findCheck(result, 'regime_sizing').detail).toMatch(/active/);
+    });
+
+    it('stacks multiplicatively with step-down sizing when both are active', () => {
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({ consecutiveLosses: 2, marketAtrPct: 6, regimeAtrThresholdPct: 3, regimeSizeCutPct: 30 }),
+      );
+      expect(result.stepDownActive).toBe(true);
+      expect(result.regimeActive).toBe(true);
+      // 1% * (1 - 50%) * (1 - 30%) = 0.35% of 100,000 = 350 / $5 stop = 70 shares
+      expect(result.sizing.suggestedQuantity).toBe(70);
+    });
+
+    it('reports active with regimeSizeCutPct left at 0 (default) but applies no actual size change', () => {
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({ marketAtrPct: 6, regimeAtrThresholdPct: 3, regimeSizeCutPct: 0 }),
+      );
+      expect(result.regimeActive).toBe(true);
+      expect(result.sizing.suggestedQuantity).toBe(200); // unchanged — same as full 1% sizing
+    });
+  });
+
   describe('daily drawdown halt', () => {
     it('passes when today is flat or positive', () => {
       const result = evaluateRiskCheck(signal(), baseCtx({ dailyPnl: 0 }));

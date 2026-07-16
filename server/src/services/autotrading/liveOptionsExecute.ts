@@ -537,6 +537,11 @@ async function finishEntryPlacement(
  */
 export async function runLiveOptionsExecution(
   candidates: { signal: OptionsTradeSignal }[],
+  /** Regime-aware sizing (2026-07-16) — same market-ATR% reading loop.ts
+   *  already computed once this cycle for its volatility hard-cutoff, not
+   *  re-fetched here. Defaults to null (regime cut inactive) for any caller
+   *  that doesn't have/need one, e.g. a direct test call. */
+  marketAtrPct: number | null = null,
 ): Promise<LiveOptionsExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
   const equity = cfg.accountEquityUsd ?? 0;
@@ -612,6 +617,9 @@ export async function runLiveOptionsExecution(
       maxCorrelatedExposurePct: cfg.maxCorrelatedExposurePct,
       maxTradesPerDay: cfg.maxTradesPerDay,
       correlationThreshold: cfg.correlationThreshold,
+      marketAtrPct,
+      regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
+      regimeSizeCutPct: cfg.regimeSizeCutPct,
     };
     const result = evaluateOptionsRiskCheck(signal, ctx);
     if (!result.ok) {

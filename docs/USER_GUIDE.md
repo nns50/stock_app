@@ -668,8 +668,17 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   correlated exposure** (% of equity cap on capital, not risk, already concentrated in
   tickers statistically correlated with a candidate — by default |r| ≥ 0.7 over 30
   trading days, both now their own **correlation lookback (days)** and **correlation
-  threshold (|r|)** fields right below it), and **max trades per day** (a hard cap on
-  new entries, paper and live, stocks and options, all combined). Every field here
+  threshold (|r|)** fields right below it), **max trades per day** (a hard cap on
+  new entries, paper and live, stocks and options, all combined), and **regime ATR
+  threshold** with **regime size cut** (a softer, graduated companion to **max market
+  ATR** below: once the broad-market proxy's own ATR% crosses this LOWER threshold,
+  new positions size down by the cut % instead of being blocked outright — max market
+  ATR still blocks everything once volatility gets more extreme; mirrors step-down
+  sizing above, just keyed to market volatility instead of a losing streak, and stacks
+  with it if both are active at once. Regime size cut defaults to 0% — disabled, so
+  leaving it untouched changes nothing regardless of the threshold's own value. **Live
+  and paper only — no backtest equivalent**, same as max market ATR itself; watch
+  **Recent activity**'s risk-check entries to see it fire). Every field here
   applies to paper and live trading alike, and each has its own **Save** button, so
   you can change one without touching the rest. For a plain-English walkthrough of each of these — with worked
   examples and guidance on what to change when nothing's trading — see

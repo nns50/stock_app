@@ -1,14 +1,15 @@
 # Automated Trading — Specification
 
-**Status: all phases (1-17) shipped and running.** Equities screening, decision, risk
+**Status: all phases (1-18) shipped and running.** Equities screening, decision, risk
 engine, backtesting, paper execution, monitoring/kill-switch, and the live-trading gate
 (phases 1-8) are built and have each cleared adversarial review. An options-trading
 addition (phases 9-13 — screening & decision, risk engine & combined budget, backtesting,
 paper execution & expiration management, and monitoring) has since been scoped, approved,
 and shipped on top of the same codebase, followed by live options trading, bidirectional
-(long/short) equity and options trading, and options price-based exits (phases 14-17 —
-see "Phased roadmap" below). This is the reference spec for adding a fully
-**autonomous** execution loop (screen → decide → risk-check → place orders) to the app.
+(long/short) equity and options trading, options price-based exits, and regime-aware
+position sizing (phases 14-18 — see "Phased roadmap" below). This is the reference spec
+for adding a fully **autonomous** execution loop (screen → decide → risk-check → place
+orders) to the app.
 
 This is a different capability from the existing live-trading feature described in
 [`LIVE_TRADING_DESIGN.md`](./LIVE_TRADING_DESIGN.md), which requires a human to type a
@@ -2031,6 +2032,78 @@ reaching them.
       place; a dedicated test in each now proves an explicit `0` behaves
       identically to an omitted field, since a client can reach that exact
       input through the backtest routes' own pass-through.
+
+18. **Regime-aware position sizing — shipped (2026-07-16).** A softer,
+    graduated companion to the existing `maxMarketAtrPct` hard cutoff: once
+    the broad-market proxy's (SPY) own ATR% crosses a lower
+    `regimeAtrThresholdPct`, new positions size down by `regimeSizeCutPct`
+    instead of being blocked outright — `maxMarketAtrPct` still blocks
+    everything once volatility gets more extreme. Mirrors the existing
+    `stepDownAfterLosses`/`stepDownSizeCutPct` mechanism (a consecutive-loss
+    streak cuts size the same way), just keyed to market volatility instead
+    of a losing streak.
+    - **No new fetch.** `loop.ts` already computes `marketAtrPct` once per
+      cycle (`getMarketAtrPct('SPY')`) for the existing volatility filter;
+      this reuses that SAME reading, threaded into `RiskCheckContext` and
+      on into `runPaperExecution`/`runOptionsPaperExecution`/
+      `runLiveExecution`/`runLiveOptionsExecution` as a new parameter
+      (default `null` — regime cut inactive — for any caller that doesn't
+      have one, e.g. a direct test call). The manual `/risk-check` preview
+      route self-fetches its own fresh reading instead, matching that
+      route's existing "re-fetch everything fresh" design rather than
+      requiring a caller to thread one in.
+    - **Same insertion point as step-down, stacks multiplicatively.**
+      `evaluateRiskCheck()`/`evaluateOptionsRiskCheck()` extend the existing
+      `effectiveRiskPct` formula with a second multiplicative factor:
+      `riskPerTradePct × (step-down factor) × (regime factor)` — both cuts
+      apply together when both are active, exactly like step-down sizing
+      and live probation already stack (sequential multiply-then-floor, no
+      "smallest wins" logic anywhere in this codebase). `RiskCheckContext`
+      is a single shared type (`riskCheck.ts`, reused by
+      `optionsRiskCheck.ts`, not duplicated) — extending it once updated
+      both the equity and options sizing paths.
+    - **Config.** `AutotradeConfig.regimeAtrThresholdPct` (default `3`, a
+      real threshold — unlike most brand-new fields this session, this one
+      isn't inert at its default) / `regimeSizeCutPct` (default `0` =
+      disabled — so an untouched config changes nothing regardless of the
+      threshold's own value), routed through `PUT /api/autotrade/config`
+      only. The backtest routes' own risk-param override schema
+      (`backtestRiskParamsSchema`) deliberately does NOT gain these two
+      fields — see the scope boundary below.
+    - **Scope: LIVE + PAPER only, same boundary as `maxMarketAtrPct`
+      itself.** All three backtest engines explicitly pass `marketAtrPct:
+      null` (regime cut unconditionally inactive) into every
+      `RiskCheckContext` they build, with a comment pointing back to
+      `maxMarketAtrPct`/`maxTickerAtrPct`/`sessionBufferMinutes`'s own
+      pre-existing "no backtest equivalent" note — no live SPY-proxy ATR
+      series is wired into any backtest engine today, and none of the six
+      other session-volatility fields are simulated in a historical daily-bar
+      replay either.
+    - **UI.** Two new Configuration fields (**Regime ATR threshold (%)**,
+      **Regime size cut (%)**) placed right after **Max trades per day** —
+      the same relative position as `regimeAtrThresholdPct`/
+      `regimeSizeCutPct` in `AutotradeConfig` itself. No new dashboard
+      surface for the live market-ATR% reading itself (unlike consecutive
+      losses, which the dashboard already tracks) — a per-poll live provider
+      fetch on the frequently-polled dashboard endpoint would reintroduce
+      exactly the kind of wasteful repeated-fetch cost the earlier
+      performance phases (see the Perf sub-phases above) fixed. The
+      `regime_sizing` check this feature adds already flows into every
+      risk-check's own journaled `checks` array (**Recent activity**),
+      exactly like `step_down_sizing` always has — sufficient visibility
+      without a new always-on fetch.
+    - **Verified:** every new/changed test (the formula's active/inactive/
+      stacking behavior for both equity and options, the config
+      sanitizer, and a dedicated loop-level test proving `getMarketAtrPct`
+      is called exactly once per tick and reused, not re-fetched) confirmed
+      genuinely failing on a reverted source change before being restored.
+      Also fixed along the way: the formula's own `marketAtrPct === null`
+      checks used strict equality, which crashed (`.toFixed` on `undefined`)
+      against several pre-existing test fixtures that build a
+      `RiskCheckContext`-shaped mock without every current field — switched
+      to `== null` so the code is robust to a caller (test or otherwise)
+      that omits the field entirely, not just one that passes `null`
+      explicitly.
 
 ---
 

@@ -626,6 +626,15 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
         maxConcurrentPositions: cfg.maxConcurrentPositions,
         correlatedNotional: correlated,
         ...riskParams,
+        // Regime-aware sizing has no backtest equivalent (2026-07-16) — same
+        // documented scope boundary as maxMarketAtrPct/maxTickerAtrPct/
+        // sessionBufferMinutes above: no live SPY-proxy ATR series is wired
+        // into any backtest engine. null unconditionally disables the cut
+        // regardless of the two threshold/magnitude values (see
+        // evaluateRiskCheck's own regimeActive computation).
+        marketAtrPct: null,
+        regimeAtrThresholdPct: 0,
+        regimeSizeCutPct: 0,
       };
       const result = evaluateRiskCheck(signal, ctx);
       if (!result.ok) continue;

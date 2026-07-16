@@ -518,12 +518,33 @@ describe('runAutotradeLoopTick', () => {
 
     expect(mockScreen).toHaveBeenCalledTimes(1);
     expect(mockDecide).toHaveBeenCalledWith([candidate('AAPL', 2)], { stopAtrMultiple: 1.5, targetRMultiple: 2 });
-    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed);
+    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed, 2);
     expect(summary.ranEntries).toBe(true);
     expect(summary.candidatesScreened).toBe(1);
     expect(summary.candidatesPassedVolatility).toBe(1);
     expect(summary.signalsGenerated).toBe(1);
     expect(summary.entriesOpened).toBe(1);
+  });
+
+  it('fetches the market-ATR% reading exactly once per tick, reusing it for both the volatility hard-cutoff and regime-aware sizing (2026-07-16)', async () => {
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+    mockOptionsDecide.mockResolvedValue({ signals: [], skipped: [] });
+
+    await runAutotradeLoopTick();
+
+    // Not re-fetched a second time for sizing — the SAME reading already
+    // computed for the volatility filter is threaded through to execution.
+    expect(mockMarketAtr).toHaveBeenCalledTimes(1);
+    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed, 2);
   });
 
   it('threads the configured screening/decision thresholds through, not the hardcoded legacy defaults', async () => {
@@ -625,9 +646,9 @@ describe('runAutotradeLoopTick', () => {
 
     // Equity's batch is seeded from options' pre-existing snapshot...
     expect(mockOptionsSeed).toHaveBeenCalledWith(optSnapshot);
-    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], seed);
+    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], seed, 2);
     // ...and options execution runs too, on its own decided signals.
-    expect(mockOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }]);
+    expect(mockOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }], 2);
     expect(summary.optionsEntriesOpened).toBe(1);
   });
 
@@ -950,7 +971,7 @@ describe('runAutotradeLoopTick', () => {
 
       expect(mockScreen).toHaveBeenCalledTimes(1); // screening ran — live alone was enough to justify it
       expect(mockExecute).not.toHaveBeenCalled(); // paper stayed off
-      expect(mockLiveExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }]);
+      expect(mockLiveExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], 2);
       expect(summary.ranEntries).toBe(true);
       expect(summary.entriesOpened).toBe(0);
       expect(summary.liveEntriesOpened).toBe(1);
@@ -1094,7 +1115,7 @@ describe('runAutotradeLoopTick', () => {
 
       const summary = await runAutotradeLoopTick();
 
-      expect(mockLiveOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }]);
+      expect(mockLiveOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }], 2);
       expect(summary.liveOptionsEntriesOpened).toBe(1);
     });
 

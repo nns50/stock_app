@@ -260,6 +260,11 @@ const EMPTY_SEED: PaperPortfolioSeed = {
 export async function runPaperExecution(
   candidates: { signal: TradeSignal }[],
   seed: PaperPortfolioSeed = EMPTY_SEED,
+  /** Regime-aware sizing (2026-07-16) — the SAME market-ATR% reading loop.ts
+   *  already computes once per cycle for its own volatility hard-cutoff, not
+   *  re-fetched here. Defaults to null (regime cut inactive) for any caller
+   *  that doesn't have/need one, e.g. a direct test call. */
+  marketAtrPct: number | null = null,
 ): Promise<ExecutionOutcome[]> {
   const config = getAutotradeConfig();
   const equity = config.accountEquityUsd ?? 0;
@@ -311,6 +316,9 @@ export async function runPaperExecution(
       maxCorrelatedExposurePct: config.maxCorrelatedExposurePct,
       maxTradesPerDay: config.maxTradesPerDay,
       correlationThreshold: config.correlationThreshold,
+      marketAtrPct,
+      regimeAtrThresholdPct: config.regimeAtrThresholdPct,
+      regimeSizeCutPct: config.regimeSizeCutPct,
     };
     const result = evaluateRiskCheck(signal, ctx);
     logAutotradeEvent({

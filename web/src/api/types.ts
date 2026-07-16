@@ -1074,6 +1074,9 @@ export interface AutotradeConfig {
   maxAggregateOpenRiskPct: number;
   maxCorrelatedExposurePct: number;
   maxTradesPerDay: number;
+  // --- Regime-aware sizing (live + paper only; 0 disables) ---
+  regimeAtrThresholdPct: number;
+  regimeSizeCutPct: number;
 
   // --- Screening/decision thresholds ---
   tradeDirection: AutotradeTradeDirectionMode;

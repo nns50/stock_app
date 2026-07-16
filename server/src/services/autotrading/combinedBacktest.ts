@@ -707,6 +707,11 @@ export async function simulateCombinedBacktest(
         maxConcurrentPositions: cfg.maxConcurrentPositions,
         correlatedNotional: correlated,
         ...riskParams,
+        // Regime-aware sizing has no backtest equivalent (2026-07-16) — see
+        // backtest.ts's own identical note. null unconditionally disables it.
+        marketAtrPct: null,
+        regimeAtrThresholdPct: 0,
+        regimeSizeCutPct: 0,
       };
       const result = evaluateRiskCheck(signal, ctx);
       if (!result.ok) continue;
@@ -883,6 +888,11 @@ export async function simulateCombinedBacktest(
         maxConcurrentPositions: cfg.maxConcurrentPositions,
         correlatedNotional: correlated,
         ...riskParams,
+        // Regime-aware sizing has no backtest equivalent (2026-07-16) — see
+        // backtest.ts's own identical note. null unconditionally disables it.
+        marketAtrPct: null,
+        regimeAtrThresholdPct: 0,
+        regimeSizeCutPct: 0,
       };
       const result = evaluateOptionsRiskCheck(
         shortRef

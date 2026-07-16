@@ -492,18 +492,28 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       const outcomes = await runPaperExecution(
         decision.signals.map((signal) => ({ signal })),
         seed,
+        marketAtrPct,
       );
       summary.entriesOpened = outcomes.filter((o) => o.ok).length;
 
-      const optionsOutcomes = await runOptionsPaperExecution(optionsDecision.signals.map((signal) => ({ signal })));
+      const optionsOutcomes = await runOptionsPaperExecution(
+        optionsDecision.signals.map((signal) => ({ signal })),
+        marketAtrPct,
+      );
       summary.optionsEntriesOpened = optionsOutcomes.filter((o) => o.ok).length;
     }
     if (liveStillActive) {
-      const liveOutcomes = await runLiveExecution(decision.signals.map((signal) => ({ signal })));
+      const liveOutcomes = await runLiveExecution(
+        decision.signals.map((signal) => ({ signal })),
+        marketAtrPct,
+      );
       summary.liveEntriesOpened = liveOutcomes.filter((o) => o.ok).length;
     }
     if (liveOptionsStillActive) {
-      const liveOptionsOutcomes = await runLiveOptionsExecution(optionsDecision.signals.map((signal) => ({ signal })));
+      const liveOptionsOutcomes = await runLiveOptionsExecution(
+        optionsDecision.signals.map((signal) => ({ signal })),
+        marketAtrPct,
+      );
       summary.liveOptionsEntriesOpened = liveOptionsOutcomes.filter((o) => o.ok).length;
     }
     summary.ranEntries = true;

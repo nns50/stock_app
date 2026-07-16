@@ -1432,6 +1432,8 @@ export default function AutoTradePage() {
   const [maxAggregateOpenRiskPctDraft, setMaxAggregateOpenRiskPctDraft] = useState<number | undefined>();
   const [maxCorrelatedExposurePctDraft, setMaxCorrelatedExposurePctDraft] = useState<number | undefined>();
   const [maxTradesPerDayDraft, setMaxTradesPerDayDraft] = useState<number | undefined>();
+  const [regimeAtrThresholdPctDraft, setRegimeAtrThresholdPctDraft] = useState<number | undefined>();
+  const [regimeSizeCutPctDraft, setRegimeSizeCutPctDraft] = useState<number | undefined>();
   const [minRelVolDraft, setMinRelVolDraft] = useState<number | undefined>();
   const [maxTickerAtrPctDraft, setMaxTickerAtrPctDraft] = useState<number | undefined>();
   const [maxMarketAtrPctDraft, setMaxMarketAtrPctDraft] = useState<number | undefined>();
@@ -1486,6 +1488,8 @@ export default function AutoTradePage() {
     setMaxAggregateOpenRiskPctDraft(config.data.maxAggregateOpenRiskPct);
     setMaxCorrelatedExposurePctDraft(config.data.maxCorrelatedExposurePct);
     setMaxTradesPerDayDraft(config.data.maxTradesPerDay);
+    setRegimeAtrThresholdPctDraft(config.data.regimeAtrThresholdPct);
+    setRegimeSizeCutPctDraft(config.data.regimeSizeCutPct);
     setMinRelVolDraft(config.data.minRelVol);
     setMaxTickerAtrPctDraft(config.data.maxTickerAtrPct);
     setMaxMarketAtrPctDraft(config.data.maxMarketAtrPct);
@@ -1536,6 +1540,8 @@ export default function AutoTradePage() {
     maxAggregateOpenRiskPct?: number;
     maxCorrelatedExposurePct?: number;
     maxTradesPerDay?: number;
+    regimeAtrThresholdPct?: number;
+    regimeSizeCutPct?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     maxTickerAtrPct?: number;
@@ -1586,6 +1592,8 @@ export default function AutoTradePage() {
       setMaxAggregateOpenRiskPctDraft(saved.maxAggregateOpenRiskPct);
       setMaxCorrelatedExposurePctDraft(saved.maxCorrelatedExposurePct);
       setMaxTradesPerDayDraft(saved.maxTradesPerDay);
+      setRegimeAtrThresholdPctDraft(saved.regimeAtrThresholdPct);
+      setRegimeSizeCutPctDraft(saved.regimeSizeCutPct);
       setMinRelVolDraft(saved.minRelVol);
       setMaxTickerAtrPctDraft(saved.maxTickerAtrPct);
       setMaxMarketAtrPctDraft(saved.maxMarketAtrPct);
@@ -2432,6 +2440,66 @@ export default function AutoTradePage() {
                     maxTradesPerDayDraft == null ||
                     maxTradesPerDayDraft < 0 ||
                     maxTradesPerDayDraft === config.data?.maxTradesPerDay
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Regime ATR threshold (%)"
+              hint="A softer, graduated companion to Max market ATR (%) below: once the broad-market proxy's own ATR% crosses THIS lower threshold, new positions size down (see Regime size cut below) instead of being blocked outright — Max market ATR (%) still blocks everything once volatility gets more extreme. Stacks with step-down sizing above if both are active at once. Live + paper only — no backtest equivalent. Check Recent activity's risk_check entries to see it fire."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={regimeAtrThresholdPctDraft}
+                  onChange={setRegimeAtrThresholdPctDraft}
+                  min={0}
+                  max={100}
+                  step={0.5}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save regime ATR threshold"
+                  onClick={() =>
+                    regimeAtrThresholdPctDraft != null &&
+                    saveConfig({ regimeAtrThresholdPct: regimeAtrThresholdPctDraft })
+                  }
+                  disabled={
+                    regimeAtrThresholdPctDraft == null ||
+                    regimeAtrThresholdPctDraft < 0 ||
+                    regimeAtrThresholdPctDraft > 100 ||
+                    regimeAtrThresholdPctDraft === config.data?.regimeAtrThresholdPct
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Regime size cut (%)"
+              hint="% cut to risk-per-trade once the regime ATR threshold above is active. 0 disables it (default) — leaving this at 0 means Regime ATR threshold has no effect regardless of its own value."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={regimeSizeCutPctDraft}
+                  onChange={setRegimeSizeCutPctDraft}
+                  min={0}
+                  max={100}
+                  step={1}
+                  placeholder="0 (no cut)"
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save regime size cut"
+                  onClick={() =>
+                    regimeSizeCutPctDraft != null && saveConfig({ regimeSizeCutPct: regimeSizeCutPctDraft })
+                  }
+                  disabled={
+                    regimeSizeCutPctDraft == null ||
+                    regimeSizeCutPctDraft < 0 ||
+                    regimeSizeCutPctDraft > 100 ||
+                    regimeSizeCutPctDraft === config.data?.regimeSizeCutPct
                   }
                 >
                   Save

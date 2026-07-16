@@ -567,7 +567,14 @@ export async function attemptLiveEntry(
  * already-approved earlier in this same call), mirroring execute.ts's
  * runPaperExecution() and riskCheck.ts's runAutotradeRiskCheck exactly.
  */
-export async function runLiveExecution(candidates: { signal: TradeSignal }[]): Promise<LiveExecutionOutcome[]> {
+export async function runLiveExecution(
+  candidates: { signal: TradeSignal }[],
+  /** Regime-aware sizing (2026-07-16) — same market-ATR% reading loop.ts
+   *  already computed once this cycle for its volatility hard-cutoff, not
+   *  re-fetched here. Defaults to null (regime cut inactive) for any caller
+   *  that doesn't have/need one, e.g. a direct test call. */
+  marketAtrPct: number | null = null,
+): Promise<LiveExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
   const equity = cfg.accountEquityUsd ?? 0;
 
@@ -643,6 +650,9 @@ export async function runLiveExecution(candidates: { signal: TradeSignal }[]): P
       maxCorrelatedExposurePct: cfg.maxCorrelatedExposurePct,
       maxTradesPerDay: cfg.maxTradesPerDay,
       correlationThreshold: cfg.correlationThreshold,
+      marketAtrPct,
+      regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
+      regimeSizeCutPct: cfg.regimeSizeCutPct,
     };
     const result = evaluateRiskCheck(signal, ctx);
     if (!result.ok) {

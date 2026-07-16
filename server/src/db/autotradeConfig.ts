@@ -102,6 +102,31 @@ export interface AutotradeConfig {
   maxCorrelatedExposurePct: number;
   /** Max entries (paper + live combined) risk-check will approve per day. */
   maxTradesPerDay: number;
+  /** Regime-aware sizing (added 2026-07-16, follow-up to phase 17 — see
+   *  docs/AUTOTRADING_SPEC.md phase 18): a SOFTER, graduated companion to
+   *  `maxMarketAtrPct` above, keyed to the SAME broad-market-proxy (SPY) ATR%
+   *  reading `maxMarketAtrPct` already computes once per loop cycle (see
+   *  executionGuards.ts's getMarketAtrPct) — no new fetch. Where
+   *  `maxMarketAtrPct` is a hard cutoff (blocks EVERY new entry once
+   *  tripped), this cuts POSITION SIZE once market ATR% crosses this lower
+   *  threshold, exactly like `stepDownSizeCutPct` cuts size after a losing
+   *  streak — same insertion point (a multiplicative cut to
+   *  `riskPerTradePct`, before sizing math), and stacks WITH step-down if
+   *  both are active at once (multiplicative, matching how step-down and
+   *  live probation already stack). Intended to sit below
+   *  `maxMarketAtrPct`'s own threshold (elevated-but-not-extreme volatility
+   *  sizes down; extreme volatility still blocks entirely) — not enforced
+   *  against each other, same as every other pair of independently-editable
+   *  guardrail fields in this config. LIVE + PAPER only, same scope boundary
+   *  as `maxMarketAtrPct` itself: a historical backtest has no live SPY-proxy
+   *  ATR series wired in (see that field's own note below), so this has no
+   *  backtest equivalent either. */
+  regimeAtrThresholdPct: number;
+  /** % cut to riskPerTradePct once regimeAtrThresholdPct is active. Defaults
+   *  to 0 (disabled) — unlike stepDownSizeCutPct (a pre-existing, always-on
+   *  behavior this config merely made tunable), this is a brand-new feature,
+   *  so an untouched config changes nothing. */
+  regimeSizeCutPct: number;
 
   // --- Screening/decision thresholds (docs/AUTOTRADING_SPEC.md — RESEARCH &
   // SCREEN / DECISION). Same treatment, extraction, and reasoning as the
@@ -389,6 +414,8 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
     maxTradesPerDay: 6,
+    regimeAtrThresholdPct: 3,
+    regimeSizeCutPct: 0,
     tradeDirection: 'long',
     minRelVol: 1.5,
     maxTickerAtrPct: 15,
@@ -502,6 +529,8 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     maxAggregateOpenRiskPct: pct(input.maxAggregateOpenRiskPct, d.maxAggregateOpenRiskPct),
     maxCorrelatedExposurePct: pct(input.maxCorrelatedExposurePct, d.maxCorrelatedExposurePct),
     maxTradesPerDay: posInt(input.maxTradesPerDay, d.maxTradesPerDay),
+    regimeAtrThresholdPct: pct(input.regimeAtrThresholdPct, d.regimeAtrThresholdPct),
+    regimeSizeCutPct: pct(input.regimeSizeCutPct, d.regimeSizeCutPct),
     tradeDirection:
       input.tradeDirection === 'long' || input.tradeDirection === 'short' || input.tradeDirection === 'both'
         ? input.tradeDirection
