@@ -293,6 +293,14 @@ export default function ScreenerPage() {
                 Require trend alignment
               </label>
               <label className="flex items-center gap-2 text-xs text-slate-400 mt-1">
+                <input
+                  type="checkbox"
+                  checked={!!cfg.filters.requireWeeklyTrendAlignment}
+                  onChange={(e) => setFilter('requireWeeklyTrendAlignment', e.target.checked)}
+                />
+                Require weekly trend alignment
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-400 mt-1">
                 <input type="checkbox" checked={includeFailed} onChange={(e) => setIncludeFailed(e.target.checked)} />
                 Include filtered-out (full breakdown)
               </label>

@@ -36,6 +36,16 @@ export interface ScreenerFilters {
   rsiMax?: number;
   /** Require price to align with the chosen direction relative to its MAs. */
   requireTrendAlignment?: boolean;
+  /** Require price to ALSO align with the chosen direction relative to its
+   *  WEEKLY moving average (2026-07-16, docs/AUTOTRADING_SPEC.md phase 19) —
+   *  a second, longer-horizon confirmation on top of requireTrendAlignment's
+   *  daily-only check, same cfg.maShort period reused on a weekly candle
+   *  series instead of a second config field. Fails CLOSED like
+   *  requireTrendAlignment does: unavailable weekly data (insufficient
+   *  history, or the caller didn't compute one at all — see
+   *  IndicatorSnapshot.weeklyMaShort) blocks the candidate rather than
+   *  silently passing it. */
+  requireWeeklyTrendAlignment?: boolean;
 }
 
 export interface ScreenerConfig {
@@ -74,6 +84,12 @@ export interface IndicatorSnapshot {
   avgVolume: number | null;
   volume: number | null;
   gapPct: number | null;
+  /** WEEKLY-timeframe maShort (2026-07-16) — null when the caller didn't
+   *  compute/pass one in (see computeIndicators's own weeklyIndicators
+   *  param), not just when weekly history is insufficient; either way,
+   *  requireWeeklyTrendAlignment treats null as "not confirmed," same
+   *  fail-closed posture as requireTrendAlignment's own daily maShort. */
+  weeklyMaShort: number | null;
 }
 
 export interface ComponentScore {
@@ -227,13 +243,25 @@ export function candleIndicatorsAt(series: CandleIndicatorSeries, i: number): Ca
  *  original behavior, unchanged for any caller that omits it) lets a caller
  *  treat `candles` as a fixed FULL history and simulate "as of this earlier
  *  day" without slicing it down first — a backtest's day-by-day loop needs
- *  exactly this to avoid an O(n) array copy on every single simulated day. */
+ *  exactly this to avoid an O(n) array copy on every single simulated day.
+ *
+ *  `weeklyIndicators` (2026-07-16): the CLOSED-week counterpart of
+ *  `cachedCandleIndicators` — the caller computes it (via
+ *  computeCandleIndicators/candleIndicatorsAt against a WEEKLY candle
+ *  series, using closedWeeklyIndexAsOf — see backtest.ts's own doc comment
+ *  on why the plain daily indexAsOf() can't be reused here) and passes only
+ *  its `.maShort` through onto the returned snapshot. Undefined/null (the
+ *  default) when the caller hasn't computed one — e.g. because
+ *  requireWeeklyTrendAlignment isn't actually enabled, matching this
+ *  codebase's established "don't do work nobody asked for" convention (see
+ *  optionsExecute.ts's priceRulesActive gate for the same pattern). */
 export function computeIndicators(
   candles: Candle[],
   quote: Quote | undefined,
   cfg: ScreenerConfig,
   cachedCandleIndicators?: CandleIndicators,
   asOfIndex?: number,
+  weeklyIndicators?: CandleIndicators | null,
 ): IndicatorSnapshot | null {
   const end = asOfIndex ?? candles.length - 1;
   if (end < 1 || end >= candles.length) return null;
@@ -274,6 +302,7 @@ export function computeIndicators(
     avgVolume,
     volume,
     gapPct: gap,
+    weeklyMaShort: weeklyIndicators?.maShort ?? null,
   };
 }
 
@@ -355,8 +384,8 @@ const LABELS: Record<IndicatorKey, string> = {
 };
 
 /** Score a single symbol; returns the full transparent breakdown.
- *  `cachedCandleIndicators`/`asOfIndex` pass straight through to
- *  computeIndicators — see its own doc comment. */
+ *  `cachedCandleIndicators`/`asOfIndex`/`weeklyIndicators` pass straight
+ *  through to computeIndicators — see its own doc comment. */
 export function scoreSymbol(
   symbol: string,
   candles: Candle[],
@@ -364,8 +393,9 @@ export function scoreSymbol(
   cfg: ScreenerConfig,
   cachedCandleIndicators?: CandleIndicators,
   asOfIndex?: number,
+  weeklyIndicators?: CandleIndicators | null,
 ): SymbolScore {
-  const ind = computeIndicators(candles, quote, cfg, cachedCandleIndicators, asOfIndex);
+  const ind = computeIndicators(candles, quote, cfg, cachedCandleIndicators, asOfIndex, weeklyIndicators);
   return scoreFromIndicators(symbol, ind, cfg, quote?.last ?? 0);
 }
 
@@ -386,8 +416,9 @@ export function scoreSymbolBothDirections(
   cfg: ScreenerConfig,
   cachedCandleIndicators?: CandleIndicators,
   asOfIndex?: number,
+  weeklyIndicators?: CandleIndicators | null,
 ): { long: SymbolScore; short: SymbolScore } {
-  const ind = computeIndicators(candles, quote, cfg, cachedCandleIndicators, asOfIndex);
+  const ind = computeIndicators(candles, quote, cfg, cachedCandleIndicators, asOfIndex, weeklyIndicators);
   const fallbackPrice = quote?.last ?? 0;
   return {
     long: scoreFromIndicators(symbol, ind, { ...cfg, direction: 'long' }, fallbackPrice),
@@ -481,6 +512,12 @@ function applyFilters(ind: IndicatorSnapshot, cfg: ScreenerConfig): { passed: bo
       ind.maShort !== null && ind.maLong !== null && (long ? ind.price > ind.maShort : ind.price < ind.maShort);
     if (!aligned) reasons.push(`not ${cfg.direction}-aligned vs ${cfg.maShort}MA`);
   }
+  if (f.requireWeeklyTrendAlignment) {
+    const long = cfg.direction === 'long';
+    const aligned =
+      ind.weeklyMaShort !== null && (long ? ind.price > ind.weeklyMaShort : ind.price < ind.weeklyMaShort);
+    if (!aligned) reasons.push(`not ${cfg.direction}-aligned vs weekly ${cfg.maShort}MA`);
+  }
   return { passed: reasons.length === 0, reasons };
 }
 
@@ -499,5 +536,6 @@ function emptySnapshot(price: number): IndicatorSnapshot {
     avgVolume: null,
     volume: null,
     gapPct: null,
+    weeklyMaShort: null,
   };
 }

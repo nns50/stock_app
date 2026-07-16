@@ -173,10 +173,10 @@ this is the same persistent list Auto-Trade's screener draws from.
 
 ### Filters vs. score
 
-Filters (price, average volume, RSI band, trend alignment) are applied **separately**
-from scoring. A symbol can score well yet be flagged as *not passing* your filters,
-with the reasons shown. Toggle **"Include filtered-out (full breakdown)"** to see
-everything, including why each was excluded.
+Filters (price, average volume, RSI band, trend alignment — daily and weekly) are
+applied **separately** from scoring. A symbol can score well yet be flagged as *not
+passing* your filters, with the reasons shown. Toggle **"Include filtered-out (full
+breakdown)"** to see everything, including why each was excluded.
 
 ### Direction, presets & config
 
@@ -698,7 +698,13 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   entries are unaffected either way — an autotrade options position is always long the
   contract, a put for a bearish read instead of a call, which is already defined-risk),
   **min relative volume** (a candidate's volume must be at least this many
-  times its own average to pass the screener), **max ticker ATR** and **max market
+  times its own average to pass the screener), **require weekly trend alignment** (a
+  second, longer-horizon confirmation on top of the daily setup: price must ALSO be on
+  the right side of its own WEEKLY moving average — unlike the plain "require trend
+  alignment" screener filter, this one is wired into the unattended loop itself, so
+  toggling it actually changes what the loop trades, not just what a manual preview
+  shows; off by default, and live, paper, and backtest all honor it — watch **Recent
+  activity** to see it fire), **max ticker ATR** and **max market
   ATR** (skip a candidate whose own volatility is too high, or skip every new entry
   this cycle if SPY's own volatility is too high — stricter than the manual Screen/
   Decision preview below, since an unattended loop has no one to override a bad read),

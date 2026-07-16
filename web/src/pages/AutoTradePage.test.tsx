@@ -51,6 +51,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     regimeSizeCutPct: 0,
     tradeDirection: 'long',
     minRelVol: 1.5,
+    requireWeeklyTrendAlignment: false,
     maxTickerAtrPct: 15,
     maxMarketAtrPct: 5,
     stopAtrMultiple: 1.5,
@@ -258,6 +259,37 @@ describe('AutoTradePage', () => {
     fireEvent.click(saveButton);
 
     await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ regimeSizeCutPct: 25, confirmAggressive: undefined }));
+  });
+
+  it('reflects a fetched requireWeeklyTrendAlignment: true as a checked checkbox', async () => {
+    vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture({ requireWeeklyTrendAlignment: true }));
+    renderPage();
+    await screen.findByText('VNQ');
+    // Unlike 'Auto-trading enabled' elsewhere in this file, this field's
+    // fixture value (true) differs from its useState default (false), so
+    // this assertion can actually distinguish "config hydrated" from "still
+    // on the initial default" — which means it also genuinely needs to wait
+    // for that hydration, not just for the (separately-fetched) exclusion
+    // list's own VNQ text to land. Same config-hydration-is-not-synchronous-
+    // with-VNQ caution as the account equity test above.
+    await waitFor(() => {
+      const checkbox = screen.getByLabelText('Require weekly trend alignment') as HTMLInputElement;
+      expect(checkbox.checked).toBe(true);
+    });
+  });
+
+  it('toggling require weekly trend alignment saves immediately (no separate Save button)', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByLabelText('Require weekly trend alignment'));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ requireWeeklyTrendAlignment: true, confirmAggressive: undefined }),
+    );
   });
 
   it('saves a new options stop-loss % value', async () => {

@@ -1,15 +1,15 @@
 # Automated Trading — Specification
 
-**Status: all phases (1-18) shipped and running.** Equities screening, decision, risk
+**Status: all phases (1-19) shipped and running.** Equities screening, decision, risk
 engine, backtesting, paper execution, monitoring/kill-switch, and the live-trading gate
 (phases 1-8) are built and have each cleared adversarial review. An options-trading
 addition (phases 9-13 — screening & decision, risk engine & combined budget, backtesting,
 paper execution & expiration management, and monitoring) has since been scoped, approved,
 and shipped on top of the same codebase, followed by live options trading, bidirectional
-(long/short) equity and options trading, options price-based exits, and regime-aware
-position sizing (phases 14-18 — see "Phased roadmap" below). This is the reference spec
-for adding a fully **autonomous** execution loop (screen → decide → risk-check → place
-orders) to the app.
+(long/short) equity and options trading, options price-based exits, regime-aware
+position sizing, and multi-timeframe (daily + weekly) trend confirmation (phases 14-19 —
+see "Phased roadmap" below). This is the reference spec for adding a fully
+**autonomous** execution loop (screen → decide → risk-check → place orders) to the app.
 
 This is a different capability from the existing live-trading feature described in
 [`LIVE_TRADING_DESIGN.md`](./LIVE_TRADING_DESIGN.md), which requires a human to type a
@@ -2104,6 +2104,90 @@ reaching them.
       to `== null` so the code is robust to a caller (test or otherwise)
       that omits the field entirely, not just one that passes `null`
       explicitly.
+
+19. **Multi-timeframe (daily + weekly) trend confirmation — shipped
+    (2026-07-16).** A second, longer-horizon check on top of the existing
+    `requireTrendAlignment` (daily-only) filter: price must ALSO be on the
+    right side of its own **weekly** moving average, using the same
+    `maShort` period against weekly instead of daily candles. A **filter**,
+    not a scored component — like `requireTrendAlignment`, it either blocks
+    a candidate or it doesn't, rather than nudging the 0-100 score, so it
+    needed no new scoring weight and no About-page component-table entry.
+    - **Reuses the existing scoring engine, not a parallel one.**
+      `computeCandleIndicators`/`computeCandleIndicatorSeries`/
+      `candleIndicatorsAt` (`indicators/screener.ts`) are already fully
+      timeframe-agnostic — they take whatever `Candle[]` they're handed, so
+      the SAME functions run unmodified against a weekly series. Only one
+      new derived value threads through `computeIndicators()`/`scoreSymbol()`/
+      `scoreSymbolBothDirections()`: an optional `weeklyIndicators` param,
+      whose `.maShort` lands on `IndicatorSnapshot.weeklyMaShort` — not a
+      second full candle array threaded through the whole pipeline.
+    - **Fails CLOSED, matching `requireTrendAlignment`'s own precedent.**
+      `weeklyMaShort === null` (no weekly data computed/available) blocks
+      the candidate rather than silently passing it — the same
+      candidate-specific-data-missing convention `scoreFromIndicators`
+      already uses elsewhere, and a deliberately different posture from the
+      market-wide `maxMarketAtrPct`/regime-sizing checks (phase 18), which
+      fail OPEN on missing data because those describe an unknown *market*
+      condition rather than a missing *candidate* signal.
+    - **Live/paper: `screen.ts` fetches weekly candles only when the filter
+      is enabled** (`cfg.filters.requireWeeklyTrendAlignment`) — same
+      don't-do-unrequested-work gate as the earnings-blackout lookup and
+      `optionsExecute.ts`'s own `priceRulesActive` gate. A dedicated weekly
+      indicator cache (`weeklyIndicatorCache`, keyed `symbol:maShort`)
+      mirrors the existing daily `candleIndicatorCache` but stays a
+      separate `Map` so the two can never collide. The fetch pulls 40 weekly
+      bars and drops the most recent one before computing anything (`
+      cachedWeeklyIndicatorsFor`'s own `.slice(0, -1)`) — a live fetch always
+      ends at "now," so the tail bar may still be mid-week and unclosed.
+    - **Backtest: a new lookahead-bias guard, `closedWeeklyIndexAsOf`.**
+      `Candle.time` is a bar's own START, and the existing `indexAsOf()`
+      returns the week *containing* the simulated day — which, for a weekly
+      bar, is still in progress and hasn't closed yet. Using it directly
+      would leak the rest of that week's price action into "as of today."
+      `closedWeeklyIndexAsOf` backs up exactly one index from whatever
+      `indexAsOf` resolves to, needing no knowledge of the provider's actual
+      week-start-day convention (Monday vs. Sunday) — the last CLOSED week
+      is simply one behind whichever week today falls inside, regardless of
+      which weekday that week happens to start on (verified against both a
+      Monday- and a Sunday-start fixture in `backtestIndexAsOf.test.ts`).
+      All three engines (`backtest.ts`, `optionsBacktest.ts`,
+      `combinedBacktest.ts`) take an optional `weeklyHistoryBySymbol` Map,
+      precompute its indicator series once up front (mirrors the existing
+      daily precompute), and only fetch it at all
+      (`loadWeeklyBacktestHistory`, one calendar year of padding) when
+      `cfg.screenerConfig?.filters?.requireWeeklyTrendAlignment` is set —
+      omitted entirely, not just empty, for any backtest that doesn't use
+      this feature.
+    - **Config.** `AutotradeConfig.requireWeeklyTrendAlignment` (boolean,
+      default `false`), routed through `PUT /api/autotrade/config` only, and
+      — unlike `requireTrendAlignment`, which has no live-loop UI and is
+      structurally unreachable from the autonomous loop today
+      (`loop.ts` only ever passed `filters: { minRelVol }` to
+      `runAutotradeScreen`) — this phase deliberately wires the new field
+      into `loop.ts`'s own screen call too, so toggling it actually changes
+      what the unattended loop trades, not only what a manual Screen+Decide
+      preview shows. Backtests reach the same field through the already-
+      generic `screenerConfig?: Partial<ScreenerConfig>` every backtest
+      config already accepts — no new backtest-config field or route schema
+      was needed.
+    - **UI.** A **"Require weekly trend alignment"** checkbox on both the
+      Screener page (mirroring the existing "Require trend alignment"
+      checkbox) and the Auto page's Configuration card (saves immediately on
+      toggle, no separate Save button — same pattern as **Auto-trading
+      enabled**), placed after **Min relative volume (×)**.
+    - **Verified:** every new/changed test — the pure filter (inactive, fails
+      closed on missing data, blocks/passes on dis/agreement, mirrors for
+      short, accumulates with other filter reasons), `closedWeeklyIndexAsOf`
+      (including the "in-progress week's own start day" lookahead regression
+      case and the Monday/Sunday-start-agnostic case), the config sanitizer,
+      the live-loop wiring, `screen.ts`'s fetch gate (on/off), an end-to-end
+      `simulateBacktest` run (blocks, passes, filter-off isolation, and
+      fails closed when no weekly history was supplied at all), and both web
+      checkboxes (render state, save-on-toggle, and — for the Screener page
+      — the toggled value actually reaching the next `runScreener()` call) —
+      confirmed genuinely failing on a reverted source change before being
+      restored.
 
 ---
 

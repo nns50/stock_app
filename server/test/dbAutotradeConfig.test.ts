@@ -240,6 +240,32 @@ describe('autotrade config persistence', () => {
     });
   });
 
+  describe('multi-timeframe confirmation (2026-07-16)', () => {
+    it('defaults to false', () => {
+      expect(defaultAutotradeConfig().requireWeeklyTrendAlignment).toBe(false);
+      expect(getAutotradeConfig().requireWeeklyTrendAlignment).toBe(false);
+    });
+
+    it('persists true and round-trips', () => {
+      expect(setAutotradeConfig({ requireWeeklyTrendAlignment: true }).requireWeeklyTrendAlignment).toBe(true);
+      expect(getAutotradeConfig().requireWeeklyTrendAlignment).toBe(true);
+    });
+
+    it('rejects a non-boolean value, failing closed to false', () => {
+      setAutotradeConfig({ requireWeeklyTrendAlignment: true });
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+      const cfg = setAutotradeConfig({ requireWeeklyTrendAlignment: 'yes' });
+      expect(cfg.requireWeeklyTrendAlignment).toBe(false);
+    });
+
+    it('round-trips independently of unrelated patches', () => {
+      setAutotradeConfig({ requireWeeklyTrendAlignment: true });
+      const cfg = setAutotradeConfig({ riskProfile: 'AGGRESSIVE' });
+      expect(cfg.requireWeeklyTrendAlignment).toBe(true);
+      expect(cfg.riskProfile).toBe('AGGRESSIVE');
+    });
+  });
+
   describe('options strategy type', () => {
     it("defaults to 'single_leg'", () => {
       expect(defaultAutotradeConfig().optionsStrategyType).toBe('single_leg');

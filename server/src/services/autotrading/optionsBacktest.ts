@@ -13,8 +13,10 @@ import { defaultAutotradeScreenerConfig, pickDirection } from './screen';
 import {
   addDays,
   BacktestRiskParams,
+  closedWeeklyIndexAsOf,
   indexAsOf,
   loadBacktestHistory,
+  loadWeeklyBacktestHistory,
   resolveBacktestRiskParams,
   toISO,
   WARMUP_PADDING_DAYS,
@@ -385,6 +387,7 @@ export async function simulateOptionsBacktest(
   historyBySymbol: Map<string, Candle[]>,
   contractsBySymbol: Map<string, OptionContractRef[]>,
   cfg: OptionsBacktestConfig,
+  weeklyHistoryBySymbol?: Map<string, Candle[]>,
 ): Promise<OptionsBacktestReport> {
   const riskParams = resolveBacktestRiskParams(cfg);
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
@@ -456,6 +459,16 @@ export async function simulateOptionsBacktest(
   const candleIndicatorSeriesBySymbol = new Map<string, CandleIndicatorSeries>();
   for (const [symbol, candles] of historyBySymbol) {
     candleIndicatorSeriesBySymbol.set(symbol, computeCandleIndicatorSeries(candles, screenerCfg));
+  }
+  // WEEKLY counterpart (2026-07-16, multi-timeframe confirmation) — mirrors
+  // backtest.ts's simulateBacktest() own identical precompute exactly. Only
+  // built when the caller supplied a weekly history (requireWeeklyTrendAlignment
+  // enabled) — see that function's own doc comment.
+  const weeklyCandleIndicatorSeriesBySymbol = new Map<string, CandleIndicatorSeries>();
+  if (weeklyHistoryBySymbol) {
+    for (const [symbol, weeklyCandles] of weeklyHistoryBySymbol) {
+      weeklyCandleIndicatorSeriesBySymbol.set(symbol, computeCandleIndicatorSeries(weeklyCandles, screenerCfg));
+    }
   }
   // Per-symbol resume point for the scoring loop's own indexAsOf call below —
   // mirrors backtest.ts's identical indexCursor (dayMs only increases across
@@ -632,6 +645,15 @@ export async function simulateOptionsBacktest(
       const history = candles.slice(0, idx + 1);
       const series = candleIndicatorSeriesBySymbol.get(symbol)!;
       const cached = candleIndicatorsAt(series, idx) ?? undefined;
+      // The CLOSED-week weekly indicators as of today — see backtest.ts's
+      // simulateBacktest() for why closedWeeklyIndexAsOf(), not indexAsOf().
+      const weeklyCandles = weeklyHistoryBySymbol?.get(symbol);
+      const weeklyCached = weeklyCandles
+        ? (candleIndicatorsAt(
+            weeklyCandleIndicatorSeriesBySymbol.get(symbol)!,
+            closedWeeklyIndexAsOf(weeklyCandles, dayMs),
+          ) ?? undefined)
+        : undefined;
       // 'both': score this symbol as a long AND a short from the same
       // indicator computation and keep whichever direction (if either)
       // qualifies — mirrors backtest.ts's simulateBacktest() exactly, so an
@@ -640,7 +662,7 @@ export async function simulateOptionsBacktest(
       // ScreenCandidate.direction).
       const picked =
         directionMode === 'both'
-          ? pickDirection(scoreSymbolBothDirections(symbol, candles, undefined, screenerCfg, cached, idx))
+          ? pickDirection(scoreSymbolBothDirections(symbol, candles, undefined, screenerCfg, cached, idx, weeklyCached))
           : (() => {
               const score = scoreSymbol(
                 symbol,
@@ -649,6 +671,7 @@ export async function simulateOptionsBacktest(
                 { ...screenerCfg, direction: directionMode },
                 cached,
                 idx,
+                weeklyCached,
               );
               return score.passedFilters ? { direction: directionMode, score } : null;
             })();
@@ -968,13 +991,16 @@ export async function simulateOptionsBacktest(
  */
 export async function runOptionsBacktest(cfg: OptionsBacktestConfig): Promise<OptionsBacktestReport> {
   const { historyBySymbol, excludedSymbols, errors } = await loadBacktestHistory(cfg.symbols, cfg.from, cfg.to);
+  const weeklyHistoryBySymbol = cfg.screenerConfig?.filters?.requireWeeklyTrendAlignment
+    ? await loadWeeklyBacktestHistory(Array.from(historyBySymbol.keys()), cfg.from, cfg.to)
+    : undefined;
   const maxDte = defaultAutotradeEntryConfig('call').maxDaysToExpiration ?? 60;
   const contractsBySymbol = new Map<string, OptionContractRef[]>();
   for (const symbol of historyBySymbol.keys()) {
     const contracts = await getHistoricalOptionContracts(symbol, cfg.from, addDays(cfg.to, maxDte));
     contractsBySymbol.set(symbol, contracts);
   }
-  const report = await simulateOptionsBacktest(historyBySymbol, contractsBySymbol, cfg);
+  const report = await simulateOptionsBacktest(historyBySymbol, contractsBySymbol, cfg, weeklyHistoryBySymbol);
   return { ...report, excludedSymbols, errors };
 }
 
@@ -997,6 +1023,9 @@ export interface OptionsWalkForwardReport {
  *  directly comparable. */
 export async function runOptionsWalkForwardBacktest(cfg: OptionsWalkForwardConfig): Promise<OptionsWalkForwardReport> {
   const { historyBySymbol, excludedSymbols, errors } = await loadBacktestHistory(cfg.symbols, cfg.from, cfg.to);
+  const weeklyHistoryBySymbol = cfg.screenerConfig?.filters?.requireWeeklyTrendAlignment
+    ? await loadWeeklyBacktestHistory(Array.from(historyBySymbol.keys()), cfg.from, cfg.to)
+    : undefined;
   const maxDte = defaultAutotradeEntryConfig('call').maxDaysToExpiration ?? 60;
   const contractsBySymbol = new Map<string, OptionContractRef[]>();
   for (const symbol of historyBySymbol.keys()) {
@@ -1004,15 +1033,17 @@ export async function runOptionsWalkForwardBacktest(cfg: OptionsWalkForwardConfi
     contractsBySymbol.set(symbol, contracts);
   }
   const outOfSampleFrom = addDays(cfg.splitDate, 1);
-  const inSample = await simulateOptionsBacktest(historyBySymbol, contractsBySymbol, {
-    ...cfg,
-    from: cfg.from,
-    to: cfg.splitDate,
-  });
-  const outOfSample = await simulateOptionsBacktest(historyBySymbol, contractsBySymbol, {
-    ...cfg,
-    from: outOfSampleFrom,
-    to: cfg.to,
-  });
+  const inSample = await simulateOptionsBacktest(
+    historyBySymbol,
+    contractsBySymbol,
+    { ...cfg, from: cfg.from, to: cfg.splitDate },
+    weeklyHistoryBySymbol,
+  );
+  const outOfSample = await simulateOptionsBacktest(
+    historyBySymbol,
+    contractsBySymbol,
+    { ...cfg, from: outOfSampleFrom, to: cfg.to },
+    weeklyHistoryBySymbol,
+  );
   return { inSample, outOfSample, excludedSymbols, errors };
 }

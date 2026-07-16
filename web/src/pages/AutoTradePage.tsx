@@ -1435,6 +1435,7 @@ export default function AutoTradePage() {
   const [regimeAtrThresholdPctDraft, setRegimeAtrThresholdPctDraft] = useState<number | undefined>();
   const [regimeSizeCutPctDraft, setRegimeSizeCutPctDraft] = useState<number | undefined>();
   const [minRelVolDraft, setMinRelVolDraft] = useState<number | undefined>();
+  const [requireWeeklyTrendAlignment, setRequireWeeklyTrendAlignment] = useState(false);
   const [maxTickerAtrPctDraft, setMaxTickerAtrPctDraft] = useState<number | undefined>();
   const [maxMarketAtrPctDraft, setMaxMarketAtrPctDraft] = useState<number | undefined>();
   const [stopAtrMultipleDraft, setStopAtrMultipleDraft] = useState<number | undefined>();
@@ -1491,6 +1492,7 @@ export default function AutoTradePage() {
     setRegimeAtrThresholdPctDraft(config.data.regimeAtrThresholdPct);
     setRegimeSizeCutPctDraft(config.data.regimeSizeCutPct);
     setMinRelVolDraft(config.data.minRelVol);
+    setRequireWeeklyTrendAlignment(config.data.requireWeeklyTrendAlignment);
     setMaxTickerAtrPctDraft(config.data.maxTickerAtrPct);
     setMaxMarketAtrPctDraft(config.data.maxMarketAtrPct);
     setStopAtrMultipleDraft(config.data.stopAtrMultiple);
@@ -1544,6 +1546,7 @@ export default function AutoTradePage() {
     regimeSizeCutPct?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
+    requireWeeklyTrendAlignment?: boolean;
     maxTickerAtrPct?: number;
     maxMarketAtrPct?: number;
     stopAtrMultiple?: number;
@@ -1595,6 +1598,7 @@ export default function AutoTradePage() {
       setRegimeAtrThresholdPctDraft(saved.regimeAtrThresholdPct);
       setRegimeSizeCutPctDraft(saved.regimeSizeCutPct);
       setMinRelVolDraft(saved.minRelVol);
+      setRequireWeeklyTrendAlignment(saved.requireWeeklyTrendAlignment);
       setMaxTickerAtrPctDraft(saved.maxTickerAtrPct);
       setMaxMarketAtrPctDraft(saved.maxMarketAtrPct);
       setStopAtrMultipleDraft(saved.stopAtrMultiple);
@@ -2542,6 +2546,20 @@ export default function AutoTradePage() {
                 </button>
               </div>
             </Field>
+            <div>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={requireWeeklyTrendAlignment}
+                  onChange={(e) => saveConfig({ requireWeeklyTrendAlignment: e.target.checked })}
+                />
+                Require weekly trend alignment
+              </label>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                A second, longer-horizon confirmation on top of the daily setup: price must ALSO be on the right side of
+                its own weekly moving average. Live, paper, and backtest — check Recent activity to see it fire.
+              </p>
+            </div>
             <Field
               label="Max ticker ATR (%)"
               hint="Skip a candidate whose own ATR% (of price) exceeds this — the loop's own volatility guard, stricter than the manual Screen/Decision preview applies."

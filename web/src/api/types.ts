@@ -116,6 +116,9 @@ export interface ScreenerFilters {
   rsiMin?: number;
   rsiMax?: number;
   requireTrendAlignment?: boolean;
+  /** Multi-timeframe confirmation (2026-07-16) — require price to ALSO align
+   *  with the chosen direction relative to its WEEKLY moving average. */
+  requireWeeklyTrendAlignment?: boolean;
 }
 
 export interface ScreenerConfig {
@@ -1081,6 +1084,7 @@ export interface AutotradeConfig {
   // --- Screening/decision thresholds ---
   tradeDirection: AutotradeTradeDirectionMode;
   minRelVol: number;
+  requireWeeklyTrendAlignment: boolean;
   maxTickerAtrPct: number;
   maxMarketAtrPct: number;
   stopAtrMultiple: number;

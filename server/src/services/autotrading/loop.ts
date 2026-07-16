@@ -397,7 +397,9 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     }
 
     const screenResult = await runAutotradeScreen({
-      config: { filters: { minRelVol: config.minRelVol } },
+      config: {
+        filters: { minRelVol: config.minRelVol, requireWeeklyTrendAlignment: config.requireWeeklyTrendAlignment },
+      },
       earningsBlackoutDays: config.earningsBlackoutDays,
       directionMode: config.tradeDirection,
     });

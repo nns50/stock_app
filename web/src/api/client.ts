@@ -442,6 +442,7 @@ export const client = {
     regimeSizeCutPct?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
+    requireWeeklyTrendAlignment?: boolean;
     maxTickerAtrPct?: number;
     maxMarketAtrPct?: number;
     stopAtrMultiple?: number;
