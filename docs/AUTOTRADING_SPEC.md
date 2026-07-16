@@ -1943,6 +1943,18 @@ on its own timeline regardless of this options work.
       the equity one), even though all three engines fully support it via
       a direct API request.
 
+**Follow-up (2026-07-16) — closes the backtest-form gap noted in phases 15 and 16.**
+The Auto page's Backtest & walk-forward card gained its own **Backtest trade
+direction** select (`Long`/`Short`/`Both`), a single shared field threaded into
+all three run buttons (equity, options, combined) and both walk-forward
+variants — own value, not synced from Configuration's `tradeDirection`, same
+self-contained-hypothesis convention as the card's existing (also independent)
+risk-profile field. `web/src/api/types.ts`'s `BacktestRequest`,
+`OptionsBacktestRequest`, and `CombinedBacktestRequest` each gained an optional
+`directionMode` field to carry it. No server-side changes were needed — the
+routes and engines already supported `directionMode`, they just had no UI
+reaching them.
+
 ---
 
 ## Original spec
