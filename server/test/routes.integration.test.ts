@@ -1178,6 +1178,16 @@ describe('autotrade options backtest routes (integration)', () => {
     const res = await post('/api/autotrade/backtest-options', { ...baseBody, symbols });
     expect(res.status).toBe(400);
   });
+
+  it("accepts a valid directionMode ('both')", async () => {
+    const res = await post('/api/autotrade/backtest-options', { ...baseBody, directionMode: 'both' });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects an invalid directionMode', async () => {
+    const res = await post('/api/autotrade/backtest-options', { ...baseBody, directionMode: 'sideways' });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('autotrade combined backtest routes (integration)', () => {
@@ -1258,6 +1268,16 @@ describe('autotrade combined backtest routes (integration)', () => {
   it('rejects more than 50 symbols', async () => {
     const symbols = Array.from({ length: 51 }, (_, i) => `SYM${i}`);
     const res = await post('/api/autotrade/backtest-combined', { ...baseBody, symbols });
+    expect(res.status).toBe(400);
+  });
+
+  it("accepts a valid directionMode ('both')", async () => {
+    const res = await post('/api/autotrade/backtest-combined', { ...baseBody, directionMode: 'both' });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects an invalid directionMode', async () => {
+    const res = await post('/api/autotrade/backtest-combined', { ...baseBody, directionMode: 'sideways' });
     expect(res.status).toBe(400);
   });
 });

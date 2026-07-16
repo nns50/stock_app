@@ -3,16 +3,18 @@ import {
   candleIndicatorsAt,
   CandleIndicatorSeries,
   computeCandleIndicatorSeries,
+  Direction,
   ScreenerConfig,
   SymbolScore,
   scoreSymbol,
+  scoreSymbolBothDirections,
 } from '../../indicators/screener';
 import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } from './decide';
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
 import { evaluateOptionsRiskCheck } from './optionsRiskCheck';
 import { defaultAutotradeEntryConfig, OptionsDecisionConfig, OptionsSignalSide } from './optionsDecide';
 import { RiskProfileName, OptionsStrategyType } from '../../db/autotradeConfig';
-import { defaultAutotradeScreenerConfig } from './screen';
+import { defaultAutotradeScreenerConfig, pickDirection } from './screen';
 import { getHistoricalBars } from './historicalData';
 import { getHistoricalOptionContracts } from './optionsHistoricalData';
 import { OptionContractRef } from './polygonOptionsClient';
@@ -123,6 +125,16 @@ export interface CombinedBacktestConfig extends Partial<BacktestRiskParams> {
   screenerConfig?: Partial<ScreenerConfig>;
   decisionConfig?: Partial<DecisionConfig>;
   optionsDecisionConfig?: Partial<OptionsDecisionConfig>;
+  /** 'long' (default) | 'short' | 'both' — own value here, NOT read from live
+   *  config, same self-contained-hypothesis convention as
+   *  BacktestConfig.directionMode (backtest.ts) and
+   *  OptionsBacktestConfig.directionMode (optionsBacktest.ts). Governs BOTH
+   *  legs from the SAME per-symbol scoring pass: the equity leg resolves
+   *  each candidate's side via scoreSymbolBothDirections()/pickDirection()
+   *  in 'both' mode, and the options leg derives call/put from that exact
+   *  same resolved direction — not a separate options-only setting, mirroring
+   *  how the live loop's options decision reads ScreenCandidate.direction. */
+  directionMode?: 'long' | 'short' | 'both';
 }
 
 export interface CombinedBacktestReport {
@@ -214,13 +226,18 @@ export async function simulateCombinedBacktest(
   const riskParams = resolveBacktestRiskParams(cfg);
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
   const decisionCfg = { ...defaultDecisionConfig(), ...cfg.decisionConfig };
-  const optDirection = cfg.optionsDecisionConfig?.direction ?? 'long';
-  const optSide: OptionsSignalSide = optDirection === 'long' ? 'call' : 'put';
-  const entryCfg = {
-    ...defaultAutotradeEntryConfig(optSide),
+  const directionMode = cfg.directionMode ?? 'long';
+  const sideFor = (direction: Direction): OptionsSignalSide => (direction === 'long' ? 'call' : 'put');
+  const entryConfigFor = (side: OptionsSignalSide) => ({
+    ...defaultAutotradeEntryConfig(side),
     ...cfg.optionsDecisionConfig?.entryConfig,
-    side: optSide,
-  };
+    side,
+  });
+  // The DTE window doesn't vary by side (defaultAutotradeEntryConfig's
+  // minDaysToExpiration is the same for calls and puts) — read once,
+  // side-independent, for the already-open-position time-exit check below
+  // (which runs before that day's candidates, and so before any side, are known).
+  const exitMinDaysToExpiration = cfg.optionsDecisionConfig?.entryConfig?.minDaysToExpiration ?? 7;
   const optStrategyType: OptionsStrategyType = cfg.optionsDecisionConfig?.strategyType ?? 'single_leg';
 
   const fromMs = Date.parse(`${cfg.from}T00:00:00Z`);
@@ -497,7 +514,7 @@ export async function simulateCombinedBacktest(
         }
       }
       const dte = daysToExpiration(pos.expiration, new Date(dayMs));
-      if (dte <= (entryCfg.minDaysToExpiration ?? 7) || dte <= 0) {
+      if (dte <= exitMinDaysToExpiration || dte <= 0) {
         const exitPremium = bar.close;
         const shortExitPremium = shortBar?.close;
         const pnl = simulatedOptionsPnl(
@@ -550,9 +567,18 @@ export async function simulateCombinedBacktest(
 
     // 6) Score every symbol ONCE per day (asset-agnostic) — filtered
     // separately below per instrument type's own "already open" exclusion.
+    // 'both': score each symbol as a long AND a short from the same
+    // indicator computation and keep whichever direction (if either)
+    // qualifies — mirrors backtest.ts's/optionsBacktest.ts's own 'both'
+    // handling exactly. Resolved ONCE per symbol per day and shared by both
+    // legs below: the options leg derives call/put from this SAME resolved
+    // direction instead of a separate options-only setting.
     const openEquitySymbols = new Set([...openEquity.map((p) => p.symbol), ...pendingEquity.map((p) => p.symbol)]);
     const openOptionsSymbols = new Set([...openOptions.map((p) => p.symbol), ...pendingOptions.map((p) => p.symbol)]);
-    const scoresToday = new Map<string, { score: SymbolScore; underlyingClose: number; history: Candle[] }>();
+    const scoresToday = new Map<
+      string,
+      { score: SymbolScore; underlyingClose: number; history: Candle[]; direction: Direction }
+    >();
     for (const [symbol, candles] of historyBySymbol) {
       const idx = indexAsOf(candles, dayMs, scoringIndexCursor.get(symbol) ?? 0);
       if (idx >= 0) scoringIndexCursor.set(symbol, idx);
@@ -563,9 +589,27 @@ export async function simulateCombinedBacktest(
       const history = candles.slice(0, idx + 1);
       const series = candleIndicatorSeriesBySymbol.get(symbol)!;
       const cached = candleIndicatorsAt(series, idx) ?? undefined;
-      const score = scoreSymbol(symbol, candles, undefined, screenerCfg, cached, idx);
-      if (!score.passedFilters) continue;
-      scoresToday.set(symbol, { score, underlyingClose: candles[idx].close, history });
+      const picked =
+        directionMode === 'both'
+          ? pickDirection(scoreSymbolBothDirections(symbol, candles, undefined, screenerCfg, cached, idx))
+          : (() => {
+              const score = scoreSymbol(
+                symbol,
+                candles,
+                undefined,
+                { ...screenerCfg, direction: directionMode },
+                cached,
+                idx,
+              );
+              return score.passedFilters ? { direction: directionMode, score } : null;
+            })();
+      if (!picked) continue;
+      scoresToday.set(symbol, {
+        score: picked.score,
+        underlyingClose: candles[idx].close,
+        history,
+        direction: picked.direction,
+      });
     }
 
     // The ONE shared ledger both legs read from and write to this day —
@@ -574,13 +618,13 @@ export async function simulateCombinedBacktest(
     let runningRisk =
       openEquity.reduce((s, p) => s + p.riskAmount, 0) + openOptions.reduce((s, p) => s + p.riskAmount, 0);
     let runningCount = openEquity.length + openOptions.length;
-    // Equity keeps its real side (this combined engine doesn't yet support
-    // directionMode:'both' -- that lands together with options call/put
-    // direction-awareness, since both currently read the SAME single
-    // scoresToday scoring pass above); options positions are always 'long'
-    // (see riskCheck.ts's correlatedNotional() doc comment). Both sides
-    // reduce to the exact prior always-additive behavior when equity really
-    // is all long, as it always has been up to now.
+    // Equity keeps its real, resolved side; options positions are always
+    // 'long' (see riskCheck.ts's correlatedNotional() doc comment — an
+    // autotrade options position is always long-the-contract, a put for a
+    // bearish read same as a call for a bullish one, never short-the-
+    // contract). Both sides reduce to the exact prior always-additive
+    // behavior when equity really is all long, as it always was before
+    // directionMode existed.
     const runningPositions: { symbol: string; notional: number; side: 'long' | 'short' }[] = [
       ...openEquity.map((p) => ({
         symbol: p.symbol,
@@ -593,12 +637,12 @@ export async function simulateCombinedBacktest(
     // 7) EQUITY decide + risk-check FIRST (same ordering as loop.ts).
     const equityCandidates = Array.from(scoresToday.entries())
       .filter(([symbol]) => !openEquitySymbols.has(symbol))
-      .map(([, v]) => v.score)
-      .sort((a, b) => b.total - a.total || a.symbol.localeCompare(b.symbol));
+      .map(([, v]) => v)
+      .sort((a, b) => b.score.total - a.score.total || a.score.symbol.localeCompare(b.score.symbol));
 
-    for (const score of equityCandidates) {
+    for (const candidate of equityCandidates) {
       const signal = generateSignal(
-        { ...score, discoverySource: 'universe', direction: screenerCfg.direction },
+        { ...candidate.score, discoverySource: 'universe', direction: candidate.direction },
         decisionCfg,
       );
       if (!signal) continue;
@@ -645,14 +689,22 @@ export async function simulateCombinedBacktest(
     // which by now already reflects anything equity just approved today.
     const optionsCandidates = Array.from(scoresToday.entries())
       .filter(([symbol]) => !openOptionsSymbols.has(symbol))
-      .map(([symbol, v]) => ({ symbol, total: v.score.total, underlyingClose: v.underlyingClose, history: v.history }))
+      .map(([symbol, v]) => ({
+        symbol,
+        total: v.score.total,
+        underlyingClose: v.underlyingClose,
+        history: v.history,
+        direction: v.direction,
+      }))
       .sort((a, b) => b.total - a.total || a.symbol.localeCompare(b.symbol));
 
     for (const candidate of optionsCandidates) {
+      const side = sideFor(candidate.direction);
+      const entryCfg = entryConfigFor(side);
       const contracts = contractsBySymbol.get(candidate.symbol) ?? [];
       const ref = pickReferenceContract(
         contracts,
-        optSide,
+        side,
         day,
         candidate.underlyingClose,
         entryCfg.minDaysToExpiration ?? 7,
@@ -689,7 +741,7 @@ export async function simulateCombinedBacktest(
 
       const T = yearsToExpiration(ref.expiration, new Date(dayMs));
       const iv = impliedVol({
-        type: optSide,
+        type: side,
         marketPrice: bar.close,
         S: candidate.underlyingClose,
         K: ref.strike,
@@ -724,7 +776,7 @@ export async function simulateCombinedBacktest(
       }
 
       const delta = bsGreeks({
-        type: optSide,
+        type: side,
         S: candidate.underlyingClose,
         K: ref.strike,
         T,
@@ -745,7 +797,7 @@ export async function simulateCombinedBacktest(
       if (optStrategyType === 'debit_spread') {
         shortRef = await pickShortLegReferenceContract(
           contracts,
-          optSide,
+          side,
           ref.strike,
           ref.expiration,
           day,
@@ -795,7 +847,7 @@ export async function simulateCombinedBacktest(
           ? {
               kind: 'debit_spread',
               symbol: candidate.symbol,
-              side: optSide,
+              side: side,
               expiration: ref.expiration,
               dte: T * 365,
               ivRank: ivContext.ivRank,
@@ -818,7 +870,7 @@ export async function simulateCombinedBacktest(
           : {
               kind: 'single_leg',
               symbol: candidate.symbol,
-              side: optSide,
+              side: side,
               contractSymbol: ref.ticker,
               strike: ref.strike,
               expiration: ref.expiration,
@@ -851,7 +903,7 @@ export async function simulateCombinedBacktest(
             : 0;
       pendingOptions.push({
         symbol: candidate.symbol,
-        side: optSide,
+        side: side,
         kind: optStrategyType,
         contractTicker: ref.ticker,
         strike: ref.strike,

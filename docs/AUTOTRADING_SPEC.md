@@ -1860,6 +1860,88 @@ on its own timeline regardless of this options work.
     - **Scope boundary:** this phase is equity-only. Options calls/puts
       per-candidate assignment, reusing this same directional read, is
       phase 16 below.
+16. **Options call/put per-candidate assignment — shipped (2026-07-16).**
+    Closes phase 15's own scope boundary: options call/put now follows each
+    candidate's own resolved direction (long → call, short → put) instead
+    of a single setting applied to every candidate in a run.
+    - **Live loop & manual preview: a one-line read, not new routing.**
+      `optionsDecide.ts`'s `generateOptionsSignal()` now derives
+      `side` from `candidate.direction` instead of a `cfg.direction` field,
+      which is removed from `OptionsDecisionConfig` entirely (the same
+      treatment `DecisionConfig.direction` got in phase 15, for the same
+      reason: a per-candidate value can't meaningfully be "configured" at
+      the batch level, only read). No routing changes were needed in
+      `loop.ts` or `routes/autotrade.ts`'s `/decide` — both already pass
+      options decisioning the SAME `ScreenCandidate[]` equity's own
+      decision just consumed, and that array already carries the correct
+      per-candidate `.direction` (phase 15). A batch scored with
+      `tradeDirection:'both'` therefore produces a genuine mix of calls and
+      puts with zero additional wiring — verified live against the mock
+      provider: every row's equity Dir badge and Options call/put badge
+      matched, symbol for symbol, in a real browser render.
+    - **`optionsBacktest.ts`: its own `directionMode`, full `'both'`
+      support.** Replaced the single `optionsDecisionConfig?.direction`
+      read (resolved once, outside the day loop) with `directionMode:
+      'long' | 'short' | 'both'` on `OptionsBacktestConfig` — own value,
+      not inherited from live config, same self-contained-hypothesis
+      convention `BacktestConfig.directionMode` already established. In
+      `'both'` mode its internal equity-scoring loop now calls
+      `scoreSymbolBothDirections()`/`pickDirection()` per symbol (mirroring
+      `backtest.ts`'s own upgrade) instead of single-direction `scoreSymbol()`,
+      and `side`/`entryCfg` — previously computed ONCE for the whole
+      run — are now resolved per candidate inside the day loop
+      (`sideFor()`/`entryConfigFor()` helpers), since a candidate's call/put
+      contract, delta band, and IV-rank ceiling all key off its own side.
+      The already-open-position time-exit check needed its own
+      `exitMinDaysToExpiration` constant, since the DTE window doesn't vary
+      by side but is checked before that day's candidates (and so before
+      any side) are known.
+    - **`combinedBacktest.ts`: the equity leg gets bidirectional too,
+      closing the gap this file's own code comment flagged in phase 15.**
+      Its equity-scoring loop (`scoresToday`) previously used
+      single-direction `scoreSymbol()` unconditionally, because — per that
+      comment — both legs read the same scoring pass and options
+      direction-awareness didn't exist yet to make upgrading it worthwhile
+      on its own. Now: `scoresToday` resolves each symbol's direction the
+      same way (`scoreSymbolBothDirections()`/`pickDirection()` in `'both'`
+      mode) and carries it alongside each score; the equity leg's
+      `generateSignal()` call reads it directly (replacing a constant
+      `screenerCfg.direction`), and the options leg derives its own
+      `side`/`entryCfg` from that SAME per-symbol resolved direction
+      (replacing the static `optDirection`/`optSide` computed once outside
+      the day loop) — so a long equity signal and its matching call, or a
+      short equity signal and its matching put, always agree, sharing the
+      one combined risk ledger phase 11 already built. New
+      `CombinedBacktestConfig.directionMode` field, same self-contained
+      convention as the other two engines.
+    - **Routing:** `routes/autotrade.ts`'s `optionsBacktestBodyBase` and
+      `combinedBacktestBodyBase` gained a `directionMode` field (previously
+      absent from both schemas entirely — only the equity `/backtest` route
+      had one), threaded straight into `runOptionsBacktest`/
+      `runOptionsWalkForwardBacktest`/`runCombinedBacktest`/
+      `runCombinedWalkForwardBacktest`, same non-inherited convention.
+    - **No new risk gate.** Confirms phase 15's own reasoning: an autotrade
+      options position is always long-the-contract regardless of call or
+      put (buying a put to express a bearish thesis is still bounded risk,
+      same shape as buying a call), so nothing analogous to equity's
+      `liveAllowNakedShort` gate was needed for this phase.
+    - **UI: no new UI needed.** The Research & Screen candidates table's
+      Options column already rendered whatever `side` the API returned —
+      it never assumed a fixed direction. The existing **Trade direction**
+      select (phase 15) now transparently governs options call/put too,
+      exactly as scoped: reusing the equity directional read, not a second,
+      options-specific direction setting.
+    - **Verified:** every new/changed test (`optionsDecide.ts`'s existing
+      direction-locking tests updated for the removed `cfg.direction`, a
+      new mixed-batch call+put test, `optionsBacktest.ts`'s and
+      `combinedBacktest.ts`'s own `'both'`-mode tests, four new route
+      integration tests) confirmed genuinely failing on a reverted source
+      change before being restored, matching phase 15's own discipline.
+    - **Known gap, carried forward:** the backtest FORM UI still has no
+      control for `directionMode` (phase 15's own noted gap, now true of
+      all three backtest routes — equity, options, and combined — not just
+      the equity one), even though all three engines fully support it via
+      a direct API request.
 
 ---
 

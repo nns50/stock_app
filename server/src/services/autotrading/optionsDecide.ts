@@ -7,7 +7,6 @@ import { getIvHistory, recordAtmIv } from '../../db/ivHistory';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { OptionsStrategyType } from '../../db/autotradeConfig';
 import { mapPool } from '../../util/async';
-import { Direction } from '../../indicators/screener';
 import { ScreenCandidate } from './screen';
 import { Candle } from '../../providers/types';
 
@@ -45,7 +44,6 @@ import { Candle } from '../../providers/types';
 export type OptionsSignalSide = 'call' | 'put';
 
 export interface OptionsDecisionConfig {
-  direction: Direction;
   /** Merged onto defaultAutotradeEntryConfig(side) — same override shape as
    *  decide.ts's DecisionConfig patch convention. */
   entryConfig?: Partial<EntryStrategyConfig>;
@@ -63,7 +61,7 @@ export interface OptionsDecisionConfig {
 }
 
 export function defaultOptionsDecisionConfig(): OptionsDecisionConfig {
-  return { direction: 'long', strategyType: 'single_leg' };
+  return { strategyType: 'single_leg' };
 }
 
 /** entryRules.ts's own default plus the confirmed autotrade-specific IV-rank
@@ -164,13 +162,21 @@ export type OptionsSignalResult = { ok: true; signal: OptionsTradeSignal } | { o
  * accept the realized-vol estimate as a fallback (2026-07-09, by request —
  * see the comment above computeIvContext's call site) when real history is
  * still short; a signal built from that fallback says so in its rationale.
+ *
+ * Call vs put is read straight off `candidate.direction` (2026-07-16) — a
+ * long candidate gets a call, a short candidate gets a put — the exact same
+ * per-candidate read decide.ts's equity generateSignal() uses, not a
+ * separate options-only setting. Since both equity and options decisions
+ * consume the SAME already-screened ScreenCandidate[] in one run (loop.ts,
+ * routes/autotrade.ts's /decide), a batch scored with tradeDirection:'both'
+ * naturally produces a mix of calls and puts here too, with no extra wiring.
  */
 export async function generateOptionsSignal(
   candidate: ScreenCandidate,
   cfg: OptionsDecisionConfig = defaultOptionsDecisionConfig(),
 ): Promise<OptionsSignalResult> {
   const symbol = candidate.symbol.toUpperCase();
-  const side: OptionsSignalSide = cfg.direction === 'long' ? 'call' : 'put';
+  const side: OptionsSignalSide = candidate.direction === 'long' ? 'call' : 'put';
   const strategyType: OptionsStrategyType = cfg.strategyType ?? 'single_leg';
   const entryCfg: EntryStrategyConfig = { ...defaultAutotradeEntryConfig(side), ...cfg.entryConfig, side };
   const provider = getProvider();

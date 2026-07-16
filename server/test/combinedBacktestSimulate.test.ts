@@ -43,6 +43,22 @@ function warmupThrough(signalDay: string): Candle[] {
   return days;
 }
 
+/** A steady 60-day trend ending the day before `signalDay`, then the signal
+ *  day itself — same convention as backtestSimulate.test.ts's/
+ *  optionsBacktestSimulate.test.ts's own trendThrough(), needed (unlike
+ *  warmupThrough's flat series) to make scoreSymbolBothDirections()
+ *  genuinely prefer one side over the other. */
+function trendThrough(signalDay: string, dir: 'up' | 'down'): Candle[] {
+  const step = dir === 'up' ? 0.5 : -0.5;
+  let price = 100;
+  const days: Candle[] = [];
+  for (let i = 60; i >= 0; i--) {
+    days.push(equityBar(d(signalDay, -i), { open: price, high: price + 1, low: price - 1, close: price }));
+    if (i > 0) price += step;
+  }
+  return days;
+}
+
 function baseConfig(overrides: Partial<CombinedBacktestConfig> = {}): CombinedBacktestConfig {
   return {
     symbols: ['AAA', 'BBB'],
@@ -64,8 +80,14 @@ const DTE_DAYS = 30;
 const TARGET_SIGMA = 0.3;
 const STRIKE = 102;
 
-function contractRef(ticker: string, strike: number, expiration: string): OptionContractRef {
-  return { ticker, underlying: 'BBB', contractType: 'call', strike, expiration };
+function contractRef(
+  ticker: string,
+  strike: number,
+  expiration: string,
+  contractType: 'call' | 'put' = 'call',
+  underlying = 'BBB',
+): OptionContractRef {
+  return { ticker, underlying, contractType, strike, expiration };
 }
 
 function optionBar(day: string, premium: number, overrides: Partial<Omit<Candle, 'time'>> = {}): Candle {
@@ -82,6 +104,10 @@ function optionBar(day: string, premium: number, overrides: Partial<Omit<Candle,
 
 function premiumFor(S: number, K: number, T: number, sigma = TARGET_SIGMA): number {
   return bsPrice({ type: 'call', S, K, T, r: RISK_FREE_RATE, sigma });
+}
+
+function premiumForSide(type: 'call' | 'put', S: number, K: number, T: number, sigma = TARGET_SIGMA): number {
+  return bsPrice({ type, S, K, T, r: RISK_FREE_RATE, sigma });
 }
 
 function yearsFor(days: number): number {
@@ -479,6 +505,71 @@ describe('simulateCombinedBacktest', () => {
       expect(report.optionsSkipped.some((s) => s.symbol === 'BBB' && s.reason.includes('Risk check blocked'))).toBe(
         true,
       );
+    });
+  });
+
+  describe('directionMode', () => {
+    it("'both' produces a BUY equity signal + CALL options signal on an uptrending underlying, and a SELL equity signal + PUT options signal on a downtrending one — sharing ONE combined run", async () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, DTE_DAYS);
+      const T = yearsFor(DTE_DAYS);
+      const UP_TICKER = 'O:UP-CALL';
+      const DOWN_TICKER = 'O:DOWN-PUT';
+      // Must match trendThrough's own signal-day close exactly (100 +/- 60 *
+      // 0.5) — the candidate is scored (and its underlyingClose captured) on
+      // signalDay itself, not on the later entryDay fill.
+      const upSpot = 130;
+      const upStrike = 132;
+      const downSpot = 70;
+      const downStrike = 68;
+      const upPremium = premiumForSide('call', upSpot, upStrike, T);
+      const downPremium = premiumForSide('put', downSpot, downStrike, T);
+      mockContractBars({
+        [UP_TICKER]: [optionBar(signalDay, upPremium), optionBar(entryDay, upPremium, { open: upPremium })],
+        [DOWN_TICKER]: [optionBar(signalDay, downPremium), optionBar(entryDay, downPremium, { open: downPremium })],
+      });
+      const historyBySymbol = new Map([
+        ['UP', [...trendThrough(signalDay, 'up'), equityBar(entryDay)]],
+        ['DOWN', [...trendThrough(signalDay, 'down'), equityBar(entryDay)]],
+      ]);
+      const contractsBySymbol = new Map([
+        ['UP', [contractRef(UP_TICKER, upStrike, expiration, 'call', 'UP')]],
+        ['DOWN', [contractRef(DOWN_TICKER, downStrike, expiration, 'put', 'DOWN')]],
+      ]);
+
+      const report = await simulateCombinedBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        baseConfig({
+          symbols: ['UP', 'DOWN'],
+          from: signalDay,
+          to: entryDay,
+          directionMode: 'both',
+          maxConcurrentPositions: 10,
+          maxCorrelatedExposurePct: 100,
+          maxDailyDrawdownPct: 100,
+          maxTradesPerDay: 100,
+          maxAggregateOpenRiskPct: 100,
+          // A real (non-flat) trend has genuine realized volatility, unlike
+          // warmupThrough's deliberately zero-variance series — irrelevant
+          // to what this test is proving (per-candidate side selection for
+          // BOTH legs), so the ceiling is relaxed here only.
+          optionsDecisionConfig: { entryConfig: { ivRankMax: 100 } },
+        }),
+      );
+
+      expect(report.equityTrades).toHaveLength(2);
+      const upEquity = report.equityTrades.find((t) => t.symbol === 'UP')!;
+      const downEquity = report.equityTrades.find((t) => t.symbol === 'DOWN')!;
+      expect(upEquity.side).toBe('buy');
+      expect(downEquity.side).toBe('sell');
+
+      expect(report.optionsTrades).toHaveLength(2);
+      const upOption = report.optionsTrades.find((t) => t.symbol === 'UP')!;
+      const downOption = report.optionsTrades.find((t) => t.symbol === 'DOWN')!;
+      expect(upOption.side).toBe('call');
+      expect(downOption.side).toBe('put');
     });
   });
 });
