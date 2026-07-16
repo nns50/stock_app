@@ -18,8 +18,9 @@ import { defaultAutotradeScreenerConfig, pickDirection } from './screen';
 import { getHistoricalBars } from './historicalData';
 import { getHistoricalOptionContracts } from './optionsHistoricalData';
 import { OptionContractRef } from './polygonOptionsClient';
-import { impliedVol, bsGreeks, yearsToExpiration, daysToExpiration } from '../../options/blackScholes';
+import { impliedVol, bsGreeks, yearsToExpiration } from '../../options/blackScholes';
 import { computeIvContext } from '../ivRank';
+import { evaluateExit } from '../../options/exitRules';
 import {
   addDays,
   backtestCorrelatedNotional,
@@ -85,13 +86,15 @@ import {
 //
 // Options-side entry logic reuses optionsBacktest.ts's own already-confirmed
 // scope reductions unchanged (single reference contract per underlying per
-// day, no OI/bid-ask, hv-estimate IV-rank fallback, time-based exit only) —
-// this file only changes HOW the two risk budgets combine, not what either
-// side's entry/exit rules already are. Single leg or debit spread, matching
-// whichever cfg.optionsDecisionConfig?.strategyType the equity/options
-// backtest route was given — reuses optionsBacktest.ts's own
-// pickShortLegReferenceContract()/simulatedOptionsPnl() for the short leg's
-// selection and P&L, not a reimplementation (Task #69).
+// day, no OI/bid-ask, hv-estimate IV-rank fallback) — this file only changes
+// HOW the two risk budgets combine, not what either side's entry rules
+// already are. Single leg or debit spread, matching whichever
+// cfg.optionsDecisionConfig?.strategyType the equity/options backtest route
+// was given — reuses optionsBacktest.ts's own pickShortLegReferenceContract()/
+// simulatedOptionsPnl() for the short leg's selection and P&L, not a
+// reimplementation (Task #69). Options exit was originally time-based only;
+// optionsStopLossPct/optionsTakeProfitPct below add a %-of-premium P&L rule
+// on top (2026-07-16, same follow-up as optionsBacktest.ts's own).
 // ---------------------------------------------------------------------------
 
 const RISK_FREE_RATE = 0.04;
@@ -135,6 +138,13 @@ export interface CombinedBacktestConfig extends Partial<BacktestRiskParams> {
    *  same resolved direction — not a separate options-only setting, mirroring
    *  how the live loop's options decision reads ScreenCandidate.direction. */
   directionMode?: 'long' | 'short' | 'both';
+  /** Own value here, NOT read from live config if omitted — same
+   *  self-contained-hypothesis convention as every other backtest field.
+   *  Mirrors AutotradeConfig.optionsStopLossPct/optionsTakeProfitPct
+   *  (0/omitted disables each); applies to the OPTIONS leg only — the
+   *  equity leg keeps its own separate breakevenTriggerRMultiple etc. above. */
+  optionsStopLossPct?: number;
+  optionsTakeProfitPct?: number;
 }
 
 export interface CombinedBacktestReport {
@@ -211,6 +221,22 @@ interface PendingOptionEntry {
   contracts: number;
   riskAmount: number;
   notional: number;
+}
+
+/** Maps exitRules.ts's own kebab-case ExitTrigger.rule strings to this
+ *  engine's snake_case exit reason values — same mapping convention as
+ *  optionsExecute.ts's/optionsBacktest.ts's own exitReasonFor() (deliberately
+ *  duplicated, not shared, matching this codebase's parallel-engine
+ *  convention). */
+function exitReasonFor(activeRule: string): 'stop_loss' | 'take_profit' | 'time_exit' {
+  switch (activeRule) {
+    case 'stop-loss':
+      return 'stop_loss';
+    case 'take-profit':
+      return 'take_profit';
+    default:
+      return 'time_exit';
+  }
 }
 
 /**
@@ -513,10 +539,26 @@ export async function simulateCombinedBacktest(
           continue;
         }
       }
-      const dte = daysToExpiration(pos.expiration, new Date(dayMs));
-      if (dte <= exitMinDaysToExpiration || dte <= 0) {
-        const exitPremium = bar.close;
-        const shortExitPremium = shortBar?.close;
+      const exitPremium = bar.close;
+      const shortExitPremium = shortBar?.close;
+      // Stop-loss/take-profit are evaluated from the SAME bar data just
+      // fetched above for the time-exit check — no new cost. Net debit
+      // (long minus short premium) is the basis for a spread, at both entry
+      // and now — the same basis simulatedOptionsPnl() already sizes P&L
+      // from.
+      const entryBasis =
+        pos.kind === 'debit_spread' ? pos.entryPremium - (pos.shortEntryPremium ?? 0) : pos.entryPremium;
+      const currentBasis = pos.kind === 'debit_spread' ? exitPremium - (shortExitPremium ?? 0) : exitPremium;
+      const ev = evaluateExit(
+        { entryPrice: entryBasis, currentPrice: currentBasis, side: 'long', expiration: pos.expiration },
+        {
+          timeExitDaysBeforeExpiry: exitMinDaysToExpiration,
+          stopLossPct: cfg.optionsStopLossPct || undefined,
+          takeProfitPct: cfg.optionsTakeProfitPct || undefined,
+        },
+        new Date(dayMs),
+      );
+      if (ev.triggered) {
         const pnl = simulatedOptionsPnl(
           pos.kind,
           pos.entryPremium,
@@ -541,7 +583,7 @@ export async function simulateCombinedBacktest(
           exitDate: day,
           exitPremium,
           shortExitPremium,
-          exitReason: dte <= 0 ? 'expiration' : 'time_exit',
+          exitReason: ev.activeRule === 'time-exit' && ev.dte <= 0 ? 'expiration' : exitReasonFor(ev.activeRule!),
           contracts: pos.contracts,
           pnl,
           rMultiple: pos.riskAmount > 0 ? pnl / pos.riskAmount : 0,

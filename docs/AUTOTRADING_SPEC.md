@@ -1,11 +1,13 @@
 # Automated Trading — Specification
 
-**Status: all phases (1-13) shipped and running.** Equities screening, decision, risk
+**Status: all phases (1-17) shipped and running.** Equities screening, decision, risk
 engine, backtesting, paper execution, monitoring/kill-switch, and the live-trading gate
 (phases 1-8) are built and have each cleared adversarial review. An options-trading
 addition (phases 9-13 — screening & decision, risk engine & combined budget, backtesting,
 paper execution & expiration management, and monitoring) has since been scoped, approved,
-and shipped on top of the same codebase. This is the reference spec for adding a fully
+and shipped on top of the same codebase, followed by live options trading, bidirectional
+(long/short) equity and options trading, and options price-based exits (phases 14-17 —
+see "Phased roadmap" below). This is the reference spec for adding a fully
 **autonomous** execution loop (screen → decide → risk-check → place orders) to the app.
 
 This is a different capability from the existing live-trading feature described in
@@ -1954,6 +1956,81 @@ risk-profile field. `web/src/api/types.ts`'s `BacktestRequest`,
 `directionMode` field to carry it. No server-side changes were needed — the
 routes and engines already supported `directionMode`, they just had no UI
 reaching them.
+
+17. **Options price-based exits: stop-loss / take-profit — shipped
+    (2026-07-16).** Phase 12 shipped options exits as **close-only and
+    time-based** — a position only ever left automatically via
+    `timeExitDaysBeforeExpiry`, with take-profit/stop-loss/delta-drift
+    explicitly deferred to human review. This phase adds a %-of-premium
+    stop-loss and take-profit on top, reusing `exitRules.ts`'s pre-existing
+    `evaluateExit()` engine unchanged (it already supported `stopLossPct`/
+    `takeProfitPct`/delta-drift; only `timeExitDaysBeforeExpiry` was wired
+    up before now).
+    - **Scope boundary: PAPER + BOTH BACKTEST ENGINES only, not LIVE.**
+      Mirrors phase 9-13's own equity precedent — the trailing-stop/
+      breakeven/partial-exit feature is also paper+backtest only, LIVE
+      equity positions untouched, on the stated reasoning that modifying or
+      partially closing a resting live bracket has no existing precedent
+      and a meaningfully worse failure mode than a force-close does. The
+      same reasoning applies here: LIVE options positions stay time-exit-
+      only (unchanged) rather than threading a dynamic exit reason through
+      the live order-placement/reconcile/materialization pipeline.
+    - **Config.** `AutotradeConfig.optionsStopLossPct`/`optionsTakeProfitPct`
+      (0-100, both default `0` = disabled — an untouched config changes
+      nothing), routed through `PUT /api/autotrade/config` and all four
+      backtest routes (`/backtest-options`, `/backtest-options/walk-forward`,
+      `/backtest-combined`, `/backtest-combined/walk-forward`). The two
+      backtest engines' own config fields are optional and NOT inherited
+      from the live config when omitted, same self-contained-hypothesis
+      convention as every other backtest field — a saved backtest run stays
+      reproducible from its own parameters.
+    - **Net-debit basis for spreads.** The %-of-premium calculation for a
+      debit spread uses `entryPremium - shortEntryPremium` (net debit) as
+      the basis, not the long leg's raw premium alone — matching the
+      existing `optionsPnl()`/`simulatedOptionsPnl()` functions' own
+      established basis, so a stop/target percentage means the same thing
+      it already means everywhere else P&L is reported.
+    - **`optionsExecute.ts`: an efficiency-preserving gate, not an always-on
+      poll.** `checkOptionsPaperExits()` only fetches a quote unconditionally
+      every cycle when a price rule is actually configured
+      (`optionsStopLossPct > 0 || optionsTakeProfitPct > 0`); with both left
+      at their 0 default, behavior — and provider-call cost — is
+      byte-identical to before this phase (no fetch until the quote-free
+      time-exit trigger fires, then one fetch to price the close).
+    - **`optionsBacktest.ts` / `combinedBacktest.ts`: no new cost.** Both
+      engines already fetch each day's bar close to check the time-exit
+      rule; the stop-loss/take-profit check reuses that same close via one
+      `evaluateExit()` call (passing the simulated day as `now`, never the
+      real wall clock) instead of a second pass.
+    - **Schema.** `autotrade_options_paper_positions.exit_reason` gains
+      `'stop_loss'`/`'take_profit'` alongside the existing `'time_exit'`/
+      `'manual'` (SQLite can't widen a CHECK in place, so
+      `rebuildAutotradeOptionsPaperPositionsTable()` copies rows through a
+      fresh table on startup, same rename/create/copy/drop dance as the
+      equity paper-positions table's own migration, guarded so it runs
+      once). LIVE options positions' own schema is untouched — still
+      `'time_exit'`/`'manual'` only, matching the scope boundary above.
+    - **UI.** The Auto page's Configuration card gained **Options stop-loss
+      (%)** and **Options take-profit (%)** fields (Save button per field,
+      matching the existing partial-exit-size field's pattern); both hints
+      call out that they're paper/backtest-only and that LIVE stays
+      time-exit-only. The options backtest trades table and options paper
+      positions table both color-code the exit-reason badge (green
+      take-profit, red stop-loss) alongside the existing slate/blue
+      end-of-period/time-exit cases; the LIVE options positions table is
+      unchanged, matching the scope boundary.
+    - **Verified:** every new/changed test (across `optionsExecute.ts`,
+      both backtest engines, the config sanitizer, the DB schema/migration,
+      and the UI) confirmed genuinely failing on a reverted source change
+      before being restored. The coverage sweep also caught a latent bug
+      class worth calling out: passing an **explicit** `0` (as opposed to
+      omitting the field) for either pct through to `evaluateExit()`
+      without the `|| undefined` guard makes `pct <= -0`/`pct >= 0` true for
+      any loss/gain at all — an immediate-exit-on-any-move bug, not merely
+      "feature disabled." Both backtest engines already had the guard in
+      place; a dedicated test in each now proves an explicit `0` behaves
+      identically to an omitted field, since a client can reach that exact
+      input through the backtest routes' own pass-through.
 
 ---
 

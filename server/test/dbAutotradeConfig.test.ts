@@ -499,6 +499,37 @@ describe('autotrade config persistence', () => {
     });
   });
 
+  describe('options stop-loss / take-profit (paper + backtest only)', () => {
+    it('both default to 0 (disabled)', () => {
+      const d = defaultAutotradeConfig();
+      expect(d.optionsStopLossPct).toBe(0);
+      expect(d.optionsTakeProfitPct).toBe(0);
+    });
+
+    it('persists a patch and round-trips', () => {
+      const cfg = setAutotradeConfig({ optionsStopLossPct: 25, optionsTakeProfitPct: 50 });
+      expect(cfg).toMatchObject({ optionsStopLossPct: 25, optionsTakeProfitPct: 50 });
+      expect(getAutotradeConfig()).toMatchObject({ optionsStopLossPct: 25, optionsTakeProfitPct: 50 });
+    });
+
+    it('clamps to [0, 100] rather than rejecting out-of-range values', () => {
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize clamp
+      expect(setAutotradeConfig({ optionsStopLossPct: 150 }).optionsStopLossPct).toBe(100);
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize clamp
+      expect(setAutotradeConfig({ optionsTakeProfitPct: -10 }).optionsTakeProfitPct).toBe(0);
+      expect(setAutotradeConfig({ optionsStopLossPct: 0 }).optionsStopLossPct).toBe(0); // exactly 0 is valid, not a fallback trigger
+    });
+
+    it('round-trips independently of unrelated patches, including the equity trailing-stop fields', () => {
+      setAutotradeConfig({ optionsStopLossPct: 20, optionsTakeProfitPct: 40, breakevenTriggerRMultiple: 1 });
+      const cfg = setAutotradeConfig({ riskProfile: 'AGGRESSIVE' });
+      expect(cfg.optionsStopLossPct).toBe(20);
+      expect(cfg.optionsTakeProfitPct).toBe(40);
+      expect(cfg.breakevenTriggerRMultiple).toBe(1);
+      expect(cfg.riskProfile).toBe('AGGRESSIVE');
+    });
+  });
+
   describe('earnings blackout', () => {
     it('defaults to 0 (disabled)', () => {
       expect(defaultAutotradeConfig().earningsBlackoutDays).toBe(0);

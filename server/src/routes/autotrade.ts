@@ -128,6 +128,9 @@ const configBody = z.object({
   liveOptionsProbationSizeMultiplier: z.number().positive().max(1).optional(),
   // --- Options strategy shape -------------------------------------------------
   optionsStrategyType: z.enum(['single_leg', 'debit_spread']).optional(),
+  // --- Options stop-loss / take-profit (paper + backtest only; 0 disables) ----
+  optionsStopLossPct: z.number().min(0).max(100).optional(),
+  optionsTakeProfitPct: z.number().min(0).max(100).optional(),
   // --- Movers auto-promotion --------------------------------------------------
   autoPromoteMoversEnabled: z.boolean().optional(),
   autoPromoteThreshold: z.number().int().min(1).optional(),
@@ -205,6 +208,8 @@ autotradeRouter.put(
       patch.liveOptionsProbationSizeMultiplier = body.liveOptionsProbationSizeMultiplier;
     }
     if (body.optionsStrategyType !== undefined) patch.optionsStrategyType = body.optionsStrategyType;
+    if (body.optionsStopLossPct !== undefined) patch.optionsStopLossPct = body.optionsStopLossPct;
+    if (body.optionsTakeProfitPct !== undefined) patch.optionsTakeProfitPct = body.optionsTakeProfitPct;
     if (body.autoPromoteMoversEnabled !== undefined) patch.autoPromoteMoversEnabled = body.autoPromoteMoversEnabled;
     if (body.autoPromoteThreshold !== undefined) patch.autoPromoteThreshold = body.autoPromoteThreshold;
     if (body.autoPromoteWindowDays !== undefined) patch.autoPromoteWindowDays = body.autoPromoteWindowDays;
@@ -719,6 +724,9 @@ const optionsBacktestBodyBase = z.object({
    *  own default when omitted entirely. Governs call vs put too — see
    *  OptionsBacktestConfig's own doc comment. */
   directionMode: z.enum(['long', 'short', 'both']).optional(),
+  // --- Options stop-loss / take-profit (own value, not read from live config) -
+  optionsStopLossPct: z.number().min(0).max(100).optional(),
+  optionsTakeProfitPct: z.number().min(0).max(100).optional(),
 });
 const optionsBacktestBody = optionsBacktestBodyBase
   .refine((b) => b.from <= b.to, { message: 'from must be on or before to', path: ['from'] })
@@ -752,6 +760,8 @@ autotradeRouter.post(
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
       directionMode: body.directionMode,
+      optionsStopLossPct: body.optionsStopLossPct,
+      optionsTakeProfitPct: body.optionsTakeProfitPct,
     });
     res.json({ report, stats: computeBacktestStats(report) });
   }),
@@ -773,6 +783,8 @@ autotradeRouter.post(
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
       directionMode: body.directionMode,
+      optionsStopLossPct: body.optionsStopLossPct,
+      optionsTakeProfitPct: body.optionsTakeProfitPct,
     });
     res.json({
       inSample: { report: wf.inSample, stats: computeBacktestStats(wf.inSample) },
@@ -824,6 +836,9 @@ const combinedBacktestBodyBase = z.object({
    *  own default when omitted entirely. Governs BOTH legs — see
    *  CombinedBacktestConfig's own doc comment. */
   directionMode: z.enum(['long', 'short', 'both']).optional(),
+  // --- Options stop-loss / take-profit (own value; options leg only) ----------
+  optionsStopLossPct: z.number().min(0).max(100).optional(),
+  optionsTakeProfitPct: z.number().min(0).max(100).optional(),
 });
 const combinedBacktestBody = combinedBacktestBodyBase
   .refine((b) => b.from <= b.to, { message: 'from must be on or before to', path: ['from'] })
@@ -864,6 +879,8 @@ autotradeRouter.post(
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
       directionMode: body.directionMode,
+      optionsStopLossPct: body.optionsStopLossPct,
+      optionsTakeProfitPct: body.optionsTakeProfitPct,
     });
     res.json({ report, stats: combinedStats(report) });
   }),
@@ -892,6 +909,8 @@ autotradeRouter.post(
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
       directionMode: body.directionMode,
+      optionsStopLossPct: body.optionsStopLossPct,
+      optionsTakeProfitPct: body.optionsTakeProfitPct,
     });
     res.json({
       inSample: { report: wf.inSample, stats: combinedStats(wf.inSample) },

@@ -314,6 +314,26 @@ export interface AutotradeConfig {
    *  (options backtests remain single-leg only). */
   optionsStrategyType: OptionsStrategyType;
 
+  // --- Options stop-loss / take-profit (docs/AUTOTRADING_SPEC.md — follow-up
+  // to phase 12's own confirmed close-only, time-based exit design; added
+  // 2026-07-16). PAPER and BACKTEST options positions only, mirroring the
+  // equity trailing-stop/breakeven/partial-exit fields above — LIVE options
+  // positions stay time-exit-only (see that section's own writeup: a resting
+  // live position has no bracket to lean on and a meaningfully worse failure
+  // mode than a scheduled time-based close). Reuses options/exitRules.ts's
+  // own %-of-premium model (unrealized return vs. entry price, net debit for
+  // a spread), not decide.ts's R-multiple one, since a long option/spread has
+  // no ATR-based stop distance to measure R against. Both default to 0
+  // (disabled), so leaving them untouched changes nothing — the loop stays
+  // exactly as time-exit-only as it's always been. -----------------------
+
+  /** Exit a paper/backtest options position once its unrealized loss reaches
+   *  this % of the premium paid (net debit, for a spread). 0 disables it. */
+  optionsStopLossPct: number;
+  /** Exit a paper/backtest options position once its unrealized gain reaches
+   *  this % of the premium paid (net debit, for a spread). 0 disables it. */
+  optionsTakeProfitPct: number;
+
   // --- Movers auto-promotion (docs/AUTOTRADING_SPEC.md — the 2026-07-10
   // universe-widening fix's explicitly separate follow-up) ---------------
 
@@ -404,6 +424,8 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveOptionsProbationTrades: 20,
     liveOptionsProbationSizeMultiplier: 0.5,
     optionsStrategyType: 'single_leg',
+    optionsStopLossPct: 0,
+    optionsTakeProfitPct: 0,
     autoPromoteMoversEnabled: true,
     autoPromoteThreshold: 3,
     autoPromoteWindowDays: 10,
@@ -528,6 +550,8 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       input.optionsStrategyType === 'debit_spread' || input.optionsStrategyType === 'single_leg'
         ? input.optionsStrategyType
         : d.optionsStrategyType,
+    optionsStopLossPct: pct(input.optionsStopLossPct, d.optionsStopLossPct),
+    optionsTakeProfitPct: pct(input.optionsTakeProfitPct, d.optionsTakeProfitPct),
     autoPromoteMoversEnabled:
       typeof input.autoPromoteMoversEnabled === 'boolean' ? input.autoPromoteMoversEnabled : d.autoPromoteMoversEnabled,
     autoPromoteThreshold: posIntMin1(input.autoPromoteThreshold, d.autoPromoteThreshold),

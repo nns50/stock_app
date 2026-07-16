@@ -229,6 +229,117 @@ describe('simulateCombinedBacktest', () => {
     expect(report.equityTrades[0].symbol).toBe('BBB');
   });
 
+  it('closes the OPTIONS leg via stop-loss once unrealized loss reaches the configured %, well before the time-exit window (2026-07-16)', async () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const expiration = d(signalDay, DTE_DAYS); // 30 days out -- time-exit can't fire
+    const T = yearsFor(DTE_DAYS);
+    const entryPremium = premiumFor(100, STRIKE, T);
+    const exitDay = d(signalDay, 2); // first day eligible (not the entry day itself)
+    const exitPremium = entryPremium * 0.4; // -60%, past a -50% stop
+    mockContractBars({
+      [CALL_TICKER]: [
+        optionBar(signalDay, entryPremium),
+        optionBar(entryDay, entryPremium, { open: entryPremium }),
+        optionBar(exitDay, exitPremium),
+      ],
+    });
+    const historyBySymbol = new Map([['BBB', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(exitDay)]]]);
+    const contractsBySymbol = new Map([['BBB', [contractRef(CALL_TICKER, STRIKE, expiration)]]]);
+    const report = await simulateCombinedBacktest(
+      historyBySymbol,
+      contractsBySymbol,
+      baseConfig({ symbols: ['BBB'], from: signalDay, to: exitDay, optionsStopLossPct: 50 }),
+    );
+    const optTrade = report.optionsTrades.find((t) => t.exitReason !== 'end_of_period');
+    expect(optTrade?.exitReason).toBe('stop_loss');
+  });
+
+  it('closes the OPTIONS leg via take-profit once unrealized gain reaches the configured %, well before the time-exit window (2026-07-16)', async () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const expiration = d(signalDay, DTE_DAYS); // 30 days out -- time-exit can't fire
+    const T = yearsFor(DTE_DAYS);
+    const entryPremium = premiumFor(100, STRIKE, T);
+    const exitDay = d(signalDay, 2); // first day eligible (not the entry day itself)
+    const exitPremium = entryPremium * 1.6; // +60%, past a +50% target
+    mockContractBars({
+      [CALL_TICKER]: [
+        optionBar(signalDay, entryPremium),
+        optionBar(entryDay, entryPremium, { open: entryPremium }),
+        optionBar(exitDay, exitPremium),
+      ],
+    });
+    const historyBySymbol = new Map([['BBB', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(exitDay)]]]);
+    const contractsBySymbol = new Map([['BBB', [contractRef(CALL_TICKER, STRIKE, expiration)]]]);
+    const report = await simulateCombinedBacktest(
+      historyBySymbol,
+      contractsBySymbol,
+      baseConfig({ symbols: ['BBB'], from: signalDay, to: exitDay, optionsTakeProfitPct: 50 }),
+    );
+    const optTrade = report.optionsTrades.find((t) => t.exitReason !== 'end_of_period');
+    expect(optTrade?.exitReason).toBe('take_profit');
+  });
+
+  it('leaves the OPTIONS leg fully disabled for price-based exits when 0/omitted — same trades as before this feature existed (2026-07-16)', async () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const expiration = d(signalDay, DTE_DAYS);
+    const T = yearsFor(DTE_DAYS);
+    const entryPremium = premiumFor(100, STRIKE, T);
+    const exitDay = d(signalDay, 2);
+    const exitPremium = entryPremium * 0.4; // a -60% move that WOULD trigger a stop if one were configured
+    mockContractBars({
+      [CALL_TICKER]: [
+        optionBar(signalDay, entryPremium),
+        optionBar(entryDay, entryPremium, { open: entryPremium }),
+        optionBar(exitDay, exitPremium),
+      ],
+    });
+    const historyBySymbol = new Map([['BBB', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(exitDay)]]]);
+    const contractsBySymbol = new Map([['BBB', [contractRef(CALL_TICKER, STRIKE, expiration)]]]);
+    const report = await simulateCombinedBacktest(
+      historyBySymbol,
+      contractsBySymbol,
+      baseConfig({ symbols: ['BBB'], from: signalDay, to: exitDay }), // no optionsStopLossPct/optionsTakeProfitPct
+    );
+    // Still force-closes at period end (exitDay is the last simulated day) --
+    // the point is that neither price rule fired despite the big move,
+    // matching pre-feature behavior exactly (only 'end_of_period' could have
+    // closed it, not 'stop_loss').
+    expect(report.optionsTrades).toHaveLength(1);
+    expect(report.optionsTrades[0].exitReason).toBe('end_of_period');
+  });
+
+  it('treats an EXPLICIT 0 the same as omitted, not a 0%-loss/gain threshold that fires immediately (2026-07-16)', async () => {
+    // A route handler passes `optionsStopLossPct: body.optionsStopLossPct`
+    // through verbatim (routes/autotrade.ts), so a client explicitly
+    // sending 0 is a real, reachable input -- not just "field absent".
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const expiration = d(signalDay, DTE_DAYS);
+    const T = yearsFor(DTE_DAYS);
+    const entryPremium = premiumFor(100, STRIKE, T);
+    const exitDay = d(signalDay, 2);
+    const exitPremium = entryPremium * 0.4; // a -60% move that WOULD trigger a stop if 0 meant "any loss"
+    mockContractBars({
+      [CALL_TICKER]: [
+        optionBar(signalDay, entryPremium),
+        optionBar(entryDay, entryPremium, { open: entryPremium }),
+        optionBar(exitDay, exitPremium),
+      ],
+    });
+    const historyBySymbol = new Map([['BBB', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(exitDay)]]]);
+    const contractsBySymbol = new Map([['BBB', [contractRef(CALL_TICKER, STRIKE, expiration)]]]);
+    const report = await simulateCombinedBacktest(
+      historyBySymbol,
+      contractsBySymbol,
+      baseConfig({ symbols: ['BBB'], from: signalDay, to: exitDay, optionsStopLossPct: 0, optionsTakeProfitPct: 0 }),
+    );
+    expect(report.optionsTrades).toHaveLength(1);
+    expect(report.optionsTrades[0].exitReason).toBe('end_of_period');
+  });
+
   describe('CRITICAL: the combined aggregate-risk budget crosses instrument types', () => {
     // Generous on every other cap (via the riskCaps() overrides threaded into
     // baseConfig() at each call site below) so max_aggregate_open_risk is
