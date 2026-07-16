@@ -62,6 +62,7 @@ import type {
   WebullAccountStateResult,
   LivePreviewResult,
   PlaceResult,
+  ClosePositionResult,
   ReconcileResult,
   ReconcileAllResult,
   CancelResult,
@@ -290,6 +291,11 @@ export const client = {
   deletePosition: (id: number) => api<{ deleted: number }>(`/positions/${id}`, { method: 'DELETE' }),
   addExit: (id: number, body: Record<string, unknown>) =>
     api<Position>(`/positions/${id}/exits`, { method: 'POST', body: JSON.stringify(body) }),
+  closePosition: (id: number, accountId: string, confirmation: string) =>
+    api<ClosePositionResult>(`/positions/${id}/close`, {
+      method: 'POST',
+      body: JSON.stringify({ accountId, confirmation }),
+    }),
 
   // --- journal ---
   journalStats: () => api<JournalStats>('/journal/stats'),

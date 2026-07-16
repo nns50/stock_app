@@ -17,7 +17,7 @@ import {
   StatTile,
 } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
-import { ExitModal, JournalEditModal } from '../components/PositionForms';
+import { CloseModal, ExitModal, JournalEditModal } from '../components/PositionForms';
 import { OPEN_LOG_TRADE_EVENT, TRADE_LOGGED_EVENT } from '../components/GlobalLogTrade';
 import { RiskSizingModal } from '../components/RiskSizingModal';
 import { ExposurePanel } from '../components/ExposurePanel';
@@ -28,6 +28,17 @@ import { useConfirm } from '../components/ConfirmContext';
 import type { Position, PositionWithPnl } from '../api/types';
 
 type StatusFilter = 'all' | 'open' | 'closed';
+
+/** Mirrors the server's providers/webull/positions.ts isWebullTracked() —
+ *  an open position counts as broker-attributable only if the app itself
+ *  put it there from a real brokerage: imported by the Webull sync (tagged
+ *  'webull'), opened by a live fill (tagged 'live'), or linked to a live
+ *  order_intent (sourceIntentId). A plain manually-logged position (e.g.
+ *  tracked at a different broker) has nothing to place a real order
+ *  against, so it keeps the journal-only "exit" flow instead of "close". */
+function isLivePosition(p: Position): boolean {
+  return p.tags.includes('webull') || p.tags.includes('live') || p.sourceIntentId !== null;
+}
 
 /** Comparable value for a sortable Positions column (module-level → stable). */
 function positionSortVal(row: PositionWithPnl, key: string): number | string | null {
@@ -77,6 +88,7 @@ export default function PositionsPage() {
 
   const [sizerOpen, setSizerOpen] = useState(false);
   const [exitPos, setExitPos] = useState<Position | null>(null);
+  const [closePos, setClosePos] = useState<Position | null>(null);
   const [editPos, setEditPos] = useState<Position | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const { toast } = useToast();
@@ -211,6 +223,7 @@ export default function PositionsPage() {
                     row={row}
                     events={eventsBySym.get(row.position.symbol.toUpperCase())}
                     onExit={setExitPos}
+                    onClose={setClosePos}
                     onEdit={setEditPos}
                     onDelete={remove}
                   />
@@ -223,6 +236,7 @@ export default function PositionsPage() {
 
       <RiskSizingModal open={sizerOpen} onClose={() => setSizerOpen(false)} />
       <ExitModal position={exitPos} onClose={() => setExitPos(null)} onSaved={reload} />
+      <CloseModal position={closePos} onClose={() => setClosePos(null)} onSaved={reload} />
       <JournalEditModal position={editPos} onClose={() => setEditPos(null)} onSaved={reload} />
     </div>
   );
@@ -233,12 +247,14 @@ const PositionRow = memo(
     row,
     events,
     onExit,
+    onClose,
     onEdit,
     onDelete,
   }: {
     row: PositionWithPnl;
     events?: SymbolEvents;
     onExit: (p: Position) => void;
+    onClose: (p: Position) => void;
     onEdit: (p: Position) => void;
     onDelete: (id: number) => void;
   }) {
@@ -320,11 +336,20 @@ const PositionRow = memo(
           <PnL value={pnl.returnPct} format={fmtPct} />
         </td>
         <td className="td text-right whitespace-nowrap">
-          {p.status === 'open' && (
-            <button className="text-xs text-accent hover:underline mr-2" onClick={() => onExit(p)}>
-              exit
-            </button>
-          )}
+          {p.status === 'open' &&
+            (isLivePosition(p) ? (
+              <button
+                className="text-xs text-bear hover:underline mr-2"
+                onClick={() => onClose(p)}
+                title="Place a real closing order at your broker"
+              >
+                close
+              </button>
+            ) : (
+              <button className="text-xs text-accent hover:underline mr-2" onClick={() => onExit(p)}>
+                exit
+              </button>
+            ))}
           <button className="text-xs text-slate-400 hover:text-slate-200 mr-2" onClick={() => onEdit(p)}>
             journal
           </button>

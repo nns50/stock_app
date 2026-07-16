@@ -453,8 +453,18 @@ nudge, not a blocker — you can still save with items unchecked.
 - When a position has a stop/target, the row shows a **management line**: distance to
   stop (SL) and target (TP), plus the trade's **current open P&L in R** (`+1.4R`) — so
   you always know how the trade is doing *relative to what you risked*.
-- **exit** records a (partial or full) exit; **journal** edits tags/grade/notes;
-  **del** removes it (with confirm + Undo).
+- **exit** (manually-logged positions) records a (partial or full) exit — a journal entry
+  only, since there's no broker order to place against a trade you tracked by hand.
+- **close** (broker-tracked positions — imported from Webull, opened by a live fill, or
+  linked to a live order) instead places a **real closing order** at your broker: full
+  remaining quantity, a marketable-limit price near the current market, cancelling any
+  resting stop/target first. Gated by the same type-to-confirm phrase (`SELL <qty>
+  <symbol>` / `BUY <qty> <symbol>`) as any other live order on the [Trade](#trade) page —
+  type it, enter your Webull cash account_id (remembered from Trade), and the server
+  re-checks `TRADING_ENABLED`, every guardrail, and the kill switch before it fires. The
+  order can take a few minutes to fill; the position updates once it does (automatically,
+  via the same background Webull sync that reconciles any other live order).
+- **journal** edits tags/grade/notes; **del** removes it (with confirm + Undo).
 - An **Exposure panel** summarizes gross/net exposure across the book.
 
 ---

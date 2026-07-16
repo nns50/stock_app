@@ -158,7 +158,7 @@ function etDateStr(ms: number = Date.now()): string {
 }
 
 const AUTOTRADE_TAGS = ['live', 'autotrade'];
-const isAutotradePosition = (p: Position): boolean => p.tags.includes('autotrade');
+export const isAutotradePosition = (p: Position): boolean => p.tags.includes('autotrade');
 
 export interface LivePortfolioSnapshot {
   today: string;
@@ -1041,7 +1041,7 @@ function materializeTimeExitFill(
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-interface BracketCancelOutcome {
+export interface BracketCancelOutcome {
   ok: boolean;
   reason?: string;
   /** A bracket leg was found FILLED on the post-cancel re-poll — it raced the
@@ -1051,7 +1051,15 @@ interface BracketCancelOutcome {
   raced?: boolean;
 }
 
-async function cancelLiveBracketExitLegs(intent: OrderIntentRecord, accountId: string): Promise<BracketCancelOutcome> {
+/** Exported for reuse by services/trading/closePosition.ts (manual "close
+ *  this position" from the Positions page, 2026-07-16) — a position's
+ *  resting bracket exit legs need cancelling first regardless of WHY the
+ *  position is being closed (maxHoldDays here, or a human clicking Close),
+ *  and this function has nothing autotrade-specific in its own body. */
+export async function cancelLiveBracketExitLegs(
+  intent: OrderIntentRecord,
+  accountId: string,
+): Promise<BracketCancelOutcome> {
   const cancel = await webullCancelOrder(accountId, intent.idempotencyKey);
   if (!cancel.ok) {
     return { ok: false, reason: `Broker cancel rejected: ${cancel.error}` };

@@ -398,6 +398,29 @@ key becomes `client_order_id`.
   each leg's own broker-assigned `order_id` from Order Detail and cancelling by that
   instead (untried — no confirmed evidence Webull's cancel endpoint accepts an
   `order_id` in place of `client_order_id`).
+- **Manually closing a REAL position from the Positions page (shipped, 2026-07-16):**
+  `POST /api/positions/:id/close` (`services/trading/closePosition.ts`) — the human-confirmed
+  counterpart to autotrade's own force-closes above. Fixes a real gap: the pre-existing
+  **exit** action (`POST /:id/exits`) only ever wrote a journal entry, silently doing nothing
+  toward the broker for a live position (tagged `webull`/`live`, or with a `sourceIntentId`) —
+  the app would show it as closed while the broker still held it. The Positions page now shows
+  **close**, not **exit**, for any such position, opening a modal with the SAME
+  type-to-confirm-phrase friction (`SELL <qty> <symbol>` / `BUY <qty> <symbol>`, flipped from the
+  position's side) as any other live order. Server-side: checked BEFORE anything else (a mismatch
+  has zero side effects, not even a bracket cancel); if the entry intent was a bracket, its
+  resting exit legs are cancelled first via the SAME `cancelLiveBracketExitLegs` this file's own
+  post-fill-cancel entry above uses; then a fresh marketable-limit closing order (0.5% buffer,
+  full remaining quantity) is submitted through `placeOrder()` — the identical
+  `TRADING_ENABLED` + guardrails + audit-trail pipeline the Trade page itself uses, not a
+  parallel implementation. The resulting order is a plain, non-autotrade-tagged intent, so the
+  EXISTING generic reconcile (`reconcileIntent`/`reconcileAllWorking`, including the background
+  Webull sync scheduler) picks up its fill and records the exit — no new reconciliation code
+  needed. One exception: for an autotrade-tagged EQUITY position specifically, the resulting
+  intent IS registered with autotrade's own bookkeeping (`recordLiveExitOrder`), so
+  `checkLiveEquityTimeExits`'s own maxHoldDays dedup guard sees the close already in flight and
+  doesn't independently race it with a second cancel+close attempt — never needed for options,
+  since autotrade's live options positions live in an entirely separate table never shown on the
+  Positions page.
 - **Next:** confirm a real option fill + a real vertical preview; COVERED_STOCK (stock+option) and
   IRON_CONDOR (4-leg) strategies; options brackets / OTOCO; the post-fill bracket-cancel
   behavior above against a real account.
