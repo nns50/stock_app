@@ -944,11 +944,15 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   Screen → Decision → Risk Check day by day over
   historical daily bars — the exact same logic the live loop above uses, so a backtest
   can't tell you something the live system wouldn't actually do. One exception today:
-  **trade direction** — the backtest engine can replay `Long`, `Short`, or `Both` just
-  like the live loop, but this form has no control for it yet, so a run from this page
-  always tests `Long`-only regardless of what **Trade direction** is set to in
-  Configuration above; testing `Short` or `Both` needs a direct API request (`directionMode`
-  on `POST /api/autotrade/backtest`) until a form control is added. Leave **Out-of-sample
+  **trade direction** — all three engines below (equity, options, and combined) can
+  replay `Long`, `Short`, or `Both` just like the live loop — in `Both`, the options
+  engines derive each trade's call/put from that same per-candidate resolved side, exactly
+  like the live loop's Options column does — but none of the three forms has a control for
+  it yet, so a run from this page always tests `Long`-only regardless of what **Trade
+  direction** is set to in Configuration above; testing `Short` or `Both` needs a direct
+  API request (`directionMode` on `POST /api/autotrade/backtest`,
+  `/api/autotrade/backtest-options`, or `/api/autotrade/backtest-combined`) until a form
+  control is added. Leave **Out-of-sample
   split** blank for a single-window run, or set it to split the range into an
   **in-sample** window (what the configuration was "tuned" on) and an **out-of-sample**
   window (unseen data) — a strategy that only performs in-sample is exactly what this
