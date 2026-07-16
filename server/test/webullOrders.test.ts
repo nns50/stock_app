@@ -9,6 +9,7 @@ import {
   webullOrderStatus,
   webullCancelOrder,
   webullReplaceOrder,
+  listWebullOpenOrders,
   newClientOrderId,
 } from '../src/providers/webull/orders';
 import type { OrderIntent } from '../src/services/trading/guardrails';
@@ -546,6 +547,85 @@ describe('webull stock order + preview', () => {
     const body = JSON.parse((opts as RequestInit).body as string);
     expect(body.account_id).toBe('ACC1');
     expect(body.modify_orders[0]).toEqual({ client_order_id: 'CID-REP', quantity: '2', limit_price: '179' });
+  });
+});
+
+describe('listWebullOpenOrders', () => {
+  it('flattens combo envelopes into one entry per sub-order, normalizing side/status', () => {
+    // A bracket envelope (MASTER buy + two exit sells, each with its OWN
+    // client_order_id) plus a standalone order — mirrors what the open-orders
+    // endpoint returns, and is the ONLY way to recover the exit legs' ids.
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const bracket = {
+      client_order_id: 'CID-MASTER',
+      combo_order_id: 'WB-COMBO',
+      orders: [
+        {
+          combo_type: 'MASTER',
+          client_order_id: 'CID-MASTER',
+          symbol: 'AAPL',
+          side: 'BUY',
+          status: 'FILLED',
+          order_id: 'WB-M',
+        },
+        {
+          combo_type: 'STOP_LOSS',
+          client_order_id: 'CID-SL',
+          symbol: 'AAPL',
+          side: 'SELL',
+          status: 'WORKING',
+          order_id: 'WB-SL',
+        },
+        {
+          combo_type: 'STOP_PROFIT',
+          client_order_id: 'CID-TP',
+          symbol: 'AAPL',
+          action: 'SELL',
+          status: 'WORKING',
+          order_id: 'WB-TP',
+        },
+      ],
+    };
+    const standalone = {
+      client_order_id: 'CID-SOLO',
+      orders: [{ client_order_id: 'CID-SOLO', symbol: 'MSFT', side: 'sell', status: 'PENDING', order_id: 'WB-SOLO' }],
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify([bracket, standalone]),
+    } as Response);
+
+    return listWebullOpenOrders('ACC1').then((r) => {
+      expect(r.ok).toBe(true);
+      expect(r.orders).toHaveLength(4);
+      // The two exit legs are recoverable by their OWN client_order_ids, side-normalized.
+      const sl = r.orders.find((o) => o.clientOrderId === 'CID-SL');
+      expect(sl).toMatchObject({ symbol: 'AAPL', side: 'sell', status: 'WORKING', comboType: 'STOP_LOSS' });
+      // `action` is accepted as a side alias.
+      expect(r.orders.find((o) => o.clientOrderId === 'CID-TP')).toMatchObject({ side: 'sell' });
+      expect(r.orders.find((o) => o.clientOrderId === 'CID-MASTER')).toMatchObject({ side: 'buy', status: 'FILLED' });
+    });
+  });
+
+  it('fails closed (ok:false, no orders) when the broker call errors', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      text: async () => JSON.stringify({ msg: 'server error' }),
+    } as Response);
+
+    const r = await listWebullOpenOrders('ACC1');
+    expect(r).toMatchObject({ ok: false, orders: [] });
+    expect(r.error).toMatch(/server error/i);
+  });
+
+  it('returns not-configured (never throws) when Webull keys are unset', async () => {
+    Object.assign(config.webull, { appKey: '', appSecret: '', region: '' });
+    const r = await listWebullOpenOrders('ACC1');
+    expect(r).toMatchObject({ ok: false, orders: [] });
+    expect(r.error).toMatch(/not configured/i);
   });
 });
 

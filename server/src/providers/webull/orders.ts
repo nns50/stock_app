@@ -570,6 +570,94 @@ export async function webullOrderStatus(accountId: string, clientOrderId: string
   return { ok: true, found: false };
 }
 
+/** One currently-open (resting/working) order at the broker, flattened out of
+ *  its combo envelope. `side`/`symbol` are parsed leniently across the field
+ *  names Webull has been seen to use, since a bracket's exit legs are echoed
+ *  back with their OWN client_order_id (buildOrderRequest) — which we never
+ *  persisted, so the broker's open-orders list is the only way to recover them
+ *  for an already-open position. */
+export interface WebullOpenOrder {
+  clientOrderId?: string;
+  brokerOrderId?: string;
+  symbol?: string;
+  /** Normalized to 'buy' | 'sell' when determinable, else undefined (in which
+   *  case the caller must NOT assume a side — fail closed rather than cancel a
+   *  wrong-side order). */
+  side?: 'buy' | 'sell';
+  status?: string;
+  comboType?: string;
+}
+
+export interface WebullOpenOrdersResult {
+  ok: boolean;
+  orders: WebullOpenOrder[];
+  /** The raw broker payload, kept so a first live run can reveal the real field
+   *  shape if the lenient parsing below misses anything. */
+  raw?: unknown;
+  error?: string;
+}
+
+function normalizeSide(v: unknown): 'buy' | 'sell' | undefined {
+  if (typeof v !== 'string') return undefined;
+  const s = v.trim().toUpperCase();
+  if (['BUY', 'B', 'BOT', 'LONG', 'BUY_TO_OPEN', 'BUY_TO_CLOSE'].includes(s)) return 'buy';
+  if (['SELL', 'S', 'SLD', 'SHORT', 'SELL_TO_OPEN', 'SELL_TO_CLOSE'].includes(s)) return 'sell';
+  return undefined;
+}
+
+function pickStr(o: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = o[k];
+    if (typeof v === 'string' && v.length > 0) return v;
+    if (typeof v === 'number') return String(v);
+  }
+  return undefined;
+}
+
+function mapOpenOrder(o: Record<string, unknown>): WebullOpenOrder {
+  return {
+    clientOrderId: pickStr(o, ['client_order_id', 'clientOrderId']),
+    brokerOrderId: pickStr(o, ['order_id', 'orderId', 'combo_order_id']),
+    symbol: pickStr(o, ['symbol', 'ticker', 'instrument_symbol', 'stock_symbol']),
+    side: normalizeSide(o.side ?? o.action ?? o.order_side ?? o.buy_sell ?? o.trade_side ?? o.direction),
+    status: o.status ? String(o.status).toUpperCase() : undefined,
+    comboType: typeof o.combo_type === 'string' ? o.combo_type : undefined,
+  };
+}
+
+/**
+ * READ-ONLY list of every currently-open order for the account, flattened
+ * across combo envelopes to one entry per sub-order. Places/cancels nothing;
+ * never throws. Used to find a bracket's resting stop/target legs so a
+ * manual/force close can cancel them first — the master-id cancel does NOT
+ * reach the exit legs (each has its own client_order_id), confirmed against a
+ * real account where a close was rejected as "will reverse an existing
+ * position" until the resting stop/target was cancelled by hand.
+ */
+export async function listWebullOpenOrders(accountId: string): Promise<WebullOpenOrdersResult> {
+  if (!webullConfigured()) return { ok: false, orders: [], error: 'Webull is not configured.' };
+  const r = await webullClient().call('GET', '/openapi/trade/order/open', {
+    query: { account_id: accountId },
+    surface: 'trade',
+  });
+  if (!r.ok) {
+    const j = (r.data ?? {}) as { msg?: string; message?: string; error_msg?: string };
+    return {
+      ok: false,
+      orders: [],
+      raw: r.data,
+      error: j.msg || j.message || j.error_msg || `Webull open-orders failed (${r.status})`,
+    };
+  }
+  const envelopes = Array.isArray(r.data) ? (r.data as OrderEnvelope[]) : [];
+  const orders: WebullOpenOrder[] = [];
+  for (const env of envelopes) {
+    const subs = Array.isArray(env.orders) && env.orders.length ? env.orders : [env as Record<string, unknown>];
+    for (const o of subs) orders.push(mapOpenOrder(o as Record<string, unknown>));
+  }
+  return { ok: true, orders, raw: r.data };
+}
+
 export interface WebullCancelResult {
   ok: boolean;
   raw?: unknown;

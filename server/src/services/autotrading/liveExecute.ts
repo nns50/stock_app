@@ -9,6 +9,8 @@ import {
   webullPlaceOrder,
   webullOrderStatus,
   webullCancelOrder,
+  listWebullOpenOrders,
+  WebullOpenOrder,
 } from '../../providers/webull/orders';
 import { mapWebullStatus } from '../trading/reconcile';
 import {
@@ -1056,56 +1058,129 @@ export interface BracketCancelOutcome {
  *  resting bracket exit legs need cancelling first regardless of WHY the
  *  position is being closed (maxHoldDays here, or a human clicking Close),
  *  and this function has nothing autotrade-specific in its own body. */
+/** An order at the broker is "resting" (could still fill and race our close)
+ *  unless it's in a known terminal state. Unknown/missing statuses are treated
+ *  as resting — conservative: we'll try to cancel and then require the re-scan
+ *  to confirm it's gone, rather than assume an unrecognized status is safe. */
+const TERMINAL_ORDER_STATUSES = new Set([
+  'FILLED',
+  'CANCELLED',
+  'CANCELED',
+  'EXPIRED',
+  'REJECTED',
+  'FAILED',
+  'DELETED',
+  'INACTIVE',
+]);
+function isRestingStatus(status?: string): boolean {
+  return !status || !TERMINAL_ORDER_STATUSES.has(status.toUpperCase());
+}
+
+/** The bracket's resting exit legs, recovered from the broker's live open
+ *  orders: same symbol, the EXIT side (a long's stop/target are sells, a
+ *  short's are buys — the same side as the close we're about to place), still
+ *  resting, and with a client_order_id we can cancel by. Side must be POSITIVELY
+ *  parsed to match — an order whose side we couldn't read is never assumed to be
+ *  cancellable (fail closed, never cancel a wrong-side order). */
+function restingExitOrders(orders: WebullOpenOrder[], symbol: string, exitSide: 'buy' | 'sell'): WebullOpenOrder[] {
+  return orders.filter(
+    (o) => o.symbol?.toUpperCase() === symbol && o.side === exitSide && isRestingStatus(o.status) && !!o.clientOrderId,
+  );
+}
+
 export async function cancelLiveBracketExitLegs(
   intent: OrderIntentRecord,
   accountId: string,
 ): Promise<BracketCancelOutcome> {
-  // A REJECTED cancel is not decisive on its own. Webull rejects with "Order
-  // can not be canceled" precisely when the order is ALREADY terminal — i.e.
-  // the exit legs are already cancelled/filled/expired and nothing is left to
-  // race a fresh close. Bailing on that rejection (as this originally did)
-  // strands a position that is in fact safe to close (the exact bug a human hit
-  // clicking Close on a position whose bracket was already gone). So don't
-  // decide from the cancel's own result — always re-poll the ACTUAL leg states
-  // below and decide from those. The cancel outcome only colours the failure
-  // message and the can't-verify fallback.
-  const cancel = await webullCancelOrder(accountId, intent.idempotencyKey);
+  const symbol = intent.symbol.toUpperCase();
+  // The exit legs are the OPPOSITE side of the entry (a long's stop/target are
+  // sells; a short's are buys) — the same side as the close we're about to
+  // place. We CANNOT clear them by the entry's own client_order_id: a bracket's
+  // exit legs each get their OWN client_order_id at placement (orders.ts's
+  // buildOrderRequest), which was never persisted, and cancelling by the master
+  // id doesn't reach them — confirmed against a real account, where a close was
+  // rejected as "will reverse an existing position" until the resting stop/
+  // target was cancelled by hand. So recover them from the broker's live open
+  // orders and cancel each by its own id, exactly as that manual fix did.
+  const exitSide: 'buy' | 'sell' = intent.side === 'buy' ? 'sell' : 'buy';
 
-  const status = await webullOrderStatus(accountId, intent.idempotencyKey);
-  if (!status.ok || !status.found || !status.legs) {
-    // Can't read the leg states, so we can't confirm nothing is resting — stay
-    // blocked either way, but name the rejected cancel when that's the cause so
-    // the human sees the real reason instead of a generic "couldn't verify".
-    const detail = status.error ?? 'no legs in the response';
+  const first = await listWebullOpenOrders(accountId);
+  if (!first.ok) {
     return {
       ok: false,
-      reason: cancel.ok
-        ? `Could not verify bracket state after cancel: ${detail}`
-        : `Broker cancel rejected (${cancel.error}) and bracket state could not be verified: ${detail}`,
+      reason: `Could not read the broker's open orders to clear the resting bracket: ${first.error}`,
     };
+  }
+  logOpenOrdersDiagnostic(symbol, first.orders, first.raw);
+
+  let resting = restingExitOrders(first.orders, symbol, exitSide);
+  if (resting.length === 0) {
+    // Nothing resting on the exit side. Either the bracket is already gone (safe
+    // to close) OR an exit leg just filled and the position is closing on its
+    // own (don't place a second order). Distinguish via the combo status — a
+    // best-effort signal; the close's own naked-short guardrail is the backstop
+    // if the broker doesn't surface the fill here.
+    const combo = await webullOrderStatus(accountId, intent.idempotencyKey);
+    const filledLeg =
+      combo.ok &&
+      combo.found &&
+      combo.legs?.some((l) => l.comboType && l.comboType !== 'MASTER' && l.status === 'FILLED');
+    if (filledLeg) {
+      return {
+        ok: false,
+        raced: true,
+        reason: 'A bracket leg filled before the close — the position is already closing',
+      };
+    }
+    return { ok: true };
   }
 
-  const exitLegs = status.legs.filter((l) => l.comboType && l.comboType !== 'MASTER');
-  if (exitLegs.some((l) => l.status === 'FILLED')) {
-    return { ok: false, raced: true, reason: 'A bracket leg filled before the cancel took effect' };
+  // Cancel each resting exit leg by its OWN client_order_id.
+  for (const o of resting) {
+    await webullCancelOrder(accountId, o.clientOrderId!);
   }
-  const stillWorking = exitLegs.filter((l) => l.status !== 'CANCELLED' && l.status !== 'FILLED');
-  if (stillWorking.length > 0) {
-    // The legs really ARE still resting — a fresh close could double-fill
-    // against them, so this genuinely blocks whether or not the cancel was
-    // accepted. Surface the rejected cancel when that's what happened.
-    const legList = stillWorking.map((l) => `${l.comboType ?? '?'}=${l.status ?? '?'}`).join(', ');
+
+  // Re-scan and CONFIRM they actually cleared before letting the close through —
+  // a cancel POST is only an accepted request, not proof of a terminal state.
+  const second = await listWebullOpenOrders(accountId);
+  if (!second.ok) {
     return {
       ok: false,
-      reason: cancel.ok
-        ? `Exit leg(s) still show as working after cancel: ${legList}`
-        : `Broker cancel rejected (${cancel.error}); exit leg(s) still working: ${legList}`,
+      reason: `Cancelled the resting bracket order(s) but could not confirm they cleared: ${second.error}`,
     };
   }
-  // No exit leg is resting anymore (all cancelled/terminal, none filled) — safe
-  // to place the close, even if the cancel call itself was rejected (that just
-  // means the legs were already gone before we asked).
+  resting = restingExitOrders(second.orders, symbol, exitSide);
+  if (resting.length > 0) {
+    // Still resting after the cancel — a fresh close would double up against
+    // them, so fail closed rather than risk it.
+    return {
+      ok: false,
+      reason: `Resting ${exitSide} order(s) on ${symbol} did not clear after cancel (${resting
+        .map((o) => o.clientOrderId)
+        .join(', ')}) — not placing a close that could double up.`,
+    };
+  }
   return { ok: true };
+}
+
+/** One-line server-log breadcrumb so the FIRST real close reveals whether the
+ *  lenient open-orders parsing actually found the symbol's resting legs — and,
+ *  when it found open orders but matched none to the symbol (a likely parse
+ *  miss), a truncated raw sample to reveal the true field names. Quiet unless
+ *  there's something to see. */
+function logOpenOrdersDiagnostic(symbol: string, orders: WebullOpenOrder[], raw: unknown): void {
+  const onSymbol = orders.filter((o) => o.symbol?.toUpperCase() === symbol);
+  if (onSymbol.length > 0) {
+    const summary = onSymbol.map((o) => ({ id: o.clientOrderId, side: o.side, status: o.status, combo: o.comboType }));
+    console.warn(
+      `[cancelLiveBracketExitLegs] ${symbol}: ${orders.length} open order(s), matched ${JSON.stringify(summary)}`,
+    );
+  } else if (orders.length > 0) {
+    const sample = JSON.stringify(Array.isArray(raw) ? raw[0] : raw)?.slice(0, 600);
+    console.warn(
+      `[cancelLiveBracketExitLegs] ${symbol}: ${orders.length} open order(s) but NONE matched the symbol — likely a field-name parse miss. Sample: ${sample}`,
+    );
+  }
 }
 
 export interface LiveEquityTimeExitOutcome {
