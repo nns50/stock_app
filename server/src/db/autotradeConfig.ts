@@ -158,6 +158,18 @@ export interface AutotradeConfig {
    *  default. 0 disables this specific filter (every relative-volume reading
    *  passes). */
   minRelVol: number;
+  /** Multi-timeframe confirmation (2026-07-16, docs/AUTOTRADING_SPEC.md
+   *  phase 19): require price to ALSO be aligned with the chosen direction
+   *  relative to its WEEKLY moving average, on top of whatever the daily
+   *  setup already says — mirrors ScreenerFilters.requireWeeklyTrendAlignment
+   *  (see its own doc comment for the fail-closed semantics and why it
+   *  reuses maShort's period rather than a new one). Defaults `false` — an
+   *  untouched config changes nothing. Unlike maxTickerAtrPct/maxMarketAtrPct
+   *  above, this DOES have backtest support (all three engines fetch a
+   *  parallel weekly history when it's enabled) — historical weekly bars are
+   *  ordinary OHLCV data the existing Polygon-backed fetch already handles,
+   *  not a live-only real-time reading. */
+  requireWeeklyTrendAlignment: boolean;
   /** Skip a candidate whose own ATR% (of price) exceeds this — the loop's
    *  own per-ticker volatility guard, stricter than what the human-reviewed
    *  manual Screen/Decision preview applies (executionGuards.ts's header
@@ -418,6 +430,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     regimeSizeCutPct: 0,
     tradeDirection: 'long',
     minRelVol: 1.5,
+    requireWeeklyTrendAlignment: false,
     maxTickerAtrPct: 15,
     maxMarketAtrPct: 5,
     stopAtrMultiple: 1.5,
@@ -536,6 +549,10 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
         ? input.tradeDirection
         : d.tradeDirection,
     minRelVol: nonNeg(input.minRelVol, d.minRelVol),
+    requireWeeklyTrendAlignment:
+      typeof input.requireWeeklyTrendAlignment === 'boolean'
+        ? input.requireWeeklyTrendAlignment
+        : d.requireWeeklyTrendAlignment,
     maxTickerAtrPct: pct(input.maxTickerAtrPct, d.maxTickerAtrPct),
     maxMarketAtrPct: pct(input.maxMarketAtrPct, d.maxMarketAtrPct),
     stopAtrMultiple: posDecimal(input.stopAtrMultiple, d.stopAtrMultiple),

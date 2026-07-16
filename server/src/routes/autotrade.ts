@@ -85,6 +85,7 @@ const configBody = z.object({
   // --- Screening/decision thresholds ------------------------------------------
   tradeDirection: z.enum(['long', 'short', 'both']).optional(),
   minRelVol: z.number().nonnegative().optional(),
+  requireWeeklyTrendAlignment: z.boolean().optional(),
   maxTickerAtrPct: z.number().min(0).max(100).optional(),
   maxMarketAtrPct: z.number().min(0).max(100).optional(),
   stopAtrMultiple: z.number().positive().optional(),
@@ -173,6 +174,8 @@ autotradeRouter.put(
     if (body.regimeSizeCutPct !== undefined) patch.regimeSizeCutPct = body.regimeSizeCutPct;
     if (body.tradeDirection !== undefined) patch.tradeDirection = body.tradeDirection;
     if (body.minRelVol !== undefined) patch.minRelVol = body.minRelVol;
+    if (body.requireWeeklyTrendAlignment !== undefined)
+      patch.requireWeeklyTrendAlignment = body.requireWeeklyTrendAlignment;
     if (body.maxTickerAtrPct !== undefined) patch.maxTickerAtrPct = body.maxTickerAtrPct;
     if (body.maxMarketAtrPct !== undefined) patch.maxMarketAtrPct = body.maxMarketAtrPct;
     if (body.stopAtrMultiple !== undefined) patch.stopAtrMultiple = body.stopAtrMultiple;
@@ -386,7 +389,14 @@ autotradeRouter.delete(
  *  hoc request override it (a caller-supplied filters.minRelVol wins, since
  *  it's spread last). */
 function screenerConfigOverride(config: AutotradeConfig, requested?: Partial<ScreenerConfig>): Partial<ScreenerConfig> {
-  return { ...requested, filters: { minRelVol: config.minRelVol, ...requested?.filters } };
+  return {
+    ...requested,
+    filters: {
+      minRelVol: config.minRelVol,
+      requireWeeklyTrendAlignment: config.requireWeeklyTrendAlignment,
+      ...requested?.filters,
+    },
+  };
 }
 
 /** Same reasoning as screenerConfigOverride, for stopAtrMultiple/targetRMultiple. */

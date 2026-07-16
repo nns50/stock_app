@@ -31,7 +31,11 @@ vi.mock('yahoo-finance2', () => ({
 import { initDb, db } from '../src/db';
 import { addExclusion } from '../src/db/autotradeExclusions';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
-import { runAutotradeScreen, resetCandleIndicatorCache } from '../src/services/autotrading/screen';
+import {
+  runAutotradeScreen,
+  resetCandleIndicatorCache,
+  resetWeeklyIndicatorCache,
+} from '../src/services/autotrading/screen';
 import { clearEventsCache } from '../src/services/events';
 import { getProvider } from '../src/providers';
 
@@ -53,6 +57,7 @@ beforeEach(() => {
   earningsFixture.current = {};
   clearEventsCache();
   resetCandleIndicatorCache();
+  resetWeeklyIndicatorCache();
 });
 
 describe('runAutotradeScreen', () => {
@@ -409,6 +414,121 @@ describe('runAutotradeScreen', () => {
       const events = listAutotradeEvents({ stage: 'screen', symbol: 'SCRJRNL' });
       const found = events.find((e) => e.action === 'candidate_found');
       expect(JSON.parse(found!.detail!)).toMatchObject({ direction: 'short' });
+      restore();
+    });
+  });
+
+  describe('weekly trend alignment (multi-timeframe confirmation, 2026-07-16)', () => {
+    const lastTime = Date.UTC(2026, 5, 1);
+
+    // A daily uptrend ending at close=159 — same shape as the directionMode
+    // describe block's own trendCandles() helper above, redefined locally
+    // per this file's existing per-describe-block convention (see
+    // 'candle-indicator caching' and 'directionMode' above, each with their
+    // own private candle builder rather than a single shared one).
+    function dailyUptrend() {
+      const closes = Array.from({ length: 60 }, (_, i) => 100 + i);
+      let prev = closes[0];
+      return closes.map((close, i) => {
+        const open = i === 0 ? close : prev;
+        prev = close;
+        return {
+          time: lastTime - (closes.length - 1 - i) * 86_400_000,
+          open,
+          high: Math.max(open, close) * 1.01,
+          low: Math.min(open, close) * 0.99,
+          close,
+          volume: 1_000_000,
+        };
+      });
+    }
+    const daily = dailyUptrend(); // last close = 159
+
+    // A flat WEEKLY series at a known, controlled level — screen.ts's
+    // cachedWeeklyIndicatorsFor() drops the last (possibly in-progress) bar
+    // before computing, so 25 raw candles -> 24 used -> comfortably above
+    // the default 20-period maShort window.
+    function flatWeekly(level: number) {
+      return Array.from({ length: 25 }, (_, i) => ({
+        time: lastTime - (24 - i) * 7 * 86_400_000,
+        open: level,
+        high: level * 1.01,
+        low: level * 0.99,
+        close: level,
+        volume: 1_000_000,
+      }));
+    }
+
+    // Mirrors the directionMode describe block's own mockCandles() helper:
+    // getQuote is mocked to undefined too, so scoreSymbol falls back to the
+    // candle-derived price instead of a synthetic quote silently overriding
+    // the deliberately-crafted daily/weekly fixtures below.
+    function mockByTimeframe(weeklyLevel: number) {
+      const candles = vi
+        .spyOn(getProvider(), 'getCandles')
+        .mockImplementation(
+          async (_symbol: string, timeframe: string) =>
+            (timeframe === 'weekly' ? flatWeekly(weeklyLevel) : daily) as never,
+        );
+      const quote = vi.spyOn(getProvider(), 'getQuote').mockResolvedValue(undefined as never);
+      return () => {
+        candles.mockRestore();
+        quote.mockRestore();
+      };
+    }
+
+    it("does not fetch weekly candles when the filter is off (default) — same don't-do-unrequested-work gate as earningsBlackoutDays", async () => {
+      const spy = vi.spyOn(getProvider(), 'getCandles');
+      await runAutotradeScreen({ symbols: ['SCRWK1'], config: { filters: RELAXED_FILTERS } });
+      expect(spy.mock.calls.some(([, timeframe]) => timeframe === 'weekly')).toBe(false);
+      spy.mockRestore();
+    });
+
+    it('fetches weekly candles for the scanned symbol when the filter is enabled', async () => {
+      const spy = vi.spyOn(getProvider(), 'getCandles');
+      await runAutotradeScreen({
+        symbols: ['SCRWK2'],
+        config: { filters: { ...RELAXED_FILTERS, requireWeeklyTrendAlignment: true } },
+      });
+      expect(spy.mock.calls.some(([symbol, timeframe]) => symbol === 'SCRWK2' && timeframe === 'weekly')).toBe(true);
+      spy.mockRestore();
+    });
+
+    it('blocks a candidate whose daily setup disagrees with its weekly trend', async () => {
+      // Weekly MA far ABOVE the daily uptrend's price (159) -> long-aligned
+      // check (price > weeklyMaShort) fails.
+      const restore = mockByTimeframe(500);
+      const result = await runAutotradeScreen({
+        symbols: ['SCRWKBLOCK'],
+        config: { filters: { ...RELAXED_FILTERS, requireWeeklyTrendAlignment: true } },
+      });
+      expect(result.candidates.find((c) => c.symbol === 'SCRWKBLOCK')).toBeUndefined();
+      // Not an exclusion/skip/error — a routine filtered-out non-match, same
+      // as any other failed scoring filter (see screen.ts's own comment on
+      // why these are just omitted rather than journaled).
+      expect(result.excluded.find((e) => e.symbol === 'SCRWKBLOCK')).toBeUndefined();
+      expect(result.errors.find((e) => e.symbol === 'SCRWKBLOCK')).toBeUndefined();
+      restore();
+    });
+
+    it('passes a candidate whose daily setup agrees with its weekly trend', async () => {
+      // Weekly MA far BELOW the daily uptrend's price (159) -> long-aligned.
+      const restore = mockByTimeframe(50);
+      const result = await runAutotradeScreen({
+        symbols: ['SCRWKPASS'],
+        config: { filters: { ...RELAXED_FILTERS, requireWeeklyTrendAlignment: true } },
+      });
+      expect(result.candidates.find((c) => c.symbol === 'SCRWKPASS')).toBeDefined();
+      restore();
+    });
+
+    it('the same disagreeing weekly data does NOT block when the filter is left off (isolates the block above to the filter itself)', async () => {
+      const restore = mockByTimeframe(500);
+      const result = await runAutotradeScreen({
+        symbols: ['SCRWKCTRL'],
+        config: { filters: RELAXED_FILTERS }, // requireWeeklyTrendAlignment omitted
+      });
+      expect(result.candidates.find((c) => c.symbol === 'SCRWKCTRL')).toBeDefined();
       restore();
     });
   });

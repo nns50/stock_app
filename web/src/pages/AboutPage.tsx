@@ -102,8 +102,8 @@ export default function AboutPage() {
           </table>
         </div>
         <p className="text-xs text-slate-500">
-          Filters (price, average volume, RSI band, trend alignment) are applied separately — a symbol can score well
-          yet be flagged as not passing your filters, with the reasons shown.
+          Filters (price, average volume, RSI band, trend alignment — daily and weekly) are applied separately — a
+          symbol can score well yet be flagged as not passing your filters, with the reasons shown.
         </p>
       </Section>
 

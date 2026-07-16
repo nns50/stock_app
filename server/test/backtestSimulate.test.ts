@@ -536,4 +536,69 @@ describe('simulateBacktest', () => {
     // same-day trade (which would otherwise fill, and appear here, on day2).
     expect(report.trades.map((t) => t.symbol)).toEqual(['TDAYA']);
   });
+
+  describe('multi-timeframe confirmation (2026-07-16) — requireWeeklyTrendAlignment', () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+
+    // A flat weekly series at a known, controlled level, ending exactly on
+    // signalDay — 30 candles comfortably warms up the default 20-period
+    // maShort well before closedWeeklyIndexAsOf backs up one index off it.
+    function weeklyBarsAt(level: number): Candle[] {
+      const bars: Candle[] = [];
+      for (let i = 29; i >= 0; i--) {
+        bars.push(bar(d(signalDay, -7 * i), { open: level, high: level * 1.01, low: level * 0.99, close: level }));
+      }
+      return bars;
+    }
+
+    // Same shape as the "enters at the NEXT day's open" test above (a ~100
+    // flat warmup, then a gap-up entryDay bar) — already proven to fill
+    // reliably under RELAXED with no weekly filter involved.
+    function historyWithGapUpEntry(): Map<string, Candle[]> {
+      return new Map([
+        ['TEST', [...warmupThrough(signalDay), bar(entryDay, { open: 102, high: 103, low: 101, close: 102.5 })]],
+      ]);
+    }
+
+    function weeklyFilterConfig(overrides: Partial<BacktestConfig> = {}) {
+      return baseConfig({
+        from: signalDay,
+        to: entryDay,
+        screenerConfig: { filters: { ...RELAXED.filters, requireWeeklyTrendAlignment: true } },
+        ...overrides,
+      });
+    }
+
+    it('blocks the signal entirely when the weekly trend disagrees (fails closed, end-to-end through the engine)', () => {
+      // Weekly MA (500) far ABOVE the ~100 daily price -> long misaligned.
+      const weeklyHistory = new Map([['TEST', weeklyBarsAt(500)]]);
+      const report = simulateBacktest(historyWithGapUpEntry(), weeklyFilterConfig(), weeklyHistory);
+      expect(report.trades).toHaveLength(0);
+    });
+
+    it('lets the signal through and fills normally when the weekly trend agrees', () => {
+      // Weekly MA (50) far BELOW the ~100 daily price -> long aligned.
+      const weeklyHistory = new Map([['TEST', weeklyBarsAt(50)]]);
+      const report = simulateBacktest(historyWithGapUpEntry(), weeklyFilterConfig(), weeklyHistory);
+      expect(report.trades).toHaveLength(1);
+      expect(report.trades[0].entryDate).toBe(entryDay);
+      expect(report.trades[0].entryPrice).toBe(102);
+    });
+
+    it('the same disagreeing weekly data does NOT block when the filter is left off (isolates the block above to the filter itself)', () => {
+      const weeklyHistory = new Map([['TEST', weeklyBarsAt(500)]]);
+      const report = simulateBacktest(
+        historyWithGapUpEntry(),
+        baseConfig({ from: signalDay, to: entryDay }),
+        weeklyHistory,
+      );
+      expect(report.trades).toHaveLength(1);
+    });
+
+    it('fails closed when the filter is enabled but no weekly history was supplied at all (weeklyHistoryBySymbol omitted)', () => {
+      const report = simulateBacktest(historyWithGapUpEntry(), weeklyFilterConfig());
+      expect(report.trades).toHaveLength(0);
+    });
+  });
 });

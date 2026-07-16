@@ -281,6 +281,26 @@ export function indexAsOf(candles: Candle[], asOfMs: number, fromIndex = 0): num
   return idx;
 }
 
+/**
+ * Index of the last WEEKLY candle that is fully CLOSED as of `asOfMs` —
+ * added 2026-07-16 for multi-timeframe confirmation (docs/AUTOTRADING_SPEC.md
+ * phase 19). `Candle.time` is a bar's own START, and indexAsOf() has no
+ * concept of a bar's CLOSE — indexAsOf(weeklyCandles, asOfMs) returns the
+ * week CONTAINING asOfMs (started on-or-before it), which by definition
+ * hasn't finished yet as of asOfMs itself. Using that candle directly would
+ * leak later-in-the-week price action into a backtest's "as of this
+ * simulated day" read — the exact lookahead-bias class this file's own
+ * day-by-day walk-forward design otherwise goes out of its way to avoid.
+ * The fix doesn't need to know the upstream provider's week-start-day
+ * convention (Monday vs. Sunday, unconfirmed for Polygon's weekly
+ * aggregates) at all: the last CLOSED week is simply one index behind
+ * whichever week asOfMs currently falls inside.
+ */
+export function closedWeeklyIndexAsOf(weeklyCandles: Candle[], asOfMs: number): number {
+  const idx = indexAsOf(weeklyCandles, asOfMs);
+  return idx <= 0 ? -1 : idx - 1;
+}
+
 /** Correlation, computed entirely from already-loaded history (no I/O) — the
  *  backtest analog of riskCheck.ts's provider-fetching correlatedNotional.
  *  Takes the same lightweight `{symbol, notional}[]` shape riskCheck.ts's
@@ -335,8 +355,19 @@ export function backtestCorrelatedNotional(
  * Run the simulation over already-loaded history. Pure — no I/O — so it's
  * directly unit-testable with hand-built candle series. `historyBySymbol`
  * should include WARMUP_PADDING_DAYS or more of lookback before `cfg.from`.
+ *
+ * `weeklyHistoryBySymbol` (2026-07-16, multi-timeframe confirmation):
+ * OPTIONAL, own parameter rather than folded into `historyBySymbol` —
+ * omitted entirely (not just empty) by any caller that hasn't enabled
+ * `requireWeeklyTrendAlignment`, so a backtest run that doesn't use this
+ * feature pays zero extra cost, same "don't do unrequested work" posture as
+ * every other call site this feature touches (screen.ts's own fetch gate).
  */
-export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: BacktestConfig): BacktestReport {
+export function simulateBacktest(
+  historyBySymbol: Map<string, Candle[]>,
+  cfg: BacktestConfig,
+  weeklyHistoryBySymbol?: Map<string, Candle[]>,
+): BacktestReport {
   const riskParams = resolveBacktestRiskParams(cfg);
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
   const decisionCfg = { ...defaultDecisionConfig(), ...cfg.decisionConfig };
@@ -379,6 +410,17 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
   const candleIndicatorSeriesBySymbol = new Map<string, CandleIndicatorSeries>();
   for (const [symbol, candles] of historyBySymbol) {
     candleIndicatorSeriesBySymbol.set(symbol, computeCandleIndicatorSeries(candles, screenerCfg));
+  }
+
+  // The WEEKLY counterpart (2026-07-16) — same once-up-front precompute
+  // pattern, just fed a weekly candle series instead of daily. Only built
+  // when the caller actually supplied one (requireWeeklyTrendAlignment
+  // enabled) — see simulateBacktest's own doc comment.
+  const weeklyCandleIndicatorSeriesBySymbol = new Map<string, CandleIndicatorSeries>();
+  if (weeklyHistoryBySymbol) {
+    for (const [symbol, weeklyCandles] of weeklyHistoryBySymbol) {
+      weeklyCandleIndicatorSeriesBySymbol.set(symbol, computeCandleIndicatorSeries(weeklyCandles, screenerCfg));
+    }
   }
 
   // The running win/loss streak, maintained incrementally instead of calling
@@ -553,6 +595,17 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
       if (idx < 1 || candles[idx].time !== dayMs) continue; // needs a bar dated exactly today
       const series = candleIndicatorSeriesBySymbol.get(symbol)!;
       const cached = candleIndicatorsAt(series, idx) ?? undefined;
+      // The CLOSED-week weekly indicators as of today, if the caller
+      // supplied a weekly history — closedWeeklyIndexAsOf(), not indexAsOf(),
+      // is deliberate here: see that function's own doc comment on the
+      // lookahead-bias it exists to avoid.
+      const weeklyCandles = weeklyHistoryBySymbol?.get(symbol);
+      const weeklyCached = weeklyCandles
+        ? (candleIndicatorsAt(
+            weeklyCandleIndicatorSeriesBySymbol.get(symbol)!,
+            closedWeeklyIndexAsOf(weeklyCandles, dayMs),
+          ) ?? undefined)
+        : undefined;
       // 'both': score this symbol as a long AND a short from the same
       // indicator computation and keep whichever direction (if either)
       // qualifies — mirrors screen.ts's runAutotradeScreen() exactly, so a
@@ -560,7 +613,7 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
       // would actually do with tradeDirection:'both'.
       const picked =
         directionMode === 'both'
-          ? pickDirection(scoreSymbolBothDirections(symbol, candles, undefined, screenerCfg, cached, idx))
+          ? pickDirection(scoreSymbolBothDirections(symbol, candles, undefined, screenerCfg, cached, idx, weeklyCached))
           : (() => {
               const score = scoreSymbol(
                 symbol,
@@ -569,6 +622,7 @@ export function simulateBacktest(historyBySymbol: Map<string, Candle[]>, cfg: Ba
                 { ...screenerCfg, direction: directionMode },
                 cached,
                 idx,
+                weeklyCached,
               );
               return score.passedFilters ? { direction: directionMode, score } : null;
             })();
@@ -835,13 +889,51 @@ export async function loadBacktestHistory(
 }
 
 /**
+ * WEEKLY counterpart of loadBacktestHistory (2026-07-16, multi-timeframe
+ * confirmation) — no real-estate pre-filter of its own; `symbols` is meant
+ * to be whatever loadBacktestHistory's OWN historyBySymbol.keys() already
+ * came back as (already eligibility-checked once), not re-derived from
+ * scratch. No WARMUP_PADDING_DAYS either — that padding exists so a DAILY
+ * MA has a full window on the first simulated day; a weekly candle only
+ * needs cfg.maShort WEEKS of lookback, comfortably covered by padding `from`
+ * back one calendar year regardless of maShort's actual value (mirrors
+ * screen.ts's own WEEKLY_CANDLE_LIMIT — a fixed, generous constant, not
+ * sized off cfg.maShort dynamically). Errors are swallowed per-symbol (a
+ * symbol simply has no weekly confirmation available, exactly like
+ * `ind.weeklyMaShort === null` already means for a live/paper fetch
+ * failure) rather than surfaced in a `errors` list of their own — this
+ * filter fails CLOSED on missing data by design (see ScreenerFilters.
+ * requireWeeklyTrendAlignment), so a fetch failure here already shows up
+ * as "candidate blocked," not a silent pass needing a separate report. */
+export async function loadWeeklyBacktestHistory(
+  symbols: string[],
+  from: string,
+  to: string,
+): Promise<Map<string, Candle[]>> {
+  const paddedFrom = addDays(from, -365);
+  const weeklyHistoryBySymbol = new Map<string, Candle[]>();
+  await mapPool(symbols, 6, async (symbol) => {
+    try {
+      const bars = await getHistoricalBars(symbol, 'weekly', paddedFrom, to);
+      if (bars.length) weeklyHistoryBySymbol.set(symbol.toUpperCase(), bars);
+    } catch {
+      /* no weekly confirmation available for this symbol — fails closed, see doc comment above */
+    }
+  });
+  return weeklyHistoryBySymbol;
+}
+
+/**
  * Full backtest: pre-filter real estate, fetch (or reuse cached) historical
  * bars for every eligible symbol, then simulate. Async orchestration around
  * the pure simulateBacktest() core.
  */
 export async function runBacktest(cfg: BacktestConfig): Promise<BacktestReport> {
   const { historyBySymbol, excludedSymbols, errors } = await loadBacktestHistory(cfg.symbols, cfg.from, cfg.to);
-  const report = simulateBacktest(historyBySymbol, cfg);
+  const weeklyHistoryBySymbol = cfg.screenerConfig?.filters?.requireWeeklyTrendAlignment
+    ? await loadWeeklyBacktestHistory(Array.from(historyBySymbol.keys()), cfg.from, cfg.to)
+    : undefined;
+  const report = simulateBacktest(historyBySymbol, cfg, weeklyHistoryBySymbol);
   return { ...report, excludedSymbols, errors };
 }
 
@@ -871,8 +963,19 @@ export interface WalkForwardReport {
  */
 export async function runWalkForwardBacktest(cfg: WalkForwardConfig): Promise<WalkForwardReport> {
   const { historyBySymbol, excludedSymbols, errors } = await loadBacktestHistory(cfg.symbols, cfg.from, cfg.to);
+  const weeklyHistoryBySymbol = cfg.screenerConfig?.filters?.requireWeeklyTrendAlignment
+    ? await loadWeeklyBacktestHistory(Array.from(historyBySymbol.keys()), cfg.from, cfg.to)
+    : undefined;
   const outOfSampleFrom = addDays(cfg.splitDate, 1);
-  const inSample = simulateBacktest(historyBySymbol, { ...cfg, from: cfg.from, to: cfg.splitDate });
-  const outOfSample = simulateBacktest(historyBySymbol, { ...cfg, from: outOfSampleFrom, to: cfg.to });
+  const inSample = simulateBacktest(
+    historyBySymbol,
+    { ...cfg, from: cfg.from, to: cfg.splitDate },
+    weeklyHistoryBySymbol,
+  );
+  const outOfSample = simulateBacktest(
+    historyBySymbol,
+    { ...cfg, from: outOfSampleFrom, to: cfg.to },
+    weeklyHistoryBySymbol,
+  );
   return { inSample, outOfSample, excludedSymbols, errors };
 }

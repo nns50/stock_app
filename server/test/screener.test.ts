@@ -149,6 +149,61 @@ describe('scoreSymbol — filters', () => {
   });
 });
 
+describe('scoreSymbol — weekly trend alignment filter (2026-07-16)', () => {
+  const cfg = resolveScreenerConfig({ direction: 'long', filters: { requireWeeklyTrendAlignment: true } });
+  // uptrend's own last close (its `price` when scored against itself) is 179
+  // (closes 100..179). A flat weekly series well BELOW that price means
+  // "price > weeklyMaShort" — long-aligned; well ABOVE means the opposite.
+  const weeklyBelow = computeCandleIndicators(candlesFromCloses(Array(25).fill(100)), cfg)!;
+  const weeklyAbove = computeCandleIndicators(candlesFromCloses(Array(25).fill(300)), cfg)!;
+
+  it('is inactive (ignored) when the filter is off, even with no weekly data at all', () => {
+    const off = resolveScreenerConfig({ direction: 'long' }); // requireWeeklyTrendAlignment omitted
+    const r = scoreSymbol('TEST', uptrend, undefined, off);
+    expect(r.passedFilters).toBe(true);
+    expect(r.indicators.weeklyMaShort).toBeNull();
+  });
+
+  it('fails CLOSED when enabled but the caller supplied no weekly indicators at all', () => {
+    const r = scoreSymbol('TEST', uptrend, undefined, cfg); // no 7th arg
+    expect(r.indicators.weeklyMaShort).toBeNull();
+    expect(r.passedFilters).toBe(false);
+    expect(r.filterReasons.join(' ')).toContain('weekly');
+  });
+
+  it('blocks a long candidate whose weekly trend disagrees (price below its weekly MA)', () => {
+    const r = scoreSymbol('TEST', uptrend, undefined, cfg, undefined, undefined, weeklyAbove);
+    expect(r.indicators.weeklyMaShort).toBe(weeklyAbove.maShort);
+    expect(r.passedFilters).toBe(false);
+    expect(r.filterReasons.join(' ')).toContain('weekly');
+  });
+
+  it('passes a long candidate whose weekly trend agrees (price above its weekly MA)', () => {
+    const r = scoreSymbol('TEST', uptrend, undefined, cfg, undefined, undefined, weeklyBelow);
+    expect(r.passedFilters).toBe(true);
+    expect(r.filterReasons).toHaveLength(0);
+  });
+
+  it('mirrors correctly for a short candidate (blocks/passes on the opposite side)', () => {
+    const shortCfg = { ...cfg, direction: 'short' as const };
+    // For a short, agreement means price is BELOW its weekly MA.
+    const agrees = scoreSymbol('TEST', uptrend, undefined, shortCfg, undefined, undefined, weeklyAbove);
+    expect(agrees.passedFilters).toBe(true);
+
+    const disagrees = scoreSymbol('TEST', uptrend, undefined, shortCfg, undefined, undefined, weeklyBelow);
+    expect(disagrees.passedFilters).toBe(false);
+  });
+
+  it("doesn't affect a symbol that already fails on other filters (reasons accumulate, not replace)", () => {
+    const strict = { ...cfg, filters: { ...cfg.filters, minPrice: 10_000 } };
+    const r = scoreSymbol('TEST', uptrend, undefined, strict, undefined, undefined, weeklyAbove);
+    expect(r.passedFilters).toBe(false);
+    expect(r.filterReasons.length).toBeGreaterThanOrEqual(2);
+    expect(r.filterReasons.join(' ')).toContain('price');
+    expect(r.filterReasons.join(' ')).toContain('weekly');
+  });
+});
+
 describe('computeCandleIndicators — cacheable, quote-independent piece of computeIndicators', () => {
   const cfg = defaultScreenerConfig();
 

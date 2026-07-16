@@ -197,6 +197,57 @@ export function resetCandleIndicatorCache(): void {
   candleIndicatorCache.clear();
 }
 
+// The WEEKLY counterpart of candleIndicatorCache above (2026-07-16, multi-
+// timeframe confirmation — docs/AUTOTRADING_SPEC.md phase 19). A separate Map
+// (not a shared key namespace with the daily cache) so a weekly and daily
+// entry for the same symbol+config can never collide/overwrite each other.
+// Keyed and invalidated the same way — the latest WEEKLY candle's own
+// timestamp only actually changes once a week, so this self-invalidates even
+// less often than the daily cache does.
+const weeklyIndicatorCache = new Map<string, { candleTime: number; indicators: CandleIndicators }>();
+
+function weeklyIndicatorCacheKey(symbol: string, cfg: ScreenerConfig): string {
+  return `${symbol}:${cfg.maShort}`;
+}
+
+/** How many weekly bars to fetch — a fixed, generous constant (not sized off
+ *  cfg.maShort dynamically), matching the daily fetch's own `limit: 120`
+ *  convention below. 40 weeks (~9 months) comfortably covers the default
+ *  20-week reading with room to spare even for a raised maShort. */
+const WEEKLY_CANDLE_LIMIT = 40;
+
+/** The closed-week counterpart of cachedCandleIndicatorsFor() above — only
+ *  called when requireWeeklyTrendAlignment is actually enabled (see the
+ *  gate at its call site below), so nobody who hasn't opted in pays for the
+ *  extra provider fetch. `weeklyCandles.slice(0, -1)` drops the most recent
+ *  (possibly still-in-progress) week before computing anything — the SAME
+ *  "only trust a fully closed week" posture backtest.ts's own
+ *  closedWeeklyIndexAsOf() enforces for the backtest engines, just via
+ *  array-slicing here instead of an index lookup (a live fetch always ends
+ *  at "now," so the tail element is exactly the one bar that might not be
+ *  closed yet). */
+function cachedWeeklyIndicatorsFor(
+  symbol: string,
+  weeklyCandles: Candle[],
+  cfg: ScreenerConfig,
+): CandleIndicators | undefined {
+  const closed = weeklyCandles.slice(0, -1);
+  if (closed.length === 0) return undefined;
+  const candleTime = closed[closed.length - 1].time;
+  const key = weeklyIndicatorCacheKey(symbol, cfg);
+  const cached = weeklyIndicatorCache.get(key);
+  if (cached && cached.candleTime === candleTime) return cached.indicators;
+  const fresh = computeCandleIndicators(closed, cfg);
+  if (fresh) weeklyIndicatorCache.set(key, { candleTime, indicators: fresh });
+  return fresh ?? undefined;
+}
+
+/** Test-only: clears the module-level weekly cache, mirroring
+ *  resetCandleIndicatorCache() above. */
+export function resetWeeklyIndicatorCache(): void {
+  weeklyIndicatorCache.clear();
+}
+
 export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<ScreenResult> {
   const cfg = resolveAutotradeScreenerConfig(opts.config);
   // Falls back to cfg.direction (itself defaulted 'long') when omitted —
@@ -297,6 +348,16 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
         provider.getQuote(symbol).catch(() => undefined),
       ]);
       const cachedIndicators = cachedCandleIndicatorsFor(symbol, candles, cfg);
+      // Only fetched when the filter is actually enabled — same
+      // don't-do-unrequested-work gate as the earnings blackout lookup
+      // above (and optionsExecute.ts's own priceRulesActive gate).
+      const weeklyIndicators = cfg.filters.requireWeeklyTrendAlignment
+        ? cachedWeeklyIndicatorsFor(
+            symbol,
+            await provider.getCandles(symbol, 'weekly', { limit: WEEKLY_CANDLE_LIMIT }),
+            cfg,
+          )
+        : undefined;
       // 'both': score each candidate as a long AND a short from the SAME
       // indicator computation, then keep whichever direction (if either)
       // actually qualifies — see pickDirection(). 'long'/'short': unchanged
@@ -305,9 +366,19 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
       // pick a meaningless single cfg.direction.
       const picked =
         directionMode === 'both'
-          ? pickDirection(scoreSymbolBothDirections(symbol, candles, quote, cfg, cachedIndicators))
+          ? pickDirection(
+              scoreSymbolBothDirections(symbol, candles, quote, cfg, cachedIndicators, undefined, weeklyIndicators),
+            )
           : (() => {
-              const score = scoreSymbol(symbol, candles, quote, { ...cfg, direction: directionMode }, cachedIndicators);
+              const score = scoreSymbol(
+                symbol,
+                candles,
+                quote,
+                { ...cfg, direction: directionMode },
+                cachedIndicators,
+                undefined,
+                weeklyIndicators,
+              );
               return score.passedFilters ? { direction: directionMode, score } : null;
             })();
       if (picked) {

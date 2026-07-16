@@ -251,8 +251,8 @@ the total. The full breakdown travels with every result:
 | Trend           | price vs MAs + MA alignment                  | aligned with the chosen direction         |
 
 Weights, MA periods, RSI period, scaling knobs, direction (long/short), and hard
-filters (min price, min volume, RSI bounds, trend alignment) are all
-configurable, and savable as presets.
+filters (min price, min volume, RSI bounds, trend alignment — daily and weekly) are
+all configurable, and savable as presets.
 
 ## Greeks & units (Black–Scholes helper)
 
