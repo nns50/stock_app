@@ -15,7 +15,7 @@ import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/de
 import { OptionsDecisionConfig, runOptionsDecision } from '../services/autotrading/optionsDecide';
 import { runAutotradeRiskCheck } from '../services/autotrading/riskCheck';
 import { runOptionsRiskCheck } from '../services/autotrading/optionsRiskCheck';
-import { ScreenerConfig } from '../indicators/screener';
+import { defaultScreenerConfig, ScreenerConfig } from '../indicators/screener';
 import { computeBacktestStats, runBacktest, runWalkForwardBacktest } from '../services/autotrading/backtest';
 import { runOptionsBacktest, runOptionsWalkForwardBacktest } from '../services/autotrading/optionsBacktest';
 import { runCombinedBacktest, runCombinedWalkForwardBacktest } from '../services/autotrading/combinedBacktest';
@@ -91,6 +91,9 @@ const configBody = z.object({
   tradeDirection: z.enum(['long', 'short', 'both']).optional(),
   minRelVol: z.number().nonnegative().optional(),
   requireWeeklyTrendAlignment: z.boolean().optional(),
+  relativeStrengthWeight: z.number().min(0).max(100).optional(),
+  benchmarkSymbol: z.string().min(1).optional(),
+  relativeStrengthLookbackDays: z.number().int().min(1).optional(),
   maxTickerAtrPct: z.number().min(0).max(100).optional(),
   maxMarketAtrPct: z.number().min(0).max(100).optional(),
   stopAtrMultiple: z.number().positive().optional(),
@@ -140,6 +143,12 @@ const configBody = z.object({
   // --- Options stop-loss / take-profit (paper + backtest only; 0 disables) ----
   optionsStopLossPct: z.number().min(0).max(100).optional(),
   optionsTakeProfitPct: z.number().min(0).max(100).optional(),
+  // --- Options trailing stop / breakeven / partial profit-taking (0 disables each) --
+  optionsBreakevenTriggerPct: z.number().min(0).max(100).optional(),
+  optionsTrailStartPct: z.number().min(0).max(100).optional(),
+  optionsTrailStopPct: z.number().min(0).max(100).optional(),
+  optionsPartialExitTriggerPct: z.number().min(0).max(100).optional(),
+  optionsPartialExitPct: z.number().min(0).max(100).optional(),
   // --- Movers auto-promotion --------------------------------------------------
   autoPromoteMoversEnabled: z.boolean().optional(),
   autoPromoteThreshold: z.number().int().min(1).optional(),
@@ -181,6 +190,10 @@ autotradeRouter.put(
     if (body.minRelVol !== undefined) patch.minRelVol = body.minRelVol;
     if (body.requireWeeklyTrendAlignment !== undefined)
       patch.requireWeeklyTrendAlignment = body.requireWeeklyTrendAlignment;
+    if (body.relativeStrengthWeight !== undefined) patch.relativeStrengthWeight = body.relativeStrengthWeight;
+    if (body.benchmarkSymbol !== undefined) patch.benchmarkSymbol = body.benchmarkSymbol;
+    if (body.relativeStrengthLookbackDays !== undefined)
+      patch.relativeStrengthLookbackDays = body.relativeStrengthLookbackDays;
     if (body.maxTickerAtrPct !== undefined) patch.maxTickerAtrPct = body.maxTickerAtrPct;
     if (body.maxMarketAtrPct !== undefined) patch.maxMarketAtrPct = body.maxMarketAtrPct;
     if (body.stopAtrMultiple !== undefined) patch.stopAtrMultiple = body.stopAtrMultiple;
@@ -223,6 +236,15 @@ autotradeRouter.put(
     if (body.optionsStrategyType !== undefined) patch.optionsStrategyType = body.optionsStrategyType;
     if (body.optionsStopLossPct !== undefined) patch.optionsStopLossPct = body.optionsStopLossPct;
     if (body.optionsTakeProfitPct !== undefined) patch.optionsTakeProfitPct = body.optionsTakeProfitPct;
+    if (body.optionsBreakevenTriggerPct !== undefined) {
+      patch.optionsBreakevenTriggerPct = body.optionsBreakevenTriggerPct;
+    }
+    if (body.optionsTrailStartPct !== undefined) patch.optionsTrailStartPct = body.optionsTrailStartPct;
+    if (body.optionsTrailStopPct !== undefined) patch.optionsTrailStopPct = body.optionsTrailStopPct;
+    if (body.optionsPartialExitTriggerPct !== undefined) {
+      patch.optionsPartialExitTriggerPct = body.optionsPartialExitTriggerPct;
+    }
+    if (body.optionsPartialExitPct !== undefined) patch.optionsPartialExitPct = body.optionsPartialExitPct;
     if (body.autoPromoteMoversEnabled !== undefined) patch.autoPromoteMoversEnabled = body.autoPromoteMoversEnabled;
     if (body.autoPromoteThreshold !== undefined) patch.autoPromoteThreshold = body.autoPromoteThreshold;
     if (body.autoPromoteWindowDays !== undefined) patch.autoPromoteWindowDays = body.autoPromoteWindowDays;
@@ -401,6 +423,13 @@ function screenerConfigOverride(config: AutotradeConfig, requested?: Partial<Scr
       requireWeeklyTrendAlignment: config.requireWeeklyTrendAlignment,
       ...requested?.filters,
     },
+    weights: {
+      ...defaultScreenerConfig().weights,
+      relativeStrength: config.relativeStrengthWeight,
+      ...requested?.weights,
+    },
+    benchmarkSymbol: requested?.benchmarkSymbol ?? config.benchmarkSymbol,
+    relativeStrengthLookbackDays: requested?.relativeStrengthLookbackDays ?? config.relativeStrengthLookbackDays,
   };
 }
 
@@ -747,6 +776,12 @@ const optionsBacktestBodyBase = z.object({
   // --- Options stop-loss / take-profit (own value, not read from live config) -
   optionsStopLossPct: z.number().min(0).max(100).optional(),
   optionsTakeProfitPct: z.number().min(0).max(100).optional(),
+  // --- Options trailing stop / breakeven / partial profit-taking (own value) -
+  optionsBreakevenTriggerPct: z.number().min(0).max(100).optional(),
+  optionsTrailStartPct: z.number().min(0).max(100).optional(),
+  optionsTrailStopPct: z.number().min(0).max(100).optional(),
+  optionsPartialExitTriggerPct: z.number().min(0).max(100).optional(),
+  optionsPartialExitPct: z.number().min(0).max(100).optional(),
 });
 const optionsBacktestBody = optionsBacktestBodyBase
   .refine((b) => b.from <= b.to, { message: 'from must be on or before to', path: ['from'] })
@@ -782,6 +817,11 @@ autotradeRouter.post(
       directionMode: body.directionMode,
       optionsStopLossPct: body.optionsStopLossPct,
       optionsTakeProfitPct: body.optionsTakeProfitPct,
+      optionsBreakevenTriggerPct: body.optionsBreakevenTriggerPct,
+      optionsTrailStartPct: body.optionsTrailStartPct,
+      optionsTrailStopPct: body.optionsTrailStopPct,
+      optionsPartialExitTriggerPct: body.optionsPartialExitTriggerPct,
+      optionsPartialExitPct: body.optionsPartialExitPct,
     });
     res.json({ report, stats: computeBacktestStats(report) });
   }),
@@ -805,6 +845,11 @@ autotradeRouter.post(
       directionMode: body.directionMode,
       optionsStopLossPct: body.optionsStopLossPct,
       optionsTakeProfitPct: body.optionsTakeProfitPct,
+      optionsBreakevenTriggerPct: body.optionsBreakevenTriggerPct,
+      optionsTrailStartPct: body.optionsTrailStartPct,
+      optionsTrailStopPct: body.optionsTrailStopPct,
+      optionsPartialExitTriggerPct: body.optionsPartialExitTriggerPct,
+      optionsPartialExitPct: body.optionsPartialExitPct,
     });
     res.json({
       inSample: { report: wf.inSample, stats: computeBacktestStats(wf.inSample) },
@@ -859,6 +904,12 @@ const combinedBacktestBodyBase = z.object({
   // --- Options stop-loss / take-profit (own value; options leg only) ----------
   optionsStopLossPct: z.number().min(0).max(100).optional(),
   optionsTakeProfitPct: z.number().min(0).max(100).optional(),
+  // --- Options trailing stop / breakeven / partial profit-taking (options leg only) -
+  optionsBreakevenTriggerPct: z.number().min(0).max(100).optional(),
+  optionsTrailStartPct: z.number().min(0).max(100).optional(),
+  optionsTrailStopPct: z.number().min(0).max(100).optional(),
+  optionsPartialExitTriggerPct: z.number().min(0).max(100).optional(),
+  optionsPartialExitPct: z.number().min(0).max(100).optional(),
 });
 const combinedBacktestBody = combinedBacktestBodyBase
   .refine((b) => b.from <= b.to, { message: 'from must be on or before to', path: ['from'] })
@@ -901,6 +952,11 @@ autotradeRouter.post(
       directionMode: body.directionMode,
       optionsStopLossPct: body.optionsStopLossPct,
       optionsTakeProfitPct: body.optionsTakeProfitPct,
+      optionsBreakevenTriggerPct: body.optionsBreakevenTriggerPct,
+      optionsTrailStartPct: body.optionsTrailStartPct,
+      optionsTrailStopPct: body.optionsTrailStopPct,
+      optionsPartialExitTriggerPct: body.optionsPartialExitTriggerPct,
+      optionsPartialExitPct: body.optionsPartialExitPct,
     });
     res.json({ report, stats: combinedStats(report) });
   }),
@@ -931,6 +987,11 @@ autotradeRouter.post(
       directionMode: body.directionMode,
       optionsStopLossPct: body.optionsStopLossPct,
       optionsTakeProfitPct: body.optionsTakeProfitPct,
+      optionsBreakevenTriggerPct: body.optionsBreakevenTriggerPct,
+      optionsTrailStartPct: body.optionsTrailStartPct,
+      optionsTrailStopPct: body.optionsTrailStopPct,
+      optionsPartialExitTriggerPct: body.optionsPartialExitTriggerPct,
+      optionsPartialExitPct: body.optionsPartialExitPct,
     });
     res.json({
       inSample: { report: wf.inSample, stats: combinedStats(wf.inSample) },

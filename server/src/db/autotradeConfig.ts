@@ -170,6 +170,23 @@ export interface AutotradeConfig {
    *  ordinary OHLCV data the existing Polygon-backed fetch already handles,
    *  not a live-only real-time reading. */
   requireWeeklyTrendAlignment: boolean;
+  /** Relative-strength-vs-benchmark (2026-07-17): weight (0-100, same scale
+   *  as every other indicators/screener.ts component) given to how much a
+   *  candidate has out/under-performed benchmarkSymbol over
+   *  relativeStrengthLookbackDays trading days — direction-aware, like every
+   *  other component (a LONG candidate scores higher for BEATING the
+   *  benchmark, a SHORT candidate scores higher for LAGGING it). 0 (the
+   *  default) disables the component entirely — screen.ts doesn't even fetch
+   *  the benchmark's own candles when this is 0, so an untouched config pays
+   *  no extra provider call and changes nothing about existing scores. */
+  relativeStrengthWeight: number;
+  /** Symbol the relativeStrength component measures out/under-performance
+   *  against — e.g. 'SPY'. Only matters when relativeStrengthWeight is
+   *  nonzero. */
+  benchmarkSymbol: string;
+  /** Trading days back for both the candidate's own and the benchmark's
+   *  lookback return that relativeStrengthWeight scores. */
+  relativeStrengthLookbackDays: number;
   /** Skip a candidate whose own ATR% (of price) exceeds this — the loop's
    *  own per-ticker volatility guard, stricter than what the human-reviewed
    *  manual Screen/Decision preview applies (executionGuards.ts's header
@@ -371,6 +388,40 @@ export interface AutotradeConfig {
    *  this % of the premium paid (net debit, for a spread). 0 disables it. */
   optionsTakeProfitPct: number;
 
+  // --- Options trailing stop / breakeven / partial profit-taking (added
+  // 2026-07-17). PAPER and BACKTEST options positions only, same scope
+  // boundary as optionsStopLossPct/optionsTakeProfitPct above — LIVE options
+  // positions stay time-exit-only. The options counterpart to the equity
+  // trailing-stop/breakeven/partial-exit fields above, adapted to options'
+  // %-of-premium model (net debit, for a spread) instead of a price-based
+  // stop: a long option/spread has no ATR-based stop distance to ratchet a
+  // PRICE against, so these are expressed directly as percentage points of
+  // unrealized gain, not R-multiples. All five default to 0/disabled except
+  // optionsPartialExitPct (50), so leaving them untouched changes nothing.
+  // ---------------------------------------------------------------------
+
+  /** Once unrealized gain reaches this % of premium, lock in at least
+   *  breakeven (0% gain) — a one-time ratchet, never applied if it would
+   *  loosen the current floor. 0 disables it. */
+  optionsBreakevenTriggerPct: number;
+  /** Once unrealized gain reaches this %, begin trailing (see
+   *  optionsTrailStopPct) behind the best gain % seen since entry. 0
+   *  disables trailing entirely — optionsBreakevenTriggerPct above works
+   *  independently of this. */
+  optionsTrailStartPct: number;
+  /** Once trailing is active, the floor trails this many percentage points
+   *  behind the best unrealized gain % seen since entry — ratcheting only
+   *  favorably, same as optionsBreakevenTriggerPct. Meaningless if
+   *  optionsTrailStartPct is 0. */
+  optionsTrailStopPct: number;
+  /** Once unrealized gain reaches this %, close optionsPartialExitPct% of
+   *  the position once — the rest keeps running toward its original
+   *  take-profit (or continues trailing). 0 disables it. */
+  optionsPartialExitTriggerPct: number;
+  /** % of the position closed at the optionsPartialExitTriggerPct trigger.
+   *  Only meaningful when that trigger is nonzero. */
+  optionsPartialExitPct: number;
+
   // --- Movers auto-promotion (docs/AUTOTRADING_SPEC.md — the 2026-07-10
   // universe-widening fix's explicitly separate follow-up) ---------------
 
@@ -431,6 +482,9 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     tradeDirection: 'long',
     minRelVol: 1.5,
     requireWeeklyTrendAlignment: false,
+    relativeStrengthWeight: 0,
+    benchmarkSymbol: 'SPY',
+    relativeStrengthLookbackDays: 20,
     maxTickerAtrPct: 15,
     maxMarketAtrPct: 5,
     stopAtrMultiple: 1.5,
@@ -466,6 +520,11 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     optionsStrategyType: 'single_leg',
     optionsStopLossPct: 0,
     optionsTakeProfitPct: 0,
+    optionsBreakevenTriggerPct: 0,
+    optionsTrailStartPct: 0,
+    optionsTrailStopPct: 0,
+    optionsPartialExitTriggerPct: 0,
+    optionsPartialExitPct: 50,
     autoPromoteMoversEnabled: true,
     autoPromoteThreshold: 3,
     autoPromoteWindowDays: 10,
@@ -553,6 +612,12 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       typeof input.requireWeeklyTrendAlignment === 'boolean'
         ? input.requireWeeklyTrendAlignment
         : d.requireWeeklyTrendAlignment,
+    relativeStrengthWeight: pct(input.relativeStrengthWeight, d.relativeStrengthWeight),
+    benchmarkSymbol:
+      typeof input.benchmarkSymbol === 'string' && input.benchmarkSymbol.trim() !== ''
+        ? input.benchmarkSymbol.trim().toUpperCase()
+        : d.benchmarkSymbol,
+    relativeStrengthLookbackDays: posIntMin1(input.relativeStrengthLookbackDays, d.relativeStrengthLookbackDays),
     maxTickerAtrPct: pct(input.maxTickerAtrPct, d.maxTickerAtrPct),
     maxMarketAtrPct: pct(input.maxMarketAtrPct, d.maxMarketAtrPct),
     stopAtrMultiple: posDecimal(input.stopAtrMultiple, d.stopAtrMultiple),
@@ -598,6 +663,11 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
         : d.optionsStrategyType,
     optionsStopLossPct: pct(input.optionsStopLossPct, d.optionsStopLossPct),
     optionsTakeProfitPct: pct(input.optionsTakeProfitPct, d.optionsTakeProfitPct),
+    optionsBreakevenTriggerPct: pct(input.optionsBreakevenTriggerPct, d.optionsBreakevenTriggerPct),
+    optionsTrailStartPct: pct(input.optionsTrailStartPct, d.optionsTrailStartPct),
+    optionsTrailStopPct: pct(input.optionsTrailStopPct, d.optionsTrailStopPct),
+    optionsPartialExitTriggerPct: pct(input.optionsPartialExitTriggerPct, d.optionsPartialExitTriggerPct),
+    optionsPartialExitPct: pct(input.optionsPartialExitPct, d.optionsPartialExitPct),
     autoPromoteMoversEnabled:
       typeof input.autoPromoteMoversEnabled === 'boolean' ? input.autoPromoteMoversEnabled : d.autoPromoteMoversEnabled,
     autoPromoteThreshold: posIntMin1(input.autoPromoteThreshold, d.autoPromoteThreshold),

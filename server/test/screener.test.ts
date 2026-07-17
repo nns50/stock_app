@@ -50,7 +50,7 @@ describe('scoreSymbol — transparency contract', () => {
 
   it('exposes every weighted component with an explanation', () => {
     const keys = result.components.map((c) => c.key).sort();
-    expect(keys).toEqual(['gap', 'momentum', 'relativeVolume', 'rsi', 'trend', 'volatility']);
+    expect(keys).toEqual(['gap', 'momentum', 'relativeStrength', 'relativeVolume', 'rsi', 'trend', 'volatility']);
     for (const c of result.components) {
       expect(c).toHaveProperty('score');
       expect(c).toHaveProperty('weight');
@@ -201,6 +201,60 @@ describe('scoreSymbol — weekly trend alignment filter (2026-07-16)', () => {
     expect(r.filterReasons.length).toBeGreaterThanOrEqual(2);
     expect(r.filterReasons.join(' ')).toContain('price');
     expect(r.filterReasons.join(' ')).toContain('weekly');
+  });
+});
+
+describe('scoreSymbol — relative strength vs. benchmark (2026-07-17)', () => {
+  // uptrend: closes 100..179 (80 bars). Default relativeStrengthLookbackDays
+  // is 20, so the candidate's own lookback return is (179-159)/159*100 ≈
+  // +12.58% (close at index 59 is 100+59=159).
+  const cfg = resolveScreenerConfig({ direction: 'long', weights: { relativeStrength: 25 } as any });
+
+  it('contributes nothing to the total when weight is 0 (the default), even with no benchmark data at all', () => {
+    const off = resolveScreenerConfig({ direction: 'long' }); // weights.relativeStrength omitted -> 0
+    const r = scoreSymbol('TEST', uptrend, undefined, off);
+    const component = r.components.find((c) => c.key === 'relativeStrength')!;
+    expect(component.weight).toBe(0);
+    expect(component.contribution).toBe(0);
+    expect(r.indicators.benchmarkLookbackReturnPct).toBeNull();
+  });
+
+  it('scores 0 (not a total-corrupting NaN) when weight is nonzero but the caller supplied no benchmark return at all', () => {
+    const r = scoreSymbol('TEST', uptrend, undefined, cfg); // no 8th arg
+    const component = r.components.find((c) => c.key === 'relativeStrength')!;
+    expect(component.score).toBe(0);
+    expect(component.note).toContain('no relative-strength data');
+    expect(Number.isFinite(r.total)).toBe(true);
+  });
+
+  it('scores well above the midpoint for a long candidate that outperformed the benchmark', () => {
+    const r = scoreSymbol('TEST', uptrend, undefined, cfg, undefined, undefined, undefined, 5); // benchmark +5%, candidate ~+12.58%
+    const component = r.components.find((c) => c.key === 'relativeStrength')!;
+    expect(component.score).toBeGreaterThan(50);
+    expect(r.indicators.symbolLookbackReturnPct).toBeCloseTo(12.58, 1);
+    expect(r.indicators.benchmarkLookbackReturnPct).toBe(5);
+  });
+
+  it('scores well below the midpoint for a long candidate that underperformed the benchmark', () => {
+    const r = scoreSymbol('TEST', uptrend, undefined, cfg, undefined, undefined, undefined, 20); // benchmark +20%, candidate ~+12.58%
+    const component = r.components.find((c) => c.key === 'relativeStrength')!;
+    expect(component.score).toBeLessThan(50);
+  });
+
+  it('mirrors correctly for a short candidate — underperformance (not outperformance) scores higher', () => {
+    const shortCfg = { ...cfg, direction: 'short' as const };
+    const underperformed = scoreSymbol('TEST', uptrend, undefined, shortCfg, undefined, undefined, undefined, 20); // candidate lagged
+    const outperformed = scoreSymbol('TEST', uptrend, undefined, shortCfg, undefined, undefined, undefined, 5); // candidate led
+    const scoreOf = (r: typeof underperformed) => r.components.find((c) => c.key === 'relativeStrength')!.score;
+    expect(scoreOf(underperformed)).toBeGreaterThan(scoreOf(outperformed));
+  });
+
+  it('is null when history does not reach back far enough for the lookback window', () => {
+    const short = candlesFromCloses(Array.from({ length: 10 }, (_, i) => 100 + i)); // fewer than 20 bars
+    const r = scoreSymbol('TEST', short, undefined, cfg, undefined, undefined, undefined, 5);
+    expect(r.indicators.symbolLookbackReturnPct).toBeNull();
+    const component = r.components.find((c) => c.key === 'relativeStrength')!;
+    expect(component.score).toBe(0);
   });
 });
 

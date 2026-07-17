@@ -4,6 +4,7 @@ import {
   CandleIndicatorSeries,
   computeCandleIndicatorSeries,
   Direction,
+  lookbackReturnPct,
   ScreenerConfig,
   scoreSymbol,
   scoreSymbolBothDirections,
@@ -16,6 +17,7 @@ import {
   closedWeeklyIndexAsOf,
   indexAsOf,
   loadBacktestHistory,
+  loadBenchmarkBacktestHistory,
   loadWeeklyBacktestHistory,
   resolveBacktestRiskParams,
   toISO,
@@ -36,7 +38,7 @@ import { getHistoricalBars } from './historicalData';
 import { OptionContractRef } from './polygonOptionsClient';
 import { impliedVol, bsGreeks, yearsToExpiration, daysToExpiration } from '../../options/blackScholes';
 import { computeIvContext } from '../ivRank';
-import { evaluateExit } from '../../options/exitRules';
+import { evaluateExit, unrealizedReturnPct } from '../../options/exitRules';
 
 // ---------------------------------------------------------------------------
 // The options counterpart to backtest.ts (docs/AUTOTRADING_SPEC.md, phase 11)
@@ -132,6 +134,20 @@ export interface OptionsBacktestConfig extends Partial<BacktestRiskParams> {
    *  close alongside the existing time-exit check. */
   optionsStopLossPct?: number;
   optionsTakeProfitPct?: number;
+  /** Own value here, NOT read from live config if omitted — same
+   *  self-contained-hypothesis convention as every other backtest field.
+   *  Mirrors AutotradeConfig.optionsBreakevenTriggerPct/optionsTrailStartPct/
+   *  optionsTrailStopPct/optionsPartialExitTriggerPct/optionsPartialExitPct
+   *  (0/omitted disables each) — the options counterpart to backtest.ts's own
+   *  equity trailing-stop/breakeven/partial-exit fields, expressed in
+   *  percentage points of unrealized gain (net debit basis, for a spread)
+   *  instead of R-multiples of a price-based stop, since a long option/spread
+   *  has no ATR-based stop distance to measure R against. */
+  optionsBreakevenTriggerPct?: number;
+  optionsTrailStartPct?: number;
+  optionsTrailStopPct?: number;
+  optionsPartialExitTriggerPct?: number;
+  optionsPartialExitPct?: number;
 }
 
 export interface SimulatedOptionsTrade {
@@ -156,7 +172,7 @@ export interface SimulatedOptionsTrade {
   exitPremium: number;
   /** The short leg's exit premium — debit spreads only. */
   shortExitPremium?: number;
-  exitReason: 'time_exit' | 'stop_loss' | 'take_profit' | 'expiration' | 'end_of_period';
+  exitReason: 'time_exit' | 'stop_loss' | 'take_profit' | 'expiration' | 'end_of_period' | 'partial_exit';
   contracts: number;
   pnl: number;
   rMultiple: number;
@@ -190,6 +206,16 @@ interface OpenOptionPosition {
   contracts: number;
   riskAmount: number;
   notional: number;
+  /** Running peak of (mark − short mark) seen since entry — mirrors
+   *  backtest.ts's own OpenPosition.bestPrice; always a running MAX (options
+   *  are always opened long). Seeded at entry basis. */
+  bestBasisSinceEntry: number;
+  /** Ratcheted minimum acceptable unrealized gain % (net debit basis, for a
+   *  spread) — mirrors autotradeOptionsPaperPositions.ts's own
+   *  stopFloorPct. Null until a breakeven/trailing event first fires; until
+   *  then the day-loop uses cfg.optionsStopLossPct as-is. */
+  stopFloorPct: number | null;
+  partialExitTaken: boolean;
 }
 
 interface PendingOptionEntry {
@@ -388,6 +414,7 @@ export async function simulateOptionsBacktest(
   contractsBySymbol: Map<string, OptionContractRef[]>,
   cfg: OptionsBacktestConfig,
   weeklyHistoryBySymbol?: Map<string, Candle[]>,
+  benchmarkCandles?: Candle[],
 ): Promise<OptionsBacktestReport> {
   const riskParams = resolveBacktestRiskParams(cfg);
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
@@ -474,6 +501,11 @@ export async function simulateOptionsBacktest(
   // mirrors backtest.ts's identical indexCursor (dayMs only increases across
   // this loop, so each symbol's answer only ever advances forward).
   const scoringIndexCursor = new Map<string, number>();
+  // The benchmark's own resume point (2026-07-17, relative-strength-vs-
+  // benchmark) — a single cursor, not per-symbol, since benchmarkCandles is
+  // one shared series read once per simulated day, mirroring backtest.ts's
+  // identical benchmarkIndexCursor.
+  let benchmarkIndexCursor = 0;
 
   for (let dayIndex = 0; dayIndex < tradingDays.length; dayIndex++) {
     const day = tradingDays[dayIndex];
@@ -506,6 +538,8 @@ export async function simulateOptionsBacktest(
 
       const ready = p.kind === 'debit_spread' ? longBar && shortBar : longBar;
       if (ready) {
+        const entryPremium = longBar!.open;
+        const shortEntryPremium = shortBar?.open;
         openPositions.push({
           symbol: p.symbol,
           side: p.side,
@@ -517,11 +551,14 @@ export async function simulateOptionsBacktest(
           expiration: p.expiration,
           signalDate: p.signalDate,
           entryDate: day,
-          entryPremium: longBar!.open,
-          shortEntryPremium: shortBar?.open,
+          entryPremium,
+          shortEntryPremium,
           contracts: p.contracts,
           riskAmount: p.riskAmount,
           notional: p.notional,
+          bestBasisSinceEntry: entryPremium - (shortEntryPremium ?? 0),
+          stopFloorPct: null,
+          partialExitTaken: false,
         });
         filledToday += 1;
       } else {
@@ -572,11 +609,16 @@ export async function simulateOptionsBacktest(
       const entryBasis =
         pos.kind === 'debit_spread' ? pos.entryPremium - (pos.shortEntryPremium ?? 0) : pos.entryPremium;
       const currentBasis = pos.kind === 'debit_spread' ? exitPremium - (shortExitPremium ?? 0) : exitPremium;
+      // Once a breakeven/trailing event has ratcheted stopFloorPct, it
+      // OVERRIDES the live cfg.optionsStopLossPct for this position (mirrors
+      // backtest.ts's own stopPrice, position-specific once set) — null means
+      // nothing has ratcheted yet, so behavior is byte-for-byte unchanged.
+      const stopLossPct = pos.stopFloorPct != null ? -pos.stopFloorPct : cfg.optionsStopLossPct || undefined;
       const ev = evaluateExit(
         { entryPrice: entryBasis, currentPrice: currentBasis, side: 'long', expiration: pos.expiration },
         {
           timeExitDaysBeforeExpiry: exitMinDaysToExpiration,
-          stopLossPct: cfg.optionsStopLossPct || undefined,
+          stopLossPct,
           takeProfitPct: cfg.optionsTakeProfitPct || undefined,
         },
         new Date(dayMs),
@@ -616,6 +658,81 @@ export async function simulateOptionsBacktest(
         dailyPnl += pnl;
         equity += pnl;
       } else {
+        // Trailing stop / breakeven / partial profit-taking — mirrors
+        // backtest.ts's own equity-leg block (in-memory, no DB) and
+        // optionsExecute.ts's applyOptionsPositionManagement, against the
+        // day's own bar CLOSE (backtest evaluates once per day, unlike
+        // paper/live's fresh point-in-time quote).
+        const gainPct = unrealizedReturnPct(entryBasis, currentBasis, 'long');
+        if (gainPct !== null) {
+          const partialExitTriggerPct = cfg.optionsPartialExitTriggerPct ?? 0;
+          if (partialExitTriggerPct > 0 && !pos.partialExitTaken && gainPct >= partialExitTriggerPct) {
+            const closeQty = Math.floor(pos.contracts * ((cfg.optionsPartialExitPct ?? 0) / 100));
+            if (closeQty > 0 && closeQty < pos.contracts) {
+              const partialPnl = simulatedOptionsPnl(
+                pos.kind,
+                pos.entryPremium,
+                exitPremium,
+                pos.shortEntryPremium,
+                shortExitPremium,
+                closeQty,
+              );
+              trades.push({
+                symbol: pos.symbol,
+                side: pos.side,
+                kind: pos.kind,
+                contractTicker: pos.contractTicker,
+                strike: pos.strike,
+                shortContractTicker: pos.shortContractTicker,
+                shortStrike: pos.shortStrike,
+                expiration: pos.expiration,
+                signalDate: pos.signalDate,
+                entryDate: pos.entryDate,
+                entryPremium: pos.entryPremium,
+                shortEntryPremium: pos.shortEntryPremium,
+                exitDate: day,
+                exitPremium,
+                shortExitPremium,
+                exitReason: 'partial_exit',
+                contracts: closeQty,
+                pnl: partialPnl,
+                rMultiple: pos.riskAmount > 0 ? partialPnl / pos.riskAmount : 0,
+              });
+              closedPnls.push(partialPnl);
+              recordStreak(partialPnl);
+              dailyPnl += partialPnl;
+              equity += partialPnl;
+              pos.contracts -= closeQty;
+              pos.partialExitTaken = true;
+            }
+          }
+
+          // Best basis seen since entry — always a running MAX (options are
+          // always opened long, unlike equity's long/short branch).
+          pos.bestBasisSinceEntry = Math.max(pos.bestBasisSinceEntry, currentBasis);
+          const bestGainPct = unrealizedReturnPct(entryBasis, pos.bestBasisSinceEntry, 'long') ?? gainPct;
+
+          // Breakeven and trailing both just propose a candidate floor; only
+          // the MOST protective (highest) of {prior floor, breakeven
+          // candidate, trailing candidate} ever gets written — guarantees
+          // neither can ever loosen the floor, mirrors backtest.ts's own
+          // candidateStop merge.
+          const breakevenTriggerPct = cfg.optionsBreakevenTriggerPct ?? 0;
+          const trailStartPct = cfg.optionsTrailStartPct ?? 0;
+          const trailStopPct = cfg.optionsTrailStopPct ?? 0;
+          let candidateFloor: number | null = null;
+          if (breakevenTriggerPct > 0 && gainPct >= breakevenTriggerPct) {
+            candidateFloor = candidateFloor === null ? 0 : Math.max(candidateFloor, 0);
+          }
+          if (trailStartPct > 0 && trailStopPct > 0 && gainPct >= trailStartPct) {
+            const trailingCandidate = bestGainPct - trailStopPct;
+            candidateFloor = candidateFloor === null ? trailingCandidate : Math.max(candidateFloor, trailingCandidate);
+          }
+          if (candidateFloor !== null) {
+            const priorFloor = pos.stopFloorPct ?? (cfg.optionsStopLossPct ? -cfg.optionsStopLossPct : null);
+            pos.stopFloorPct = priorFloor === null ? candidateFloor : Math.max(priorFloor, candidateFloor);
+          }
+        }
         stillOpen.push(pos);
       }
     }
@@ -626,6 +743,16 @@ export async function simulateOptionsBacktest(
     // ever considers a candidate the equity screener already approved).
     const consecutiveLosses = streak.type === 'loss' ? streak.count : 0;
     const openSymbols = new Set([...openPositions.map((p) => p.symbol), ...pendingEntries.map((p) => p.symbol)]);
+
+    // The benchmark's own lookback return as of TODAY — computed once per
+    // day, reused for every candidate below. See backtest.ts's
+    // simulateBacktest() for the identical pattern/reasoning.
+    const benchmarkIdx = benchmarkCandles ? indexAsOf(benchmarkCandles, dayMs, benchmarkIndexCursor) : -1;
+    if (benchmarkIdx >= 0) benchmarkIndexCursor = benchmarkIdx;
+    const benchmarkLookbackReturnPct =
+      benchmarkCandles && benchmarkIdx >= 0 && benchmarkCandles[benchmarkIdx].time === dayMs
+        ? lookbackReturnPct(benchmarkCandles, screenerCfg.relativeStrengthLookbackDays, benchmarkIdx)
+        : null;
 
     const candidates: {
       symbol: string;
@@ -662,7 +789,18 @@ export async function simulateOptionsBacktest(
       // ScreenCandidate.direction).
       const picked =
         directionMode === 'both'
-          ? pickDirection(scoreSymbolBothDirections(symbol, candles, undefined, screenerCfg, cached, idx, weeklyCached))
+          ? pickDirection(
+              scoreSymbolBothDirections(
+                symbol,
+                candles,
+                undefined,
+                screenerCfg,
+                cached,
+                idx,
+                weeklyCached,
+                benchmarkLookbackReturnPct,
+              ),
+            )
           : (() => {
               const score = scoreSymbol(
                 symbol,
@@ -672,6 +810,7 @@ export async function simulateOptionsBacktest(
                 cached,
                 idx,
                 weeklyCached,
+                benchmarkLookbackReturnPct,
               );
               return score.passedFilters ? { direction: directionMode, score } : null;
             })();
@@ -994,13 +1133,24 @@ export async function runOptionsBacktest(cfg: OptionsBacktestConfig): Promise<Op
   const weeklyHistoryBySymbol = cfg.screenerConfig?.filters?.requireWeeklyTrendAlignment
     ? await loadWeeklyBacktestHistory(Array.from(historyBySymbol.keys()), cfg.from, cfg.to)
     : undefined;
+  const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
+  const benchmarkCandles =
+    (cfg.screenerConfig?.weights?.relativeStrength ?? 0)
+      ? await loadBenchmarkBacktestHistory(screenerCfg.benchmarkSymbol, cfg.from, cfg.to)
+      : undefined;
   const maxDte = defaultAutotradeEntryConfig('call').maxDaysToExpiration ?? 60;
   const contractsBySymbol = new Map<string, OptionContractRef[]>();
   for (const symbol of historyBySymbol.keys()) {
     const contracts = await getHistoricalOptionContracts(symbol, cfg.from, addDays(cfg.to, maxDte));
     contractsBySymbol.set(symbol, contracts);
   }
-  const report = await simulateOptionsBacktest(historyBySymbol, contractsBySymbol, cfg, weeklyHistoryBySymbol);
+  const report = await simulateOptionsBacktest(
+    historyBySymbol,
+    contractsBySymbol,
+    cfg,
+    weeklyHistoryBySymbol,
+    benchmarkCandles,
+  );
   return { ...report, excludedSymbols, errors };
 }
 
@@ -1026,6 +1176,11 @@ export async function runOptionsWalkForwardBacktest(cfg: OptionsWalkForwardConfi
   const weeklyHistoryBySymbol = cfg.screenerConfig?.filters?.requireWeeklyTrendAlignment
     ? await loadWeeklyBacktestHistory(Array.from(historyBySymbol.keys()), cfg.from, cfg.to)
     : undefined;
+  const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
+  const benchmarkCandles =
+    (cfg.screenerConfig?.weights?.relativeStrength ?? 0)
+      ? await loadBenchmarkBacktestHistory(screenerCfg.benchmarkSymbol, cfg.from, cfg.to)
+      : undefined;
   const maxDte = defaultAutotradeEntryConfig('call').maxDaysToExpiration ?? 60;
   const contractsBySymbol = new Map<string, OptionContractRef[]>();
   for (const symbol of historyBySymbol.keys()) {
@@ -1038,12 +1193,14 @@ export async function runOptionsWalkForwardBacktest(cfg: OptionsWalkForwardConfi
     contractsBySymbol,
     { ...cfg, from: cfg.from, to: cfg.splitDate },
     weeklyHistoryBySymbol,
+    benchmarkCandles,
   );
   const outOfSample = await simulateOptionsBacktest(
     historyBySymbol,
     contractsBySymbol,
     { ...cfg, from: outOfSampleFrom, to: cfg.to },
     weeklyHistoryBySymbol,
+    benchmarkCandles,
   );
   return { inSample, outOfSample, excludedSymbols, errors };
 }

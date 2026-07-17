@@ -449,6 +449,9 @@ export const client = {
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     requireWeeklyTrendAlignment?: boolean;
+    relativeStrengthWeight?: number;
+    benchmarkSymbol?: string;
+    relativeStrengthLookbackDays?: number;
     maxTickerAtrPct?: number;
     maxMarketAtrPct?: number;
     stopAtrMultiple?: number;
@@ -483,6 +486,11 @@ export const client = {
     optionsStrategyType?: AutotradeOptionsStrategyType;
     optionsStopLossPct?: number;
     optionsTakeProfitPct?: number;
+    optionsBreakevenTriggerPct?: number;
+    optionsTrailStartPct?: number;
+    optionsTrailStopPct?: number;
+    optionsPartialExitTriggerPct?: number;
+    optionsPartialExitPct?: number;
     autoPromoteMoversEnabled?: boolean;
     autoPromoteThreshold?: number;
     autoPromoteWindowDays?: number;

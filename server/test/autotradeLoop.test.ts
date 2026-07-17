@@ -572,7 +572,12 @@ describe('runAutotradeLoopTick', () => {
 
     expect(mockSessionWindow).toHaveBeenCalledWith(30);
     expect(mockScreen).toHaveBeenCalledWith({
-      config: { filters: { minRelVol: 3, requireWeeklyTrendAlignment: true } },
+      config: {
+        filters: { minRelVol: 3, requireWeeklyTrendAlignment: true },
+        weights: { momentum: 30, relativeVolume: 20, rsi: 15, volatility: 10, gap: 10, trend: 15, relativeStrength: 0 },
+        benchmarkSymbol: 'SPY',
+        relativeStrengthLookbackDays: 20,
+      },
       earningsBlackoutDays: 0,
       directionMode: 'long',
     });

@@ -52,6 +52,9 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     tradeDirection: 'long',
     minRelVol: 1.5,
     requireWeeklyTrendAlignment: false,
+    relativeStrengthWeight: 0,
+    benchmarkSymbol: 'SPY',
+    relativeStrengthLookbackDays: 20,
     maxTickerAtrPct: 15,
     maxMarketAtrPct: 5,
     stopAtrMultiple: 1.5,
@@ -64,6 +67,11 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     partialExitPct: 50,
     optionsStopLossPct: 0,
     optionsTakeProfitPct: 0,
+    optionsBreakevenTriggerPct: 0,
+    optionsTrailStartPct: 0,
+    optionsTrailStopPct: 0,
+    optionsPartialExitTriggerPct: 0,
+    optionsPartialExitPct: 50,
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
     correlationLookbackDays: 30,
@@ -292,6 +300,67 @@ describe('AutoTradePage', () => {
     );
   });
 
+  it('saves a new relative strength weight value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const weightField = screen.getByText('Relative strength weight (0-100)').closest('label')!;
+    const weightInput = within(weightField).getByRole('textbox');
+    fireEvent.change(weightInput, { target: { value: '25' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save relative strength weight' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ relativeStrengthWeight: 25, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new benchmark symbol value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const symbolField = screen.getByText('Benchmark symbol').closest('label')!;
+    const symbolInput = within(symbolField).getByRole('textbox');
+    fireEvent.change(symbolInput, { target: { value: 'qqq' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save benchmark symbol' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    // Uppercased as the user types, mirroring how symbols are stored elsewhere.
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ benchmarkSymbol: 'QQQ', confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new relative strength lookback value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const lookbackField = screen.getByText('Relative strength lookback (days)').closest('label')!;
+    const lookbackInput = within(lookbackField).getByRole('textbox');
+    fireEvent.change(lookbackInput, { target: { value: '10' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save relative strength lookback' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ relativeStrengthLookbackDays: 10, confirmAggressive: undefined }),
+    );
+  });
+
   it('saves a new options stop-loss % value', async () => {
     const setConfig = vi
       .spyOn(client, 'setAutotradeConfig')
@@ -299,8 +368,11 @@ describe('AutoTradePage', () => {
     renderPage();
     await screen.findByText('VNQ');
 
-    // Shared with the take-profit field just below it — stop-loss renders first in the DOM.
-    const stopLossInput = screen.getAllByPlaceholderText('0 (disabled)')[0];
+    // Scoped by the Field's own wrapping <label> — several sibling fields
+    // share the '0 (disabled)' placeholder, so an index into
+    // getAllByPlaceholderText would be fragile to their DOM order.
+    const stopLossField = screen.getByText('Options stop-loss (%)').closest('label')!;
+    const stopLossInput = within(stopLossField).getByPlaceholderText('0 (disabled)');
     fireEvent.change(stopLossInput, { target: { value: '25' } });
 
     const saveButton = screen.getByRole('button', { name: 'Save options stop-loss' });
@@ -319,7 +391,8 @@ describe('AutoTradePage', () => {
     renderPage();
     await screen.findByText('VNQ');
 
-    const takeProfitInput = screen.getAllByPlaceholderText('0 (disabled)')[1];
+    const takeProfitField = screen.getByText('Options take-profit (%)').closest('label')!;
+    const takeProfitInput = within(takeProfitField).getByPlaceholderText('0 (disabled)');
     fireEvent.change(takeProfitInput, { target: { value: '50' } });
 
     const saveButton = screen.getByRole('button', { name: 'Save options take-profit' });
@@ -328,6 +401,108 @@ describe('AutoTradePage', () => {
 
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ optionsTakeProfitPct: 50, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new options breakeven trigger % value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const breakevenField = screen.getByText('Options breakeven trigger (%)').closest('label')!;
+    const input = within(breakevenField).getByPlaceholderText('0 (disabled)');
+    fireEvent.change(input, { target: { value: '20' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save options breakeven trigger' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ optionsBreakevenTriggerPct: 20, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new options trailing start % value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const trailStartField = screen.getByText('Options trailing start (%)').closest('label')!;
+    const input = within(trailStartField).getByPlaceholderText('0 (disabled)');
+    fireEvent.change(input, { target: { value: '20' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save options trailing start' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ optionsTrailStartPct: 20, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new options trailing distance % value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const trailDistanceField = screen.getByText('Options trailing distance (%)').closest('label')!;
+    const input = within(trailDistanceField).getByPlaceholderText('0 (disabled)');
+    fireEvent.change(input, { target: { value: '10' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save options trailing distance' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ optionsTrailStopPct: 10, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new options partial exit trigger % value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const partialExitTriggerField = screen.getByText('Options partial exit trigger (%)').closest('label')!;
+    const input = within(partialExitTriggerField).getByPlaceholderText('0 (disabled)');
+    fireEvent.change(input, { target: { value: '20' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save options partial exit trigger' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ optionsPartialExitTriggerPct: 20, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new options partial exit size % value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    // No shared placeholder (mirrors equity's own "Partial exit size (%)"
+    // field) — scope by the Field's own wrapping <label>.
+    const sizeField = screen.getByText('Options partial exit size (%)').closest('label')!;
+    const sizeInput = within(sizeField).getByRole('textbox');
+    fireEvent.change(sizeInput, { target: { value: '25' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save options partial exit size' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ optionsPartialExitPct: 25, confirmAggressive: undefined }),
     );
   });
 

@@ -8,7 +8,22 @@ import { db } from './index';
 // option position is identified by contract (strike/expiration/side), not a
 // buy/sell direction + stop/target price. One row per round trip: open
 // fields are always set; exit fields are null until closed, then set on the
-// SAME row (no partial fills/exits, matching every other engine here).
+// SAME row.
+//
+// Trailing stop / breakeven / partial profit-taking (added 2026-07-17,
+// mirroring autotradePaperPositions.ts's own trio): quantity CAN now shrink
+// in place via partialCloseOptionsPaperPosition — the row stays 'open' with
+// reduced size, the closed slice itself only journaled by the caller, same
+// "one row per position, not a split position/exits table" convention.
+// stop_floor_pct is the % counterpart to stopPrice: a long option has no
+// stop PRICE to ratchet, so this instead stores the ratcheted MINIMUM
+// acceptable unrealized gain % (net debit basis, for a spread) once a
+// breakeven/trailing event first fires; null means "nothing has ratcheted
+// yet, defer to the live optionsStopLossPct config" — checkOptionsPaperExits
+// prefers this column over the live config once it's set. best_basis_since_entry
+// is the running peak of that same basis — always a running MAX (options are
+// always opened long), never a long/short branch the way equity's
+// high/low-water mark needs.
 // ---------------------------------------------------------------------------
 
 export type OptionsPaperSide = 'call' | 'put';
@@ -70,6 +85,17 @@ export interface OptionsPaperPosition {
   shortExitPrice: number | null;
   exitAt: number | null;
   exitReason: OptionsPaperExitReason | null;
+  /** Running peak of (mark − short mark) since entry, for the trailing
+   *  calculation. Null only for a row that predates this feature or hasn't
+   *  been checked even once yet. */
+  bestBasisSinceEntry: number | null;
+  /** Ratcheted minimum acceptable unrealized gain % (net debit basis, for a
+   *  spread). Null until a breakeven/trailing event first fires — until
+   *  then, checkOptionsPaperExits() uses the live optionsStopLossPct config
+   *  instead. */
+  stopFloorPct: number | null;
+  /** Whether the one-time partial-exit trigger has already fired. */
+  partialExitTaken: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -103,6 +129,9 @@ interface Row {
   short_exit_price: number | null;
   exit_at: number | null;
   exit_reason: OptionsPaperExitReason | null;
+  best_basis_since_entry: number | null;
+  stop_floor_pct: number | null;
+  partial_exit_taken: number;
   created_at: number;
   updated_at: number;
 }
@@ -130,21 +159,30 @@ function map(r: Row): OptionsPaperPosition {
     shortExitPrice: r.short_exit_price,
     exitAt: r.exit_at,
     exitReason: r.exit_reason,
+    bestBasisSinceEntry: r.best_basis_since_entry,
+    stopFloorPct: r.stop_floor_pct,
+    partialExitTaken: r.partial_exit_taken === 1,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
 }
 
-/** Record a new options paper fill — the execution stage's synthetic order placement. */
+/** Record a new options paper fill — the execution stage's synthetic order
+ *  placement. best_basis_since_entry is seeded from the entry basis (entry
+ *  premium, minus the short leg's for a spread) so the trailing calculation
+ *  has a stable baseline from the very first check cycle — mirrors
+ *  autotradePaperPositions.ts's own initial_stop_price/best_price_since_entry
+ *  seeding. */
 export function openOptionsPaperPosition(input: OpenOptionsPaperPositionInput): OptionsPaperPosition {
   const now = Date.now();
+  const entryBasis = input.entryPrice - (input.shortEntryPrice ?? 0);
   const info = db
     .prepare(
       `INSERT INTO autotrade_options_paper_positions
          (symbol, side, kind, contract_symbol, strike, short_contract_symbol, short_strike,
           expiration, quantity, entry_price, short_entry_price, entry_at,
-          risk_amount, risk_profile, rationale, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+          risk_amount, risk_profile, rationale, status, best_basis_since_entry, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
     )
     .run(
       input.symbol.toUpperCase(),
@@ -162,6 +200,7 @@ export function openOptionsPaperPosition(input: OpenOptionsPaperPositionInput): 
       input.riskAmount,
       input.riskProfile,
       input.rationale,
+      entryBasis,
       now,
       now,
     );
@@ -192,6 +231,76 @@ export function closeOptionsPaperPosition(
   if (info.changes === 0) return null;
   const row = db.prepare('SELECT * FROM autotrade_options_paper_positions WHERE id = ?').get(id) as Row;
   return map(row);
+}
+
+/** Record the best (highest) net basis seen since entry — the running peak
+ *  the trailing calculation ratchets against. Unconditional set, trusting
+ *  the caller to have already taken the max against the current value.
+ *  No-op (returns null) if `id` isn't open. Mirrors
+ *  autotradePaperPositions.ts's own updatePaperPositionBestPrice. */
+export function updateOptionsPaperPositionBestBasis(id: number, basis: number): OptionsPaperPosition | null {
+  const now = Date.now();
+  const info = db
+    .prepare(
+      `UPDATE autotrade_options_paper_positions SET best_basis_since_entry = ?, updated_at = ?
+       WHERE id = ? AND status = 'open'`,
+    )
+    .run(basis, now, id);
+  if (info.changes === 0) return null;
+  return map(db.prepare('SELECT * FROM autotrade_options_paper_positions WHERE id = ?').get(id) as Row);
+}
+
+/** Ratchet an open position's stop floor (breakeven move or trailing) — an
+ *  unconditional set, trusting the caller (optionsExecute.ts) to have
+ *  already confirmed `newFloorPct` is more protective than the existing one
+ *  (or the live config, if nothing has ratcheted yet). No-op (returns null)
+ *  if `id` isn't open. Mirrors autotradePaperPositions.ts's own
+ *  ratchetPaperPositionStop. */
+export function ratchetOptionsPaperPositionStopFloor(id: number, newFloorPct: number): OptionsPaperPosition | null {
+  const now = Date.now();
+  const info = db
+    .prepare(
+      `UPDATE autotrade_options_paper_positions SET stop_floor_pct = ?, updated_at = ?
+       WHERE id = ? AND status = 'open'`,
+    )
+    .run(newFloorPct, now, id);
+  if (info.changes === 0) return null;
+  return map(db.prepare('SELECT * FROM autotrade_options_paper_positions WHERE id = ?').get(id) as Row);
+}
+
+export interface PartialCloseOptionsPaperPositionInput {
+  /** Contracts/spreads closed — must be strictly less than the position's
+   *  current quantity (a full close belongs to closeOptionsPaperPosition
+   *  instead). */
+  quantity: number;
+  /** The long leg's exit premium for the closed slice. */
+  exitPrice: number;
+  /** The short leg's exit premium for the closed slice — debit spreads only. */
+  shortExitPrice?: number;
+}
+
+/** Scale out of an open options position: reduces quantity in place and
+ *  marks partial_exit_taken so the trigger doesn't re-fire. The position
+ *  stays 'open' with the remainder — riskAmount is deliberately left
+ *  untouched (the ORIGINAL full-size dollar risk, for the life of the
+ *  trade). The closed slice itself isn't written anywhere structured beyond
+ *  the caller's own journal event. No-op (returns null) if `id` isn't open
+ *  or `quantity` isn't strictly less than the current quantity. Mirrors
+ *  autotradePaperPositions.ts's own partialClosePaperPosition. */
+export function partialCloseOptionsPaperPosition(
+  id: number,
+  input: PartialCloseOptionsPaperPositionInput,
+): OptionsPaperPosition | null {
+  const now = Date.now();
+  const info = db
+    .prepare(
+      `UPDATE autotrade_options_paper_positions
+       SET quantity = quantity - ?, partial_exit_taken = 1, updated_at = ?
+       WHERE id = ? AND status = 'open' AND ? < quantity`,
+    )
+    .run(input.quantity, now, id, input.quantity);
+  if (info.changes === 0) return null;
+  return map(db.prepare('SELECT * FROM autotrade_options_paper_positions WHERE id = ?').get(id) as Row);
 }
 
 /** All currently-open options paper positions, oldest first — what the loop

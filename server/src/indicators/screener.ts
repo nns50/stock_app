@@ -23,7 +23,7 @@ import {
 
 export type Direction = 'long' | 'short';
 
-export type IndicatorKey = 'momentum' | 'relativeVolume' | 'rsi' | 'volatility' | 'gap' | 'trend';
+export type IndicatorKey = 'momentum' | 'relativeVolume' | 'rsi' | 'volatility' | 'gap' | 'trend' | 'relativeStrength';
 
 export type IndicatorWeights = Record<IndicatorKey, number>;
 
@@ -67,6 +67,19 @@ export interface ScreenerConfig {
   atrPctScale: number;
   /** Gap% (in the trade direction) that maps to a full gap sub-score. */
   gapScale: number;
+  /** Trading days back for both the candidate's own and the benchmark's
+   *  lookback return (relativeStrength component below). */
+  relativeStrengthLookbackDays: number;
+  /** Excess return (candidate's lookback return minus the benchmark's, in
+   *  the trade direction) that maps to a full relativeStrength sub-score. */
+  relativeStrengthScale: number;
+  /** Symbol the relativeStrength component measures outperformance against
+   *  — e.g. 'SPY'. Only matters when weights.relativeStrength is nonzero;
+   *  the caller (screen.ts) is responsible for fetching this symbol's own
+   *  candles and passing its lookback return into computeIndicators/
+   *  scoreSymbol as benchmarkLookbackReturnPct — this module never fetches
+   *  data itself. */
+  benchmarkSymbol: string;
   filters: ScreenerFilters;
 }
 
@@ -90,6 +103,16 @@ export interface IndicatorSnapshot {
    *  requireWeeklyTrendAlignment treats null as "not confirmed," same
    *  fail-closed posture as requireTrendAlignment's own daily maShort. */
   weeklyMaShort: number | null;
+  /** This symbol's own % price change over cfg.relativeStrengthLookbackDays
+   *  trading days (computed straight from the same daily `candles` array
+   *  every other indicator here already uses — no extra fetch). Null when
+   *  history doesn't reach back that far. */
+  symbolLookbackReturnPct: number | null;
+  /** The benchmark's (cfg.benchmarkSymbol) % change over the SAME lookback
+   *  window — null whenever the caller didn't pass one in (see
+   *  computeIndicators's own benchmarkLookbackReturnPct param), same
+   *  "null means not computed this cycle" convention as weeklyMaShort. */
+  benchmarkLookbackReturnPct: number | null;
 }
 
 export interface ComponentScore {
@@ -116,7 +139,7 @@ export interface SymbolScore {
 export function defaultScreenerConfig(): ScreenerConfig {
   return {
     direction: 'long',
-    weights: { momentum: 30, relativeVolume: 20, rsi: 15, volatility: 10, gap: 10, trend: 15 },
+    weights: { momentum: 30, relativeVolume: 20, rsi: 15, volatility: 10, gap: 10, trend: 15, relativeStrength: 0 },
     maShort: 20,
     maLong: 50,
     rsiPeriod: 14,
@@ -127,6 +150,9 @@ export function defaultScreenerConfig(): ScreenerConfig {
     rsiWidth: 25,
     atrPctScale: 5,
     gapScale: 3,
+    relativeStrengthLookbackDays: 20,
+    relativeStrengthScale: 10,
+    benchmarkSymbol: 'SPY',
     filters: { minPrice: 1, minAvgVolume: 200_000 },
   };
 }
@@ -254,7 +280,33 @@ export function candleIndicatorsAt(series: CandleIndicatorSeries, i: number): Ca
  *  default) when the caller hasn't computed one — e.g. because
  *  requireWeeklyTrendAlignment isn't actually enabled, matching this
  *  codebase's established "don't do work nobody asked for" convention (see
- *  optionsExecute.ts's priceRulesActive gate for the same pattern). */
+ *  optionsExecute.ts's priceRulesActive gate for the same pattern).
+ *
+ *  `benchmarkLookbackReturnPct` (2026-07-17): the benchmark's own % change
+ *  over cfg.relativeStrengthLookbackDays trading days, ending on the SAME
+ *  date this call is scoring — the caller (screen.ts, or a backtest engine)
+ *  computes it once per cycle/day from the benchmark's OWN candle series and
+ *  passes it straight through onto the returned snapshot, mirroring how
+ *  weeklyIndicators is computed by the caller and passed through above.
+ *  Undefined/null (the default) when the caller hasn't computed one — e.g.
+ *  because weights.relativeStrength is 0, matching requireWeeklyTrendAlignment's
+ *  own don't-do-unrequested-work convention. */
+/** % change of `candles`' close at `asOfIndex` (default the last one) vs. the
+ *  close `lookbackDays` trading days earlier. Null when history doesn't
+ *  reach back that far — same "insufficient history means null, never a
+ *  fabricated 0" posture every other indicator in this file has. Exported so
+ *  a caller (screen.ts, or a backtest engine) can apply the EXACT SAME index
+ *  arithmetic computeIndicators uses internally for a candidate's own
+ *  symbolLookbackReturnPct to a SEPARATE symbol's candles — the benchmark —
+ *  without a second, potentially-drifting implementation. */
+export function lookbackReturnPct(candles: Candle[], lookbackDays: number, asOfIndex?: number): number | null {
+  const end = asOfIndex ?? candles.length - 1;
+  if (end < 0 || end >= candles.length) return null;
+  const lookbackIndex = end - lookbackDays;
+  if (lookbackIndex < 0) return null;
+  return percentChange(candles[end].close, candles[lookbackIndex].close);
+}
+
 export function computeIndicators(
   candles: Candle[],
   quote: Quote | undefined,
@@ -262,6 +314,7 @@ export function computeIndicators(
   cachedCandleIndicators?: CandleIndicators,
   asOfIndex?: number,
   weeklyIndicators?: CandleIndicators | null,
+  benchmarkLookbackReturnPct?: number | null,
 ): IndicatorSnapshot | null {
   const end = asOfIndex ?? candles.length - 1;
   if (end < 1 || end >= candles.length) return null;
@@ -288,6 +341,10 @@ export function computeIndicators(
   const openForGap = quote?.open ?? last.open;
   const gap = gapPercent(openForGap, prev.close);
 
+  // Candidate's own lookback return — straight from the same daily candles
+  // array every other indicator here already has in hand, no extra fetch.
+  const symbolLookbackReturnPct = lookbackReturnPct(candles, cfg.relativeStrengthLookbackDays, end);
+
   return {
     price,
     changePct,
@@ -303,6 +360,8 @@ export function computeIndicators(
     volume,
     gapPct: gap,
     weeklyMaShort: weeklyIndicators?.maShort ?? null,
+    symbolLookbackReturnPct,
+    benchmarkLookbackReturnPct: benchmarkLookbackReturnPct ?? null,
   };
 }
 
@@ -354,6 +413,29 @@ function scoreGap(ind: IndicatorSnapshot, cfg: ScreenerConfig): { score: number;
   return { score, note: `gap ${fmtPct(ind.gapPct)} (${cfg.direction}-favorable gaps score higher)` };
 }
 
+/** Outperformance vs. cfg.benchmarkSymbol over cfg.relativeStrengthLookbackDays
+ *  — direction-aware like every other component: a LONG candidate scores
+ *  higher for beating the benchmark, a SHORT candidate scores higher for
+ *  lagging it (relative WEAKNESS favors a short thesis). 0/no-note whenever
+ *  either side of the comparison is unavailable (insufficient candidate
+ *  history, or the caller never computed a benchmark return — see
+ *  computeIndicators's own benchmarkLookbackReturnPct param) rather than
+ *  guessing — matches every other "no data" branch in this file. */
+function scoreRelativeStrength(ind: IndicatorSnapshot, cfg: ScreenerConfig): { score: number; note: string } {
+  if (ind.symbolLookbackReturnPct === null || ind.benchmarkLookbackReturnPct === null) {
+    return { score: 0, note: 'no relative-strength data' };
+  }
+  const excess = ind.symbolLookbackReturnPct - ind.benchmarkLookbackReturnPct;
+  const sign = cfg.direction === 'long' ? 1 : -1;
+  const score = scale01(sign * excess, -cfg.relativeStrengthScale, cfg.relativeStrengthScale);
+  return {
+    score,
+    note:
+      `${fmtPct(ind.symbolLookbackReturnPct)} vs ${cfg.benchmarkSymbol} ${fmtPct(ind.benchmarkLookbackReturnPct)} ` +
+      `over ${cfg.relativeStrengthLookbackDays}d (${fmtPct(excess)} excess)`,
+  };
+}
+
 function scoreTrend(ind: IndicatorSnapshot, cfg: ScreenerConfig): { score: number; note: string } {
   if (ind.maShort === null || ind.maLong === null) {
     return { score: 0, note: 'no MAs (insufficient history)' };
@@ -381,11 +463,13 @@ const LABELS: Record<IndicatorKey, string> = {
   volatility: 'Volatility (ATR%)',
   gap: 'Gap',
   trend: 'Trend',
+  relativeStrength: 'Rel. Strength',
 };
 
 /** Score a single symbol; returns the full transparent breakdown.
- *  `cachedCandleIndicators`/`asOfIndex`/`weeklyIndicators` pass straight
- *  through to computeIndicators — see its own doc comment. */
+ *  `cachedCandleIndicators`/`asOfIndex`/`weeklyIndicators`/
+ *  `benchmarkLookbackReturnPct` pass straight through to computeIndicators —
+ *  see its own doc comment. */
 export function scoreSymbol(
   symbol: string,
   candles: Candle[],
@@ -394,8 +478,17 @@ export function scoreSymbol(
   cachedCandleIndicators?: CandleIndicators,
   asOfIndex?: number,
   weeklyIndicators?: CandleIndicators | null,
+  benchmarkLookbackReturnPct?: number | null,
 ): SymbolScore {
-  const ind = computeIndicators(candles, quote, cfg, cachedCandleIndicators, asOfIndex, weeklyIndicators);
+  const ind = computeIndicators(
+    candles,
+    quote,
+    cfg,
+    cachedCandleIndicators,
+    asOfIndex,
+    weeklyIndicators,
+    benchmarkLookbackReturnPct,
+  );
   return scoreFromIndicators(symbol, ind, cfg, quote?.last ?? 0);
 }
 
@@ -417,8 +510,17 @@ export function scoreSymbolBothDirections(
   cachedCandleIndicators?: CandleIndicators,
   asOfIndex?: number,
   weeklyIndicators?: CandleIndicators | null,
+  benchmarkLookbackReturnPct?: number | null,
 ): { long: SymbolScore; short: SymbolScore } {
-  const ind = computeIndicators(candles, quote, cfg, cachedCandleIndicators, asOfIndex, weeklyIndicators);
+  const ind = computeIndicators(
+    candles,
+    quote,
+    cfg,
+    cachedCandleIndicators,
+    asOfIndex,
+    weeklyIndicators,
+    benchmarkLookbackReturnPct,
+  );
   const fallbackPrice = quote?.last ?? 0;
   return {
     long: scoreFromIndicators(symbol, ind, { ...cfg, direction: 'long' }, fallbackPrice),
@@ -451,6 +553,7 @@ function scoreFromIndicators(
     volatility: scoreVolatility(ind, cfg),
     gap: scoreGap(ind, cfg),
     trend: scoreTrend(ind, cfg),
+    relativeStrength: scoreRelativeStrength(ind, cfg),
   };
 
   const rawValues: Record<IndicatorKey, { value: number | null; display: string }> = {
@@ -460,6 +563,16 @@ function scoreFromIndicators(
     volatility: { value: ind.atrPct, display: ind.atrPct === null ? '—' : `${ind.atrPct.toFixed(2)}%` },
     gap: { value: ind.gapPct, display: fmtPct(ind.gapPct) },
     trend: { value: ind.maShort, display: ind.maShort === null ? '—' : `${cfg.maShort}MA ${ind.maShort.toFixed(2)}` },
+    relativeStrength: {
+      value:
+        ind.symbolLookbackReturnPct !== null && ind.benchmarkLookbackReturnPct !== null
+          ? ind.symbolLookbackReturnPct - ind.benchmarkLookbackReturnPct
+          : null,
+      display:
+        ind.symbolLookbackReturnPct === null || ind.benchmarkLookbackReturnPct === null
+          ? '—'
+          : fmtPct(ind.symbolLookbackReturnPct - ind.benchmarkLookbackReturnPct),
+    },
   };
 
   const keys = Object.keys(cfg.weights) as IndicatorKey[];
@@ -537,5 +650,7 @@ function emptySnapshot(price: number): IndicatorSnapshot {
     volume: null,
     gapPct: null,
     weeklyMaShort: null,
+    symbolLookbackReturnPct: null,
+    benchmarkLookbackReturnPct: null,
   };
 }

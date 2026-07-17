@@ -714,7 +714,15 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   alignment" screener filter, this one is wired into the unattended loop itself, so
   toggling it actually changes what the loop trades, not just what a manual preview
   shows; off by default, and live, paper, and backtest all honor it — watch **Recent
-  activity** to see it fire), **max ticker ATR** and **max market
+  activity** to see it fire), **relative strength weight** (2026-07-17 — how much a
+  candidate's own out/under-performance vs. a benchmark counts toward its total
+  screener score, on the same 0-100 scale as every other scoring component — see
+  **About**'s scoring table for the full breakdown), **benchmark symbol** (what
+  relative strength measures against, e.g. `SPY` — only matters once the weight above
+  is nonzero, at which point the loop fetches that symbol's own daily candles once per
+  cycle, not once per candidate), and **relative strength lookback (days)** (trading
+  days back for both the candidate's own and the benchmark's return that comparison
+  uses), **max ticker ATR** and **max market
   ATR** (skip a candidate whose own volatility is too high, or skip every new entry
   this cycle if SPY's own volatility is too high — stricter than the manual Screen/
   Decision preview below, since an unattended loop has no one to override a bad read),
@@ -725,10 +733,11 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   known earnings date falls within this many calendar days — an unattended loop can't
   react to an earnings-driven overnight gap the way ATR-based stop sizing assumes;
   options entries are unaffected, since an approaching print already shows up as
-  elevated IV rank there instead). All eight default to the values the loop always
+  elevated IV rank there instead). All eleven default to the values the loop always
   used before they were configurable (trade direction to `Long`; earnings blackout's
-  own "before" is simply never checking — 0 disables it), so leaving them untouched
-  changes nothing; the manual
+  own "before" is simply never checking — 0 disables it; relative strength weight 0,
+  benchmark `SPY`, lookback 20 days), so leaving them untouched changes nothing; the
+  manual
   Screen/Decision preview
   below defaults to these same saved values too (so it previews what the loop would
   actually do), though it has no UI to override them ad hoc today. A related but
@@ -752,14 +761,27 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   whenever its trigger gets turned on — so leaving them untouched changes nothing.
   R-multiples here are always measured against the position's own original stop
   distance, fixed at entry, even after the stop itself has since moved.
-  Two more fields do the same for an already-open **paper or backtest options**
+  Seven more fields do the same for an already-open **paper or backtest options**
   position (**live options positions are untouched — still time-exit only**, the
   same scope boundary as the five equity fields above): **Options stop-loss (%)**
   and **Options take-profit (%)** close the position once unrealized loss/gain
-  reaches that % of premium paid (net debit, for a spread). Both default to
-  **0 (disabled)** — leaving them untouched changes nothing, and the loop's only
-  automated options exit stays time-based (closing as expiration approaches, see
-  "Options paper positions" below).
+  reaches that % of premium paid (net debit, for a spread). The remaining five
+  mirror the equity breakeven/trailing/partial-exit fields above, but in
+  percentage-of-premium terms rather than R-multiples — a long option/spread has
+  no ATR-based stop price to measure R against: **Options breakeven trigger (%)**
+  (once unrealized gain reaches this %, move the stop-loss floor to breakeven —
+  a one-time move, never applied if it would loosen an already-ratcheted floor),
+  **Options trailing start (%)** and **Options trailing distance (%)** (once gain
+  reaches the trailing-start %, the floor trails the trailing-distance percentage
+  points behind the best gain % seen since entry, ratcheting only favorably —
+  independent of the breakeven trigger), and **Options partial exit trigger (%)**
+  with **Options partial exit size (%)** (once gain reaches the trigger, close
+  that percentage of the contracts once — the rest keeps running toward its
+  original take-profit or continues trailing). All seven default to
+  **0 (disabled)**, except partial exit size, which defaults to 50% for whenever
+  its trigger gets turned on — leaving them untouched changes nothing, and the
+  loop's only automated options exit stays time-based (closing as expiration
+  approaches, see "Options paper positions" below).
   **Auto-promote recurring movers** (on by default) grows your universe automatically:
   a symbol Webull's premarket movers surface that also clears screening on **3 distinct
   days within a 10-day window** (both tunable, along with a **50-symbol lifetime cap** on

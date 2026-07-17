@@ -1096,6 +1096,18 @@ export interface AutotradeConfig {
   tradeDirection: AutotradeTradeDirectionMode;
   minRelVol: number;
   requireWeeklyTrendAlignment: boolean;
+  /** Relative-strength-vs-benchmark (2026-07-17): weight (0-100, same scale
+   *  as every other screener component) given to how much a candidate has
+   *  out/under-performed benchmarkSymbol over relativeStrengthLookbackDays
+   *  trading days — direction-aware (a long favors outperformance, a short
+   *  favors underperformance). 0 (the default) disables the component. */
+  relativeStrengthWeight: number;
+  /** Symbol the relativeStrength component measures out/under-performance
+   *  against — e.g. 'SPY'. Only matters when relativeStrengthWeight is nonzero. */
+  benchmarkSymbol: string;
+  /** Trading days back for both the candidate's own and the benchmark's
+   *  lookback return that relativeStrengthWeight scores. */
+  relativeStrengthLookbackDays: number;
   maxTickerAtrPct: number;
   maxMarketAtrPct: number;
   stopAtrMultiple: number;
@@ -1152,6 +1164,16 @@ export interface AutotradeConfig {
   // --- Options stop-loss / take-profit (PAPER + BACKTEST only; 0 disables) --
   optionsStopLossPct: number;
   optionsTakeProfitPct: number;
+
+  // --- Options trailing stop / breakeven / partial profit-taking (PAPER and
+  // BACKTEST only; 0 disables). Percentage-of-premium based (net debit for a
+  // spread), not an R-multiple like the equity block above — an option has
+  // no ATR-based stop price to measure R against. ---------------------------
+  optionsBreakevenTriggerPct: number;
+  optionsTrailStartPct: number;
+  optionsTrailStopPct: number;
+  optionsPartialExitTriggerPct: number;
+  optionsPartialExitPct: number;
 
   // --- Movers auto-promotion ---
   autoPromoteMoversEnabled: boolean;

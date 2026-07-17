@@ -573,6 +573,135 @@ describe('checkOptionsPaperExits', () => {
     });
   });
 
+  describe('trailing stop / breakeven / partial profit-taking (2026-07-17)', () => {
+    // openPos() defaults: entryPrice 3, quantity 2, expiration far outside any
+    // time-exit window unless overridden -> gainPct = (mark - 3) / 3 * 100.
+
+    it('does nothing when all five fields are left at their defaults (0/50)', async () => {
+      const pos = openPos({ expiration: '2024-07-15' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3.3 } }) as never); // +10%
+      await checkOptionsPaperExits();
+      const after = listOptionsPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
+      expect(after.stopFloorPct).toBeNull();
+      expect(after.quantity).toBe(2);
+    });
+
+    it('leaves the floor deferring to the live stop-loss % (stays null) when a plain stop-loss is configured alongside breakeven, but breakeven has not triggered yet', async () => {
+      setAutotradeConfig({ optionsStopLossPct: 50, optionsBreakevenTriggerPct: 20 });
+      const pos = openPos({ expiration: '2024-07-15' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3.3 } }) as never); // +10%, below the 20% breakeven trigger
+      await checkOptionsPaperExits();
+      const after = listOptionsPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
+      expect(after.stopFloorPct).toBeNull();
+    });
+
+    it('moves the floor to breakeven (0%) once the trigger % is reached', async () => {
+      setAutotradeConfig({ optionsBreakevenTriggerPct: 20 });
+      const pos = openPos({ expiration: '2024-07-15' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3.6 } }) as never); // exactly +20%
+      await checkOptionsPaperExits();
+      const after = listOptionsPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
+      expect(after.stopFloorPct).toBe(0);
+    });
+
+    it('never loosens an already-ratcheted floor when price pulls back below the trigger (but still above the floor)', async () => {
+      setAutotradeConfig({ optionsBreakevenTriggerPct: 20 });
+      const pos = openPos({ expiration: '2024-07-15' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3.9 } }) as never); // +30% -> ratchets to 0
+      await checkOptionsPaperExits();
+      expect(listOptionsPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!.stopFloorPct).toBe(0);
+
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3.1 } }) as never); // pulls back to ~+3.3%
+      const outcomes = await checkOptionsPaperExits();
+      expect(outcomes[0].closed).toBe(false); // still above the 0% floor
+      expect(listOptionsPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!.stopFloorPct).toBe(0); // unchanged
+    });
+
+    it('trails the floor behind the best gain % once past the trailing-start %', async () => {
+      setAutotradeConfig({ optionsTrailStartPct: 20, optionsTrailStopPct: 10 });
+      const pos = openPos({ expiration: '2024-07-15' });
+      // +30% -- comfortably past the 20% trailing-start trigger.
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3.9 } }) as never);
+      await checkOptionsPaperExits();
+      const after = listOptionsPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
+      expect(after.stopFloorPct).toBe(20); // 30 - 10
+    });
+
+    it('ratchets the trailing floor against the best gain seen, not a later (still-above-floor) pullback', async () => {
+      setAutotradeConfig({ optionsTrailStartPct: 20, optionsTrailStopPct: 10 });
+      const pos = openPos({ expiration: '2024-07-15' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3.9 } }) as never); // best +30% -> floor 20%
+      await checkOptionsPaperExits();
+      expect(listOptionsPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!.stopFloorPct).toBe(20);
+
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3.75 } }) as never); // pulls back to +25%, still above the 20% floor
+      const outcomes = await checkOptionsPaperExits();
+      expect(outcomes[0].closed).toBe(false);
+      // Best gain stays 30% (never decreases), so the trailing candidate is still 20% either way.
+      expect(listOptionsPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!.stopFloorPct).toBe(20);
+    });
+
+    it('closes below the ratcheted floor once price gives back too much', async () => {
+      setAutotradeConfig({ optionsTrailStartPct: 20, optionsTrailStopPct: 10 });
+      openPos({ expiration: '2024-07-15' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3.9 } }) as never); // best +30% -> floor 20%
+      await checkOptionsPaperExits();
+
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3.5 } }) as never); // ~+16.7%, below the 20% floor
+      const outcomes = await checkOptionsPaperExits();
+      expect(outcomes[0].closed).toBe(true);
+      expect(outcomes[0].position!.exitReason).toBe('stop_loss');
+    });
+
+    it('closes the configured percentage once at the partial-exit trigger, leaving the rest open', async () => {
+      setAutotradeConfig({ optionsPartialExitTriggerPct: 20, optionsPartialExitPct: 50 });
+      const pos = openPos({ expiration: '2024-07-15' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3.6 } }) as never); // exactly +20%
+      const outcomes = await checkOptionsPaperExits();
+
+      expect(outcomes[0].closed).toBe(false); // the position itself stays open
+      const after = listOptionsPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
+      expect(after.quantity).toBe(1); // half of 2
+      expect(after.partialExitTaken).toBe(true);
+      expect(after.status).toBe('open');
+
+      const events = listAutotradeEvents({ symbol: 'AAPL', stage: 'execution' });
+      const partial = events.find((e) => e.action === 'options_paper_partial_exit')!;
+      // (3.6 - 3) * 1 * 100 = 60
+      const detail = JSON.parse(partial.detail!);
+      expect(detail).toMatchObject({ quantity: 1, exitPrice: 3.6 });
+      expect(detail.pnl).toBeCloseTo(60, 5);
+    });
+
+    it('does not re-fire the partial exit on a later cycle once already taken', async () => {
+      setAutotradeConfig({ optionsPartialExitTriggerPct: 20, optionsPartialExitPct: 50 });
+      const pos = openPos({ expiration: '2024-07-15' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3.6 } }) as never);
+      await checkOptionsPaperExits();
+      expect(listOptionsPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!.quantity).toBe(1);
+
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3.9 } }) as never); // +30%, no other rule configured
+      await checkOptionsPaperExits();
+      const after = listOptionsPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
+      expect(after.quantity).toBe(1); // unchanged -- no second partial exit
+    });
+
+    it('lets a take-profit hit take priority over breakeven/trailing/partial-exit management', async () => {
+      setAutotradeConfig({
+        optionsTakeProfitPct: 20,
+        optionsBreakevenTriggerPct: 10,
+        optionsPartialExitTriggerPct: 10,
+        optionsPartialExitPct: 50,
+      });
+      openPos({ expiration: '2024-07-15' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.5 } }) as never); // +50% -- past every trigger
+      const outcomes = await checkOptionsPaperExits();
+      expect(outcomes[0].closed).toBe(true);
+      expect(outcomes[0].position!.exitReason).toBe('take_profit');
+      expect(outcomes[0].position!.quantity).toBe(2); // the full original size, not partially reduced first
+    });
+  });
+
   describe('debit spreads', () => {
     function openSpreadPos(overrides: Partial<Parameters<typeof openOptionsPaperPosition>[0]> = {}) {
       return openOptionsPaperPosition({
@@ -653,6 +782,26 @@ describe('checkOptionsPaperExits', () => {
       const outcomes = await checkOptionsPaperExits();
       expect(outcomes[0].closed).toBe(true);
       expect(outcomes[0].position!.exitReason).toBe('take_profit');
+    });
+
+    it('ratchets the trailing floor from the NET DEBIT basis, not the long leg premium alone', async () => {
+      // Net debit at entry: 3 - 1 = 2. A long-leg-only read of entryPrice=3 vs.
+      // currentPrice=3.9 would look like a mere +30% (short of a 40% trigger);
+      // the correct net-debit read is entry 2 -> current (3.9 - 0.2) = 3.7,
+      // i.e. +85%, comfortably past it.
+      setAutotradeConfig({ optionsTrailStartPct: 40, optionsTrailStopPct: 10 });
+      const pos = openSpreadPos({ expiration: '2024-07-15', entryPrice: 3, shortEntryPrice: 1 });
+      mockGetProvider.mockReturnValue(
+        chainsFor({
+          AAPL: [
+            { side: 'call', strike: 100, mark: 3.9 },
+            { side: 'call', strike: 110, mark: 0.2 },
+          ],
+        }) as never,
+      );
+      await checkOptionsPaperExits();
+      const after = listOptionsPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
+      expect(after.stopFloorPct).toBeCloseTo(75, 5); // 85 - 10
     });
   });
 });

@@ -1601,6 +1601,9 @@ export default function AutoTradePage() {
   const [regimeSizeCutPctDraft, setRegimeSizeCutPctDraft] = useState<number | undefined>();
   const [minRelVolDraft, setMinRelVolDraft] = useState<number | undefined>();
   const [requireWeeklyTrendAlignment, setRequireWeeklyTrendAlignment] = useState(false);
+  const [relativeStrengthWeightDraft, setRelativeStrengthWeightDraft] = useState<number | undefined>();
+  const [benchmarkSymbolDraft, setBenchmarkSymbolDraft] = useState('');
+  const [relativeStrengthLookbackDaysDraft, setRelativeStrengthLookbackDaysDraft] = useState<number | undefined>();
   const [maxTickerAtrPctDraft, setMaxTickerAtrPctDraft] = useState<number | undefined>();
   const [maxMarketAtrPctDraft, setMaxMarketAtrPctDraft] = useState<number | undefined>();
   const [stopAtrMultipleDraft, setStopAtrMultipleDraft] = useState<number | undefined>();
@@ -1613,6 +1616,11 @@ export default function AutoTradePage() {
   const [partialExitPctDraft, setPartialExitPctDraft] = useState<number | undefined>();
   const [optionsStopLossPctDraft, setOptionsStopLossPctDraft] = useState<number | undefined>();
   const [optionsTakeProfitPctDraft, setOptionsTakeProfitPctDraft] = useState<number | undefined>();
+  const [optionsBreakevenTriggerPctDraft, setOptionsBreakevenTriggerPctDraft] = useState<number | undefined>();
+  const [optionsTrailStartPctDraft, setOptionsTrailStartPctDraft] = useState<number | undefined>();
+  const [optionsTrailStopPctDraft, setOptionsTrailStopPctDraft] = useState<number | undefined>();
+  const [optionsPartialExitTriggerPctDraft, setOptionsPartialExitTriggerPctDraft] = useState<number | undefined>();
+  const [optionsPartialExitPctDraft, setOptionsPartialExitPctDraft] = useState<number | undefined>();
   const [sessionBufferMinutesDraft, setSessionBufferMinutesDraft] = useState<number | undefined>();
   const [earningsBlackoutDaysDraft, setEarningsBlackoutDaysDraft] = useState<number | undefined>();
   const [correlationLookbackDaysDraft, setCorrelationLookbackDaysDraft] = useState<number | undefined>();
@@ -1658,6 +1666,9 @@ export default function AutoTradePage() {
     setRegimeSizeCutPctDraft(config.data.regimeSizeCutPct);
     setMinRelVolDraft(config.data.minRelVol);
     setRequireWeeklyTrendAlignment(config.data.requireWeeklyTrendAlignment);
+    setRelativeStrengthWeightDraft(config.data.relativeStrengthWeight);
+    setBenchmarkSymbolDraft(config.data.benchmarkSymbol ?? '');
+    setRelativeStrengthLookbackDaysDraft(config.data.relativeStrengthLookbackDays);
     setMaxTickerAtrPctDraft(config.data.maxTickerAtrPct);
     setMaxMarketAtrPctDraft(config.data.maxMarketAtrPct);
     setStopAtrMultipleDraft(config.data.stopAtrMultiple);
@@ -1670,6 +1681,11 @@ export default function AutoTradePage() {
     setPartialExitPctDraft(config.data.partialExitPct);
     setOptionsStopLossPctDraft(config.data.optionsStopLossPct);
     setOptionsTakeProfitPctDraft(config.data.optionsTakeProfitPct);
+    setOptionsBreakevenTriggerPctDraft(config.data.optionsBreakevenTriggerPct);
+    setOptionsTrailStartPctDraft(config.data.optionsTrailStartPct);
+    setOptionsTrailStopPctDraft(config.data.optionsTrailStopPct);
+    setOptionsPartialExitTriggerPctDraft(config.data.optionsPartialExitTriggerPct);
+    setOptionsPartialExitPctDraft(config.data.optionsPartialExitPct);
     setSessionBufferMinutesDraft(config.data.sessionBufferMinutes);
     setEarningsBlackoutDaysDraft(config.data.earningsBlackoutDays);
     setCorrelationLookbackDaysDraft(config.data.correlationLookbackDays);
@@ -1712,6 +1728,9 @@ export default function AutoTradePage() {
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     requireWeeklyTrendAlignment?: boolean;
+    relativeStrengthWeight?: number;
+    benchmarkSymbol?: string;
+    relativeStrengthLookbackDays?: number;
     maxTickerAtrPct?: number;
     maxMarketAtrPct?: number;
     stopAtrMultiple?: number;
@@ -1724,6 +1743,11 @@ export default function AutoTradePage() {
     partialExitPct?: number;
     optionsStopLossPct?: number;
     optionsTakeProfitPct?: number;
+    optionsBreakevenTriggerPct?: number;
+    optionsTrailStartPct?: number;
+    optionsTrailStopPct?: number;
+    optionsPartialExitTriggerPct?: number;
+    optionsPartialExitPct?: number;
     sessionBufferMinutes?: number;
     earningsBlackoutDays?: number;
     correlationLookbackDays?: number;
@@ -1764,6 +1788,9 @@ export default function AutoTradePage() {
       setRegimeSizeCutPctDraft(saved.regimeSizeCutPct);
       setMinRelVolDraft(saved.minRelVol);
       setRequireWeeklyTrendAlignment(saved.requireWeeklyTrendAlignment);
+      setRelativeStrengthWeightDraft(saved.relativeStrengthWeight);
+      setBenchmarkSymbolDraft(saved.benchmarkSymbol ?? '');
+      setRelativeStrengthLookbackDaysDraft(saved.relativeStrengthLookbackDays);
       setMaxTickerAtrPctDraft(saved.maxTickerAtrPct);
       setMaxMarketAtrPctDraft(saved.maxMarketAtrPct);
       setStopAtrMultipleDraft(saved.stopAtrMultiple);
@@ -1776,6 +1803,11 @@ export default function AutoTradePage() {
       setPartialExitPctDraft(saved.partialExitPct);
       setOptionsStopLossPctDraft(saved.optionsStopLossPct);
       setOptionsTakeProfitPctDraft(saved.optionsTakeProfitPct);
+      setOptionsBreakevenTriggerPctDraft(saved.optionsBreakevenTriggerPct);
+      setOptionsTrailStartPctDraft(saved.optionsTrailStartPct);
+      setOptionsTrailStopPctDraft(saved.optionsTrailStopPct);
+      setOptionsPartialExitTriggerPctDraft(saved.optionsPartialExitTriggerPct);
+      setOptionsPartialExitPctDraft(saved.optionsPartialExitPct);
       setSessionBufferMinutesDraft(saved.sessionBufferMinutes);
       setEarningsBlackoutDaysDraft(saved.earningsBlackoutDays);
       setCorrelationLookbackDaysDraft(saved.correlationLookbackDays);
@@ -2726,6 +2758,90 @@ export default function AutoTradePage() {
               </p>
             </div>
             <Field
+              label="Relative strength weight (0-100)"
+              hint="How much a candidate's out/under-performance vs. the benchmark below counts toward its total screener score — same 0-100 scale as every other scoring component. 0 (default) disables it entirely, including the extra benchmark-quote fetch."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={relativeStrengthWeightDraft}
+                  onChange={setRelativeStrengthWeightDraft}
+                  min={0}
+                  max={100}
+                  step={1}
+                  placeholder="0 (disabled)"
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save relative strength weight"
+                  onClick={() =>
+                    relativeStrengthWeightDraft != null &&
+                    saveConfig({ relativeStrengthWeight: relativeStrengthWeightDraft })
+                  }
+                  disabled={
+                    relativeStrengthWeightDraft == null ||
+                    relativeStrengthWeightDraft < 0 ||
+                    relativeStrengthWeightDraft > 100 ||
+                    relativeStrengthWeightDraft === config.data?.relativeStrengthWeight
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Benchmark symbol"
+              hint="What relative strength above is measured against — e.g. SPY. Only matters when that weight is nonzero."
+            >
+              <div className="flex gap-2">
+                <input
+                  className="input"
+                  value={benchmarkSymbolDraft}
+                  onChange={(e) => setBenchmarkSymbolDraft(e.target.value.toUpperCase())}
+                  placeholder="SPY"
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save benchmark symbol"
+                  onClick={() =>
+                    benchmarkSymbolDraft.trim() !== '' && saveConfig({ benchmarkSymbol: benchmarkSymbolDraft.trim() })
+                  }
+                  disabled={
+                    benchmarkSymbolDraft.trim() === '' || benchmarkSymbolDraft.trim() === config.data?.benchmarkSymbol
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Relative strength lookback (days)"
+              hint="Trading days back for both the candidate's own and the benchmark's return that relative strength compares."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={relativeStrengthLookbackDaysDraft}
+                  onChange={setRelativeStrengthLookbackDaysDraft}
+                  min={1}
+                  step={1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save relative strength lookback"
+                  onClick={() =>
+                    relativeStrengthLookbackDaysDraft != null &&
+                    saveConfig({ relativeStrengthLookbackDays: relativeStrengthLookbackDaysDraft })
+                  }
+                  disabled={
+                    relativeStrengthLookbackDaysDraft == null ||
+                    relativeStrengthLookbackDaysDraft < 1 ||
+                    relativeStrengthLookbackDaysDraft === config.data?.relativeStrengthLookbackDays
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
               label="Max ticker ATR (%)"
               hint="Skip a candidate whose own ATR% (of price) exceeds this — the loop's own volatility guard, stricter than the manual Screen/Decision preview applies."
             >
@@ -3016,6 +3132,158 @@ export default function AutoTradePage() {
                     optionsTakeProfitPctDraft < 0 ||
                     optionsTakeProfitPctDraft > 100 ||
                     optionsTakeProfitPctDraft === config.data?.optionsTakeProfitPct
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Options breakeven trigger (%)"
+              hint="Once unrealized gain (% of premium paid, net debit for a spread) reaches this level, move the stop-loss floor to breakeven (0% — no gain, no loss) — a one-time move, never applied if it would loosen an already-ratcheted floor. 0 disables it. Paper and backtest only; live positions are untouched."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={optionsBreakevenTriggerPctDraft}
+                  onChange={setOptionsBreakevenTriggerPctDraft}
+                  min={0}
+                  max={100}
+                  step={1}
+                  placeholder="0 (disabled)"
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save options breakeven trigger"
+                  onClick={() =>
+                    optionsBreakevenTriggerPctDraft != null &&
+                    saveConfig({ optionsBreakevenTriggerPct: optionsBreakevenTriggerPctDraft })
+                  }
+                  disabled={
+                    optionsBreakevenTriggerPctDraft == null ||
+                    optionsBreakevenTriggerPctDraft < 0 ||
+                    optionsBreakevenTriggerPctDraft > 100 ||
+                    optionsBreakevenTriggerPctDraft === config.data?.optionsBreakevenTriggerPct
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Options trailing start (%)"
+              hint="Once unrealized gain reaches this %, start trailing the stop-loss floor (see trailing distance below) behind the best gain % seen since entry. 0 disables trailing — independent of the breakeven trigger above."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={optionsTrailStartPctDraft}
+                  onChange={setOptionsTrailStartPctDraft}
+                  min={0}
+                  max={100}
+                  step={1}
+                  placeholder="0 (disabled)"
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save options trailing start"
+                  onClick={() =>
+                    optionsTrailStartPctDraft != null && saveConfig({ optionsTrailStartPct: optionsTrailStartPctDraft })
+                  }
+                  disabled={
+                    optionsTrailStartPctDraft == null ||
+                    optionsTrailStartPctDraft < 0 ||
+                    optionsTrailStartPctDraft > 100 ||
+                    optionsTrailStartPctDraft === config.data?.optionsTrailStartPct
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Options trailing distance (%)"
+              hint="Once trailing is active, the stop-loss floor trails this many percentage points behind the best unrealized gain % seen — ratcheting only favorably, same as the breakeven trigger. Meaningless if trailing start above is 0."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={optionsTrailStopPctDraft}
+                  onChange={setOptionsTrailStopPctDraft}
+                  min={0}
+                  max={100}
+                  step={1}
+                  placeholder="0 (disabled)"
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save options trailing distance"
+                  onClick={() =>
+                    optionsTrailStopPctDraft != null && saveConfig({ optionsTrailStopPct: optionsTrailStopPctDraft })
+                  }
+                  disabled={
+                    optionsTrailStopPctDraft == null ||
+                    optionsTrailStopPctDraft < 0 ||
+                    optionsTrailStopPctDraft > 100 ||
+                    optionsTrailStopPctDraft === config.data?.optionsTrailStopPct
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Options partial exit trigger (%)"
+              hint="Once unrealized gain reaches this %, close the percentage below once — the rest keeps running toward its original take-profit (or continues trailing). 0 disables it."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={optionsPartialExitTriggerPctDraft}
+                  onChange={setOptionsPartialExitTriggerPctDraft}
+                  min={0}
+                  max={100}
+                  step={1}
+                  placeholder="0 (disabled)"
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save options partial exit trigger"
+                  onClick={() =>
+                    optionsPartialExitTriggerPctDraft != null &&
+                    saveConfig({ optionsPartialExitTriggerPct: optionsPartialExitTriggerPctDraft })
+                  }
+                  disabled={
+                    optionsPartialExitTriggerPctDraft == null ||
+                    optionsPartialExitTriggerPctDraft < 0 ||
+                    optionsPartialExitTriggerPctDraft > 100 ||
+                    optionsPartialExitTriggerPctDraft === config.data?.optionsPartialExitTriggerPct
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Options partial exit size (%)"
+              hint="% of the contracts closed at the partial-exit trigger above. Only meaningful when that trigger is nonzero."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={optionsPartialExitPctDraft}
+                  onChange={setOptionsPartialExitPctDraft}
+                  min={0}
+                  max={100}
+                  step={1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save options partial exit size"
+                  onClick={() =>
+                    optionsPartialExitPctDraft != null &&
+                    saveConfig({ optionsPartialExitPct: optionsPartialExitPctDraft })
+                  }
+                  disabled={
+                    optionsPartialExitPctDraft == null ||
+                    optionsPartialExitPctDraft < 0 ||
+                    optionsPartialExitPctDraft > 100 ||
+                    optionsPartialExitPctDraft === config.data?.optionsPartialExitPct
                   }
                 >
                   Save

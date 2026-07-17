@@ -532,4 +532,122 @@ describe('runAutotradeScreen', () => {
       restore();
     });
   });
+
+  describe('relative strength vs. benchmark (2026-07-17)', () => {
+    const lastTime = Date.UTC(2026, 5, 1);
+
+    // Same shape as the weekly-trend block's own dailyUptrend() above,
+    // redefined locally per this file's established per-describe-block
+    // convention. Last close = 159; default relativeStrengthLookbackDays
+    // (20) reads back to close index 39 = 100+39 = 139, so the candidate's
+    // own lookback return is (159-139)/139*100 ≈ +14.39%.
+    function dailyUptrend() {
+      const closes = Array.from({ length: 60 }, (_, i) => 100 + i);
+      let prev = closes[0];
+      return closes.map((close, i) => {
+        const open = i === 0 ? close : prev;
+        prev = close;
+        return {
+          time: lastTime - (closes.length - 1 - i) * 86_400_000,
+          open,
+          high: Math.max(open, close) * 1.01,
+          low: Math.min(open, close) * 0.99,
+          close,
+          volume: 1_000_000,
+        };
+      });
+    }
+    const daily = dailyUptrend();
+
+    // A benchmark series walking from startClose by dailyStep/bar — dailyStep
+    // 0 gives an exactly-flat (0%) benchmark return regardless of the level
+    // chosen; a nonzero step gives a precisely controlled nonzero return, so
+    // the tests below can pick a benchmark that the candidate's own ~+14.39%
+    // clearly beats or clearly trails.
+    function benchmarkTrend(startClose: number, dailyStep: number) {
+      const closes = Array.from({ length: 60 }, (_, i) => startClose + i * dailyStep);
+      return closes.map((close, i) => ({
+        time: lastTime - (59 - i) * 86_400_000,
+        open: close,
+        high: close * 1.01,
+        low: close * 0.99,
+        close,
+        volume: 1_000_000,
+      }));
+    }
+
+    // Mirrors mockByTimeframe() above, switching on the SYMBOL argument
+    // instead of the timeframe one — the scanned candidate's own daily
+    // candles vs. the configured benchmark symbol's own daily candles are
+    // both fetched via the same getCandles(symbol, 'daily', ...) shape.
+    function mockBySymbol(benchmarkSymbol: string, benchmarkCandles: ReturnType<typeof benchmarkTrend>) {
+      const candles = vi
+        .spyOn(getProvider(), 'getCandles')
+        .mockImplementation(async (symbol: string) => (symbol === benchmarkSymbol ? benchmarkCandles : daily) as never);
+      const quote = vi.spyOn(getProvider(), 'getQuote').mockResolvedValue(undefined as never);
+      return () => {
+        candles.mockRestore();
+        quote.mockRestore();
+      };
+    }
+
+    it("does not fetch benchmark candles when weights.relativeStrength is 0 (default) — same don't-do-unrequested-work gate as weekly trend", async () => {
+      const spy = vi.spyOn(getProvider(), 'getCandles');
+      await runAutotradeScreen({ symbols: ['SCRRS1'], config: { filters: RELAXED_FILTERS } });
+      expect(spy.mock.calls.some(([symbol]) => symbol === 'SPY')).toBe(false);
+      spy.mockRestore();
+    });
+
+    it('fetches the configured benchmark symbol once (not per-candidate) when the weight is nonzero', async () => {
+      const restore = mockBySymbol('SPY', benchmarkTrend(100, 0));
+      await runAutotradeScreen({
+        symbols: ['SCRRS2', 'SCRRS3'],
+        config: { filters: RELAXED_FILTERS, weights: { relativeStrength: 25 } as any, benchmarkSymbol: 'SPY' },
+      });
+      const spy = getProvider().getCandles as unknown as { mock: { calls: unknown[][] } };
+      const benchmarkCalls = spy.mock.calls.filter(([symbol]) => symbol === 'SPY');
+      expect(benchmarkCalls).toHaveLength(1); // once for the whole cycle, not once per symbol
+      restore();
+    });
+
+    it('scores a candidate that beat a flat benchmark above the SAME candidate compared against a benchmark that beat it', async () => {
+      const flatBenchmark = mockBySymbol('SPY', benchmarkTrend(100, 0)); // 0% -> candidate's own +14.39% is pure excess
+      const weak = await runAutotradeScreen({
+        symbols: ['SCRRSWEAK'],
+        config: { filters: RELAXED_FILTERS, weights: { relativeStrength: 100 } as any, benchmarkSymbol: 'SPY' },
+      });
+      flatBenchmark();
+
+      resetCandleIndicatorCache();
+      // Rises from 100 by 2/bar -> ~+22.5% over the 20-day window, comfortably
+      // past the candidate's own +14.39%, so the candidate's excess goes negative.
+      const strongBenchmark = mockBySymbol('SPY', benchmarkTrend(100, 2));
+      const strong = await runAutotradeScreen({
+        symbols: ['SCRRSSTRONG'],
+        config: { filters: RELAXED_FILTERS, weights: { relativeStrength: 100 } as any, benchmarkSymbol: 'SPY' },
+      });
+      strongBenchmark();
+
+      const weakScore = weak.candidates.find((c) => c.symbol === 'SCRRSWEAK')!.total;
+      const strongScore = strong.candidates.find((c) => c.symbol === 'SCRRSSTRONG')!.total;
+      expect(weakScore).toBeGreaterThan(strongScore);
+    });
+
+    it('a failed benchmark fetch degrades to a 0 relativeStrength contribution rather than failing the whole screen', async () => {
+      const candles = vi
+        .spyOn(getProvider(), 'getCandles')
+        .mockImplementation(async (symbol: string) =>
+          symbol === 'SPY' ? Promise.reject(new Error('no data')) : (daily as never),
+        );
+      const quote = vi.spyOn(getProvider(), 'getQuote').mockResolvedValue(undefined as never);
+      const result = await runAutotradeScreen({
+        symbols: ['SCRRSFAIL'],
+        config: { filters: RELAXED_FILTERS, weights: { relativeStrength: 25 } as any, benchmarkSymbol: 'SPY' },
+      });
+      expect(result.errors.find((e) => e.symbol === 'SCRRSFAIL')).toBeUndefined();
+      expect(result.candidates.find((c) => c.symbol === 'SCRRSFAIL')).toBeDefined();
+      candles.mockRestore();
+      quote.mockRestore();
+    });
+  });
 });

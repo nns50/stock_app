@@ -340,6 +340,84 @@ describe('simulateCombinedBacktest', () => {
     expect(report.optionsTrades[0].exitReason).toBe('end_of_period');
   });
 
+  it('trails the OPTIONS leg floor behind the best gain, then closes once price gives back too much (2026-07-17)', async () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const expiration = d(signalDay, DTE_DAYS); // 30 days out -- time-exit can't fire
+    const T = yearsFor(DTE_DAYS);
+    const entryPremium = premiumFor(100, STRIKE, T);
+    const peakDay = d(signalDay, 2);
+    const peakPremium = entryPremium * 1.3; // +30% -- past the 20% trailing-start trigger; floor becomes 30-10=20%
+    const closeDay = d(signalDay, 3);
+    const closePremium = entryPremium * 1.1; // +10%, below the ratcheted 20% floor
+    mockContractBars({
+      [CALL_TICKER]: [
+        optionBar(signalDay, entryPremium),
+        optionBar(entryDay, entryPremium, { open: entryPremium }),
+        optionBar(peakDay, peakPremium),
+        optionBar(closeDay, closePremium),
+      ],
+    });
+    const historyBySymbol = new Map([
+      ['BBB', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(peakDay), equityBar(closeDay)]],
+    ]);
+    const contractsBySymbol = new Map([['BBB', [contractRef(CALL_TICKER, STRIKE, expiration)]]]);
+    const report = await simulateCombinedBacktest(
+      historyBySymbol,
+      contractsBySymbol,
+      baseConfig({
+        symbols: ['BBB'],
+        from: signalDay,
+        to: closeDay,
+        optionsTrailStartPct: 20,
+        optionsTrailStopPct: 10,
+      }),
+    );
+    const optTrade = report.optionsTrades.find((t) => t.exitReason !== 'end_of_period');
+    expect(optTrade?.exitReason).toBe('stop_loss');
+    expect(optTrade?.exitDate).toBe(closeDay);
+  });
+
+  it('records a partial-exit trade on the OPTIONS leg once the trigger % is reached (2026-07-17)', async () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const expiration = d(signalDay, DTE_DAYS);
+    const T = yearsFor(DTE_DAYS);
+    const entryPremium = premiumFor(100, STRIKE, T);
+    const partialDay = d(signalDay, 2);
+    const partialPremium = entryPremium * 1.3; // +30%, past a 20% partial-exit trigger
+    mockContractBars({
+      [CALL_TICKER]: [
+        optionBar(signalDay, entryPremium),
+        optionBar(entryDay, entryPremium, { open: entryPremium }),
+        optionBar(partialDay, partialPremium),
+      ],
+    });
+    const historyBySymbol = new Map([
+      ['BBB', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(partialDay)]],
+    ]);
+    const contractsBySymbol = new Map([['BBB', [contractRef(CALL_TICKER, STRIKE, expiration)]]]);
+    // A larger account pushes risk-based sizing well past 1 contract -- see
+    // optionsBacktestSimulate.test.ts's own identical fixture reasoning.
+    const report = await simulateCombinedBacktest(
+      historyBySymbol,
+      contractsBySymbol,
+      baseConfig({
+        symbols: ['BBB'],
+        from: signalDay,
+        to: partialDay,
+        startingEquity: 1_000_000,
+        optionsPartialExitTriggerPct: 20,
+        optionsPartialExitPct: 50,
+      }),
+    );
+    const partial = report.optionsTrades.find((t) => t.exitReason === 'partial_exit');
+    expect(partial).toBeDefined();
+    expect(partial!.exitDate).toBe(partialDay);
+    expect(partial!.contracts).toBeGreaterThan(0);
+    expect(partial!.pnl).toBeGreaterThan(0);
+  });
+
   describe('CRITICAL: the combined aggregate-risk budget crosses instrument types', () => {
     // Generous on every other cap (via the riskCaps() overrides threaded into
     // baseConfig() at each call site below) so max_aggregate_open_risk is
