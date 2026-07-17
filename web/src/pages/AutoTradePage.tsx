@@ -1554,6 +1554,7 @@ export default function AutoTradePage() {
   const livePositions = useAsync(() => client.autotradeLivePositions({ limit: 100 }), []);
   const liveOptionsPositions = useAsync(() => client.autotradeLiveOptionsPositions({ limit: 100 }), []);
   const dashboard = useAsync(() => client.autotradeDashboard(), []);
+  const [view, setView] = useLocalStorage<'config' | 'dashboard'>('autotrade.view', 'config');
   const { toast } = useToast();
   const confirm = useConfirm();
   // Manually close a REAL live position from this page — reuses the same
@@ -2295,1998 +2296,2141 @@ export default function AutoTradePage() {
         }
       />
 
-      <CollapsibleCard id="autotrade.configuration" title="Configuration">
-        {/* Deliberately OUTSIDE the loading/error branch below: it renders
-            from local `killSwitch` state, not `config.data`, so a transient
-            reload failure (e.g. right after a toggle — saveConfig/
-            toggleKillSwitch both fire config.reload() without awaiting it)
-            can never hide the one control that releases it. */}
-        <button
-          onClick={toggleKillSwitch}
-          disabled={killBusy}
-          className={cx(
-            'w-full rounded-lg border px-3 py-2 text-sm font-semibold transition-colors mb-3',
-            killSwitch
-              ? 'border-bear bg-bear/20 text-bear'
-              : 'border-ink-600 bg-ink-700/40 text-slate-300 hover:border-bear/60',
-          )}
-        >
-          {killSwitch ? '■ Kill switch ENGAGED — release' : 'Kill switch — engage halt'}
-        </button>
-        {config.loading ? (
-          <Spinner />
-        ) : config.error ? (
-          <ErrorState error={config.error} onRetry={config.reload} />
-        ) : (
-          <div className="grid sm:grid-cols-2 gap-3 items-end">
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={enabled} onChange={(e) => saveConfig({ enabled: e.target.checked })} />
-              Auto-trading enabled
-            </label>
-            <Field
-              label="Risk profile"
-              hint="Just a label, journaled with every trade — per-trade risk, drawdown halt, position count, aggregate risk, correlated exposure, and trade caps are all set independently below and don't change with this switch."
-            >
-              <select
-                className="input"
-                value={riskProfile}
-                onChange={(e) => saveConfig({ riskProfile: e.target.value as AutotradeRiskProfile })}
-              >
-                <option value="MODERATE">Moderate (default)</option>
-                <option value="AGGRESSIVE">Aggressive</option>
-              </select>
-            </Field>
-            <Field
-              label="Options strategy"
-              hint={
-                optionsStrategyType === 'debit_spread'
-                  ? 'Long leg + a further out-of-the-money short leg — caps both max loss and max gain.'
-                  : 'Long call/put only (default) — uncapped upside, simplest structure.'
-              }
-            >
-              <select
-                className="input"
-                value={optionsStrategyType}
-                onChange={(e) => saveConfig({ optionsStrategyType: e.target.value as AutotradeOptionsStrategyType })}
-              >
-                <option value="single_leg">Single leg (default)</option>
-                <option value="debit_spread">Debit spread</option>
-              </select>
-            </Field>
-            <Field
-              label="Account equity ($)"
-              hint={
-                config.data?.liveAccountId
-                  ? 'The risk engine sizes trades and computes its % caps against this. Auto-syncs from your live Webull account every 1 minute — set manually, or sync it now below.'
-                  : 'The risk engine sizes trades and computes its % caps against this. Set manually — or set a Webull account ID under Live trading below to sync it automatically instead.'
-              }
-            >
-              <div className="flex flex-col gap-2">
-                <div className="flex gap-2">
-                  <NumberInput value={equityDraft} onChange={setEquityDraft} placeholder="e.g. 25000" />
-                  <button
-                    className="btn-ghost shrink-0"
-                    aria-label="Save account equity"
-                    onClick={() => saveConfig({ accountEquityUsd: equityDraft ?? null })}
-                    disabled={equityDraft === (config.data?.accountEquityUsd ?? undefined)}
-                  >
-                    Save
-                  </button>
-                </div>
-                <button
-                  className="btn-ghost self-start text-xs"
-                  onClick={() => syncEquityFromBroker()}
-                  disabled={equitySyncBusy || !config.data?.liveAccountId}
-                  title={!config.data?.liveAccountId ? 'Set a Webull account ID under Live trading first' : undefined}
-                >
-                  {equitySyncBusy ? 'Syncing…' : 'Sync from Webull (net liquidation value)'}
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Max concurrent positions"
-              hint="ONE combined budget for open positions — a stock position and an option position draw from the same pool. Applies to paper and live, equity and options alike."
-            >
-              <div className="flex gap-2">
-                <NumberInput value={maxPositionsDraft} onChange={setMaxPositionsDraft} min={1} step={1} />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save max concurrent positions"
-                  onClick={() => maxPositionsDraft != null && saveConfig({ maxConcurrentPositions: maxPositionsDraft })}
-                  disabled={
-                    maxPositionsDraft == null ||
-                    maxPositionsDraft < 1 ||
-                    maxPositionsDraft === config.data?.maxConcurrentPositions
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Risk per trade (%)"
-              hint="% of account equity risked per trade, before any step-down cut. For options, this is premium paid, not notional exposure — sizing stays consistent with the equity risk model."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={riskPerTradePctDraft}
-                  onChange={setRiskPerTradePctDraft}
-                  min={0}
-                  max={100}
-                  step={0.1}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save risk per trade"
-                  onClick={() => riskPerTradePctDraft != null && saveConfig({ riskPerTradePct: riskPerTradePctDraft })}
-                  disabled={
-                    riskPerTradePctDraft == null ||
-                    riskPerTradePctDraft < 0 ||
-                    riskPerTradePctDraft > 100 ||
-                    riskPerTradePctDraft === config.data?.riskPerTradePct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Max daily drawdown (%)"
-              hint="Today's realized P&L crossing below this % of equity halts new entries for the rest of the day — existing positions' stops/targets keep working regardless."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={maxDailyDrawdownPctDraft}
-                  onChange={setMaxDailyDrawdownPctDraft}
-                  min={0}
-                  max={100}
-                  step={0.1}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save max daily drawdown"
-                  onClick={() =>
-                    maxDailyDrawdownPctDraft != null && saveConfig({ maxDailyDrawdownPct: maxDailyDrawdownPctDraft })
-                  }
-                  disabled={
-                    maxDailyDrawdownPctDraft == null ||
-                    maxDailyDrawdownPctDraft < 0 ||
-                    maxDailyDrawdownPctDraft > 100 ||
-                    maxDailyDrawdownPctDraft === config.data?.maxDailyDrawdownPct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Step-down after (consecutive losses)"
-              hint="Once your current losing streak reaches this count, new positions size down by the cut below — until a win breaks the streak."
-            >
-              <div className="flex gap-2">
-                <NumberInput value={stepDownAfterLossesDraft} onChange={setStepDownAfterLossesDraft} min={0} step={1} />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save step-down loss trigger"
-                  onClick={() =>
-                    stepDownAfterLossesDraft != null && saveConfig({ stepDownAfterLosses: stepDownAfterLossesDraft })
-                  }
-                  disabled={
-                    stepDownAfterLossesDraft == null ||
-                    stepDownAfterLossesDraft < 0 ||
-                    stepDownAfterLossesDraft === config.data?.stepDownAfterLosses
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Step-down size cut (%)"
-              hint="How much smaller a position sizes once step-down is active — e.g. 50 halves risk per trade for the duration of the streak."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={stepDownSizeCutPctDraft}
-                  onChange={setStepDownSizeCutPctDraft}
-                  min={0}
-                  max={100}
-                  step={1}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save step-down size cut"
-                  onClick={() =>
-                    stepDownSizeCutPctDraft != null && saveConfig({ stepDownSizeCutPct: stepDownSizeCutPctDraft })
-                  }
-                  disabled={
-                    stepDownSizeCutPctDraft == null ||
-                    stepDownSizeCutPctDraft < 0 ||
-                    stepDownSizeCutPctDraft > 100 ||
-                    stepDownSizeCutPctDraft === config.data?.stepDownSizeCutPct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Max aggregate open risk (%)"
-              hint="Pre-trade cap on total open risk (size × stop distance) across every open position plus the one being proposed — blocks a trade that would push the combined total over this % of equity, even if per-trade risk and position count are individually fine. ONE combined budget shared by stocks and options."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={maxAggregateOpenRiskPctDraft}
-                  onChange={setMaxAggregateOpenRiskPctDraft}
-                  min={0}
-                  max={100}
-                  step={0.1}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save max aggregate open risk"
-                  onClick={() =>
-                    maxAggregateOpenRiskPctDraft != null &&
-                    saveConfig({ maxAggregateOpenRiskPct: maxAggregateOpenRiskPctDraft })
-                  }
-                  disabled={
-                    maxAggregateOpenRiskPctDraft == null ||
-                    maxAggregateOpenRiskPctDraft < 0 ||
-                    maxAggregateOpenRiskPctDraft > 100 ||
-                    maxAggregateOpenRiskPctDraft === config.data?.maxAggregateOpenRiskPct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Max correlated exposure (%)"
-              hint="Cap on capital (not risk) already concentrated in tickers statistically correlated with a candidate, per the correlation lookback/threshold settings below — guards against several correlated names getting stopped out together."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={maxCorrelatedExposurePctDraft}
-                  onChange={setMaxCorrelatedExposurePctDraft}
-                  min={0}
-                  max={100}
-                  step={0.1}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save max correlated exposure"
-                  onClick={() =>
-                    maxCorrelatedExposurePctDraft != null &&
-                    saveConfig({ maxCorrelatedExposurePct: maxCorrelatedExposurePctDraft })
-                  }
-                  disabled={
-                    maxCorrelatedExposurePctDraft == null ||
-                    maxCorrelatedExposurePctDraft < 0 ||
-                    maxCorrelatedExposurePctDraft > 100 ||
-                    maxCorrelatedExposurePctDraft === config.data?.maxCorrelatedExposurePct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Correlation lookback (trading days)"
-              hint="How many trading days of daily-return history are compared when measuring correlation between two symbols, for the max correlated exposure cap above."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={correlationLookbackDaysDraft}
-                  onChange={setCorrelationLookbackDaysDraft}
-                  min={1}
-                  step={1}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save correlation lookback"
-                  onClick={() =>
-                    correlationLookbackDaysDraft != null &&
-                    saveConfig({ correlationLookbackDays: correlationLookbackDaysDraft })
-                  }
-                  disabled={
-                    correlationLookbackDaysDraft == null ||
-                    correlationLookbackDaysDraft < 1 ||
-                    correlationLookbackDaysDraft === config.data?.correlationLookbackDays
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Correlation threshold (|r|)"
-              hint="|Pearson r| at or above this counts two tickers as 'correlated' for the max correlated exposure cap above. 0-1, not a percentage."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={correlationThresholdDraft}
-                  onChange={setCorrelationThresholdDraft}
-                  min={0}
-                  max={1}
-                  step={0.05}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save correlation threshold"
-                  onClick={() =>
-                    correlationThresholdDraft != null && saveConfig({ correlationThreshold: correlationThresholdDraft })
-                  }
-                  disabled={
-                    correlationThresholdDraft == null ||
-                    correlationThresholdDraft < 0 ||
-                    correlationThresholdDraft > 1 ||
-                    correlationThresholdDraft === config.data?.correlationThreshold
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Max trades per day"
-              hint="Hard cap on new entries risk-check will approve per day — paper and live, stocks and options, all combined."
-            >
-              <div className="flex gap-2">
-                <NumberInput value={maxTradesPerDayDraft} onChange={setMaxTradesPerDayDraft} min={0} step={1} />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save max trades per day"
-                  onClick={() => maxTradesPerDayDraft != null && saveConfig({ maxTradesPerDay: maxTradesPerDayDraft })}
-                  disabled={
-                    maxTradesPerDayDraft == null ||
-                    maxTradesPerDayDraft < 0 ||
-                    maxTradesPerDayDraft === config.data?.maxTradesPerDay
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Regime ATR threshold (%)"
-              hint="A softer, graduated companion to Max market ATR (%) below: once the broad-market proxy's own ATR% crosses THIS lower threshold, new positions size down (see Regime size cut below) instead of being blocked outright — Max market ATR (%) still blocks everything once volatility gets more extreme. Stacks with step-down sizing above if both are active at once. Live + paper only — no backtest equivalent. Check Recent activity's risk_check entries to see it fire."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={regimeAtrThresholdPctDraft}
-                  onChange={setRegimeAtrThresholdPctDraft}
-                  min={0}
-                  max={100}
-                  step={0.5}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save regime ATR threshold"
-                  onClick={() =>
-                    regimeAtrThresholdPctDraft != null &&
-                    saveConfig({ regimeAtrThresholdPct: regimeAtrThresholdPctDraft })
-                  }
-                  disabled={
-                    regimeAtrThresholdPctDraft == null ||
-                    regimeAtrThresholdPctDraft < 0 ||
-                    regimeAtrThresholdPctDraft > 100 ||
-                    regimeAtrThresholdPctDraft === config.data?.regimeAtrThresholdPct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Regime size cut (%)"
-              hint="% cut to risk-per-trade once the regime ATR threshold above is active. 0 disables it (default) — leaving this at 0 means Regime ATR threshold has no effect regardless of its own value."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={regimeSizeCutPctDraft}
-                  onChange={setRegimeSizeCutPctDraft}
-                  min={0}
-                  max={100}
-                  step={1}
-                  placeholder="0 (no cut)"
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save regime size cut"
-                  onClick={() =>
-                    regimeSizeCutPctDraft != null && saveConfig({ regimeSizeCutPct: regimeSizeCutPctDraft })
-                  }
-                  disabled={
-                    regimeSizeCutPctDraft == null ||
-                    regimeSizeCutPctDraft < 0 ||
-                    regimeSizeCutPctDraft > 100 ||
-                    regimeSizeCutPctDraft === config.data?.regimeSizeCutPct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Trade direction"
-              hint={
-                tradeDirection === 'both'
-                  ? 'Screens every candidate as both a long and a short and takes whichever direction actually qualifies, per symbol — can hold a long on one stock and a short on another at once. Live shorts also need "Allow naked short" enabled below (a short\'s downside is unlimited, unlike a long); paper shorts work either way.'
-                  : tradeDirection === 'short'
-                    ? 'Only takes short setups. Live shorts also need "Allow naked short" enabled below (a short\'s downside is unlimited, unlike a long); paper shorts work either way.'
-                    : 'Only takes long setups (default) — unchanged original behavior.'
-              }
-            >
-              <select
-                className="input"
-                value={tradeDirection}
-                onChange={(e) => saveConfig({ tradeDirection: e.target.value as AutotradeTradeDirectionMode })}
-              >
-                <option value="long">Long only (default)</option>
-                <option value="short">Short only</option>
-                <option value="both">Both</option>
-              </select>
-            </Field>
-            <Field
-              label="Min relative volume (×)"
-              hint="Screener's relative-volume floor — a candidate's volume must be at least this many times its average to pass. 0 disables this specific filter."
-            >
-              <div className="flex gap-2">
-                <NumberInput value={minRelVolDraft} onChange={setMinRelVolDraft} min={0} step={0.1} />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save min relative volume"
-                  onClick={() => minRelVolDraft != null && saveConfig({ minRelVol: minRelVolDraft })}
-                  disabled={minRelVolDraft == null || minRelVolDraft < 0 || minRelVolDraft === config.data?.minRelVol}
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <div>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={requireWeeklyTrendAlignment}
-                  onChange={(e) => saveConfig({ requireWeeklyTrendAlignment: e.target.checked })}
-                />
-                Require weekly trend alignment
-              </label>
-              <p className="text-[11px] text-slate-500 mt-0.5">
-                A second, longer-horizon confirmation on top of the daily setup: price must ALSO be on the right side of
-                its own weekly moving average. Live, paper, and backtest — check Recent activity to see it fire.
-              </p>
-            </div>
-            <Field
-              label="Relative strength weight (0-100)"
-              hint="How much a candidate's out/under-performance vs. the benchmark below counts toward its total screener score — same 0-100 scale as every other scoring component. 0 (default) disables it entirely, including the extra benchmark-quote fetch."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={relativeStrengthWeightDraft}
-                  onChange={setRelativeStrengthWeightDraft}
-                  min={0}
-                  max={100}
-                  step={1}
-                  placeholder="0 (disabled)"
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save relative strength weight"
-                  onClick={() =>
-                    relativeStrengthWeightDraft != null &&
-                    saveConfig({ relativeStrengthWeight: relativeStrengthWeightDraft })
-                  }
-                  disabled={
-                    relativeStrengthWeightDraft == null ||
-                    relativeStrengthWeightDraft < 0 ||
-                    relativeStrengthWeightDraft > 100 ||
-                    relativeStrengthWeightDraft === config.data?.relativeStrengthWeight
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Benchmark symbol"
-              hint="What relative strength above is measured against — e.g. SPY. Only matters when that weight is nonzero."
-            >
-              <div className="flex gap-2">
-                <input
-                  className="input"
-                  value={benchmarkSymbolDraft}
-                  onChange={(e) => setBenchmarkSymbolDraft(e.target.value.toUpperCase())}
-                  placeholder="SPY"
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save benchmark symbol"
-                  onClick={() =>
-                    benchmarkSymbolDraft.trim() !== '' && saveConfig({ benchmarkSymbol: benchmarkSymbolDraft.trim() })
-                  }
-                  disabled={
-                    benchmarkSymbolDraft.trim() === '' || benchmarkSymbolDraft.trim() === config.data?.benchmarkSymbol
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Relative strength lookback (days)"
-              hint="Trading days back for both the candidate's own and the benchmark's return that relative strength compares."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={relativeStrengthLookbackDaysDraft}
-                  onChange={setRelativeStrengthLookbackDaysDraft}
-                  min={1}
-                  step={1}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save relative strength lookback"
-                  onClick={() =>
-                    relativeStrengthLookbackDaysDraft != null &&
-                    saveConfig({ relativeStrengthLookbackDays: relativeStrengthLookbackDaysDraft })
-                  }
-                  disabled={
-                    relativeStrengthLookbackDaysDraft == null ||
-                    relativeStrengthLookbackDaysDraft < 1 ||
-                    relativeStrengthLookbackDaysDraft === config.data?.relativeStrengthLookbackDays
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Max ticker ATR (%)"
-              hint="Skip a candidate whose own ATR% (of price) exceeds this — the loop's own volatility guard, stricter than the manual Screen/Decision preview applies."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={maxTickerAtrPctDraft}
-                  onChange={setMaxTickerAtrPctDraft}
-                  min={0}
-                  max={100}
-                  step={1}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save max ticker ATR"
-                  onClick={() => maxTickerAtrPctDraft != null && saveConfig({ maxTickerAtrPct: maxTickerAtrPctDraft })}
-                  disabled={
-                    maxTickerAtrPctDraft == null ||
-                    maxTickerAtrPctDraft < 0 ||
-                    maxTickerAtrPctDraft > 100 ||
-                    maxTickerAtrPctDraft === config.data?.maxTickerAtrPct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Max market ATR (%)"
-              hint="Skip ALL new entries this cycle if SPY's own ATR% exceeds this — a broad-market volatility circuit breaker."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={maxMarketAtrPctDraft}
-                  onChange={setMaxMarketAtrPctDraft}
-                  min={0}
-                  max={100}
-                  step={1}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save max market ATR"
-                  onClick={() => maxMarketAtrPctDraft != null && saveConfig({ maxMarketAtrPct: maxMarketAtrPctDraft })}
-                  disabled={
-                    maxMarketAtrPctDraft == null ||
-                    maxMarketAtrPctDraft < 0 ||
-                    maxMarketAtrPctDraft > 100 ||
-                    maxMarketAtrPctDraft === config.data?.maxMarketAtrPct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Stop distance (× ATR)"
-              hint="Stop distance = this × the candidate's own ATR — e.g. 1.5 places the stop 1.5 ATRs away from entry."
-            >
-              <div className="flex gap-2">
-                <NumberInput value={stopAtrMultipleDraft} onChange={setStopAtrMultipleDraft} min={0} step={0.1} />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save stop distance"
-                  onClick={() => stopAtrMultipleDraft != null && saveConfig({ stopAtrMultiple: stopAtrMultipleDraft })}
-                  disabled={
-                    stopAtrMultipleDraft == null ||
-                    stopAtrMultipleDraft <= 0 ||
-                    stopAtrMultipleDraft === config.data?.stopAtrMultiple
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Target (R-multiple)"
-              hint="Target distance = stop distance × this — e.g. 2 places the target twice as far out as the stop (2R)."
-            >
-              <div className="flex gap-2">
-                <NumberInput value={targetRMultipleDraft} onChange={setTargetRMultipleDraft} min={0} step={0.1} />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save target R-multiple"
-                  onClick={() => targetRMultipleDraft != null && saveConfig({ targetRMultiple: targetRMultipleDraft })}
-                  disabled={
-                    targetRMultipleDraft == null ||
-                    targetRMultipleDraft <= 0 ||
-                    targetRMultipleDraft === config.data?.targetRMultiple
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Max hold time (days)"
-              hint="Force-close a position after this many calendar days if neither the stop nor target has been hit yet. 0 disables this check (hold until stop/target/manual close, as before this existed)."
-            >
-              <div className="flex gap-2">
-                <NumberInput value={maxHoldDaysDraft} onChange={setMaxHoldDaysDraft} min={0} step={1} />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save max hold time"
-                  onClick={() => maxHoldDaysDraft != null && saveConfig({ maxHoldDays: maxHoldDaysDraft })}
-                  disabled={
-                    maxHoldDaysDraft == null || maxHoldDaysDraft < 0 || maxHoldDaysDraft === config.data?.maxHoldDays
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Breakeven trigger (R-multiple)"
-              hint="Once unrealized gain reaches this many R, move the stop to exactly the entry price — a one-time move, never applied if it would loosen the current stop. 0 disables it. Paper and backtest only; live positions are untouched."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={breakevenTriggerRMultipleDraft}
-                  onChange={setBreakevenTriggerRMultipleDraft}
-                  min={0}
-                  step={0.1}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save breakeven trigger"
-                  onClick={() =>
-                    breakevenTriggerRMultipleDraft != null &&
-                    saveConfig({ breakevenTriggerRMultiple: breakevenTriggerRMultipleDraft })
-                  }
-                  disabled={
-                    breakevenTriggerRMultipleDraft == null ||
-                    breakevenTriggerRMultipleDraft < 0 ||
-                    breakevenTriggerRMultipleDraft === config.data?.breakevenTriggerRMultiple
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Trailing start (R-multiple)"
-              hint="Once unrealized gain reaches this many R, start trailing the stop (see trailing distance below) behind the best price seen since entry. 0 disables trailing — independent of the breakeven trigger above."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={trailStartRMultipleDraft}
-                  onChange={setTrailStartRMultipleDraft}
-                  min={0}
-                  step={0.1}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save trailing start"
-                  onClick={() =>
-                    trailStartRMultipleDraft != null && saveConfig({ trailStartRMultiple: trailStartRMultipleDraft })
-                  }
-                  disabled={
-                    trailStartRMultipleDraft == null ||
-                    trailStartRMultipleDraft < 0 ||
-                    trailStartRMultipleDraft === config.data?.trailStartRMultiple
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Trailing distance (R-multiple)"
-              hint="Once trailing is active, the stop trails this many R (in the position's own original risk-distance terms) behind the best price seen — ratcheting only favorably, same as the breakeven trigger. Meaningless if trailing start above is 0."
-            >
-              <div className="flex gap-2">
-                <NumberInput value={trailStopRMultipleDraft} onChange={setTrailStopRMultipleDraft} min={0} step={0.1} />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save trailing distance"
-                  onClick={() =>
-                    trailStopRMultipleDraft != null && saveConfig({ trailStopRMultiple: trailStopRMultipleDraft })
-                  }
-                  disabled={
-                    trailStopRMultipleDraft == null ||
-                    trailStopRMultipleDraft < 0 ||
-                    trailStopRMultipleDraft === config.data?.trailStopRMultiple
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Partial exit trigger (R-multiple)"
-              hint="Once unrealized gain reaches this many R, close the percentage below once — the rest keeps running toward its original target (or continues trailing). 0 disables it."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={partialExitRMultipleDraft}
-                  onChange={setPartialExitRMultipleDraft}
-                  min={0}
-                  step={0.1}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save partial exit trigger"
-                  onClick={() =>
-                    partialExitRMultipleDraft != null && saveConfig({ partialExitRMultiple: partialExitRMultipleDraft })
-                  }
-                  disabled={
-                    partialExitRMultipleDraft == null ||
-                    partialExitRMultipleDraft < 0 ||
-                    partialExitRMultipleDraft === config.data?.partialExitRMultiple
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Partial exit size (%)"
-              hint="% of the position closed at the partial-exit trigger above. Only meaningful when that trigger is nonzero."
-            >
-              <div className="flex gap-2">
-                <NumberInput value={partialExitPctDraft} onChange={setPartialExitPctDraft} min={0} max={100} step={1} />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save partial exit size"
-                  onClick={() => partialExitPctDraft != null && saveConfig({ partialExitPct: partialExitPctDraft })}
-                  disabled={
-                    partialExitPctDraft == null ||
-                    partialExitPctDraft < 0 ||
-                    partialExitPctDraft > 100 ||
-                    partialExitPctDraft === config.data?.partialExitPct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Options stop-loss (%)"
-              hint="Close a PAPER/BACKTEST options position once unrealized loss reaches this % of premium paid (net debit, for a spread). 0 disables it — LIVE options positions are unaffected and stay time-exit-only."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={optionsStopLossPctDraft}
-                  onChange={setOptionsStopLossPctDraft}
-                  min={0}
-                  max={100}
-                  step={1}
-                  placeholder="0 (disabled)"
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save options stop-loss"
-                  onClick={() =>
-                    optionsStopLossPctDraft != null && saveConfig({ optionsStopLossPct: optionsStopLossPctDraft })
-                  }
-                  disabled={
-                    optionsStopLossPctDraft == null ||
-                    optionsStopLossPctDraft < 0 ||
-                    optionsStopLossPctDraft > 100 ||
-                    optionsStopLossPctDraft === config.data?.optionsStopLossPct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Options take-profit (%)"
-              hint="Close a PAPER/BACKTEST options position once unrealized gain reaches this % of premium paid (net debit, for a spread). 0 disables it — LIVE options positions are unaffected and stay time-exit-only."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={optionsTakeProfitPctDraft}
-                  onChange={setOptionsTakeProfitPctDraft}
-                  min={0}
-                  max={100}
-                  step={1}
-                  placeholder="0 (disabled)"
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save options take-profit"
-                  onClick={() =>
-                    optionsTakeProfitPctDraft != null && saveConfig({ optionsTakeProfitPct: optionsTakeProfitPctDraft })
-                  }
-                  disabled={
-                    optionsTakeProfitPctDraft == null ||
-                    optionsTakeProfitPctDraft < 0 ||
-                    optionsTakeProfitPctDraft > 100 ||
-                    optionsTakeProfitPctDraft === config.data?.optionsTakeProfitPct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Options breakeven trigger (%)"
-              hint="Once unrealized gain (% of premium paid, net debit for a spread) reaches this level, move the stop-loss floor to breakeven (0% — no gain, no loss) — a one-time move, never applied if it would loosen an already-ratcheted floor. 0 disables it. Paper and backtest only; live positions are untouched."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={optionsBreakevenTriggerPctDraft}
-                  onChange={setOptionsBreakevenTriggerPctDraft}
-                  min={0}
-                  max={100}
-                  step={1}
-                  placeholder="0 (disabled)"
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save options breakeven trigger"
-                  onClick={() =>
-                    optionsBreakevenTriggerPctDraft != null &&
-                    saveConfig({ optionsBreakevenTriggerPct: optionsBreakevenTriggerPctDraft })
-                  }
-                  disabled={
-                    optionsBreakevenTriggerPctDraft == null ||
-                    optionsBreakevenTriggerPctDraft < 0 ||
-                    optionsBreakevenTriggerPctDraft > 100 ||
-                    optionsBreakevenTriggerPctDraft === config.data?.optionsBreakevenTriggerPct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Options trailing start (%)"
-              hint="Once unrealized gain reaches this %, start trailing the stop-loss floor (see trailing distance below) behind the best gain % seen since entry. 0 disables trailing — independent of the breakeven trigger above."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={optionsTrailStartPctDraft}
-                  onChange={setOptionsTrailStartPctDraft}
-                  min={0}
-                  max={100}
-                  step={1}
-                  placeholder="0 (disabled)"
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save options trailing start"
-                  onClick={() =>
-                    optionsTrailStartPctDraft != null && saveConfig({ optionsTrailStartPct: optionsTrailStartPctDraft })
-                  }
-                  disabled={
-                    optionsTrailStartPctDraft == null ||
-                    optionsTrailStartPctDraft < 0 ||
-                    optionsTrailStartPctDraft > 100 ||
-                    optionsTrailStartPctDraft === config.data?.optionsTrailStartPct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Options trailing distance (%)"
-              hint="Once trailing is active, the stop-loss floor trails this many percentage points behind the best unrealized gain % seen — ratcheting only favorably, same as the breakeven trigger. Meaningless if trailing start above is 0."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={optionsTrailStopPctDraft}
-                  onChange={setOptionsTrailStopPctDraft}
-                  min={0}
-                  max={100}
-                  step={1}
-                  placeholder="0 (disabled)"
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save options trailing distance"
-                  onClick={() =>
-                    optionsTrailStopPctDraft != null && saveConfig({ optionsTrailStopPct: optionsTrailStopPctDraft })
-                  }
-                  disabled={
-                    optionsTrailStopPctDraft == null ||
-                    optionsTrailStopPctDraft < 0 ||
-                    optionsTrailStopPctDraft > 100 ||
-                    optionsTrailStopPctDraft === config.data?.optionsTrailStopPct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Options partial exit trigger (%)"
-              hint="Once unrealized gain reaches this %, close the percentage below once — the rest keeps running toward its original take-profit (or continues trailing). 0 disables it."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={optionsPartialExitTriggerPctDraft}
-                  onChange={setOptionsPartialExitTriggerPctDraft}
-                  min={0}
-                  max={100}
-                  step={1}
-                  placeholder="0 (disabled)"
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save options partial exit trigger"
-                  onClick={() =>
-                    optionsPartialExitTriggerPctDraft != null &&
-                    saveConfig({ optionsPartialExitTriggerPct: optionsPartialExitTriggerPctDraft })
-                  }
-                  disabled={
-                    optionsPartialExitTriggerPctDraft == null ||
-                    optionsPartialExitTriggerPctDraft < 0 ||
-                    optionsPartialExitTriggerPctDraft > 100 ||
-                    optionsPartialExitTriggerPctDraft === config.data?.optionsPartialExitTriggerPct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Options partial exit size (%)"
-              hint="% of the contracts closed at the partial-exit trigger above. Only meaningful when that trigger is nonzero."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={optionsPartialExitPctDraft}
-                  onChange={setOptionsPartialExitPctDraft}
-                  min={0}
-                  max={100}
-                  step={1}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save options partial exit size"
-                  onClick={() =>
-                    optionsPartialExitPctDraft != null &&
-                    saveConfig({ optionsPartialExitPct: optionsPartialExitPctDraft })
-                  }
-                  disabled={
-                    optionsPartialExitPctDraft == null ||
-                    optionsPartialExitPctDraft < 0 ||
-                    optionsPartialExitPctDraft > 100 ||
-                    optionsPartialExitPctDraft === config.data?.optionsPartialExitPct
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Session buffer (minutes)"
-              hint="No new entries within this many minutes of the session open or close — the opening auction and closing imbalance both distort prices."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={sessionBufferMinutesDraft}
-                  onChange={setSessionBufferMinutesDraft}
-                  min={0}
-                  step={1}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save session buffer"
-                  onClick={() =>
-                    sessionBufferMinutesDraft != null && saveConfig({ sessionBufferMinutes: sessionBufferMinutesDraft })
-                  }
-                  disabled={
-                    sessionBufferMinutesDraft == null ||
-                    sessionBufferMinutesDraft < 0 ||
-                    sessionBufferMinutesDraft === config.data?.sessionBufferMinutes
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Earnings blackout (days)"
-              hint="Skip an equity candidate whose next known earnings date falls within this many calendar days — an unattended loop can't react to an earnings-driven overnight gap. 0 disables this check. Options entries are unaffected (IV rank already covers this there)."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={earningsBlackoutDaysDraft}
-                  onChange={setEarningsBlackoutDaysDraft}
-                  min={0}
-                  step={1}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save earnings blackout"
-                  onClick={() =>
-                    earningsBlackoutDaysDraft != null && saveConfig({ earningsBlackoutDays: earningsBlackoutDaysDraft })
-                  }
-                  disabled={
-                    earningsBlackoutDaysDraft == null ||
-                    earningsBlackoutDaysDraft < 0 ||
-                    earningsBlackoutDaysDraft === config.data?.earningsBlackoutDays
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={autoPromoteMoversEnabled}
-                onChange={(e) => saveConfig({ autoPromoteMoversEnabled: e.target.checked })}
-              />
-              Auto-promote recurring movers
-            </label>
-            <Field
-              label="Promotion threshold"
-              hint="A movers-sourced symbol (Webull's daily gainers/unusual-volume feed) that clears screening this many DISTINCT days within the window earns a permanent spot in your universe — automatically, from the automated loop only, never from a manual Run screen."
-            >
-              <div className="flex items-center gap-2 flex-wrap">
-                <NumberInput
-                  value={autoPromoteThresholdDraft}
-                  onChange={setAutoPromoteThresholdDraft}
-                  min={1}
-                  step={1}
-                />
-                <span className="text-xs text-slate-500">times within</span>
-                <NumberInput
-                  value={autoPromoteWindowDaysDraft}
-                  onChange={setAutoPromoteWindowDaysDraft}
-                  min={1}
-                  step={1}
-                />
-                <span className="text-xs text-slate-500">days</span>
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save promotion threshold"
-                  onClick={() =>
-                    autoPromoteThresholdDraft != null &&
-                    autoPromoteWindowDaysDraft != null &&
-                    saveConfig({
-                      autoPromoteThreshold: autoPromoteThresholdDraft,
-                      autoPromoteWindowDays: autoPromoteWindowDaysDraft,
-                    })
-                  }
-                  disabled={
-                    autoPromoteThresholdDraft == null ||
-                    autoPromoteWindowDaysDraft == null ||
-                    autoPromoteThresholdDraft < 1 ||
-                    autoPromoteWindowDaysDraft < 1 ||
-                    (autoPromoteThresholdDraft === config.data?.autoPromoteThreshold &&
-                      autoPromoteWindowDaysDraft === config.data?.autoPromoteWindowDays)
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="Max auto-promoted symbols"
-              hint="Lifetime cap on symbols added by this mechanism specifically — doesn't count your seeded or manually-added universe. Once a symbol is promoted (or you remove one later), it's never reconsidered again either way."
-            >
-              <div className="flex gap-2">
-                <NumberInput
-                  value={autoPromoteMaxSymbolsDraft}
-                  onChange={setAutoPromoteMaxSymbolsDraft}
-                  min={0}
-                  step={1}
-                />
-                <button
-                  className="btn-ghost shrink-0"
-                  aria-label="Save max auto-promoted symbols"
-                  onClick={() =>
-                    autoPromoteMaxSymbolsDraft != null &&
-                    saveConfig({ autoPromoteMaxSymbols: autoPromoteMaxSymbolsDraft })
-                  }
-                  disabled={
-                    autoPromoteMaxSymbolsDraft == null ||
-                    autoPromoteMaxSymbolsDraft < 0 ||
-                    autoPromoteMaxSymbolsDraft === config.data?.autoPromoteMaxSymbols
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </Field>
-          </div>
-        )}
-        {config.data && config.data.accountEquityUsd === null && (
-          <p className="text-[11px] text-bear mt-3">
-            Account equity isn&apos;t set — the risk engine blocks every trade until it is (fails closed rather than
-            guessing).
-          </p>
-        )}
-        {killSwitch && (
-          <p className="text-[11px] text-bear mt-3">
-            <strong>Kill switch engaged</strong> — new entries are halted regardless of the settings above. Existing
-            paper positions keep working: their stop/target levels are still checked every cycle (see &quot;Paper
-            trading&quot; below).
-          </p>
-        )}
-        {enabled && !killSwitch && (
-          <p className="text-[11px] text-amber-400 mt-3">
-            Auto-trading is enabled — the background loop below is now actively scanning and placing{' '}
-            <strong>paper</strong> trades on a schedule. It never touches a real broker (see &quot;Paper trading&quot;
-            below); going live is configured separately (see &quot;Live trading&quot; below).
-          </p>
-        )}
-      </CollapsibleCard>
+      <div className="flex gap-1 border-b border-ink-600/60">
+        {(['config', 'dashboard'] as const).map((v) => (
+          <button
+            key={v}
+            className={cx(
+              'px-4 py-2 text-sm font-medium border-b-2 -mb-px',
+              view === v ? 'border-accent text-slate-100' : 'border-transparent text-slate-400 hover:text-slate-200',
+            )}
+            onClick={() => setView(v)}
+          >
+            {v === 'config' ? 'Configuration' : 'Dashboard'}
+          </button>
+        ))}
+      </div>
 
-      <CollapsibleCard id="autotrade.liveTrading" title="Live trading">
-        <p className="text-[11px] text-slate-500 mb-3">
-          Places REAL orders through Webull once enabled — no per-order confirmation, only the guardrails configured
-          here plus the kill switch. Independent of paper trading above (both can run at once). See
-          docs/AUTOTRADING_SPEC.md&apos;s Phase 8 design for the full reasoning.
-        </p>
-        {/* No separate loading/error rendering here — this card is driven by
+      {/* Deliberately OUTSIDE the config/dashboard split below: it renders
+          from local `killSwitch` state, not `config.data`, so a transient
+          reload failure (e.g. right after a toggle — saveConfig/
+          toggleKillSwitch both fire config.reload() without awaiting it)
+          can never hide the one control that releases it — and a halt you
+          need in a hurry shouldn't be a tab-switch away. */}
+      <button
+        onClick={toggleKillSwitch}
+        disabled={killBusy}
+        className={cx(
+          'w-full rounded-lg border px-3 py-2 text-sm font-semibold transition-colors',
+          killSwitch
+            ? 'border-bear bg-bear/20 text-bear'
+            : 'border-ink-600 bg-ink-700/40 text-slate-300 hover:border-bear/60',
+        )}
+      >
+        {killSwitch ? '■ Kill switch ENGAGED — release' : 'Kill switch — engage halt'}
+      </button>
+
+      {view === 'config' && (
+        <>
+          {config.loading ? (
+            <Spinner />
+          ) : config.error ? (
+            <ErrorState error={config.error} onRetry={config.reload} />
+          ) : (
+            <>
+              <CollapsibleCard id="autotrade.config.core" title="Core settings">
+                <div className="grid sm:grid-cols-2 gap-3 items-end">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={enabled}
+                      onChange={(e) => saveConfig({ enabled: e.target.checked })}
+                    />
+                    Auto-trading enabled
+                  </label>
+                  <Field
+                    label="Risk profile"
+                    hint="Just a label, journaled with every trade — per-trade risk, drawdown halt, position count, aggregate risk, correlated exposure, and trade caps are all set independently below and don't change with this switch."
+                  >
+                    <select
+                      className="input"
+                      value={riskProfile}
+                      onChange={(e) => saveConfig({ riskProfile: e.target.value as AutotradeRiskProfile })}
+                    >
+                      <option value="MODERATE">Moderate (default)</option>
+                      <option value="AGGRESSIVE">Aggressive</option>
+                    </select>
+                  </Field>
+                  <Field
+                    label="Options strategy"
+                    hint={
+                      optionsStrategyType === 'debit_spread'
+                        ? 'Long leg + a further out-of-the-money short leg — caps both max loss and max gain.'
+                        : 'Long call/put only (default) — uncapped upside, simplest structure.'
+                    }
+                  >
+                    <select
+                      className="input"
+                      value={optionsStrategyType}
+                      onChange={(e) =>
+                        saveConfig({ optionsStrategyType: e.target.value as AutotradeOptionsStrategyType })
+                      }
+                    >
+                      <option value="single_leg">Single leg (default)</option>
+                      <option value="debit_spread">Debit spread</option>
+                    </select>
+                  </Field>
+                  <Field
+                    label="Account equity ($)"
+                    hint={
+                      config.data?.liveAccountId
+                        ? 'The risk engine sizes trades and computes its % caps against this. Auto-syncs from your live Webull account every 1 minute — set manually, or sync it now below.'
+                        : 'The risk engine sizes trades and computes its % caps against this. Set manually — or set a Webull account ID under Live trading below to sync it automatically instead.'
+                    }
+                  >
+                    <div className="flex flex-col gap-2">
+                      <div className="flex gap-2">
+                        <NumberInput value={equityDraft} onChange={setEquityDraft} placeholder="e.g. 25000" />
+                        <button
+                          className="btn-ghost shrink-0"
+                          aria-label="Save account equity"
+                          onClick={() => saveConfig({ accountEquityUsd: equityDraft ?? null })}
+                          disabled={equityDraft === (config.data?.accountEquityUsd ?? undefined)}
+                        >
+                          Save
+                        </button>
+                      </div>
+                      <button
+                        className="btn-ghost self-start text-xs"
+                        onClick={() => syncEquityFromBroker()}
+                        disabled={equitySyncBusy || !config.data?.liveAccountId}
+                        title={
+                          !config.data?.liveAccountId ? 'Set a Webull account ID under Live trading first' : undefined
+                        }
+                      >
+                        {equitySyncBusy ? 'Syncing…' : 'Sync from Webull (net liquidation value)'}
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Max concurrent positions"
+                    hint="ONE combined budget for open positions — a stock position and an option position draw from the same pool. Applies to paper and live, equity and options alike."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput value={maxPositionsDraft} onChange={setMaxPositionsDraft} min={1} step={1} />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max concurrent positions"
+                        onClick={() =>
+                          maxPositionsDraft != null && saveConfig({ maxConcurrentPositions: maxPositionsDraft })
+                        }
+                        disabled={
+                          maxPositionsDraft == null ||
+                          maxPositionsDraft < 1 ||
+                          maxPositionsDraft === config.data?.maxConcurrentPositions
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                </div>
+              </CollapsibleCard>
+
+              <CollapsibleCard id="autotrade.config.risk" title="Position sizing & risk guardrails">
+                <div className="grid sm:grid-cols-2 gap-3 items-end">
+                  <Field
+                    label="Risk per trade (%)"
+                    hint="% of account equity risked per trade, before any step-down cut. For options, this is premium paid, not notional exposure — sizing stays consistent with the equity risk model."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={riskPerTradePctDraft}
+                        onChange={setRiskPerTradePctDraft}
+                        min={0}
+                        max={100}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save risk per trade"
+                        onClick={() =>
+                          riskPerTradePctDraft != null && saveConfig({ riskPerTradePct: riskPerTradePctDraft })
+                        }
+                        disabled={
+                          riskPerTradePctDraft == null ||
+                          riskPerTradePctDraft < 0 ||
+                          riskPerTradePctDraft > 100 ||
+                          riskPerTradePctDraft === config.data?.riskPerTradePct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Max daily drawdown (%)"
+                    hint="Today's realized P&L crossing below this % of equity halts new entries for the rest of the day — existing positions' stops/targets keep working regardless."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={maxDailyDrawdownPctDraft}
+                        onChange={setMaxDailyDrawdownPctDraft}
+                        min={0}
+                        max={100}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max daily drawdown"
+                        onClick={() =>
+                          maxDailyDrawdownPctDraft != null &&
+                          saveConfig({ maxDailyDrawdownPct: maxDailyDrawdownPctDraft })
+                        }
+                        disabled={
+                          maxDailyDrawdownPctDraft == null ||
+                          maxDailyDrawdownPctDraft < 0 ||
+                          maxDailyDrawdownPctDraft > 100 ||
+                          maxDailyDrawdownPctDraft === config.data?.maxDailyDrawdownPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Step-down after (consecutive losses)"
+                    hint="Once your current losing streak reaches this count, new positions size down by the cut below — until a win breaks the streak."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={stepDownAfterLossesDraft}
+                        onChange={setStepDownAfterLossesDraft}
+                        min={0}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save step-down loss trigger"
+                        onClick={() =>
+                          stepDownAfterLossesDraft != null &&
+                          saveConfig({ stepDownAfterLosses: stepDownAfterLossesDraft })
+                        }
+                        disabled={
+                          stepDownAfterLossesDraft == null ||
+                          stepDownAfterLossesDraft < 0 ||
+                          stepDownAfterLossesDraft === config.data?.stepDownAfterLosses
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Step-down size cut (%)"
+                    hint="How much smaller a position sizes once step-down is active — e.g. 50 halves risk per trade for the duration of the streak."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={stepDownSizeCutPctDraft}
+                        onChange={setStepDownSizeCutPctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save step-down size cut"
+                        onClick={() =>
+                          stepDownSizeCutPctDraft != null && saveConfig({ stepDownSizeCutPct: stepDownSizeCutPctDraft })
+                        }
+                        disabled={
+                          stepDownSizeCutPctDraft == null ||
+                          stepDownSizeCutPctDraft < 0 ||
+                          stepDownSizeCutPctDraft > 100 ||
+                          stepDownSizeCutPctDraft === config.data?.stepDownSizeCutPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Max aggregate open risk (%)"
+                    hint="Pre-trade cap on total open risk (size × stop distance) across every open position plus the one being proposed — blocks a trade that would push the combined total over this % of equity, even if per-trade risk and position count are individually fine. ONE combined budget shared by stocks and options."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={maxAggregateOpenRiskPctDraft}
+                        onChange={setMaxAggregateOpenRiskPctDraft}
+                        min={0}
+                        max={100}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max aggregate open risk"
+                        onClick={() =>
+                          maxAggregateOpenRiskPctDraft != null &&
+                          saveConfig({ maxAggregateOpenRiskPct: maxAggregateOpenRiskPctDraft })
+                        }
+                        disabled={
+                          maxAggregateOpenRiskPctDraft == null ||
+                          maxAggregateOpenRiskPctDraft < 0 ||
+                          maxAggregateOpenRiskPctDraft > 100 ||
+                          maxAggregateOpenRiskPctDraft === config.data?.maxAggregateOpenRiskPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Max correlated exposure (%)"
+                    hint="Cap on capital (not risk) already concentrated in tickers statistically correlated with a candidate, per the correlation lookback/threshold settings below — guards against several correlated names getting stopped out together."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={maxCorrelatedExposurePctDraft}
+                        onChange={setMaxCorrelatedExposurePctDraft}
+                        min={0}
+                        max={100}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max correlated exposure"
+                        onClick={() =>
+                          maxCorrelatedExposurePctDraft != null &&
+                          saveConfig({ maxCorrelatedExposurePct: maxCorrelatedExposurePctDraft })
+                        }
+                        disabled={
+                          maxCorrelatedExposurePctDraft == null ||
+                          maxCorrelatedExposurePctDraft < 0 ||
+                          maxCorrelatedExposurePctDraft > 100 ||
+                          maxCorrelatedExposurePctDraft === config.data?.maxCorrelatedExposurePct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Correlation lookback (trading days)"
+                    hint="How many trading days of daily-return history are compared when measuring correlation between two symbols, for the max correlated exposure cap above."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={correlationLookbackDaysDraft}
+                        onChange={setCorrelationLookbackDaysDraft}
+                        min={1}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save correlation lookback"
+                        onClick={() =>
+                          correlationLookbackDaysDraft != null &&
+                          saveConfig({ correlationLookbackDays: correlationLookbackDaysDraft })
+                        }
+                        disabled={
+                          correlationLookbackDaysDraft == null ||
+                          correlationLookbackDaysDraft < 1 ||
+                          correlationLookbackDaysDraft === config.data?.correlationLookbackDays
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Correlation threshold (|r|)"
+                    hint="|Pearson r| at or above this counts two tickers as 'correlated' for the max correlated exposure cap above. 0-1, not a percentage."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={correlationThresholdDraft}
+                        onChange={setCorrelationThresholdDraft}
+                        min={0}
+                        max={1}
+                        step={0.05}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save correlation threshold"
+                        onClick={() =>
+                          correlationThresholdDraft != null &&
+                          saveConfig({ correlationThreshold: correlationThresholdDraft })
+                        }
+                        disabled={
+                          correlationThresholdDraft == null ||
+                          correlationThresholdDraft < 0 ||
+                          correlationThresholdDraft > 1 ||
+                          correlationThresholdDraft === config.data?.correlationThreshold
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Max trades per day"
+                    hint="Hard cap on new entries risk-check will approve per day — paper and live, stocks and options, all combined."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput value={maxTradesPerDayDraft} onChange={setMaxTradesPerDayDraft} min={0} step={1} />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max trades per day"
+                        onClick={() =>
+                          maxTradesPerDayDraft != null && saveConfig({ maxTradesPerDay: maxTradesPerDayDraft })
+                        }
+                        disabled={
+                          maxTradesPerDayDraft == null ||
+                          maxTradesPerDayDraft < 0 ||
+                          maxTradesPerDayDraft === config.data?.maxTradesPerDay
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Regime ATR threshold (%)"
+                    hint="A softer, graduated companion to Max market ATR (%) below: once the broad-market proxy's own ATR% crosses THIS lower threshold, new positions size down (see Regime size cut below) instead of being blocked outright — Max market ATR (%) still blocks everything once volatility gets more extreme. Stacks with step-down sizing above if both are active at once. Live + paper only — no backtest equivalent. Check Recent activity's risk_check entries to see it fire."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={regimeAtrThresholdPctDraft}
+                        onChange={setRegimeAtrThresholdPctDraft}
+                        min={0}
+                        max={100}
+                        step={0.5}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save regime ATR threshold"
+                        onClick={() =>
+                          regimeAtrThresholdPctDraft != null &&
+                          saveConfig({ regimeAtrThresholdPct: regimeAtrThresholdPctDraft })
+                        }
+                        disabled={
+                          regimeAtrThresholdPctDraft == null ||
+                          regimeAtrThresholdPctDraft < 0 ||
+                          regimeAtrThresholdPctDraft > 100 ||
+                          regimeAtrThresholdPctDraft === config.data?.regimeAtrThresholdPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Regime size cut (%)"
+                    hint="% cut to risk-per-trade once the regime ATR threshold above is active. 0 disables it (default) — leaving this at 0 means Regime ATR threshold has no effect regardless of its own value."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={regimeSizeCutPctDraft}
+                        onChange={setRegimeSizeCutPctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                        placeholder="0 (no cut)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save regime size cut"
+                        onClick={() =>
+                          regimeSizeCutPctDraft != null && saveConfig({ regimeSizeCutPct: regimeSizeCutPctDraft })
+                        }
+                        disabled={
+                          regimeSizeCutPctDraft == null ||
+                          regimeSizeCutPctDraft < 0 ||
+                          regimeSizeCutPctDraft > 100 ||
+                          regimeSizeCutPctDraft === config.data?.regimeSizeCutPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                </div>
+              </CollapsibleCard>
+
+              <CollapsibleCard id="autotrade.config.screening" title="Screening & entry filters">
+                <div className="grid sm:grid-cols-2 gap-3 items-end">
+                  <Field
+                    label="Trade direction"
+                    hint={
+                      tradeDirection === 'both'
+                        ? 'Screens every candidate as both a long and a short and takes whichever direction actually qualifies, per symbol — can hold a long on one stock and a short on another at once. Live shorts also need "Allow naked short" enabled below (a short\'s downside is unlimited, unlike a long); paper shorts work either way.'
+                        : tradeDirection === 'short'
+                          ? 'Only takes short setups. Live shorts also need "Allow naked short" enabled below (a short\'s downside is unlimited, unlike a long); paper shorts work either way.'
+                          : 'Only takes long setups (default) — unchanged original behavior.'
+                    }
+                  >
+                    <select
+                      className="input"
+                      value={tradeDirection}
+                      onChange={(e) => saveConfig({ tradeDirection: e.target.value as AutotradeTradeDirectionMode })}
+                    >
+                      <option value="long">Long only (default)</option>
+                      <option value="short">Short only</option>
+                      <option value="both">Both</option>
+                    </select>
+                  </Field>
+                  <Field
+                    label="Min relative volume (×)"
+                    hint="Screener's relative-volume floor — a candidate's volume must be at least this many times its average to pass. 0 disables this specific filter."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput value={minRelVolDraft} onChange={setMinRelVolDraft} min={0} step={0.1} />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save min relative volume"
+                        onClick={() => minRelVolDraft != null && saveConfig({ minRelVol: minRelVolDraft })}
+                        disabled={
+                          minRelVolDraft == null || minRelVolDraft < 0 || minRelVolDraft === config.data?.minRelVol
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <div>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={requireWeeklyTrendAlignment}
+                        onChange={(e) => saveConfig({ requireWeeklyTrendAlignment: e.target.checked })}
+                      />
+                      Require weekly trend alignment
+                    </label>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      A second, longer-horizon confirmation on top of the daily setup: price must ALSO be on the right
+                      side of its own weekly moving average. Live, paper, and backtest — check Recent activity to see it
+                      fire.
+                    </p>
+                  </div>
+                  <Field
+                    label="Relative strength weight (0-100)"
+                    hint="How much a candidate's out/under-performance vs. the benchmark below counts toward its total screener score — same 0-100 scale as every other scoring component. 0 (default) disables it entirely, including the extra benchmark-quote fetch."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={relativeStrengthWeightDraft}
+                        onChange={setRelativeStrengthWeightDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                        placeholder="0 (disabled)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save relative strength weight"
+                        onClick={() =>
+                          relativeStrengthWeightDraft != null &&
+                          saveConfig({ relativeStrengthWeight: relativeStrengthWeightDraft })
+                        }
+                        disabled={
+                          relativeStrengthWeightDraft == null ||
+                          relativeStrengthWeightDraft < 0 ||
+                          relativeStrengthWeightDraft > 100 ||
+                          relativeStrengthWeightDraft === config.data?.relativeStrengthWeight
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Benchmark symbol"
+                    hint="What relative strength above is measured against — e.g. SPY. Only matters when that weight is nonzero."
+                  >
+                    <div className="flex gap-2">
+                      <input
+                        className="input"
+                        value={benchmarkSymbolDraft}
+                        onChange={(e) => setBenchmarkSymbolDraft(e.target.value.toUpperCase())}
+                        placeholder="SPY"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save benchmark symbol"
+                        onClick={() =>
+                          benchmarkSymbolDraft.trim() !== '' &&
+                          saveConfig({ benchmarkSymbol: benchmarkSymbolDraft.trim() })
+                        }
+                        disabled={
+                          benchmarkSymbolDraft.trim() === '' ||
+                          benchmarkSymbolDraft.trim() === config.data?.benchmarkSymbol
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Relative strength lookback (days)"
+                    hint="Trading days back for both the candidate's own and the benchmark's return that relative strength compares."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={relativeStrengthLookbackDaysDraft}
+                        onChange={setRelativeStrengthLookbackDaysDraft}
+                        min={1}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save relative strength lookback"
+                        onClick={() =>
+                          relativeStrengthLookbackDaysDraft != null &&
+                          saveConfig({ relativeStrengthLookbackDays: relativeStrengthLookbackDaysDraft })
+                        }
+                        disabled={
+                          relativeStrengthLookbackDaysDraft == null ||
+                          relativeStrengthLookbackDaysDraft < 1 ||
+                          relativeStrengthLookbackDaysDraft === config.data?.relativeStrengthLookbackDays
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Max ticker ATR (%)"
+                    hint="Skip a candidate whose own ATR% (of price) exceeds this — the loop's own volatility guard, stricter than the manual Screen/Decision preview applies."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={maxTickerAtrPctDraft}
+                        onChange={setMaxTickerAtrPctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max ticker ATR"
+                        onClick={() =>
+                          maxTickerAtrPctDraft != null && saveConfig({ maxTickerAtrPct: maxTickerAtrPctDraft })
+                        }
+                        disabled={
+                          maxTickerAtrPctDraft == null ||
+                          maxTickerAtrPctDraft < 0 ||
+                          maxTickerAtrPctDraft > 100 ||
+                          maxTickerAtrPctDraft === config.data?.maxTickerAtrPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Max market ATR (%)"
+                    hint="Skip ALL new entries this cycle if SPY's own ATR% exceeds this — a broad-market volatility circuit breaker."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={maxMarketAtrPctDraft}
+                        onChange={setMaxMarketAtrPctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max market ATR"
+                        onClick={() =>
+                          maxMarketAtrPctDraft != null && saveConfig({ maxMarketAtrPct: maxMarketAtrPctDraft })
+                        }
+                        disabled={
+                          maxMarketAtrPctDraft == null ||
+                          maxMarketAtrPctDraft < 0 ||
+                          maxMarketAtrPctDraft > 100 ||
+                          maxMarketAtrPctDraft === config.data?.maxMarketAtrPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                </div>
+              </CollapsibleCard>
+
+              <CollapsibleCard id="autotrade.config.equityExits" title="Equity exits">
+                <div className="grid sm:grid-cols-2 gap-3 items-end">
+                  <Field
+                    label="Stop distance (× ATR)"
+                    hint="Stop distance = this × the candidate's own ATR — e.g. 1.5 places the stop 1.5 ATRs away from entry."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput value={stopAtrMultipleDraft} onChange={setStopAtrMultipleDraft} min={0} step={0.1} />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save stop distance"
+                        onClick={() =>
+                          stopAtrMultipleDraft != null && saveConfig({ stopAtrMultiple: stopAtrMultipleDraft })
+                        }
+                        disabled={
+                          stopAtrMultipleDraft == null ||
+                          stopAtrMultipleDraft <= 0 ||
+                          stopAtrMultipleDraft === config.data?.stopAtrMultiple
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Target (R-multiple)"
+                    hint="Target distance = stop distance × this — e.g. 2 places the target twice as far out as the stop (2R)."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput value={targetRMultipleDraft} onChange={setTargetRMultipleDraft} min={0} step={0.1} />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save target R-multiple"
+                        onClick={() =>
+                          targetRMultipleDraft != null && saveConfig({ targetRMultiple: targetRMultipleDraft })
+                        }
+                        disabled={
+                          targetRMultipleDraft == null ||
+                          targetRMultipleDraft <= 0 ||
+                          targetRMultipleDraft === config.data?.targetRMultiple
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Max hold time (days)"
+                    hint="Force-close a position after this many calendar days if neither the stop nor target has been hit yet. 0 disables this check (hold until stop/target/manual close, as before this existed)."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput value={maxHoldDaysDraft} onChange={setMaxHoldDaysDraft} min={0} step={1} />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max hold time"
+                        onClick={() => maxHoldDaysDraft != null && saveConfig({ maxHoldDays: maxHoldDaysDraft })}
+                        disabled={
+                          maxHoldDaysDraft == null ||
+                          maxHoldDaysDraft < 0 ||
+                          maxHoldDaysDraft === config.data?.maxHoldDays
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Breakeven trigger (R-multiple)"
+                    hint="Once unrealized gain reaches this many R, move the stop to exactly the entry price — a one-time move, never applied if it would loosen the current stop. 0 disables it. Paper and backtest only; live positions are untouched."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={breakevenTriggerRMultipleDraft}
+                        onChange={setBreakevenTriggerRMultipleDraft}
+                        min={0}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save breakeven trigger"
+                        onClick={() =>
+                          breakevenTriggerRMultipleDraft != null &&
+                          saveConfig({ breakevenTriggerRMultiple: breakevenTriggerRMultipleDraft })
+                        }
+                        disabled={
+                          breakevenTriggerRMultipleDraft == null ||
+                          breakevenTriggerRMultipleDraft < 0 ||
+                          breakevenTriggerRMultipleDraft === config.data?.breakevenTriggerRMultiple
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Trailing start (R-multiple)"
+                    hint="Once unrealized gain reaches this many R, start trailing the stop (see trailing distance below) behind the best price seen since entry. 0 disables trailing — independent of the breakeven trigger above."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={trailStartRMultipleDraft}
+                        onChange={setTrailStartRMultipleDraft}
+                        min={0}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save trailing start"
+                        onClick={() =>
+                          trailStartRMultipleDraft != null &&
+                          saveConfig({ trailStartRMultiple: trailStartRMultipleDraft })
+                        }
+                        disabled={
+                          trailStartRMultipleDraft == null ||
+                          trailStartRMultipleDraft < 0 ||
+                          trailStartRMultipleDraft === config.data?.trailStartRMultiple
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Trailing distance (R-multiple)"
+                    hint="Once trailing is active, the stop trails this many R (in the position's own original risk-distance terms) behind the best price seen — ratcheting only favorably, same as the breakeven trigger. Meaningless if trailing start above is 0."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={trailStopRMultipleDraft}
+                        onChange={setTrailStopRMultipleDraft}
+                        min={0}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save trailing distance"
+                        onClick={() =>
+                          trailStopRMultipleDraft != null && saveConfig({ trailStopRMultiple: trailStopRMultipleDraft })
+                        }
+                        disabled={
+                          trailStopRMultipleDraft == null ||
+                          trailStopRMultipleDraft < 0 ||
+                          trailStopRMultipleDraft === config.data?.trailStopRMultiple
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Partial exit trigger (R-multiple)"
+                    hint="Once unrealized gain reaches this many R, close the percentage below once — the rest keeps running toward its original target (or continues trailing). 0 disables it."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={partialExitRMultipleDraft}
+                        onChange={setPartialExitRMultipleDraft}
+                        min={0}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save partial exit trigger"
+                        onClick={() =>
+                          partialExitRMultipleDraft != null &&
+                          saveConfig({ partialExitRMultiple: partialExitRMultipleDraft })
+                        }
+                        disabled={
+                          partialExitRMultipleDraft == null ||
+                          partialExitRMultipleDraft < 0 ||
+                          partialExitRMultipleDraft === config.data?.partialExitRMultiple
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Partial exit size (%)"
+                    hint="% of the position closed at the partial-exit trigger above. Only meaningful when that trigger is nonzero."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={partialExitPctDraft}
+                        onChange={setPartialExitPctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save partial exit size"
+                        onClick={() =>
+                          partialExitPctDraft != null && saveConfig({ partialExitPct: partialExitPctDraft })
+                        }
+                        disabled={
+                          partialExitPctDraft == null ||
+                          partialExitPctDraft < 0 ||
+                          partialExitPctDraft > 100 ||
+                          partialExitPctDraft === config.data?.partialExitPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                </div>
+              </CollapsibleCard>
+
+              <CollapsibleCard id="autotrade.config.optionsExits" title="Options exits">
+                <div className="grid sm:grid-cols-2 gap-3 items-end">
+                  <Field
+                    label="Options stop-loss (%)"
+                    hint="Close a PAPER/BACKTEST options position once unrealized loss reaches this % of premium paid (net debit, for a spread). 0 disables it — LIVE options positions are unaffected and stay time-exit-only."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsStopLossPctDraft}
+                        onChange={setOptionsStopLossPctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                        placeholder="0 (disabled)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options stop-loss"
+                        onClick={() =>
+                          optionsStopLossPctDraft != null && saveConfig({ optionsStopLossPct: optionsStopLossPctDraft })
+                        }
+                        disabled={
+                          optionsStopLossPctDraft == null ||
+                          optionsStopLossPctDraft < 0 ||
+                          optionsStopLossPctDraft > 100 ||
+                          optionsStopLossPctDraft === config.data?.optionsStopLossPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options take-profit (%)"
+                    hint="Close a PAPER/BACKTEST options position once unrealized gain reaches this % of premium paid (net debit, for a spread). 0 disables it — LIVE options positions are unaffected and stay time-exit-only."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsTakeProfitPctDraft}
+                        onChange={setOptionsTakeProfitPctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                        placeholder="0 (disabled)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options take-profit"
+                        onClick={() =>
+                          optionsTakeProfitPctDraft != null &&
+                          saveConfig({ optionsTakeProfitPct: optionsTakeProfitPctDraft })
+                        }
+                        disabled={
+                          optionsTakeProfitPctDraft == null ||
+                          optionsTakeProfitPctDraft < 0 ||
+                          optionsTakeProfitPctDraft > 100 ||
+                          optionsTakeProfitPctDraft === config.data?.optionsTakeProfitPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options breakeven trigger (%)"
+                    hint="Once unrealized gain (% of premium paid, net debit for a spread) reaches this level, move the stop-loss floor to breakeven (0% — no gain, no loss) — a one-time move, never applied if it would loosen an already-ratcheted floor. 0 disables it. Paper and backtest only; live positions are untouched."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsBreakevenTriggerPctDraft}
+                        onChange={setOptionsBreakevenTriggerPctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                        placeholder="0 (disabled)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options breakeven trigger"
+                        onClick={() =>
+                          optionsBreakevenTriggerPctDraft != null &&
+                          saveConfig({ optionsBreakevenTriggerPct: optionsBreakevenTriggerPctDraft })
+                        }
+                        disabled={
+                          optionsBreakevenTriggerPctDraft == null ||
+                          optionsBreakevenTriggerPctDraft < 0 ||
+                          optionsBreakevenTriggerPctDraft > 100 ||
+                          optionsBreakevenTriggerPctDraft === config.data?.optionsBreakevenTriggerPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options trailing start (%)"
+                    hint="Once unrealized gain reaches this %, start trailing the stop-loss floor (see trailing distance below) behind the best gain % seen since entry. 0 disables trailing — independent of the breakeven trigger above."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsTrailStartPctDraft}
+                        onChange={setOptionsTrailStartPctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                        placeholder="0 (disabled)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options trailing start"
+                        onClick={() =>
+                          optionsTrailStartPctDraft != null &&
+                          saveConfig({ optionsTrailStartPct: optionsTrailStartPctDraft })
+                        }
+                        disabled={
+                          optionsTrailStartPctDraft == null ||
+                          optionsTrailStartPctDraft < 0 ||
+                          optionsTrailStartPctDraft > 100 ||
+                          optionsTrailStartPctDraft === config.data?.optionsTrailStartPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options trailing distance (%)"
+                    hint="Once trailing is active, the stop-loss floor trails this many percentage points behind the best unrealized gain % seen — ratcheting only favorably, same as the breakeven trigger. Meaningless if trailing start above is 0."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsTrailStopPctDraft}
+                        onChange={setOptionsTrailStopPctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                        placeholder="0 (disabled)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options trailing distance"
+                        onClick={() =>
+                          optionsTrailStopPctDraft != null &&
+                          saveConfig({ optionsTrailStopPct: optionsTrailStopPctDraft })
+                        }
+                        disabled={
+                          optionsTrailStopPctDraft == null ||
+                          optionsTrailStopPctDraft < 0 ||
+                          optionsTrailStopPctDraft > 100 ||
+                          optionsTrailStopPctDraft === config.data?.optionsTrailStopPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options partial exit trigger (%)"
+                    hint="Once unrealized gain reaches this %, close the percentage below once — the rest keeps running toward its original take-profit (or continues trailing). 0 disables it."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsPartialExitTriggerPctDraft}
+                        onChange={setOptionsPartialExitTriggerPctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                        placeholder="0 (disabled)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options partial exit trigger"
+                        onClick={() =>
+                          optionsPartialExitTriggerPctDraft != null &&
+                          saveConfig({ optionsPartialExitTriggerPct: optionsPartialExitTriggerPctDraft })
+                        }
+                        disabled={
+                          optionsPartialExitTriggerPctDraft == null ||
+                          optionsPartialExitTriggerPctDraft < 0 ||
+                          optionsPartialExitTriggerPctDraft > 100 ||
+                          optionsPartialExitTriggerPctDraft === config.data?.optionsPartialExitTriggerPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options partial exit size (%)"
+                    hint="% of the contracts closed at the partial-exit trigger above. Only meaningful when that trigger is nonzero."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsPartialExitPctDraft}
+                        onChange={setOptionsPartialExitPctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options partial exit size"
+                        onClick={() =>
+                          optionsPartialExitPctDraft != null &&
+                          saveConfig({ optionsPartialExitPct: optionsPartialExitPctDraft })
+                        }
+                        disabled={
+                          optionsPartialExitPctDraft == null ||
+                          optionsPartialExitPctDraft < 0 ||
+                          optionsPartialExitPctDraft > 100 ||
+                          optionsPartialExitPctDraft === config.data?.optionsPartialExitPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                </div>
+              </CollapsibleCard>
+
+              <CollapsibleCard id="autotrade.config.entryTiming" title="Entry timing">
+                <div className="grid sm:grid-cols-2 gap-3 items-end">
+                  <Field
+                    label="Session buffer (minutes)"
+                    hint="No new entries within this many minutes of the session open or close — the opening auction and closing imbalance both distort prices."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={sessionBufferMinutesDraft}
+                        onChange={setSessionBufferMinutesDraft}
+                        min={0}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save session buffer"
+                        onClick={() =>
+                          sessionBufferMinutesDraft != null &&
+                          saveConfig({ sessionBufferMinutes: sessionBufferMinutesDraft })
+                        }
+                        disabled={
+                          sessionBufferMinutesDraft == null ||
+                          sessionBufferMinutesDraft < 0 ||
+                          sessionBufferMinutesDraft === config.data?.sessionBufferMinutes
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Earnings blackout (days)"
+                    hint="Skip an equity candidate whose next known earnings date falls within this many calendar days — an unattended loop can't react to an earnings-driven overnight gap. 0 disables this check. Options entries are unaffected (IV rank already covers this there)."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={earningsBlackoutDaysDraft}
+                        onChange={setEarningsBlackoutDaysDraft}
+                        min={0}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save earnings blackout"
+                        onClick={() =>
+                          earningsBlackoutDaysDraft != null &&
+                          saveConfig({ earningsBlackoutDays: earningsBlackoutDaysDraft })
+                        }
+                        disabled={
+                          earningsBlackoutDaysDraft == null ||
+                          earningsBlackoutDaysDraft < 0 ||
+                          earningsBlackoutDaysDraft === config.data?.earningsBlackoutDays
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                </div>
+              </CollapsibleCard>
+
+              <CollapsibleCard id="autotrade.config.autoPromote" title="Auto-promote recurring movers">
+                <div className="grid sm:grid-cols-2 gap-3 items-end">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={autoPromoteMoversEnabled}
+                      onChange={(e) => saveConfig({ autoPromoteMoversEnabled: e.target.checked })}
+                    />
+                    Auto-promote recurring movers
+                  </label>
+                  <Field
+                    label="Promotion threshold"
+                    hint="A movers-sourced symbol (Webull's daily gainers/unusual-volume feed) that clears screening this many DISTINCT days within the window earns a permanent spot in your universe — automatically, from the automated loop only, never from a manual Run screen."
+                  >
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <NumberInput
+                        value={autoPromoteThresholdDraft}
+                        onChange={setAutoPromoteThresholdDraft}
+                        min={1}
+                        step={1}
+                      />
+                      <span className="text-xs text-slate-500">times within</span>
+                      <NumberInput
+                        value={autoPromoteWindowDaysDraft}
+                        onChange={setAutoPromoteWindowDaysDraft}
+                        min={1}
+                        step={1}
+                      />
+                      <span className="text-xs text-slate-500">days</span>
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save promotion threshold"
+                        onClick={() =>
+                          autoPromoteThresholdDraft != null &&
+                          autoPromoteWindowDaysDraft != null &&
+                          saveConfig({
+                            autoPromoteThreshold: autoPromoteThresholdDraft,
+                            autoPromoteWindowDays: autoPromoteWindowDaysDraft,
+                          })
+                        }
+                        disabled={
+                          autoPromoteThresholdDraft == null ||
+                          autoPromoteWindowDaysDraft == null ||
+                          autoPromoteThresholdDraft < 1 ||
+                          autoPromoteWindowDaysDraft < 1 ||
+                          (autoPromoteThresholdDraft === config.data?.autoPromoteThreshold &&
+                            autoPromoteWindowDaysDraft === config.data?.autoPromoteWindowDays)
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Max auto-promoted symbols"
+                    hint="Lifetime cap on symbols added by this mechanism specifically — doesn't count your seeded or manually-added universe. Once a symbol is promoted (or you remove one later), it's never reconsidered again either way."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={autoPromoteMaxSymbolsDraft}
+                        onChange={setAutoPromoteMaxSymbolsDraft}
+                        min={0}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max auto-promoted symbols"
+                        onClick={() =>
+                          autoPromoteMaxSymbolsDraft != null &&
+                          saveConfig({ autoPromoteMaxSymbols: autoPromoteMaxSymbolsDraft })
+                        }
+                        disabled={
+                          autoPromoteMaxSymbolsDraft == null ||
+                          autoPromoteMaxSymbolsDraft < 0 ||
+                          autoPromoteMaxSymbolsDraft === config.data?.autoPromoteMaxSymbols
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                </div>
+              </CollapsibleCard>
+            </>
+          )}
+          {config.data && config.data.accountEquityUsd === null && (
+            <p className="text-[11px] text-bear mt-3">
+              Account equity isn&apos;t set — the risk engine blocks every trade until it is (fails closed rather than
+              guessing).
+            </p>
+          )}
+          {killSwitch && (
+            <p className="text-[11px] text-bear mt-3">
+              <strong>Kill switch engaged</strong> — new entries are halted regardless of the settings above. Existing
+              paper positions keep working: their stop/target levels are still checked every cycle (see the &quot;Paper
+              trading&quot; card on the Dashboard tab).
+            </p>
+          )}
+          {enabled && !killSwitch && (
+            <p className="text-[11px] text-amber-400 mt-3">
+              Auto-trading is enabled — the background loop is now actively scanning and placing <strong>paper</strong>{' '}
+              trades on a schedule. It never touches a real broker (see &quot;Paper trading&quot; on the Dashboard tab);
+              going live is configured separately (see &quot;Live trading&quot; below).
+            </p>
+          )}
+
+          <CollapsibleCard id="autotrade.liveTrading" title="Live trading">
+            <p className="text-[11px] text-slate-500 mb-3">
+              Places REAL orders through Webull once enabled — no per-order confirmation, only the guardrails configured
+              here plus the kill switch. Independent of paper trading (both can run at once — see the Dashboard tab).
+              See docs/AUTOTRADING_SPEC.md&apos;s Phase 8 design for the full reasoning.
+            </p>
+            {/* No separate loading/error rendering here — this card is driven by
             the SAME config request as Configuration above, which already
             shows its own Spinner/ErrorState; repeating it here would just
             show "Something went wrong" twice for one failed request. */}
-        {config.data && (
-          <LiveTradingSection
-            config={config.data}
-            paperPositions={paperPositions.data?.positions ?? []}
-            liveAccountIdDraft={liveAccountIdDraft}
-            setLiveAccountIdDraft={setLiveAccountIdDraft}
-            liveMaxOrderUsdDraft={liveMaxOrderUsdDraft}
-            setLiveMaxOrderUsdDraft={setLiveMaxOrderUsdDraft}
-            liveMaxDailyLossUsdDraft={liveMaxDailyLossUsdDraft}
-            setLiveMaxDailyLossUsdDraft={setLiveMaxDailyLossUsdDraft}
-            liveMaxOrdersPerDayDraft={liveMaxOrdersPerDayDraft}
-            setLiveMaxOrdersPerDayDraft={setLiveMaxOrdersPerDayDraft}
-            liveFatFingerPctDraft={liveFatFingerPctDraft}
-            setLiveFatFingerPctDraft={setLiveFatFingerPctDraft}
-            liveAllowNakedShortDraft={liveAllowNakedShortDraft}
-            setLiveAllowNakedShortDraft={setLiveAllowNakedShortDraft}
-            liveProbationTradesDraft={liveProbationTradesDraft}
-            setLiveProbationTradesDraft={setLiveProbationTradesDraft}
-            liveProbationSizeMultiplierDraft={liveProbationSizeMultiplierDraft}
-            setLiveProbationSizeMultiplierDraft={setLiveProbationSizeMultiplierDraft}
-            liveCapsBusy={liveCapsBusy}
-            onSaveLiveCaps={saveLiveCaps}
-            suggestLiveCapsBusy={suggestLiveCapsBusy}
-            onSuggestLiveCaps={applySuggestedLiveCaps}
-            confirmLiveText={confirmLiveText}
-            setConfirmLiveText={setConfirmLiveText}
-            confirmPhrase={LIVE_TRADING_CONFIRMATION_PHRASE}
-            liveEnableBusy={liveEnableBusy}
-            onEnable={enableLiveTrading}
-            onDisable={disableLiveTrading}
-            dashboard={dashboard.data}
-            liveOptionsEnabledDraft={liveOptionsEnabledDraft}
-            setLiveOptionsEnabledDraft={setLiveOptionsEnabledDraft}
-            liveOptionsMaxOrderUsdDraft={liveOptionsMaxOrderUsdDraft}
-            setLiveOptionsMaxOrderUsdDraft={setLiveOptionsMaxOrderUsdDraft}
-            liveOptionsMaxDailyLossUsdDraft={liveOptionsMaxDailyLossUsdDraft}
-            setLiveOptionsMaxDailyLossUsdDraft={setLiveOptionsMaxDailyLossUsdDraft}
-            liveOptionsMaxOrdersPerDayDraft={liveOptionsMaxOrdersPerDayDraft}
-            setLiveOptionsMaxOrdersPerDayDraft={setLiveOptionsMaxOrdersPerDayDraft}
-            liveOptionsFatFingerPctDraft={liveOptionsFatFingerPctDraft}
-            setLiveOptionsFatFingerPctDraft={setLiveOptionsFatFingerPctDraft}
-            liveOptionsProbationTradesDraft={liveOptionsProbationTradesDraft}
-            setLiveOptionsProbationTradesDraft={setLiveOptionsProbationTradesDraft}
-            liveOptionsProbationSizeMultiplierDraft={liveOptionsProbationSizeMultiplierDraft}
-            setLiveOptionsProbationSizeMultiplierDraft={setLiveOptionsProbationSizeMultiplierDraft}
-            liveOptionsSaveBusy={liveOptionsSaveBusy}
-            onSaveLiveOptionsCaps={saveLiveOptionsCaps}
-          />
-        )}
-
-        <h4 className="font-medium text-sm mt-5 mb-3 text-bear">
-          Live positions — real money, no per-order confirmation
-        </h4>
-        <p className="text-xs text-slate-500 mb-3">
-          The real fills the loop has actually placed through Webull — the same{' '}
-          <code className="text-[11px]">positions</code> rows your own manual trades use, tagged so only
-          autotrade&apos;s own are shown here. Nothing here is simulated; see the Positions and Journal pages for your
-          full real book (autotrade&apos;s fills included, unmarked there).
-        </p>
-        {livePositions.loading ? (
-          <Spinner />
-        ) : livePositions.error ? (
-          <ErrorState error={livePositions.error} onRetry={livePositions.reload} />
-        ) : (
-          (() => {
-            const rows = livePositions.data?.positions ?? [];
-            const open = rows.filter((p) => p.status === 'open');
-            const closed = rows.filter((p) => p.status === 'closed');
-            const totalRealized = rows.reduce((s, p) => s + p.pnl.realizedPnl, 0);
-            const unrealizedTotal = open.reduce((s, p) => s + (p.pnl.unrealizedPnl ?? 0), 0);
-            const unrealizedKnown = open.some((p) => p.pnl.unrealizedPnl !== null);
-            return (
-              <>
-                {rows.length > 0 && (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
-                    <StatTile label="Open" value={open.length} />
-                    <StatTile label="Closed" value={closed.length} />
-                    <StatTile
-                      label="Realized P&L"
-                      value={fmtSignedUsd(totalRealized)}
-                      valueClass={totalRealized >= 0 ? 'text-bull' : 'text-bear'}
-                    />
-                    <StatTile
-                      label="Unrealized P&L"
-                      value={unrealizedKnown ? fmtSignedUsd(unrealizedTotal) : '—'}
-                      valueClass={unrealizedKnown ? (unrealizedTotal >= 0 ? 'text-bull' : 'text-bear') : undefined}
-                    />
-                  </div>
-                )}
-                <LivePositionsTable positions={rows} onClose={setCloseEquityPos} />
-              </>
-            );
-          })()
-        )}
-
-        <h4 className="font-medium text-sm mt-5 mb-3 text-bear">
-          Live options positions — real money, no per-order confirmation
-        </h4>
-        <p className="text-xs text-slate-500 mb-3">
-          The real options fills the loop has actually placed through Webull — its own ledger (
-          <code className="text-[11px]">autotrade_live_options_positions</code>), separate from the equity live
-          positions above since a debit spread needs a second leg&apos;s columns.
-        </p>
-        {liveOptionsPositions.loading ? (
-          <Spinner />
-        ) : liveOptionsPositions.error ? (
-          <ErrorState error={liveOptionsPositions.error} onRetry={liveOptionsPositions.reload} />
-        ) : (
-          (() => {
-            const rows = liveOptionsPositions.data?.positions ?? [];
-            const open = rows.filter((p) => p.status === 'open');
-            const closed = rows.filter((p) => p.status === 'closed');
-            const pnls = closed.map((p) => optionsPaperPnl(p)).filter((v): v is number => v !== null);
-            const totalRealized = pnls.reduce((s, v) => s + v, 0);
-            const unrealizedTotal = open.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0);
-            const unrealizedKnown = open.some((p) => p.unrealizedPnl !== null);
-            return (
-              <>
-                {rows.length > 0 && (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
-                    <StatTile label="Open" value={open.length} />
-                    <StatTile label="Closed" value={closed.length} />
-                    <StatTile
-                      label="Realized P&L"
-                      value={fmtSignedUsd(totalRealized)}
-                      valueClass={totalRealized >= 0 ? 'text-bull' : 'text-bear'}
-                    />
-                    <StatTile
-                      label="Unrealized P&L"
-                      value={unrealizedKnown ? fmtSignedUsd(unrealizedTotal) : '—'}
-                      valueClass={unrealizedKnown ? (unrealizedTotal >= 0 ? 'text-bull' : 'text-bear') : undefined}
-                    />
-                  </div>
-                )}
-                <LiveOptionsPositionsTable positions={rows} onClose={setCloseOptionsPos} />
-              </>
-            );
-          })()
-        )}
-      </CollapsibleCard>
-
-      <CollapsibleCard id="autotrade.monitoring" title="Monitoring">
-        {dashboard.loading && !dashboard.data ? (
-          <Spinner />
-        ) : dashboard.error ? (
-          <ErrorState error={dashboard.error} onRetry={dashboard.reload} />
-        ) : dashboard.data ? (
-          <MonitoringDashboard dash={dashboard.data} />
-        ) : null}
-      </CollapsibleCard>
-
-      <CollapsibleCard id="autotrade.realEstateExclusion" title="Real-estate exclusion list">
-        <div className="grid sm:grid-cols-4 gap-2 items-end mb-3">
-          <Field label="Symbol">
-            <input
-              className="input"
-              value={newSymbol}
-              onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
-              placeholder="O"
-            />
-          </Field>
-          <div className="sm:col-span-2">
-            <Field label="Reason (optional)">
-              <input
-                className="input"
-                value={newReason}
-                onChange={(e) => setNewReason(e.target.value)}
-                placeholder="REIT"
+            {config.data && (
+              <LiveTradingSection
+                config={config.data}
+                paperPositions={paperPositions.data?.positions ?? []}
+                liveAccountIdDraft={liveAccountIdDraft}
+                setLiveAccountIdDraft={setLiveAccountIdDraft}
+                liveMaxOrderUsdDraft={liveMaxOrderUsdDraft}
+                setLiveMaxOrderUsdDraft={setLiveMaxOrderUsdDraft}
+                liveMaxDailyLossUsdDraft={liveMaxDailyLossUsdDraft}
+                setLiveMaxDailyLossUsdDraft={setLiveMaxDailyLossUsdDraft}
+                liveMaxOrdersPerDayDraft={liveMaxOrdersPerDayDraft}
+                setLiveMaxOrdersPerDayDraft={setLiveMaxOrdersPerDayDraft}
+                liveFatFingerPctDraft={liveFatFingerPctDraft}
+                setLiveFatFingerPctDraft={setLiveFatFingerPctDraft}
+                liveAllowNakedShortDraft={liveAllowNakedShortDraft}
+                setLiveAllowNakedShortDraft={setLiveAllowNakedShortDraft}
+                liveProbationTradesDraft={liveProbationTradesDraft}
+                setLiveProbationTradesDraft={setLiveProbationTradesDraft}
+                liveProbationSizeMultiplierDraft={liveProbationSizeMultiplierDraft}
+                setLiveProbationSizeMultiplierDraft={setLiveProbationSizeMultiplierDraft}
+                liveCapsBusy={liveCapsBusy}
+                onSaveLiveCaps={saveLiveCaps}
+                suggestLiveCapsBusy={suggestLiveCapsBusy}
+                onSuggestLiveCaps={applySuggestedLiveCaps}
+                confirmLiveText={confirmLiveText}
+                setConfirmLiveText={setConfirmLiveText}
+                confirmPhrase={LIVE_TRADING_CONFIRMATION_PHRASE}
+                liveEnableBusy={liveEnableBusy}
+                onEnable={enableLiveTrading}
+                onDisable={disableLiveTrading}
+                dashboard={dashboard.data}
+                liveOptionsEnabledDraft={liveOptionsEnabledDraft}
+                setLiveOptionsEnabledDraft={setLiveOptionsEnabledDraft}
+                liveOptionsMaxOrderUsdDraft={liveOptionsMaxOrderUsdDraft}
+                setLiveOptionsMaxOrderUsdDraft={setLiveOptionsMaxOrderUsdDraft}
+                liveOptionsMaxDailyLossUsdDraft={liveOptionsMaxDailyLossUsdDraft}
+                setLiveOptionsMaxDailyLossUsdDraft={setLiveOptionsMaxDailyLossUsdDraft}
+                liveOptionsMaxOrdersPerDayDraft={liveOptionsMaxOrdersPerDayDraft}
+                setLiveOptionsMaxOrdersPerDayDraft={setLiveOptionsMaxOrdersPerDayDraft}
+                liveOptionsFatFingerPctDraft={liveOptionsFatFingerPctDraft}
+                setLiveOptionsFatFingerPctDraft={setLiveOptionsFatFingerPctDraft}
+                liveOptionsProbationTradesDraft={liveOptionsProbationTradesDraft}
+                setLiveOptionsProbationTradesDraft={setLiveOptionsProbationTradesDraft}
+                liveOptionsProbationSizeMultiplierDraft={liveOptionsProbationSizeMultiplierDraft}
+                setLiveOptionsProbationSizeMultiplierDraft={setLiveOptionsProbationSizeMultiplierDraft}
+                liveOptionsSaveBusy={liveOptionsSaveBusy}
+                onSaveLiveOptionsCaps={saveLiveOptionsCaps}
               />
-            </Field>
-          </div>
-          <button className="btn-primary" onClick={addExclusion}>
-            Add
-          </button>
-        </div>
-        {exclusions.loading ? (
-          <Spinner />
-        ) : exclusions.error ? (
-          <ErrorState error={exclusions.error} onRetry={exclusions.reload} />
-        ) : exclusionRows.length === 0 ? (
-          <EmptyState
-            title="No exclusions"
-            hint="Add a symbol above — the sector/industry classification check also catches unlisted REITs."
-          />
-        ) : (
-          <table className="w-full">
-            <thead className="border-b border-ink-600/60">
-              <tr>
-                <th className="th">Symbol</th>
-                <th className="th">Reason</th>
-                <th className="th">Source</th>
-                <th className="th text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {exclusionRows.map((e) => (
-                <tr key={e.symbol} className="border-b border-ink-700/50">
-                  <td className="td font-semibold">{e.symbol}</td>
-                  <td className="td text-slate-400">{e.reason || '—'}</td>
-                  <td className="td">
-                    <Badge color={e.source === 'default' ? 'slate' : 'blue'}>{e.source}</Badge>
-                  </td>
-                  <td className="td text-right">
-                    <button
-                      className="text-xs text-slate-500 hover:text-bear"
-                      onClick={() => removeExclusion(e.symbol)}
-                    >
-                      remove
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </CollapsibleCard>
+            )}
+          </CollapsibleCard>
+        </>
+      )}
 
-      <CollapsibleCard
-        id="autotrade.screen"
-        title="Research, Screen & Decide"
-        action={
-          <button className="btn-primary" onClick={runScreen} disabled={screenBusy}>
-            {screenBusy ? 'Scanning…' : 'Run screen'}
-          </button>
-        }
-      >
-        {screenErr && <div className="text-bear text-sm mb-2">{screenErr}</div>}
-        {screenResult ? (
-          <div className="space-y-4">
-            <p className="text-xs text-slate-500">
-              Scanned {screenResult.discovery.scannedCount} symbols ({screenResult.discovery.universeCount} universe
-              {screenResult.discovery.moversCount > 0 ? ` + ${screenResult.discovery.moversCount} movers` : ''}) ·
-              generated {ago(screenResult.generatedAt)}
+      {view === 'dashboard' && (
+        <>
+          <CollapsibleCard id="autotrade.livePositions" title="Live positions">
+            <h4 className="font-medium text-sm mb-3 text-bear">
+              Live positions — real money, no per-order confirmation
+            </h4>
+            <p className="text-xs text-slate-500 mb-3">
+              The real fills the loop has actually placed through Webull — the same{' '}
+              <code className="text-[11px]">positions</code> rows your own manual trades use, tagged so only
+              autotrade&apos;s own are shown here. Nothing here is simulated; see the Positions and Journal pages for
+              your full real book (autotrade&apos;s fills included, unmarked there).
             </p>
-            <ScreenSection title={`Candidates (${screenResult.candidates.length})`}>
-              {screenResult.candidates.length === 0 ? (
-                <p className="text-xs text-slate-500">No candidates passed screening this run.</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="border-b border-ink-600/60">
-                      <tr>
-                        <th className="th">Symbol</th>
-                        <th className="th">Dir</th>
-                        <th className="th text-right">Price</th>
-                        <th className="th text-right">Score</th>
-                        <th className="th text-right">Gap</th>
-                        <th className="th text-right">Rel Vol</th>
-                        <th className="th">Source</th>
-                        <th className="th text-right">Entry</th>
-                        <th className="th text-right">Stop</th>
-                        <th className="th text-right">Target</th>
-                        <th className="th text-right">R</th>
-                        <th className="th text-right">Qty</th>
-                        <th className="th">Risk check</th>
-                        <th className="th">Options</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {screenResult.candidates.map((c) => {
-                        const signal = signalBySymbol.get(c.symbol);
-                        const risk = riskBySymbol.get(c.symbol);
-                        const optSignal = optionsSignalBySymbol.get(c.symbol);
-                        const optRisk = optionsRiskBySymbol.get(c.symbol);
-                        const failing = risk?.checks.filter((chk) => !chk.passed) ?? [];
-                        const optFailing = optRisk?.checks.filter((chk) => !chk.passed) ?? [];
-                        const optRiskIsSpread = !!optRisk && 'suggestedContracts' in optRisk.sizing;
-                        const optRiskQty = !optRisk
-                          ? 0
-                          : 'suggestedContracts' in optRisk.sizing
-                            ? optRisk.sizing.suggestedContracts
-                            : optRisk.sizing.suggestedQuantity;
-                        return (
-                          <tr key={c.symbol} className="border-b border-ink-700/50">
-                            <td className="td font-semibold">{c.symbol}</td>
-                            <td className="td">
-                              <Badge color={c.direction === 'long' ? 'green' : 'red'}>{c.direction}</Badge>
-                            </td>
-                            <td className="td text-right tabular-nums">{fmtUsd(c.price)}</td>
-                            <td className="td text-right tabular-nums">{fmtNum(c.total, 1)}</td>
-                            <td className="td text-right tabular-nums">
-                              {c.indicators.gapPct === null ? '—' : fmtPct(c.indicators.gapPct)}
-                            </td>
-                            <td className="td text-right tabular-nums">
-                              {c.indicators.relVolume === null ? '—' : `${fmtNum(c.indicators.relVolume)}×`}
-                            </td>
-                            <td className="td">
-                              <Badge color={c.discoverySource === 'movers' ? 'green' : 'slate'}>
-                                {c.discoverySource}
-                              </Badge>
-                            </td>
-                            <td className="td text-right tabular-nums" title={signal?.rationale}>
-                              {signal ? fmtUsd(signal.entry) : '—'}
-                            </td>
-                            <td className="td text-right tabular-nums text-bear">
-                              {signal ? fmtUsd(signal.stop) : '—'}
-                            </td>
-                            <td className="td text-right tabular-nums text-bull">
-                              {signal ? fmtUsd(signal.target) : '—'}
-                            </td>
-                            <td className="td text-right tabular-nums">{signal ? `${signal.rMultiple}R` : '—'}</td>
-                            <td className="td text-right tabular-nums">
-                              {risk && risk.ok ? risk.sizing.suggestedQuantity : '—'}
-                            </td>
-                            <td className="td">
-                              {!risk ? (
-                                '—'
-                              ) : risk.ok ? (
-                                <Badge color="green">approved</Badge>
-                              ) : (
-                                <span title={failing.map((chk) => `${chk.rule}: ${chk.detail}`).join('\n')}>
-                                  <Badge color="red">blocked</Badge>{' '}
-                                  <span className="text-[11px] text-slate-500">{failing[0]?.rule}</span>
-                                </span>
-                              )}
-                            </td>
-                            <td className="td" title={optSignal?.rationale}>
-                              {optSignal ? (
-                                <div className="space-y-0.5">
-                                  <span className="whitespace-nowrap">
-                                    {optSignal.kind === 'single_leg' ? (
-                                      <>
-                                        <Badge color={optSignal.side === 'call' ? 'green' : 'red'}>
-                                          {optSignal.side} {optSignal.strike}
-                                        </Badge>{' '}
-                                        <span className="text-[11px] text-slate-500">
-                                          {fmtUsd(optSignal.premium)} · {fmtDate(optSignal.expiration)}
-                                        </span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Badge color={optSignal.side === 'call' ? 'green' : 'red'}>
-                                          {optSignal.side} {optSignal.longStrike}/{optSignal.shortStrike}
-                                        </Badge>{' '}
-                                        <span className="text-[11px] text-slate-500">
-                                          {fmtUsd(optSignal.netDebit)} debit · {fmtDate(optSignal.expiration)}
-                                        </span>
-                                      </>
-                                    )}
-                                  </span>
-                                  {optRisk && (
-                                    <div>
-                                      {optRisk.ok ? (
-                                        <span className="whitespace-nowrap">
-                                          <Badge color="green">approved</Badge>{' '}
-                                          <span className="text-[11px] text-slate-500">
-                                            {optRiskQty} {optRiskIsSpread ? 'spread' : 'contract'}
-                                            {optRiskQty === 1 ? '' : 's'}
-                                          </span>
-                                        </span>
-                                      ) : (
-                                        <span title={optFailing.map((chk) => `${chk.rule}: ${chk.detail}`).join('\n')}>
-                                          <Badge color="red">blocked</Badge>{' '}
-                                          <span className="text-[11px] text-slate-500">{optFailing[0]?.rule}</span>
-                                        </span>
+            {livePositions.loading ? (
+              <Spinner />
+            ) : livePositions.error ? (
+              <ErrorState error={livePositions.error} onRetry={livePositions.reload} />
+            ) : (
+              (() => {
+                const rows = livePositions.data?.positions ?? [];
+                const open = rows.filter((p) => p.status === 'open');
+                const closed = rows.filter((p) => p.status === 'closed');
+                const totalRealized = rows.reduce((s, p) => s + p.pnl.realizedPnl, 0);
+                const unrealizedTotal = open.reduce((s, p) => s + (p.pnl.unrealizedPnl ?? 0), 0);
+                const unrealizedKnown = open.some((p) => p.pnl.unrealizedPnl !== null);
+                return (
+                  <>
+                    {rows.length > 0 && (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+                        <StatTile label="Open" value={open.length} />
+                        <StatTile label="Closed" value={closed.length} />
+                        <StatTile
+                          label="Realized P&L"
+                          value={fmtSignedUsd(totalRealized)}
+                          valueClass={totalRealized >= 0 ? 'text-bull' : 'text-bear'}
+                        />
+                        <StatTile
+                          label="Unrealized P&L"
+                          value={unrealizedKnown ? fmtSignedUsd(unrealizedTotal) : '—'}
+                          valueClass={unrealizedKnown ? (unrealizedTotal >= 0 ? 'text-bull' : 'text-bear') : undefined}
+                        />
+                      </div>
+                    )}
+                    <LivePositionsTable positions={rows} onClose={setCloseEquityPos} />
+                  </>
+                );
+              })()
+            )}
+
+            <h4 className="font-medium text-sm mt-5 mb-3 text-bear">
+              Live options positions — real money, no per-order confirmation
+            </h4>
+            <p className="text-xs text-slate-500 mb-3">
+              The real options fills the loop has actually placed through Webull — its own ledger (
+              <code className="text-[11px]">autotrade_live_options_positions</code>), separate from the equity live
+              positions above since a debit spread needs a second leg&apos;s columns.
+            </p>
+            {liveOptionsPositions.loading ? (
+              <Spinner />
+            ) : liveOptionsPositions.error ? (
+              <ErrorState error={liveOptionsPositions.error} onRetry={liveOptionsPositions.reload} />
+            ) : (
+              (() => {
+                const rows = liveOptionsPositions.data?.positions ?? [];
+                const open = rows.filter((p) => p.status === 'open');
+                const closed = rows.filter((p) => p.status === 'closed');
+                const pnls = closed.map((p) => optionsPaperPnl(p)).filter((v): v is number => v !== null);
+                const totalRealized = pnls.reduce((s, v) => s + v, 0);
+                const unrealizedTotal = open.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0);
+                const unrealizedKnown = open.some((p) => p.unrealizedPnl !== null);
+                return (
+                  <>
+                    {rows.length > 0 && (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+                        <StatTile label="Open" value={open.length} />
+                        <StatTile label="Closed" value={closed.length} />
+                        <StatTile
+                          label="Realized P&L"
+                          value={fmtSignedUsd(totalRealized)}
+                          valueClass={totalRealized >= 0 ? 'text-bull' : 'text-bear'}
+                        />
+                        <StatTile
+                          label="Unrealized P&L"
+                          value={unrealizedKnown ? fmtSignedUsd(unrealizedTotal) : '—'}
+                          valueClass={unrealizedKnown ? (unrealizedTotal >= 0 ? 'text-bull' : 'text-bear') : undefined}
+                        />
+                      </div>
+                    )}
+                    <LiveOptionsPositionsTable positions={rows} onClose={setCloseOptionsPos} />
+                  </>
+                );
+              })()
+            )}
+          </CollapsibleCard>
+
+          <CollapsibleCard id="autotrade.monitoring" title="Monitoring">
+            {dashboard.loading && !dashboard.data ? (
+              <Spinner />
+            ) : dashboard.error ? (
+              <ErrorState error={dashboard.error} onRetry={dashboard.reload} />
+            ) : dashboard.data ? (
+              <MonitoringDashboard dash={dashboard.data} />
+            ) : null}
+          </CollapsibleCard>
+        </>
+      )}
+
+      {view === 'config' && (
+        <>
+          <CollapsibleCard id="autotrade.realEstateExclusion" title="Real-estate exclusion list">
+            <div className="grid sm:grid-cols-4 gap-2 items-end mb-3">
+              <Field label="Symbol">
+                <input
+                  className="input"
+                  value={newSymbol}
+                  onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
+                  placeholder="O"
+                />
+              </Field>
+              <div className="sm:col-span-2">
+                <Field label="Reason (optional)">
+                  <input
+                    className="input"
+                    value={newReason}
+                    onChange={(e) => setNewReason(e.target.value)}
+                    placeholder="REIT"
+                  />
+                </Field>
+              </div>
+              <button className="btn-primary" onClick={addExclusion}>
+                Add
+              </button>
+            </div>
+            {exclusions.loading ? (
+              <Spinner />
+            ) : exclusions.error ? (
+              <ErrorState error={exclusions.error} onRetry={exclusions.reload} />
+            ) : exclusionRows.length === 0 ? (
+              <EmptyState
+                title="No exclusions"
+                hint="Add a symbol above — the sector/industry classification check also catches unlisted REITs."
+              />
+            ) : (
+              <table className="w-full">
+                <thead className="border-b border-ink-600/60">
+                  <tr>
+                    <th className="th">Symbol</th>
+                    <th className="th">Reason</th>
+                    <th className="th">Source</th>
+                    <th className="th text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {exclusionRows.map((e) => (
+                    <tr key={e.symbol} className="border-b border-ink-700/50">
+                      <td className="td font-semibold">{e.symbol}</td>
+                      <td className="td text-slate-400">{e.reason || '—'}</td>
+                      <td className="td">
+                        <Badge color={e.source === 'default' ? 'slate' : 'blue'}>{e.source}</Badge>
+                      </td>
+                      <td className="td text-right">
+                        <button
+                          className="text-xs text-slate-500 hover:text-bear"
+                          onClick={() => removeExclusion(e.symbol)}
+                        >
+                          remove
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </CollapsibleCard>
+        </>
+      )}
+
+      {view === 'dashboard' && (
+        <>
+          <CollapsibleCard
+            id="autotrade.screen"
+            title="Research, Screen & Decide"
+            action={
+              <button className="btn-primary" onClick={runScreen} disabled={screenBusy}>
+                {screenBusy ? 'Scanning…' : 'Run screen'}
+              </button>
+            }
+          >
+            {screenErr && <div className="text-bear text-sm mb-2">{screenErr}</div>}
+            {screenResult ? (
+              <div className="space-y-4">
+                <p className="text-xs text-slate-500">
+                  Scanned {screenResult.discovery.scannedCount} symbols ({screenResult.discovery.universeCount} universe
+                  {screenResult.discovery.moversCount > 0 ? ` + ${screenResult.discovery.moversCount} movers` : ''}) ·
+                  generated {ago(screenResult.generatedAt)}
+                </p>
+                <ScreenSection title={`Candidates (${screenResult.candidates.length})`}>
+                  {screenResult.candidates.length === 0 ? (
+                    <p className="text-xs text-slate-500">No candidates passed screening this run.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead className="border-b border-ink-600/60">
+                          <tr>
+                            <th className="th">Symbol</th>
+                            <th className="th">Dir</th>
+                            <th className="th text-right">Price</th>
+                            <th className="th text-right">Score</th>
+                            <th className="th text-right">Gap</th>
+                            <th className="th text-right">Rel Vol</th>
+                            <th className="th">Source</th>
+                            <th className="th text-right">Entry</th>
+                            <th className="th text-right">Stop</th>
+                            <th className="th text-right">Target</th>
+                            <th className="th text-right">R</th>
+                            <th className="th text-right">Qty</th>
+                            <th className="th">Risk check</th>
+                            <th className="th">Options</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {screenResult.candidates.map((c) => {
+                            const signal = signalBySymbol.get(c.symbol);
+                            const risk = riskBySymbol.get(c.symbol);
+                            const optSignal = optionsSignalBySymbol.get(c.symbol);
+                            const optRisk = optionsRiskBySymbol.get(c.symbol);
+                            const failing = risk?.checks.filter((chk) => !chk.passed) ?? [];
+                            const optFailing = optRisk?.checks.filter((chk) => !chk.passed) ?? [];
+                            const optRiskIsSpread = !!optRisk && 'suggestedContracts' in optRisk.sizing;
+                            const optRiskQty = !optRisk
+                              ? 0
+                              : 'suggestedContracts' in optRisk.sizing
+                                ? optRisk.sizing.suggestedContracts
+                                : optRisk.sizing.suggestedQuantity;
+                            return (
+                              <tr key={c.symbol} className="border-b border-ink-700/50">
+                                <td className="td font-semibold">{c.symbol}</td>
+                                <td className="td">
+                                  <Badge color={c.direction === 'long' ? 'green' : 'red'}>{c.direction}</Badge>
+                                </td>
+                                <td className="td text-right tabular-nums">{fmtUsd(c.price)}</td>
+                                <td className="td text-right tabular-nums">{fmtNum(c.total, 1)}</td>
+                                <td className="td text-right tabular-nums">
+                                  {c.indicators.gapPct === null ? '—' : fmtPct(c.indicators.gapPct)}
+                                </td>
+                                <td className="td text-right tabular-nums">
+                                  {c.indicators.relVolume === null ? '—' : `${fmtNum(c.indicators.relVolume)}×`}
+                                </td>
+                                <td className="td">
+                                  <Badge color={c.discoverySource === 'movers' ? 'green' : 'slate'}>
+                                    {c.discoverySource}
+                                  </Badge>
+                                </td>
+                                <td className="td text-right tabular-nums" title={signal?.rationale}>
+                                  {signal ? fmtUsd(signal.entry) : '—'}
+                                </td>
+                                <td className="td text-right tabular-nums text-bear">
+                                  {signal ? fmtUsd(signal.stop) : '—'}
+                                </td>
+                                <td className="td text-right tabular-nums text-bull">
+                                  {signal ? fmtUsd(signal.target) : '—'}
+                                </td>
+                                <td className="td text-right tabular-nums">{signal ? `${signal.rMultiple}R` : '—'}</td>
+                                <td className="td text-right tabular-nums">
+                                  {risk && risk.ok ? risk.sizing.suggestedQuantity : '—'}
+                                </td>
+                                <td className="td">
+                                  {!risk ? (
+                                    '—'
+                                  ) : risk.ok ? (
+                                    <Badge color="green">approved</Badge>
+                                  ) : (
+                                    <span title={failing.map((chk) => `${chk.rule}: ${chk.detail}`).join('\n')}>
+                                      <Badge color="red">blocked</Badge>{' '}
+                                      <span className="text-[11px] text-slate-500">{failing[0]?.rule}</span>
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="td" title={optSignal?.rationale}>
+                                  {optSignal ? (
+                                    <div className="space-y-0.5">
+                                      <span className="whitespace-nowrap">
+                                        {optSignal.kind === 'single_leg' ? (
+                                          <>
+                                            <Badge color={optSignal.side === 'call' ? 'green' : 'red'}>
+                                              {optSignal.side} {optSignal.strike}
+                                            </Badge>{' '}
+                                            <span className="text-[11px] text-slate-500">
+                                              {fmtUsd(optSignal.premium)} · {fmtDate(optSignal.expiration)}
+                                            </span>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <Badge color={optSignal.side === 'call' ? 'green' : 'red'}>
+                                              {optSignal.side} {optSignal.longStrike}/{optSignal.shortStrike}
+                                            </Badge>{' '}
+                                            <span className="text-[11px] text-slate-500">
+                                              {fmtUsd(optSignal.netDebit)} debit · {fmtDate(optSignal.expiration)}
+                                            </span>
+                                          </>
+                                        )}
+                                      </span>
+                                      {optRisk && (
+                                        <div>
+                                          {optRisk.ok ? (
+                                            <span className="whitespace-nowrap">
+                                              <Badge color="green">approved</Badge>{' '}
+                                              <span className="text-[11px] text-slate-500">
+                                                {optRiskQty} {optRiskIsSpread ? 'spread' : 'contract'}
+                                                {optRiskQty === 1 ? '' : 's'}
+                                              </span>
+                                            </span>
+                                          ) : (
+                                            <span
+                                              title={optFailing.map((chk) => `${chk.rule}: ${chk.detail}`).join('\n')}
+                                            >
+                                              <Badge color="red">blocked</Badge>{' '}
+                                              <span className="text-[11px] text-slate-500">{optFailing[0]?.rule}</span>
+                                            </span>
+                                          )}
+                                        </div>
                                       )}
                                     </div>
+                                  ) : (
+                                    <span className="text-[11px] text-slate-500">—</span>
                                   )}
-                                </div>
-                              ) : (
-                                <span className="text-[11px] text-slate-500">—</span>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </ScreenSection>
-            {result && result.decision.skipped.length > 0 && (
-              <ScreenSection title={`No signal — insufficient volatility history (${result.decision.skipped.length})`}>
-                <ul className="text-xs text-slate-500 space-y-0.5">
-                  {result.decision.skipped.map((s) => (
-                    <li key={s.symbol}>
-                      <span className="font-semibold text-slate-300">{s.symbol}</span> — {s.reason}
-                    </li>
-                  ))}
-                </ul>
-              </ScreenSection>
-            )}
-            {result && result.optionsDecision.skipped.length > 0 && (
-              <ScreenSection title={`No options signal (${result.optionsDecision.skipped.length})`}>
-                <ul className="text-xs text-slate-500 space-y-0.5">
-                  {result.optionsDecision.skipped.map((s) => (
-                    <li key={s.symbol}>
-                      <span className="font-semibold text-slate-300">{s.symbol}</span> — {s.reason}
-                    </li>
-                  ))}
-                </ul>
-              </ScreenSection>
-            )}
-            {screenResult.excluded.length > 0 && (
-              <ScreenSection title={`Excluded — real estate (${screenResult.excluded.length})`}>
-                <ul className="text-xs text-slate-400 space-y-0.5">
-                  {screenResult.excluded.map((e) => (
-                    <li key={e.symbol}>
-                      <span className="font-semibold text-slate-300">{e.symbol}</span> — {e.reason}
-                    </li>
-                  ))}
-                </ul>
-              </ScreenSection>
-            )}
-            {screenResult.skipped.length > 0 && (
-              <ScreenSection title={`Skipped — unverified sector (${screenResult.skipped.length})`}>
-                <ul className="text-xs text-slate-500 space-y-0.5">
-                  {screenResult.skipped.map((s) => (
-                    <li key={s.symbol}>
-                      <span className="font-semibold text-slate-300">{s.symbol}</span> — {s.reason}
-                    </li>
-                  ))}
-                </ul>
-              </ScreenSection>
-            )}
-            {screenResult.errors.length > 0 && (
-              <ScreenSection title={`Errors (${screenResult.errors.length})`}>
-                <ul className="text-xs text-bear space-y-0.5">
-                  {screenResult.errors.map((e) => (
-                    <li key={e.symbol}>
-                      <span className="font-semibold">{e.symbol}</span> — {e.message}
-                    </li>
-                  ))}
-                </ul>
-              </ScreenSection>
-            )}
-          </div>
-        ) : (
-          !screenErr && (
-            <p className="text-xs text-slate-500">
-              Scans the universe (plus Webull&apos;s pre-market movers, if configured) for volume-breakout candidates,
-              screening out real estate first, then computes an ATR-based stop and reward:risk target for each one that
-              clears, then sizes and risk-checks it against the active profile&apos;s caps (daily drawdown, concurrent
-              positions, max aggregate open risk, correlated-ticker exposure, daily trade cap). Read-only — nothing here
-              places an order.
-            </p>
-          )
-        )}
-      </CollapsibleCard>
-
-      <CollapsibleCard id="autotrade.backtest" title="Backtest & walk-forward">
-        <p className="text-xs text-slate-500 mb-3">
-          Replays Screen → Decision → Risk Check day-by-day over historical daily bars, using the exact same logic the
-          live loop uses — the validation gate docs/AUTOTRADING_SPEC.md requires before any paper or live trading. Leave
-          &quot;Out-of-sample split&quot; blank for a single-window backtest, or set it to split the run into in-sample
-          vs out-of-sample windows (a strategy that only performs in-sample should look weak or negative out-of-sample).
-          &quot;Run options backtest&quot; replays the same window through the options overlay instead — single leg or
-          debit spread, whichever the Options strategy setting above is set to, gated by the same equity screen — a
-          separate, independent run, not combined with the equity book above. &quot;Run combined backtest&quot; replays
-          the SAME window with both books sharing ONE risk budget instead — an approved equity position&apos;s risk
-          counts against an options candidate&apos;s cap that same day, and vice versa, exactly like the live
-          loop&apos;s paper execution already enforces. Read-only — nothing here places an order.
-        </p>
-        <div className="grid sm:grid-cols-3 gap-3 items-end mb-3">
-          <div className="sm:col-span-3">
-            <Field label="Symbols (comma-separated)">
-              <input
-                className="input"
-                value={btSymbols}
-                onChange={(e) => setBtSymbols(e.target.value.toUpperCase())}
-                placeholder="AAPL, MSFT, NVDA"
-              />
-            </Field>
-          </div>
-          <Field label="From">
-            <input type="date" className="input" value={btFrom} onChange={(e) => setBtFrom(e.target.value)} />
-          </Field>
-          <Field label="To">
-            <input type="date" className="input" value={btTo} onChange={(e) => setBtTo(e.target.value)} />
-          </Field>
-          <Field label="Out-of-sample split (optional)" hint="Splits into in-sample / out-of-sample when set.">
-            <input type="date" className="input" value={btSplitDate} onChange={(e) => setBtSplitDate(e.target.value)} />
-          </Field>
-          <Field label="Backtest risk profile" hint="Independent of the live Configuration risk profile above.">
-            <select
-              className="input"
-              value={btRiskProfile}
-              onChange={(e) => setBtRiskProfile(e.target.value as AutotradeRiskProfile)}
-            >
-              <option value="MODERATE">Moderate</option>
-              <option value="AGGRESSIVE">Aggressive</option>
-            </select>
-          </Field>
-          <Field
-            label="Backtest trade direction"
-            hint="Independent of the live Configuration's Trade direction above. In Both, each candidate is scored as long and short and the run trades whichever side qualifies — governs options call/put too."
-          >
-            <select
-              className="input"
-              value={btDirectionMode}
-              onChange={(e) => setBtDirectionMode(e.target.value as AutotradeTradeDirectionMode)}
-            >
-              <option value="long">Long only (default)</option>
-              <option value="short">Short only</option>
-              <option value="both">Both</option>
-            </select>
-          </Field>
-          <Field label="Starting equity ($)">
-            <NumberInput value={btEquity} onChange={setBtEquity} placeholder="e.g. 100000" />
-          </Field>
-          <Field label="Max concurrent positions" hint="Independent of the live Configuration cap above.">
-            <NumberInput value={btMaxPositions} onChange={setBtMaxPositions} min={1} step={1} placeholder="e.g. 3" />
-          </Field>
-          <div className="flex gap-2 flex-wrap">
-            <button className="btn-primary" onClick={runBacktest} disabled={btBusy}>
-              {btBusy ? 'Running…' : btSplitDate ? 'Run walk-forward' : 'Run backtest'}
-            </button>
-            <button
-              className="btn-ghost"
-              onClick={runOptionsBacktest}
-              disabled={optBtBusy}
-              title="Replays the same window through the options overlay (phases 9-11) instead of the equity strategy."
-            >
-              {optBtBusy ? 'Running…' : btSplitDate ? 'Run options walk-forward' : 'Run options backtest'}
-            </button>
-            <button
-              className="btn-ghost"
-              onClick={runCombinedBacktestClick}
-              disabled={combinedBtBusy}
-              title="Replays the same window with equity and options sharing ONE combined risk budget, instead of the two independent overlays above."
-            >
-              {combinedBtBusy ? 'Running…' : btSplitDate ? 'Run combined walk-forward' : 'Run combined backtest'}
-            </button>
-          </div>
-        </div>
-        {btErr && <div className="text-bear text-sm mb-2">{btErr}</div>}
-        {btResult && (
-          <div className="space-y-3">
-            {btResult.report.excludedSymbols.length > 0 && (
-              <p className="text-[11px] text-slate-500">
-                Excluded (real estate): {btResult.report.excludedSymbols.map((e) => e.symbol).join(', ')}
-              </p>
-            )}
-            {btResult.report.errors.length > 0 && (
-              <p className="text-[11px] text-bear">
-                Couldn&apos;t fetch data — excluded from this run:{' '}
-                {btResult.report.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
-              </p>
-            )}
-            <BacktestStatsGrid stats={btResult.stats} />
-            <BacktestEquityChart equityCurve={btResult.report.equityCurve} gradientId="btEquityPlain" />
-            <BacktestTradesTable trades={btResult.report.trades} />
-          </div>
-        )}
-        {btWfResult && btSubmitted && (
-          <div className="space-y-5">
-            {btWfResult.excludedSymbols.length > 0 && (
-              <p className="text-[11px] text-slate-500">
-                Excluded (real estate): {btWfResult.excludedSymbols.map((e) => e.symbol).join(', ')}
-              </p>
-            )}
-            {btWfResult.errors.length > 0 && (
-              <p className="text-[11px] text-bear">
-                Couldn&apos;t fetch data — excluded from this run:{' '}
-                {btWfResult.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
-              </p>
-            )}
-            <BacktestWindowResult
-              title={`In-sample (${btSubmitted.from} → ${btSubmitted.splitDate})`}
-              hint="The tuning window — strong performance here alone proves nothing."
-              run={btWfResult.inSample}
-              gradientId="btEquityIn"
-            />
-            <BacktestWindowResult
-              title={`Out-of-sample (${btSubmitted.splitDate} → ${btSubmitted.to})`}
-              hint="Unseen data — this is the number that matters for the validation gate."
-              run={btWfResult.outOfSample}
-              gradientId="btEquityOut"
-            />
-          </div>
-        )}
-        {optBtErr && <div className="text-bear text-sm mb-2">{optBtErr}</div>}
-        {optBtResult && (
-          <div className="space-y-3">
-            <h4 className="text-xs uppercase tracking-wide text-slate-400">Options overlay</h4>
-            {optBtResult.report.excludedSymbols.length > 0 && (
-              <p className="text-[11px] text-slate-500">
-                Excluded (real estate): {optBtResult.report.excludedSymbols.map((e) => e.symbol).join(', ')}
-              </p>
-            )}
-            {optBtResult.report.errors.length > 0 && (
-              <p className="text-[11px] text-bear">
-                Couldn&apos;t fetch data — excluded from this run:{' '}
-                {optBtResult.report.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
-              </p>
-            )}
-            <BacktestStatsGrid stats={optBtResult.stats} />
-            <BacktestEquityChart equityCurve={optBtResult.report.equityCurve} gradientId="optBtEquityPlain" />
-            <OptionsBacktestTradesTable trades={optBtResult.report.trades} />
-          </div>
-        )}
-        {optBtWfResult && btSubmitted && (
-          <div className="space-y-5">
-            <h4 className="text-xs uppercase tracking-wide text-slate-400">Options overlay</h4>
-            {optBtWfResult.excludedSymbols.length > 0 && (
-              <p className="text-[11px] text-slate-500">
-                Excluded (real estate): {optBtWfResult.excludedSymbols.map((e) => e.symbol).join(', ')}
-              </p>
-            )}
-            {optBtWfResult.errors.length > 0 && (
-              <p className="text-[11px] text-bear">
-                Couldn&apos;t fetch data — excluded from this run:{' '}
-                {optBtWfResult.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
-              </p>
-            )}
-            <OptionsBacktestWindowResult
-              title={`In-sample (${btSubmitted.from} → ${btSubmitted.splitDate})`}
-              hint="The tuning window — strong performance here alone proves nothing."
-              run={optBtWfResult.inSample}
-              gradientId="optBtEquityIn"
-            />
-            <OptionsBacktestWindowResult
-              title={`Out-of-sample (${btSubmitted.splitDate} → ${btSubmitted.to})`}
-              hint="Unseen data — this is the number that matters for the validation gate."
-              run={optBtWfResult.outOfSample}
-              gradientId="optBtEquityOut"
-            />
-          </div>
-        )}
-        {combinedBtErr && <div className="text-bear text-sm mb-2">{combinedBtErr}</div>}
-        {combinedBtResult && (
-          <div className="space-y-3">
-            <h4 className="text-xs uppercase tracking-wide text-slate-400">Combined (one shared risk budget)</h4>
-            {combinedBtResult.report.excludedSymbols.length > 0 && (
-              <p className="text-[11px] text-slate-500">
-                Excluded (real estate): {combinedBtResult.report.excludedSymbols.map((e) => e.symbol).join(', ')}
-              </p>
-            )}
-            {combinedBtResult.report.errors.length > 0 && (
-              <p className="text-[11px] text-bear">
-                Couldn&apos;t fetch data — excluded from this run:{' '}
-                {combinedBtResult.report.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
-              </p>
-            )}
-            <BacktestStatsGrid stats={combinedBtResult.stats} />
-            <BacktestEquityChart equityCurve={combinedBtResult.report.equityCurve} gradientId="combinedBtEquityPlain" />
-            <BacktestTradesTable trades={combinedBtResult.report.equityTrades} />
-            <OptionsBacktestTradesTable trades={combinedBtResult.report.optionsTrades} />
-          </div>
-        )}
-        {combinedBtWfResult && btSubmitted && (
-          <div className="space-y-5">
-            <h4 className="text-xs uppercase tracking-wide text-slate-400">Combined (one shared risk budget)</h4>
-            {combinedBtWfResult.excludedSymbols.length > 0 && (
-              <p className="text-[11px] text-slate-500">
-                Excluded (real estate): {combinedBtWfResult.excludedSymbols.map((e) => e.symbol).join(', ')}
-              </p>
-            )}
-            {combinedBtWfResult.errors.length > 0 && (
-              <p className="text-[11px] text-bear">
-                Couldn&apos;t fetch data — excluded from this run:{' '}
-                {combinedBtWfResult.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
-              </p>
-            )}
-            <CombinedBacktestWindowResult
-              title={`In-sample (${btSubmitted.from} → ${btSubmitted.splitDate})`}
-              hint="The tuning window — strong performance here alone proves nothing."
-              run={combinedBtWfResult.inSample}
-              gradientId="combinedBtEquityIn"
-            />
-            <CombinedBacktestWindowResult
-              title={`Out-of-sample (${btSubmitted.splitDate} → ${btSubmitted.to})`}
-              hint="Unseen data — this is the number that matters for the validation gate."
-              run={combinedBtWfResult.outOfSample}
-              gradientId="combinedBtEquityOut"
-            />
-          </div>
-        )}
-      </CollapsibleCard>
-
-      <CollapsibleCard
-        id="autotrade.paperTrading"
-        title="Paper trading"
-        action={
-          <button className="btn-primary" onClick={runLoopOnce} disabled={loopBusy}>
-            {loopBusy ? 'Running…' : 'Run one cycle now'}
-          </button>
-        }
-      >
-        <p className="text-xs text-slate-500 mb-3">
-          When enabled above, the server runs this same Screen → Decision → Risk Check → Execution cycle on its own
-          every minute — this button just runs one cycle immediately, so you can watch it work without waiting. Every
-          fill here is a local simulation from a live quote; it never places a real order (see
-          docs/AUTOTRADING_SPEC.md). No entries in the first/last 15 minutes of the session, and a volatility filter
-          (per-ticker and broad-market) can skip a cycle&apos;s entries entirely.
-        </p>
-        {loopErr && <div className="text-bear text-sm mb-2">{loopErr}</div>}
-        {loopSummary && (
-          <p className="text-[11px] text-slate-500 mb-3">
-            {loopSummary.skippedReason ? (
-              <>New entries skipped — {loopSummary.skippedReason}. </>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </ScreenSection>
+                {result && result.decision.skipped.length > 0 && (
+                  <ScreenSection
+                    title={`No signal — insufficient volatility history (${result.decision.skipped.length})`}
+                  >
+                    <ul className="text-xs text-slate-500 space-y-0.5">
+                      {result.decision.skipped.map((s) => (
+                        <li key={s.symbol}>
+                          <span className="font-semibold text-slate-300">{s.symbol}</span> — {s.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  </ScreenSection>
+                )}
+                {result && result.optionsDecision.skipped.length > 0 && (
+                  <ScreenSection title={`No options signal (${result.optionsDecision.skipped.length})`}>
+                    <ul className="text-xs text-slate-500 space-y-0.5">
+                      {result.optionsDecision.skipped.map((s) => (
+                        <li key={s.symbol}>
+                          <span className="font-semibold text-slate-300">{s.symbol}</span> — {s.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  </ScreenSection>
+                )}
+                {screenResult.excluded.length > 0 && (
+                  <ScreenSection title={`Excluded — real estate (${screenResult.excluded.length})`}>
+                    <ul className="text-xs text-slate-400 space-y-0.5">
+                      {screenResult.excluded.map((e) => (
+                        <li key={e.symbol}>
+                          <span className="font-semibold text-slate-300">{e.symbol}</span> — {e.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  </ScreenSection>
+                )}
+                {screenResult.skipped.length > 0 && (
+                  <ScreenSection title={`Skipped — unverified sector (${screenResult.skipped.length})`}>
+                    <ul className="text-xs text-slate-500 space-y-0.5">
+                      {screenResult.skipped.map((s) => (
+                        <li key={s.symbol}>
+                          <span className="font-semibold text-slate-300">{s.symbol}</span> — {s.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  </ScreenSection>
+                )}
+                {screenResult.errors.length > 0 && (
+                  <ScreenSection title={`Errors (${screenResult.errors.length})`}>
+                    <ul className="text-xs text-bear space-y-0.5">
+                      {screenResult.errors.map((e) => (
+                        <li key={e.symbol}>
+                          <span className="font-semibold">{e.symbol}</span> — {e.message}
+                        </li>
+                      ))}
+                    </ul>
+                  </ScreenSection>
+                )}
+              </div>
             ) : (
-              <>
-                Screened {loopSummary.candidatesScreened}, {loopSummary.candidatesPassedVolatility} passed the
-                volatility filter, {loopSummary.signalsGenerated} signal(s) generated, {loopSummary.entriesOpened}{' '}
-                opened ({loopSummary.optionsEntriesOpened} options). Options decision considered{' '}
-                {loopSummary.optionsCandidatesConsidered} candidate(s) (universe-sourced only — movers can't accumulate
-                real IV-rank history) and generated {loopSummary.optionsSignalsGenerated} signal(s).{' '}
-                {loopSummary.moversAutoPromoted > 0 && (
-                  <>{loopSummary.moversAutoPromoted} recurring mover(s) promoted to the universe. </>
-                )}
-              </>
+              !screenErr && (
+                <p className="text-xs text-slate-500">
+                  Scans the universe (plus Webull&apos;s pre-market movers, if configured) for volume-breakout
+                  candidates, screening out real estate first, then computes an ATR-based stop and reward:risk target
+                  for each one that clears, then sizes and risk-checks it against the active profile&apos;s caps (daily
+                  drawdown, concurrent positions, max aggregate open risk, correlated-ticker exposure, daily trade cap).
+                  Read-only — nothing here places an order.
+                </p>
+              )
             )}
-            Exits checked: {loopSummary.exitsChecked} ({loopSummary.exitsClosed} closed) — options:{' '}
-            {loopSummary.optionsExitsChecked} ({loopSummary.optionsExitsClosed} closed).
-          </p>
-        )}
-        {paperPositions.loading ? (
-          <Spinner />
-        ) : paperPositions.error ? (
-          <ErrorState error={paperPositions.error} onRetry={paperPositions.reload} />
-        ) : (
-          (() => {
-            const rows = paperPositions.data?.positions ?? [];
-            const open = rows.filter((p) => p.status === 'open');
-            const closed = rows.filter((p) => p.status === 'closed');
-            const totalPnl = closed.reduce((s, p) => s + (paperPnl(p) ?? 0), 0);
-            const unrealizedTotal = open.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0);
-            const unrealizedKnown = open.some((p) => p.unrealizedPnl !== null);
-            return (
-              <>
-                {rows.length > 0 && (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
-                    <StatTile label="Open" value={open.length} />
-                    <StatTile label="Closed" value={closed.length} />
-                    <StatTile
-                      label="Realized P&L"
-                      value={fmtSignedUsd(totalPnl)}
-                      valueClass={totalPnl >= 0 ? 'text-bull' : 'text-bear'}
-                    />
-                    <StatTile
-                      label="Unrealized P&L"
-                      value={unrealizedKnown ? fmtSignedUsd(unrealizedTotal) : '—'}
-                      valueClass={unrealizedKnown ? (unrealizedTotal >= 0 ? 'text-bull' : 'text-bear') : undefined}
-                    />
-                  </div>
-                )}
-                <PaperPositionsTable positions={rows} />
-              </>
-            );
-          })()
-        )}
+          </CollapsibleCard>
 
-        <h4 className="font-medium text-sm mt-5 mb-3">Options paper positions</h4>
-        <p className="text-xs text-slate-500 mb-3">
-          Long calls/puts or debit spreads (whichever the Options strategy setting above builds), gated by the same
-          combined risk budget as equity. A spread's Entry/Current/Exit $ show its net value (long leg minus short leg).
-          Automated exit is time-based only (close as expiration approaches, no roll) — take-profit/stop-loss/
-          delta-drift stay human-review-only on the Options page.
-        </p>
-        {optionsPaperPositions.loading ? (
-          <Spinner />
-        ) : optionsPaperPositions.error ? (
-          <ErrorState error={optionsPaperPositions.error} onRetry={optionsPaperPositions.reload} />
-        ) : (
-          (() => {
-            const rows = optionsPaperPositions.data?.positions ?? [];
-            const open = rows.filter((p) => p.status === 'open');
-            const closed = rows.filter((p) => p.status === 'closed');
-            const totalPnl = closed.reduce((s, p) => s + (optionsPaperPnl(p) ?? 0), 0);
-            const unrealizedTotal = open.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0);
-            const unrealizedKnown = open.some((p) => p.unrealizedPnl !== null);
-            return (
-              <>
-                {rows.length > 0 && (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
-                    <StatTile label="Open" value={open.length} />
-                    <StatTile label="Closed" value={closed.length} />
-                    <StatTile
-                      label="Realized P&L"
-                      value={fmtSignedUsd(totalPnl)}
-                      valueClass={totalPnl >= 0 ? 'text-bull' : 'text-bear'}
-                    />
-                    <StatTile
-                      label="Unrealized P&L"
-                      value={unrealizedKnown ? fmtSignedUsd(unrealizedTotal) : '—'}
-                      valueClass={unrealizedKnown ? (unrealizedTotal >= 0 ? 'text-bull' : 'text-bear') : undefined}
-                    />
-                  </div>
+          <CollapsibleCard id="autotrade.backtest" title="Backtest & walk-forward">
+            <p className="text-xs text-slate-500 mb-3">
+              Replays Screen → Decision → Risk Check day-by-day over historical daily bars, using the exact same logic
+              the live loop uses — the validation gate docs/AUTOTRADING_SPEC.md requires before any paper or live
+              trading. Leave &quot;Out-of-sample split&quot; blank for a single-window backtest, or set it to split the
+              run into in-sample vs out-of-sample windows (a strategy that only performs in-sample should look weak or
+              negative out-of-sample). &quot;Run options backtest&quot; replays the same window through the options
+              overlay instead — single leg or debit spread, whichever the Options strategy setting above is set to,
+              gated by the same equity screen — a separate, independent run, not combined with the equity book above.
+              &quot;Run combined backtest&quot; replays the SAME window with both books sharing ONE risk budget instead
+              — an approved equity position&apos;s risk counts against an options candidate&apos;s cap that same day,
+              and vice versa, exactly like the live loop&apos;s paper execution already enforces. Read-only — nothing
+              here places an order.
+            </p>
+            <div className="grid sm:grid-cols-3 gap-3 items-end mb-3">
+              <div className="sm:col-span-3">
+                <Field label="Symbols (comma-separated)">
+                  <input
+                    className="input"
+                    value={btSymbols}
+                    onChange={(e) => setBtSymbols(e.target.value.toUpperCase())}
+                    placeholder="AAPL, MSFT, NVDA"
+                  />
+                </Field>
+              </div>
+              <Field label="From">
+                <input type="date" className="input" value={btFrom} onChange={(e) => setBtFrom(e.target.value)} />
+              </Field>
+              <Field label="To">
+                <input type="date" className="input" value={btTo} onChange={(e) => setBtTo(e.target.value)} />
+              </Field>
+              <Field label="Out-of-sample split (optional)" hint="Splits into in-sample / out-of-sample when set.">
+                <input
+                  type="date"
+                  className="input"
+                  value={btSplitDate}
+                  onChange={(e) => setBtSplitDate(e.target.value)}
+                />
+              </Field>
+              <Field label="Backtest risk profile" hint="Independent of the live Configuration risk profile above.">
+                <select
+                  className="input"
+                  value={btRiskProfile}
+                  onChange={(e) => setBtRiskProfile(e.target.value as AutotradeRiskProfile)}
+                >
+                  <option value="MODERATE">Moderate</option>
+                  <option value="AGGRESSIVE">Aggressive</option>
+                </select>
+              </Field>
+              <Field
+                label="Backtest trade direction"
+                hint="Independent of the live Configuration's Trade direction above. In Both, each candidate is scored as long and short and the run trades whichever side qualifies — governs options call/put too."
+              >
+                <select
+                  className="input"
+                  value={btDirectionMode}
+                  onChange={(e) => setBtDirectionMode(e.target.value as AutotradeTradeDirectionMode)}
+                >
+                  <option value="long">Long only (default)</option>
+                  <option value="short">Short only</option>
+                  <option value="both">Both</option>
+                </select>
+              </Field>
+              <Field label="Starting equity ($)">
+                <NumberInput value={btEquity} onChange={setBtEquity} placeholder="e.g. 100000" />
+              </Field>
+              <Field label="Max concurrent positions" hint="Independent of the live Configuration cap above.">
+                <NumberInput
+                  value={btMaxPositions}
+                  onChange={setBtMaxPositions}
+                  min={1}
+                  step={1}
+                  placeholder="e.g. 3"
+                />
+              </Field>
+              <div className="flex gap-2 flex-wrap">
+                <button className="btn-primary" onClick={runBacktest} disabled={btBusy}>
+                  {btBusy ? 'Running…' : btSplitDate ? 'Run walk-forward' : 'Run backtest'}
+                </button>
+                <button
+                  className="btn-ghost"
+                  onClick={runOptionsBacktest}
+                  disabled={optBtBusy}
+                  title="Replays the same window through the options overlay (phases 9-11) instead of the equity strategy."
+                >
+                  {optBtBusy ? 'Running…' : btSplitDate ? 'Run options walk-forward' : 'Run options backtest'}
+                </button>
+                <button
+                  className="btn-ghost"
+                  onClick={runCombinedBacktestClick}
+                  disabled={combinedBtBusy}
+                  title="Replays the same window with equity and options sharing ONE combined risk budget, instead of the two independent overlays above."
+                >
+                  {combinedBtBusy ? 'Running…' : btSplitDate ? 'Run combined walk-forward' : 'Run combined backtest'}
+                </button>
+              </div>
+            </div>
+            {btErr && <div className="text-bear text-sm mb-2">{btErr}</div>}
+            {btResult && (
+              <div className="space-y-3">
+                {btResult.report.excludedSymbols.length > 0 && (
+                  <p className="text-[11px] text-slate-500">
+                    Excluded (real estate): {btResult.report.excludedSymbols.map((e) => e.symbol).join(', ')}
+                  </p>
                 )}
-                <OptionsPaperPositionsTable positions={rows} />
-              </>
-            );
-          })()
-        )}
-      </CollapsibleCard>
+                {btResult.report.errors.length > 0 && (
+                  <p className="text-[11px] text-bear">
+                    Couldn&apos;t fetch data — excluded from this run:{' '}
+                    {btResult.report.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
+                  </p>
+                )}
+                <BacktestStatsGrid stats={btResult.stats} />
+                <BacktestEquityChart equityCurve={btResult.report.equityCurve} gradientId="btEquityPlain" />
+                <BacktestTradesTable trades={btResult.report.trades} />
+              </div>
+            )}
+            {btWfResult && btSubmitted && (
+              <div className="space-y-5">
+                {btWfResult.excludedSymbols.length > 0 && (
+                  <p className="text-[11px] text-slate-500">
+                    Excluded (real estate): {btWfResult.excludedSymbols.map((e) => e.symbol).join(', ')}
+                  </p>
+                )}
+                {btWfResult.errors.length > 0 && (
+                  <p className="text-[11px] text-bear">
+                    Couldn&apos;t fetch data — excluded from this run:{' '}
+                    {btWfResult.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
+                  </p>
+                )}
+                <BacktestWindowResult
+                  title={`In-sample (${btSubmitted.from} → ${btSubmitted.splitDate})`}
+                  hint="The tuning window — strong performance here alone proves nothing."
+                  run={btWfResult.inSample}
+                  gradientId="btEquityIn"
+                />
+                <BacktestWindowResult
+                  title={`Out-of-sample (${btSubmitted.splitDate} → ${btSubmitted.to})`}
+                  hint="Unseen data — this is the number that matters for the validation gate."
+                  run={btWfResult.outOfSample}
+                  gradientId="btEquityOut"
+                />
+              </div>
+            )}
+            {optBtErr && <div className="text-bear text-sm mb-2">{optBtErr}</div>}
+            {optBtResult && (
+              <div className="space-y-3">
+                <h4 className="text-xs uppercase tracking-wide text-slate-400">Options overlay</h4>
+                {optBtResult.report.excludedSymbols.length > 0 && (
+                  <p className="text-[11px] text-slate-500">
+                    Excluded (real estate): {optBtResult.report.excludedSymbols.map((e) => e.symbol).join(', ')}
+                  </p>
+                )}
+                {optBtResult.report.errors.length > 0 && (
+                  <p className="text-[11px] text-bear">
+                    Couldn&apos;t fetch data — excluded from this run:{' '}
+                    {optBtResult.report.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
+                  </p>
+                )}
+                <BacktestStatsGrid stats={optBtResult.stats} />
+                <BacktestEquityChart equityCurve={optBtResult.report.equityCurve} gradientId="optBtEquityPlain" />
+                <OptionsBacktestTradesTable trades={optBtResult.report.trades} />
+              </div>
+            )}
+            {optBtWfResult && btSubmitted && (
+              <div className="space-y-5">
+                <h4 className="text-xs uppercase tracking-wide text-slate-400">Options overlay</h4>
+                {optBtWfResult.excludedSymbols.length > 0 && (
+                  <p className="text-[11px] text-slate-500">
+                    Excluded (real estate): {optBtWfResult.excludedSymbols.map((e) => e.symbol).join(', ')}
+                  </p>
+                )}
+                {optBtWfResult.errors.length > 0 && (
+                  <p className="text-[11px] text-bear">
+                    Couldn&apos;t fetch data — excluded from this run:{' '}
+                    {optBtWfResult.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
+                  </p>
+                )}
+                <OptionsBacktestWindowResult
+                  title={`In-sample (${btSubmitted.from} → ${btSubmitted.splitDate})`}
+                  hint="The tuning window — strong performance here alone proves nothing."
+                  run={optBtWfResult.inSample}
+                  gradientId="optBtEquityIn"
+                />
+                <OptionsBacktestWindowResult
+                  title={`Out-of-sample (${btSubmitted.splitDate} → ${btSubmitted.to})`}
+                  hint="Unseen data — this is the number that matters for the validation gate."
+                  run={optBtWfResult.outOfSample}
+                  gradientId="optBtEquityOut"
+                />
+              </div>
+            )}
+            {combinedBtErr && <div className="text-bear text-sm mb-2">{combinedBtErr}</div>}
+            {combinedBtResult && (
+              <div className="space-y-3">
+                <h4 className="text-xs uppercase tracking-wide text-slate-400">Combined (one shared risk budget)</h4>
+                {combinedBtResult.report.excludedSymbols.length > 0 && (
+                  <p className="text-[11px] text-slate-500">
+                    Excluded (real estate): {combinedBtResult.report.excludedSymbols.map((e) => e.symbol).join(', ')}
+                  </p>
+                )}
+                {combinedBtResult.report.errors.length > 0 && (
+                  <p className="text-[11px] text-bear">
+                    Couldn&apos;t fetch data — excluded from this run:{' '}
+                    {combinedBtResult.report.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
+                  </p>
+                )}
+                <BacktestStatsGrid stats={combinedBtResult.stats} />
+                <BacktestEquityChart
+                  equityCurve={combinedBtResult.report.equityCurve}
+                  gradientId="combinedBtEquityPlain"
+                />
+                <BacktestTradesTable trades={combinedBtResult.report.equityTrades} />
+                <OptionsBacktestTradesTable trades={combinedBtResult.report.optionsTrades} />
+              </div>
+            )}
+            {combinedBtWfResult && btSubmitted && (
+              <div className="space-y-5">
+                <h4 className="text-xs uppercase tracking-wide text-slate-400">Combined (one shared risk budget)</h4>
+                {combinedBtWfResult.excludedSymbols.length > 0 && (
+                  <p className="text-[11px] text-slate-500">
+                    Excluded (real estate): {combinedBtWfResult.excludedSymbols.map((e) => e.symbol).join(', ')}
+                  </p>
+                )}
+                {combinedBtWfResult.errors.length > 0 && (
+                  <p className="text-[11px] text-bear">
+                    Couldn&apos;t fetch data — excluded from this run:{' '}
+                    {combinedBtWfResult.errors.map((e) => `${e.symbol} (${e.message})`).join(', ')}
+                  </p>
+                )}
+                <CombinedBacktestWindowResult
+                  title={`In-sample (${btSubmitted.from} → ${btSubmitted.splitDate})`}
+                  hint="The tuning window — strong performance here alone proves nothing."
+                  run={combinedBtWfResult.inSample}
+                  gradientId="combinedBtEquityIn"
+                />
+                <CombinedBacktestWindowResult
+                  title={`Out-of-sample (${btSubmitted.splitDate} → ${btSubmitted.to})`}
+                  hint="Unseen data — this is the number that matters for the validation gate."
+                  run={combinedBtWfResult.outOfSample}
+                  gradientId="combinedBtEquityOut"
+                />
+              </div>
+            )}
+          </CollapsibleCard>
 
-      <CollapsibleCard id="autotrade.recentActivity" title="Recent activity">
-        {events.loading ? (
-          <Spinner />
-        ) : events.error ? (
-          <ErrorState error={events.error} onRetry={events.reload} />
-        ) : eventRows.length === 0 ? (
-          <EmptyState
-            title="No activity yet"
-            hint="Run a screen above, or change a setting, to see journal entries here."
-          />
-        ) : (
-          <table className="w-full">
-            <thead className="border-b border-ink-600/60">
-              <tr>
-                <th className="th">When</th>
-                <th className="th">Stage</th>
-                <th className="th">Action</th>
-                <th className="th">Symbol</th>
-                <th className="th">Detail</th>
-              </tr>
-            </thead>
-            <tbody>
-              {eventRows.map((e) => (
-                <tr key={e.id} className="border-b border-ink-700/50">
-                  <td className="td text-slate-500 text-xs whitespace-nowrap">{ago(e.createdAt)}</td>
-                  <td className="td">
-                    <Badge>{e.stage}</Badge>
-                  </td>
-                  <td className="td">{e.action}</td>
-                  <td className="td font-semibold">{e.symbol || '—'}</td>
-                  <td className="td text-slate-500 text-xs max-w-[280px] truncate" title={detailText(e.detail)}>
-                    {detailText(e.detail)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </CollapsibleCard>
+          <CollapsibleCard
+            id="autotrade.paperTrading"
+            title="Paper trading"
+            action={
+              <button className="btn-primary" onClick={runLoopOnce} disabled={loopBusy}>
+                {loopBusy ? 'Running…' : 'Run one cycle now'}
+              </button>
+            }
+          >
+            <p className="text-xs text-slate-500 mb-3">
+              When enabled above, the server runs this same Screen → Decision → Risk Check → Execution cycle on its own
+              every minute — this button just runs one cycle immediately, so you can watch it work without waiting.
+              Every fill here is a local simulation from a live quote; it never places a real order (see
+              docs/AUTOTRADING_SPEC.md). No entries in the first/last 15 minutes of the session, and a volatility filter
+              (per-ticker and broad-market) can skip a cycle&apos;s entries entirely.
+            </p>
+            {loopErr && <div className="text-bear text-sm mb-2">{loopErr}</div>}
+            {loopSummary && (
+              <p className="text-[11px] text-slate-500 mb-3">
+                {loopSummary.skippedReason ? (
+                  <>New entries skipped — {loopSummary.skippedReason}. </>
+                ) : (
+                  <>
+                    Screened {loopSummary.candidatesScreened}, {loopSummary.candidatesPassedVolatility} passed the
+                    volatility filter, {loopSummary.signalsGenerated} signal(s) generated, {loopSummary.entriesOpened}{' '}
+                    opened ({loopSummary.optionsEntriesOpened} options). Options decision considered{' '}
+                    {loopSummary.optionsCandidatesConsidered} candidate(s) (universe-sourced only — movers can't
+                    accumulate real IV-rank history) and generated {loopSummary.optionsSignalsGenerated} signal(s).{' '}
+                    {loopSummary.moversAutoPromoted > 0 && (
+                      <>{loopSummary.moversAutoPromoted} recurring mover(s) promoted to the universe. </>
+                    )}
+                  </>
+                )}
+                Exits checked: {loopSummary.exitsChecked} ({loopSummary.exitsClosed} closed) — options:{' '}
+                {loopSummary.optionsExitsChecked} ({loopSummary.optionsExitsClosed} closed).
+              </p>
+            )}
+            {paperPositions.loading ? (
+              <Spinner />
+            ) : paperPositions.error ? (
+              <ErrorState error={paperPositions.error} onRetry={paperPositions.reload} />
+            ) : (
+              (() => {
+                const rows = paperPositions.data?.positions ?? [];
+                const open = rows.filter((p) => p.status === 'open');
+                const closed = rows.filter((p) => p.status === 'closed');
+                const totalPnl = closed.reduce((s, p) => s + (paperPnl(p) ?? 0), 0);
+                const unrealizedTotal = open.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0);
+                const unrealizedKnown = open.some((p) => p.unrealizedPnl !== null);
+                return (
+                  <>
+                    {rows.length > 0 && (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+                        <StatTile label="Open" value={open.length} />
+                        <StatTile label="Closed" value={closed.length} />
+                        <StatTile
+                          label="Realized P&L"
+                          value={fmtSignedUsd(totalPnl)}
+                          valueClass={totalPnl >= 0 ? 'text-bull' : 'text-bear'}
+                        />
+                        <StatTile
+                          label="Unrealized P&L"
+                          value={unrealizedKnown ? fmtSignedUsd(unrealizedTotal) : '—'}
+                          valueClass={unrealizedKnown ? (unrealizedTotal >= 0 ? 'text-bull' : 'text-bear') : undefined}
+                        />
+                      </div>
+                    )}
+                    <PaperPositionsTable positions={rows} />
+                  </>
+                );
+              })()
+            )}
+
+            <h4 className="font-medium text-sm mt-5 mb-3">Options paper positions</h4>
+            <p className="text-xs text-slate-500 mb-3">
+              Long calls/puts or debit spreads (whichever the Options strategy setting above builds), gated by the same
+              combined risk budget as equity. A spread's Entry/Current/Exit $ show its net value (long leg minus short
+              leg). Automated exit is time-based only (close as expiration approaches, no roll) — take-profit/stop-loss/
+              delta-drift stay human-review-only on the Options page.
+            </p>
+            {optionsPaperPositions.loading ? (
+              <Spinner />
+            ) : optionsPaperPositions.error ? (
+              <ErrorState error={optionsPaperPositions.error} onRetry={optionsPaperPositions.reload} />
+            ) : (
+              (() => {
+                const rows = optionsPaperPositions.data?.positions ?? [];
+                const open = rows.filter((p) => p.status === 'open');
+                const closed = rows.filter((p) => p.status === 'closed');
+                const totalPnl = closed.reduce((s, p) => s + (optionsPaperPnl(p) ?? 0), 0);
+                const unrealizedTotal = open.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0);
+                const unrealizedKnown = open.some((p) => p.unrealizedPnl !== null);
+                return (
+                  <>
+                    {rows.length > 0 && (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+                        <StatTile label="Open" value={open.length} />
+                        <StatTile label="Closed" value={closed.length} />
+                        <StatTile
+                          label="Realized P&L"
+                          value={fmtSignedUsd(totalPnl)}
+                          valueClass={totalPnl >= 0 ? 'text-bull' : 'text-bear'}
+                        />
+                        <StatTile
+                          label="Unrealized P&L"
+                          value={unrealizedKnown ? fmtSignedUsd(unrealizedTotal) : '—'}
+                          valueClass={unrealizedKnown ? (unrealizedTotal >= 0 ? 'text-bull' : 'text-bear') : undefined}
+                        />
+                      </div>
+                    )}
+                    <OptionsPaperPositionsTable positions={rows} />
+                  </>
+                );
+              })()
+            )}
+          </CollapsibleCard>
+
+          <CollapsibleCard id="autotrade.recentActivity" title="Recent activity">
+            {events.loading ? (
+              <Spinner />
+            ) : events.error ? (
+              <ErrorState error={events.error} onRetry={events.reload} />
+            ) : eventRows.length === 0 ? (
+              <EmptyState
+                title="No activity yet"
+                hint="Run a screen above, or change a setting, to see journal entries here."
+              />
+            ) : (
+              <table className="w-full">
+                <thead className="border-b border-ink-600/60">
+                  <tr>
+                    <th className="th">When</th>
+                    <th className="th">Stage</th>
+                    <th className="th">Action</th>
+                    <th className="th">Symbol</th>
+                    <th className="th">Detail</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {eventRows.map((e) => (
+                    <tr key={e.id} className="border-b border-ink-700/50">
+                      <td className="td text-slate-500 text-xs whitespace-nowrap">{ago(e.createdAt)}</td>
+                      <td className="td">
+                        <Badge>{e.stage}</Badge>
+                      </td>
+                      <td className="td">{e.action}</td>
+                      <td className="td font-semibold">{e.symbol || '—'}</td>
+                      <td className="td text-slate-500 text-xs max-w-[280px] truncate" title={detailText(e.detail)}>
+                        {detailText(e.detail)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </CollapsibleCard>
+        </>
+      )}
 
       <p className="text-[11px] text-slate-500">
-        Decision-support and tracking, not financial advice. Paper trading above is always a local simulation that never
-        reaches a real broker. Live trading (below) does place real orders once explicitly enabled — review backtest and
+        Decision-support and tracking, not financial advice. Paper trading is always a local simulation that never
+        reaches a real broker. Live trading does place real orders once explicitly enabled — review backtest and
         paper-trading results first. See docs/AUTOTRADING_SPEC.md for the full plan.
       </p>
 

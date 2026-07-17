@@ -637,6 +637,17 @@ runs whether or not live trading is on. Live trading, once explicitly enabled, p
 real orders through Webull with **no per-order confirmation** — only a one-time typed
 phrase to turn it on, plus the guardrails and kill switches described below.
 
+The page opens on two tabs (2026-07-17), so settings you change occasionally and live
+state you watch constantly aren't one long scroll together. **Configuration** holds
+everything below through **Real-estate exclusion list** — settings you set once and
+revisit occasionally, further grouped into labeled cards (core settings; sizing & risk
+guardrails; screening & entry filters; equity exits; options exits; entry timing;
+auto-promote) so the field count stays scannable. **Dashboard** holds **Monitoring**
+through **Recent activity**, plus the **Live positions** / **Live options positions**
+tables described under Live trading below — everything that reflects live, ongoing
+state. The kill switch stays visible on both tabs, since a halt you need in a hurry
+shouldn't be a tab-switch away.
+
 - **Configuration** — a master **enabled** switch for the execution loop below (when on,
   the server runs the full cycle on its own every minute, placing paper trades — see
   "Paper trading" below), the active **risk profile** (`Moderate`, the conservative
@@ -824,7 +835,7 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   are enforced by the broker directly. Live trading is blocked if *either* kill switch is
   engaged — this page's own, or the **Trade** page's — since both places orders through
   the same real account; either one's "Halt trading" is a genuine, shared emergency stop.
-  A **Live positions** table below shows every real position the loop has actually
+  A **Live positions** table (Dashboard tab) shows every real position the loop has actually
   placed — the exact same `positions` rows your own manual trades use on the
   **Positions**/**Journal** pages, filtered here to just autotrade's own fills (tagged
   server-side, not a separate table the way paper trading is). Shows the same open/closed
@@ -855,8 +866,8 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   separate orders. The automated exit is the same close-only, time-based rule paper
   options trading already uses (no price-based stop/target) — but here it places a
   **real** closing order (a single-leg sell, or both spread legs together as one combo)
-  instead of just recording a paper close. A **Live options positions** table below
-  the equity Live positions table shows every real options position the loop has
+  instead of just recording a paper close. A **Live options positions** table (Dashboard
+  tab, below the equity Live positions table) shows every real options position the loop has
   placed, with the same side/strike badges (and both strikes for a spread) as the
   options paper table. Kept accurate every cycle by the same kind of broker-truth
   backstop the equity table uses — for a spread, both legs have to be confirmed gone
@@ -941,8 +952,8 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   reasoning as the equity Live section just above it.
 - **Real-estate exclusion list** — real estate is a hard, permanent exclusion for this
   strategy. A starter list of well-known real-estate ETFs ships seeded in; add or remove
-  symbols freely. This list is a backstop, not the only check — the screen below also
-  classifies every candidate by sector/industry, so REITs and real-estate operating
+  symbols freely. This list is a backstop, not the only check — the screen (Dashboard
+  tab) also classifies every candidate by sector/industry, so REITs and real-estate operating
   companies that aren't on the list (e.g. cell-tower or data-center REITs) still get
   caught.
 - **Research, Screen & Decide** — **Run screen** scans your universe (the same

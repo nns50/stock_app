@@ -33,6 +33,15 @@ function renderPage() {
   );
 }
 
+// The Configuration/Dashboard split (2026-07-17) persists the active tab in
+// localStorage the same way CollapsibleCard persists collapse state — seed it
+// before render so dashboard-only tests don't need an extra click-and-wait on
+// every single case just to reach content that isn't on the default tab.
+function renderDashboard() {
+  localStorage.setItem('autotrade.view', JSON.stringify('dashboard'));
+  return renderPage();
+}
+
 function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfig {
   return {
     enabled: false,
@@ -173,6 +182,7 @@ function loopSummaryFixture(overrides: Partial<LoopTickSummary> = {}): LoopTickS
 }
 
 beforeEach(() => {
+  localStorage.clear();
   vi.restoreAllMocks();
   vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture());
   vi.spyOn(client, 'autotradeExclusions').mockResolvedValue({
@@ -727,8 +737,8 @@ describe('AutoTradePage', () => {
         },
       ],
     });
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.click(screen.getByRole('button', { name: 'Run screen' }));
 
@@ -817,8 +827,8 @@ describe('AutoTradePage', () => {
     vi.spyOn(client, 'runAutotradeDecision').mockResolvedValue(result);
     vi.spyOn(client, 'runAutotradeRiskCheck').mockResolvedValue({ results: [] });
     vi.spyOn(client, 'runOptionsRiskCheck').mockResolvedValue({ results: [] });
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.click(screen.getByRole('button', { name: 'Run screen' }));
 
@@ -919,8 +929,8 @@ describe('AutoTradePage', () => {
         },
       ],
     });
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.click(screen.getByRole('button', { name: 'Run screen' }));
 
@@ -971,8 +981,8 @@ describe('AutoTradePage', () => {
       optionsDecision: { signals: [], skipped: [] },
     };
     const decide = vi.spyOn(client, 'runAutotradeDecision').mockResolvedValueOnce(okResult);
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.click(screen.getByRole('button', { name: 'Run screen' }));
     expect(await screen.findByText('Candidates (1)')).toBeInTheDocument();
@@ -1063,8 +1073,8 @@ describe('AutoTradePage', () => {
       approvedNotional: 0,
     };
     vi.spyOn(client, 'runAutotradeRiskCheck').mockResolvedValue({ results: [blocked] });
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.click(screen.getByRole('button', { name: 'Run screen' }));
 
@@ -1112,8 +1122,8 @@ describe('AutoTradePage', () => {
       optionsDecision: { signals: [], skipped: [] },
     };
     vi.spyOn(client, 'runAutotradeDecision').mockResolvedValue(result);
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.click(screen.getByRole('button', { name: 'Run screen' }));
 
@@ -1140,7 +1150,7 @@ describe('AutoTradePage', () => {
         },
       ],
     });
-    renderPage();
+    renderDashboard();
     expect(await screen.findByText(/1\/2 failed: max_concurrent_positions/)).toBeInTheDocument();
     expect(screen.queryByText(/object Object/)).toBeNull();
   });
@@ -1194,8 +1204,8 @@ describe('AutoTradePage', () => {
 
   it('runs a plain backtest and renders stats + the trade', async () => {
     const run = vi.spyOn(client, 'runAutotradeBacktest').mockResolvedValue(btRun());
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run backtest' }));
@@ -1244,8 +1254,8 @@ describe('AutoTradePage', () => {
       },
       stats: btRun().stats,
     });
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl' } });
     fireEvent.change(screen.getByRole('combobox', { name: /^Backtest trade direction\b/ }), {
@@ -1270,8 +1280,8 @@ describe('AutoTradePage', () => {
       errors: [],
     };
     const run = vi.spyOn(client, 'runAutotradeWalkForward').mockResolvedValue(wfResult);
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'AAPL' } });
     const dateInputs = document.querySelectorAll('input[type="date"]');
@@ -1289,8 +1299,8 @@ describe('AutoTradePage', () => {
 
   it('shows an inline error and does not call the API when no symbols are entered', async () => {
     const run = vi.spyOn(client, 'runAutotradeBacktest');
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.click(screen.getByRole('button', { name: 'Run backtest' }));
 
@@ -1300,8 +1310,8 @@ describe('AutoTradePage', () => {
 
   it('surfaces a backtest API error', async () => {
     vi.spyOn(client, 'runAutotradeBacktest').mockRejectedValue(new Error('from must be on or before to'));
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'AAPL' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run backtest' }));
@@ -1313,8 +1323,8 @@ describe('AutoTradePage', () => {
     const run = btRun();
     run.report.errors = [{ symbol: 'BAD1', message: 'Polygon 429: rate limited' }];
     vi.spyOn(client, 'runAutotradeBacktest').mockResolvedValue(run);
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'AAPL, BAD1' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run backtest' }));
@@ -1376,8 +1386,8 @@ describe('AutoTradePage', () => {
       },
     };
     const run = vi.spyOn(client, 'runOptionsBacktest').mockResolvedValue(optResult);
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run options backtest' }));
@@ -1424,8 +1434,8 @@ describe('AutoTradePage', () => {
         longestLossStreak: 0,
       },
     });
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run options backtest' }));
@@ -1493,8 +1503,8 @@ describe('AutoTradePage', () => {
       },
     };
     vi.spyOn(client, 'runOptionsBacktest').mockResolvedValue(optResult);
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run options backtest' }));
@@ -1574,8 +1584,8 @@ describe('AutoTradePage', () => {
       },
     };
     vi.spyOn(client, 'runOptionsBacktest').mockResolvedValue(optResult);
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl, msft' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run options backtest' }));
@@ -1653,8 +1663,8 @@ describe('AutoTradePage', () => {
       },
     };
     const run = vi.spyOn(client, 'runCombinedBacktest').mockResolvedValue(combinedResult);
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run combined backtest' }));
@@ -1700,7 +1710,7 @@ describe('AutoTradePage', () => {
   }
 
   it('shows an empty state when there are no paper positions', async () => {
-    renderPage();
+    renderDashboard();
     expect(await screen.findByText('No paper trades yet')).toBeInTheDocument();
   });
 
@@ -1721,7 +1731,7 @@ describe('AutoTradePage', () => {
         }),
       ],
     });
-    renderPage();
+    renderDashboard();
     expect(await screen.findByText('AAPL')).toBeInTheDocument();
     expect(screen.getByText('MSFT')).toBeInTheDocument();
     // (110-100)*10 realized pnl — appears twice: the stat tile total and the trade's own row.
@@ -1744,7 +1754,7 @@ describe('AutoTradePage', () => {
         }),
       ],
     });
-    renderPage();
+    renderDashboard();
     expect(await screen.findByText('AAPL')).toBeInTheDocument();
     expect(screen.getByText('$108.00')).toBeInTheDocument(); // Current $ column
     // 80 unrealized pnl — appears twice: the stat tile total and the trade's own row.
@@ -1756,7 +1766,7 @@ describe('AutoTradePage', () => {
     vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({
       positions: [paperPosition({ status: 'open', currentPrice: 95, stale: true, unrealizedPnl: -50 })],
     });
-    renderPage();
+    renderDashboard();
     expect(await screen.findByText('stale')).toBeInTheDocument();
   });
 
@@ -1767,7 +1777,7 @@ describe('AutoTradePage', () => {
     vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({
       positions: [paperPosition({ status: 'open', currentPrice: null, unrealizedPnl: null })],
     });
-    renderPage();
+    renderDashboard();
     await screen.findByText('AAPL');
     const tile = screen.getByText('Unrealized P&L').parentElement!;
     expect(within(tile).getByText('—')).toBeInTheDocument();
@@ -1806,7 +1816,7 @@ describe('AutoTradePage', () => {
   }
 
   it('shows an empty state when there are no options paper positions', async () => {
-    renderPage();
+    renderDashboard();
     expect(await screen.findByText('No options paper trades yet')).toBeInTheDocument();
   });
 
@@ -1829,7 +1839,7 @@ describe('AutoTradePage', () => {
         }),
       ],
     });
-    renderPage();
+    renderDashboard();
     expect(await screen.findByText('AAPL')).toBeInTheDocument();
     expect(screen.getByText('MSFT')).toBeInTheDocument();
     // (5-2)*1*100 = 300 realized pnl — appears twice: the stat tile total and the trade's own row.
@@ -1861,7 +1871,7 @@ describe('AutoTradePage', () => {
         }),
       ],
     });
-    renderPage();
+    renderDashboard();
     await screen.findByText('AAPL');
 
     const stopLossBadge = screen.getByText('stop loss');
@@ -1885,7 +1895,7 @@ describe('AutoTradePage', () => {
         }),
       ],
     });
-    renderPage();
+    renderDashboard();
     expect(await screen.findByText('AAPL')).toBeInTheDocument();
     expect(screen.getByText('$4.00')).toBeInTheDocument(); // Current $ column
     expect(screen.getAllByText('+$200.00').length).toBeGreaterThan(0);
@@ -1913,7 +1923,7 @@ describe('AutoTradePage', () => {
         }),
       ],
     });
-    renderPage();
+    renderDashboard();
     expect(await screen.findByText('SPRD')).toBeInTheDocument();
     expect(screen.getByText('call 100/110')).toBeInTheDocument();
     expect(screen.getByText('$2.00')).toBeInTheDocument(); // Entry $ = net debit
@@ -1943,7 +1953,7 @@ describe('AutoTradePage', () => {
         }),
       ],
     });
-    renderPage();
+    renderDashboard();
     expect(await screen.findByText('SPRD')).toBeInTheDocument();
     expect(screen.getByText('$3.00')).toBeInTheDocument(); // Current $ = net value now
     expect(screen.getAllByText('+$200.00').length).toBeGreaterThan(0);
@@ -1967,8 +1977,8 @@ describe('AutoTradePage', () => {
       }),
     );
     const positions = vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
     positions.mockClear();
 
     fireEvent.click(screen.getByRole('button', { name: 'Run one cycle now' }));
@@ -1985,16 +1995,16 @@ describe('AutoTradePage', () => {
     vi.spyOn(client, 'runAutotradeLoopOnce').mockResolvedValue(
       loopSummaryFixture({ ranEntries: false, skippedReason: 'Market is closed' }),
     );
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
     fireEvent.click(screen.getByRole('button', { name: 'Run one cycle now' }));
     expect(await screen.findByText(/New entries skipped — Market is closed/)).toBeInTheDocument();
   });
 
   it('surfaces an error when running a loop cycle fails', async () => {
     vi.spyOn(client, 'runAutotradeLoopOnce').mockRejectedValue(new Error('provider unavailable'));
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
     fireEvent.click(screen.getByRole('button', { name: 'Run one cycle now' }));
     expect(await screen.findByText('provider unavailable')).toBeInTheDocument();
   });
@@ -2010,8 +2020,8 @@ describe('AutoTradePage', () => {
         entriesOpened: 1,
       }),
     );
-    renderPage();
-    await screen.findByText('VNQ');
+    renderDashboard();
+    await screen.findByText('Monitoring');
 
     fireEvent.click(screen.getByRole('button', { name: 'Run one cycle now' }));
     expect(await screen.findByText(/Screened 5, 5 passed/)).toBeInTheDocument();
@@ -2153,7 +2163,7 @@ describe('AutoTradePage', () => {
           stepDownAfterLosses: 2,
         }),
       );
-      renderPage();
+      renderDashboard();
       // "Aggressive" also appears as a <select><option> elsewhere on the page.
       expect((await screen.findAllByText('Aggressive')).length).toBeGreaterThan(0);
       expect(screen.getByText('1 / 3')).toBeInTheDocument(); // open positions vs cap
@@ -2163,7 +2173,7 @@ describe('AutoTradePage', () => {
 
     it('shows an error state with retry when the dashboard fails to load', async () => {
       vi.spyOn(client, 'autotradeDashboard').mockRejectedValue(new Error('dashboard unavailable'));
-      renderPage();
+      renderDashboard();
       expect(await screen.findByText('dashboard unavailable')).toBeInTheDocument();
     });
 
@@ -2171,7 +2181,7 @@ describe('AutoTradePage', () => {
       vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
         dashboardFixture({ maxCorrelatedExposure: 6_000, lastCorrelatedExposureCheck: null }),
       );
-      renderPage();
+      renderDashboard();
       expect(await screen.findByText(/of \$6,000\.00 cap — no candidate checked yet/)).toBeInTheDocument();
     });
 
@@ -2190,7 +2200,7 @@ describe('AutoTradePage', () => {
           },
         }),
       );
-      renderPage();
+      renderDashboard();
       expect(await screen.findByText('$1,500.00')).toBeInTheDocument();
       expect(screen.getByText(/of \$6,000\.00 cap — MSFT, 3m ago/)).toBeInTheDocument();
       expect(screen.queryByText('BLOCKED')).toBeNull();
@@ -2208,14 +2218,14 @@ describe('AutoTradePage', () => {
           },
         }),
       );
-      renderPage();
+      renderDashboard();
       expect(await screen.findByText('$8,200.50')).toBeInTheDocument();
       expect(screen.getByText('BLOCKED')).toBeInTheDocument();
     });
 
     it('shows "hasn\'t run yet" for the last cycle before the loop has ever run', async () => {
       vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture({ lastTick: null }));
-      renderPage();
+      renderDashboard();
       expect(await screen.findByText(/The automated loop hasn.t run yet/)).toBeInTheDocument();
     });
 
@@ -2242,7 +2252,7 @@ describe('AutoTradePage', () => {
           },
         }),
       );
-      renderPage();
+      renderDashboard();
       expect(
         await screen.findByText(/12 screened → 7 passed volatility → 3 signals \(\+1 options\)/),
       ).toBeInTheDocument();
@@ -2259,7 +2269,7 @@ describe('AutoTradePage', () => {
           },
         }),
       );
-      renderPage();
+      renderDashboard();
       expect(await screen.findByText('Market is closed')).toBeInTheDocument();
     });
 
@@ -2314,7 +2324,7 @@ describe('AutoTradePage', () => {
           openRisk: 800,
         }),
       );
-      renderPage();
+      renderDashboard();
       expect(await screen.findByText('2 / 2')).toBeInTheDocument(); // combined count
       expect(screen.getByText('1 equity + 1 options')).toBeInTheDocument();
       expect(screen.getByText(/equity \+ options combined/)).toBeInTheDocument();
@@ -2350,7 +2360,7 @@ describe('AutoTradePage', () => {
           ],
         }),
       );
-      renderPage();
+      renderDashboard();
       const soonEl = await screen.findByText('3.0d');
       const farEl = screen.getByText('30.0d');
       expect(soonEl.className).toMatch(/text-bear/); // <=7d imminent -> flagged
@@ -2361,8 +2371,8 @@ describe('AutoTradePage', () => {
 
     it('hides the options expirations section when there are no open options positions', async () => {
       vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture({ openOptionsPositions: [] }));
-      renderPage();
-      await screen.findByText('VNQ');
+      renderDashboard();
+      await screen.findByText('Monitoring');
       expect(screen.queryByText(/Options expirations/)).toBeNull();
     });
 
@@ -2370,7 +2380,7 @@ describe('AutoTradePage', () => {
       vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
         dashboardFixture({ dailyPnl: -3_200, dailyDrawdownHaltLevel: -3_000 }), // breached
       );
-      renderPage();
+      renderDashboard();
       expect(await screen.findByText(/HALT TRIGGERED/)).toBeInTheDocument();
     });
 
@@ -2378,8 +2388,8 @@ describe('AutoTradePage', () => {
       vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
         dashboardFixture({ dailyPnl: -50, dailyDrawdownHaltLevel: -3_000 }), // a normal down day, not halted
       );
-      renderPage();
-      await screen.findByText('VNQ');
+      renderDashboard();
+      await screen.findByText('Monitoring');
       expect(screen.queryByText(/HALT TRIGGERED/)).toBeNull();
     });
 
@@ -2387,8 +2397,8 @@ describe('AutoTradePage', () => {
       vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
         dashboardFixture({ dailyPnl: 0, dailyDrawdownHaltLevel: -0 }),
       );
-      renderPage();
-      await screen.findByText('VNQ');
+      renderDashboard();
+      await screen.findByText('Monitoring');
       expect(screen.queryByText(/HALT TRIGGERED/)).toBeNull();
     });
 
@@ -2403,8 +2413,8 @@ describe('AutoTradePage', () => {
         }),
       );
       const dash = vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
-      renderPage();
-      await screen.findByText('VNQ');
+      renderDashboard();
+      await screen.findByText('Monitoring');
       dash.mockClear();
 
       fireEvent.click(screen.getByRole('button', { name: 'Run one cycle now' }));
@@ -2421,8 +2431,8 @@ describe('AutoTradePage', () => {
       const dash = vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
       const positions = vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
       const evts = vi.spyOn(client, 'autotradeEvents').mockResolvedValue({ events: [] });
-      renderPage();
-      await screen.findByText('VNQ');
+      renderDashboard();
+      await screen.findByText('Monitoring');
       dash.mockClear();
       positions.mockClear();
       evts.mockClear();
@@ -2642,7 +2652,7 @@ describe('AutoTradePage', () => {
     }
 
     it('shows an empty state when there are no live positions', async () => {
-      renderPage();
+      renderDashboard();
       expect(await screen.findByText('No live positions yet')).toBeInTheDocument();
     });
 
@@ -2683,7 +2693,7 @@ describe('AutoTradePage', () => {
           }),
         ],
       });
-      renderPage();
+      renderDashboard();
       expect(await screen.findByText('AAPL')).toBeInTheDocument();
       expect(screen.getByText('MSFT')).toBeInTheDocument();
       expect(screen.getAllByText('+$100.00').length).toBeGreaterThan(0); // stat tile + row
@@ -2704,7 +2714,7 @@ describe('AutoTradePage', () => {
           }),
         ],
       });
-      renderPage();
+      renderDashboard();
       await screen.findByText('AAPL');
       expect(screen.getByText(/200\.00 C 2026-08-21/)).toBeInTheDocument();
     });
@@ -2732,7 +2742,7 @@ describe('AutoTradePage', () => {
           }),
         ],
       });
-      renderPage();
+      renderDashboard();
       await screen.findByText('AAPL');
       expect(screen.getByText('$108.00')).toBeInTheDocument();
       expect(screen.getAllByText('+$80.00').length).toBeGreaterThan(0);
@@ -2746,7 +2756,7 @@ describe('AutoTradePage', () => {
             livePosition({ id: 2, symbol: 'MSFT', status: 'closed', remainingQuantity: 0 }),
           ],
         });
-        renderPage();
+        renderDashboard();
         await screen.findByText('AAPL');
         expect(screen.getByText('MSFT')).toBeInTheDocument(); // closed row rendered too...
         expect(screen.getAllByText('close')).toHaveLength(1); // ...but only the open one gets a close button
@@ -2759,7 +2769,7 @@ describe('AutoTradePage', () => {
         const closeSpy = vi
           .spyOn(client, 'closePosition')
           .mockResolvedValue({ ok: true, placed: true, reason: 'placed' });
-        renderPage();
+        renderDashboard();
         await screen.findByText('AAPL');
         const callsBeforeClose = list.mock.calls.length;
 
@@ -2788,7 +2798,7 @@ describe('AutoTradePage', () => {
           reason: 'blocked',
           error: 'kill switch engaged',
         });
-        renderPage();
+        renderDashboard();
         await screen.findByText('AAPL');
 
         fireEvent.click(screen.getByText('close'));
@@ -2907,12 +2917,12 @@ describe('AutoTradePage', () => {
           }),
         ],
       });
-      renderPage();
+      renderDashboard();
       expect(await screen.findByText('call 100/110')).toBeInTheDocument();
     });
 
     it('shows the empty state when no live options positions exist yet', async () => {
-      renderPage();
+      renderDashboard();
       expect(await screen.findByText('No live options positions yet')).toBeInTheDocument();
     });
 
@@ -2924,7 +2934,7 @@ describe('AutoTradePage', () => {
           liveOptionsOpenRisk: 300,
         }),
       );
-      renderPage();
+      renderDashboard();
       expect(await screen.findByText('● enabled')).toBeInTheDocument();
       expect(screen.getByText('1 / 2')).toBeInTheDocument();
     });
@@ -2944,7 +2954,7 @@ describe('AutoTradePage', () => {
             }),
           ],
         });
-        renderPage();
+        renderDashboard();
         await screen.findByText('AAPL');
         expect(screen.getByText('MSFT')).toBeInTheDocument(); // closed row rendered too...
         expect(screen.getAllByText('close')).toHaveLength(1); // ...but only the open one gets a close button
@@ -2957,7 +2967,7 @@ describe('AutoTradePage', () => {
         const closeSpy = vi
           .spyOn(client, 'closeLiveOptionsPosition')
           .mockResolvedValue({ ok: true, placed: true, reason: 'placed' });
-        renderPage();
+        renderDashboard();
         await screen.findByText('AAPL');
 
         fireEvent.click(screen.getByText('close'));
@@ -2989,7 +2999,7 @@ describe('AutoTradePage', () => {
           reason: 'blocked',
           error: 'kill switch engaged',
         });
-        renderPage();
+        renderDashboard();
         await screen.findByText('AAPL');
 
         fireEvent.click(screen.getByText('close'));
@@ -3018,7 +3028,7 @@ describe('AutoTradePage', () => {
             }),
           ],
         });
-        renderPage();
+        renderDashboard();
         await screen.findByText('NVDA');
 
         fireEvent.click(screen.getByText('close'));
