@@ -316,6 +316,9 @@ export interface Position {
   /** The order_intents.id whose live fill produced this position — null for
    *  a manually logged/imported trade. */
   sourceIntentId: number | null;
+  /** The Webull account this lot lives in — null for a manually-logged
+   *  position, or a legacy row from before this field existed. */
+  accountId: string | null;
   createdAt: number;
   updatedAt: number;
   exits: PositionExit[];
@@ -1748,6 +1751,9 @@ export interface LiveOptionsPosition {
   shortExitPrice: number | null;
   exitAt: number | null;
   exitReason: LiveOptionsExitReason | null;
+  /** The Webull account this fill executed in — null for a legacy row from
+   *  before this field existed. */
+  accountId: string | null;
   createdAt: number;
   updatedAt: number;
   /** A live contract mark as of the request (long leg, for a spread) — null

@@ -291,6 +291,8 @@ export const client = {
   deletePosition: (id: number) => api<{ deleted: number }>(`/positions/${id}`, { method: 'DELETE' }),
   addExit: (id: number, body: Record<string, unknown>) =>
     api<Position>(`/positions/${id}/exits`, { method: 'POST', body: JSON.stringify(body) }),
+  deleteExit: (id: number, exitId: number) =>
+    api<{ deleted: number; position: Position }>(`/positions/${id}/exits/${exitId}`, { method: 'DELETE' }),
   closePosition: (id: number, accountId: string, confirmation: string) =>
     api<ClosePositionResult>(`/positions/${id}/close`, {
       method: 'POST',

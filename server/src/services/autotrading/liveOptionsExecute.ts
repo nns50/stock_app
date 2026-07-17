@@ -436,6 +436,7 @@ export async function attemptLiveOptionsEntry(
       expiration: signal.expiration,
       riskAmount: riskResult.approvedRiskAmount,
       riskProfile,
+      accountId,
     });
     return finishEntryPlacement(symbol, intent, 'debit_spread', placed, riskProfile);
   }
@@ -489,6 +490,7 @@ export async function attemptLiveOptionsEntry(
     expiration: signal.expiration,
     riskAmount: riskResult.approvedRiskAmount,
     riskProfile,
+    accountId,
   });
   return finishEntryPlacement(symbol, intent, 'single_leg', placed, riskProfile);
 }
@@ -1004,6 +1006,7 @@ function materializeOptionsEntryFill(
     // liveExecute.ts's own materializeEntryFill() generated note exactly,
     // rather than inventing a synthetic per-leg split.
     rationale: `Auto-placed by autotrade — order #${intent.id}${intent.brokerOrderId ? ` (broker ${intent.brokerOrderId})` : ''}`,
+    accountId: meta.accountId,
   });
   setLiveOptionsOrderPositionId(intent.id, position.id);
   logAutotradeEvent({
@@ -1108,7 +1111,12 @@ export async function syncLiveOptionsPositionsFromBroker(accountId: string): Pro
       ),
   );
 
-  const open = listOpenLiveOptionsPositions();
+  // Strictly this account's own rows — same conservative stance as equity's
+  // closePositionsFromPreview (providers/webull/positions.ts): closing
+  // something we're not certain belongs to THIS account is exactly the
+  // false-close bug account_id exists to prevent. Deliberately no
+  // includeUnassignedAccount here for the same reason.
+  const open = listOpenLiveOptionsPositions({ accountId });
   const closedSymbols = new Set<string>();
   let closed = 0;
   for (const pos of open) {

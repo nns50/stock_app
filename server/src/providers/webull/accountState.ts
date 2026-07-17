@@ -129,7 +129,7 @@ export async function webullAccountState(
     });
     if (p.ok) {
       for (const row of extractPositions(p.data)) {
-        const mapped = mapWebullPosition(row);
+        const mapped = mapWebullPosition(row, accountId);
         if (mapped && mapped.symbol === want && matchesInstrument(mapped, instrument)) {
           currentPositionQty += (mapped.side === 'short' ? -1 : 1) * mapped.quantity;
         }

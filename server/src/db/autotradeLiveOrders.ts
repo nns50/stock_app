@@ -29,6 +29,12 @@ export interface LiveOrderMeta {
   /** Entry: set once the fill materializes into a `positions` row. Exit:
    *  known upfront (the already-open position this order is meant to close). */
   positionId: number | null;
+  /** Entry rows only — the Webull account this order executed in, carried
+   *  forward to positions.accountId once the fill materializes (the account
+   *  can't be re-derived correctly at materialization time: it may no longer
+   *  match whatever's currently configured). Null for exit rows (the
+   *  position being closed already has its own account) and legacy rows. */
+  accountId: string | null;
   createdAt: number;
 }
 
@@ -41,6 +47,7 @@ interface Row {
   risk_amount: number;
   risk_profile: string;
   position_id: number | null;
+  account_id: string | null;
   created_at: number;
 }
 
@@ -54,6 +61,7 @@ function mapRow(r: Row): LiveOrderMeta {
     riskAmount: r.risk_amount,
     riskProfile: r.risk_profile,
     positionId: r.position_id,
+    accountId: r.account_id,
     createdAt: r.created_at,
   };
 }
@@ -68,11 +76,12 @@ export function recordLiveOrder(input: {
   targetPrice: number;
   riskAmount: number;
   riskProfile: string;
+  accountId?: string | null;
 }): LiveOrderMeta {
   const now = Date.now();
   db.prepare(
-    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, created_at)
-     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?)`,
+    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, created_at)
+     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?)`,
   ).run(
     input.intentId,
     input.symbol.toUpperCase(),
@@ -80,6 +89,7 @@ export function recordLiveOrder(input: {
     input.targetPrice,
     input.riskAmount,
     input.riskProfile,
+    input.accountId ?? null,
     now,
   );
   return getLiveOrder(input.intentId)!;

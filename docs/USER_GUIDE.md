@@ -464,7 +464,14 @@ nudge, not a blocker — you can still save with items unchecked.
   re-checks `TRADING_ENABLED`, every guardrail, and the kill switch before it fires. The
   order can take a few minutes to fill; the position updates once it does (automatically,
   via the same background Webull sync that reconciles any other live order).
-- **journal** edits tags/grade/notes; **del** removes it (with confirm + Undo).
+- **journal** edits tags/grade/notes, and (2026-07-17) which **Webull account** the lot
+  lives in — shown as a small chip next to the symbol whenever it's set, so you can tell
+  positions in different real accounts (e.g. cash vs. margin) apart at a glance. The same
+  dialog lists the position's **exits** with a **remove** button on each — deletes that
+  exit and reopens the position for the quantity it closed; use this to undo a mistaken or
+  incorrect exit entry (including one the Webull sync below auto-recorded against the
+  wrong account, before this fix).
+- **del** removes the whole position (with confirm + Undo).
 - An **Exposure panel** summarizes gross/net exposure across the book.
 
 ---
@@ -1202,6 +1209,18 @@ One home (⚙ or `⌘K → Settings`) for everything:
   broker confirmation. Enter an account ID once, flip on **Sync automatically in the
   background**, and pick an interval (1m–30m); it then keeps itself current with no further
   clicking, independent of any open tab.
+  >
+  > **Multiple real accounts (2026-07-17).** Every synced position (and every live position
+  > the Auto-Trade page itself opens) now remembers which Webull account it actually came
+  > from. If you trade more than one real account — e.g. a cash account and a margin
+  > account — switching the account ID here (or in Auto-Trade's live-trading settings) no
+  > longer touches the OTHER account's positions: each sync only ever closes or matches
+  > against lots tagged with that same account. Before this fix, switching accounts could
+  > wrongly mark the previous account's still-open positions as closed, and could silently
+  > merge a new buy in the new account into an existing position from the old one instead of
+  > tracking it separately. If you were affected before upgrading, see a wrongly-closed
+  > position's **journal** dialog above to remove the bad exit and reopen it, then set its
+  > correct account there too, before re-syncing.
 - **Quotes may be delayed** (commonly ~15 min on free tiers). The provider chip shows
   live vs demo. Responses are cached briefly and pages with a **Refresh** control
   auto-poll every **1 minute** by default (adjustable, including off).
