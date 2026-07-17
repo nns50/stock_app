@@ -15,7 +15,7 @@ vi.mock('../src/services/quotes', () => ({ priceMap: vi.fn() }));
 
 beforeAll(() => initDb());
 beforeEach(() => {
-  db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+  db.exec('DELETE FROM position_exits; DELETE FROM positions; DELETE FROM webull_miss_streak;');
   vi.mocked(priceMap).mockReset();
   // Default: price every probed position at $10 unless a test overrides it.
   vi.mocked(priceMap).mockImplementation(
@@ -176,7 +176,7 @@ describe('importWebullPositions', () => {
 });
 
 describe('syncClosedWebullPositions', () => {
-  it('closes a Webull-tracked position no longer held at the broker', async () => {
+  it('closes a Webull-tracked position no longer held at the broker, once confirmed on 2 consecutive syncs', async () => {
     const p = createPosition({
       assetType: 'stock',
       symbol: 'VRAX',
@@ -188,6 +188,13 @@ describe('syncClosedWebullPositions', () => {
       accountId: 'ACC1',
     });
     mockPositions([]); // Webull shows nothing held anymore
+
+    // First miss is NOT enough by itself — see the miss-streak debounce test
+    // below for why (a single incomplete/flaky broker response used to
+    // fabricate a close on the spot).
+    const r1 = await syncClosedWebullPositions('ACC1');
+    expect(r1).toMatchObject({ ok: true, closed: 0, closedSymbols: [] });
+    expect(getPosition(p.id)!.status).toBe('open');
 
     const r = await syncClosedWebullPositions('ACC1');
     expect(r).toMatchObject({ ok: true, closed: 1, closedSymbols: ['VRAX'] });
@@ -270,6 +277,7 @@ describe('syncClosedWebullPositions', () => {
     });
     mockPositions([{ symbol: 'KC', asset_type: 'STOCK', quantity: '40', cost_price: '15' }]);
 
+    await syncClosedWebullPositions('ACC1'); // first miss — not confirmed yet
     const r = await syncClosedWebullPositions('ACC1');
     expect(r).toMatchObject({ closed: 1, closedSymbols: ['KC'] });
     const after = getPosition(p.id)!;
@@ -301,6 +309,7 @@ describe('syncClosedWebullPositions', () => {
     // Journal shows 100 total; broker now shows only 30 -> 70-share gap.
     mockPositions([{ symbol: 'AAPL', asset_type: 'STOCK', quantity: '30', cost_price: '155' }]);
 
+    await syncClosedWebullPositions('ACC1'); // first miss — not confirmed yet
     await syncClosedWebullPositions('ACC1');
     expect(getPosition(older.id)!.status).toBe('closed'); // fully closed first
     expect(getPosition(older.id)!.remainingQuantity).toBe(0);
@@ -320,9 +329,15 @@ describe('syncClosedWebullPositions', () => {
       tags: ['webull'],
       accountId: 'ACC1',
     });
+    // priceMap is only ever consulted once the miss is CONFIRMED (2nd
+    // consecutive sync) — it's never called at all on the first, unconfirmed
+    // miss, so queuing this mockResolvedValueOnce still lines up with the
+    // call that actually needs it.
     vi.mocked(priceMap).mockResolvedValueOnce(new Map([[p.id, { price: null, stale: false, asOf: null }]]));
     mockPositions([]);
 
+    const r1 = await syncClosedWebullPositions('ACC1');
+    expect(r1).toMatchObject({ closed: 0, closedSymbols: [] });
     const r = await syncClosedWebullPositions('ACC1');
     expect(r).toMatchObject({ closed: 0, closedSymbols: [] });
     expect(getPosition(p.id)!.status).toBe('open');
@@ -350,8 +365,112 @@ describe('syncClosedWebullPositions', () => {
   });
 });
 
+// Regression coverage for the flapping bug: a low-priced/thinly-covered
+// symbol intermittently missing from a single broker preview response used
+// to be enough, by itself, to fabricate a close — and the very next
+// successful sync would then re-import it as a brand-new position, cycling
+// indefinitely (observed in production: hundreds of open/close cycles over
+// several hours, each booking a fabricated realized loss). See
+// webull_miss_streak's table comment (db/index.ts).
+describe('miss-streak debounce (flapping-close bug fix)', () => {
+  it('does NOT close on a single missing observation', async () => {
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'IOTR',
+      side: 'long',
+      quantity: 2,
+      entryPrice: 3.79,
+      entryDate: '2026-07-09',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+    mockPositions([]); // one flaky/incomplete preview omits it
+
+    const r = await syncClosedWebullPositions('ACC1');
+    expect(r).toMatchObject({ ok: true, closed: 0, closedSymbols: [] });
+    expect(getPosition(p.id)!.status).toBe('open');
+    expect(getPosition(p.id)!.remainingQuantity).toBe(2);
+  });
+
+  it('closes once the same contract is missing on 2 CONSECUTIVE syncs', async () => {
+    createPosition({
+      assetType: 'stock',
+      symbol: 'IOTR',
+      side: 'long',
+      quantity: 2,
+      entryPrice: 3.79,
+      entryDate: '2026-07-09',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+    mockPositions([]);
+
+    const r1 = await syncClosedWebullPositions('ACC1');
+    expect(r1.closed).toBe(0);
+    const r2 = await syncClosedWebullPositions('ACC1');
+    expect(r2).toMatchObject({ ok: true, closed: 1, closedSymbols: ['IOTR'] });
+  });
+
+  it('a confirmed "still held" sync in between resets the streak — a later single miss does not close it', async () => {
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'IOTR',
+      side: 'long',
+      quantity: 2,
+      entryPrice: 3.79,
+      entryDate: '2026-07-09',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+
+    mockPositions([]); // miss #1
+    await syncClosedWebullPositions('ACC1');
+    expect(getPosition(p.id)!.status).toBe('open');
+
+    mockPositions([{ symbol: 'IOTR', asset_type: 'STOCK', quantity: '2', cost_price: '3.79' }]); // confirmed held
+    await syncClosedWebullPositions('ACC1');
+    expect(getPosition(p.id)!.status).toBe('open');
+
+    mockPositions([]); // miss #1 again (streak was reset, not carried over)
+    const r = await syncClosedWebullPositions('ACC1');
+    expect(r).toMatchObject({ closed: 0, closedSymbols: [] });
+    expect(getPosition(p.id)!.status).toBe('open');
+  });
+
+  it('does not require re-confirmation across DIFFERENT contracts — each key has its own streak', async () => {
+    createPosition({
+      assetType: 'stock',
+      symbol: 'IOTR',
+      side: 'long',
+      quantity: 2,
+      entryPrice: 3.79,
+      entryDate: '2026-07-09',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+    const cjmb = createPosition({
+      assetType: 'stock',
+      symbol: 'CJMB',
+      side: 'long',
+      quantity: 356,
+      entryPrice: 1.22,
+      entryDate: '2026-07-17',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+    // First sync: only IOTR misses. Second sync: only CJMB misses. Neither
+    // should close — each contract needs its OWN 2 consecutive misses.
+    mockPositions([{ symbol: 'CJMB', asset_type: 'STOCK', quantity: '356', cost_price: '1.22' }]);
+    await syncClosedWebullPositions('ACC1');
+    mockPositions([{ symbol: 'IOTR', asset_type: 'STOCK', quantity: '2', cost_price: '3.79' }]);
+    const r = await syncClosedWebullPositions('ACC1');
+    expect(r).toMatchObject({ closed: 0, closedSymbols: [] });
+    expect(getPosition(cjmb.id)!.status).toBe('open');
+  });
+});
+
 describe('runWebullPositionsSync', () => {
-  it('closes and imports in the same pass off a single live-positions fetch', async () => {
+  it('closes and imports in the same pass off a single live-positions fetch, once the close is confirmed', async () => {
     const p = createPosition({
       assetType: 'stock',
       symbol: 'VRAX',
@@ -365,11 +484,16 @@ describe('runWebullPositionsSync', () => {
     // VRAX no longer held; MSFT is new.
     mockPositions([{ symbol: 'MSFT', asset_type: 'STOCK', quantity: '20', cost_price: '410' }]);
 
+    const r1 = await runWebullPositionsSync('ACC1');
+    // First miss isn't confirmed yet, but import is never debounced — MSFT
+    // shows up immediately (only the destructive close side waits).
+    expect(r1).toMatchObject({ ok: true, closed: 0, imported: 1, skipped: 0 });
+
     const r = await runWebullPositionsSync('ACC1');
-    expect(r).toMatchObject({ ok: true, closed: 1, closedSymbols: ['VRAX'], imported: 1, skipped: 0 });
+    expect(r).toMatchObject({ ok: true, closed: 1, closedSymbols: ['VRAX'], imported: 0, skipped: 1 });
     expect(getPosition(p.id)!.status).toBe('closed');
     expect(listPositions({ status: 'open' }).map((x) => x.symbol)).toEqual(['MSFT']);
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1); // one shared preview fetch, not two
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2); // one shared preview fetch per call, not two per call
   });
 
   it('reports nothing to do when the journal already matches the broker', async () => {

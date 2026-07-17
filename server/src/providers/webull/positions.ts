@@ -11,6 +11,7 @@ import {
 } from '../../db/positions';
 import { priceMap } from '../../services/quotes';
 import { webullClient, webullConfigured } from './account';
+import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../db/webullMissStreak';
 
 // ---------------------------------------------------------------------------
 // Sync open brokerage positions from Webull into the trade journal.
@@ -292,6 +293,11 @@ const NOTE_AUTO_CLOSED =
  * (services/quotes.ts's priceMap) since there's no broker fill to read a
  * price from; a contract priceMap can't resolve is left open rather than
  * guessed at $0 — it'll be picked up on a later sync once pricing recovers.
+ * A contract only comes up short here once — on the very first sync that
+ * doesn't show it — WITHOUT necessarily meaning it's gone from the broker: a
+ * single incomplete/flaky preview response is enough to trigger this. So a
+ * gap is NOT acted on immediately; see webull_miss_streak (db/index.ts) for
+ * the consecutive-confirmation debounce that guards against exactly that.
  */
 async function closePositionsFromPreview(
   preview: PositionsPreview,
@@ -319,7 +325,18 @@ async function closePositionsFromPreview(
     lots.sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.id - b.id); // FIFO: oldest first
     const journalQty = lots.reduce((s, p) => s + p.remainingQuantity, 0);
     const gap = journalQty - (liveQtyByKey.get(key) ?? 0);
-    if (gap > 1e-9) toClose.set(key, { lots, qty: gap });
+    if (gap > 1e-9) {
+      // Missing (fully or partially) from THIS preview — require it to stay
+      // missing on MISS_CONFIRM_THRESHOLD consecutive syncs, with no
+      // fully-confirmed observation in between, before trusting it enough to
+      // write a close. See the doc comment above and webull_miss_streak's
+      // table comment for the flapping bug this prevents.
+      const streak = bumpMissStreak(preview.accountId, key);
+      if (streak >= MISS_CONFIRM_THRESHOLD) toClose.set(key, { lots, qty: gap });
+    } else {
+      // Fully accounted for in this preview — any earlier miss streak was wrong.
+      clearMissStreak(preview.accountId, key);
+    }
   }
   if (toClose.size === 0) return { closed: 0, closedSymbols: [] };
 
@@ -329,7 +346,7 @@ async function closePositionsFromPreview(
   const exitDate = today();
   const closedSymbols = new Set<string>();
   let closed = 0;
-  for (const { lots, qty } of toClose.values()) {
+  for (const [key, { lots, qty }] of toClose) {
     const exitPrice = prices.get(lots[0].id)?.price;
     if (exitPrice == null) continue; // can't price it — leave open, retry next sync
     let remaining = qty;
@@ -344,6 +361,8 @@ async function closePositionsFromPreview(
       }
       remaining -= take;
     }
+    // Acted on this contract's gap — a further gap next sync starts a fresh count.
+    clearMissStreak(preview.accountId, key);
   }
   return { closed, closedSymbols: Array.from(closedSymbols) };
 }
