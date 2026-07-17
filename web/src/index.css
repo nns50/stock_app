@@ -173,10 +173,29 @@ select:focus-visible {
   transform: translateX(-100%);
   animation: skeleton-shimmer 1.4s ease-in-out infinite;
 }
+/* fade-in is intentionally opacity-only (no transform slide, unlike
+   modal-in below) — `.animate-fade-in` wraps every page's WHOLE content
+   (Layout.tsx's `{children}`), so ANY page-local modal (`fixed inset-0`,
+   e.g. the Auto page's close-position modal) rendered anywhere inside it is
+   a descendant of this element. An animated `transform` here — even with an
+   explicit `to { transform: none }` end-state — leaves Chrome reporting a
+   non-`none` matrix from getComputedStyle for the animation's lifetime, and
+   per the CSS Transforms spec ANY non-`none` transform value establishes a
+   new containing block for position:fixed/absolute descendants. That turns
+   every such modal's "fixed" positioning into "fixed relative to this DIV's
+   full scrollable height" instead of the viewport, pinning it near the top
+   of the PAGE rather than the top of the current scroll position — confirmed
+   via a live repro (scrolled ~3500px down a long page, the modal rendered
+   ~3400px above the viewport) AND confirmed that an explicit `to {transform:
+   none}` keyframe does NOT avoid it (still reports a matrix). Dropping the
+   transform animation entirely is the only reliable fix — the opacity fade
+   alone is a small enough visual change from the original translateY(4px)
+   slide to not be worth the risk this class of bug can recur. modal-in below
+   keeps its own transform: it animates the modal .card itself, which never
+   has position:fixed descendants of its own in this app. */
 @keyframes fade-in {
   from {
     opacity: 0;
-    transform: translateY(4px);
   }
 }
 @keyframes modal-in {
