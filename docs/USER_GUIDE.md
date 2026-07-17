@@ -714,7 +714,15 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   alignment" screener filter, this one is wired into the unattended loop itself, so
   toggling it actually changes what the loop trades, not just what a manual preview
   shows; off by default, and live, paper, and backtest all honor it — watch **Recent
-  activity** to see it fire), **max ticker ATR** and **max market
+  activity** to see it fire), **relative strength weight** (2026-07-17 — how much a
+  candidate's own out/under-performance vs. a benchmark counts toward its total
+  screener score, on the same 0-100 scale as every other scoring component — see
+  **About**'s scoring table for the full breakdown), **benchmark symbol** (what
+  relative strength measures against, e.g. `SPY` — only matters once the weight above
+  is nonzero, at which point the loop fetches that symbol's own daily candles once per
+  cycle, not once per candidate), and **relative strength lookback (days)** (trading
+  days back for both the candidate's own and the benchmark's return that comparison
+  uses), **max ticker ATR** and **max market
   ATR** (skip a candidate whose own volatility is too high, or skip every new entry
   this cycle if SPY's own volatility is too high — stricter than the manual Screen/
   Decision preview below, since an unattended loop has no one to override a bad read),
@@ -725,10 +733,11 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   known earnings date falls within this many calendar days — an unattended loop can't
   react to an earnings-driven overnight gap the way ATR-based stop sizing assumes;
   options entries are unaffected, since an approaching print already shows up as
-  elevated IV rank there instead). All eight default to the values the loop always
+  elevated IV rank there instead). All eleven default to the values the loop always
   used before they were configurable (trade direction to `Long`; earnings blackout's
-  own "before" is simply never checking — 0 disables it), so leaving them untouched
-  changes nothing; the manual
+  own "before" is simply never checking — 0 disables it; relative strength weight 0,
+  benchmark `SPY`, lookback 20 days), so leaving them untouched changes nothing; the
+  manual
   Screen/Decision preview
   below defaults to these same saved values too (so it previews what the loop would
   actually do), though it has no UI to override them ad hoc today. A related but

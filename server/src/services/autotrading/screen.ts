@@ -7,6 +7,7 @@ import {
   computeCandleIndicators,
   defaultScreenerConfig,
   Direction,
+  lookbackReturnPct,
   scoreSymbol,
   scoreSymbolBothDirections,
   ScreenerConfig,
@@ -296,6 +297,24 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
     }
   }
 
+  // Relative-strength-vs-benchmark (2026-07-17): the benchmark's own lookback
+  // return is the SAME single number for every candidate this cycle, so it's
+  // fetched and computed ONCE here — never per-symbol inside the mapPool
+  // loop below — then handed to every scoreSymbol/scoreSymbolBothDirections
+  // call as-is. Only fetched when the component is actually weighted in (same
+  // don't-do-unrequested-work gate as the weekly-trend fetch above); a failed
+  // fetch degrades to "no relative-strength data this cycle" (score 0 for
+  // that one component, everything else unaffected) rather than failing the
+  // whole screen — same best-effort posture as the sector-map/quotes warm-up
+  // just above.
+  const benchmarkLookbackReturnPct =
+    cfg.weights.relativeStrength > 0
+      ? await provider
+          .getCandles(cfg.benchmarkSymbol, 'daily', { limit: 120 })
+          .then((candles) => lookbackReturnPct(candles, cfg.relativeStrengthLookbackDays))
+          .catch(() => null)
+      : null;
+
   await mapPool(symbols, 6, async (symbol) => {
     // Real-estate exclusion runs FIRST, before any scoring — a listed or
     // classified RE symbol never reaches Decision/Risk Check, per the spec.
@@ -367,7 +386,16 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
       const picked =
         directionMode === 'both'
           ? pickDirection(
-              scoreSymbolBothDirections(symbol, candles, quote, cfg, cachedIndicators, undefined, weeklyIndicators),
+              scoreSymbolBothDirections(
+                symbol,
+                candles,
+                quote,
+                cfg,
+                cachedIndicators,
+                undefined,
+                weeklyIndicators,
+                benchmarkLookbackReturnPct,
+              ),
             )
           : (() => {
               const score = scoreSymbol(
@@ -378,6 +406,7 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
                 cachedIndicators,
                 undefined,
                 weeklyIndicators,
+                benchmarkLookbackReturnPct,
               );
               return score.passedFilters ? { direction: directionMode, score } : null;
             })();

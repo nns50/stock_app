@@ -1601,6 +1601,9 @@ export default function AutoTradePage() {
   const [regimeSizeCutPctDraft, setRegimeSizeCutPctDraft] = useState<number | undefined>();
   const [minRelVolDraft, setMinRelVolDraft] = useState<number | undefined>();
   const [requireWeeklyTrendAlignment, setRequireWeeklyTrendAlignment] = useState(false);
+  const [relativeStrengthWeightDraft, setRelativeStrengthWeightDraft] = useState<number | undefined>();
+  const [benchmarkSymbolDraft, setBenchmarkSymbolDraft] = useState('');
+  const [relativeStrengthLookbackDaysDraft, setRelativeStrengthLookbackDaysDraft] = useState<number | undefined>();
   const [maxTickerAtrPctDraft, setMaxTickerAtrPctDraft] = useState<number | undefined>();
   const [maxMarketAtrPctDraft, setMaxMarketAtrPctDraft] = useState<number | undefined>();
   const [stopAtrMultipleDraft, setStopAtrMultipleDraft] = useState<number | undefined>();
@@ -1663,6 +1666,9 @@ export default function AutoTradePage() {
     setRegimeSizeCutPctDraft(config.data.regimeSizeCutPct);
     setMinRelVolDraft(config.data.minRelVol);
     setRequireWeeklyTrendAlignment(config.data.requireWeeklyTrendAlignment);
+    setRelativeStrengthWeightDraft(config.data.relativeStrengthWeight);
+    setBenchmarkSymbolDraft(config.data.benchmarkSymbol ?? '');
+    setRelativeStrengthLookbackDaysDraft(config.data.relativeStrengthLookbackDays);
     setMaxTickerAtrPctDraft(config.data.maxTickerAtrPct);
     setMaxMarketAtrPctDraft(config.data.maxMarketAtrPct);
     setStopAtrMultipleDraft(config.data.stopAtrMultiple);
@@ -1722,6 +1728,9 @@ export default function AutoTradePage() {
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     requireWeeklyTrendAlignment?: boolean;
+    relativeStrengthWeight?: number;
+    benchmarkSymbol?: string;
+    relativeStrengthLookbackDays?: number;
     maxTickerAtrPct?: number;
     maxMarketAtrPct?: number;
     stopAtrMultiple?: number;
@@ -1779,6 +1788,9 @@ export default function AutoTradePage() {
       setRegimeSizeCutPctDraft(saved.regimeSizeCutPct);
       setMinRelVolDraft(saved.minRelVol);
       setRequireWeeklyTrendAlignment(saved.requireWeeklyTrendAlignment);
+      setRelativeStrengthWeightDraft(saved.relativeStrengthWeight);
+      setBenchmarkSymbolDraft(saved.benchmarkSymbol ?? '');
+      setRelativeStrengthLookbackDaysDraft(saved.relativeStrengthLookbackDays);
       setMaxTickerAtrPctDraft(saved.maxTickerAtrPct);
       setMaxMarketAtrPctDraft(saved.maxMarketAtrPct);
       setStopAtrMultipleDraft(saved.stopAtrMultiple);
@@ -2745,6 +2757,90 @@ export default function AutoTradePage() {
                 its own weekly moving average. Live, paper, and backtest — check Recent activity to see it fire.
               </p>
             </div>
+            <Field
+              label="Relative strength weight (0-100)"
+              hint="How much a candidate's out/under-performance vs. the benchmark below counts toward its total screener score — same 0-100 scale as every other scoring component. 0 (default) disables it entirely, including the extra benchmark-quote fetch."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={relativeStrengthWeightDraft}
+                  onChange={setRelativeStrengthWeightDraft}
+                  min={0}
+                  max={100}
+                  step={1}
+                  placeholder="0 (disabled)"
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save relative strength weight"
+                  onClick={() =>
+                    relativeStrengthWeightDraft != null &&
+                    saveConfig({ relativeStrengthWeight: relativeStrengthWeightDraft })
+                  }
+                  disabled={
+                    relativeStrengthWeightDraft == null ||
+                    relativeStrengthWeightDraft < 0 ||
+                    relativeStrengthWeightDraft > 100 ||
+                    relativeStrengthWeightDraft === config.data?.relativeStrengthWeight
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Benchmark symbol"
+              hint="What relative strength above is measured against — e.g. SPY. Only matters when that weight is nonzero."
+            >
+              <div className="flex gap-2">
+                <input
+                  className="input"
+                  value={benchmarkSymbolDraft}
+                  onChange={(e) => setBenchmarkSymbolDraft(e.target.value.toUpperCase())}
+                  placeholder="SPY"
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save benchmark symbol"
+                  onClick={() =>
+                    benchmarkSymbolDraft.trim() !== '' && saveConfig({ benchmarkSymbol: benchmarkSymbolDraft.trim() })
+                  }
+                  disabled={
+                    benchmarkSymbolDraft.trim() === '' || benchmarkSymbolDraft.trim() === config.data?.benchmarkSymbol
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Relative strength lookback (days)"
+              hint="Trading days back for both the candidate's own and the benchmark's return that relative strength compares."
+            >
+              <div className="flex gap-2">
+                <NumberInput
+                  value={relativeStrengthLookbackDaysDraft}
+                  onChange={setRelativeStrengthLookbackDaysDraft}
+                  min={1}
+                  step={1}
+                />
+                <button
+                  className="btn-ghost shrink-0"
+                  aria-label="Save relative strength lookback"
+                  onClick={() =>
+                    relativeStrengthLookbackDaysDraft != null &&
+                    saveConfig({ relativeStrengthLookbackDays: relativeStrengthLookbackDaysDraft })
+                  }
+                  disabled={
+                    relativeStrengthLookbackDaysDraft == null ||
+                    relativeStrengthLookbackDaysDraft < 1 ||
+                    relativeStrengthLookbackDaysDraft === config.data?.relativeStrengthLookbackDays
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </Field>
             <Field
               label="Max ticker ATR (%)"
               hint="Skip a candidate whose own ATR% (of price) exceeds this — the loop's own volatility guard, stricter than the manual Screen/Decision preview applies."

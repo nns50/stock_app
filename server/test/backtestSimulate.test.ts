@@ -601,4 +601,42 @@ describe('simulateBacktest', () => {
       expect(report.trades).toHaveLength(0);
     });
   });
+
+  describe('relative strength vs. benchmark (2026-07-17) — relativeStrengthWeight', () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+
+    // A flat benchmark series at a known level, covering the same window as
+    // warmupThrough's own daily history (61 bars back through entryDay).
+    function benchmarkBarsAt(level: number): Candle[] {
+      const bars: Candle[] = [];
+      for (let i = 61; i >= 0; i--) {
+        bars.push(bar(d(entryDay, -i), { open: level, high: level * 1.01, low: level * 0.99, close: level }));
+      }
+      return bars;
+    }
+
+    function historyWithGapUpEntry(): Map<string, Candle[]> {
+      return new Map([
+        ['TEST', [...warmupThrough(signalDay), bar(entryDay, { open: 102, high: 103, low: 101, close: 102.5 })]],
+      ]);
+    }
+
+    it('trades fire identically whether benchmarkCandles is supplied or omitted, when relativeStrengthWeight is 0 (the default)', () => {
+      const cfg = baseConfig({ from: signalDay, to: entryDay });
+      const withoutBenchmark = simulateBacktest(historyWithGapUpEntry(), cfg);
+      const withBenchmark = simulateBacktest(historyWithGapUpEntry(), cfg, undefined, benchmarkBarsAt(200));
+      expect(withBenchmark.trades).toEqual(withoutBenchmark.trades);
+    });
+
+    it('does NOT fail closed when the weight is nonzero but no benchmarkCandles were supplied — unlike requireWeeklyTrendAlignment, a missing benchmark just contributes 0 to the score, it never blocks the signal', () => {
+      const cfg = baseConfig({
+        from: signalDay,
+        to: entryDay,
+        screenerConfig: { ...RELAXED, weights: { relativeStrength: 100 } as any },
+      });
+      const report = simulateBacktest(historyWithGapUpEntry(), cfg); // no 4th arg
+      expect(report.trades).toHaveLength(1);
+    });
+  });
 });

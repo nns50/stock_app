@@ -4,6 +4,7 @@ import { saveLastTick } from '../../db/autotradeLastTick';
 import { getTradingConfig } from '../../db/trading';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { runAutotradeScreen, ScreenCandidate } from './screen';
+import { defaultScreenerConfig } from '../../indicators/screener';
 import { runAutotradeDecision } from './decide';
 import { runOptionsDecision } from './optionsDecide';
 import { runPaperExecution, checkPaperExits } from './execute';
@@ -399,6 +400,9 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     const screenResult = await runAutotradeScreen({
       config: {
         filters: { minRelVol: config.minRelVol, requireWeeklyTrendAlignment: config.requireWeeklyTrendAlignment },
+        weights: { ...defaultScreenerConfig().weights, relativeStrength: config.relativeStrengthWeight },
+        benchmarkSymbol: config.benchmarkSymbol,
+        relativeStrengthLookbackDays: config.relativeStrengthLookbackDays,
       },
       earningsBlackoutDays: config.earningsBlackoutDays,
       directionMode: config.tradeDirection,

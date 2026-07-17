@@ -170,6 +170,23 @@ export interface AutotradeConfig {
    *  ordinary OHLCV data the existing Polygon-backed fetch already handles,
    *  not a live-only real-time reading. */
   requireWeeklyTrendAlignment: boolean;
+  /** Relative-strength-vs-benchmark (2026-07-17): weight (0-100, same scale
+   *  as every other indicators/screener.ts component) given to how much a
+   *  candidate has out/under-performed benchmarkSymbol over
+   *  relativeStrengthLookbackDays trading days — direction-aware, like every
+   *  other component (a LONG candidate scores higher for BEATING the
+   *  benchmark, a SHORT candidate scores higher for LAGGING it). 0 (the
+   *  default) disables the component entirely — screen.ts doesn't even fetch
+   *  the benchmark's own candles when this is 0, so an untouched config pays
+   *  no extra provider call and changes nothing about existing scores. */
+  relativeStrengthWeight: number;
+  /** Symbol the relativeStrength component measures out/under-performance
+   *  against — e.g. 'SPY'. Only matters when relativeStrengthWeight is
+   *  nonzero. */
+  benchmarkSymbol: string;
+  /** Trading days back for both the candidate's own and the benchmark's
+   *  lookback return that relativeStrengthWeight scores. */
+  relativeStrengthLookbackDays: number;
   /** Skip a candidate whose own ATR% (of price) exceeds this — the loop's
    *  own per-ticker volatility guard, stricter than what the human-reviewed
    *  manual Screen/Decision preview applies (executionGuards.ts's header
@@ -465,6 +482,9 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     tradeDirection: 'long',
     minRelVol: 1.5,
     requireWeeklyTrendAlignment: false,
+    relativeStrengthWeight: 0,
+    benchmarkSymbol: 'SPY',
+    relativeStrengthLookbackDays: 20,
     maxTickerAtrPct: 15,
     maxMarketAtrPct: 5,
     stopAtrMultiple: 1.5,
@@ -592,6 +612,12 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       typeof input.requireWeeklyTrendAlignment === 'boolean'
         ? input.requireWeeklyTrendAlignment
         : d.requireWeeklyTrendAlignment,
+    relativeStrengthWeight: pct(input.relativeStrengthWeight, d.relativeStrengthWeight),
+    benchmarkSymbol:
+      typeof input.benchmarkSymbol === 'string' && input.benchmarkSymbol.trim() !== ''
+        ? input.benchmarkSymbol.trim().toUpperCase()
+        : d.benchmarkSymbol,
+    relativeStrengthLookbackDays: posIntMin1(input.relativeStrengthLookbackDays, d.relativeStrengthLookbackDays),
     maxTickerAtrPct: pct(input.maxTickerAtrPct, d.maxTickerAtrPct),
     maxMarketAtrPct: pct(input.maxMarketAtrPct, d.maxMarketAtrPct),
     stopAtrMultiple: posDecimal(input.stopAtrMultiple, d.stopAtrMultiple),

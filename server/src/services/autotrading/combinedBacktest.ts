@@ -4,6 +4,7 @@ import {
   CandleIndicatorSeries,
   computeCandleIndicatorSeries,
   Direction,
+  lookbackReturnPct,
   ScreenerConfig,
   SymbolScore,
   scoreSymbol,
@@ -29,6 +30,7 @@ import {
   EquityPoint,
   indexAsOf,
   loadBacktestHistory,
+  loadBenchmarkBacktestHistory,
   loadWeeklyBacktestHistory,
   MS_PER_DAY,
   resolveBacktestRiskParams,
@@ -269,6 +271,7 @@ export async function simulateCombinedBacktest(
   contractsBySymbol: Map<string, OptionContractRef[]>,
   cfg: CombinedBacktestConfig,
   weeklyHistoryBySymbol?: Map<string, Candle[]>,
+  benchmarkCandles?: Candle[],
 ): Promise<CombinedBacktestReport> {
   const riskParams = resolveBacktestRiskParams(cfg);
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
@@ -361,6 +364,10 @@ export async function simulateCombinedBacktest(
   // mirrors backtest.ts's identical indexCursor (dayMs only increases across
   // this loop, so each symbol's answer only ever advances forward).
   const scoringIndexCursor = new Map<string, number>();
+  // The benchmark's own resume point (2026-07-17, relative-strength-vs-
+  // benchmark) — a single cursor, not per-symbol, mirrors backtest.ts's
+  // identical benchmarkIndexCursor.
+  let benchmarkIndexCursor = 0;
 
   for (let dayIndex = 0; dayIndex < tradingDays.length; dayIndex++) {
     const day = tradingDays[dayIndex];
@@ -717,6 +724,16 @@ export async function simulateCombinedBacktest(
     const optionsLossStreak = optionsStreak.type === 'loss' ? optionsStreak.count : 0;
     const consecutiveLosses = Math.max(equityLossStreak, optionsLossStreak);
 
+    // The benchmark's own lookback return as of TODAY — computed once per
+    // day, reused for every candidate below. See backtest.ts's
+    // simulateBacktest() for the identical pattern/reasoning.
+    const benchmarkIdx = benchmarkCandles ? indexAsOf(benchmarkCandles, dayMs, benchmarkIndexCursor) : -1;
+    if (benchmarkIdx >= 0) benchmarkIndexCursor = benchmarkIdx;
+    const benchmarkLookbackReturnPct =
+      benchmarkCandles && benchmarkIdx >= 0 && benchmarkCandles[benchmarkIdx].time === dayMs
+        ? lookbackReturnPct(benchmarkCandles, screenerCfg.relativeStrengthLookbackDays, benchmarkIdx)
+        : null;
+
     // 6) Score every symbol ONCE per day (asset-agnostic) — filtered
     // separately below per instrument type's own "already open" exclusion.
     // 'both': score each symbol as a long AND a short from the same
@@ -752,7 +769,18 @@ export async function simulateCombinedBacktest(
         : undefined;
       const picked =
         directionMode === 'both'
-          ? pickDirection(scoreSymbolBothDirections(symbol, candles, undefined, screenerCfg, cached, idx, weeklyCached))
+          ? pickDirection(
+              scoreSymbolBothDirections(
+                symbol,
+                candles,
+                undefined,
+                screenerCfg,
+                cached,
+                idx,
+                weeklyCached,
+                benchmarkLookbackReturnPct,
+              ),
+            )
           : (() => {
               const score = scoreSymbol(
                 symbol,
@@ -762,6 +790,7 @@ export async function simulateCombinedBacktest(
                 cached,
                 idx,
                 weeklyCached,
+                benchmarkLookbackReturnPct,
               );
               return score.passedFilters ? { direction: directionMode, score } : null;
             })();
@@ -1187,13 +1216,24 @@ export async function runCombinedBacktest(cfg: CombinedBacktestConfig): Promise<
   const weeklyHistoryBySymbol = cfg.screenerConfig?.filters?.requireWeeklyTrendAlignment
     ? await loadWeeklyBacktestHistory(Array.from(historyBySymbol.keys()), cfg.from, cfg.to)
     : undefined;
+  const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
+  const benchmarkCandles =
+    (cfg.screenerConfig?.weights?.relativeStrength ?? 0)
+      ? await loadBenchmarkBacktestHistory(screenerCfg.benchmarkSymbol, cfg.from, cfg.to)
+      : undefined;
   const maxDte = defaultAutotradeEntryConfig('call').maxDaysToExpiration ?? 60;
   const contractsBySymbol = new Map<string, OptionContractRef[]>();
   for (const symbol of historyBySymbol.keys()) {
     const contracts = await getHistoricalOptionContracts(symbol, cfg.from, addDays(cfg.to, maxDte));
     contractsBySymbol.set(symbol, contracts);
   }
-  const report = await simulateCombinedBacktest(historyBySymbol, contractsBySymbol, cfg, weeklyHistoryBySymbol);
+  const report = await simulateCombinedBacktest(
+    historyBySymbol,
+    contractsBySymbol,
+    cfg,
+    weeklyHistoryBySymbol,
+    benchmarkCandles,
+  );
   return { ...report, excludedSymbols, errors };
 }
 
@@ -1220,6 +1260,11 @@ export async function runCombinedWalkForwardBacktest(
   const weeklyHistoryBySymbol = cfg.screenerConfig?.filters?.requireWeeklyTrendAlignment
     ? await loadWeeklyBacktestHistory(Array.from(historyBySymbol.keys()), cfg.from, cfg.to)
     : undefined;
+  const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
+  const benchmarkCandles =
+    (cfg.screenerConfig?.weights?.relativeStrength ?? 0)
+      ? await loadBenchmarkBacktestHistory(screenerCfg.benchmarkSymbol, cfg.from, cfg.to)
+      : undefined;
   const maxDte = defaultAutotradeEntryConfig('call').maxDaysToExpiration ?? 60;
   const contractsBySymbol = new Map<string, OptionContractRef[]>();
   for (const symbol of historyBySymbol.keys()) {
@@ -1232,12 +1277,14 @@ export async function runCombinedWalkForwardBacktest(
     contractsBySymbol,
     { ...cfg, from: cfg.from, to: cfg.splitDate },
     weeklyHistoryBySymbol,
+    benchmarkCandles,
   );
   const outOfSample = await simulateCombinedBacktest(
     historyBySymbol,
     contractsBySymbol,
     { ...cfg, from: outOfSampleFrom, to: cfg.to },
     weeklyHistoryBySymbol,
+    benchmarkCandles,
   );
   return { inSample, outOfSample, excludedSymbols, errors };
 }

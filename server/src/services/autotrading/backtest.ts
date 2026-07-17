@@ -3,6 +3,7 @@ import {
   candleIndicatorsAt,
   CandleIndicatorSeries,
   computeCandleIndicatorSeries,
+  lookbackReturnPct,
   ScreenerConfig,
   SymbolScore,
   scoreSymbol,
@@ -362,11 +363,18 @@ export function backtestCorrelatedNotional(
  * `requireWeeklyTrendAlignment`, so a backtest run that doesn't use this
  * feature pays zero extra cost, same "don't do unrequested work" posture as
  * every other call site this feature touches (screen.ts's own fetch gate).
+ *
+ * `benchmarkCandles` (2026-07-17, relative-strength-vs-benchmark): OPTIONAL,
+ * a single series (not per-symbol like weeklyHistoryBySymbol — every
+ * candidate on a given day is compared against the SAME benchmark reading),
+ * omitted entirely by any caller whose screenerCfg.weights.relativeStrength
+ * is 0, same don't-do-unrequested-work posture as weeklyHistoryBySymbol.
  */
 export function simulateBacktest(
   historyBySymbol: Map<string, Candle[]>,
   cfg: BacktestConfig,
   weeklyHistoryBySymbol?: Map<string, Candle[]>,
+  benchmarkCandles?: Candle[],
 ): BacktestReport {
   const riskParams = resolveBacktestRiskParams(cfg);
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
@@ -398,6 +406,10 @@ export function simulateBacktest(
   // day — dayMs only increases across this loop, so each symbol's answer
   // only ever advances forward.
   const indexCursor = new Map<string, number>();
+  // The benchmark's own resume point — a single cursor, not a per-symbol
+  // map, since benchmarkCandles is one shared series, looked up once per
+  // simulated day (not once per candidate) below.
+  let benchmarkIndexCursor = 0;
 
   // SMA/RSI/ATR over each symbol's FULL history, computed ONCE up front
   // (single O(n) pass each) rather than re-sliced-and-recomputed from
@@ -587,6 +599,19 @@ export function simulateBacktest(
     const consecutiveLosses = streak.type === 'loss' ? streak.count : 0;
     const openSymbols = new Set([...openPositions.map((p) => p.symbol), ...pendingEntries.map((p) => p.symbol)]);
 
+    // The benchmark's own lookback return as of TODAY — computed ONCE per
+    // day here, then reused for every candidate below (mirrors screen.ts's
+    // own once-per-cycle fetch, just at day granularity instead of tick
+    // granularity). Null whenever benchmarkCandles wasn't supplied, or
+    // today isn't an exact bar date in it (a benchmark-only holiday/gap,
+    // matching the per-symbol idx/candles[idx].time === dayMs guard below).
+    const benchmarkIdx = benchmarkCandles ? indexAsOf(benchmarkCandles, dayMs, benchmarkIndexCursor) : -1;
+    if (benchmarkIdx >= 0) benchmarkIndexCursor = benchmarkIdx;
+    const benchmarkLookbackReturnPct =
+      benchmarkCandles && benchmarkIdx >= 0 && benchmarkCandles[benchmarkIdx].time === dayMs
+        ? lookbackReturnPct(benchmarkCandles, screenerCfg.relativeStrengthLookbackDays, benchmarkIdx)
+        : null;
+
     const candidates: { score: SymbolScore; signal: TradeSignal }[] = [];
     for (const [symbol, candles] of historyBySymbol) {
       if (openSymbols.has(symbol)) continue; // don't stack a second position in the same name
@@ -613,7 +638,18 @@ export function simulateBacktest(
       // would actually do with tradeDirection:'both'.
       const picked =
         directionMode === 'both'
-          ? pickDirection(scoreSymbolBothDirections(symbol, candles, undefined, screenerCfg, cached, idx, weeklyCached))
+          ? pickDirection(
+              scoreSymbolBothDirections(
+                symbol,
+                candles,
+                undefined,
+                screenerCfg,
+                cached,
+                idx,
+                weeklyCached,
+                benchmarkLookbackReturnPct,
+              ),
+            )
           : (() => {
               const score = scoreSymbol(
                 symbol,
@@ -623,6 +659,7 @@ export function simulateBacktest(
                 cached,
                 idx,
                 weeklyCached,
+                benchmarkLookbackReturnPct,
               );
               return score.passedFilters ? { direction: directionMode, score } : null;
             })();
@@ -924,6 +961,30 @@ export async function loadWeeklyBacktestHistory(
 }
 
 /**
+ * Benchmark counterpart of loadWeeklyBacktestHistory (2026-07-17,
+ * relative-strength-vs-benchmark) — a SINGLE symbol's own daily bars, not
+ * per-candidate, reused by every candidate scored against it below. Same
+ * WARMUP_PADDING_DAYS padding as loadBacktestHistory's own candidate
+ * fetch — comfortably covers the default 20-day lookback with room to
+ * spare. A fetch failure returns undefined (fails closed exactly like
+ * loadWeeklyBacktestHistory: no benchmark data this run means every
+ * candidate's relativeStrength component scores 0 for the whole run, not a
+ * thrown error). */
+export async function loadBenchmarkBacktestHistory(
+  benchmarkSymbol: string,
+  from: string,
+  to: string,
+): Promise<Candle[] | undefined> {
+  const paddedFrom = addDays(from, -WARMUP_PADDING_DAYS);
+  try {
+    const bars = await getHistoricalBars(benchmarkSymbol, TIMEFRAME, paddedFrom, to);
+    return bars.length ? bars : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Full backtest: pre-filter real estate, fetch (or reuse cached) historical
  * bars for every eligible symbol, then simulate. Async orchestration around
  * the pure simulateBacktest() core.
@@ -933,7 +994,12 @@ export async function runBacktest(cfg: BacktestConfig): Promise<BacktestReport> 
   const weeklyHistoryBySymbol = cfg.screenerConfig?.filters?.requireWeeklyTrendAlignment
     ? await loadWeeklyBacktestHistory(Array.from(historyBySymbol.keys()), cfg.from, cfg.to)
     : undefined;
-  const report = simulateBacktest(historyBySymbol, cfg, weeklyHistoryBySymbol);
+  const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
+  const benchmarkCandles =
+    (cfg.screenerConfig?.weights?.relativeStrength ?? 0)
+      ? await loadBenchmarkBacktestHistory(screenerCfg.benchmarkSymbol, cfg.from, cfg.to)
+      : undefined;
+  const report = simulateBacktest(historyBySymbol, cfg, weeklyHistoryBySymbol, benchmarkCandles);
   return { ...report, excludedSymbols, errors };
 }
 
@@ -966,16 +1032,23 @@ export async function runWalkForwardBacktest(cfg: WalkForwardConfig): Promise<Wa
   const weeklyHistoryBySymbol = cfg.screenerConfig?.filters?.requireWeeklyTrendAlignment
     ? await loadWeeklyBacktestHistory(Array.from(historyBySymbol.keys()), cfg.from, cfg.to)
     : undefined;
+  const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
+  const benchmarkCandles =
+    (cfg.screenerConfig?.weights?.relativeStrength ?? 0)
+      ? await loadBenchmarkBacktestHistory(screenerCfg.benchmarkSymbol, cfg.from, cfg.to)
+      : undefined;
   const outOfSampleFrom = addDays(cfg.splitDate, 1);
   const inSample = simulateBacktest(
     historyBySymbol,
     { ...cfg, from: cfg.from, to: cfg.splitDate },
     weeklyHistoryBySymbol,
+    benchmarkCandles,
   );
   const outOfSample = simulateBacktest(
     historyBySymbol,
     { ...cfg, from: outOfSampleFrom, to: cfg.to },
     weeklyHistoryBySymbol,
+    benchmarkCandles,
   );
   return { inSample, outOfSample, excludedSymbols, errors };
 }

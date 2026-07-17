@@ -449,6 +449,9 @@ export const client = {
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     requireWeeklyTrendAlignment?: boolean;
+    relativeStrengthWeight?: number;
+    benchmarkSymbol?: string;
+    relativeStrengthLookbackDays?: number;
     maxTickerAtrPct?: number;
     maxMarketAtrPct?: number;
     stopAtrMultiple?: number;

@@ -18,8 +18,8 @@ function Term({ term, children }: { term: string; children: ReactNode }) {
   );
 }
 
-// The six scoring components, mirroring server/src/indicators/screener.ts so the
-// page stays an accurate description of what the engine actually does.
+// The seven scoring components, mirroring server/src/indicators/screener.ts so
+// the page stays an accurate description of what the engine actually does.
 const COMPONENTS: { name: string; weight: number; what: string }[] = [
   {
     name: 'Momentum',
@@ -51,6 +51,11 @@ const COMPONENTS: { name: string; weight: number; what: string }[] = [
     weight: 15,
     what: 'How many of three conditions hold: price vs the 20MA, price vs the 50MA, and 20MA vs 50MA alignment (0, 33, 67, or 100).',
   },
+  {
+    name: 'Rel. Strength',
+    weight: 0,
+    what: 'Off by default (opt-in via the Auto-Trade config). This symbol’s own % price change over a lookback window (20 trading days by default) minus a benchmark’s (SPY by default) over the same window — outperformance scores higher for longs, underperformance scores higher for shorts.',
+  },
 ];
 
 export default function AboutPage() {
@@ -76,10 +81,10 @@ export default function AboutPage() {
 
       <Section id="screenerScore" title="How the screener score works">
         <p>
-          Each symbol gets six sub-scores, each normalized to <span className="tabular-nums">0–100</span>. The total is
-          their <strong className="text-slate-200">weighted average</strong> using the weights below (also 0–100). Every
-          result ships with its full breakdown — raw value, sub-score, weight, and contribution — so nothing is hidden.
-          All weights, periods, and scales are editable in the screener config.
+          Each symbol gets seven sub-scores, each normalized to <span className="tabular-nums">0–100</span>. The total
+          is their <strong className="text-slate-200">weighted average</strong> using the weights below (also 0–100).
+          Every result ships with its full breakdown — raw value, sub-score, weight, and contribution — so nothing is
+          hidden. All weights, periods, and scales are editable in the screener config.
         </p>
         <div className="mt-2 overflow-x-auto">
           <table className="w-full text-sm">

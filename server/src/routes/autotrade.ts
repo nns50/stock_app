@@ -15,7 +15,7 @@ import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/de
 import { OptionsDecisionConfig, runOptionsDecision } from '../services/autotrading/optionsDecide';
 import { runAutotradeRiskCheck } from '../services/autotrading/riskCheck';
 import { runOptionsRiskCheck } from '../services/autotrading/optionsRiskCheck';
-import { ScreenerConfig } from '../indicators/screener';
+import { defaultScreenerConfig, ScreenerConfig } from '../indicators/screener';
 import { computeBacktestStats, runBacktest, runWalkForwardBacktest } from '../services/autotrading/backtest';
 import { runOptionsBacktest, runOptionsWalkForwardBacktest } from '../services/autotrading/optionsBacktest';
 import { runCombinedBacktest, runCombinedWalkForwardBacktest } from '../services/autotrading/combinedBacktest';
@@ -91,6 +91,9 @@ const configBody = z.object({
   tradeDirection: z.enum(['long', 'short', 'both']).optional(),
   minRelVol: z.number().nonnegative().optional(),
   requireWeeklyTrendAlignment: z.boolean().optional(),
+  relativeStrengthWeight: z.number().min(0).max(100).optional(),
+  benchmarkSymbol: z.string().min(1).optional(),
+  relativeStrengthLookbackDays: z.number().int().min(1).optional(),
   maxTickerAtrPct: z.number().min(0).max(100).optional(),
   maxMarketAtrPct: z.number().min(0).max(100).optional(),
   stopAtrMultiple: z.number().positive().optional(),
@@ -187,6 +190,10 @@ autotradeRouter.put(
     if (body.minRelVol !== undefined) patch.minRelVol = body.minRelVol;
     if (body.requireWeeklyTrendAlignment !== undefined)
       patch.requireWeeklyTrendAlignment = body.requireWeeklyTrendAlignment;
+    if (body.relativeStrengthWeight !== undefined) patch.relativeStrengthWeight = body.relativeStrengthWeight;
+    if (body.benchmarkSymbol !== undefined) patch.benchmarkSymbol = body.benchmarkSymbol;
+    if (body.relativeStrengthLookbackDays !== undefined)
+      patch.relativeStrengthLookbackDays = body.relativeStrengthLookbackDays;
     if (body.maxTickerAtrPct !== undefined) patch.maxTickerAtrPct = body.maxTickerAtrPct;
     if (body.maxMarketAtrPct !== undefined) patch.maxMarketAtrPct = body.maxMarketAtrPct;
     if (body.stopAtrMultiple !== undefined) patch.stopAtrMultiple = body.stopAtrMultiple;
@@ -416,6 +423,13 @@ function screenerConfigOverride(config: AutotradeConfig, requested?: Partial<Scr
       requireWeeklyTrendAlignment: config.requireWeeklyTrendAlignment,
       ...requested?.filters,
     },
+    weights: {
+      ...defaultScreenerConfig().weights,
+      relativeStrength: config.relativeStrengthWeight,
+      ...requested?.weights,
+    },
+    benchmarkSymbol: requested?.benchmarkSymbol ?? config.benchmarkSymbol,
+    relativeStrengthLookbackDays: requested?.relativeStrengthLookbackDays ?? config.relativeStrengthLookbackDays,
   };
 }
 
