@@ -483,6 +483,11 @@ export const client = {
     optionsStrategyType?: AutotradeOptionsStrategyType;
     optionsStopLossPct?: number;
     optionsTakeProfitPct?: number;
+    optionsBreakevenTriggerPct?: number;
+    optionsTrailStartPct?: number;
+    optionsTrailStopPct?: number;
+    optionsPartialExitTriggerPct?: number;
+    optionsPartialExitPct?: number;
     autoPromoteMoversEnabled?: boolean;
     autoPromoteThreshold?: number;
     autoPromoteWindowDays?: number;

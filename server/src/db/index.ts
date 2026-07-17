@@ -366,6 +366,20 @@ ${AUTOTRADE_PAPER_POSITIONS_TABLE_SQL}
 -- entry_price/exit_price for the LONG leg and adds the short_* columns for the
 -- further-OTM short leg; both null for 'single_leg'. quantity is spreads, not
 -- contracts-per-leg (one spread = one long + one short contract).
+-- best_basis_since_entry/stop_floor_pct/partial_exit_taken (added
+-- 2026-07-17, options trailing-stop/breakeven/partial-exit — PAPER and
+-- BACKTEST only, mirroring autotrade_paper_positions's own
+-- initial_stop_price/best_price_since_entry/partial_exit_taken trio, adapted
+-- to options' %-of-premium model instead of a price-based stop): a long
+-- option has no stop PRICE to ratchet, so stop_floor_pct instead stores the
+-- ratcheted MINIMUM acceptable unrealized gain % (net debit basis, for a
+-- spread) — null until a breakeven/trailing event first fires, at which
+-- point checkOptionsPaperExits() prefers it over the live
+-- optionsStopLossPct config for that position from then on, exactly as
+-- stopPrice's own "once ratcheted, always position-specific" precedent.
+-- best_basis_since_entry is the running peak of the SAME basis, seeded at
+-- entryPrice (minus shortEntryPrice, for a spread) — options are always
+-- opened long, so this is always a running MAX, never a long/short branch.
 CREATE TABLE IF NOT EXISTS autotrade_options_paper_positions (
   id                     INTEGER PRIMARY KEY AUTOINCREMENT,
   symbol                 TEXT NOT NULL,        -- underlying
@@ -388,6 +402,9 @@ CREATE TABLE IF NOT EXISTS autotrade_options_paper_positions (
   short_exit_price       REAL,                 -- short leg's premium per share at exit (debit spreads only)
   exit_at                INTEGER,
   exit_reason            TEXT CHECK(exit_reason IN ('time_exit','stop_loss','take_profit','manual') OR exit_reason IS NULL),
+  best_basis_since_entry REAL,                 -- running peak of (mark - short mark); null pre-feature or unchecked
+  stop_floor_pct         REAL,                 -- ratcheted minimum acceptable gain %; null until first ratcheted
+  partial_exit_taken     INTEGER NOT NULL DEFAULT 0,
   created_at             INTEGER NOT NULL,
   updated_at             INTEGER NOT NULL
 );
@@ -720,6 +737,20 @@ function migrate(): void {
   }
   if (!hasOpp('short_exit_price')) {
     db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN short_exit_price REAL');
+  }
+
+  // autotrade_options_paper_positions gained trailing-stop/breakeven/
+  // partial-exit tracking (added 2026-07-17, mirroring autotrade_paper_positions's
+  // own three columns above — see the fresh-create DDL's own doc comment for why
+  // stop_floor_pct is a % floor, not a price).
+  if (!hasOpp('best_basis_since_entry')) {
+    db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN best_basis_since_entry REAL');
+  }
+  if (!hasOpp('stop_floor_pct')) {
+    db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN stop_floor_pct REAL');
+  }
+  if (!hasOpp('partial_exit_taken')) {
+    db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN partial_exit_taken INTEGER NOT NULL DEFAULT 0');
   }
 
   // autotrade_live_options_orders gained contract detail (Task #70 Step C):

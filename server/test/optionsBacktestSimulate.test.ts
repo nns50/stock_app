@@ -336,6 +336,153 @@ describe('simulateOptionsBacktest', () => {
     });
   });
 
+  describe('trailing stop / breakeven / partial profit-taking (2026-07-17)', () => {
+    it('ratchets the floor to breakeven, then closes on a later pullback below it', async () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, 45); // far out -- time-exit can't fire
+      const T = yearsFor(60);
+      const entryPremium = premiumFor('call', 100, STRIKE, T);
+      const ratchetDay = d(signalDay, 2); // first eligible day -- gain past the breakeven trigger
+      const ratchetPremium = entryPremium * 1.3; // +30%, past a 20% breakeven trigger
+      const closeDay = d(signalDay, 3); // pulls back below the now-ratcheted 0% floor
+      const closePremium = entryPremium * 0.95; // -5%
+      mockContractBars({
+        [CALL_TICKER]: [
+          optionBar(signalDay, entryPremium),
+          optionBar(entryDay, entryPremium, { open: entryPremium }),
+          optionBar(ratchetDay, ratchetPremium),
+          optionBar(closeDay, closePremium),
+        ],
+      });
+      const historyBySymbol = new Map([
+        ['TEST', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(ratchetDay), equityBar(closeDay)]],
+      ]);
+      const contractsBySymbol = new Map([['TEST', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]]]);
+
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        baseConfig({ from: signalDay, to: closeDay, optionsBreakevenTriggerPct: 20 }),
+      );
+      expect(report.trades).toHaveLength(1);
+      // Closed at the ratcheted 0% floor (a -5% move), not end_of_period --
+      // proves the breakeven ratchet from ratchetDay carried into closeDay's check.
+      expect(report.trades[0].exitReason).toBe('stop_loss');
+      expect(report.trades[0].exitDate).toBe(closeDay);
+    });
+
+    it('trails the floor behind the best gain seen, then closes once price gives back too much', async () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, 45);
+      const T = yearsFor(60);
+      const entryPremium = premiumFor('call', 100, STRIKE, T);
+      const peakDay = d(signalDay, 2);
+      const peakPremium = entryPremium * 1.3; // +30% -- past the 20% trailing-start trigger; floor becomes 30-10=20%
+      const closeDay = d(signalDay, 3);
+      const closePremium = entryPremium * 1.1; // +10%, below the ratcheted 20% floor
+      mockContractBars({
+        [CALL_TICKER]: [
+          optionBar(signalDay, entryPremium),
+          optionBar(entryDay, entryPremium, { open: entryPremium }),
+          optionBar(peakDay, peakPremium),
+          optionBar(closeDay, closePremium),
+        ],
+      });
+      const historyBySymbol = new Map([
+        ['TEST', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(peakDay), equityBar(closeDay)]],
+      ]);
+      const contractsBySymbol = new Map([['TEST', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]]]);
+
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        baseConfig({ from: signalDay, to: closeDay, optionsTrailStartPct: 20, optionsTrailStopPct: 10 }),
+      );
+      expect(report.trades).toHaveLength(1);
+      expect(report.trades[0].exitReason).toBe('stop_loss');
+      expect(report.trades[0].exitDate).toBe(closeDay);
+    });
+
+    it('records a partial-exit trade once the trigger % is reached, and the remainder keeps running', async () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, 45);
+      const T = yearsFor(60);
+      const entryPremium = premiumFor('call', 100, STRIKE, T);
+      const partialDay = d(signalDay, 2);
+      const partialPremium = entryPremium * 1.3; // +30%, past a 20% partial-exit trigger
+      mockContractBars({
+        [CALL_TICKER]: [
+          optionBar(signalDay, entryPremium),
+          optionBar(entryDay, entryPremium, { open: entryPremium }),
+          optionBar(partialDay, partialPremium),
+        ],
+      });
+      const historyBySymbol = new Map([
+        ['TEST', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(partialDay)]],
+      ]);
+      const contractsBySymbol = new Map([['TEST', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]]]);
+
+      // A larger account pushes risk-based sizing well past 1 contract, so
+      // the 50%-of-position partial-exit has something to actually close
+      // (floor(1 * 0.5) would otherwise round to 0 and silently no-op).
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        baseConfig({
+          from: signalDay,
+          to: partialDay,
+          startingEquity: 1_000_000,
+          optionsPartialExitTriggerPct: 20,
+          optionsPartialExitPct: 50,
+        }),
+      );
+      const partial = report.trades.find((t) => t.exitReason === 'partial_exit');
+      expect(partial).toBeDefined();
+      expect(partial!.exitDate).toBe(partialDay);
+      expect(partial!.contracts).toBeGreaterThan(0);
+      expect(partial!.pnl).toBeGreaterThan(0); // premium rose
+      // The remainder force-closes at period end (partialDay is also the last
+      // simulated day). closeQty = floor(original * 0.5), so for a 50% split
+      // the closed slice can never exceed what's left running.
+      const remainder = report.trades.find((t) => t.exitReason === 'end_of_period');
+      expect(remainder).toBeDefined();
+      expect(remainder!.contracts).toBeGreaterThan(0);
+      expect(partial!.contracts).toBeLessThanOrEqual(remainder!.contracts);
+    });
+
+    it('leaves 0/omitted trailing fields fully disabled -- same trades as before this feature existed', async () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, 45);
+      const T = yearsFor(60);
+      const entryPremium = premiumFor('call', 100, STRIKE, T);
+      const closeDay = d(signalDay, 2);
+      const closePremium = entryPremium * 1.3; // +30% -- would ratchet/close under any of the new fields if configured
+      mockContractBars({
+        [CALL_TICKER]: [
+          optionBar(signalDay, entryPremium),
+          optionBar(entryDay, entryPremium, { open: entryPremium }),
+          optionBar(closeDay, closePremium),
+        ],
+      });
+      const historyBySymbol = new Map([
+        ['TEST', [...warmupThrough(signalDay), equityBar(entryDay), equityBar(closeDay)]],
+      ]);
+      const contractsBySymbol = new Map([['TEST', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]]]);
+
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        baseConfig({ from: signalDay, to: closeDay }), // no trailing fields at all
+      );
+      expect(report.trades).toHaveLength(1);
+      expect(report.trades[0].exitReason).toBe('end_of_period');
+    });
+  });
+
   it('does not immediately re-exit a position on its own entry day, even if DTE is already at the exit threshold', async () => {
     const signalDay = '2024-03-01';
     const entryDay = d(signalDay, 1);

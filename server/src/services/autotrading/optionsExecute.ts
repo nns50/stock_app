@@ -11,10 +11,13 @@ import {
   listOpenOptionsPaperPositions,
   listOptionsPaperPositions,
   openOptionsPaperPosition,
+  partialCloseOptionsPaperPosition,
+  ratchetOptionsPaperPositionStopFloor,
+  updateOptionsPaperPositionBestBasis,
   OptionsPaperExitReason,
   OptionsPaperPosition,
 } from '../../db/autotradeOptionsPaperPositions';
-import { defaultExitConfig, evaluateExit } from '../../options/exitRules';
+import { defaultExitConfig, evaluateExit, unrealizedReturnPct } from '../../options/exitRules';
 import { getProvider } from '../../providers';
 import { mapPool } from '../../util/async';
 
@@ -511,7 +514,16 @@ async function fetchExitMarks(pos: OptionsPaperPosition): Promise<{ exitPrice: n
 export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[]> {
   const open = listOpenOptionsPaperPositions();
   const cfg = getAutotradeConfig();
-  const priceRulesActive = cfg.optionsStopLossPct > 0 || cfg.optionsTakeProfitPct > 0;
+  // Trailing/breakeven/partial-exit need a fresh mark every cycle too (to
+  // keep the best-basis-seen ratchet current), same "up front, only when
+  // actually needed" gate as the stop-loss/take-profit rules — leaving all
+  // five fields at 0/disabled changes nothing, including provider load.
+  const priceRulesActive =
+    cfg.optionsStopLossPct > 0 ||
+    cfg.optionsTakeProfitPct > 0 ||
+    cfg.optionsBreakevenTriggerPct > 0 ||
+    cfg.optionsTrailStartPct > 0 ||
+    cfg.optionsPartialExitTriggerPct > 0;
   return mapPool(open, 6, async (pos): Promise<OptionsExitCheckOutcome> => {
     let marks: { exitPrice: number; shortExitPrice?: number } | undefined;
     if (priceRulesActive) {
@@ -525,15 +537,31 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
         ? marks.exitPrice - (marks.shortExitPrice ?? 0)
         : marks.exitPrice;
 
+    // Once a breakeven/trailing event has ratcheted stopFloorPct, it
+    // OVERRIDES the live cfg.optionsStopLossPct for this position (mirrors
+    // autotradePaperPositions.ts's own stopPrice, position-specific once
+    // ratcheted) — null means nothing has ratcheted yet, so behavior is
+    // byte-for-byte unchanged from before this feature existed.
+    const stopLossPct = pos.stopFloorPct != null ? -pos.stopFloorPct : cfg.optionsStopLossPct || undefined;
     const ev = evaluateExit(
       { entryPrice: entryBasis, currentPrice: currentBasis, side: 'long', expiration: pos.expiration },
       {
         timeExitDaysBeforeExpiry: AUTOTRADE_TIME_EXIT_DAYS,
-        stopLossPct: cfg.optionsStopLossPct || undefined,
+        stopLossPct,
         takeProfitPct: cfg.optionsTakeProfitPct || undefined,
       },
     );
-    if (!ev.triggered) return { symbol: pos.symbol, closed: false };
+    if (!ev.triggered) {
+      // Only reached once stop/take-profit/time-exit have all been ruled
+      // out — mirrors applyPositionManagement's own place in checkPaperExits.
+      // Needs a fresh mark, same as the trigger check above; a cycle whose
+      // fetch failed (or wasn't attempted) just skips management this time,
+      // retried next cycle.
+      if (marks && currentBasis !== null) {
+        applyOptionsPositionManagement(pos, entryBasis, currentBasis, marks, cfg);
+      }
+      return { symbol: pos.symbol, closed: false };
+    }
 
     // Triggered without an up-front fetch (priceRulesActive was false, or it
     // failed) -- fetch now, exactly like the original design's "quote only
@@ -571,4 +599,96 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
     }
     return { symbol: pos.symbol, closed: !!closed, position: closed ?? undefined };
   });
+}
+
+/**
+ * Trailing stop / breakeven / partial profit-taking — only reached once
+ * stop-loss/take-profit/time-exit have all already been ruled out for this
+ * cycle. The options counterpart to execute.ts's own applyPositionManagement,
+ * adapted to options' %-of-premium model: unrealized gain is measured as a
+ * percentage of entryBasis (net debit, for a spread), not an R-multiple of a
+ * price-based stop distance — a long option/spread has no ATR-based stop to
+ * measure R against. `entryBasis`/`currentBasis` are the SAME net-debit-aware
+ * basis checkOptionsPaperExits() already computed for the trigger check
+ * (single fetch, reused here — no extra provider call). Every autotrade
+ * options position is opened LONG, so best-basis-since-entry is always a
+ * running MAX, never a long/short branch.
+ */
+function applyOptionsPositionManagement(
+  pos: OptionsPaperPosition,
+  entryBasis: number,
+  currentBasis: number,
+  marks: { exitPrice: number; shortExitPrice?: number },
+  cfg: ReturnType<typeof getAutotradeConfig>,
+): void {
+  const gainPct = unrealizedReturnPct(entryBasis, currentBasis, 'long');
+  if (gainPct === null) return;
+
+  // Partial exit — one-time, checked first (a scale-out is the "bigger"
+  // action; breakeven/trailing below just adjust where the remainder's
+  // floor sits). partialExitTaken guards against re-firing every cycle.
+  if (cfg.optionsPartialExitTriggerPct > 0 && !pos.partialExitTaken && gainPct >= cfg.optionsPartialExitTriggerPct) {
+    const closeQty = Math.floor(pos.quantity * (cfg.optionsPartialExitPct / 100));
+    if (closeQty > 0 && closeQty < pos.quantity) {
+      const updated = partialCloseOptionsPaperPosition(pos.id, {
+        quantity: closeQty,
+        exitPrice: marks.exitPrice,
+        shortExitPrice: marks.shortExitPrice,
+      });
+      if (updated) {
+        const pnl = optionsPnl({ ...pos, quantity: closeQty }, marks.exitPrice, marks.shortExitPrice ?? null);
+        logAutotradeEvent({
+          symbol: pos.symbol,
+          stage: 'execution',
+          action: 'options_paper_partial_exit',
+          detail: {
+            quantity: closeQty,
+            exitPrice: marks.exitPrice,
+            shortExitPrice: marks.shortExitPrice,
+            pnl,
+            gainPct,
+          },
+          riskProfile: pos.riskProfile,
+        });
+      }
+    }
+  }
+
+  // Best basis seen since entry — the running peak the trailing calculation
+  // ratchets against. Cheap bookkeeping; no journal entry.
+  const priorBest = pos.bestBasisSinceEntry ?? entryBasis;
+  const bestBasis = Math.max(priorBest, currentBasis);
+  if (bestBasis !== priorBest) updateOptionsPaperPositionBestBasis(pos.id, bestBasis);
+  const bestGainPct = unrealizedReturnPct(entryBasis, bestBasis, 'long') ?? gainPct;
+
+  // Breakeven and trailing both just propose a candidate floor; only the
+  // MOST protective (highest) of {prior floor, breakeven candidate, trailing
+  // candidate} ever gets written — guarantees neither can ever loosen the
+  // floor, without needing separate "already applied" flags. A candidate is
+  // only computed when its OWN trigger actually fires this cycle — the prior
+  // floor (or the live config, if nothing has ratcheted yet) is never
+  // persisted on its own, or every position would freeze at the live config's
+  // value on its very first check.
+  let candidateFloor: number | null = null;
+  if (cfg.optionsBreakevenTriggerPct > 0 && gainPct >= cfg.optionsBreakevenTriggerPct) {
+    candidateFloor = candidateFloor === null ? 0 : Math.max(candidateFloor, 0);
+  }
+  if (cfg.optionsTrailStartPct > 0 && cfg.optionsTrailStopPct > 0 && gainPct >= cfg.optionsTrailStartPct) {
+    const trailingCandidate = bestGainPct - cfg.optionsTrailStopPct;
+    candidateFloor = candidateFloor === null ? trailingCandidate : Math.max(candidateFloor, trailingCandidate);
+  }
+  if (candidateFloor !== null) {
+    const priorFloor = pos.stopFloorPct ?? (cfg.optionsStopLossPct > 0 ? -cfg.optionsStopLossPct : null);
+    const newFloor = priorFloor === null ? candidateFloor : Math.max(priorFloor, candidateFloor);
+    if (newFloor !== pos.stopFloorPct) {
+      ratchetOptionsPaperPositionStopFloor(pos.id, newFloor);
+      logAutotradeEvent({
+        symbol: pos.symbol,
+        stage: 'execution',
+        action: 'options_paper_stop_ratcheted',
+        detail: { from: pos.stopFloorPct, to: newFloor, gainPct },
+        riskProfile: pos.riskProfile,
+      });
+    }
+  }
 }

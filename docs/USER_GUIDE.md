@@ -752,14 +752,27 @@ phrase to turn it on, plus the guardrails and kill switches described below.
   whenever its trigger gets turned on — so leaving them untouched changes nothing.
   R-multiples here are always measured against the position's own original stop
   distance, fixed at entry, even after the stop itself has since moved.
-  Two more fields do the same for an already-open **paper or backtest options**
+  Seven more fields do the same for an already-open **paper or backtest options**
   position (**live options positions are untouched — still time-exit only**, the
   same scope boundary as the five equity fields above): **Options stop-loss (%)**
   and **Options take-profit (%)** close the position once unrealized loss/gain
-  reaches that % of premium paid (net debit, for a spread). Both default to
-  **0 (disabled)** — leaving them untouched changes nothing, and the loop's only
-  automated options exit stays time-based (closing as expiration approaches, see
-  "Options paper positions" below).
+  reaches that % of premium paid (net debit, for a spread). The remaining five
+  mirror the equity breakeven/trailing/partial-exit fields above, but in
+  percentage-of-premium terms rather than R-multiples — a long option/spread has
+  no ATR-based stop price to measure R against: **Options breakeven trigger (%)**
+  (once unrealized gain reaches this %, move the stop-loss floor to breakeven —
+  a one-time move, never applied if it would loosen an already-ratcheted floor),
+  **Options trailing start (%)** and **Options trailing distance (%)** (once gain
+  reaches the trailing-start %, the floor trails the trailing-distance percentage
+  points behind the best gain % seen since entry, ratcheting only favorably —
+  independent of the breakeven trigger), and **Options partial exit trigger (%)**
+  with **Options partial exit size (%)** (once gain reaches the trigger, close
+  that percentage of the contracts once — the rest keeps running toward its
+  original take-profit or continues trailing). All seven default to
+  **0 (disabled)**, except partial exit size, which defaults to 50% for whenever
+  its trigger gets turned on — leaving them untouched changes nothing, and the
+  loop's only automated options exit stays time-based (closing as expiration
+  approaches, see "Options paper positions" below).
   **Auto-promote recurring movers** (on by default) grows your universe automatically:
   a symbol Webull's premarket movers surface that also clears screening on **3 distinct
   days within a 10-day window** (both tunable, along with a **50-symbol lifetime cap** on

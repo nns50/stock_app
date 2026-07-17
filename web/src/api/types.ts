@@ -1153,6 +1153,16 @@ export interface AutotradeConfig {
   optionsStopLossPct: number;
   optionsTakeProfitPct: number;
 
+  // --- Options trailing stop / breakeven / partial profit-taking (PAPER and
+  // BACKTEST only; 0 disables). Percentage-of-premium based (net debit for a
+  // spread), not an R-multiple like the equity block above — an option has
+  // no ATR-based stop price to measure R against. ---------------------------
+  optionsBreakevenTriggerPct: number;
+  optionsTrailStartPct: number;
+  optionsTrailStopPct: number;
+  optionsPartialExitTriggerPct: number;
+  optionsPartialExitPct: number;
+
   // --- Movers auto-promotion ---
   autoPromoteMoversEnabled: boolean;
   autoPromoteThreshold: number;
