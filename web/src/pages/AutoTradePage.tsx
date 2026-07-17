@@ -779,6 +779,14 @@ const LiveOptionsPositionsTable = memo(
                 <tr key={p.id} className="border-b border-ink-700/50">
                   <td className="td font-semibold" title={p.rationale}>
                     {p.symbol}
+                    {p.accountId && (
+                      <span
+                        className="ml-2 chip bg-ink-700 text-slate-400 font-mono text-[10px] font-normal"
+                        title={`Webull account ${p.accountId}`}
+                      >
+                        {p.accountId.length > 14 ? `…${p.accountId.slice(-11)}` : p.accountId}
+                      </span>
+                    )}
                   </td>
                   <td className="td">
                     <Badge color={p.side === 'call' ? 'green' : 'red'}>
@@ -887,6 +895,14 @@ const LivePositionsTable = memo(
                     {isOption && (
                       <span className="ml-2 text-xs font-normal text-slate-500">
                         {fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : 'P'} {p.expiration}
+                      </span>
+                    )}
+                    {p.accountId && (
+                      <span
+                        className="ml-2 chip bg-ink-700 text-slate-400 font-mono text-[10px] font-normal"
+                        title={`Webull account ${p.accountId}`}
+                      >
+                        {p.accountId.length > 14 ? `…${p.accountId.slice(-11)}` : p.accountId}
                       </span>
                     )}
                   </td>

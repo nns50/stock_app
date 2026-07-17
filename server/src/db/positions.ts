@@ -34,6 +34,9 @@ export interface PositionInput {
   /** The order_intents.id whose live fill produced this position (entry-side
    *  execution-quality provenance). Omit for a manually logged/imported trade. */
   sourceIntentId?: number | null;
+  /** The Webull account this lot lives in (imported/live-traded only). Omit
+   *  for a manually-logged position — there's no brokerage account to record. */
+  accountId?: string | null;
 }
 
 export interface PositionExit {
@@ -71,6 +74,7 @@ export interface Position {
   stopPrice: number | null;
   targetPrice: number | null;
   sourceIntentId: number | null;
+  accountId: string | null;
   createdAt: number;
   updatedAt: number;
   exits: PositionExit[];
@@ -100,6 +104,7 @@ interface PositionRow {
   stop_price: number | null;
   target_price: number | null;
   source_intent_id: number | null;
+  account_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -184,6 +189,7 @@ function mapPosition(row: PositionRow, exits?: PositionExit[]): Position {
     stopPrice: row.stop_price,
     targetPrice: row.target_price,
     sourceIntentId: row.source_intent_id,
+    accountId: row.account_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     exits: resolvedExits,
@@ -195,6 +201,18 @@ export interface PositionFilter {
   status?: 'open' | 'closed';
   symbol?: string;
   assetType?: AssetType;
+  /** Exact-match a Webull account. A position with no recorded account
+   *  (manually logged, or a legacy row from before this column existed)
+   *  never matches unless includeUnassignedAccount is also set. */
+  accountId?: string;
+  /** Only meaningful together with accountId. Also matches positions with NO
+   *  recorded account — safe for "is this symbol already tracked under this
+   *  account" dedup checks (an unassigned row effectively gets claimed by
+   *  whichever account's sync confirms it first). NEVER safe for
+   *  close-detection: closing something we're not certain belongs to this
+   *  account would risk the exact false-close bug this column exists to
+   *  prevent, so the close-detector deliberately omits this flag. */
+  includeUnassignedAccount?: boolean;
 }
 
 export function listPositions(filter: PositionFilter = {}): Position[] {
@@ -211,6 +229,10 @@ export function listPositions(filter: PositionFilter = {}): Position[] {
   if (filter.assetType) {
     where.push('asset_type = ?');
     params.push(filter.assetType);
+  }
+  if (filter.accountId) {
+    where.push(filter.includeUnassignedAccount ? '(account_id = ? OR account_id IS NULL)' : 'account_id = ?');
+    params.push(filter.accountId);
   }
   const sql = `SELECT * FROM positions ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY entry_date DESC, id DESC`;
   const rows = db.prepare(sql).all(...params) as PositionRow[];
@@ -231,8 +253,8 @@ export function createPosition(input: PositionInput): Position {
       `INSERT INTO positions
         (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
          option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
-         stop_price, target_price, source_intent_id, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?)`,
+         stop_price, target_price, source_intent_id, account_id, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       input.assetType,
@@ -254,6 +276,7 @@ export function createPosition(input: PositionInput): Position {
       input.stopPrice ?? null,
       input.targetPrice ?? null,
       input.sourceIntentId ?? null,
+      input.accountId ?? null,
       now,
       now,
     );
@@ -271,6 +294,9 @@ export interface PositionPatch {
   entryTime?: string | null;
   stopPrice?: number | null;
   targetPrice?: number | null;
+  /** Manual correction — e.g. tagging a legacy pre-migration row, or fixing
+   *  a row the account-blind sync bug (2026-07-17 and earlier) mis-tracked. */
+  accountId?: string | null;
 }
 
 export function updatePosition(id: number, patch: PositionPatch): Position | undefined {
@@ -292,6 +318,7 @@ export function updatePosition(id: number, patch: PositionPatch): Position | und
   if (patch.entryTime !== undefined) set('entry_time', patch.entryTime);
   if (patch.stopPrice !== undefined) set('stop_price', patch.stopPrice);
   if (patch.targetPrice !== undefined) set('target_price', patch.targetPrice);
+  if (patch.accountId !== undefined) set('account_id', patch.accountId);
   if (fields.length === 0) return existing;
   set('updated_at', Date.now());
   params.push(id);
@@ -375,6 +402,7 @@ export interface ImportablePosition {
   stopPrice?: number | null;
   targetPrice?: number | null;
   sourceIntentId?: number | null;
+  accountId?: string | null;
   createdAt?: number;
   updatedAt?: number;
   exits?: ImportableExit[];
@@ -395,8 +423,8 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
     `INSERT INTO positions
        (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
         option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
-        stop_price, target_price, source_intent_id, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        stop_price, target_price, source_intent_id, account_id, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   );
   const insertExit = db.prepare(
     `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, source_intent_id, created_at)
@@ -429,6 +457,7 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
         p.stopPrice ?? null,
         p.targetPrice ?? null,
         p.sourceIntentId ?? null,
+        p.accountId ?? null,
         p.createdAt ?? now,
         p.updatedAt ?? now,
       );

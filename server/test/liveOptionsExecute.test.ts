@@ -1118,7 +1118,7 @@ function openSpreadPosition(overrides: Partial<Parameters<typeof createLiveOptio
 
 describe('syncLiveOptionsPositionsFromBroker', () => {
   it('closes a single-leg position once Webull no longer holds the contract, pricing the exit from the current quote', async () => {
-    const pos = openLivePosition({ strike: 100, expiration: '2030-01-18' });
+    const pos = openLivePosition({ strike: 100, expiration: '2030-01-18', accountId: 'ACC1' });
     mockPreviewPositions.mockResolvedValue(previewOf([])); // broker holds nothing matching
     mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.5 } }) as never);
 
@@ -1134,7 +1134,7 @@ describe('syncLiveOptionsPositionsFromBroker', () => {
   });
 
   it('leaves a single-leg position open while Webull still holds the contract', async () => {
-    const pos = openLivePosition({ strike: 100, expiration: '2030-01-18' });
+    const pos = openLivePosition({ strike: 100, expiration: '2030-01-18', accountId: 'ACC1' });
     mockPreviewPositions.mockResolvedValue(
       previewOf([{ symbol: 'AAPL', optionType: 'call', strike: 100, expiration: '2030-01-18' }]),
     );
@@ -1147,7 +1147,7 @@ describe('syncLiveOptionsPositionsFromBroker', () => {
   });
 
   it('leaves a position open (retrying later) when the broker no longer holds it but no current quote can price the exit', async () => {
-    openLivePosition({ strike: 100, expiration: '2030-01-18' });
+    openLivePosition({ strike: 100, expiration: '2030-01-18', accountId: 'ACC1' });
     mockPreviewPositions.mockResolvedValue(previewOf([]));
     mockGetProvider.mockReturnValue(chainsFor({}) as never); // no chain for AAPL -> fetchContractMark throws
 
@@ -1157,7 +1157,7 @@ describe('syncLiveOptionsPositionsFromBroker', () => {
   });
 
   it('closes a debit spread only once BOTH legs are confirmed gone from the broker, netting both legs into the exit P&L', async () => {
-    const pos = openSpreadPosition();
+    const pos = openSpreadPosition({ accountId: 'ACC1' });
     mockPreviewPositions.mockResolvedValue(previewOf([])); // neither leg held
     mockGetProvider.mockReturnValue(
       chainsFor({
@@ -1181,7 +1181,7 @@ describe('syncLiveOptionsPositionsFromBroker', () => {
   });
 
   it('leaves a debit spread open when only ONE leg is missing from the broker — ambiguous, not guessed', async () => {
-    const pos = openSpreadPosition();
+    const pos = openSpreadPosition({ accountId: 'ACC1' });
     // Only the long leg (100 strike) still shows at the broker; the short
     // (110) doesn't -- a partial mismatch, deliberately left alone rather
     // than treated as evidence the whole spread closed.
@@ -1192,6 +1192,20 @@ describe('syncLiveOptionsPositionsFromBroker', () => {
     const result = await syncLiveOptionsPositionsFromBroker('ACC1');
 
     expect(result).toMatchObject({ ok: true, checked: 1, closed: 0 });
+    expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
+  });
+
+  // Regression for the reported cash/margin account bug (2026-07-17): a
+  // position opened under one Webull account must never be closed by a
+  // broker-truth sync against a DIFFERENT account, even if that other
+  // account genuinely doesn't hold the contract.
+  it('does NOT close a live options position that belongs to a DIFFERENT account', async () => {
+    const pos = openLivePosition({ strike: 100, expiration: '2030-01-18', accountId: 'CASH' });
+    mockPreviewPositions.mockResolvedValue(previewOf([])); // MARGIN holds nothing — irrelevant, pos lives in CASH
+
+    const result = await syncLiveOptionsPositionsFromBroker('MARGIN');
+
+    expect(result).toMatchObject({ ok: true, checked: 0, closed: 0, closedSymbols: [] });
     expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
   });
 

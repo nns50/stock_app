@@ -44,6 +44,7 @@ const createBody = z
     checklist: z.array(z.object({ rule: z.string(), checked: z.boolean() })).optional(),
     stopPrice: z.number().positive().nullish(),
     targetPrice: z.number().positive().nullish(),
+    accountId: z.string().nullish(),
   })
   .refine((d) => d.assetType !== 'option' || (d.optionType && d.strike && d.expiration), {
     message: 'option positions require optionType, strike and expiration',
@@ -64,6 +65,7 @@ const patchBody = z.object({
     .optional(),
   stopPrice: z.number().positive().nullable().optional(),
   targetPrice: z.number().positive().nullable().optional(),
+  accountId: z.string().nullable().optional(),
 });
 
 const exitBody = z.object({

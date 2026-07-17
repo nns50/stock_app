@@ -44,6 +44,11 @@ export interface CreateLiveOptionsPositionInput {
   riskAmount: number;
   riskProfile: string;
   rationale: string;
+  /** The Webull account this fill executed in (autotradeCfg.liveAccountId at
+   *  entry time) — lets the broker-truth sync below tell one account's
+   *  holdings apart from another's. Omit only for a legacy row that predates
+   *  this column. */
+  accountId?: string | null;
 }
 
 export interface CloseLiveOptionsPositionInput {
@@ -76,6 +81,7 @@ export interface LiveOptionsPosition {
   shortExitPrice: number | null;
   exitAt: number | null;
   exitReason: LiveOptionsExitReason | null;
+  accountId: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -85,6 +91,18 @@ export interface ListLiveOptionsPositionsFilter {
   symbol?: string;
   /** Max rows to return (default 200, capped at 1000). */
   limit?: number;
+}
+
+export interface OpenLiveOptionsPositionsFilter {
+  /** Exact-match a Webull account. Omit to return every open position
+   *  regardless of account (correct for order-dedup / split-check / the
+   *  time-exit sweep, which don't care which account a position lives in —
+   *  only the broker-truth sync in liveOptionsExecute.ts needs this). */
+  accountId?: string;
+  /** Only meaningful together with accountId — see PositionFilter's twin
+   *  flag in db/positions.ts for the reasoning (permissive for dedup/claim,
+   *  never for closing). */
+  includeUnassignedAccount?: boolean;
 }
 
 interface Row {
@@ -109,6 +127,7 @@ interface Row {
   short_exit_price: number | null;
   exit_at: number | null;
   exit_reason: LiveOptionsExitReason | null;
+  account_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -136,6 +155,7 @@ function map(r: Row): LiveOptionsPosition {
     shortExitPrice: r.short_exit_price,
     exitAt: r.exit_at,
     exitReason: r.exit_reason,
+    accountId: r.account_id,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -149,8 +169,8 @@ export function createLiveOptionsPosition(input: CreateLiveOptionsPositionInput)
       `INSERT INTO autotrade_live_options_positions
          (symbol, side, kind, contract_symbol, strike, short_contract_symbol, short_strike,
           expiration, quantity, entry_price, short_entry_price, entry_at,
-          risk_amount, risk_profile, rationale, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+          risk_amount, risk_profile, rationale, status, account_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
     )
     .run(
       input.symbol.toUpperCase(),
@@ -168,6 +188,7 @@ export function createLiveOptionsPosition(input: CreateLiveOptionsPositionInput)
       input.riskAmount,
       input.riskProfile,
       input.rationale,
+      input.accountId ?? null,
       now,
       now,
     );
@@ -199,12 +220,33 @@ export function getLiveOptionsPosition(id: number): LiveOptionsPosition | undefi
 }
 
 /** All currently-open live options positions, oldest first — what the loop
- *  checks for the time-exit trigger every cycle. */
-export function listOpenLiveOptionsPositions(): LiveOptionsPosition[] {
+ *  checks for the time-exit trigger every cycle (unfiltered — a time-exit
+ *  check doesn't care which account a position lives in). Pass `filter` to
+ *  additionally scope by account, for the broker-truth sync in
+ *  liveOptionsExecute.ts, which very much does care. */
+export function listOpenLiveOptionsPositions(filter: OpenLiveOptionsPositionsFilter = {}): LiveOptionsPosition[] {
+  const where = ["status = 'open'"];
+  const params: unknown[] = [];
+  if (filter.accountId) {
+    where.push(filter.includeUnassignedAccount ? '(account_id = ? OR account_id IS NULL)' : 'account_id = ?');
+    params.push(filter.accountId);
+  }
   const rows = db
-    .prepare("SELECT * FROM autotrade_live_options_positions WHERE status = 'open' ORDER BY entry_at ASC")
-    .all() as Row[];
+    .prepare(`SELECT * FROM autotrade_live_options_positions WHERE ${where.join(' AND ')} ORDER BY entry_at ASC`)
+    .all(...params) as Row[];
   return rows.map(map);
+}
+
+/** Manual correction — claim a legacy pre-migration row for a specific
+ *  account, or fix a row the account-blind sync bug (2026-07-17 and
+ *  earlier) mis-tracked. */
+export function setLiveOptionsPositionAccount(id: number, accountId: string | null): LiveOptionsPosition | undefined {
+  db.prepare('UPDATE autotrade_live_options_positions SET account_id = ?, updated_at = ? WHERE id = ?').run(
+    accountId,
+    Date.now(),
+    id,
+  );
+  return getLiveOptionsPosition(id);
 }
 
 /** True if `symbol` (the underlying) already has an open live options

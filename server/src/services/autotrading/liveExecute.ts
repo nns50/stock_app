@@ -288,8 +288,17 @@ export function adoptOrphanedLivePositions(): { adopted: number } {
   for (const p of orphans) {
     const match =
       p.sourceIntentId !== null
-        ? pendingEntries.find((o) => o.intentId === p.sourceIntentId)
-        : pendingEntries.find((o) => o.symbol === p.symbol);
+        ? // Exact order-to-order link — no cross-account ambiguity possible.
+          pendingEntries.find((o) => o.intentId === p.sourceIntentId)
+        : // Symbol-only match — could otherwise link a pending order for account A
+          // to an orphan actually held in account B if both trade the same symbol
+          // around an account switch. Require agreement when both sides know
+          // their account; a null on either side (legacy data) still matches, same
+          // permissive-for-linking-not-closing stance as positions.ts's own
+          // includeUnassignedAccount.
+          pendingEntries.find(
+            (o) => o.symbol === p.symbol && (o.accountId == null || p.accountId == null || o.accountId === p.accountId),
+          );
     if (!match) continue;
     updatePosition(p.id, {
       tags: Array.from(new Set([...p.tags, ...AUTOTRADE_TAGS])),
@@ -532,6 +541,7 @@ export async function attemptLiveEntry(
     targetPrice: signal.target,
     riskAmount: riskResult.approvedRiskAmount,
     riskProfile,
+    accountId,
   });
   logAutotradeEvent({
     symbol,
@@ -755,7 +765,7 @@ function reconcileOneLiveOrder(
   meta: LiveOrderMeta,
   broker: Awaited<ReturnType<typeof webullOrderStatus>>,
 ): { changed: boolean; action?: 'entry_filled' | 'exit_filled'; error?: string } {
-  const { stopPrice, targetPrice, riskAmount, riskProfile } = meta;
+  const { stopPrice, targetPrice, riskAmount, riskProfile, accountId } = meta;
   // The MASTER (entry) leg's own status, same field reconcileIntent() already
   // uses for a non-bracket order. Also this table's ROLE='exit' order's own
   // (and only) status -- a time-exit closing order is never a bracket, so
@@ -804,6 +814,7 @@ function reconcileOneLiveOrder(
           targetPrice,
           riskAmount,
           riskProfile,
+          accountId,
           broker.filledQty ?? intent.quantity,
           broker.filledPrice ?? intent.limitPrice ?? 0,
         );
@@ -886,6 +897,7 @@ function materializeEntryFill(
   targetPrice: number,
   riskAmount: number,
   riskProfile: string,
+  accountId: string | null,
   filledQty: number,
   filledPrice: number,
 ): void {
@@ -932,6 +944,7 @@ function materializeEntryFill(
     notes: `Auto-placed by autotrade — order #${intent.id}${intent.brokerOrderId ? ` (broker ${intent.brokerOrderId})` : ''}`,
     tags: AUTOTRADE_TAGS,
     sourceIntentId: intent.id,
+    accountId,
   });
   setLiveOrderPositionId(intent.id, position.id);
   logAutotradeEvent({

@@ -31,6 +31,12 @@ const post = (path: string, body: unknown) =>
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
+const patch = (path: string, body: unknown) =>
+  fetch(`${base}${path}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 const getJson = async (path: string) => (await fetch(`${base}${path}`)).json();
 
 describe('positions + journal routes (integration)', () => {
@@ -64,6 +70,32 @@ describe('positions + journal routes (integration)', () => {
   it('rejects an invalid create with 400', async () => {
     const res = await post('/api/positions', { assetType: 'stock' }); // missing required fields
     expect(res.status).toBe(400);
+  });
+
+  // Regression (2026-07-17): the Zod body schemas for both routes were
+  // written before accountId existed and didn't list it, so Zod silently
+  // stripped it from the parsed body before it ever reached the DB layer —
+  // a real, would-have-shipped gap the DB-layer unit tests (which call
+  // createPosition/updatePosition directly, bypassing the route entirely)
+  // couldn't catch, only found by driving the real route end-to-end.
+  it('round-trips accountId through both create and patch, not silently dropping it', async () => {
+    const created = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'VRAX',
+      side: 'long',
+      quantity: 50,
+      entryPrice: 20,
+      entryDate: '2026-07-01',
+      accountId: 'CASH_ACC',
+    });
+    const pos = (await created.json()) as { id: number; accountId: string | null };
+    expect(pos.accountId).toBe('CASH_ACC');
+
+    const patched = await patch(`/api/positions/${pos.id}`, { accountId: 'MARGIN_ACC' });
+    expect(((await patched.json()) as { accountId: string | null }).accountId).toBe('MARGIN_ACC');
+
+    const cleared = await patch(`/api/positions/${pos.id}`, { accountId: null });
+    expect(((await cleared.json()) as { accountId: string | null }).accountId).toBeNull();
   });
 
   it('day stats reflect entries and P&L booked on a date', async () => {

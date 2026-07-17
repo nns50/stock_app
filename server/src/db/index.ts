@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS positions (
   stop_price  REAL,                    -- planned stop (price level)
   target_price REAL,                   -- planned target (price level)
   source_intent_id INTEGER,            -- order_intents.id that produced this fill (live-traded only; no FK — a manually logged/imported position has none, and order_intents isn't guaranteed to persist forever)
+  account_id  TEXT,                    -- the Webull account this lot lives in (imported/live-traded only; null for a manually-logged position, or a legacy row from before this column existed)
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
@@ -457,6 +458,7 @@ CREATE TABLE IF NOT EXISTS autotrade_live_orders (
   risk_profile  TEXT NOT NULL,
   position_id   INTEGER,              -- entry: set once the fill materializes into positions.
                                        -- exit: known upfront (the position this order will close).
+  account_id    TEXT,                 -- entry: the Webull account this order executed in, carried to positions.account_id at materialization. null for exit rows and legacy rows.
   created_at    INTEGER NOT NULL
 );
 
@@ -492,6 +494,7 @@ CREATE TABLE IF NOT EXISTS autotrade_live_options_positions (
   short_exit_price       REAL,                 -- short leg's filled premium at exit (debit spreads only)
   exit_at                INTEGER,
   exit_reason            TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL),
+  account_id             TEXT,                 -- the Webull account this fill executed in; null for a legacy row from before this column existed
   created_at             INTEGER NOT NULL,
   updated_at             INTEGER NOT NULL
 );
@@ -521,6 +524,7 @@ CREATE TABLE IF NOT EXISTS autotrade_live_options_orders (
   -- position's own stored exit_reason isn't hardcoded to 'time_exit' for a
   -- manually-triggered close. Null for entry rows.
   exit_reason   TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL),
+  account_id    TEXT,                 -- entry: the Webull account this order executed in, carried to autotrade_live_options_positions.account_id at materialization. null for exit rows and legacy rows.
   created_at    INTEGER NOT NULL
 );
 
@@ -683,6 +687,23 @@ function migrate(): void {
   if (!has('entry_time')) db.exec('ALTER TABLE positions ADD COLUMN entry_time TEXT');
   if (!has('source_intent_id')) db.exec('ALTER TABLE positions ADD COLUMN source_intent_id INTEGER');
 
+  const aloEqCols = db.prepare('PRAGMA table_info(autotrade_live_orders)').all() as { name: string }[];
+  if (!aloEqCols.some((c) => c.name === 'account_id')) {
+    db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN account_id TEXT');
+  }
+  const aloOptCols = db.prepare('PRAGMA table_info(autotrade_live_options_orders)').all() as { name: string }[];
+  if (!aloOptCols.some((c) => c.name === 'account_id')) {
+    db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN account_id TEXT');
+  }
+  // 2026-07-17: without this, the Webull sync's broker-truth reconciliation
+  // had no way to tell "opened under account A" from "opened under account
+  // B" — every locally-tracked open position was compared against whichever
+  // ONE account happened to be configured at sync time, so switching the
+  // configured account wrongly auto-closed the other account's real open
+  // positions and merged a same-symbol buy in the new account onto the old
+  // account's row. See providers/webull/positions.ts for the scoped fix.
+  if (!has('account_id')) db.exec('ALTER TABLE positions ADD COLUMN account_id TEXT');
+
   // position_exits gained the same provenance link, for exit-side slippage.
   const exitCols = db.prepare('PRAGMA table_info(position_exits)').all() as { name: string }[];
   if (!exitCols.some((c) => c.name === 'source_intent_id')) {
@@ -751,6 +772,14 @@ function migrate(): void {
   }
   if (!hasOpp('partial_exit_taken')) {
     db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN partial_exit_taken INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // 2026-07-17: same account-blindness fix as positions.account_id above,
+  // for the separate live options ledger — see providers/webull/positions.ts
+  // and services/autotrading/liveOptionsExecute.ts's syncLiveOptionsPositionsFromBroker.
+  const alopCols = db.prepare('PRAGMA table_info(autotrade_live_options_positions)').all() as { name: string }[];
+  if (!alopCols.some((c) => c.name === 'account_id')) {
+    db.exec('ALTER TABLE autotrade_live_options_positions ADD COLUMN account_id TEXT');
   }
 
   // autotrade_live_options_orders gained contract detail (Task #70 Step C):

@@ -7,6 +7,7 @@ import {
   addExit,
   createPosition,
   listPositions,
+  updatePosition,
 } from '../../db/positions';
 import { priceMap } from '../../services/quotes';
 import { webullClient, webullConfigured } from './account';
@@ -68,8 +69,11 @@ function toOptionType(v: unknown): OptionType | undefined {
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-/** Map one raw Webull position to an importable journal position (or null if unusable). */
-export function mapWebullPosition(p: Record<string, unknown>): ImportablePosition | null {
+/** Map one raw Webull position to an importable journal position (or null if
+ *  unusable). `accountId` is stamped onto the result so the reconciliation
+ *  below can tell one brokerage account's holdings apart from another's — see
+ *  the account_id column comment in db/index.ts for why that matters. */
+export function mapWebullPosition(p: Record<string, unknown>, accountId: string): ImportablePosition | null {
   const symbol = String(pick(p, ['symbol', 'ticker', 'instrument_symbol', 'underlying_symbol']) ?? '').toUpperCase();
   if (!symbol) return null;
 
@@ -97,6 +101,7 @@ export function mapWebullPosition(p: Record<string, unknown>): ImportablePositio
     status: 'open',
     tags: ['webull'],
     notes: 'Imported from Webull',
+    accountId,
   };
 
   if (assetType === 'option') {
@@ -151,13 +156,18 @@ export async function previewWebullPositions(accountId: string): Promise<Positio
     };
   }
   const rows = extractPositions(r.raw);
-  const positions = rows.map(mapWebullPosition).filter((p): p is ImportablePosition => p !== null);
+  const positions = rows
+    .map((row) => mapWebullPosition(row, accountId))
+    .filter((p): p is ImportablePosition => p !== null);
   return { ok: true, url: r.url, accountId, positions, raw: r.raw, unmapped: rows.length - positions.length };
 }
 
-/** True when an importable position matches an existing open journal position. */
-function matchesOpen(open: Position[], p: ImportablePosition): boolean {
-  return open.some(
+/** The existing open journal position an importable position matches, if any.
+ *  `open` is expected to already be scoped to this account (plus unassigned
+ *  legacy rows — see PositionFilter.includeUnassignedAccount) by the caller;
+ *  this only re-checks contract identity, not account. */
+function findMatch(open: Position[], p: ImportablePosition): Position | undefined {
+  return open.find(
     (o) =>
       o.symbol === p.symbol.toUpperCase() &&
       o.assetType === p.assetType &&
@@ -177,10 +187,12 @@ export interface ContractLike {
 }
 
 /** Groups a Position/ImportablePosition by underlying contract — same identity
- *  `matchesOpen` already uses (symbol + asset type + option legs), NOT side. A
- *  long flipping to a short in the same symbol between syncs is a known,
- *  pre-existing blind spot shared with matchesOpen — this mirrors it rather
- *  than inventing stricter matching only the close-detector below applies.
+ *  `findMatch` already uses (symbol + asset type + option legs), NOT side, NOT
+ *  account. A long flipping to a short in the same symbol between syncs is a
+ *  known, pre-existing blind spot shared with findMatch — this mirrors it
+ *  rather than inventing stricter matching only the close-detector below
+ *  applies. Account scoping happens one level up, in which Positions the
+ *  caller passes in (see closePositionsFromPreview) — not in this key.
  *  Exported so liveOptionsExecute.ts's own broker-truth backstop (over the
  *  SEPARATE autotrade_live_options_positions table, not this file's
  *  `positions`) can identify the same contract identity per LEG, without
@@ -203,12 +215,17 @@ export interface ImportSummary {
 }
 
 function importFromPreview(accountId: string, preview: PositionsPreview): ImportSummary {
-  const open = listPositions({ status: 'open' });
+  const open = listPositions({ status: 'open', accountId, includeUnassignedAccount: true });
   const created: Position[] = [];
   let skipped = 0;
   for (const p of preview.positions) {
-    if (matchesOpen(open, p)) {
+    const match = findMatch(open, p);
+    if (match) {
       skipped++;
+      // A legacy row from before account tracking existed — claim it now
+      // that a sync against this specific account has confirmed it belongs
+      // here, so future syncs no longer need to treat it as unassigned.
+      if (match.accountId === null) updatePosition(match.id, { accountId });
       continue;
     }
     created.push(createPosition(p));
@@ -285,7 +302,12 @@ async function closePositionsFromPreview(
     liveQtyByKey.set(key, (liveQtyByKey.get(key) ?? 0) + p.quantity);
   }
 
-  const open = listPositions({ status: 'open' }).filter(isWebullTracked);
+  // Strictly this account's own rows — deliberately NOT includeUnassignedAccount
+  // (unlike importFromPreview's add-side): closing something we're not certain
+  // belongs to THIS account is exactly the false-close bug this exists to
+  // prevent. A legacy unassigned row only becomes close-eligible once some
+  // account's import pass has claimed it (see importFromPreview above).
+  const open = listPositions({ status: 'open', accountId: preview.accountId }).filter(isWebullTracked);
   const lotsByKey = new Map<string, Position[]>();
   for (const p of open) {
     const key = contractKey(p);

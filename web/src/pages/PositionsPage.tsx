@@ -282,6 +282,14 @@ const PositionRow = memo(
               <Badge>closed</Badge>
             </span>
           )}
+          {p.accountId && (
+            <span
+              className="ml-2 chip bg-ink-700 text-slate-400 font-mono text-[10px]"
+              title={`Webull account ${p.accountId}`}
+            >
+              {p.accountId.length > 14 ? `…${p.accountId.slice(-11)}` : p.accountId}
+            </span>
+          )}
           {p.status === 'open' && (p.stopPrice != null || p.targetPrice != null || pnl.rMultiple != null) && (
             <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums flex flex-wrap gap-x-2">
               {p.stopPrice != null && (

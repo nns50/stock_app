@@ -83,6 +83,7 @@ describe('runSchedulerTick', () => {
       entryPrice: 20,
       entryDate: '2026-01-02',
       tags: ['webull'],
+      accountId: 'ACC1',
     });
     vi.mocked(priceMap).mockResolvedValue(new Map([[p.id, { price: 15, stale: false, asOf: 0 }]]));
     Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
