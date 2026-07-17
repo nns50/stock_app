@@ -528,6 +528,28 @@ CREATE TABLE IF NOT EXISTS autotrade_live_options_orders (
   created_at    INTEGER NOT NULL
 );
 
+-- Debounces the broker-preview close-detection in closePositionsFromPreview
+-- (providers/webull/positions.ts) and syncLiveOptionsPositionsFromBroker
+-- (services/autotrading/liveOptionsExecute.ts). Both used to auto-close the
+-- instant a SINGLE preview fetch didn't include a contract still genuinely
+-- held at the broker -- an intermittent/incomplete Webull response was
+-- enough to trigger a false close, and the very next successful sync would
+-- re-import it as a brand-new position, repeating indefinitely (observed in
+-- production: a low-priced symbol cycling open/closed every ~60-150s for
+-- hours, each cycle booking a fabricated realized loss). Requiring the same
+-- contract to be missing on MISS_CONFIRM_THRESHOLD consecutive syncs, with no
+-- successful "still held" observation in between, before actually writing
+-- the close absorbs that class of single-tick flakiness at the cost of a
+-- short delay before a REAL sell is detected -- an acceptable tradeoff for a
+-- tracking-only journal that never itself places a trade based on this.
+CREATE TABLE IF NOT EXISTS webull_miss_streak (
+  account_id    TEXT NOT NULL,
+  contract_key  TEXT NOT NULL,
+  streak        INTEGER NOT NULL DEFAULT 0,
+  updated_at    INTEGER NOT NULL,
+  PRIMARY KEY (account_id, contract_key)
+);
+
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_exits_position ON position_exits(position_id);
 CREATE INDEX IF NOT EXISTS idx_picks_snapshot ON screener_picks(snapshot_id);

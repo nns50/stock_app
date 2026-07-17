@@ -42,6 +42,7 @@ import { dispatchNotifications } from '../notifier';
 import { fetchContractMark, validPremium } from './optionsExecute';
 import { getLivePortfolioSnapshot, combinedLiveOpenRisk, ProbationStatus } from './liveExecute';
 import { previewWebullPositions, contractKey } from '../../providers/webull/positions';
+import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../db/webullMissStreak';
 
 // ---------------------------------------------------------------------------
 // Task #70: the LIVE counterpart to optionsExecute.ts's paper options
@@ -1092,6 +1093,12 @@ export interface LiveOptionsPositionsSyncResult {
  * allows ('time_exit' would misleadingly imply checkLiveOptionsExits()
  * placed a real closing order); the journaled event's own detail.via is
  * what actually distinguishes it.
+ *
+ * Same consecutive-confirmation debounce as equity's closePositionsFromPreview
+ * (webull_miss_streak, db/index.ts): a leg missing from a single preview
+ * doesn't close anything by itself — an intermittent/incomplete broker
+ * response is enough to trigger that — it only acts once the same position
+ * has come up short on MISS_CONFIRM_THRESHOLD consecutive syncs.
  */
 export async function syncLiveOptionsPositionsFromBroker(accountId: string): Promise<LiveOptionsPositionsSyncResult> {
   const preview = await previewWebullPositions(accountId);
@@ -1120,6 +1127,10 @@ export async function syncLiveOptionsPositionsFromBroker(accountId: string): Pro
   const closedSymbols = new Set<string>();
   let closed = 0;
   for (const pos of open) {
+    // Keyed per-position (not per-contract): each open row closes as a whole,
+    // never FIFO-split like equity's lots, so there's no reason to share a
+    // streak across two different positions that happen to reuse a contract.
+    const streakKey = `opt:${pos.id}`;
     const longHeld = heldKeys.has(
       contractKey({
         symbol: pos.symbol,
@@ -1131,12 +1142,23 @@ export async function syncLiveOptionsPositionsFromBroker(accountId: string): Pro
     );
 
     if (pos.kind === 'single_leg') {
-      if (longHeld) continue; // still held at the broker
+      if (longHeld) {
+        clearMissStreak(accountId, streakKey);
+        continue; // still held at the broker
+      }
+      // Missing from THIS preview — don't act on a single miss; a single
+      // incomplete/flaky preview response is enough to trigger one. Require
+      // MISS_CONFIRM_THRESHOLD consecutive misses first — see
+      // webull_miss_streak's table comment (db/index.ts) for the flapping
+      // bug this guards against (equity's closePositionsFromPreview hit the
+      // same shape).
+      if (bumpMissStreak(accountId, streakKey) < MISS_CONFIRM_THRESHOLD) continue;
       const exitPrice = await safeContractMark(pos.symbol, pos.expiration, pos.strike, pos.side);
       if (exitPrice == null) continue; // can't price it — leave open, retry next sync
       if (closeLiveOptionsPositionFromBroker(pos, exitPrice, null)) {
         closed++;
         closedSymbols.add(pos.symbol);
+        clearMissStreak(accountId, streakKey);
       }
       continue;
     }
@@ -1152,7 +1174,11 @@ export async function syncLiveOptionsPositionsFromBroker(accountId: string): Pro
         expiration: pos.expiration,
       }),
     );
-    if (longHeld || shortHeld) continue;
+    if (longHeld || shortHeld) {
+      clearMissStreak(accountId, streakKey);
+      continue;
+    }
+    if (bumpMissStreak(accountId, streakKey) < MISS_CONFIRM_THRESHOLD) continue;
 
     const [longExit, shortExit] = await Promise.all([
       safeContractMark(pos.symbol, pos.expiration, pos.strike, pos.side),
@@ -1162,6 +1188,7 @@ export async function syncLiveOptionsPositionsFromBroker(accountId: string): Pro
     if (closeLiveOptionsPositionFromBroker(pos, longExit, shortExit)) {
       closed++;
       closedSymbols.add(pos.symbol);
+      clearMissStreak(accountId, streakKey);
     }
   }
   return { ok: true, checked: open.length, closed, closedSymbols: Array.from(closedSymbols) };

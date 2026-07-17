@@ -187,7 +187,7 @@ beforeEach(() => {
     'DELETE FROM autotrade_config; DELETE FROM trading_config; DELETE FROM autotrade_events; ' +
       'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; ' +
       'DELETE FROM autotrade_live_options_positions; DELETE FROM order_events; DELETE FROM order_intents; ' +
-      'DELETE FROM position_exits; DELETE FROM positions;',
+      'DELETE FROM position_exits; DELETE FROM positions; DELETE FROM webull_miss_streak;',
   );
   setTradingConfig({ enabled: true, killSwitch: false });
   config.trading.placeEnabled = true;
@@ -1117,10 +1117,15 @@ function openSpreadPosition(overrides: Partial<Parameters<typeof createLiveOptio
 }
 
 describe('syncLiveOptionsPositionsFromBroker', () => {
-  it('closes a single-leg position once Webull no longer holds the contract, pricing the exit from the current quote', async () => {
+  it('closes a single-leg position once Webull no longer holds the contract on 2 CONSECUTIVE syncs, pricing the exit from the current quote', async () => {
     const pos = openLivePosition({ strike: 100, expiration: '2030-01-18', accountId: 'ACC1' });
     mockPreviewPositions.mockResolvedValue(previewOf([])); // broker holds nothing matching
     mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.5 } }) as never);
+
+    // First miss isn't enough by itself — see the miss-streak debounce
+    // describe block below for the flapping bug this guards against.
+    const first = await syncLiveOptionsPositionsFromBroker('ACC1');
+    expect(first).toMatchObject({ ok: true, checked: 1, closed: 0 });
 
     const result = await syncLiveOptionsPositionsFromBroker('ACC1');
 
@@ -1151,12 +1156,13 @@ describe('syncLiveOptionsPositionsFromBroker', () => {
     mockPreviewPositions.mockResolvedValue(previewOf([]));
     mockGetProvider.mockReturnValue(chainsFor({}) as never); // no chain for AAPL -> fetchContractMark throws
 
+    await syncLiveOptionsPositionsFromBroker('ACC1'); // first miss — not confirmed yet, price never even consulted
     const result = await syncLiveOptionsPositionsFromBroker('ACC1');
 
     expect(result).toMatchObject({ ok: true, checked: 1, closed: 0 });
   });
 
-  it('closes a debit spread only once BOTH legs are confirmed gone from the broker, netting both legs into the exit P&L', async () => {
+  it('closes a debit spread only once BOTH legs are confirmed gone from the broker on 2 consecutive syncs, netting both legs into the exit P&L', async () => {
     const pos = openSpreadPosition({ accountId: 'ACC1' });
     mockPreviewPositions.mockResolvedValue(previewOf([])); // neither leg held
     mockGetProvider.mockReturnValue(
@@ -1168,6 +1174,7 @@ describe('syncLiveOptionsPositionsFromBroker', () => {
       }) as never,
     );
 
+    await syncLiveOptionsPositionsFromBroker('ACC1'); // first miss — not confirmed yet
     const result = await syncLiveOptionsPositionsFromBroker('ACC1');
 
     expect(result).toMatchObject({ ok: true, checked: 1, closed: 1 });
@@ -1223,5 +1230,41 @@ describe('syncLiveOptionsPositionsFromBroker', () => {
 
     expect(result).toMatchObject({ ok: false, checked: 0, closed: 0, error: 'Webull is not configured.' });
     expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
+  });
+
+  // Same flapping-close bug as equity's closePositionsFromPreview (see
+  // webull_miss_streak's table comment, db/index.ts): a single incomplete/
+  // flaky broker preview used to be enough to fabricate a close here too.
+  describe('miss-streak debounce (flapping-close bug fix)', () => {
+    it('does NOT close on a single missing observation', async () => {
+      const pos = openLivePosition({ strike: 100, expiration: '2030-01-18', accountId: 'ACC1' });
+      mockPreviewPositions.mockResolvedValue(previewOf([]));
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.5 } }) as never);
+
+      const result = await syncLiveOptionsPositionsFromBroker('ACC1');
+
+      expect(result).toMatchObject({ ok: true, closed: 0 });
+      expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
+    });
+
+    it('a confirmed "still held" sync in between resets the streak — a later single miss does not close it', async () => {
+      const pos = openLivePosition({ strike: 100, expiration: '2030-01-18', accountId: 'ACC1' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.5 } }) as never);
+
+      mockPreviewPositions.mockResolvedValue(previewOf([])); // miss #1
+      await syncLiveOptionsPositionsFromBroker('ACC1');
+      expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
+
+      mockPreviewPositions.mockResolvedValue(
+        previewOf([{ symbol: 'AAPL', optionType: 'call', strike: 100, expiration: '2030-01-18' }]),
+      ); // confirmed held
+      await syncLiveOptionsPositionsFromBroker('ACC1');
+      expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
+
+      mockPreviewPositions.mockResolvedValue(previewOf([])); // miss #1 again (streak was reset)
+      const result = await syncLiveOptionsPositionsFromBroker('ACC1');
+      expect(result).toMatchObject({ closed: 0 });
+      expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
+    });
   });
 });

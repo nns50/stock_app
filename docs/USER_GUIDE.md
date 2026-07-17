@@ -1221,6 +1221,17 @@ One home (⚙ or `⌘K → Settings`) for everything:
   > tracking it separately. If you were affected before upgrading, see a wrongly-closed
   > position's **journal** dialog above to remove the bad exit and reopen it, then set its
   > correct account there too, before re-syncing.
+  >
+  > **Flapping-close protection (2026-07-17).** A single sync that doesn't show a position
+  > held at the broker no longer closes it by itself — a momentarily incomplete/flaky
+  > response from Webull used to be enough to trigger a close on the spot, and the very next
+  > sync would then re-import the still-genuinely-held position as a brand-new one, repeating
+  > indefinitely and booking a fabricated exit (and P/L) each time. A close now only happens
+  > once the same position has been missing on **two consecutive syncs** with nothing in
+  > between confirming it's still held — a real sell is still caught within a sync interval
+  > or two, but one bad response can no longer fabricate a close/reopen cycle. If your journal
+  > or P/L already looks inflated with repeating same-symbol entries from before this fix,
+  > see **Settings → Data** below to export, review, and clean up affected rows.
 - **Quotes may be delayed** (commonly ~15 min on free tiers). The provider chip shows
   live vs demo. Responses are cached briefly and pages with a **Refresh** control
   auto-poll every **1 minute** by default (adjustable, including off).

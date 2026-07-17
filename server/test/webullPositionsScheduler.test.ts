@@ -24,7 +24,8 @@ beforeEach(() => {
   db.exec("DELETE FROM settings WHERE key = 'webullPositionsScheduler'");
   db.exec(
     'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; DELETE FROM order_events; ' +
-      'DELETE FROM order_intents; DELETE FROM position_exits; DELETE FROM positions;',
+      'DELETE FROM order_intents; DELETE FROM position_exits; DELETE FROM positions; ' +
+      'DELETE FROM webull_miss_streak;',
   );
   vi.mocked(priceMap).mockReset();
 });
@@ -94,6 +95,10 @@ describe('runSchedulerTick', () => {
     } as Response);
     setWebullSyncConfig({ enabled: true, accountId: 'ACC1' });
 
+    // First tick's miss isn't enough by itself — see webull_miss_streak's
+    // table comment (db/index.ts) for the flapping-close bug this debounce
+    // prevents; a real close is confirmed on the 2nd consecutive tick.
+    await runSchedulerTick();
     const r = await runSchedulerTick();
     expect(r).toMatchObject({ ok: true, accountId: 'ACC1', closed: 1, closedSymbols: ['VRAX'] });
     expect(getPosition(p.id)!.status).toBe('closed');
