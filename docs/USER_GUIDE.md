@@ -500,6 +500,19 @@ trades.
   its own count, total, win rate, and expectancy. This is how you discover *which
   setups and which behaviors* make you money.
 
+### Auto-tune efficacy
+
+- Only shown once **Auto-tune from realized edge** (Auto-Trade → Config) has made at
+  least one risk-per-trade adjustment. For each past adjustment, shows the old/new
+  **risk-per-trade %**, the Kelly suggestion and sample size behind it, and a
+  **before/after** comparison — win rate and expectancy for autotrade's own closed
+  trades entered before vs. on/after that adjustment's date (a manually-placed trade
+  never counts here, since the risk-% change never touched its sizing). This is
+  informational only: nothing here reverts a change automatically, however it looks —
+  see `docs/STRATEGY_PLAYBOOK.md`'s sizing section for why that's a deliberate choice,
+  not a missing feature. A very recent adjustment naturally shows few or zero "after"
+  trades; that's the sample size telling you it's too soon to read anything into it.
+
 ### Curves & risk
 
 Equity curve, edge over time, and drawdown & streaks are shown directly on the page.

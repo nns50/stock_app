@@ -1,5 +1,6 @@
 import type {
   AggregatePnl,
+  AutoTuneRiskAdjustmentEfficacy,
   Candle,
   BenchmarkResult,
   DayStats,
@@ -305,6 +306,7 @@ export const client = {
 
   // --- journal ---
   journalStats: () => api<JournalStats>('/journal/stats'),
+  journalAutoTuneEfficacy: () => api<{ adjustments: AutoTuneRiskAdjustmentEfficacy[] }>('/journal/auto-tune-efficacy'),
   journalExcursions: () => api<ExcursionReport>('/journal/excursions'),
   journalBenchmark: (accountSize?: number, symbol = 'SPY') => {
     const qs = new URLSearchParams({ symbol });

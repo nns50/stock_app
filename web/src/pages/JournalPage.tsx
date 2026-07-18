@@ -100,6 +100,7 @@ function Breakdown({ id, title, colLabel, rows }: { id: string; title: string; c
 export default function JournalPage() {
   const stats = useAsync(() => client.journalStats(), []);
   const closed = useAsync(() => client.positionsWithPnl({ status: 'closed' }), []);
+  const efficacy = useAsync(() => client.journalAutoTuneEfficacy(), []);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [editPos, setEditPos] = useState<Position | null>(null);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
@@ -107,6 +108,7 @@ export default function JournalPage() {
   const reload = () => {
     stats.reload();
     closed.reload();
+    efficacy.reload();
   };
 
   const allTags = useMemo(() => {
@@ -235,6 +237,65 @@ export default function JournalPage() {
               Only {s.kelly.sampleSize} decisive trades — too few to lean on; size conservatively.
             </div>
           )}
+        </CollapsibleCard>
+      )}
+
+      {efficacy.data && efficacy.data.adjustments.length > 0 && (
+        <CollapsibleCard
+          id="journal.autoTuneEfficacy"
+          title="Auto-tune efficacy"
+          action={
+            <InfoTip text="Did a past Auto-tune from realized edge risk-% change (Auto-Trade → Config) actually help? Before/after stats split by each adjustment's own date, scoped to autotrade's own trades only. Informational only — nothing here reverts a change automatically; you review and decide." />
+          }
+        >
+          <div className="mt-2 space-y-3">
+            {efficacy.data.adjustments.map((a) => (
+              <div key={a.eventId} className="rounded border border-ink-600/60 p-3 text-sm">
+                <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                  <span>
+                    {fmtDate(a.adjustedAt)} — riskPerTradePct{' '}
+                    <span className="font-semibold tabular-nums">{fmtNum(a.from, 2)}%</span> →{' '}
+                    <span className="font-semibold text-accent tabular-nums">{fmtNum(a.to, 2)}%</span>
+                  </span>
+                  <span className="text-xs text-slate-500 tabular-nums">
+                    Kelly suggested {fmtNum(a.kellySuggestedAtTheTime, 2)}% from {a.sampleSizeAtTheTime} trades
+                  </span>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-3">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-slate-500">
+                      Before ({a.before.totalClosed} trade{a.before.totalClosed === 1 ? '' : 's'})
+                    </div>
+                    <div className="text-xs tabular-nums">
+                      {a.before.totalClosed > 0 ? (
+                        <>
+                          {fmtNum(a.before.winRate, 0)}% win · {fmtSignedUsd(a.before.expectancy)} / trade
+                          {a.before.kelly && <> · Kelly {fmtNum(a.before.kelly.suggestedRiskPct, 2)}%</>}
+                        </>
+                      ) : (
+                        <span className="text-slate-500">no closed trades</span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-slate-500">
+                      After ({a.after.totalClosed} trade{a.after.totalClosed === 1 ? '' : 's'})
+                    </div>
+                    <div className="text-xs tabular-nums">
+                      {a.after.totalClosed > 0 ? (
+                        <>
+                          {fmtNum(a.after.winRate, 0)}% win · {fmtSignedUsd(a.after.expectancy)} / trade
+                          {a.after.kelly && <> · Kelly {fmtNum(a.after.kelly.suggestedRiskPct, 2)}%</>}
+                        </>
+                      ) : (
+                        <span className="text-slate-500">too soon to tell</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         </CollapsibleCard>
       )}
 

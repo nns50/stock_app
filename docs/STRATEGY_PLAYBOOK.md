@@ -150,6 +150,16 @@ webhooks, same as the other consequential loop events. It's still worth checking
 Journal's own Kelly panel periodically — auto-tune only ever moves *toward* it a little
 at a time, it doesn't replace understanding where the number comes from.
 
+Did a past adjustment actually help? The Journal page's **Auto-tune efficacy** card
+answers that directly — before/after win rate and expectancy around each adjustment's
+own date. Deliberately informational only: it never auto-reverts a change that looks
+bad in hindsight, for the same reason auto-tune itself waits for a real sample before
+acting on a Kelly reading in the first place — judging "did this help" off however few
+trades have closed since a *recent* change would be pure noise-chasing, and telling a
+genuinely bad adjustment apart from an unrelated cold streak or regime shift is
+genuinely hard even with a full sample. You stay in the loop; the system never
+silently walks its own sizing back on your behalf.
+
 ---
 
 ## Playbook A — Momentum/trend swing (long)
