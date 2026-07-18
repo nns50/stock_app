@@ -101,6 +101,7 @@ import type {
   AutotradeLivePosition,
   LiveOptionsPosition,
   AutotradeDashboard,
+  PortfolioGreeks,
   SuggestedLiveCaps,
 } from './types';
 
@@ -555,6 +556,7 @@ export const client = {
       body: JSON.stringify({ accountId, confirmation }),
     }),
   autotradeDashboard: () => api<AutotradeDashboard>('/autotrade/dashboard'),
+  autotradePortfolioGreeks: () => api<PortfolioGreeks>('/autotrade/portfolio-greeks'),
   setAutotradeKillSwitch: (on: boolean) =>
     api<AutotradeConfig>('/autotrade/kill-switch', { method: 'POST', body: JSON.stringify({ on }) }),
   syncAutotradeEquity: () => api<EquitySyncResult>('/autotrade/sync-equity', { method: 'POST' }),

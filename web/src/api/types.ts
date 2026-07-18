@@ -1793,6 +1793,15 @@ export interface LiveOptionsPosition {
   unrealizedPnl: number | null;
 }
 
+/** GET /autotrade/portfolio-greeks — a separate, on-demand endpoint from
+ *  AutotradeDashboard below (see the route's own doc comment for why: it
+ *  needs a live options-chain fetch, unlike every dashboard figure). */
+export interface PortfolioGreeks {
+  netDelta: number;
+  netTheta: number;
+  netVega: number;
+}
+
 export interface AutotradeDashboard {
   enabled: boolean;
   killSwitch: boolean;

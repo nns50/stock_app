@@ -1719,7 +1719,10 @@ describe('autotrade live options positions close route (integration)', () => {
 
 describe('autotrade monitoring dashboard + kill switch routes (integration)', () => {
   beforeEach(() => {
-    db.exec('DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events;');
+    db.exec(
+      'DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_options_paper_positions; ' +
+        'DELETE FROM autotrade_live_options_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events;',
+    );
   });
 
   it('GET /dashboard returns a full snapshot with safe defaults', async () => {
@@ -1739,6 +1742,11 @@ describe('autotrade monitoring dashboard + kill switch routes (integration)', ()
     expect(dash.openPositionsCount).toBe(0);
     expect(dash.maxConcurrentPositions).toBe(2);
     expect(dash.maxTradesPerDay).toBe(6);
+  });
+
+  it('GET /portfolio-greeks returns zeroed Greeks with an empty options book', async () => {
+    const greeks = await getJson('/api/autotrade/portfolio-greeks');
+    expect(greeks).toEqual({ netDelta: 0, netTheta: 0, netVega: 0 });
   });
 
   it('POST /kill-switch engages and releases, journaling each transition', async () => {

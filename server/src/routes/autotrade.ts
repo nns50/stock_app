@@ -31,6 +31,9 @@ import { Position } from '../db/positions';
 import { closeLiveOptionsAutotradePosition } from '../services/trading/closePosition';
 import { runAutotradeLoopTick } from '../services/autotrading/loop';
 import { getAutotradeDashboard } from '../services/autotrading/dashboard';
+import { getOptionsPaperPortfolioSnapshot } from '../services/autotrading/optionsExecute';
+import { getLiveOptionsPortfolioSnapshot } from '../services/autotrading/liveOptionsExecute';
+import { computeAutotradeOptionsGreeks } from '../services/portfolioGreeks';
 import { resolveStockPrices, priceMap } from '../services/quotes';
 import {
   computePaperUnrealizedPnl,
@@ -1302,6 +1305,25 @@ autotradeRouter.get(
 autotradeRouter.get('/dashboard', (_req, res) => {
   res.json(getAutotradeDashboard());
 });
+
+/** Net delta/theta/vega across autotrade's own combined open options book
+ *  (paper + live) — a SEPARATE, on-demand endpoint rather than a field on
+ *  /dashboard above: computing it needs a live options-chain fetch per open
+ *  (symbol, expiration), unlike every other /dashboard figure (a pure read of
+ *  already-persisted state), and /dashboard is polled far more often than a
+ *  Greeks snapshot needs to be (see AutoTradePage's own polling-frequency
+ *  precedent, Perf #5) — bundling this in would mean either a real network
+ *  round-trip on every dashboard poll, or a rate-limit risk, for a number
+ *  most callers of /dashboard (e.g. dailyHaltAlert.ts's own per-tick read)
+ *  never asked for. */
+autotradeRouter.get(
+  '/portfolio-greeks',
+  asyncHandler(async (_req, res) => {
+    const paperOptions = getOptionsPaperPortfolioSnapshot().openPositions;
+    const liveOptions = getLiveOptionsPortfolioSnapshot().openPositions;
+    res.json(await computeAutotradeOptionsGreeks(paperOptions, liveOptions));
+  }),
+);
 
 const killSwitchBody = z.object({ on: z.boolean() });
 autotradeRouter.post(

@@ -1,6 +1,6 @@
 import { lazy, memo, ReactNode, Suspense, useEffect, useRef, useState } from 'react';
 import { client } from '../api/client';
-import { useAsync, useLocalStorage } from '../lib/hooks';
+import { AsyncState, useAsync, useLocalStorage } from '../lib/hooks';
 import { useToast } from '../components/ToastContext';
 import { useConfirm } from '../components/ConfirmContext';
 import { RefreshBar } from '../components/RefreshBar';
@@ -40,6 +40,7 @@ import type {
   OptionsPaperPosition,
   OptionsWalkForwardResponse,
   PaperPosition,
+  PortfolioGreeks,
   Position,
   SimulatedOptionsTrade,
   SimulatedTrade,
@@ -1267,7 +1268,13 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
  *  count vs max, and the consecutive-loss streak. Every "used vs limit" pair
  *  here is a direct read of the server's own risk-check math (dashboard.ts),
  *  not re-derived in the UI. */
-function MonitoringDashboard({ dash }: { dash: AutotradeDashboard }) {
+function MonitoringDashboard({
+  dash,
+  portfolioGreeks,
+}: {
+  dash: AutotradeDashboard;
+  portfolioGreeks: AsyncState<PortfolioGreeks>;
+}) {
   const riskBusy = dash.maxAggregateOpenRisk > 0 && dash.openRisk >= dash.maxAggregateOpenRisk;
   const positionsBusy = dash.openPositionsCount >= dash.maxConcurrentPositions;
   const tradesBusy = dash.tradesToday >= dash.maxTradesPerDay;
@@ -1414,6 +1421,43 @@ function MonitoringDashboard({ dash }: { dash: AutotradeDashboard }) {
             }
           />
         </div>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h4 className="text-xs uppercase tracking-wide text-slate-400">
+            Portfolio Greeks — combined open options book (paper + live)
+          </h4>
+          <button className="btn-ghost text-xs" onClick={portfolioGreeks.reload} disabled={portfolioGreeks.loading}>
+            {portfolioGreeks.loading ? 'Loading…' : 'Reload Greeks'}
+          </button>
+        </div>
+        {portfolioGreeks.error ? (
+          <ErrorState error={portfolioGreeks.error} onRetry={portfolioGreeks.reload} />
+        ) : portfolioGreeks.data ? (
+          <div className="grid grid-cols-3 gap-2">
+            <StatTile
+              label="Net delta ($)"
+              value={fmtSignedUsd(portfolioGreeks.data.netDelta)}
+              sub="$ change per $1 move in the underlying(s)"
+              valueClass={portfolioGreeks.data.netDelta >= 0 ? 'text-bull' : 'text-bear'}
+            />
+            <StatTile
+              label="Net theta ($/day)"
+              value={fmtSignedUsd(portfolioGreeks.data.netTheta)}
+              sub="typically negative — time decay on a long book"
+              valueClass={portfolioGreeks.data.netTheta >= 0 ? 'text-bull' : 'text-bear'}
+            />
+            <StatTile
+              label="Net vega ($/vol pt)"
+              value={fmtSignedUsd(portfolioGreeks.data.netVega)}
+              sub="$ change per 1-point move in implied vol"
+              valueClass={portfolioGreeks.data.netVega >= 0 ? 'text-bull' : 'text-bear'}
+            />
+          </div>
+        ) : (
+          <Spinner />
+        )}
       </div>
 
       {dash.openOptionsPositions.length > 0 && (
@@ -1587,6 +1631,11 @@ export default function AutoTradePage() {
   const livePositions = useAsync(() => client.autotradeLivePositions({ limit: 100 }), []);
   const liveOptionsPositions = useAsync(() => client.autotradeLiveOptionsPositions({ limit: 100 }), []);
   const dashboard = useAsync(() => client.autotradeDashboard(), []);
+  // Deliberately NOT part of refreshLiveData()'s 60s-poll bundle below —
+  // unlike every other dashboard figure (a pure DB read), this needs a live
+  // options-chain fetch per open (symbol, expiration); own on-mount fetch +
+  // manual "Refresh" button only, so it isn't hit on every poll tick.
+  const portfolioGreeks = useAsync(() => client.autotradePortfolioGreeks(), []);
   const [view, setView] = useLocalStorage<'config' | 'dashboard'>('autotrade.view', 'config');
   const { toast } = useToast();
   const confirm = useConfirm();
@@ -3905,7 +3954,7 @@ export default function AutoTradePage() {
             ) : dashboard.error ? (
               <ErrorState error={dashboard.error} onRetry={dashboard.reload} />
             ) : dashboard.data ? (
-              <MonitoringDashboard dash={dashboard.data} />
+              <MonitoringDashboard dash={dashboard.data} portfolioGreeks={portfolioGreeks} />
             ) : null}
           </CollapsibleCard>
         </>

@@ -963,7 +963,18 @@ shouldn't be a tab-switch away.
   back to a live gauge, unlike correlated exposure — sector is a fixed classification,
   not relative to a hypothetical candidate, so it shows the single most-concentrated
   sector across your whole current book (paper + live, stocks + options combined) vs.
-  its $ cap right now, flagged red if already over. Every other figure
+  its $ cap right now, flagged red if already over. Below the tile grid, a **Portfolio
+  Greeks** section shows net delta, theta, and vega summed across your whole combined
+  open options book (paper + live) — "am I net long or short the market right now" and
+  "how much am I bleeding or collecting in time decay today," one $ number each, instead
+  of only ever seeing Greeks per-contract on the Options page's own chain browser. Unlike
+  every dashboard tile above (a pure database read), this needs a live options-chain
+  fetch, so it loads once when you open the Dashboard tab and only refetches when you
+  click its own **Reload Greeks** button — it does not ride the 60-second poll the rest
+  of this panel uses, to avoid an options-chain round-trip on every automatic refresh. A
+  debit spread's short leg is netted against its long leg (you're short that contract, so
+  its Greeks subtract rather than add) — every other position in this app is a plain
+  long-the-contract bet. Every other figure
   is scoped to the loop's own paper positions (never your real ones) and is a direct read
   of the same numbers the risk engine itself checks before approving a trade — this panel
   can't show you something the risk engine would disagree with. A tile goes red once

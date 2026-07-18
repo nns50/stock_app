@@ -205,6 +205,7 @@ beforeEach(() => {
   vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeLiveOptionsPositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
+  vi.spyOn(client, 'autotradePortfolioGreeks').mockResolvedValue({ netDelta: 0, netTheta: 0, netVega: 0 });
 });
 
 describe('AutoTradePage', () => {
@@ -2357,6 +2358,35 @@ describe('AutoTradePage', () => {
       renderDashboard();
       const value = await screen.findByText('$25,000.00');
       expect(value).toHaveClass('text-bear');
+    });
+
+    it('shows the portfolio Greeks aggregate once loaded', async () => {
+      vi.spyOn(client, 'autotradePortfolioGreeks').mockResolvedValue({
+        netDelta: 1234.5,
+        netTheta: -56.78,
+        netVega: 90.12,
+      });
+      renderDashboard();
+      expect(await screen.findByText('+$1,234.50')).toBeInTheDocument();
+      expect(screen.getByText('-$56.78')).toBeInTheDocument();
+      expect(screen.getByText('+$90.12')).toBeInTheDocument();
+    });
+
+    it('refetches portfolio Greeks when the Refresh button is clicked', async () => {
+      const greeks = vi
+        .spyOn(client, 'autotradePortfolioGreeks')
+        .mockResolvedValue({ netDelta: 0, netTheta: 0, netVega: 0 });
+      renderDashboard();
+      await screen.findByText('Net delta ($)');
+      expect(greeks).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByRole('button', { name: 'Reload Greeks' }));
+      await waitFor(() => expect(greeks).toHaveBeenCalledTimes(2));
+    });
+
+    it('shows an error state with retry when the portfolio-greeks fetch fails', async () => {
+      vi.spyOn(client, 'autotradePortfolioGreeks').mockRejectedValue(new Error('greeks unavailable'));
+      renderDashboard();
+      expect(await screen.findByText('greeks unavailable')).toBeInTheDocument();
     });
 
     it('shows "hasn\'t run yet" for the last cycle before the loop has ever run', async () => {
