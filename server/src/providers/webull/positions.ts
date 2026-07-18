@@ -12,6 +12,7 @@ import {
 import { priceMap } from '../../services/quotes';
 import { webullClient, webullConfigured } from './account';
 import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../db/webullMissStreak';
+import { logAutotradeEvent } from '../../db/autotradeEvents';
 
 // ---------------------------------------------------------------------------
 // Sync open brokerage positions from Webull into the trade journal.
@@ -320,11 +321,12 @@ async function closePositionsFromPreview(
     (lotsByKey.get(key) ?? lotsByKey.set(key, []).get(key)!).push(p);
   }
 
-  const toClose = new Map<string, { lots: Position[]; qty: number }>();
+  const toClose = new Map<string, { lots: Position[]; qty: number; journalQtyBefore: number; brokerQty: number }>();
   for (const [key, lots] of lotsByKey) {
     lots.sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.id - b.id); // FIFO: oldest first
     const journalQty = lots.reduce((s, p) => s + p.remainingQuantity, 0);
-    const gap = journalQty - (liveQtyByKey.get(key) ?? 0);
+    const brokerQty = liveQtyByKey.get(key) ?? 0;
+    const gap = journalQty - brokerQty;
     if (gap > 1e-9) {
       // Missing (fully or partially) from THIS preview — require it to stay
       // missing on MISS_CONFIRM_THRESHOLD consecutive syncs, with no
@@ -332,7 +334,8 @@ async function closePositionsFromPreview(
       // write a close. See the doc comment above and webull_miss_streak's
       // table comment for the flapping bug this prevents.
       const streak = bumpMissStreak(preview.accountId, key);
-      if (streak >= MISS_CONFIRM_THRESHOLD) toClose.set(key, { lots, qty: gap });
+      if (streak >= MISS_CONFIRM_THRESHOLD)
+        toClose.set(key, { lots, qty: gap, journalQtyBefore: journalQty, brokerQty });
     } else {
       // Fully accounted for in this preview — any earlier miss streak was wrong.
       clearMissStreak(preview.accountId, key);
@@ -346,10 +349,11 @@ async function closePositionsFromPreview(
   const exitDate = today();
   const closedSymbols = new Set<string>();
   let closed = 0;
-  for (const [key, { lots, qty }] of toClose) {
+  for (const [key, { lots, qty, journalQtyBefore, brokerQty }] of toClose) {
     const exitPrice = prices.get(lots[0].id)?.price;
     if (exitPrice == null) continue; // can't price it — leave open, retry next sync
     let remaining = qty;
+    let reconciled = 0;
     for (const p of lots) {
       if (remaining <= 1e-9) break;
       const take = Math.min(remaining, p.remainingQuantity);
@@ -357,9 +361,34 @@ async function closePositionsFromPreview(
       const result = addExit(p.id, { quantity: take, exitPrice, exitDate, notes: NOTE_AUTO_CLOSED });
       if (result) {
         closed++;
+        reconciled += take;
         closedSymbols.add(p.symbol);
       }
       remaining -= take;
+    }
+    // Unlike the options side's syncLiveOptionsPositionsFromBroker (which
+    // always logs a 'live_options_position_closed' event), this used to close
+    // equity positions SILENTLY — the only trace was the exit's own note text
+    // on the position itself, nothing on the Recent Activity feed. Logging
+    // here brings equity to parity, so a broker-truth reconciliation (whether
+    // it fully closes a lot or just trims a quantity mismatch across several
+    // lots, as FIFO can) is visible as its own event, not just discoverable
+    // later by noticing the P&L or open quantity looks wrong.
+    if (reconciled > 1e-9) {
+      logAutotradeEvent({
+        symbol: lots[0].symbol,
+        stage: 'execution',
+        action: 'position_reconciled_from_broker',
+        detail: {
+          via: 'broker_sync',
+          accountId: preview.accountId,
+          journalQtyBefore,
+          brokerQty,
+          gapClosed: reconciled,
+          exitPrice,
+          fullyClosed: journalQtyBefore - reconciled <= 1e-9,
+        },
+      });
     }
     // Acted on this contract's gap — a further gap next sync starts a fresh count.
     clearMissStreak(preview.accountId, key);
@@ -419,4 +448,78 @@ export async function runWebullPositionsSync(accountId: string): Promise<WebullS
     skipped: importResult.skipped,
     unmapped: preview.unmapped,
   };
+}
+
+interface ContractInfo {
+  symbol: string;
+  assetType: AssetType;
+  optionType: OptionType | null;
+  strike: number | null;
+  expiration: string | null;
+}
+
+function contractInfoOf(p: ContractLike): ContractInfo {
+  return {
+    symbol: p.symbol.toUpperCase(),
+    assetType: p.assetType,
+    optionType: p.optionType ?? null,
+    strike: p.strike ?? null,
+    expiration: p.expiration ?? null,
+  };
+}
+
+export interface PositionComparisonRow extends ContractInfo {
+  brokerQty: number;
+  journalQty: number;
+  matches: boolean;
+}
+
+export interface PositionComparison {
+  ok: boolean;
+  accountId: string;
+  rows: PositionComparisonRow[];
+  error?: string;
+}
+
+/**
+ * On-demand, full side-by-side snapshot of every contract the broker
+ * currently shows held for this account vs. what the journal shows open —
+ * unlike the sync (which only ever acts once a gap is confirmed missing),
+ * this reports EVERYTHING, matches included, so a mismatch is visible the
+ * moment you look rather than only discoverable later from a wrong P&L
+ * number or open quantity (see docs/USER_GUIDE.md's account-reconciliation
+ * section for the incident this is meant to catch earlier next time).
+ * Permissive on the journal side (includeUnassignedAccount): a comparison
+ * should surface a legacy unassigned row too, not just already-claimed
+ * ones — visibility is the whole point here, not the close-detector's
+ * conservative certainty requirement.
+ */
+export async function comparePositionsToBroker(accountId: string): Promise<PositionComparison> {
+  const preview = await previewWebullPositions(accountId);
+  if (!preview.ok) return { ok: false, accountId, rows: [], error: preview.error };
+
+  const brokerQtyByKey = new Map<string, number>();
+  const infoByKey = new Map<string, ContractInfo>();
+  for (const p of preview.positions) {
+    const key = contractKey(p);
+    brokerQtyByKey.set(key, (brokerQtyByKey.get(key) ?? 0) + p.quantity);
+    if (!infoByKey.has(key)) infoByKey.set(key, contractInfoOf(p));
+  }
+
+  const journal = listPositions({ status: 'open', accountId, includeUnassignedAccount: true });
+  const journalQtyByKey = new Map<string, number>();
+  for (const p of journal) {
+    const key = contractKey(p);
+    journalQtyByKey.set(key, (journalQtyByKey.get(key) ?? 0) + p.remainingQuantity);
+    if (!infoByKey.has(key)) infoByKey.set(key, contractInfoOf(p));
+  }
+
+  const keys = new Set([...brokerQtyByKey.keys(), ...journalQtyByKey.keys()]);
+  const rows: PositionComparisonRow[] = Array.from(keys, (key) => {
+    const brokerQty = brokerQtyByKey.get(key) ?? 0;
+    const journalQty = journalQtyByKey.get(key) ?? 0;
+    return { ...infoByKey.get(key)!, brokerQty, journalQty, matches: Math.abs(brokerQty - journalQty) < 1e-9 };
+  }).sort((a, b) => a.symbol.localeCompare(b.symbol));
+
+  return { ok: true, accountId, rows };
 }

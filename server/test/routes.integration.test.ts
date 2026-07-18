@@ -396,6 +396,14 @@ describe('webull connectivity (integration)', () => {
     expect(out).toMatchObject({ ok: false, quotes: [] });
     expect(out.error).toMatch(/not configured/i);
   });
+
+  it('reports a guarded positions/compare result without credentials, through the real route', async () => {
+    const res = await post('/api/webull/positions/compare', { accountId: 'ACC1' });
+    expect(res.status).toBe(200);
+    const out = (await res.json()) as { ok: boolean; accountId: string; rows: unknown[]; error?: string };
+    expect(out).toMatchObject({ ok: false, accountId: 'ACC1', rows: [] });
+    expect(out.error).toMatch(/not configured/i);
+  });
 });
 
 describe('trade (dry-run) routes (integration)', () => {

@@ -8,14 +8,18 @@ import {
   importWebullPositions,
   syncClosedWebullPositions,
   runWebullPositionsSync,
+  comparePositionsToBroker,
 } from '../src/providers/webull/positions';
 import { priceMap } from '../src/services/quotes';
+import { listAutotradeEvents } from '../src/db/autotradeEvents';
 
 vi.mock('../src/services/quotes', () => ({ priceMap: vi.fn() }));
 
 beforeAll(() => initDb());
 beforeEach(() => {
-  db.exec('DELETE FROM position_exits; DELETE FROM positions; DELETE FROM webull_miss_streak;');
+  db.exec(
+    'DELETE FROM position_exits; DELETE FROM positions; DELETE FROM webull_miss_streak; DELETE FROM autotrade_events;',
+  );
   vi.mocked(priceMap).mockReset();
   // Default: price every probed position at $10 unless a test overrides it.
   vi.mocked(priceMap).mockImplementation(
@@ -204,6 +208,63 @@ describe('syncClosedWebullPositions', () => {
     expect(closed.exits).toHaveLength(1);
     expect(closed.exits[0]).toMatchObject({ quantity: 50, exitPrice: 10 });
     expect(closed.exits[0].notes).toMatch(/Auto-closed via Webull sync/);
+  });
+
+  it('logs a position_reconciled_from_broker event once the close is confirmed (equity used to close silently)', async () => {
+    createPosition({
+      assetType: 'stock',
+      symbol: 'VRAX',
+      side: 'long',
+      quantity: 50,
+      entryPrice: 20,
+      entryDate: '2026-01-02',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+    mockPositions([]);
+
+    await syncClosedWebullPositions('ACC1'); // first miss — no event yet
+    expect(listAutotradeEvents({ actions: ['position_reconciled_from_broker'] })).toHaveLength(0);
+
+    await syncClosedWebullPositions('ACC1');
+    const events = listAutotradeEvents({ actions: ['position_reconciled_from_broker'] });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ symbol: 'VRAX', stage: 'execution' });
+    expect(JSON.parse(events[0].detail!)).toMatchObject({
+      via: 'broker_sync',
+      accountId: 'ACC1',
+      journalQtyBefore: 50,
+      brokerQty: 0,
+      gapClosed: 50,
+      exitPrice: 10,
+      fullyClosed: true,
+    });
+  });
+
+  it('logs fullyClosed:false for a partial reconciliation (fewer shares than the journal, not zero)', async () => {
+    createPosition({
+      assetType: 'stock',
+      symbol: 'KC',
+      side: 'long',
+      quantity: 100,
+      entryPrice: 15,
+      entryDate: '2026-01-02',
+      tags: ['live'],
+      accountId: 'ACC1',
+    });
+    mockPositions([{ symbol: 'KC', asset_type: 'STOCK', quantity: '40', cost_price: '15' }]);
+
+    await syncClosedWebullPositions('ACC1');
+    await syncClosedWebullPositions('ACC1');
+
+    const events = listAutotradeEvents({ actions: ['position_reconciled_from_broker'] });
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0].detail!)).toMatchObject({
+      journalQtyBefore: 100,
+      brokerQty: 40,
+      gapClosed: 60,
+      fullyClosed: false,
+    });
   });
 
   // The other half of the reported bug: switching the configured account
@@ -540,5 +601,117 @@ describe('runWebullPositionsSync', () => {
     const open = listPositions({ status: 'open', symbol: 'AAPL' });
     expect(open).toHaveLength(2); // CASH's original + a NEW row for MARGIN
     expect(open.find((p) => p.accountId === 'MARGIN')!.quantity).toBe(50);
+  });
+});
+
+describe('comparePositionsToBroker', () => {
+  it('reports a match when the journal and broker agree', async () => {
+    createPosition({
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 150,
+      entryDate: '2026-01-02',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+    mockPositions([{ symbol: 'AAPL', asset_type: 'STOCK', quantity: '10', cost_price: '150' }]);
+
+    const r = await comparePositionsToBroker('ACC1');
+    expect(r).toMatchObject({ ok: true, accountId: 'ACC1' });
+    expect(r.rows).toEqual([expect.objectContaining({ symbol: 'AAPL', brokerQty: 10, journalQty: 10, matches: true })]);
+  });
+
+  it('reports a mismatch, in either direction, without writing anything', async () => {
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'CJMB',
+      side: 'long',
+      quantity: 427,
+      entryPrice: 1.22,
+      entryDate: '2026-01-02',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+    mockPositions([{ symbol: 'CJMB', asset_type: 'STOCK', quantity: '356', cost_price: '1.22' }]);
+
+    const r = await comparePositionsToBroker('ACC1');
+    expect(r.rows).toEqual([
+      expect.objectContaining({ symbol: 'CJMB', brokerQty: 356, journalQty: 427, matches: false }),
+    ]);
+    // Read-only — a real gap this large would take 2 confirmed syncs to close;
+    // comparing must never itself write an exit or touch the miss streak.
+    expect(getPosition(p.id)!.remainingQuantity).toBe(427);
+    expect(getPosition(p.id)!.status).toBe('open');
+  });
+
+  it('includes a symbol only the broker holds (never imported) and one only the journal holds (never sold)', async () => {
+    createPosition({
+      assetType: 'stock',
+      symbol: 'ONLYJOURNAL',
+      side: 'long',
+      quantity: 5,
+      entryPrice: 20,
+      entryDate: '2026-01-02',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+    mockPositions([{ symbol: 'ONLYBROKER', asset_type: 'STOCK', quantity: '3', cost_price: '9' }]);
+
+    const r = await comparePositionsToBroker('ACC1');
+    expect(r.rows).toContainEqual(
+      expect.objectContaining({ symbol: 'ONLYBROKER', brokerQty: 3, journalQty: 0, matches: false }),
+    );
+    expect(r.rows).toContainEqual(
+      expect.objectContaining({ symbol: 'ONLYJOURNAL', brokerQty: 0, journalQty: 5, matches: false }),
+    );
+  });
+
+  it('is scoped to the requested account only, ignoring a different account holding the same symbol', async () => {
+    createPosition({
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 100,
+      entryPrice: 150,
+      entryDate: '2026-01-02',
+      tags: ['webull'],
+      accountId: 'CASH',
+    });
+    mockPositions([{ symbol: 'AAPL', asset_type: 'STOCK', quantity: '50', cost_price: '180' }]);
+
+    const r = await comparePositionsToBroker('MARGIN');
+    expect(r.rows).toEqual([expect.objectContaining({ symbol: 'AAPL', brokerQty: 50, journalQty: 0, matches: false })]);
+  });
+
+  it('includes a legacy unassigned journal row (permissive, unlike the close-detector)', async () => {
+    createPosition({
+      assetType: 'stock',
+      symbol: 'SLND',
+      side: 'long',
+      quantity: 39,
+      entryPrice: 1.06,
+      entryDate: '2026-01-02',
+      tags: ['webull'],
+      // No accountId — legacy row.
+    });
+    mockPositions([{ symbol: 'SLND', asset_type: 'STOCK', quantity: '39', cost_price: '1.06' }]);
+
+    const r = await comparePositionsToBroker('ACC1');
+    expect(r.rows).toEqual([expect.objectContaining({ symbol: 'SLND', brokerQty: 39, journalQty: 39, matches: true })]);
+  });
+
+  it('surfaces a Webull error without writing', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => JSON.stringify({ message: 'INVALID_TOKEN' }),
+    } as Response);
+
+    const r = await comparePositionsToBroker('ACC1');
+    expect(r).toMatchObject({ ok: false, accountId: 'ACC1', rows: [] });
+    expect(r.error).toBeTruthy();
   });
 });
