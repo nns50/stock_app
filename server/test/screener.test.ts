@@ -50,7 +50,16 @@ describe('scoreSymbol — transparency contract', () => {
 
   it('exposes every weighted component with an explanation', () => {
     const keys = result.components.map((c) => c.key).sort();
-    expect(keys).toEqual(['gap', 'momentum', 'relativeStrength', 'relativeVolume', 'rsi', 'trend', 'volatility']);
+    expect(keys).toEqual([
+      'gap',
+      'momentum',
+      'relativeStrength',
+      'relativeVolume',
+      'rsi',
+      'sentiment',
+      'trend',
+      'volatility',
+    ]);
     for (const c of result.components) {
       expect(c).toHaveProperty('score');
       expect(c).toHaveProperty('weight');
@@ -255,6 +264,62 @@ describe('scoreSymbol — relative strength vs. benchmark (2026-07-17)', () => {
     expect(r.indicators.symbolLookbackReturnPct).toBeNull();
     const component = r.components.find((c) => c.key === 'relativeStrength')!;
     expect(component.score).toBe(0);
+  });
+});
+
+describe('scoreSymbol — headline sentiment (2026-07-18)', () => {
+  // Default sentimentScale is 3 (net keyword hits that map to a full score).
+  const cfg = resolveScreenerConfig({ direction: 'long', weights: { sentiment: 25 } as any });
+
+  it('contributes nothing to the total when weight is 0 (the default), even with no sentiment data at all', () => {
+    const off = resolveScreenerConfig({ direction: 'long' }); // weights.sentiment omitted -> 0
+    const r = scoreSymbol('TEST', uptrend, undefined, off);
+    const component = r.components.find((c) => c.key === 'sentiment')!;
+    expect(component.weight).toBe(0);
+    expect(component.contribution).toBe(0);
+    expect(r.indicators.sentimentNetScore).toBeNull();
+  });
+
+  it('scores 0 (not a total-corrupting NaN) when weight is nonzero but the caller supplied no sentiment score at all', () => {
+    const r = scoreSymbol('TEST', uptrend, undefined, cfg); // no 9th arg
+    const component = r.components.find((c) => c.key === 'sentiment')!;
+    expect(component.score).toBe(0);
+    expect(component.note).toBe('no sentiment data');
+    expect(Number.isFinite(r.total)).toBe(true);
+  });
+
+  it('scores a full 100 for a long candidate at/beyond the positive scale', () => {
+    const r = scoreSymbol('TEST', uptrend, undefined, cfg, undefined, undefined, undefined, undefined, 3);
+    const component = r.components.find((c) => c.key === 'sentiment')!;
+    expect(component.score).toBe(100);
+    expect(component.note).toBe('+3 net headline keyword hits');
+  });
+
+  it('scores a full 0 for a long candidate at/beyond the negative scale', () => {
+    const r = scoreSymbol('TEST', uptrend, undefined, cfg, undefined, undefined, undefined, undefined, -3);
+    const component = r.components.find((c) => c.key === 'sentiment')!;
+    expect(component.score).toBe(0);
+    expect(component.note).toBe('-3 net headline keyword hits');
+  });
+
+  it('scores the midpoint for neutral (net-zero) sentiment', () => {
+    const r = scoreSymbol('TEST', uptrend, undefined, cfg, undefined, undefined, undefined, undefined, 0);
+    const component = r.components.find((c) => c.key === 'sentiment')!;
+    expect(component.score).toBe(50);
+  });
+
+  it('mirrors correctly for a short candidate — negative sentiment scores higher than positive', () => {
+    const shortCfg = { ...cfg, direction: 'short' as const };
+    const negative = scoreSymbol('TEST', uptrend, undefined, shortCfg, undefined, undefined, undefined, undefined, -3);
+    const positive = scoreSymbol('TEST', uptrend, undefined, shortCfg, undefined, undefined, undefined, undefined, 3);
+    const scoreOf = (r: typeof negative) => r.components.find((c) => c.key === 'sentiment')!.score;
+    expect(scoreOf(negative)).toBeGreaterThan(scoreOf(positive));
+  });
+
+  it('clamps beyond the configured scale rather than overflowing past 0/100', () => {
+    const r = scoreSymbol('TEST', uptrend, undefined, cfg, undefined, undefined, undefined, undefined, 50);
+    const component = r.components.find((c) => c.key === 'sentiment')!;
+    expect(component.score).toBe(100);
   });
 });
 

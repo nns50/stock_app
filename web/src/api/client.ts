@@ -460,6 +460,7 @@ export const client = {
     relativeStrengthWeight?: number;
     benchmarkSymbol?: string;
     relativeStrengthLookbackDays?: number;
+    sentimentWeight?: number;
     maxTickerAtrPct?: number;
     maxMarketAtrPct?: number;
     stopAtrMultiple?: number;

@@ -401,7 +401,11 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     const screenResult = await runAutotradeScreen({
       config: {
         filters: { minRelVol: config.minRelVol, requireWeeklyTrendAlignment: config.requireWeeklyTrendAlignment },
-        weights: { ...defaultScreenerConfig().weights, relativeStrength: config.relativeStrengthWeight },
+        weights: {
+          ...defaultScreenerConfig().weights,
+          relativeStrength: config.relativeStrengthWeight,
+          sentiment: config.sentimentWeight,
+        },
         benchmarkSymbol: config.benchmarkSymbol,
         relativeStrengthLookbackDays: config.relativeStrengthLookbackDays,
       },

@@ -197,6 +197,18 @@ export interface AutotradeConfig {
   /** Trading days back for both the candidate's own and the benchmark's
    *  lookback return that relativeStrengthWeight scores. */
   relativeStrengthLookbackDays: number;
+  /** News-headline sentiment (2026-07-18): weight (0-100, same scale as
+   *  every other indicators/screener.ts component) given to a simple,
+   *  transparent keyword count over each candidate's recent headlines
+   *  (services/sentiment.ts's computeHeadlineSentiment() — a small, fixed,
+   *  documented word list, not a third-party sentiment API or ML model, to
+   *  keep this explainable per this app's own scoring invariant). 0 (the
+   *  default) disables the component entirely — screen.ts doesn't even
+   *  fetch headlines when this is 0, so an untouched config pays no extra
+   *  provider call and changes nothing about existing scores. Direction-
+   *  aware like every other component: a LONG candidate scores higher for
+   *  net-POSITIVE headlines, a SHORT candidate for net-NEGATIVE ones. */
+  sentimentWeight: number;
   /** Skip a candidate whose own ATR% (of price) exceeds this — the loop's
    *  own per-ticker volatility guard, stricter than what the human-reviewed
    *  manual Screen/Decision preview applies (executionGuards.ts's header
@@ -536,6 +548,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     relativeStrengthWeight: 0,
     benchmarkSymbol: 'SPY',
     relativeStrengthLookbackDays: 20,
+    sentimentWeight: 0,
     maxTickerAtrPct: 15,
     maxMarketAtrPct: 5,
     stopAtrMultiple: 1.5,
@@ -674,6 +687,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
         ? input.benchmarkSymbol.trim().toUpperCase()
         : d.benchmarkSymbol,
     relativeStrengthLookbackDays: posIntMin1(input.relativeStrengthLookbackDays, d.relativeStrengthLookbackDays),
+    sentimentWeight: pct(input.sentimentWeight, d.sentimentWeight),
     maxTickerAtrPct: pct(input.maxTickerAtrPct, d.maxTickerAtrPct),
     maxMarketAtrPct: pct(input.maxMarketAtrPct, d.maxMarketAtrPct),
     stopAtrMultiple: posDecimal(input.stopAtrMultiple, d.stopAtrMultiple),

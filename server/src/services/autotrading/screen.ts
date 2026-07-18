@@ -19,6 +19,8 @@ import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { mapPool } from '../../util/async';
 import { classifySector, buildUniverseSectorMap } from './realEstateClassifier';
 import { getSymbolEvents } from '../events';
+import { getNews } from '../news';
+import { computeHeadlineSentiment } from '../sentiment';
 
 // ---------------------------------------------------------------------------
 // The Research & Screen stage (docs/AUTOTRADING_SPEC.md — EXECUTION LOOP,
@@ -377,6 +379,18 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
             cfg,
           )
         : undefined;
+      // Sentiment (2026-07-18): unlike relativeStrength's ONE shared
+      // benchmark fetch above, this is genuinely per-symbol — each candidate
+      // has its own headlines — so it's fetched here, inside the per-symbol
+      // loop, same don't-do-unrequested-work gate as weeklyIndicators just
+      // above. getNews() is already best-effort on its own (empty array on
+      // failure, its own 5-min TTL cache) — the extra .catch(() => []) here
+      // is belt-and-suspenders, matching benchmarkLookbackReturnPct's own
+      // explicit .catch(() => null) above: this candidate's OTHER components
+      // (momentum, RSI, ...) shouldn't fail just because sentiment couldn't
+      // be read this cycle.
+      const sentimentNetScore =
+        cfg.weights.sentiment > 0 ? computeHeadlineSentiment(await getNews(symbol).catch(() => [])).netScore : null;
       // 'both': score each candidate as a long AND a short from the SAME
       // indicator computation, then keep whichever direction (if either)
       // actually qualifies — see pickDirection(). 'long'/'short': unchanged
@@ -395,6 +409,7 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
                 undefined,
                 weeklyIndicators,
                 benchmarkLookbackReturnPct,
+                sentimentNetScore,
               ),
             )
           : (() => {
@@ -407,6 +422,7 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
                 undefined,
                 weeklyIndicators,
                 benchmarkLookbackReturnPct,
+                sentimentNetScore,
               );
               return score.passedFilters ? { direction: directionMode, score } : null;
             })();

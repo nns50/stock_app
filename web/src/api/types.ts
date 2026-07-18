@@ -1149,6 +1149,12 @@ export interface AutotradeConfig {
   /** Trading days back for both the candidate's own and the benchmark's
    *  lookback return that relativeStrengthWeight scores. */
   relativeStrengthLookbackDays: number;
+  /** News-headline sentiment (2026-07-18): weight (0-100, same scale as every
+   *  other screener component) given to a simple, transparent keyword count
+   *  over each candidate's recent headlines — direction-aware (a long favors
+   *  net-positive headlines, a short favors net-negative ones). 0 (the
+   *  default) disables the component. */
+  sentimentWeight: number;
   maxTickerAtrPct: number;
   maxMarketAtrPct: number;
   stopAtrMultiple: number;

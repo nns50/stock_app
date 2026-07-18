@@ -28,6 +28,14 @@ vi.mock('yahoo-finance2', () => ({
   },
 }));
 
+// getNews (services/news.ts) is mocked separately from the yahoo-finance2
+// mock above — it already fails closed to [] on any error (see its own
+// try/catch), so this isn't strictly required for safety, but mocking it
+// directly gives full control over headline content per test, which a
+// through-the-library mock wouldn't (search() would need its own fixture
+// data threading).
+vi.mock('../src/services/news', () => ({ getNews: vi.fn().mockResolvedValue([]) }));
+
 import { initDb, db } from '../src/db';
 import { addExclusion } from '../src/db/autotradeExclusions';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
@@ -38,6 +46,9 @@ import {
 } from '../src/services/autotrading/screen';
 import { clearEventsCache } from '../src/services/events';
 import { getProvider } from '../src/providers';
+import { getNews } from '../src/services/news';
+
+const mockGetNews = vi.mocked(getNews);
 
 beforeAll(() => initDb());
 
@@ -648,6 +659,69 @@ describe('runAutotradeScreen', () => {
       expect(result.candidates.find((c) => c.symbol === 'SCRRSFAIL')).toBeDefined();
       candles.mockRestore();
       quote.mockRestore();
+    });
+  });
+
+  describe('sentiment (2026-07-18)', () => {
+    beforeEach(() => mockGetNews.mockReset().mockResolvedValue([]));
+
+    it("does not fetch headlines when weights.sentiment is 0 (default) — same don't-do-unrequested-work gate as relativeStrength/weekly trend", async () => {
+      await runAutotradeScreen({ symbols: ['SCRSENT1'], config: { filters: RELAXED_FILTERS } });
+      expect(mockGetNews).not.toHaveBeenCalled();
+    });
+
+    it('fetches headlines per-candidate (not once for the whole cycle, unlike the benchmark) when the weight is nonzero', async () => {
+      await runAutotradeScreen({
+        symbols: ['SCRSENT2', 'SCRSENT3'],
+        config: { filters: RELAXED_FILTERS, weights: { sentiment: 25 } as any },
+      });
+      expect(mockGetNews).toHaveBeenCalledWith('SCRSENT2');
+      expect(mockGetNews).toHaveBeenCalledWith('SCRSENT3');
+      expect(mockGetNews).toHaveBeenCalledTimes(2);
+    });
+
+    it('scores a candidate with net-positive headlines above the SAME candidate with net-negative ones', async () => {
+      mockGetNews.mockImplementation(async (symbol) =>
+        symbol === 'SCRSENTPOS'
+          ? [{ title: 'Acme beats estimates and raises guidance', link: 'x' }]
+          : [{ title: 'Acme misses estimates and cuts guidance', link: 'x' }],
+      );
+      const result = await runAutotradeScreen({
+        symbols: ['SCRSENTPOS', 'SCRSENTNEG'],
+        config: { filters: RELAXED_FILTERS, weights: { sentiment: 100 } as any },
+      });
+      const posScore = result.candidates.find((c) => c.symbol === 'SCRSENTPOS')!.total;
+      const negScore = result.candidates.find((c) => c.symbol === 'SCRSENTNEG')!.total;
+      expect(posScore).toBeGreaterThan(negScore);
+    });
+
+    it('a failed headline fetch degrades to a 0 sentiment contribution rather than failing the whole candidate', async () => {
+      // getNews() already fails closed to [] internally in production; this
+      // test mocks a rejection directly to exercise screen.ts's OWN
+      // .catch(() => []) around the call (belt-and-suspenders, matching
+      // benchmarkLookbackReturnPct's own explicit catch above) — the
+      // candidate's other components must still score normally.
+      // mockImplementationOnce (not the persistent mockImplementation): only
+      // one candidate is screened here, so a one-shot rejection is enough —
+      // and a *persistent* rejecting implementation left configured on this
+      // shared, vi.mock-factory-created mock trips Vitest's unhandled-
+      // rejection detector as a false alarm in this vitest version, even
+      // though screen.ts's own .catch(() => []) demonstrably handles it (this
+      // exact failure mode was confirmed in isolation: swap back to
+      // mockImplementation to reproduce). mockRejectedValueOnce works too;
+      // this form was chosen to keep matching the "constructed only when
+      // invoked" style used elsewhere in this describe block.
+      mockGetNews.mockImplementationOnce(async () => {
+        throw new Error('rate limited');
+      });
+      const result = await runAutotradeScreen({
+        symbols: ['SCRSENTFAIL'],
+        config: { filters: RELAXED_FILTERS, weights: { sentiment: 25 } as any },
+      });
+      expect(result.errors.find((e) => e.symbol === 'SCRSENTFAIL')).toBeUndefined();
+      const candidate = result.candidates.find((c) => c.symbol === 'SCRSENTFAIL');
+      expect(candidate).toBeDefined();
+      expect(candidate!.indicators.sentimentNetScore).toBe(0);
     });
   });
 });

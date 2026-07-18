@@ -65,6 +65,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     relativeStrengthWeight: 0,
     benchmarkSymbol: 'SPY',
     relativeStrengthLookbackDays: 20,
+    sentimentWeight: 0,
     maxTickerAtrPct: 15,
     maxMarketAtrPct: 5,
     stopAtrMultiple: 1.5,
@@ -471,6 +472,24 @@ describe('AutoTradePage', () => {
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ relativeStrengthLookbackDays: 10, confirmAggressive: undefined }),
     );
+  });
+
+  it('saves a new sentiment weight value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const weightField = screen.getByText('Sentiment weight (0-100)').closest('label')!;
+    const weightInput = within(weightField).getByRole('textbox');
+    fireEvent.change(weightInput, { target: { value: '25' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save sentiment weight' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ sentimentWeight: 25, confirmAggressive: undefined }));
   });
 
   it('saves a new options stop-loss % value', async () => {
