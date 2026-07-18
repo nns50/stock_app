@@ -1205,6 +1205,12 @@ export interface AutotradeConfig {
   autoPromoteThreshold: number;
   autoPromoteWindowDays: number;
   autoPromoteMaxSymbols: number;
+
+  // --- Auto-tune from realized edge ---
+  autoTuneEnabled: boolean;
+  autoTuneMinTrades: number;
+  autoTuneMaxStepPct: number;
+  autoTuneSlippageExcludePct: number;
 }
 
 /** A starting-point suggestion for the live-only guardrail caps, derived from

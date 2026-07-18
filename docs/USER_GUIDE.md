@@ -808,7 +808,19 @@ shouldn't be a tab-switch away.
   re-discovered and re-scored from scratch every day. Only ever runs from the background
   loop, never from a manual **Run screen**; each promotion shows up in **Recent
   activity**, and once added, a symbol you later remove is never re-added by this
-  mechanism. The **kill switch** button above these settings is a separate, sticky
+  mechanism.
+  **Auto-tune from realized edge** (2026-07-18, off by default) closes the loop between
+  the Journal's own analytics and what the loop actually does: once a day, it nudges
+  **risk-per-trade** toward the Journal's Kelly suggestion (same quarter-Kelly, 3%-capped
+  math shown there), and auto-excludes any symbol whose average live-fill slippage
+  crosses a threshold — both gated on a configurable minimum sample size so a handful of
+  trades can't move things, and the risk change is capped per day so one noisy reading
+  can't swing live sizing. A symbol it excludes lands on the same exclusion list your
+  manual entries use (Settings), so it's visible and reversible there, not a hidden
+  blocklist. Every adjustment shows up in **Recent activity** the moment it happens. See
+  `docs/STRATEGY_PLAYBOOK.md`'s sizing and execution-quality sections for how to read the
+  numbers this is reacting to.
+  The **kill switch** button above these settings is a separate, sticky
   emergency halt —
   engaging it (one click, no confirmation needed, mirroring the same button on the
   **Trade** page) blocks all new entries immediately, regardless of the enabled toggle

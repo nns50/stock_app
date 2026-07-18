@@ -104,6 +104,14 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     liveOptionsProbationTrades: 20,
     liveOptionsProbationSizeMultiplier: 0.5,
     optionsStrategyType: 'single_leg',
+    autoPromoteMoversEnabled: true,
+    autoPromoteThreshold: 3,
+    autoPromoteWindowDays: 10,
+    autoPromoteMaxSymbols: 50,
+    autoTuneEnabled: false,
+    autoTuneMinTrades: 20,
+    autoTuneMaxStepPct: 0.5,
+    autoTuneSlippageExcludePct: 2,
     ...overrides,
   };
 }
@@ -348,6 +356,77 @@ describe('AutoTradePage', () => {
     // Uppercased as the user types, mirroring how symbols are stored elsewhere.
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ benchmarkSymbol: 'QQQ', confirmAggressive: undefined }),
+    );
+  });
+
+  it('toggling auto-tune from realized edge saves immediately (no separate Save button)', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Auto-tune from realized edge/ }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ autoTuneEnabled: true, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new auto-tune min sample size value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Min sample size').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '10' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save min sample size' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ autoTuneMinTrades: 10, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new auto-tune max daily risk-% step value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Max daily risk-% step').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '1' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save max daily risk-% step' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ autoTuneMaxStepPct: 1, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new auto-tune slippage exclusion threshold value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Slippage exclusion threshold (%)').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '3' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save slippage exclusion threshold' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ autoTuneSlippageExcludePct: 3, confirmAggressive: undefined }),
     );
   });
 

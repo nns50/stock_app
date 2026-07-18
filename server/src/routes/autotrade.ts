@@ -154,6 +154,12 @@ const configBody = z.object({
   autoPromoteThreshold: z.number().int().min(1).optional(),
   autoPromoteWindowDays: z.number().int().min(1).optional(),
   autoPromoteMaxSymbols: z.number().int().nonnegative().optional(),
+  // --- Auto-tune from realized edge (autoTuneEnabled false by default; the
+  // three bounds below are inert until it's turned on) -----------------------
+  autoTuneEnabled: z.boolean().optional(),
+  autoTuneMinTrades: z.number().int().min(1).optional(),
+  autoTuneMaxStepPct: z.number().min(0).max(100).optional(),
+  autoTuneSlippageExcludePct: z.number().min(0).max(100).optional(),
 });
 autotradeRouter.put(
   '/config',
@@ -249,6 +255,12 @@ autotradeRouter.put(
     if (body.autoPromoteThreshold !== undefined) patch.autoPromoteThreshold = body.autoPromoteThreshold;
     if (body.autoPromoteWindowDays !== undefined) patch.autoPromoteWindowDays = body.autoPromoteWindowDays;
     if (body.autoPromoteMaxSymbols !== undefined) patch.autoPromoteMaxSymbols = body.autoPromoteMaxSymbols;
+    if (body.autoTuneEnabled !== undefined) patch.autoTuneEnabled = body.autoTuneEnabled;
+    if (body.autoTuneMinTrades !== undefined) patch.autoTuneMinTrades = body.autoTuneMinTrades;
+    if (body.autoTuneMaxStepPct !== undefined) patch.autoTuneMaxStepPct = body.autoTuneMaxStepPct;
+    if (body.autoTuneSlippageExcludePct !== undefined) {
+      patch.autoTuneSlippageExcludePct = body.autoTuneSlippageExcludePct;
+    }
 
     // liveTradingEnabled and liveAccountId are handled together, NOT in the
     // generic patch above: going false -> true requires the typed

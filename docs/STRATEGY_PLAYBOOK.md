@@ -141,6 +141,14 @@ credit holds), so 1R discipline still applies — the spread just defines the "s
 The app deliberately returns a **quarter-Kelly, capped at 3%** — full Kelly is wildly
 volatile and assumes your edge is exact. Treat it as a ceiling, not a target.
 
+Auto-Trade's **Auto-tune from realized edge** (Config tab, off by default) closes this
+loop for you: once enabled, it re-reads this same Kelly suggestion once a day and nudges
+`riskPerTradePct` toward it — bounded by a configurable max daily step so one noisy day
+can't swing live sizing, and gated on the same minimum-sample-size floor. Every adjustment
+is journaled to Recent Activity. It's still worth checking the Journal's own Kelly panel
+periodically — auto-tune only ever moves *toward* it a little at a time, it doesn't
+replace understanding where the number comes from.
+
 ---
 
 ## Playbook A — Momentum/trend swing (long)
@@ -306,6 +314,14 @@ Scope: this only covers orders **placed live through this app** with a limit pri
 stop-market fill has no reference price to compare against, and a manually logged or
 imported trade was never a live order — neither shows up here, by design (there's
 nothing honest to compare them to).
+
+The same **Auto-tune from realized edge** setting mentioned above also watches this
+per-symbol: once enabled, a symbol whose average live-fill slippage crosses a configurable
+threshold (with enough fills to trust the reading) is automatically added to the
+autotrade exclusion list — the same list Settings' manual exclusions use, so it's visible
+and reversible there, not a hidden blocklist. A thin, hard-to-fill name that's quietly
+bleeding money on every entry/exit stops being re-traded without you having to notice the
+pattern in the Analytics tab yourself.
 
 ---
 

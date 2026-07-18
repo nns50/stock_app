@@ -62,3 +62,27 @@ export function aggregateSlippage(rows: SlippageRow[]): SlippageReport {
   const sorted = [...rows].sort((a, b) => b.totalUsd - a.totalUsd);
   return { trades: rows.length, totalUsd, avgPct, rows: sorted };
 }
+
+export interface SymbolSlippage {
+  symbol: string;
+  trades: number;
+  avgPct: number;
+  totalUsd: number;
+}
+
+/** Per-symbol slippage breakdown — same rows aggregateSlippage() reports
+ *  overall, grouped instead by symbol (services/autotrading/autoTune.ts's
+ *  slippage-based auto-exclusion needs this; the Journal page's own report
+ *  stays account-wide). Worst avgPct first. */
+export function groupSlippageBySymbol(rows: SlippageRow[]): SymbolSlippage[] {
+  const byId = new Map<string, SlippageRow[]>();
+  for (const r of rows) {
+    (byId.get(r.symbol) ?? byId.set(r.symbol, []).get(r.symbol)!).push(r);
+  }
+  return Array.from(byId.entries(), ([symbol, group]) => ({
+    symbol,
+    trades: group.length,
+    avgPct: round2(group.reduce((s, r) => s + r.pct, 0) / group.length),
+    totalUsd: round2(group.reduce((s, r) => s + r.totalUsd, 0)),
+  })).sort((a, b) => b.avgPct - a.avgPct);
+}

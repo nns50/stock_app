@@ -29,6 +29,7 @@ import {
 } from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures } from './liveFailureAlert';
 import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
+import { maybeAutoTune } from './autoTune';
 import { checkSessionWindow, checkVolatility, getMarketAtrPct, VolatilityFilterConfig } from './executionGuards';
 import { runWebullPositionsSync } from '../../providers/webull/positions';
 import { processMoversForPromotion } from './moversPromotion';
@@ -543,6 +544,10 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // already current by this point regardless of which return path the tick
     // took above. Best-effort, throttled to once per pool per day, never throws.
     await maybeAlertDailyDrawdownHalt();
+    // Same reasoning, same placement: a no-op unless explicitly enabled, and
+    // throttled to once per (ET) trading day internally regardless of how
+    // often this tick runs. Best-effort, never throws.
+    await maybeAutoTune();
   }
 }
 
