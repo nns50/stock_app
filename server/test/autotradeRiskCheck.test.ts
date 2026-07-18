@@ -41,6 +41,9 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
     maxTradesPerDay: 6,
+    sectorNotional: 0,
+    maxSectorExposurePct: 20,
+    candidateSector: null,
     ...overrides,
   };
 }
@@ -258,6 +261,42 @@ describe('evaluateRiskCheck — pure evaluator', () => {
     it('passes at exactly the cap boundary', () => {
       const result = evaluateRiskCheck(signal(), baseCtx({ correlatedNotional: 6000 }));
       expect(findCheck(result, 'max_correlated_exposure').passed).toBe(true);
+    });
+  });
+
+  describe('sector exposure cap', () => {
+    it('is skipped entirely (no rule added) when the candidate has no sector classification', () => {
+      const result = evaluateRiskCheck(signal(), baseCtx({ candidateSector: null, sectorNotional: 999_999 }));
+      expect(result.checks.find((c) => c.rule === 'max_sector_exposure')).toBeUndefined();
+      expect(result.ok).toBe(true); // the huge sectorNotional never gets a chance to block anything
+    });
+
+    it("does NOT count the proposed trade's own notional — a lone position in its own sector never blocks on this", () => {
+      const result = evaluateRiskCheck(signal(), baseCtx({ candidateSector: 'Technology', sectorNotional: 0 }));
+      expect(findCheck(result, 'max_sector_exposure').passed).toBe(true);
+    });
+
+    it('blocks when capital already in this sector exceeds the cap', () => {
+      // MODERATE-style fixture: 20% of $100k = $20,000 cap.
+      const result = evaluateRiskCheck(signal(), baseCtx({ candidateSector: 'Technology', sectorNotional: 21_000 }));
+      expect(result.ok).toBe(false);
+      expect(findCheck(result, 'max_sector_exposure').passed).toBe(false);
+      expect(findCheck(result, 'max_sector_exposure').detail).toMatch(/already in Technology/);
+    });
+
+    it('passes at exactly the cap boundary', () => {
+      const result = evaluateRiskCheck(signal(), baseCtx({ candidateSector: 'Technology', sectorNotional: 20_000 }));
+      expect(findCheck(result, 'max_sector_exposure').passed).toBe(true);
+    });
+
+    it('is independent of the correlated-exposure cap — one can block while the other passes', () => {
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({ correlatedNotional: 0, candidateSector: 'Technology', sectorNotional: 25_000 }),
+      );
+      expect(findCheck(result, 'max_correlated_exposure').passed).toBe(true);
+      expect(findCheck(result, 'max_sector_exposure').passed).toBe(false);
+      expect(result.ok).toBe(false);
     });
   });
 

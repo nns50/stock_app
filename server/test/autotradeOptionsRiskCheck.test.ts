@@ -88,6 +88,9 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
     maxTradesPerDay: 6,
+    sectorNotional: 0,
+    maxSectorExposurePct: 20,
+    candidateSector: null,
     ...overrides,
   };
 }
@@ -232,6 +235,34 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
       const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ correlatedNotional: 7000 }));
       expect(result.ok).toBe(false);
       expect(findCheck(result, 'max_correlated_exposure').passed).toBe(false); // 7000 > 6000 cap
+    });
+  });
+
+  describe('sector exposure cap', () => {
+    it('is skipped entirely (no rule added) when the candidate has no sector classification', () => {
+      const result = evaluateOptionsRiskCheck(
+        optionSignal(),
+        baseCtx({ candidateSector: null, sectorNotional: 999_999 }),
+      );
+      expect(result.checks.find((c) => c.rule === 'max_sector_exposure')).toBeUndefined();
+    });
+
+    it("does NOT count the proposed option's own notional", () => {
+      const result = evaluateOptionsRiskCheck(
+        optionSignal(),
+        baseCtx({ candidateSector: 'Technology', sectorNotional: 0 }),
+      );
+      expect(findCheck(result, 'max_sector_exposure').passed).toBe(true);
+    });
+
+    it("blocks when capital already in this underlying's sector exceeds the cap", () => {
+      // 20% of $100k = $20,000 cap.
+      const result = evaluateOptionsRiskCheck(
+        optionSignal(),
+        baseCtx({ candidateSector: 'Technology', sectorNotional: 21_000 }),
+      );
+      expect(result.ok).toBe(false);
+      expect(findCheck(result, 'max_sector_exposure').passed).toBe(false);
     });
   });
 

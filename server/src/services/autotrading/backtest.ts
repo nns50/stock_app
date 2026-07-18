@@ -717,6 +717,15 @@ export function simulateBacktest(
         maxConcurrentPositions: cfg.maxConcurrentPositions,
         correlatedNotional: correlated,
         ...riskParams,
+        // Sector exposure cap has no backtest equivalent either (2026-07-18,
+        // same scope boundary as regime sizing below) — BacktestRiskParams is
+        // a deliberately separate, self-contained bundle from AutotradeConfig
+        // (see this file's own header comment) and isn't growing a sector
+        // dimension. candidateSector: null unconditionally skips the check
+        // (see evaluateRiskCheck's own max_sector_exposure gating).
+        sectorNotional: 0,
+        maxSectorExposurePct: 0,
+        candidateSector: null,
         // Regime-aware sizing has no backtest equivalent (2026-07-16) — same
         // documented scope boundary as maxMarketAtrPct/maxTickerAtrPct/
         // sessionBufferMinutes above: no live SPY-proxy ATR series is wired

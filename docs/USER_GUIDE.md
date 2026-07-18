@@ -696,7 +696,11 @@ shouldn't be a tab-switch away.
   correlated exposure** (% of equity cap on capital, not risk, already concentrated in
   tickers statistically correlated with a candidate — by default |r| ≥ 0.7 over 30
   trading days, both now their own **correlation lookback (days)** and **correlation
-  threshold (|r|)** fields right below it), **max trades per day** (a hard cap on
+  threshold (|r|)** fields right below it), **max sector exposure** (a cheaper backstop
+  to the correlation cap right above it — % of equity cap on capital already
+  concentrated in the candidate's own universe sector, regardless of price correlation;
+  two names in the same sector can carry low correlation today and still share the same
+  macro risk), **max trades per day** (a hard cap on
   new entries, paper and live, stocks and options, all combined), and **regime ATR
   threshold** with **regime size cut** (a softer, graduated companion to **max market
   ATR** below: once the broad-market proxy's own ATR% crosses this LOWER threshold,
@@ -955,7 +959,11 @@ shouldn't be a tab-switch away.
   shows the **last candidate actually risk-checked** against this cap: its symbol, the $
   amount already correlated, how long ago, and a red **BLOCKED** flag if that check is
   what stopped it — reading "no candidate checked yet" until the loop (or a manual **Run
-  screen**) has evaluated at least one. Every other figure
+  screen**) has evaluated at least one. The **sector exposure** tile right next to it is
+  back to a live gauge, unlike correlated exposure — sector is a fixed classification,
+  not relative to a hypothetical candidate, so it shows the single most-concentrated
+  sector across your whole current book (paper + live, stocks + options combined) vs.
+  its $ cap right now, flagged red if already over. Every other figure
   is scoped to the loop's own paper positions (never your real ones) and is a direct read
   of the same numbers the risk engine itself checks before approving a trade — this panel
   can't show you something the risk engine would disagree with. A tile goes red once

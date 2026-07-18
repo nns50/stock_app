@@ -55,6 +55,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     stepDownSizeCutPct: 50,
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
+    maxSectorExposurePct: 20,
     maxTradesPerDay: 6,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
@@ -130,6 +131,8 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     maxAggregateOpenRisk: 2_000,
     maxCorrelatedExposure: 6_000,
     lastCorrelatedExposureCheck: null,
+    sectorExposure: [],
+    maxSectorExposure: 20_000,
     dailyPnl: 0,
     dailyDrawdownHaltLevel: -3_000,
     tradesToday: 0,
@@ -427,6 +430,25 @@ describe('AutoTradePage', () => {
 
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ autoTuneSlippageExcludePct: 3, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new max sector exposure value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Max sector exposure (%)').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '25' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save max sector exposure' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ maxSectorExposurePct: 25, confirmAggressive: undefined }),
     );
   });
 
@@ -2300,6 +2322,41 @@ describe('AutoTradePage', () => {
       renderDashboard();
       expect(await screen.findByText('$8,200.50')).toBeInTheDocument();
       expect(screen.getByText('BLOCKED')).toBeInTheDocument();
+    });
+
+    it('shows "no open positions" for sector exposure with an empty book', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({ sectorExposure: [], maxSectorExposure: 20_000 }),
+      );
+      renderDashboard();
+      expect(await screen.findByText(/of \$20,000\.00 cap — no open positions/)).toBeInTheDocument();
+    });
+
+    it('shows the worst (largest) current sector concentration, sorted first by computeExposure', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          sectorExposure: [
+            { key: 'Technology', gross: 4_500, pct: 60, count: 2 },
+            { key: 'Healthcare', gross: 3_000, pct: 40, count: 1 },
+          ],
+          maxSectorExposure: 20_000,
+        }),
+      );
+      renderDashboard();
+      expect(await screen.findByText('$4,500.00')).toBeInTheDocument();
+      expect(screen.getByText(/of \$20,000\.00 cap — Technology \(2 positions\)/)).toBeInTheDocument();
+    });
+
+    it('flags sector exposure over the cap in red', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          sectorExposure: [{ key: 'Energy', gross: 25_000, pct: 100, count: 3 }],
+          maxSectorExposure: 20_000,
+        }),
+      );
+      renderDashboard();
+      const value = await screen.findByText('$25,000.00');
+      expect(value).toHaveClass('text-bear');
     });
 
     it('shows "hasn\'t run yet" for the last cycle before the loop has ever run', async () => {

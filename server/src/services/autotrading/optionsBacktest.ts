@@ -971,6 +971,11 @@ export async function simulateOptionsBacktest(
         maxConcurrentPositions: cfg.maxConcurrentPositions,
         correlatedNotional: correlated,
         ...riskParams,
+        // Sector exposure cap has no backtest equivalent either (2026-07-18) —
+        // see backtest.ts's own identical note. null unconditionally skips it.
+        sectorNotional: 0,
+        maxSectorExposurePct: 0,
+        candidateSector: null,
         // Regime-aware sizing has no backtest equivalent (2026-07-16) — see
         // backtest.ts's own identical note. null unconditionally disables it.
         marketAtrPct: null,

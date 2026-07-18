@@ -5,6 +5,8 @@ import { getMarketAtrPct } from './executionGuards';
 import { OptionsTradeSignal } from './optionsDecide';
 import {
   correlatedNotional,
+  sectorNotional,
+  buildSectorOf,
   getPortfolioSnapshot,
   RiskCheckContext,
   RiskCheckResult,
@@ -246,6 +248,21 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
     `${usd(ctx.correlatedNotional)} already correlated vs cap ${usd(correlatedCap)} (${ctx.maxCorrelatedExposurePct}% of equity)`,
   );
 
+  // Complementary to the correlation cap above — see riskCheck.ts's
+  // sectorNotional() doc comment. Skipped when the candidate has no sector
+  // classification, same as the equity path. Truthy check, not `!== null` —
+  // see evaluateRiskCheck's own identical comment (a hand-built ctx fixture
+  // predating this field gets `undefined`, not `null`).
+  if (ctx.candidateSector) {
+    const sectorCap = (ctx.maxSectorExposurePct / 100) * ctx.equity;
+    const sectorOk = ctx.sectorNotional <= sectorCap;
+    check(
+      'max_sector_exposure',
+      sectorOk,
+      `${usd(ctx.sectorNotional)} already in ${ctx.candidateSector} vs cap ${usd(sectorCap)} (${ctx.maxSectorExposurePct}% of equity)`,
+    );
+  }
+
   const ok = checks.every((c) => c.passed);
   return {
     symbol: signal.symbol,
@@ -300,6 +317,7 @@ export async function runOptionsRiskCheck(
     ...snapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.notional, side: 'long' as const })),
     ...approvedEquity.map((r) => ({ symbol: r.symbol, notional: r.approvedNotional, side: 'long' as const })),
   ];
+  const sectorOf = buildSectorOf();
 
   for (const signal of signals) {
     const { amount: correlated } = await correlatedNotional(
@@ -308,6 +326,12 @@ export async function runOptionsRiskCheck(
       runningPositions,
       config.correlationLookbackDays,
       config.correlationThreshold,
+    );
+    const { amount: sectorAmount, sector: candidateSector } = sectorNotional(
+      signal.symbol,
+      'long',
+      runningPositions,
+      sectorOf,
     );
     const ctx: RiskCheckContext = {
       equity: snapshot.equity ?? 0,
@@ -326,6 +350,9 @@ export async function runOptionsRiskCheck(
       maxCorrelatedExposurePct: config.maxCorrelatedExposurePct,
       maxTradesPerDay: config.maxTradesPerDay,
       correlationThreshold: config.correlationThreshold,
+      sectorNotional: sectorAmount,
+      maxSectorExposurePct: config.maxSectorExposurePct,
+      candidateSector,
       marketAtrPct,
       regimeAtrThresholdPct: config.regimeAtrThresholdPct,
       regimeSizeCutPct: config.regimeSizeCutPct,

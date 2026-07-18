@@ -1396,6 +1396,23 @@ function MonitoringDashboard({ dash }: { dash: AutotradeDashboard }) {
             }
             valueClass={dash.lastCorrelatedExposureCheck?.passed === false ? 'text-bear' : undefined}
           />
+          <StatTile
+            label="Sector exposure"
+            value={dash.sectorExposure[0] ? fmtUsd(dash.sectorExposure[0].gross) : '—'}
+            sub={
+              dash.sectorExposure[0] ? (
+                <>
+                  of {fmtUsd(dash.maxSectorExposure)} cap — {dash.sectorExposure[0].key} ({dash.sectorExposure[0].count}{' '}
+                  position{dash.sectorExposure[0].count === 1 ? '' : 's'})
+                </>
+              ) : (
+                `of ${fmtUsd(dash.maxSectorExposure)} cap — no open positions`
+              )
+            }
+            valueClass={
+              dash.sectorExposure[0] && dash.sectorExposure[0].gross > dash.maxSectorExposure ? 'text-bear' : undefined
+            }
+          />
         </div>
       </div>
 
@@ -1613,6 +1630,7 @@ export default function AutoTradePage() {
   const [stepDownSizeCutPctDraft, setStepDownSizeCutPctDraft] = useState<number | undefined>();
   const [maxAggregateOpenRiskPctDraft, setMaxAggregateOpenRiskPctDraft] = useState<number | undefined>();
   const [maxCorrelatedExposurePctDraft, setMaxCorrelatedExposurePctDraft] = useState<number | undefined>();
+  const [maxSectorExposurePctDraft, setMaxSectorExposurePctDraft] = useState<number | undefined>();
   const [maxTradesPerDayDraft, setMaxTradesPerDayDraft] = useState<number | undefined>();
   const [regimeAtrThresholdPctDraft, setRegimeAtrThresholdPctDraft] = useState<number | undefined>();
   const [regimeSizeCutPctDraft, setRegimeSizeCutPctDraft] = useState<number | undefined>();
@@ -1682,6 +1700,7 @@ export default function AutoTradePage() {
     setStepDownSizeCutPctDraft(config.data.stepDownSizeCutPct);
     setMaxAggregateOpenRiskPctDraft(config.data.maxAggregateOpenRiskPct);
     setMaxCorrelatedExposurePctDraft(config.data.maxCorrelatedExposurePct);
+    setMaxSectorExposurePctDraft(config.data.maxSectorExposurePct);
     setMaxTradesPerDayDraft(config.data.maxTradesPerDay);
     setRegimeAtrThresholdPctDraft(config.data.regimeAtrThresholdPct);
     setRegimeSizeCutPctDraft(config.data.regimeSizeCutPct);
@@ -1747,6 +1766,7 @@ export default function AutoTradePage() {
     stepDownSizeCutPct?: number;
     maxAggregateOpenRiskPct?: number;
     maxCorrelatedExposurePct?: number;
+    maxSectorExposurePct?: number;
     maxTradesPerDay?: number;
     regimeAtrThresholdPct?: number;
     regimeSizeCutPct?: number;
@@ -1812,6 +1832,7 @@ export default function AutoTradePage() {
       setStepDownSizeCutPctDraft(saved.stepDownSizeCutPct);
       setMaxAggregateOpenRiskPctDraft(saved.maxAggregateOpenRiskPct);
       setMaxCorrelatedExposurePctDraft(saved.maxCorrelatedExposurePct);
+      setMaxSectorExposurePctDraft(saved.maxSectorExposurePct);
       setMaxTradesPerDayDraft(saved.maxTradesPerDay);
       setRegimeAtrThresholdPctDraft(saved.regimeAtrThresholdPct);
       setRegimeSizeCutPctDraft(saved.regimeSizeCutPct);
@@ -2699,6 +2720,36 @@ export default function AutoTradePage() {
                           correlationThresholdDraft < 0 ||
                           correlationThresholdDraft > 1 ||
                           correlationThresholdDraft === config.data?.correlationThreshold
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Max sector exposure (%)"
+                    hint="Cap on capital (not risk) already concentrated in the candidate's own universe sector, regardless of price correlation — a cheaper backstop to the correlation cap above (two names in the same sector can carry low price correlation and still share the same macro risk)."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={maxSectorExposurePctDraft}
+                        onChange={setMaxSectorExposurePctDraft}
+                        min={0}
+                        max={100}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max sector exposure"
+                        onClick={() =>
+                          maxSectorExposurePctDraft != null &&
+                          saveConfig({ maxSectorExposurePct: maxSectorExposurePctDraft })
+                        }
+                        disabled={
+                          maxSectorExposurePctDraft == null ||
+                          maxSectorExposurePctDraft < 0 ||
+                          maxSectorExposurePctDraft > 100 ||
+                          maxSectorExposurePctDraft === config.data?.maxSectorExposurePct
                         }
                       >
                         Save
