@@ -145,9 +145,10 @@ Auto-Trade's **Auto-tune from realized edge** (Config tab, off by default) close
 loop for you: once enabled, it re-reads this same Kelly suggestion once a day and nudges
 `riskPerTradePct` toward it — bounded by a configurable max daily step so one noisy day
 can't swing live sizing, and gated on the same minimum-sample-size floor. Every adjustment
-is journaled to Recent Activity. It's still worth checking the Journal's own Kelly panel
-periodically — auto-tune only ever moves *toward* it a little at a time, it doesn't
-replace understanding where the number comes from.
+is journaled to Recent Activity and pushed as a notification through your configured
+webhooks, same as the other consequential loop events. It's still worth checking the
+Journal's own Kelly panel periodically — auto-tune only ever moves *toward* it a little
+at a time, it doesn't replace understanding where the number comes from.
 
 ---
 
@@ -321,7 +322,9 @@ threshold (with enough fills to trust the reading) is automatically added to the
 autotrade exclusion list — the same list Settings' manual exclusions use, so it's visible
 and reversible there, not a hidden blocklist. A thin, hard-to-fill name that's quietly
 bleeding money on every entry/exit stops being re-traded without you having to notice the
-pattern in the Analytics tab yourself.
+pattern in the Analytics tab yourself. Like the risk-% nudge above, an exclusion is both
+journaled to Recent Activity and pushed as a notification, naming the symbol and the
+slippage reading that triggered it.
 
 ---
 

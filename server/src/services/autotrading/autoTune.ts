@@ -5,6 +5,7 @@ import { computeJournalStats } from '../pnl';
 import { getAutotradeConfig, setAutotradeConfig } from '../../db/autotradeConfig';
 import { addExclusion, isExcluded } from '../../db/autotradeExclusions';
 import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
+import { dispatchNotifications } from '../notifier';
 
 // ---------------------------------------------------------------------------
 // Auto-tune from realized edge (2026-07-18 follow-up to the Journal page's
@@ -153,6 +154,17 @@ export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneR
         action: 'auto_tune_risk_adjusted',
         detail: { from: current, to: next, kellySuggested: target, sampleSize: stats.kelly.sampleSize },
       });
+      // Same "push it, don't just journal it" treatment as the daily-drawdown
+      // halt — a live risk-% change is consequential enough to surface
+      // immediately, not just discoverable later on Recent Activity.
+      await dispatchNotifications([
+        {
+          title: 'Autotrade auto-tune: risk-per-trade adjusted',
+          message:
+            `riskPerTradePct ${current}% → ${next}% (Kelly suggests ${target}% from ` +
+            `${stats.kelly.sampleSize} decisive closed trades).`,
+        },
+      ]);
       riskAdjusted = true;
     }
   }
@@ -174,6 +186,17 @@ export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneR
       action: 'auto_tune_symbol_excluded',
       detail: { avgPct: g.avgPct, trades: g.trades, thresholdPct: config.autoTuneSlippageExcludePct },
     });
+    // Same reasoning as the risk-% adjustment above: worth a push, not just a
+    // journal entry — the symbol stops being traded starting now.
+    await dispatchNotifications([
+      {
+        title: `Autotrade auto-tune: ${g.symbol} excluded`,
+        message:
+          `Avg slippage ${g.avgPct}% over ${g.trades} fill${g.trades === 1 ? '' : 's'} ` +
+          `(>= ${config.autoTuneSlippageExcludePct}% threshold) — added to the autotrade exclusion list ` +
+          `(Settings → Autotrade exclusions to review or remove).`,
+      },
+    ]);
     symbolsExcluded.push(g.symbol);
   }
 
