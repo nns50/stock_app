@@ -2509,7 +2509,9 @@ export default function AutoTradePage() {
                     hint={
                       optionsStrategyType === 'debit_spread'
                         ? 'Long leg + a further out-of-the-money short leg — caps both max loss and max gain.'
-                        : 'Long call/put only (default) — uncapped upside, simplest structure.'
+                        : optionsStrategyType === 'auto'
+                          ? 'Picks per candidate from its own IV rank: debit spread when IV rank ≥ 50 (rich premium — cap the cost), single leg when below (cheap premium — keep the uncapped upside).'
+                          : 'Long call/put only (default) — uncapped upside, simplest structure.'
                     }
                   >
                     <select
@@ -2521,6 +2523,7 @@ export default function AutoTradePage() {
                     >
                       <option value="single_leg">Single leg (default)</option>
                       <option value="debit_spread">Debit spread</option>
+                      <option value="auto">Auto (by IV rank)</option>
                     </select>
                   </Field>
                   <Field

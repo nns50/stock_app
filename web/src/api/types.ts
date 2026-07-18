@@ -1103,7 +1103,7 @@ export interface ClosePositionResult extends PlaceResult {
 
 export type AutotradeRiskProfile = 'MODERATE' | 'AGGRESSIVE';
 
-export type AutotradeOptionsStrategyType = 'single_leg' | 'debit_spread';
+export type AutotradeOptionsStrategyType = 'single_leg' | 'debit_spread' | 'auto';
 
 /** 'long' (default): only long positions, unchanged original behavior.
  *  'short': only short positions. 'both': screens every candidate as both a

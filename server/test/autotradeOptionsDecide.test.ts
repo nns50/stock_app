@@ -415,6 +415,63 @@ describe('generateOptionsSignal', () => {
       if (!result.ok) expect(result.reason).toMatch(/not a net debit/i);
     });
   });
+
+  describe('strategyType: auto (IV-rank-adaptive)', () => {
+    it('resolves to single_leg when IV rank is below AUTO_STRATEGY_IV_RANK_THRESHOLD (50)', async () => {
+      fillIvHistory('AAPL', 20, { min: 0.3, max: 0.7 }); // chain IV 0.4 -> rank ~25, below 50
+      const expiration = expirationDaysOut(21);
+      mockGetProvider.mockReturnValue({
+        getOptionsExpirations: vi.fn(async () => [expiration]),
+        getOptionsChain: vi.fn(async () => chainFor(expiration, { mark: 3 })),
+      } as unknown as ReturnType<typeof getProvider>);
+
+      const result = await generateOptionsSignal(candidate(), {
+        ...defaultOptionsDecisionConfig(),
+        strategyType: 'auto',
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.signal.kind).toBe('single_leg');
+      expect(result.signal.rationale).toMatch(/^auto-selected/i);
+    });
+
+    it('resolves to debit_spread when IV rank is at/above AUTO_STRATEGY_IV_RANK_THRESHOLD (50)', async () => {
+      // chain IV 0.4 -> rank ~67: above the 50 auto threshold but still under
+      // the 70 ivRankMax ceiling, so entryRules doesn't reject the contract first.
+      fillIvHistory('AAPL', 20, { min: 0.2, max: 0.5 });
+      const expiration = expirationDaysOut(21);
+      mockGetProvider.mockReturnValue({
+        getOptionsExpirations: vi.fn(async () => [expiration]),
+        getOptionsChain: vi.fn(async () => spreadChainFor(expiration)), // needs a further-OTM short leg available
+      } as unknown as ReturnType<typeof getProvider>);
+
+      const result = await generateOptionsSignal(candidate(), {
+        ...defaultOptionsDecisionConfig(),
+        strategyType: 'auto',
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.signal.kind).toBe('debit_spread');
+      expect(result.signal.rationale).toMatch(/^auto-selected/i);
+    });
+
+    it('does NOT add the auto-selected rationale prefix for an explicit (non-auto) strategyType', async () => {
+      fillIvHistory('AAPL', 20, { min: 0.2, max: 0.5 });
+      const expiration = expirationDaysOut(21);
+      mockGetProvider.mockReturnValue({
+        getOptionsExpirations: vi.fn(async () => [expiration]),
+        getOptionsChain: vi.fn(async () => spreadChainFor(expiration)),
+      } as unknown as ReturnType<typeof getProvider>);
+
+      const result = await generateOptionsSignal(candidate(), {
+        ...defaultOptionsDecisionConfig(),
+        strategyType: 'debit_spread',
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.signal.rationale).not.toMatch(/auto-selected/i);
+    });
+  });
 });
 
 describe('defaultAutotradeEntryConfig', () => {

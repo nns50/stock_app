@@ -1132,4 +1132,102 @@ describe('simulateOptionsBacktest', () => {
       expect(report.trades[0].exitReason).toBe('take_profit');
     });
   });
+
+  describe("strategyType: 'auto' (IV-rank-adaptive, 2026-07-18)", () => {
+    // Same delta-calibrated strikes as the 'debit spreads' describe block
+    // above (K=102 -> delta ~0.44, K=107 -> delta ~0.24 at S=100, sigma=0.3,
+    // T=30d), redeclared here since that block's own consts are scoped to it.
+    const AUTO_LONG_STRIKE = 102;
+    const AUTO_SHORT_STRIKE = 107;
+    const AUTO_LONG_TICKER = 'O:AUTO-LONG';
+    const AUTO_SHORT_TICKER = 'O:AUTO-SHORT';
+
+    it('resolves to debit_spread per-day when IV rank is at/above AUTO_STRATEGY_IV_RANK_THRESHOLD (50)', async () => {
+      // warmupThrough()'s flat close series has zero variance in every
+      // rolling window, which rankFrom() special-cases to an unconditional
+      // rank of 50 — >= the 50 auto threshold, so 'auto' should behave
+      // exactly like an explicit 'debit_spread' here.
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, DTE_DAYS);
+      const T = yearsFor(DTE_DAYS);
+      const longSignalPremium = premiumFor('call', 100, AUTO_LONG_STRIKE, T);
+      const shortSignalPremium = premiumFor('call', 100, AUTO_SHORT_STRIKE, T);
+      mockContractBars({
+        [AUTO_LONG_TICKER]: [
+          optionBar(signalDay, longSignalPremium),
+          optionBar(entryDay, longSignalPremium + 0.3, { open: longSignalPremium + 0.3 }),
+        ],
+        [AUTO_SHORT_TICKER]: [
+          optionBar(signalDay, shortSignalPremium),
+          optionBar(entryDay, shortSignalPremium + 0.1, { open: shortSignalPremium + 0.1 }),
+        ],
+      });
+      const historyBySymbol = new Map([['TEST', [...warmupThrough(signalDay), equityBar(entryDay)]]]);
+      const contractsBySymbol = new Map([
+        [
+          'TEST',
+          [
+            contractRef(AUTO_LONG_TICKER, 'call', AUTO_LONG_STRIKE, expiration),
+            contractRef(AUTO_SHORT_TICKER, 'call', AUTO_SHORT_STRIKE, expiration),
+          ],
+        ],
+      ]);
+
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        baseConfig({ optionsDecisionConfig: { strategyType: 'auto' }, from: signalDay, to: entryDay }),
+      );
+      expect(report.trades).toHaveLength(1);
+      expect(report.trades[0].kind).toBe('debit_spread');
+      expect(report.trades[0].shortContractTicker).toBe(AUTO_SHORT_TICKER);
+    });
+
+    it('resolves to single_leg per-day when IV rank is below AUTO_STRATEGY_IV_RANK_THRESHOLD (50)', async () => {
+      // A genuinely varying close series (large-amplitude early, tiny-amplitude
+      // recent) so computeIvContext's hv-estimate fallback derives a REAL
+      // [~0.016, ~0.98] realized-vol range (confirmed numerically) — the
+      // fixed TARGET_SIGMA (0.3) used to price this test's option premium
+      // lands at roughly the 30th percentile of that range: below the 50
+      // auto threshold, but still under the 70 ivRankMax ceiling, so entry
+      // rules don't reject the contract before 'auto' ever resolves.
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, DTE_DAYS);
+      const T = yearsFor(DTE_DAYS);
+      const closes: number[] = [];
+      for (let i = 60; i >= 0; i--) {
+        const amplitude = i > 30 ? 3 : 0.05;
+        closes.push(100 + (i % 2 === 0 ? 1 : -1) * amplitude);
+      }
+      const underlyingCandles: Candle[] = closes.map((close, idx) => {
+        const day = d(signalDay, -(60 - idx));
+        return {
+          time: Date.parse(`${day}T00:00:00Z`),
+          open: close,
+          high: close + 0.1,
+          low: close - 0.1,
+          close,
+          volume: 500_000,
+        };
+      });
+      const lastClose = closes[closes.length - 1];
+      const premium = premiumFor('call', lastClose, STRIKE, T, TARGET_SIGMA);
+      mockContractBars({
+        [CALL_TICKER]: [optionBar(signalDay, premium), optionBar(entryDay, premium, { open: premium })],
+      });
+      const historyBySymbol = new Map([['TEST', [...underlyingCandles, equityBar(entryDay, { close: lastClose })]]]);
+      const contractsBySymbol = new Map([['TEST', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]]]);
+
+      const report = await simulateOptionsBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        baseConfig({ optionsDecisionConfig: { strategyType: 'auto' }, from: signalDay, to: entryDay }),
+      );
+      expect(report.trades).toHaveLength(1);
+      expect(report.trades[0].kind).toBe('single_leg');
+      expect(report.trades[0].shortContractTicker).toBeUndefined();
+    });
+  });
 });

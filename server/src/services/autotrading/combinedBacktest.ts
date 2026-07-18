@@ -13,7 +13,12 @@ import {
 import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } from './decide';
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
 import { evaluateOptionsRiskCheck } from './optionsRiskCheck';
-import { defaultAutotradeEntryConfig, OptionsDecisionConfig, OptionsSignalSide } from './optionsDecide';
+import {
+  AUTO_STRATEGY_IV_RANK_THRESHOLD,
+  defaultAutotradeEntryConfig,
+  OptionsDecisionConfig,
+  OptionsSignalSide,
+} from './optionsDecide';
 import { RiskProfileName, OptionsStrategyType } from '../../db/autotradeConfig';
 import { defaultAutotradeScreenerConfig, pickDirection } from './screen';
 import { getHistoricalBars } from './historicalData';
@@ -288,7 +293,7 @@ export async function simulateCombinedBacktest(
   // side-independent, for the already-open-position time-exit check below
   // (which runs before that day's candidates, and so before any side, are known).
   const exitMinDaysToExpiration = cfg.optionsDecisionConfig?.entryConfig?.minDaysToExpiration ?? 7;
-  const optStrategyType: OptionsStrategyType = cfg.optionsDecisionConfig?.strategyType ?? 'single_leg';
+  const configuredOptStrategyType: OptionsStrategyType = cfg.optionsDecisionConfig?.strategyType ?? 'single_leg';
 
   const fromMs = Date.parse(`${cfg.from}T00:00:00Z`);
   const toMs = Date.parse(`${cfg.to}T00:00:00Z`);
@@ -993,6 +998,16 @@ export async function simulateCombinedBacktest(
         });
         continue;
       }
+
+      // 'auto' resolves per-candidate-per-day here, from that day's own IV
+      // rank — same threshold/rationale as the live path (optionsDecide.ts's
+      // AUTO_STRATEGY_IV_RANK_THRESHOLD), so backtest and live can't drift.
+      const optStrategyType: 'single_leg' | 'debit_spread' =
+        configuredOptStrategyType === 'auto'
+          ? ivContext.ivRank >= AUTO_STRATEGY_IV_RANK_THRESHOLD
+            ? 'debit_spread'
+            : 'single_leg'
+          : configuredOptStrategyType;
 
       let shortRef: ShortLegReference | null = null;
       if (optStrategyType === 'debit_spread') {

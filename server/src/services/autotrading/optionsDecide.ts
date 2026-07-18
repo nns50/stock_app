@@ -39,6 +39,17 @@ import { Candle } from '../../providers/types';
 // computeSpreadSizing() (services/riskSizing.ts, Phase 10) is what actually
 // sizes an approved spread signal (see optionsRiskCheck.ts) — this file only
 // constructs and structurally validates the spread itself.
+//
+// A third config value, 'auto' (2026-07-18), resolves to one of the two
+// SHAPES above per candidate, from that candidate's own IV rank — the one
+// deliberate exception to "the loop never picks based on market conditions"
+// above, since classic options theory runs the other way for a net-premium
+// BUYER (which this app always is): rich premium (high IV rank) favors
+// capping the cost with a spread; cheap premium (low IV rank) favors the
+// single leg's uncapped upside, since there's little rebate worth collecting
+// by selling a further-OTM leg. See AUTO_STRATEGY_IV_RANK_THRESHOLD below —
+// still a human's one-time opt-in into 'auto' itself, same as choosing
+// 'debit_spread' outright.
 // ---------------------------------------------------------------------------
 
 export type OptionsSignalSide = 'call' | 'put';
@@ -47,16 +58,17 @@ export interface OptionsDecisionConfig {
   /** Merged onto defaultAutotradeEntryConfig(side) — same override shape as
    *  decide.ts's DecisionConfig patch convention. */
   entryConfig?: Partial<EntryStrategyConfig>;
-  /** 'single_leg' (default) or 'debit_spread' — see db/autotradeConfig.ts's
-   *  OptionsStrategyType doc comment. Changes WHICH contract(s)
-   *  generateOptionsSignal() builds; entryConfig still governs the long
-   *  leg's own scan either way. */
+  /** 'single_leg' (default), 'debit_spread', or 'auto' — see
+   *  db/autotradeConfig.ts's OptionsStrategyType doc comment. Changes WHICH
+   *  contract(s) generateOptionsSignal() builds; entryConfig still governs
+   *  the long leg's own scan either way. 'auto' resolves to one of the other
+   *  two PER CANDIDATE (see AUTO_STRATEGY_IV_RANK_THRESHOLD below). */
   strategyType?: OptionsStrategyType;
   /** Short-leg overrides for a debit spread, merged onto the long leg's own
    *  resolved entryCfg plus SHORT_LEG_DELTA_BAND's further-OTM default (so
    *  liquidity/spread/OI/volume/IV-rank gates stay identical for both legs
-   *  unless explicitly overridden here). Ignored when strategyType is
-   *  'single_leg'. */
+   *  unless explicitly overridden here). Ignored when strategyType resolves
+   *  to 'single_leg' (directly, or via 'auto'). */
   shortLegEntryConfig?: Partial<EntryStrategyConfig>;
 }
 
@@ -87,6 +99,15 @@ export const SHORT_LEG_DELTA_BAND: Pick<EntryStrategyConfig, 'deltaMin' | 'delta
   deltaMin: 0.15,
   deltaMax: 0.25,
 };
+
+/** Cutoff for strategyType: 'auto' (see the file header comment above) — a
+ *  candidate's IV rank at or above this resolves to 'debit_spread', below it
+ *  resolves to 'single_leg'. 50 is the midpoint of the 0-100 IV rank scale,
+ *  the simplest possible boundary and consistent with how this codebase
+ *  already treats 50 as "elevated vs. not" elsewhere (docs/AUTOTRADING_SPEC.md
+ *  regime sizing). Exported so optionsBacktest.ts/combinedBacktest.ts's
+ *  'auto' simulation can never drift from the live path's own threshold. */
+export const AUTO_STRATEGY_IV_RANK_THRESHOLD = 50;
 
 interface OptionsSignalBase {
   symbol: string;
@@ -177,7 +198,7 @@ export async function generateOptionsSignal(
 ): Promise<OptionsSignalResult> {
   const symbol = candidate.symbol.toUpperCase();
   const side: OptionsSignalSide = candidate.direction === 'long' ? 'call' : 'put';
-  const strategyType: OptionsStrategyType = cfg.strategyType ?? 'single_leg';
+  const configuredStrategyType: OptionsStrategyType = cfg.strategyType ?? 'single_leg';
   const entryCfg: EntryStrategyConfig = { ...defaultAutotradeEntryConfig(side), ...cfg.entryConfig, side };
   const provider = getProvider();
   const now = new Date();
@@ -242,6 +263,17 @@ export async function generateOptionsSignal(
   }
   const ivRankNote = ivContext.method === 'hv-estimate' ? ' (estimated from realized volatility)' : '';
 
+  // 'auto' resolves per-candidate here, now that ivContext.ivRank is known
+  // (guaranteed non-null by the early return above) — see
+  // AUTO_STRATEGY_IV_RANK_THRESHOLD's doc comment for the rationale.
+  const strategyType: 'single_leg' | 'debit_spread' =
+    configuredStrategyType === 'auto'
+      ? ivContext.ivRank >= AUTO_STRATEGY_IV_RANK_THRESHOLD
+        ? 'debit_spread'
+        : 'single_leg'
+      : configuredStrategyType;
+  const autoNote = configuredStrategyType === 'auto' ? 'Auto-selected (IV rank-based) — ' : '';
+
   const entries = scanEntries(chain, entryCfg, now, ivContext.ivRank);
   const best = entries.find((e) => e.passed);
   if (!best) {
@@ -276,7 +308,7 @@ export async function generateOptionsSignal(
     }
 
     const rationale =
-      `Long ${side} on ${symbol}: strike ${best.contract.strike}, exp ${best.contract.expiration} ` +
+      `${autoNote}Long ${side} on ${symbol}: strike ${best.contract.strike}, exp ${best.contract.expiration} ` +
       `(${best.metrics.dte.toFixed(0)}d), premium ${premium.toFixed(2)}, ` +
       `Δ ${best.metrics.delta === null ? 'n/a' : best.metrics.delta.toFixed(2)}, ` +
       `IV rank ${ivContext.ivRank.toFixed(0)}${ivRankNote}`;
@@ -365,7 +397,7 @@ export async function generateOptionsSignal(
 
   const width = Math.abs(bestShort.contract.strike - longStrike);
   const rationale =
-    `${side === 'call' ? 'Call' : 'Put'} debit spread on ${symbol}: long ${longStrike}/short ${bestShort.contract.strike}, ` +
+    `${autoNote}${side === 'call' ? 'Call' : 'Put'} debit spread on ${symbol}: long ${longStrike}/short ${bestShort.contract.strike}, ` +
     `exp ${best.contract.expiration} (${best.metrics.dte.toFixed(0)}d), net debit ${netDebit.toFixed(2)}, ` +
     `width ${width}, IV rank ${ivContext.ivRank.toFixed(0)}${ivRankNote}`;
 

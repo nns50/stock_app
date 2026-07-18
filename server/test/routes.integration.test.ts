@@ -641,6 +641,13 @@ describe('autotrade config routes (integration)', () => {
     expect(final.accountEquityUsd).toBe(20_000);
   });
 
+  it("accepts optionsStrategyType: 'auto' through the route's Zod schema (IV-rank-adaptive, 2026-07-18)", async () => {
+    await put('/api/autotrade/config', { optionsStrategyType: 'auto' });
+
+    const final = (await getJson('/api/autotrade/config')) as { optionsStrategyType: string };
+    expect(final.optionsStrategyType).toBe('auto');
+  });
+
   it('persists tradeDirection and survives an unrelated save, mirroring optionsStrategyType', async () => {
     await put('/api/autotrade/config', { tradeDirection: 'both' });
     await put('/api/autotrade/config', { accountEquityUsd: 20_000 });

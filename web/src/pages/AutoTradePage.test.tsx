@@ -954,6 +954,18 @@ describe('AutoTradePage', () => {
     await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ tradeDirection: 'both' }));
   });
 
+  it("saves the selected Options strategy on change to 'auto' (IV-rank-adaptive, 2026-07-18)", async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue(configFixture({ optionsStrategyType: 'auto' }));
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByRole('combobox', { name: /^Options strategy\b/ }), { target: { value: 'auto' } });
+
+    await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ optionsStrategyType: 'auto' }));
+  });
+
   it('shows a long/short badge per candidate — one of each from the SAME screen run', async () => {
     function indicators() {
       return {
@@ -1627,6 +1639,48 @@ describe('AutoTradePage', () => {
       expect(run).toHaveBeenCalledWith(
         expect.objectContaining({ optionsDecisionConfig: { strategyType: 'debit_spread' } }),
       ),
+    );
+  });
+
+  it("threads strategyType: 'auto' into the options backtest request the same way (IV-rank-adaptive, 2026-07-18)", async () => {
+    vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture({ optionsStrategyType: 'auto' }));
+    const run = vi.spyOn(client, 'runOptionsBacktest').mockResolvedValue({
+      report: {
+        trades: [],
+        equityCurve: [],
+        startingEquity: 100_000,
+        finalEquity: 100_000,
+        excludedSymbols: [],
+        errors: [],
+        skipped: [],
+      },
+      stats: {
+        totalTrades: 0,
+        wins: 0,
+        losses: 0,
+        winRate: 0,
+        avgWin: 0,
+        avgLoss: 0,
+        expectancy: 0,
+        profitFactor: null,
+        totalPnl: 0,
+        returnPct: 0,
+        avgR: 0,
+        bestR: 0,
+        worstR: 0,
+        maxDrawdown: 0,
+        longestWinStreak: 0,
+        longestLossStreak: 0,
+      },
+    });
+    renderDashboard();
+    await screen.findByText('Monitoring');
+
+    fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Run options backtest' }));
+
+    await waitFor(() =>
+      expect(run).toHaveBeenCalledWith(expect.objectContaining({ optionsDecisionConfig: { strategyType: 'auto' } })),
     );
   });
 
