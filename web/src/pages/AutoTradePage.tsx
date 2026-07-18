@@ -1625,6 +1625,7 @@ function BacktestWindowResult({
 export default function AutoTradePage() {
   const config = useAsync(() => client.autotradeConfig(), []);
   const exclusions = useAsync(() => client.autotradeExclusions(), []);
+  const macroEvents = useAsync(() => client.autotradeMacroEvents(), []);
   const events = useAsync(() => client.autotradeEvents({ limit: 50 }), []);
   const paperPositions = useAsync(() => client.autotradePaperPositions({ limit: 100 }), []);
   const optionsPaperPositions = useAsync(() => client.autotradeOptionsPaperPositions({ limit: 100 }), []);
@@ -1708,6 +1709,7 @@ export default function AutoTradePage() {
   const [optionsPartialExitPctDraft, setOptionsPartialExitPctDraft] = useState<number | undefined>();
   const [sessionBufferMinutesDraft, setSessionBufferMinutesDraft] = useState<number | undefined>();
   const [earningsBlackoutDaysDraft, setEarningsBlackoutDaysDraft] = useState<number | undefined>();
+  const [macroEventBlackoutHoursDraft, setMacroEventBlackoutHoursDraft] = useState<number | undefined>();
   const [correlationLookbackDaysDraft, setCorrelationLookbackDaysDraft] = useState<number | undefined>();
   const [correlationThresholdDraft, setCorrelationThresholdDraft] = useState<number | undefined>();
   const [liveAccountIdDraft, setLiveAccountIdDraft] = useState('');
@@ -1779,6 +1781,7 @@ export default function AutoTradePage() {
     setOptionsPartialExitPctDraft(config.data.optionsPartialExitPct);
     setSessionBufferMinutesDraft(config.data.sessionBufferMinutes);
     setEarningsBlackoutDaysDraft(config.data.earningsBlackoutDays);
+    setMacroEventBlackoutHoursDraft(config.data.macroEventBlackoutHours);
     setCorrelationLookbackDaysDraft(config.data.correlationLookbackDays);
     setCorrelationThresholdDraft(config.data.correlationThreshold);
     setLiveAccountIdDraft(config.data.liveAccountId ?? '');
@@ -1847,6 +1850,7 @@ export default function AutoTradePage() {
     optionsPartialExitPct?: number;
     sessionBufferMinutes?: number;
     earningsBlackoutDays?: number;
+    macroEventBlackoutHours?: number;
     correlationLookbackDays?: number;
     correlationThreshold?: number;
     optionsStrategyType?: AutotradeOptionsStrategyType;
@@ -1913,6 +1917,7 @@ export default function AutoTradePage() {
       setOptionsPartialExitPctDraft(saved.optionsPartialExitPct);
       setSessionBufferMinutesDraft(saved.sessionBufferMinutes);
       setEarningsBlackoutDaysDraft(saved.earningsBlackoutDays);
+      setMacroEventBlackoutHoursDraft(saved.macroEventBlackoutHours);
       setCorrelationLookbackDaysDraft(saved.correlationLookbackDays);
       setCorrelationThresholdDraft(saved.correlationThreshold);
       setAutoPromoteMoversEnabled(saved.autoPromoteMoversEnabled);
@@ -2145,6 +2150,37 @@ export default function AutoTradePage() {
     }
   };
 
+  const [newEventLabel, setNewEventLabel] = useState('');
+  const [newEventAt, setNewEventAt] = useState('');
+  const addMacroEvent = async () => {
+    const label = newEventLabel.trim();
+    if (!label || !newEventAt) return;
+    try {
+      await client.addAutotradeMacroEvent({ label, eventAt: new Date(newEventAt).getTime() });
+      setNewEventLabel('');
+      setNewEventAt('');
+      macroEvents.reload();
+      toast(`${label} added to the macro event list`, { type: 'success' });
+    } catch (e) {
+      toast((e as Error).message || 'Could not add macro event', { type: 'error' });
+    }
+  };
+  const removeMacroEvent = async (id: number, label: string) => {
+    const ok = await confirm({
+      title: `Remove "${label}" from the macro event list?`,
+      confirmLabel: 'Remove',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await client.removeAutotradeMacroEvent(id);
+      macroEvents.reload();
+      toast(`${label} removed`, { type: 'success' });
+    } catch (e) {
+      toast((e as Error).message || 'Could not remove macro event', { type: 'error' });
+    }
+  };
+
   const [screenBusy, setScreenBusy] = useState(false);
   const [result, setResult] = useState<AutotradeDecideResponse>();
   const [riskResults, setRiskResults] = useState<AutotradeRiskCheckResult[]>([]);
@@ -2181,6 +2217,7 @@ export default function AutoTradePage() {
   };
 
   const exclusionRows = exclusions.data?.exclusions ?? [];
+  const macroEventRows = macroEvents.data?.events ?? [];
   const eventRows = events.data?.events ?? [];
   const screenResult = result?.screen;
   const signalBySymbol = new Map((result?.decision.signals ?? []).map((s) => [s.symbol, s]));
@@ -3613,6 +3650,34 @@ export default function AutoTradePage() {
                       </button>
                     </div>
                   </Field>
+                  <Field
+                    label="Macro event blackout (hours)"
+                    hint="Hard-block ALL new entries, paper and live, within this many hours (either side) of any date-time on the macro-events list below — market-wide, unlike earnings blackout above. 0 disables this check. No backtest equivalent (no historical event-date archive exists)."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={macroEventBlackoutHoursDraft}
+                        onChange={setMacroEventBlackoutHoursDraft}
+                        min={0}
+                        step={0.5}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save macro event blackout"
+                        onClick={() =>
+                          macroEventBlackoutHoursDraft != null &&
+                          saveConfig({ macroEventBlackoutHours: macroEventBlackoutHoursDraft })
+                        }
+                        disabled={
+                          macroEventBlackoutHoursDraft == null ||
+                          macroEventBlackoutHoursDraft < 0 ||
+                          macroEventBlackoutHoursDraft === config.data?.macroEventBlackoutHours
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
                 </div>
               </CollapsibleCard>
 
@@ -4051,6 +4116,73 @@ export default function AutoTradePage() {
                         <button
                           className="text-xs text-slate-500 hover:text-bear"
                           onClick={() => removeExclusion(e.symbol)}
+                        >
+                          remove
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </CollapsibleCard>
+
+          <CollapsibleCard id="autotrade.macroEvents" title="Macro event blackout list">
+            <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-2xl">
+              Hand-maintained scheduled dates (FOMC, CPI, jobs reports, ...) checked by "Macro event blackout (hours)"
+              above — there's no economic-calendar feed in this app, so add your own from the Fed's/BLS's own published
+              calendars.
+            </p>
+            <div className="grid sm:grid-cols-4 gap-2 items-end mb-3">
+              <div className="sm:col-span-2">
+                <Field label="Label">
+                  <input
+                    className="input"
+                    value={newEventLabel}
+                    onChange={(e) => setNewEventLabel(e.target.value)}
+                    placeholder="FOMC decision"
+                  />
+                </Field>
+              </div>
+              <Field label="Date & time">
+                <input
+                  type="datetime-local"
+                  className="input"
+                  value={newEventAt}
+                  onChange={(e) => setNewEventAt(e.target.value)}
+                />
+              </Field>
+              <button className="btn-primary" onClick={addMacroEvent}>
+                Add
+              </button>
+            </div>
+            {macroEvents.loading ? (
+              <Spinner />
+            ) : macroEvents.error ? (
+              <ErrorState error={macroEvents.error} onRetry={macroEvents.reload} />
+            ) : macroEventRows.length === 0 ? (
+              <EmptyState
+                title="No scheduled events"
+                hint="Add a date above — the blackout stays disabled until then."
+              />
+            ) : (
+              <table className="w-full">
+                <thead className="border-b border-ink-600/60">
+                  <tr>
+                    <th className="th">Label</th>
+                    <th className="th">When</th>
+                    <th className="th text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {macroEventRows.map((e) => (
+                    <tr key={e.id} className="border-b border-ink-700/50">
+                      <td className="td font-semibold">{e.label}</td>
+                      <td className="td text-slate-400">{new Date(e.eventAt).toLocaleString()}</td>
+                      <td className="td text-right">
+                        <button
+                          className="text-xs text-slate-500 hover:text-bear"
+                          onClick={() => removeMacroEvent(e.id, e.label)}
                         >
                           remove
                         </button>

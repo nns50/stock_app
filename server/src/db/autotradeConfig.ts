@@ -241,6 +241,18 @@ export interface AutotradeConfig {
    *  during ordinary Yahoo flakiness. */
   earningsBlackoutDays: number;
 
+  /** Scheduled macro-event blackout (2026-07-18): hard-block new entries,
+   *  paper AND live, within this many hours (either side) of any date-time on
+   *  the hand-maintained macro-events list (db/macroEvents.ts) — market-wide,
+   *  unlike earningsBlackoutDays above, so it's checked once per loop tick
+   *  (executionGuards.ts's checkMacroEventBlackout), the same gating point as
+   *  the session-window check, not per-candidate inside the screener. 0 (the
+   *  default) disables it entirely. No backtest equivalent — same documented
+   *  scope boundary as sessionBufferMinutes/regime sizing/relative strength:
+   *  a historical macro-event-date archive doesn't exist, so there's nothing
+   *  for a backtest to replay this against. */
+  macroEventBlackoutHours: number;
+
   // --- Max hold time (docs/AUTOTRADING_SPEC.md — RESOLVED DECISIONS, added
   // 2026-07-11). Unlike its neighbors above, this DOES have a backtest
   // equivalent (a daily-bar replay can track "days since entry" same as wall-
@@ -555,6 +567,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     targetRMultiple: 2,
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
+    macroEventBlackoutHours: 0,
     maxHoldDays: 0,
     breakevenTriggerRMultiple: 0,
     trailStartRMultiple: 0,
@@ -694,6 +707,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     targetRMultiple: posDecimal(input.targetRMultiple, d.targetRMultiple),
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
     earningsBlackoutDays: posInt(input.earningsBlackoutDays, d.earningsBlackoutDays),
+    macroEventBlackoutHours: nonNeg(input.macroEventBlackoutHours, d.macroEventBlackoutHours),
     maxHoldDays: posInt(input.maxHoldDays, d.maxHoldDays),
     breakevenTriggerRMultiple: nonNeg(input.breakevenTriggerRMultiple, d.breakevenTriggerRMultiple),
     trailStartRMultiple: nonNeg(input.trailStartRMultiple, d.trailStartRMultiple),

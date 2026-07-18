@@ -1167,6 +1167,11 @@ export interface AutotradeConfig {
    *  this many calendar days. 0 disables it. Options entries are unaffected
    *  (IV rank already proxies for an approaching print there). */
   earningsBlackoutDays: number;
+  /** Hard-block ALL new entries, paper and live, within this many hours
+   *  (either side) of any date-time on the macro-events list below —
+   *  market-wide, checked once per loop tick, unlike earningsBlackoutDays
+   *  above. 0 (the default) disables it. No backtest equivalent. */
+  macroEventBlackoutHours: number;
 
   // --- Trailing stop / breakeven / partial profit-taking (PAPER and
   // BACKTEST equity positions only — LIVE is untouched). All default to
@@ -1261,6 +1266,16 @@ export interface AutotradeExclusion {
   symbol: string;
   reason: string | null;
   source: AutotradeExclusionSource;
+  createdAt: number;
+}
+
+/** A scheduled macro event (FOMC, CPI, jobs report, ...) on the user-
+ *  maintained blackout list — see AutotradeConfig.macroEventBlackoutHours. */
+export interface MacroEvent {
+  id: number;
+  label: string;
+  /** Epoch ms of the scheduled event. */
+  eventAt: number;
   createdAt: number;
 }
 

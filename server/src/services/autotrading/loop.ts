@@ -30,7 +30,14 @@ import {
 import { maybeAlertLiveOrderFailures } from './liveFailureAlert';
 import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
 import { maybeAutoTune } from './autoTune';
-import { checkSessionWindow, checkVolatility, getMarketAtrPct, VolatilityFilterConfig } from './executionGuards';
+import {
+  checkSessionWindow,
+  checkMacroEventBlackout,
+  checkVolatility,
+  getMarketAtrPct,
+  VolatilityFilterConfig,
+} from './executionGuards';
+import { listMacroEvents } from '../../db/macroEvents';
 import { runWebullPositionsSync } from '../../providers/webull/positions';
 import { processMoversForPromotion } from './moversPromotion';
 import { checkForRecentSplits } from './splitCheck';
@@ -395,6 +402,14 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     const session = checkSessionWindow(config.sessionBufferMinutes);
     if (!session.ok) {
       summary.skippedReason = session.reason;
+      return summary;
+    }
+
+    // Market-wide, same as checkSessionWindow just above — checked once per
+    // cycle, never per-candidate (see executionGuards.ts's own doc comment).
+    const macroBlackout = checkMacroEventBlackout(listMacroEvents(), config.macroEventBlackoutHours);
+    if (!macroBlackout.ok) {
+      summary.skippedReason = macroBlackout.reason;
       return summary;
     }
 

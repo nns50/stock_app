@@ -76,6 +76,7 @@ import type {
   AutotradeOptionsStrategyType,
   AutotradeTradeDirectionMode,
   AutotradeExclusion,
+  MacroEvent,
   AutotradeScreenResult,
   AutotradeDecideResponse,
   AutotradeSignal,
@@ -474,6 +475,7 @@ export const client = {
     partialExitPct?: number;
     sessionBufferMinutes?: number;
     earningsBlackoutDays?: number;
+    macroEventBlackoutHours?: number;
     correlationLookbackDays?: number;
     correlationThreshold?: number;
     liveTradingEnabled?: boolean;
@@ -511,6 +513,11 @@ export const client = {
     api<AutotradeExclusion>('/autotrade/exclusions', post(body)),
   removeAutotradeExclusion: (symbol: string) =>
     api<{ removed: string }>(`/autotrade/exclusions/${encodeURIComponent(symbol)}`, { method: 'DELETE' }),
+  autotradeMacroEvents: () => api<{ events: MacroEvent[] }>('/autotrade/macro-events'),
+  addAutotradeMacroEvent: (body: { label: string; eventAt: number }) =>
+    api<MacroEvent>('/autotrade/macro-events', post(body)),
+  removeAutotradeMacroEvent: (id: number) =>
+    api<{ removed: number }>(`/autotrade/macro-events/${id}`, { method: 'DELETE' }),
   runAutotradeScreen: (body: { symbols?: string[] } = {}) =>
     api<AutotradeScreenResult>('/autotrade/screen', post(body)),
   runAutotradeDecision: (body: { symbols?: string[] } = {}) =>

@@ -662,7 +662,7 @@ phrase to turn it on, plus the guardrails and kill switches described below.
 
 The page opens on two tabs (2026-07-17), so settings you change occasionally and live
 state you watch constantly aren't one long scroll together. **Configuration** holds
-everything below through **Real-estate exclusion list** — settings you set once and
+everything below through **Macro event blackout list** — settings you set once and
 revisit occasionally, further grouped into labeled cards (core settings; sizing & risk
 guardrails; screening & entry filters; equity exits; options exits; entry timing;
 auto-promote) so the field count stays scannable. **Dashboard** holds **Monitoring**
@@ -771,15 +771,23 @@ shouldn't be a tab-switch away.
   **stop distance** and **target** (the stop sits this many ATRs from entry; the target
   sits stop-distance × this further out, as a reward:risk multiple), **session
   buffer** (no new entries within this many minutes of the open or close, when prices
-  are most distorted), and **earnings blackout** (skip an equity candidate whose next
+  are most distorted), **earnings blackout** (skip an equity candidate whose next
   known earnings date falls within this many calendar days — an unattended loop can't
   react to an earnings-driven overnight gap the way ATR-based stop sizing assumes;
   options entries are unaffected, since an approaching print already shows up as
-  elevated IV rank there instead). All twelve default to the values the loop always
-  used before they were configurable (trade direction to `Long`; earnings blackout's
-  own "before" is simply never checking — 0 disables it; relative strength weight 0,
-  benchmark `SPY`, lookback 20 days; sentiment weight 0), so leaving them untouched
-  changes nothing; the manual
+  elevated IV rank there instead), and **macro event blackout (hours)** (2026-07-18 —
+  hard-block ALL new entries, every symbol, within this many hours either side of any
+  date-time on the **macro event blackout list** below it — unlike earnings blackout,
+  this is market-wide and checked once per cycle, the same gating point as session
+  buffer, not a per-candidate screener check. There's no economic-calendar data feed
+  in this app, so that list is entirely hand-maintained: add your own FOMC/CPI/jobs-
+  report dates from the Fed's/BLS's own published calendars; nothing is pre-seeded, and
+  the blackout stays off regardless of the hours value until at least one date is on
+  the list). All thirteen default to the values the loop always used before they were
+  configurable (trade direction to `Long`; earnings blackout's own "before" is simply
+  never checking — 0 disables it; relative strength weight 0, benchmark `SPY`, lookback
+  20 days; sentiment weight 0; macro event blackout 0 hours with an empty list), so
+  leaving them untouched changes nothing; the manual
   Screen/Decision preview
   below defaults to these same saved values too (so it previews what the loop would
   actually do), though it has no UI to override them ad hoc today. A related but
@@ -1021,6 +1029,12 @@ shouldn't be a tab-switch away.
   tab) also classifies every candidate by sector/industry, so REITs and real-estate operating
   companies that aren't on the list (e.g. cell-tower or data-center REITs) still get
   caught.
+- **Macro event blackout list** (2026-07-18) — the dates/times **macro event blackout
+  (hours)** above checks against. Unlike the exclusion list above, nothing ships
+  seeded in: add a **label** and **date & time** for each FOMC decision, CPI release,
+  jobs report, or other scheduled catalyst you want the loop to sit out around, sourced
+  from the Fed's/BLS's own published calendars. Remove an entry once it's no longer
+  relevant — there's no automatic cleanup.
 - **Research, Screen & Decide** — **Run screen** scans your universe (the same
   500+-symbol S&P 500 list managed from the **Screener** page — see **Manage
   universe** there — plus Webull's pre-market "unusual volume" and gainers movers,

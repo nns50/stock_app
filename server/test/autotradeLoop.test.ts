@@ -80,7 +80,8 @@ import { runAutotradeLoopTick, startAutotradeLoop, stopAutotradeLoop } from '../
 import { getLastTick } from '../src/db/autotradeLastTick';
 import { ScreenCandidate } from '../src/services/autotrading/screen';
 import { TradeSignal } from '../src/services/autotrading/decide';
-import { initDb } from '../src/db';
+import { initDb, db } from '../src/db';
+import { addMacroEvent } from '../src/db/macroEvents';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
 import { config } from '../src/config';
@@ -242,9 +243,11 @@ beforeEach(() => {
     stopAtrMultiple: 1.5,
     targetRMultiple: 2,
     sessionBufferMinutes: 15,
+    macroEventBlackoutHours: 0,
   });
   setTradingConfig({ enabled: false, killSwitch: false });
   config.trading.placeEnabled = true; // env master gate ON — see placeOrder.test.ts's own convention
+  db.exec('DELETE FROM macro_events'); // checkMacroEventBlackout hits the REAL table, same as the session window
   stopAutotradeLoop();
 });
 afterEach(() => {
@@ -272,6 +275,64 @@ describe('runAutotradeLoopTick', () => {
     expect(summary.optionsExitsChecked).toBe(1);
     expect(summary.optionsExitsClosed).toBe(1);
     expect(summary.ranEntries).toBe(false);
+  });
+
+  it('always checks exits, even when a scheduled macro event blocks new entries (checked after the session window)', async () => {
+    setAutotradeConfig({ macroEventBlackoutHours: 2 });
+    addMacroEvent('FOMC decision', Date.now() + 30 * 60 * 1000); // 30 min out, within the 2h buffer
+    mockCheckExits.mockResolvedValue([{ symbol: 'AAPL', closed: true }]);
+    const summary = await runAutotradeLoopTick();
+    expect(mockCheckExits).toHaveBeenCalledTimes(1);
+    expect(summary.exitsChecked).toBe(1);
+    expect(summary.exitsClosed).toBe(1);
+    expect(summary.ranEntries).toBe(false);
+    expect(summary.skippedReason).toMatch(/FOMC decision/);
+    expect(mockScreen).not.toHaveBeenCalled();
+  });
+
+  it('does not block entries when macroEventBlackoutHours is 0 (default), even with a scheduled event', async () => {
+    addMacroEvent('FOMC decision', Date.now());
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+    const summary = await runAutotradeLoopTick();
+    expect(summary.skippedReason).toBeUndefined();
+    expect(mockScreen).toHaveBeenCalled();
+  });
+
+  it('does not block entries once outside the macro-event buffer window', async () => {
+    setAutotradeConfig({ macroEventBlackoutHours: 1 });
+    addMacroEvent('FOMC decision', Date.now() + 5 * 60 * 60 * 1000); // 5h out, outside the 1h buffer
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+    const summary = await runAutotradeLoopTick();
+    expect(summary.skippedReason).toBeUndefined();
+    expect(mockScreen).toHaveBeenCalled();
+  });
+
+  it('checks the macro-event blackout only after the session window already passed', async () => {
+    mockSessionWindow.mockReturnValue({ ok: false, reason: 'Market is closed' });
+    setAutotradeConfig({ macroEventBlackoutHours: 2 });
+    addMacroEvent('FOMC decision', Date.now());
+    const summary = await runAutotradeLoopTick();
+    // The session window's OWN reason wins — macro-event blackout is never
+    // even evaluated once an earlier gate has already skipped the tick.
+    expect(summary.skippedReason).toBe('Market is closed');
   });
 
   it('always reconciles live orders too, even when neither paper nor live can open new entries', async () => {
