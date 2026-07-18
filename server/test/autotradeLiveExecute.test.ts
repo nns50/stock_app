@@ -380,9 +380,25 @@ describe('attemptLiveEntry', () => {
 
     expect(r.ok).toBe(true);
     expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
-    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    const [, placedIntent, , isShort] = mockPlaceOrder.mock.calls[0];
     expect(placedIntent.side).toBe('sell');
     expect(placedIntent.bracket).toEqual({ takeProfitPrice: 90, stopLossPrice: 105 });
+    // Opening a short from a flat account (currentPositionQty 0) — Webull's
+    // own SHORT side, not a plain SELL, so its real-time locate/borrow check
+    // runs at order time (see providers/webull/orders.ts).
+    expect(isShort).toBe(true);
+  });
+
+  it('places a plain long entry with isShort false (never SHORT for a buy)', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LONG' });
+
+    const r = await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
+
+    expect(r.ok).toBe(true);
+    const [, , , isShort] = mockPlaceOrder.mock.calls[0];
+    expect(isShort).toBe(false);
   });
 
   it('places a bracket order (entry + linked stop + target) and records autotrade_live_orders metadata on success', async () => {

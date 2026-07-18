@@ -3,6 +3,7 @@ import {
   evaluateGuardrails,
   defaultTradingConfig,
   blockingFailures,
+  wouldOpenShort,
   type OrderIntent,
   type AccountState,
   type TradingConfig,
@@ -370,6 +371,28 @@ describe('trading guardrails', () => {
   it('does not flag a sell that merely reduces a long', () => {
     const r = evaluateGuardrails(order({ side: 'sell', openClose: 'close' }), acct({ currentPositionQty: 20 }), cfg());
     expect(check(r, 'naked_short').passed).toBe(true); // 20 - 10 = 10, still long
+  });
+
+  describe('wouldOpenShort (order-side mapping for the Webull SHORT vs SELL distinction)', () => {
+    it('is true for a sell that would open a net-short position', () => {
+      expect(wouldOpenShort(order({ side: 'sell', quantity: 10 }), acct({ currentPositionQty: 0 }))).toBe(true);
+    });
+
+    it('is true for a sell that extends an already-short position', () => {
+      expect(wouldOpenShort(order({ side: 'sell', quantity: 10 }), acct({ currentPositionQty: -5 }))).toBe(true);
+    });
+
+    it('is false for a sell that only reduces a long (same as the naked_short check above)', () => {
+      expect(wouldOpenShort(order({ side: 'sell', quantity: 10 }), acct({ currentPositionQty: 20 }))).toBe(false);
+    });
+
+    it('is false for a sell that exactly flattens a long to zero', () => {
+      expect(wouldOpenShort(order({ side: 'sell', quantity: 10 }), acct({ currentPositionQty: 10 }))).toBe(false);
+    });
+
+    it('is false for any buy, regardless of current position', () => {
+      expect(wouldOpenShort(order({ side: 'buy', quantity: 10 }), acct({ currentPositionQty: -5 }))).toBe(false);
+    });
   });
 
   it('blocks a non-positive or fractional quantity', () => {

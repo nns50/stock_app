@@ -63,9 +63,13 @@ export function newClientOrderId(): string {
   return randomUUID().replace(/-/g, ''); // 32 hex chars
 }
 
-/** Map our intent → a Webull EQUITY order body. Stock only; assumes BUY/SELL
- *  (naked short is blocked upstream by the guardrails). */
-export function buildWebullStockOrder(intent: OrderIntent, clientOrderId: string): WebullOrderBody {
+/** Map our intent → a Webull EQUITY order body. Stock only. A sell that only
+ *  closes/reduces a long uses SELL; a sell that would open/extend a net-short
+ *  position (per guardrails.ts's wouldOpenShort()) uses Webull's own distinct
+ *  SHORT side instead, so the broker's real-time locate/borrow check applies —
+ *  naked shorts are still blocked upstream by the guardrails when disallowed,
+ *  this only affects which side value a PERMITTED short is submitted as. */
+export function buildWebullStockOrder(intent: OrderIntent, clientOrderId: string, isShort = false): WebullOrderBody {
   const body: WebullOrderBody = {
     combo_type: 'NORMAL',
     client_order_id: clientOrderId,
@@ -73,7 +77,7 @@ export function buildWebullStockOrder(intent: OrderIntent, clientOrderId: string
     instrument_type: 'EQUITY',
     market: 'US',
     order_type: ORDER_TYPE_TO_WEBULL[intent.orderType],
-    side: intent.side === 'buy' ? 'BUY' : 'SELL',
+    side: intent.side === 'buy' ? 'BUY' : isShort ? 'SHORT' : 'SELL',
     quantity: String(intent.quantity),
     entrust_type: 'QTY',
     time_in_force: 'DAY',
@@ -228,11 +232,13 @@ export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: strin
   return body;
 }
 
-/** Dispatch to the right body builder for this intent's asset kind. */
-export function buildWebullOrder(intent: OrderIntent, clientOrderId: string): WebullOrderPayload {
+/** Dispatch to the right body builder for this intent's asset kind. `isShort`
+ *  only matters for stocks — Webull has no equivalent distinct SHORT side for
+ *  options (a bearish options position sells to open a call/put instead). */
+export function buildWebullOrder(intent: OrderIntent, clientOrderId: string, isShort = false): WebullOrderPayload {
   return intent.assetKind === 'option'
     ? buildWebullOptionOrder(intent, clientOrderId)
-    : buildWebullStockOrder(intent, clientOrderId);
+    : buildWebullStockOrder(intent, clientOrderId, isShort);
 }
 
 /** One bracket exit leg (opposite side of the entry): a take-profit LIMIT or a
@@ -339,13 +345,13 @@ export interface WebullOrderRequest {
   client_combo_order_id?: string;
 }
 
-export function buildOrderRequest(intent: OrderIntent, clientOrderId: string): WebullOrderRequest {
+export function buildOrderRequest(intent: OrderIntent, clientOrderId: string, isShort = false): WebullOrderRequest {
   const b = intent.bracket;
   const braced = b && (b.takeProfitPrice !== undefined || b.stopLossPrice !== undefined);
   // Brackets attach to a single-name entry: a stock, or a single-leg option.
   const isSingleOption = intent.assetKind === 'option' && (intent.optionStrategy ?? 'SINGLE') === 'SINGLE';
   if ((intent.assetKind === 'stock' || isSingleOption) && braced) {
-    const master = buildWebullOrder(intent, clientOrderId); // stock or single-leg option entry
+    const master = buildWebullOrder(intent, clientOrderId, isShort); // stock or single-leg option entry
     master.combo_type = 'MASTER';
     const exit = (
       comboType: 'STOP_PROFIT' | 'STOP_LOSS',
@@ -360,7 +366,7 @@ export function buildOrderRequest(intent: OrderIntent, clientOrderId: string): W
     if (b!.stopLossPrice !== undefined) new_orders.push(exit('STOP_LOSS', 'STOP_LOSS', b!.stopLossPrice));
     return { new_orders, client_combo_order_id: newClientOrderId() };
   }
-  return { new_orders: [buildWebullOrder(intent, clientOrderId)] };
+  return { new_orders: [buildWebullOrder(intent, clientOrderId, isShort)] };
 }
 
 export interface WebullPreview {
@@ -382,10 +388,14 @@ function num(v: unknown): number | undefined {
  * POST an order (stock or single-leg option) to /openapi/trade/order/preview for
  * a COST ESTIMATE. PLACES NOTHING — this is the estimate endpoint. Never throws.
  */
-export async function webullPreviewOrder(accountId: string, intent: OrderIntent): Promise<WebullPreview> {
+export async function webullPreviewOrder(
+  accountId: string,
+  intent: OrderIntent,
+  isShort = false,
+): Promise<WebullPreview> {
   if (!webullConfigured()) return { ok: false, error: 'Webull is not configured.' };
   const r = await webullClient().call('POST', '/openapi/trade/order/preview', {
-    body: { account_id: accountId, ...buildOrderRequest(intent, newClientOrderId()) },
+    body: { account_id: accountId, ...buildOrderRequest(intent, newClientOrderId(), isShort) },
     surface: 'trade',
   });
   if (!r.ok) {
@@ -437,10 +447,11 @@ export async function webullPlaceOrder(
   accountId: string,
   intent: OrderIntent,
   clientOrderId: string,
+  isShort = false,
 ): Promise<WebullPlaceResult> {
   if (!webullConfigured()) return { ok: false, error: 'Webull is not configured.' };
   const r = await webullClient().call('POST', '/openapi/trade/order/place', {
-    body: { account_id: accountId, ...buildOrderRequest(intent, clientOrderId) },
+    body: { account_id: accountId, ...buildOrderRequest(intent, clientOrderId, isShort) },
     surface: 'trade',
   });
   if (!r.ok) {

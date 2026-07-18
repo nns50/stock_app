@@ -164,7 +164,8 @@ export const client = {
       | 'balance'
       | 'open-orders'
       | 'order-history'
-      | 'subscriptions',
+      | 'subscriptions'
+      | 'instrument',
     opts?: { symbol?: string; accountId?: string },
   ) => api<WebullProbeResult>('/webull/probe', post({ kind, ...opts })),
   webullPositionsPreview: (accountId: string) =>

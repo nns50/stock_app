@@ -131,6 +131,18 @@ describe('webull account probe', () => {
     expect(url).toContain('api.webull.com/app/subscriptions/list');
   });
 
+  it('runs an unconfirmed instrument probe for a symbol (no account id needed)', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200, text: async () => '[]' } as Response);
+    const r = await webullProbe('instrument', { symbol: 'aapl' });
+    expect(r.ok).toBe(true);
+    const url = String(fetchSpy.mock.calls[0][0]);
+    expect(url).toContain('api.webull.com/openapi/instrument/stock/list');
+    expect(url).toContain('symbols=AAPL'); // upper-cased
+  });
+
   it('surfaces a Webull error cleanly (no throw)', async () => {
     Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue({

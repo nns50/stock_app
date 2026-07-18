@@ -381,7 +381,10 @@ The side panel persists your safety settings (server-side):
   var alone still leaves `trading_enabled` ✕ in the preview until you check this and **Save**.
 - **Allow naked short**, and the caps: **max order $**, **max symbol qty**, **max exposure $**,
   **max orders/day** (counts only orders that reached the market — broker-rejected orders don't
-  burn a slot), **max daily loss $**, **fat-finger %**.
+  burn a slot), **max daily loss $**, **fat-finger %**. A sell that this toggle actually permits to
+  open or extend a short submits Webull's own distinct SHORT side (not a plain SELL), so the
+  broker's real-time locate/borrow check runs at order time — a symbol it can't currently borrow
+  is rejected there, with the reason shown alongside the blocked/rejected order.
 
 Defaults are intentionally tiny and trading ships **off**. The rules: per-order notional,
 buying power (buys only), exposure ceiling (opening adds, closing doesn't), per-symbol size,
@@ -1195,6 +1198,9 @@ One home (⚙ or `⌘K → Settings`) for everything:
   permission, please subscribe to stock quotes”_, run the **quote subscriptions** check — it
   lists what Webull's OpenAPI actually sees for your app, so you can tell an OpenAPI quote
   plan apart from a mobile-app / desktop (QT) plan, which don't grant API access.
+  A **stock instrument (unconfirmed)** check is also available — its response shape has
+  never been confirmed against a real account, so run it yourself to see what it actually
+  returns (e.g. whether it carries a shortable/hard-to-borrow flag) before anything reads it.
 - **Account** — only shown when the app is password-protected (`APP_PASSWORD` set
   server-side). Turn on **two-factor authentication** (an authenticator-app code at
   login — scan/enter the setup key, confirm a code), disable it (needs a current code),

@@ -166,6 +166,39 @@ describe('place order (live)', () => {
     ]);
   });
 
+  it('submits a permitted short (allowNakedShort) with side SHORT, not SELL', async () => {
+    setTradingConfig({ enabled: true, allowNakedShort: true });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE)) // balance
+      .mockResolvedValueOnce(okResp([])) // positions — flat, so this sell opens a short
+      .mockResolvedValueOnce(okResp({ order_id: 'WB-SHORT-1' })); // place
+
+    const short = intent({ side: 'sell' });
+    const r = await placeOrder(short, 'ACC1', placeConfirmation(short));
+
+    expect(r).toMatchObject({ placed: true, reason: 'placed' });
+    const placeBody = JSON.parse((fetchSpy.mock.calls[2][1] as RequestInit).body as string);
+    expect(placeBody.new_orders[0].side).toBe('SHORT');
+  });
+
+  it('a sell that only reduces an existing long still submits SELL, not SHORT', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE)) // balance
+      .mockResolvedValueOnce(
+        okResp([{ symbol: 'NUVB', quantity: '10', cost_price: '5', market_value: '70', asset_type: 'stock' }]),
+      ) // positions — long 10, selling 1 only reduces it
+      .mockResolvedValueOnce(okResp({ order_id: 'WB-CLOSE-1' })); // place
+
+    const closeSome = intent({ side: 'sell', openClose: 'close' });
+    const r = await placeOrder(closeSome, 'ACC1', placeConfirmation(closeSome));
+
+    expect(r).toMatchObject({ placed: true, reason: 'placed' });
+    const placeBody = JSON.parse((fetchSpy.mock.calls[2][1] as RequestInit).body as string);
+    expect(placeBody.new_orders[0].side).toBe('SELL');
+  });
+
   it('records a broker rejection without claiming a fill', async () => {
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(okResp(BALANCE))

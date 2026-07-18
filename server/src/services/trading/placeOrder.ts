@@ -1,5 +1,12 @@
 import { config } from '../../config';
-import { AccountState, GuardrailReport, OrderIntent, blockingFailures, evaluateGuardrails } from './guardrails';
+import {
+  AccountState,
+  GuardrailReport,
+  OrderIntent,
+  blockingFailures,
+  evaluateGuardrails,
+  wouldOpenShort,
+} from './guardrails';
 import { getTradingConfig } from '../../db/trading';
 import { OrderIntentRecord, countTodaysOrders, createIntent, transitionIntent } from '../../db/orders';
 import { webullAccountState, webullAccountType } from '../../providers/webull/accountState';
@@ -122,6 +129,10 @@ export async function placeOrder(intent: OrderIntent, accountId: string, confirm
   // 3) Re-run the guardrails server-side.
   const cfg = getTradingConfig();
   const guardrails = evaluateGuardrails(priced, accountState, cfg, { marketOpen: marketOpenContext(priced) });
+  // Only matters for a permitted short (allowNakedShort — naked_short above
+  // already blocks it otherwise): submit Webull's own SHORT side instead of a
+  // plain SELL so the broker's real-time locate/borrow check runs at order time.
+  const isShort = wouldOpenShort(priced, accountState);
 
   const clientOrderId = newClientOrderId();
   const intentRec = createIntent(priced, clientOrderId); // draft (audited)
@@ -139,7 +150,7 @@ export async function placeOrder(intent: OrderIntent, accountId: string, confirm
   transitionIntent(intentRec.id, 'confirmed', { detail: `confirmed: ${confirmation.trim()}` });
   transitionIntent(intentRec.id, 'submitted', { detail: `submitting (cid ${clientOrderId})` });
 
-  const broker = await webullPlaceOrder(accountId, intent, clientOrderId);
+  const broker = await webullPlaceOrder(accountId, intent, clientOrderId, isShort);
 
   if (broker.ok) {
     const acked = transitionIntent(intentRec.id, 'acknowledged', {
