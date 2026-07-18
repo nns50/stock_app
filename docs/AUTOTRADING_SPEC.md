@@ -731,6 +731,25 @@ starts.
    trade-by-trade table per window. Nothing downstream of this phase — paper or live
    execution — is wired up yet; this phase only produces the report a human reviews
    before either of those is allowed to run.
+
+   **Statistical-significance check on a walk-forward window (2026-07-18) — shipped.**
+   `services/autotrading/significance.ts`'s `computeSignificanceStats()` adds a bootstrap
+   confidence interval and a sign-flip permutation p-value on top of `computeBacktestStats()`'s
+   plain expectancy figure — the stat grid answers "what happened"; this answers "how much
+   to trust it." Both windows' significance is computed the same way regardless of engine
+   (equity, options, or combined's `[...equityTrades, ...optionsTrades]` concatenation,
+   mirroring `combinedStats()`'s own reuse of `computeBacktestStats()`), via the same
+   structural-subset parameter idiom (`{ pnl: number }[]`) so one function serves all
+   three without duplication. Mirrors `services/riskOfRuin.ts`'s own Monte Carlo
+   conventions: an injectable `rng` (default `Math.random`, swapped for a seeded PRNG in
+   tests) and a private sort-then-percentile helper, rather than a shared stats module —
+   this codebase's established small-helper-duplication convention. A sample below 20
+   trades is flagged `reliable: false` rather than hidden, the same floor
+   `pnl.ts`'s `kellySuggestion()` already uses for its own reliability flag. Exactly like
+   the walk-forward harness itself, this renders no pass/fail verdict — the CI and
+   p-value are additional evidence surfaced alongside the existing stat grid (Auto-Trade
+   page's new "significance" panel per window), for the same human review the rest of
+   this phase already defers to, not a new automated gate.
 6. **Paper execution loop — shipped.** `services/autotrading/loop.ts` mirrors the
    alerts-poller's self-rescheduling `setTimeout` pattern exactly (`services/alertScheduler.ts`):
    `autotrade_config.enabled` is read fresh every cycle (no restart to toggle), one

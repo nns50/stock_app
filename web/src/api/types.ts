@@ -1469,9 +1469,28 @@ export interface BacktestRunResponse {
   stats: BacktestStats;
 }
 
+/** Bootstrap CI + sign-flip permutation p-value on a trade list's expectancy
+ *  (services/autotrading/significance.ts) — only computed for a walk-forward
+ *  window (see WalkForwardWindowResult below), not a plain single-window
+ *  backtest run. All-null/not-reliable, never a fabricated number, when
+ *  sampleSize is 0. */
+export interface SignificanceStats {
+  sampleSize: number;
+  expectancy: number | null;
+  ciLow: number | null;
+  ciHigh: number | null;
+  pValue: number | null;
+  resamples: number;
+  reliable: boolean;
+}
+
+export interface WalkForwardWindowResult extends BacktestRunResponse {
+  significance: SignificanceStats;
+}
+
 export interface WalkForwardResponse {
-  inSample: BacktestRunResponse;
-  outOfSample: BacktestRunResponse;
+  inSample: WalkForwardWindowResult;
+  outOfSample: WalkForwardWindowResult;
   excludedSymbols: { symbol: string; reason: string }[];
   errors: { symbol: string; message: string }[];
 }
@@ -1568,9 +1587,13 @@ export interface OptionsBacktestRunResponse {
   stats: BacktestStats;
 }
 
+export interface OptionsWalkForwardWindowResult extends OptionsBacktestRunResponse {
+  significance: SignificanceStats;
+}
+
 export interface OptionsWalkForwardResponse {
-  inSample: OptionsBacktestRunResponse;
-  outOfSample: OptionsBacktestRunResponse;
+  inSample: OptionsWalkForwardWindowResult;
+  outOfSample: OptionsWalkForwardWindowResult;
   excludedSymbols: { symbol: string; reason: string }[];
   errors: { symbol: string; message: string }[];
 }
@@ -1618,9 +1641,13 @@ export interface CombinedBacktestRunResponse {
   stats: BacktestStats;
 }
 
+export interface CombinedWalkForwardWindowResult extends CombinedBacktestRunResponse {
+  significance: SignificanceStats;
+}
+
 export interface CombinedWalkForwardResponse {
-  inSample: CombinedBacktestRunResponse;
-  outOfSample: CombinedBacktestRunResponse;
+  inSample: CombinedWalkForwardWindowResult;
+  outOfSample: CombinedWalkForwardWindowResult;
   excludedSymbols: { symbol: string; reason: string }[];
   errors: { symbol: string; message: string }[];
 }

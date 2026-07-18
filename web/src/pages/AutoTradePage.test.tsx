@@ -18,6 +18,7 @@ import type {
   OptionsBacktestRunResponse,
   OptionsPaperPosition,
   PaperPosition,
+  SignificanceStats,
   WalkForwardResponse,
 } from '../api/types';
 
@@ -1397,6 +1398,17 @@ describe('AutoTradePage', () => {
     },
   });
 
+  const sigStats = (overrides: Partial<SignificanceStats> = {}): SignificanceStats => ({
+    sampleSize: 1,
+    expectancy: 300,
+    ciLow: 100,
+    ciHigh: 500,
+    pValue: 0.03,
+    resamples: 2000,
+    reliable: false,
+    ...overrides,
+  });
+
   it('runs a plain backtest and renders stats + the trade', async () => {
     const run = vi.spyOn(client, 'runAutotradeBacktest').mockResolvedValue(btRun());
     renderDashboard();
@@ -1467,10 +1479,13 @@ describe('AutoTradePage', () => {
     await waitFor(() => expect(combinedRun).toHaveBeenCalledWith(expect.objectContaining({ directionMode: 'both' })));
   });
 
-  it('runs a walk-forward split once a split date is set, showing both windows', async () => {
+  it('runs a walk-forward split once a split date is set, showing both windows and their significance stats', async () => {
     const wfResult: WalkForwardResponse = {
-      inSample: btRun({ totalPnl: 300, returnPct: 0.3 }),
-      outOfSample: btRun({ totalPnl: -50, returnPct: -0.05, wins: 0, losses: 1, winRate: 0 }),
+      inSample: { ...btRun({ totalPnl: 300, returnPct: 0.3 }), significance: sigStats() },
+      outOfSample: {
+        ...btRun({ totalPnl: -50, returnPct: -0.05, wins: 0, losses: 1, winRate: 0 }),
+        significance: sigStats({ expectancy: -50, ciLow: -120, ciHigh: 20, pValue: 0.42 }),
+      },
       excludedSymbols: [],
       errors: [],
     };
@@ -1490,6 +1505,71 @@ describe('AutoTradePage', () => {
     );
     expect(await screen.findByRole('heading', { name: /^In-sample/ })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /^Out-of-sample/ })).toBeInTheDocument();
+    // In-sample's significance (reliable: false, small sample) shows the caution note...
+    expect(screen.getAllByText('Thin sample — treat with caution').length).toBeGreaterThan(0);
+    // ...and both windows' p-values/CIs render somewhere on the page.
+    expect(screen.getByText('0.030')).toBeInTheDocument();
+    expect(screen.getByText('0.420')).toBeInTheDocument();
+    expect(screen.getByText('+$100.00 to +$500.00')).toBeInTheDocument();
+    expect(screen.getByText('-$120.00 to +$20.00')).toBeInTheDocument();
+  });
+
+  it('shows a "no trades" note instead of significance stats for an empty walk-forward window', async () => {
+    const wfResult: WalkForwardResponse = {
+      inSample: {
+        report: {
+          trades: [],
+          equityCurve: [],
+          startingEquity: 100_000,
+          finalEquity: 100_000,
+          excludedSymbols: [],
+          errors: [],
+        },
+        stats: btRun().stats,
+        significance: {
+          sampleSize: 0,
+          expectancy: null,
+          ciLow: null,
+          ciHigh: null,
+          pValue: null,
+          resamples: 0,
+          reliable: false,
+        },
+      },
+      outOfSample: {
+        report: {
+          trades: [],
+          equityCurve: [],
+          startingEquity: 100_000,
+          finalEquity: 100_000,
+          excludedSymbols: [],
+          errors: [],
+        },
+        stats: btRun().stats,
+        significance: {
+          sampleSize: 0,
+          expectancy: null,
+          ciLow: null,
+          ciHigh: null,
+          pValue: null,
+          resamples: 0,
+          reliable: false,
+        },
+      },
+      excludedSymbols: [],
+      errors: [],
+    };
+    vi.spyOn(client, 'runAutotradeWalkForward').mockResolvedValue(wfResult);
+    renderDashboard();
+    await screen.findByText('Monitoring');
+
+    fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'AAPL' } });
+    const dateInputs = document.querySelectorAll('input[type="date"]');
+    fireEvent.change(dateInputs[2], { target: { value: '2024-06-01' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Run walk-forward' }));
+
+    expect(await screen.findByRole('heading', { name: /^In-sample/ })).toBeInTheDocument();
+    expect(screen.getAllByText('No trades in this window — nothing to test for significance.')).toHaveLength(2);
   });
 
   it('shows an inline error and does not call the API when no symbols are entered', async () => {

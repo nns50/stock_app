@@ -22,11 +22,12 @@ app's tools, not a "buy signal."
 4. [Playbook B — Mean-reversion fade (short)](#playbook-b--mean-reversion-fade-short)
 5. [Playbook C — Directional options (long calls/puts)](#playbook-c--directional-options-long-callsputs)
 6. [Validating an edge with the Edge Report](#validating-an-edge-with-the-edge-report)
-7. [Tuning stops & targets with MAE/MFE](#tuning-stops--targets-with-maemfe)
-8. [Reducing slippage with execution quality](#reducing-slippage-with-execution-quality)
-9. [Guardrails: risk of ruin & the benchmark](#guardrails-risk-of-ruin--the-benchmark)
-10. [The weekly review checklist](#the-weekly-review-checklist)
-11. [Anti-patterns to avoid](#anti-patterns-to-avoid)
+7. [Is a backtested edge real, or noise?](#is-a-backtested-edge-real-or-noise)
+8. [Tuning stops & targets with MAE/MFE](#tuning-stops--targets-with-maemfe)
+9. [Reducing slippage with execution quality](#reducing-slippage-with-execution-quality)
+10. [Guardrails: risk of ruin & the benchmark](#guardrails-risk-of-ruin--the-benchmark)
+11. [The weekly review checklist](#the-weekly-review-checklist)
+12. [Anti-patterns to avoid](#anti-patterns-to-avoid)
 
 ---
 
@@ -289,6 +290,38 @@ A setup is only worth trading if it **outperforms**. The workflow:
 
 This loop — hypothesize → snapshot → measure forward returns → re-weight — is the
 single highest-leverage thing the app enables.
+
+---
+
+## Is a backtested edge real, or noise?
+
+A walk-forward backtest's stat grid (Auto-Trade → Configuration → **Backtest &
+walk-forward**) tells you *what happened* in the out-of-sample window — win rate,
+expectancy, profit factor. It doesn't tell you *how much to trust* that number. A
+positive expectancy over 12 trades and a positive expectancy over 200 trades are not
+equally convincing, even if the dollar figure is identical.
+
+Each walk-forward window also shows a **significance** panel answering that directly:
+
+- **95% CI on expectancy** — bootstrap resampling: the range of average $/trade you'd
+  plausibly see if this same window's trades played out again. A CI that stays
+  entirely above zero is a good sign; one that straddles zero means "could easily have
+  been a losing system too."
+- **p-value vs. no edge** — a sign-flip permutation test: how often randomly
+  re-signing this window's own wins and losses (simulating "no real directional edge")
+  produces a mean at least this extreme. Conventionally, under 0.05 reads as unlikely
+  to be pure noise — but treat that as a rule of thumb, not a law.
+- **Sample size**, flagged once it drops below 20 trades — below that floor, both
+  numbers above are themselves too noisy to lean on hard, the same way this app's own
+  Kelly-sizing suggestion (Position sizing, above) flags itself unreliable under the
+  same threshold.
+
+Like the rest of this backtest tool, this renders no pass/fail verdict — it's evidence
+you weigh alongside the in-sample/out-of-sample comparison itself, not a gate. A wide
+CI or a p-value near 1 doesn't mean the config is bad; it means you don't yet have
+enough out-of-sample data to tell. The fix is usually the same one that applies
+anywhere sample size is thin: widen the date range, add more symbols, or keep paper
+trading it a while longer before trusting the number.
 
 ---
 
