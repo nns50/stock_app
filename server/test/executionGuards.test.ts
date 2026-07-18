@@ -5,6 +5,7 @@ vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
 import { getProvider } from '../src/providers';
 import {
   checkSessionWindow,
+  checkMacroEventBlackout,
   checkVolatility,
   getMarketAtrPct,
   defaultVolatilityFilterConfig,
@@ -47,6 +48,57 @@ describe('checkSessionWindow', () => {
   it('uses a zero buffer to mean "any time the market is open"', () => {
     expect(checkSessionWindow(0, et(9, 30)).ok).toBe(true);
     expect(checkSessionWindow(0, et(15, 59)).ok).toBe(true);
+  });
+});
+
+describe('checkMacroEventBlackout', () => {
+  const NOW = new Date('2024-01-10T12:00:00Z').getTime();
+  const HOUR = 60 * 60 * 1000;
+
+  it('never blocks with a zero buffer, even with an event right now', () => {
+    expect(checkMacroEventBlackout([{ label: 'FOMC', eventAt: NOW }], 0, NOW)).toEqual({ ok: true });
+  });
+
+  it('never blocks with an empty events list', () => {
+    expect(checkMacroEventBlackout([], 2, NOW)).toEqual({ ok: true });
+  });
+
+  it('blocks within the buffer BEFORE a scheduled event', () => {
+    const events = [{ label: 'FOMC decision', eventAt: NOW + 1 * HOUR }];
+    const result = checkMacroEventBlackout(events, 2, NOW);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/FOMC decision/);
+  });
+
+  it('blocks within the buffer AFTER a scheduled event (symmetric)', () => {
+    const events = [{ label: 'CPI release', eventAt: NOW - 1 * HOUR }];
+    expect(checkMacroEventBlackout(events, 2, NOW).ok).toBe(false);
+  });
+
+  it("blocks (inclusive) exactly at the edge of the buffer, same as earningsBlackoutDays's own convention", () => {
+    const events = [{ label: 'Jobs report', eventAt: NOW + 2 * HOUR }];
+    expect(checkMacroEventBlackout(events, 2, NOW).ok).toBe(false);
+  });
+
+  it('allows just outside the buffer on both sides', () => {
+    const events = [{ label: 'FOMC', eventAt: NOW + 2 * HOUR + 1 }];
+    expect(checkMacroEventBlackout(events, 2, NOW).ok).toBe(true);
+  });
+
+  it('blocks when ANY event in the list is within range, ignoring the others', () => {
+    const events = [
+      { label: 'Far away', eventAt: NOW + 10 * HOUR },
+      { label: 'CPI release', eventAt: NOW + 1 * HOUR },
+    ];
+    const result = checkMacroEventBlackout(events, 2, NOW);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/CPI release/);
+  });
+
+  it('supports fractional hours (e.g. 30 minutes)', () => {
+    const events = [{ label: 'FOMC', eventAt: NOW + 20 * 60 * 1000 }]; // 20 min out
+    expect(checkMacroEventBlackout(events, 0.5, NOW).ok).toBe(false); // 30 min buffer
+    expect(checkMacroEventBlackout(events, 0.25, NOW).ok).toBe(true); // 15 min buffer
   });
 });
 

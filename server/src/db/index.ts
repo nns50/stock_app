@@ -266,6 +266,19 @@ CREATE TABLE IF NOT EXISTS autotrade_exclusions (
   created_at  INTEGER NOT NULL
 );
 
+-- Scheduled macro-event blackout (2026-07-18): a user-maintained list of
+-- market-wide catalyst date-times (FOMC, CPI, jobs reports, ...) — there's no
+-- economic-calendar data feed anywhere in this app, so unlike the earnings
+-- blackout (which reads a real per-symbol date already fetched from Yahoo),
+-- this is entirely hand-maintained, same "add/remove your own list" pattern
+-- as autotrade_exclusions above. Starts empty; nothing is pre-seeded.
+CREATE TABLE IF NOT EXISTS macro_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  label       TEXT NOT NULL,
+  event_at    INTEGER NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+
 -- No CHECK on stage/action: both vocabularies grow as later auto-trading phases
 -- land (mirrors alerts.kind / order_intents.order_type — a stale CHECK there
 -- silently rejected new values at INSERT). Validated by the AutotradeStage type

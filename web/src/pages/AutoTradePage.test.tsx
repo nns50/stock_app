@@ -85,6 +85,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     optionsPartialExitPct: 50,
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
+    macroEventBlackoutHours: 0,
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
     liveTradingEnabled: false,
@@ -200,6 +201,7 @@ beforeEach(() => {
   vi.spyOn(client, 'autotradeExclusions').mockResolvedValue({
     exclusions: [{ symbol: 'VNQ', reason: 'Real estate ETF', source: 'default', createdAt: Date.now() }],
   });
+  vi.spyOn(client, 'autotradeMacroEvents').mockResolvedValue({ events: [] });
   vi.spyOn(client, 'autotradeEvents').mockResolvedValue({ events: [] });
   vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({ positions: [] });
@@ -490,6 +492,66 @@ describe('AutoTradePage', () => {
     fireEvent.click(saveButton);
 
     await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ sentimentWeight: 25, confirmAggressive: undefined }));
+  });
+
+  it('saves a new macro event blackout hours value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Macro event blackout (hours)').closest('label')!;
+    const input = within(field).getByRole('textbox');
+    fireEvent.change(input, { target: { value: '2' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save macro event blackout' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ macroEventBlackoutHours: 2, confirmAggressive: undefined }),
+    );
+  });
+
+  it('adds a new macro event to the blackout list', async () => {
+    const addEvent = vi.spyOn(client, 'addAutotradeMacroEvent').mockResolvedValue({
+      id: 1,
+      label: 'FOMC decision',
+      eventAt: Date.parse('2026-09-16T18:00'),
+      createdAt: Date.now(),
+    });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const labelField = screen.getByPlaceholderText('FOMC decision');
+    fireEvent.change(labelField, { target: { value: 'FOMC decision' } });
+    const dateField = screen.getByText('Date & time').closest('label')!;
+    const dateInput = within(dateField).getByDisplayValue('');
+    fireEvent.change(dateInput, { target: { value: '2026-09-16T18:00' } });
+
+    // Scoped to this card specifically — the real-estate exclusion list above
+    // it has its own, differently-wired "Add" button with the same text.
+    const card = screen.getByText('Macro event blackout list').closest('.p-4')!;
+    fireEvent.click(within(card).getByRole('button', { name: 'Add' }));
+
+    await waitFor(() =>
+      expect(addEvent).toHaveBeenCalledWith({ label: 'FOMC decision', eventAt: Date.parse('2026-09-16T18:00') }),
+    );
+  });
+
+  it('removes a macro event from the blackout list after confirming', async () => {
+    vi.spyOn(client, 'autotradeMacroEvents').mockResolvedValue({
+      events: [{ id: 7, label: 'FOMC decision', eventAt: Date.now(), createdAt: Date.now() }],
+    });
+    const removeEvent = vi.spyOn(client, 'removeAutotradeMacroEvent').mockResolvedValue({ removed: 7 });
+    renderPage();
+    const row = (await screen.findByText('FOMC decision')).closest('tr')!;
+
+    fireEvent.click(within(row).getByRole('button', { name: 'remove' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+
+    await waitFor(() => expect(removeEvent).toHaveBeenCalledWith(7));
   });
 
   it('saves a new options stop-loss % value', async () => {

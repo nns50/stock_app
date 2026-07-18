@@ -9,6 +9,7 @@ import {
   LIVE_TRADING_CONFIRMATION_PHRASE,
 } from '../db/autotradeConfig';
 import { addExclusion, listExclusions, removeExclusion } from '../db/autotradeExclusions';
+import { addMacroEvent, listMacroEvents, removeMacroEvent } from '../db/macroEvents';
 import { AutotradeStage, listAutotradeEvents, logAutotradeEvent } from '../db/autotradeEvents';
 import { runAutotradeScreen } from '../services/autotrading/screen';
 import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/decide';
@@ -105,6 +106,7 @@ const configBody = z.object({
   targetRMultiple: z.number().positive().optional(),
   sessionBufferMinutes: z.number().int().nonnegative().optional(),
   earningsBlackoutDays: z.number().int().nonnegative().optional(),
+  macroEventBlackoutHours: z.number().nonnegative().optional(),
   // --- Max hold time (0 disables) --------------------------------------------
   maxHoldDays: z.number().int().nonnegative().optional(),
   // --- Trailing stop / breakeven / partial profit-taking (0 disables each) --
@@ -213,6 +215,7 @@ autotradeRouter.put(
     if (body.targetRMultiple !== undefined) patch.targetRMultiple = body.targetRMultiple;
     if (body.sessionBufferMinutes !== undefined) patch.sessionBufferMinutes = body.sessionBufferMinutes;
     if (body.earningsBlackoutDays !== undefined) patch.earningsBlackoutDays = body.earningsBlackoutDays;
+    if (body.macroEventBlackoutHours !== undefined) patch.macroEventBlackoutHours = body.macroEventBlackoutHours;
     if (body.maxHoldDays !== undefined) patch.maxHoldDays = body.maxHoldDays;
     if (body.breakevenTriggerRMultiple !== undefined) {
       patch.breakevenTriggerRMultiple = body.breakevenTriggerRMultiple;
@@ -425,6 +428,38 @@ autotradeRouter.delete(
     if (!removeExclusion(symbol)) throw new HttpError(404, `${symbol} is not on the exclusion list`);
     logAutotradeEvent({ symbol, stage: 'config', action: 'exclusion_removed' });
     res.json({ removed: symbol.toUpperCase() });
+  }),
+);
+
+// ---- Scheduled macro-event blackout list ------------------------------------
+// User-maintained date-times (FOMC, CPI, jobs reports, ...) checked by
+// macroEventBlackoutHours above — see db/macroEvents.ts's own header comment
+// on why this is hand-maintained rather than fetched from a live calendar.
+
+autotradeRouter.get('/macro-events', (_req, res) => {
+  res.json({ events: listMacroEvents() });
+});
+
+const macroEventBody = z.object({ label: z.string().min(1).max(200), eventAt: z.number().int().positive() });
+autotradeRouter.post(
+  '/macro-events',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(macroEventBody, req);
+    const record = addMacroEvent(body.label, body.eventAt);
+    logAutotradeEvent({ stage: 'config', action: 'macro_event_added', detail: { label: record.label } });
+    res.status(201).json(record);
+  }),
+);
+
+autotradeRouter.delete(
+  '/macro-events/:id',
+  asyncHandler(async (req, res) => {
+    const id = Number(param(req, 'id'));
+    if (!Number.isInteger(id) || !removeMacroEvent(id)) {
+      throw new HttpError(404, `No macro event with id ${param(req, 'id')}`);
+    }
+    logAutotradeEvent({ stage: 'config', action: 'macro_event_removed', detail: { id } });
+    res.json({ removed: id });
   }),
 );
 

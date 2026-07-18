@@ -701,6 +701,7 @@ describe('autotrade config routes (integration)', () => {
       partialExitRMultiple: 2,
       partialExitPct: 75,
       earningsBlackoutDays: 3,
+      macroEventBlackoutHours: 6,
       sessionBufferMinutes: 30,
       correlationLookbackDays: 45,
       correlationThreshold: 0.6,
@@ -720,6 +721,7 @@ describe('autotrade config routes (integration)', () => {
       partialExitRMultiple: number;
       partialExitPct: number;
       earningsBlackoutDays: number;
+      macroEventBlackoutHours: number;
       sessionBufferMinutes: number;
       correlationLookbackDays: number;
       correlationThreshold: number;
@@ -738,6 +740,7 @@ describe('autotrade config routes (integration)', () => {
       partialExitRMultiple: 2,
       partialExitPct: 75,
       earningsBlackoutDays: 3,
+      macroEventBlackoutHours: 6,
       sessionBufferMinutes: 30,
       correlationLookbackDays: 45,
       correlationThreshold: 0.6,
@@ -1034,6 +1037,43 @@ describe('autotrade config routes (integration)', () => {
       liveMaxOrdersPerDay: number;
     };
     expect(body).toEqual({ liveMaxOrderUsd: 25_000, liveMaxDailyLossUsd: 5_000, liveMaxOrdersPerDay: 10 });
+  });
+});
+
+describe('autotrade macro-events routes (integration)', () => {
+  beforeEach(() => db.exec('DELETE FROM macro_events'));
+
+  it('GET starts empty', async () => {
+    const body = (await getJson('/api/autotrade/macro-events')) as { events: unknown[] };
+    expect(body.events).toEqual([]);
+  });
+
+  it('POSTs a new event and lists it', async () => {
+    const eventAt = Date.parse('2026-09-16T18:00:00Z');
+    const created = await post('/api/autotrade/macro-events', { label: 'FOMC decision', eventAt });
+    expect(created.status).toBe(201);
+    const record = (await created.json()) as { id: number; label: string; eventAt: number };
+    expect(record).toMatchObject({ label: 'FOMC decision', eventAt });
+
+    const list = (await getJson('/api/autotrade/macro-events')) as { events: { label: string }[] };
+    expect(list.events.map((e) => e.label)).toEqual(['FOMC decision']);
+  });
+
+  it('rejects a missing label or non-numeric eventAt with 400', async () => {
+    expect((await post('/api/autotrade/macro-events', { eventAt: Date.now() })).status).toBe(400);
+    expect((await post('/api/autotrade/macro-events', { label: 'FOMC' })).status).toBe(400);
+  });
+
+  it('DELETEs an event by id, and 404s for an unknown id', async () => {
+    const created = await post('/api/autotrade/macro-events', { label: 'CPI release', eventAt: Date.now() });
+    const { id } = (await created.json()) as { id: number };
+
+    const del = await fetch(`${base}/api/autotrade/macro-events/${id}`, { method: 'DELETE' });
+    expect(del.status).toBe(200);
+    expect((await getJson('/api/autotrade/macro-events')) as { events: unknown[] }).toEqual({ events: [] });
+
+    const missing = await fetch(`${base}/api/autotrade/macro-events/${id}`, { method: 'DELETE' });
+    expect(missing.status).toBe(404);
   });
 });
 
