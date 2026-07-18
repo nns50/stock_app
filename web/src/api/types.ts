@@ -421,6 +421,21 @@ export interface KellySuggestion {
   reliable: boolean;
 }
 
+/** GET /journal/auto-tune-efficacy — did a past "Auto-tune from realized
+ *  edge" risk-% adjustment actually help? before/after are full JournalStats
+ *  (same shape as the Journal page's own overall stats), scoped to autotrade's
+ *  own trades and split by entry date relative to `adjustedAt`. */
+export interface AutoTuneRiskAdjustmentEfficacy {
+  eventId: number;
+  adjustedAt: number;
+  from: number;
+  to: number;
+  kellySuggestedAtTheTime: number;
+  sampleSizeAtTheTime: number;
+  before: JournalStats;
+  after: JournalStats;
+}
+
 export interface BenchmarkResult {
   symbol: string;
   startDate: string | null;
