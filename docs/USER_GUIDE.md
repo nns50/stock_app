@@ -757,7 +757,11 @@ shouldn't be a tab-switch away.
   is nonzero, at which point the loop fetches that symbol's own daily candles once per
   cycle, not once per candidate), and **relative strength lookback (days)** (trading
   days back for both the candidate's own and the benchmark's return that comparison
-  uses), **max ticker ATR** and **max market
+  uses), **sentiment weight** (2026-07-18 — how much a simple, transparent keyword
+  count over each candidate's recent headlines counts toward its total screener score,
+  on the same 0-100 scale as every other component and off by default — see
+  **About**'s scoring table for the word list and full breakdown), **max ticker ATR**
+  and **max market
   ATR** (skip a candidate whose own volatility is too high, or skip every new entry
   this cycle if SPY's own volatility is too high — stricter than the manual Screen/
   Decision preview below, since an unattended loop has no one to override a bad read),
@@ -768,11 +772,11 @@ shouldn't be a tab-switch away.
   known earnings date falls within this many calendar days — an unattended loop can't
   react to an earnings-driven overnight gap the way ATR-based stop sizing assumes;
   options entries are unaffected, since an approaching print already shows up as
-  elevated IV rank there instead). All eleven default to the values the loop always
+  elevated IV rank there instead). All twelve default to the values the loop always
   used before they were configurable (trade direction to `Long`; earnings blackout's
   own "before" is simply never checking — 0 disables it; relative strength weight 0,
-  benchmark `SPY`, lookback 20 days), so leaving them untouched changes nothing; the
-  manual
+  benchmark `SPY`, lookback 20 days; sentiment weight 0), so leaving them untouched
+  changes nothing; the manual
   Screen/Decision preview
   below defaults to these same saved values too (so it previews what the loop would
   actually do), though it has no UI to override them ad hoc today. A related but

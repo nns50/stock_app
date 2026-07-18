@@ -18,7 +18,7 @@ function Term({ term, children }: { term: string; children: ReactNode }) {
   );
 }
 
-// The seven scoring components, mirroring server/src/indicators/screener.ts so
+// The eight scoring components, mirroring server/src/indicators/screener.ts so
 // the page stays an accurate description of what the engine actually does.
 const COMPONENTS: { name: string; weight: number; what: string }[] = [
   {
@@ -55,6 +55,11 @@ const COMPONENTS: { name: string; weight: number; what: string }[] = [
     name: 'Rel. Strength',
     weight: 0,
     what: 'Off by default (opt-in via the Auto-Trade config). This symbol’s own % price change over a lookback window (20 trading days by default) minus a benchmark’s (SPY by default) over the same window — outperformance scores higher for longs, underperformance scores higher for shorts.',
+  },
+  {
+    name: 'Sentiment',
+    weight: 0,
+    what: 'Off by default (opt-in via the Auto-Trade config). Counts how many of a small, fixed list of finance-specific positive/negative words or phrases ("beats estimates", "downgraded", "lawsuit", …) appear across the symbol’s recent headlines — net positive hits minus negative. A simple keyword count, not a third-party sentiment API or ML model, so every hit stays traceable to the actual word list. Net-positive headlines score higher for longs, net-negative for shorts.',
   },
 ];
 

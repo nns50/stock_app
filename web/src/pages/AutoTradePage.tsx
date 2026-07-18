@@ -1688,6 +1688,7 @@ export default function AutoTradePage() {
   const [relativeStrengthWeightDraft, setRelativeStrengthWeightDraft] = useState<number | undefined>();
   const [benchmarkSymbolDraft, setBenchmarkSymbolDraft] = useState('');
   const [relativeStrengthLookbackDaysDraft, setRelativeStrengthLookbackDaysDraft] = useState<number | undefined>();
+  const [sentimentWeightDraft, setSentimentWeightDraft] = useState<number | undefined>();
   const [maxTickerAtrPctDraft, setMaxTickerAtrPctDraft] = useState<number | undefined>();
   const [maxMarketAtrPctDraft, setMaxMarketAtrPctDraft] = useState<number | undefined>();
   const [stopAtrMultipleDraft, setStopAtrMultipleDraft] = useState<number | undefined>();
@@ -1758,6 +1759,7 @@ export default function AutoTradePage() {
     setRelativeStrengthWeightDraft(config.data.relativeStrengthWeight);
     setBenchmarkSymbolDraft(config.data.benchmarkSymbol ?? '');
     setRelativeStrengthLookbackDaysDraft(config.data.relativeStrengthLookbackDays);
+    setSentimentWeightDraft(config.data.sentimentWeight);
     setMaxTickerAtrPctDraft(config.data.maxTickerAtrPct);
     setMaxMarketAtrPctDraft(config.data.maxMarketAtrPct);
     setStopAtrMultipleDraft(config.data.stopAtrMultiple);
@@ -1825,6 +1827,7 @@ export default function AutoTradePage() {
     relativeStrengthWeight?: number;
     benchmarkSymbol?: string;
     relativeStrengthLookbackDays?: number;
+    sentimentWeight?: number;
     maxTickerAtrPct?: number;
     maxMarketAtrPct?: number;
     stopAtrMultiple?: number;
@@ -1890,6 +1893,7 @@ export default function AutoTradePage() {
       setRelativeStrengthWeightDraft(saved.relativeStrengthWeight);
       setBenchmarkSymbolDraft(saved.benchmarkSymbol ?? '');
       setRelativeStrengthLookbackDaysDraft(saved.relativeStrengthLookbackDays);
+      setSentimentWeightDraft(saved.sentimentWeight);
       setMaxTickerAtrPctDraft(saved.maxTickerAtrPct);
       setMaxMarketAtrPctDraft(saved.maxMarketAtrPct);
       setStopAtrMultipleDraft(saved.stopAtrMultiple);
@@ -3025,6 +3029,36 @@ export default function AutoTradePage() {
                           relativeStrengthLookbackDaysDraft == null ||
                           relativeStrengthLookbackDaysDraft < 1 ||
                           relativeStrengthLookbackDaysDraft === config.data?.relativeStrengthLookbackDays
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Sentiment weight (0-100)"
+                    hint="How much a simple, transparent keyword count over each candidate's recent headlines counts toward its total screener score — same 0-100 scale as every other scoring component. 0 (default) disables it entirely, including the extra headline fetch. Direction-aware: a long favors net-positive headlines, a short favors net-negative ones."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={sentimentWeightDraft}
+                        onChange={setSentimentWeightDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                        placeholder="0 (disabled)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save sentiment weight"
+                        onClick={() =>
+                          sentimentWeightDraft != null && saveConfig({ sentimentWeight: sentimentWeightDraft })
+                        }
+                        disabled={
+                          sentimentWeightDraft == null ||
+                          sentimentWeightDraft < 0 ||
+                          sentimentWeightDraft > 100 ||
+                          sentimentWeightDraft === config.data?.sentimentWeight
                         }
                       >
                         Save

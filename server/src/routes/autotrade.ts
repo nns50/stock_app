@@ -98,6 +98,7 @@ const configBody = z.object({
   relativeStrengthWeight: z.number().min(0).max(100).optional(),
   benchmarkSymbol: z.string().min(1).optional(),
   relativeStrengthLookbackDays: z.number().int().min(1).optional(),
+  sentimentWeight: z.number().min(0).max(100).optional(),
   maxTickerAtrPct: z.number().min(0).max(100).optional(),
   maxMarketAtrPct: z.number().min(0).max(100).optional(),
   stopAtrMultiple: z.number().positive().optional(),
@@ -205,6 +206,7 @@ autotradeRouter.put(
     if (body.benchmarkSymbol !== undefined) patch.benchmarkSymbol = body.benchmarkSymbol;
     if (body.relativeStrengthLookbackDays !== undefined)
       patch.relativeStrengthLookbackDays = body.relativeStrengthLookbackDays;
+    if (body.sentimentWeight !== undefined) patch.sentimentWeight = body.sentimentWeight;
     if (body.maxTickerAtrPct !== undefined) patch.maxTickerAtrPct = body.maxTickerAtrPct;
     if (body.maxMarketAtrPct !== undefined) patch.maxMarketAtrPct = body.maxMarketAtrPct;
     if (body.stopAtrMultiple !== undefined) patch.stopAtrMultiple = body.stopAtrMultiple;
@@ -443,6 +445,7 @@ function screenerConfigOverride(config: AutotradeConfig, requested?: Partial<Scr
     weights: {
       ...defaultScreenerConfig().weights,
       relativeStrength: config.relativeStrengthWeight,
+      sentiment: config.sentimentWeight,
       ...requested?.weights,
     },
     benchmarkSymbol: requested?.benchmarkSymbol ?? config.benchmarkSymbol,
