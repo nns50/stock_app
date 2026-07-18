@@ -246,6 +246,15 @@ pin risk). The engine flags which rule is live; the same logic feeds your exit a
 A simple, robust default: **take profit into strength, cut at your stop %, and never
 hold a long option into the last few days unless it's deep ITM.**
 
+**Watch the whole book, not just one contract.** Once you're running more than one
+options position at a time, per-contract delta/theta only tells you about that one
+trade — Auto-Trade's Dashboard tab has a **Portfolio Greeks** section that sums net
+delta, theta, and vega across your WHOLE combined open options book (paper + live): a
+single $ figure for "am I net long or short the market right now" and "how much am I
+bleeding or collecting in time decay today." Two positions that each look fine in
+isolation can still leave you far more directionally exposed, or bleeding far more
+theta, than you'd guess from either one alone.
+
 ---
 
 ## Validating an edge with the Edge Report
