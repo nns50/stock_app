@@ -100,6 +100,16 @@ export interface AutotradeConfig {
    *  riskProfiles.ts's CORRELATION_THRESHOLD/CORRELATION_LOOKBACK_DAYS,
    *  still fixed methodology constants, not user-tunable) with the candidate. */
   maxCorrelatedExposurePct: number;
+  /** % of equity — capital (not risk) already concentrated in the candidate's
+   *  OWN universe sector (db/universe.ts's `sector` column), regardless of
+   *  price correlation. A complementary, cheaper backstop to
+   *  maxCorrelatedExposurePct above (see riskCheck.ts's sectorNotional() doc
+   *  comment): two names in the same sector can carry LOW price correlation
+   *  today and still share the same macro/sector-wide risk the correlation
+   *  cap alone would miss. Defaults on (like maxCorrelatedExposurePct) rather
+   *  than opt-in, since this is a passive safety cap, not an active-automation
+   *  toggle — same category as every other risk-check cap on this list. */
+  maxSectorExposurePct: number;
   /** Max entries (paper + live combined) risk-check will approve per day. */
   maxTradesPerDay: number;
   /** Regime-aware sizing (added 2026-07-16, follow-up to phase 17 — see
@@ -516,6 +526,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     stepDownSizeCutPct: 50,
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
+    maxSectorExposurePct: 20,
     maxTradesPerDay: 6,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
@@ -644,6 +655,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     stepDownSizeCutPct: pct(input.stepDownSizeCutPct, d.stepDownSizeCutPct),
     maxAggregateOpenRiskPct: pct(input.maxAggregateOpenRiskPct, d.maxAggregateOpenRiskPct),
     maxCorrelatedExposurePct: pct(input.maxCorrelatedExposurePct, d.maxCorrelatedExposurePct),
+    maxSectorExposurePct: pct(input.maxSectorExposurePct, d.maxSectorExposurePct),
     maxTradesPerDay: posInt(input.maxTradesPerDay, d.maxTradesPerDay),
     regimeAtrThresholdPct: pct(input.regimeAtrThresholdPct, d.regimeAtrThresholdPct),
     regimeSizeCutPct: pct(input.regimeSizeCutPct, d.regimeSizeCutPct),

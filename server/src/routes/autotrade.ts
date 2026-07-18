@@ -83,6 +83,7 @@ const configBody = z.object({
   stepDownSizeCutPct: z.number().min(0).max(100).optional(),
   maxAggregateOpenRiskPct: z.number().min(0).max(100).optional(),
   maxCorrelatedExposurePct: z.number().min(0).max(100).optional(),
+  maxSectorExposurePct: z.number().min(0).max(100).optional(),
   maxTradesPerDay: z.number().int().nonnegative().optional(),
   // --- Regime-aware sizing (live + paper only; 0 disables) -------------------
   regimeAtrThresholdPct: z.number().min(0).max(100).optional(),
@@ -189,6 +190,7 @@ autotradeRouter.put(
     if (body.stepDownSizeCutPct !== undefined) patch.stepDownSizeCutPct = body.stepDownSizeCutPct;
     if (body.maxAggregateOpenRiskPct !== undefined) patch.maxAggregateOpenRiskPct = body.maxAggregateOpenRiskPct;
     if (body.maxCorrelatedExposurePct !== undefined) patch.maxCorrelatedExposurePct = body.maxCorrelatedExposurePct;
+    if (body.maxSectorExposurePct !== undefined) patch.maxSectorExposurePct = body.maxSectorExposurePct;
     if (body.maxTradesPerDay !== undefined) patch.maxTradesPerDay = body.maxTradesPerDay;
     if (body.regimeAtrThresholdPct !== undefined) patch.regimeAtrThresholdPct = body.regimeAtrThresholdPct;
     if (body.regimeSizeCutPct !== undefined) patch.regimeSizeCutPct = body.regimeSizeCutPct;

@@ -1112,6 +1112,7 @@ export interface AutotradeConfig {
   stepDownSizeCutPct: number;
   maxAggregateOpenRiskPct: number;
   maxCorrelatedExposurePct: number;
+  maxSectorExposurePct: number;
   maxTradesPerDay: number;
   // --- Regime-aware sizing (live + paper only; 0 disables) ---
   regimeAtrThresholdPct: number;
@@ -1451,6 +1452,7 @@ export interface BacktestRiskParams {
   stepDownSizeCutPct?: number;
   maxAggregateOpenRiskPct?: number;
   maxCorrelatedExposurePct?: number;
+  maxSectorExposurePct?: number;
   maxTradesPerDay?: number;
   correlationLookbackDays?: number;
   correlationThreshold?: number;
@@ -1822,6 +1824,12 @@ export interface AutotradeDashboard {
     passed: boolean;
     correlatedNotional: number | null;
   } | null;
+  /** UNLIKE maxCorrelatedExposure above, this genuinely IS a live,
+   *  portfolio-wide instantaneous reading (sector is a static classification,
+   *  not relative to a hypothetical candidate) — sorted worst-first, across
+   *  the combined paper + live, equity + options autotrade book. */
+  sectorExposure: { key: string; gross: number; pct: number; count: number }[];
+  maxSectorExposure: number;
   /** Combined equity + options today's realized paper P&L. */
   dailyPnl: number;
   dailyDrawdownHaltLevel: number;

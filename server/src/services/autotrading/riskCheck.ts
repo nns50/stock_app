@@ -5,6 +5,7 @@ import { computeRiskSizing, RiskSizingResult } from '../riskSizing';
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { logAutotradeEvent, listAutotradeEvents } from '../../db/autotradeEvents';
+import { listUniverse } from '../../db/universe';
 import { getMarketAtrPct } from './executionGuards';
 import { TradeSignal } from './decide';
 
@@ -215,6 +216,50 @@ export async function correlatedNotional(
   return { amount: Math.max(0, amount), correlations };
 }
 
+/** Builds the `sectorOf` lookup every sectorNotional() caller needs — one
+ *  query, reused across a whole batch, exactly like routes/positions.ts's own
+ *  `sectorBySymbol` map (the only other caller of the universe table for this
+ *  purpose). Uppercased to match how symbols are actually stored/compared
+ *  elsewhere (positions' own symbols aren't guaranteed to already be upper). */
+export function buildSectorOf(): (symbol: string) => string | null {
+  const bySymbol = new Map(listUniverse().map((u) => [u.symbol.toUpperCase(), u.sector]));
+  return (symbol: string) => bySymbol.get(symbol.toUpperCase()) ?? null;
+}
+
+/** Capital (across `positions`) in the SAME universe sector as `symbol` — a
+ *  cheaper, complementary cousin of correlatedNotional() above: sector is a
+ *  static classification (db/universe.ts's own `sector` column, set when a
+ *  symbol is added to the universe), not a live statistical computation, so
+ *  this needs no candle fetch and stays fully synchronous. Two names in the
+ *  same sector can carry LOW price correlation today (idiosyncratic
+ *  catalysts) and still share the same macro/sector-wide risk the
+ *  correlation cap alone would miss — this backstops that gap, it doesn't
+ *  replace the correlation cap.
+ *
+ *  Same same-side-additive/opposite-side-hedge convention as
+ *  correlatedNotional() (see its own doc comment): a long+long pair in the
+ *  same sector compounds, a long+short pair partially hedges, floored at 0.
+ *
+ *  A candidate with no sector classification (sectorOf returns null) is
+ *  excluded from the cap entirely — same "unknown, not assumed concentrated"
+ *  reasoning correlatedNotional() uses for a candle-fetch failure — since
+ *  there's nothing to compare it against. */
+export function sectorNotional(
+  symbol: string,
+  candidateSide: 'long' | 'short',
+  positions: { symbol: string; notional: number; side: 'long' | 'short' }[],
+  sectorOf: (symbol: string) => string | null,
+): { amount: number; sector: string | null } {
+  const sector = sectorOf(symbol);
+  if (sector === null) return { amount: 0, sector: null };
+  let amount = 0;
+  for (const pos of positions) {
+    if (sectorOf(pos.symbol) !== sector) continue;
+    amount += pos.side === candidateSide ? pos.notional : -pos.notional;
+  }
+  return { amount: Math.max(0, amount), sector };
+}
+
 export interface RiskCheckContext {
   equity: number;
   dailyPnl: number;
@@ -245,6 +290,15 @@ export interface RiskCheckContext {
    *  actual correlation computation already happened before this context was
    *  built (see correlatedNotional()'s own lookbackDays/threshold params). */
   correlationThreshold: number;
+  /** sectorNotional()'s own output, threaded in the same way correlatedNotional
+   *  is above — the actual computation already happened before this context
+   *  was built. */
+  sectorNotional: number;
+  maxSectorExposurePct: number;
+  /** The candidate's own sector (sectorNotional()'s second return value) —
+   *  null skips the max_sector_exposure check entirely (see its doc comment
+   *  for why: nothing to compare an unclassified symbol against). */
+  candidateSector: string | null;
   /** Regime-aware sizing (2026-07-16, docs/AUTOTRADING_SPEC.md phase 18).
    *  `marketAtrPct` is the SAME broad-market-proxy (SPY) ATR% reading
    *  executionGuards.ts's checkVolatility() already gates entries on — null
@@ -394,6 +448,25 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     `${usd(ctx.correlatedNotional)} already correlated vs cap ${usd(correlatedCap)} (${ctx.maxCorrelatedExposurePct}% of equity, |r| ≥ ${ctx.correlationThreshold})`,
   );
 
+  // Complementary to the correlation cap above, not a replacement — see
+  // sectorNotional()'s own doc comment. Skipped entirely (no rule added, not
+  // a passing one) when the candidate has no sector classification, since
+  // there's nothing to compare it against. Truthy check (not `!== null`)
+  // deliberately also treats a MISSING field as "skip" — a hand-built
+  // RiskCheckContext fixture that predates this field (test files aren't
+  // type-checked, see web/tsconfig.json's own precedent) gets `undefined`,
+  // not `null`, and `undefined !== null` would otherwise slip past the guard
+  // and run the check against NaN-derived numbers.
+  if (ctx.candidateSector) {
+    const sectorCap = (ctx.maxSectorExposurePct / 100) * ctx.equity;
+    const sectorOk = ctx.sectorNotional <= sectorCap;
+    check(
+      'max_sector_exposure',
+      sectorOk,
+      `${usd(ctx.sectorNotional)} already in ${ctx.candidateSector} vs cap ${usd(sectorCap)} (${ctx.maxSectorExposurePct}% of equity)`,
+    );
+  }
+
   const ok = checks.every((c) => c.passed);
   return {
     symbol: signal.symbol,
@@ -444,6 +517,7 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
     ...p,
     side: 'long',
   }));
+  const sectorOf = buildSectorOf();
 
   for (const signal of signals) {
     const { amount: correlated } = await correlatedNotional(
@@ -452,6 +526,12 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
       runningPositions,
       config.correlationLookbackDays,
       config.correlationThreshold,
+    );
+    const { amount: sectorAmount, sector: candidateSector } = sectorNotional(
+      signal.symbol,
+      signal.side === 'buy' ? 'long' : 'short',
+      runningPositions,
+      sectorOf,
     );
     const ctx: RiskCheckContext = {
       equity: snapshot.equity ?? 0,
@@ -470,6 +550,9 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
       maxCorrelatedExposurePct: config.maxCorrelatedExposurePct,
       maxTradesPerDay: config.maxTradesPerDay,
       correlationThreshold: config.correlationThreshold,
+      sectorNotional: sectorAmount,
+      maxSectorExposurePct: config.maxSectorExposurePct,
+      candidateSector,
       marketAtrPct,
       regimeAtrThresholdPct: config.regimeAtrThresholdPct,
       regimeSizeCutPct: config.regimeSizeCutPct,

@@ -36,7 +36,7 @@ import { computeStreaksAndDrawdown } from '../pnl';
 import { defaultExitConfig, evaluateExit } from '../../options/exitRules';
 import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskCheck';
-import { correlatedNotional, RiskCheckContext } from './riskCheck';
+import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { dispatchNotifications } from '../notifier';
 import { fetchContractMark, validPremium } from './optionsExecute';
@@ -588,6 +588,7 @@ export async function runLiveOptionsExecution(
       .filter((o) => o.role === 'entry')
       .map((o) => o.symbol),
   ]);
+  const sectorOf = buildSectorOf();
 
   const outcomes: LiveOptionsExecutionOutcome[] = [];
   for (const { signal } of candidates) {
@@ -602,6 +603,12 @@ export async function runLiveOptionsExecution(
       runningPositions,
       cfg.correlationLookbackDays,
       cfg.correlationThreshold,
+    );
+    const { amount: sectorAmount, sector: candidateSector } = sectorNotional(
+      signal.symbol,
+      'long',
+      runningPositions,
+      sectorOf,
     );
     const ctx: RiskCheckContext = {
       equity,
@@ -620,6 +627,9 @@ export async function runLiveOptionsExecution(
       maxCorrelatedExposurePct: cfg.maxCorrelatedExposurePct,
       maxTradesPerDay: cfg.maxTradesPerDay,
       correlationThreshold: cfg.correlationThreshold,
+      sectorNotional: sectorAmount,
+      maxSectorExposurePct: cfg.maxSectorExposurePct,
+      candidateSector,
       marketAtrPct,
       regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
       regimeSizeCutPct: cfg.regimeSizeCutPct,
