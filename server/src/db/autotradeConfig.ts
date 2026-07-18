@@ -446,6 +446,46 @@ export interface AutotradeConfig {
    *  either way: this is a one-shot "earn a permanent spot," not a rolling
    *  membership that could thrash. */
   autoPromoteMaxSymbols: number;
+
+  // --- Auto-tune from realized edge (docs/AUTOTRADING_SPEC.md — 2026-07-18
+  // follow-up). Off by default, an explicit opt-in mirroring every other
+  // guardrail in this config — nothing here changes on its own unless this is
+  // switched on. Once per (ET) trading day, not per-tick — realized-trade
+  // stats don't move meaningfully inside a day, and re-deriving them every
+  // 60s tick would be wasted work — see services/autotrading/autoTune.ts:
+  //   - riskPerTradePct is nudged toward the Journal page's own Kelly
+  //     suggestion (services/pnl.ts's kellySuggestion — same quarter-Kelly,
+  //     3%-capped math already shown there), once there are enough decisive
+  //     closed trades, by at most autoTuneMaxStepPct percentage points per
+  //     day, so one noisy day can't swing live sizing on its own.
+  //   - a symbol whose average live-fill slippage (services/slippage.ts)
+  //     exceeds autoTuneSlippageExcludePct, over enough fills, gets added to
+  //     the existing exclusion list (db/autotradeExclusions.ts) — the SAME
+  //     list the real-estate/manual exclusions already use, so it's
+  //     immediately visible and removable from Settings, not a separate
+  //     hidden mechanism.
+  // Every adjustment is journaled (autotrade_events), so it shows up on
+  // Recent Activity the same as every other automated action this loop
+  // takes — nothing here happens silently. ------------------------------------
+
+  /** Master on/off for both behaviors above. */
+  autoTuneEnabled: boolean;
+  /** Decisive closed trades (for the risk-% tune) / live fills with a
+   *  comparable limit price (for the slippage exclusion) required before
+   *  auto-tune trusts a reading enough to act on it — defaults to 20,
+   *  matching kellySuggestion's own existing reliable-sample-size floor, so
+   *  this doesn't invent a stricter or looser bar than the Journal page
+   *  already uses for the same number. */
+  autoTuneMinTrades: number;
+  /** Max change to riskPerTradePct in a single day's adjustment (percentage
+   *  points, not a %-of-current-value) — bounds how fast auto-tune can move
+   *  live position sizing even if the Kelly suggestion itself jumps sharply
+   *  between two runs. */
+  autoTuneMaxStepPct: number;
+  /** A symbol's average live-fill slippage (% of limit price, same signed
+   *  convention as services/slippage.ts — positive always cost money) at or
+   *  above this gets auto-excluded from future autotrade candidates. */
+  autoTuneSlippageExcludePct: number;
 }
 
 interface ConfigRow {
@@ -529,6 +569,10 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     autoPromoteThreshold: 3,
     autoPromoteWindowDays: 10,
     autoPromoteMaxSymbols: 50,
+    autoTuneEnabled: false,
+    autoTuneMinTrades: 20,
+    autoTuneMaxStepPct: 0.5,
+    autoTuneSlippageExcludePct: 2,
   };
 }
 
@@ -673,6 +717,10 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     autoPromoteThreshold: posIntMin1(input.autoPromoteThreshold, d.autoPromoteThreshold),
     autoPromoteWindowDays: posIntMin1(input.autoPromoteWindowDays, d.autoPromoteWindowDays),
     autoPromoteMaxSymbols: posInt(input.autoPromoteMaxSymbols, d.autoPromoteMaxSymbols),
+    autoTuneEnabled: typeof input.autoTuneEnabled === 'boolean' ? input.autoTuneEnabled : d.autoTuneEnabled,
+    autoTuneMinTrades: posIntMin1(input.autoTuneMinTrades, d.autoTuneMinTrades),
+    autoTuneMaxStepPct: pct(input.autoTuneMaxStepPct, d.autoTuneMaxStepPct),
+    autoTuneSlippageExcludePct: pct(input.autoTuneSlippageExcludePct, d.autoTuneSlippageExcludePct),
   };
 }
 

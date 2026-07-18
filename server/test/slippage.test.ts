@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeSlippage, aggregateSlippage } from '../src/services/slippage';
+import { computeSlippage, aggregateSlippage, groupSlippageBySymbol } from '../src/services/slippage';
 
 const row = (over: Partial<Parameters<typeof computeSlippage>[0]> = {}) =>
   computeSlippage({
@@ -73,5 +73,34 @@ describe('aggregateSlippage', () => {
   it('reports zero trades and null avgPct on an empty set', () => {
     const report = aggregateSlippage([]);
     expect(report).toMatchObject({ trades: 0, totalUsd: 0, avgPct: null, rows: [] });
+  });
+});
+
+describe('groupSlippageBySymbol', () => {
+  it('groups by symbol, averaging pct and summing totalUsd within each group', () => {
+    const rows = [
+      row({ symbol: 'CJMB', limitPrice: 1.2, fillPrice: 1.23 }), // pct = 2.5, totalUsd = 0.03
+      row({ symbol: 'CJMB', limitPrice: 1.2, fillPrice: 1.21 }), // pct ~0.83, totalUsd = 0.01
+      row({ symbol: 'AAPL', limitPrice: 150, fillPrice: 150.15 }), // pct = 0.1, totalUsd = 0.15
+    ];
+    const groups = groupSlippageBySymbol(rows);
+    expect(groups).toHaveLength(2);
+    const cjmb = groups.find((g) => g.symbol === 'CJMB')!;
+    expect(cjmb.trades).toBe(2);
+    expect(cjmb.avgPct).toBeCloseTo((2.5 + 0.83) / 2, 1);
+    expect(cjmb.totalUsd).toBeCloseTo(0.04, 5);
+  });
+
+  it('sorts worst avgPct first', () => {
+    const rows = [
+      row({ symbol: 'LOW', limitPrice: 10, fillPrice: 10.05 }), // 0.5%
+      row({ symbol: 'HIGH', limitPrice: 1, fillPrice: 1.03 }), // 3%
+    ];
+    const groups = groupSlippageBySymbol(rows);
+    expect(groups.map((g) => g.symbol)).toEqual(['HIGH', 'LOW']);
+  });
+
+  it('returns an empty array for an empty input', () => {
+    expect(groupSlippageBySymbol([])).toEqual([]);
   });
 });

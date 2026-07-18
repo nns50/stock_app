@@ -1663,6 +1663,10 @@ export default function AutoTradePage() {
   const [autoPromoteThresholdDraft, setAutoPromoteThresholdDraft] = useState<number | undefined>();
   const [autoPromoteWindowDaysDraft, setAutoPromoteWindowDaysDraft] = useState<number | undefined>();
   const [autoPromoteMaxSymbolsDraft, setAutoPromoteMaxSymbolsDraft] = useState<number | undefined>();
+  const [autoTuneEnabled, setAutoTuneEnabled] = useState(false);
+  const [autoTuneMinTradesDraft, setAutoTuneMinTradesDraft] = useState<number | undefined>();
+  const [autoTuneMaxStepPctDraft, setAutoTuneMaxStepPctDraft] = useState<number | undefined>();
+  const [autoTuneSlippageExcludePctDraft, setAutoTuneSlippageExcludePctDraft] = useState<number | undefined>();
   useEffect(() => {
     if (!config.data) return;
     setEnabled(config.data.enabled);
@@ -1726,6 +1730,10 @@ export default function AutoTradePage() {
     setAutoPromoteThresholdDraft(config.data.autoPromoteThreshold);
     setAutoPromoteWindowDaysDraft(config.data.autoPromoteWindowDays);
     setAutoPromoteMaxSymbolsDraft(config.data.autoPromoteMaxSymbols);
+    setAutoTuneEnabled(config.data.autoTuneEnabled);
+    setAutoTuneMinTradesDraft(config.data.autoTuneMinTrades);
+    setAutoTuneMaxStepPctDraft(config.data.autoTuneMaxStepPct);
+    setAutoTuneSlippageExcludePctDraft(config.data.autoTuneSlippageExcludePct);
   }, [config.data]);
 
   const saveConfig = async (patch: {
@@ -1774,6 +1782,10 @@ export default function AutoTradePage() {
     autoPromoteThreshold?: number;
     autoPromoteWindowDays?: number;
     autoPromoteMaxSymbols?: number;
+    autoTuneEnabled?: boolean;
+    autoTuneMinTrades?: number;
+    autoTuneMaxStepPct?: number;
+    autoTuneSlippageExcludePct?: number;
   }) => {
     if (patch.riskProfile === 'AGGRESSIVE' && riskProfile !== 'AGGRESSIVE') {
       const ok = await confirm({
@@ -1833,6 +1845,10 @@ export default function AutoTradePage() {
       setAutoPromoteThresholdDraft(saved.autoPromoteThreshold);
       setAutoPromoteWindowDaysDraft(saved.autoPromoteWindowDays);
       setAutoPromoteMaxSymbolsDraft(saved.autoPromoteMaxSymbols);
+      setAutoTuneEnabled(saved.autoTuneEnabled);
+      setAutoTuneMinTradesDraft(saved.autoTuneMinTrades);
+      setAutoTuneMaxStepPctDraft(saved.autoTuneMaxStepPct);
+      setAutoTuneSlippageExcludePctDraft(saved.autoTuneSlippageExcludePct);
       config.reload(); // keeps config.data — the equity-not-set warning's source of truth — fresh
       refreshLiveData(); // risk profile / equity changes shift the dashboard's caps, and get journaled
       toast('Auto-trading settings saved', { type: 'success' });
@@ -3541,6 +3557,109 @@ export default function AutoTradePage() {
                           autoPromoteMaxSymbolsDraft == null ||
                           autoPromoteMaxSymbolsDraft < 0 ||
                           autoPromoteMaxSymbolsDraft === config.data?.autoPromoteMaxSymbols
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                </div>
+              </CollapsibleCard>
+              <CollapsibleCard id="autotrade.config.autoTune" title="Auto-tune from realized edge">
+                <div className="grid sm:grid-cols-2 gap-3 items-end">
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={autoTuneEnabled}
+                      onChange={(e) => saveConfig({ autoTuneEnabled: e.target.checked })}
+                    />
+                    <span>
+                      Auto-tune from realized edge
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default. Once a day, nudges risk-per-trade toward the Journal page&apos;s own Kelly
+                        suggestion and auto-excludes any symbol whose average live-fill slippage crosses the threshold
+                        below — both bounded by the settings here, and both journaled to Recent Activity (Dashboard tab)
+                        every time they fire, same as every other automated action this loop takes.
+                      </span>
+                    </span>
+                  </label>
+                  <Field
+                    label="Min sample size"
+                    hint="Decisive closed trades (for the risk-% tune) or live fills with a comparable limit price (for the slippage exclusion) required before a reading is trusted — matches the Journal page's own Kelly reliability floor by default."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={autoTuneMinTradesDraft}
+                        onChange={setAutoTuneMinTradesDraft}
+                        min={1}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save min sample size"
+                        onClick={() =>
+                          autoTuneMinTradesDraft != null && saveConfig({ autoTuneMinTrades: autoTuneMinTradesDraft })
+                        }
+                        disabled={
+                          autoTuneMinTradesDraft == null ||
+                          autoTuneMinTradesDraft < 1 ||
+                          autoTuneMinTradesDraft === config.data?.autoTuneMinTrades
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Max daily risk-% step"
+                    hint="Largest change to risk-per-trade allowed in a single day's adjustment (percentage points) — bounds how fast auto-tune can move live position sizing even if the Kelly suggestion itself jumps sharply."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={autoTuneMaxStepPctDraft}
+                        onChange={setAutoTuneMaxStepPctDraft}
+                        min={0}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max daily risk-% step"
+                        onClick={() =>
+                          autoTuneMaxStepPctDraft != null && saveConfig({ autoTuneMaxStepPct: autoTuneMaxStepPctDraft })
+                        }
+                        disabled={
+                          autoTuneMaxStepPctDraft == null ||
+                          autoTuneMaxStepPctDraft < 0 ||
+                          autoTuneMaxStepPctDraft === config.data?.autoTuneMaxStepPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Slippage exclusion threshold (%)"
+                    hint="A symbol whose average live-fill slippage (% of the limit price you set, same sign convention as the Journal's Execution quality report — positive always cost you money) is at or above this gets auto-excluded from future autotrade candidates."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={autoTuneSlippageExcludePctDraft}
+                        onChange={setAutoTuneSlippageExcludePctDraft}
+                        min={0}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save slippage exclusion threshold"
+                        onClick={() =>
+                          autoTuneSlippageExcludePctDraft != null &&
+                          saveConfig({ autoTuneSlippageExcludePct: autoTuneSlippageExcludePctDraft })
+                        }
+                        disabled={
+                          autoTuneSlippageExcludePctDraft == null ||
+                          autoTuneSlippageExcludePctDraft < 0 ||
+                          autoTuneSlippageExcludePctDraft === config.data?.autoTuneSlippageExcludePct
                         }
                       >
                         Save

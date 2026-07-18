@@ -745,6 +745,31 @@ describe('autotrade config routes (integration)', () => {
     });
   });
 
+  it('persists the auto-tune-from-realized-edge settings and survives an unrelated save', async () => {
+    await put('/api/autotrade/config', {
+      autoTuneEnabled: true,
+      autoTuneMinTrades: 15,
+      autoTuneMaxStepPct: 1,
+      autoTuneSlippageExcludePct: 3,
+    });
+    await put('/api/autotrade/config', { accountEquityUsd: 30_000 });
+
+    const final = (await getJson('/api/autotrade/config')) as {
+      autoTuneEnabled: boolean;
+      autoTuneMinTrades: number;
+      autoTuneMaxStepPct: number;
+      autoTuneSlippageExcludePct: number;
+      accountEquityUsd: number;
+    };
+    expect(final).toMatchObject({
+      autoTuneEnabled: true,
+      autoTuneMinTrades: 15,
+      autoTuneMaxStepPct: 1,
+      autoTuneSlippageExcludePct: 3,
+      accountEquityUsd: 30_000,
+    });
+  });
+
   it('accountEquityUsd: null still explicitly clears it, distinct from omitting the field entirely', async () => {
     await put('/api/autotrade/config', { enabled: true, accountEquityUsd: 50_000 });
     const cleared = await put('/api/autotrade/config', { accountEquityUsd: null });
