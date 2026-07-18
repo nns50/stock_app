@@ -34,6 +34,7 @@ const probeBody = z.object({
     'open-orders',
     'order-history',
     'subscriptions',
+    'instrument',
   ]),
   symbol: z.string().max(24).optional(), // up to a full OCC option symbol
   accountId: z.string().max(64).optional(),

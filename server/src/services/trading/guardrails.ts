@@ -179,6 +179,18 @@ function signedDelta(intent: OrderIntent): number {
 }
 
 /**
+ * Whether this order would open or extend a net-short position — the same
+ * resulting-quantity math the naked_short check below uses. Exported so the
+ * order builder (providers/webull/orders.ts) can submit Webull's own explicit
+ * SHORT side (distinct from a plain SELL, which only closes/reduces a long)
+ * when this is true, letting the broker's real-time locate/borrow check run
+ * at order time instead of silently mismarking the order.
+ */
+export function wouldOpenShort(intent: OrderIntent, account: AccountState): boolean {
+  return account.currentPositionQty + signedDelta(intent) < 0;
+}
+
+/**
  * Evaluate every guardrail for a proposed order. Pure: no side effects. The
  * report lists each rule (passed or not) so the UI can show the full breakdown;
  * `ok` is false if any BLOCKING rule failed.

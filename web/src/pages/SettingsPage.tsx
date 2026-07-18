@@ -412,6 +412,7 @@ function WebullSection() {
     | 'open-orders'
     | 'order-history'
     | 'subscriptions'
+    | 'instrument'
   >('account-list');
   const [symbol, setSymbol] = useState('AAPL');
   const [accountId, setAccountId] = useState('');
@@ -478,9 +479,14 @@ function WebullSection() {
                 <option value="open-orders">Open orders (read-only)</option>
                 <option value="order-history">Order history (read-only)</option>
                 <option value="subscriptions">Quote subscriptions</option>
+                <option value="instrument">Stock instrument (unconfirmed)</option>
               </select>
             </Field>
-            {(kind === 'snapshot' || kind === 'bars' || kind === 'depth' || kind === 'option-snapshot') && (
+            {(kind === 'snapshot' ||
+              kind === 'bars' ||
+              kind === 'depth' ||
+              kind === 'option-snapshot' ||
+              kind === 'instrument') && (
               <Field
                 label={kind === 'option-snapshot' ? 'OCC option symbol' : 'Symbol'}
                 hint={kind === 'option-snapshot' ? 'e.g. AAPL260522C00300000' : undefined}
@@ -524,6 +530,13 @@ function WebullSection() {
               the real endpoint path) before any order-placing code is written. The path is a best guess under{' '}
               <code className="text-slate-400">/trade/</code>; if it 404s, check the URL in the result and the Webull
               API Reference — we'll adjust.
+            </p>
+          )}
+          {kind === 'instrument' && (
+            <p className="text-[11px] text-slate-500">
+              <strong className="text-slate-400">Read-only, unconfirmed</strong> — this path is documented but has never
+              been called against a real account. Run it to see the actual response shape (e.g. whether it carries a
+              shortable / hard-to-borrow flag) before anything is built to read it.
             </p>
           )}
 

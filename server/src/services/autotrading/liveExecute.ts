@@ -1,7 +1,14 @@
 import { config } from '../../config';
 import { AutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../../db/autotradeConfig';
 import { getTradingConfig } from '../../db/trading';
-import { AccountState, evaluateGuardrails, OrderIntent, blockingFailures, TradingConfig } from '../trading/guardrails';
+import {
+  AccountState,
+  evaluateGuardrails,
+  OrderIntent,
+  blockingFailures,
+  TradingConfig,
+  wouldOpenShort,
+} from '../trading/guardrails';
 import { marketOpenContext } from '../trading/marketHours';
 import { webullAccountState } from '../../providers/webull/accountState';
 import {
@@ -505,6 +512,11 @@ export async function attemptLiveEntry(
   }
   const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
   const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
+  // Only matters for a permitted short entry (allowNakedShort — naked_short
+  // above already blocks it otherwise): submit Webull's own SHORT side instead
+  // of a plain SELL so the broker's real-time locate/borrow check runs at
+  // order time (see providers/webull/orders.ts).
+  const isShort = wouldOpenShort(intent, accountState);
 
   const clientOrderId = newClientOrderId();
   const intentRec = createIntent(intent, clientOrderId);
@@ -524,7 +536,7 @@ export async function attemptLiveEntry(
   });
   transitionIntent(intentRec.id, 'submitted', { detail: `submitting (cid ${clientOrderId})` });
 
-  const broker = await webullPlaceOrder(accountId, intent, clientOrderId);
+  const broker = await webullPlaceOrder(accountId, intent, clientOrderId, isShort);
   if (!broker.ok) {
     transitionIntent(intentRec.id, 'rejected', { detail: `broker rejected: ${broker.error}` });
     logAutotradeEvent({

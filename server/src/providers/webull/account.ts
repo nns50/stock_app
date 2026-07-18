@@ -41,7 +41,8 @@ export type ProbeKind =
   | 'balance'
   | 'open-orders'
   | 'order-history'
-  | 'subscriptions';
+  | 'subscriptions'
+  | 'instrument';
 
 export interface ProbeResult {
   ok: boolean;
@@ -120,6 +121,20 @@ function probeCall(kind: ProbeKind, opts: { symbol?: string; accountId?: string 
       // 401" — an OpenAPI quote entitlement won't show here if only the mobile
       // app / desktop (QT) plan was purchased, or if it hasn't activated yet.
       return c.call('GET', '/app/subscriptions/list', { surface: 'trade' });
+    case 'instrument':
+      // UNCONFIRMED response shape — this path is documented in the API
+      // Reference (docs/LIVE_TRADING_DESIGN.md §14) but has never been called
+      // against a real account, unlike every other probe here. Run this to see
+      // its actual fields (e.g. a shortable/hard-to-borrow flag) before
+      // building anything that reads them — same "confirmed payloads, not
+      // guesses" discipline as every other mapper in this app. The query
+      // shape below is a best-effort guess mirroring the other instrument-
+      // style market-data calls (symbols + category); adjust here if the
+      // real endpoint expects something different.
+      return c.call('GET', '/openapi/instrument/stock/list', {
+        query: { symbols: (opts.symbol || 'AAPL').toUpperCase(), category: 'US_STOCK' },
+        surface: 'market',
+      });
     default:
       return c.call('GET', '/openapi/account/list', { surface: 'trade' });
   }
