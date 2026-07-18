@@ -1,4 +1,9 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+
+vi.mock('../src/services/notifier', () => ({
+  dispatchNotifications: vi.fn().mockResolvedValue({ delivered: true, count: 1, results: [] }),
+}));
+
 import { initDb, db } from '../src/db';
 import { createPosition, addExit } from '../src/db/positions';
 import { createIntent } from '../src/db/orders';
@@ -6,7 +11,10 @@ import { getAutotradeConfig, setAutotradeConfig, defaultAutotradeConfig } from '
 import { isExcluded, listExclusions } from '../src/db/autotradeExclusions';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { kellySuggestion } from '../src/services/pnl';
+import { dispatchNotifications } from '../src/services/notifier';
 import { maybeAutoTune } from '../src/services/autotrading/autoTune';
+
+const mockDispatch = vi.mocked(dispatchNotifications);
 
 const ET_DAY_1 = Date.parse('2026-08-03T15:00:00Z'); // a Monday, well inside market hours ET
 const ET_DAY_2 = Date.parse('2026-08-04T15:00:00Z'); // the next day
@@ -58,6 +66,7 @@ beforeEach(() => {
       'DELETE FROM autotrade_events; DELETE FROM autotrade_exclusions;',
   );
   setAutotradeConfig(defaultAutotradeConfig());
+  mockDispatch.mockClear();
 });
 
 describe('maybeAutoTune', () => {
@@ -68,6 +77,7 @@ describe('maybeAutoTune', () => {
     const result = await maybeAutoTune(ET_DAY_1);
     expect(result).toEqual({ ran: false, riskAdjusted: false, symbolsExcluded: [] });
     expect(getAutotradeConfig().riskPerTradePct).toBe(before);
+    expect(mockDispatch).not.toHaveBeenCalled();
   });
 
   it('runs at most once per (ET) trading day', async () => {
@@ -92,6 +102,7 @@ describe('maybeAutoTune', () => {
       closedTrade(-50, '2026-08-02'); // only 2 decisive trades, need 5
       await maybeAutoTune(ET_DAY_1);
       expect(getAutotradeConfig().riskPerTradePct).toBe(1);
+      expect(mockDispatch).not.toHaveBeenCalled();
     });
 
     it('nudges risk-per-trade UP toward the Kelly suggestion, clamped to the max daily step', async () => {
@@ -103,6 +114,10 @@ describe('maybeAutoTune', () => {
       const result = await maybeAutoTune(ET_DAY_1);
       expect(result.riskAdjusted).toBe(true);
       expect(getAutotradeConfig().riskPerTradePct).toBeCloseTo(1 + 0.3, 5); // clamped, not the full jump to `target`
+      expect(mockDispatch).toHaveBeenCalledTimes(1);
+      const events = mockDispatch.mock.calls[0][0];
+      expect(events[0].title).toMatch(/risk-per-trade adjusted/);
+      expect(events[0].message).toMatch(/riskPerTradePct 1% → 1\.3% \(Kelly suggests/);
     });
 
     it('nudges risk-per-trade DOWN toward the Kelly suggestion, clamped to the max daily step', async () => {
@@ -144,6 +159,7 @@ describe('maybeAutoTune', () => {
       await maybeAutoTune(ET_DAY_1);
       expect(getAutotradeConfig().riskPerTradePct).toBe(3);
       expect(listAutotradeEvents({ actions: ['auto_tune_risk_adjusted'] })).toHaveLength(0);
+      expect(mockDispatch).not.toHaveBeenCalled();
     });
   });
 
@@ -153,6 +169,7 @@ describe('maybeAutoTune', () => {
       slippageFill('CJMB', 1.2, 1.23, '2026-08-01'); // 2.5% slippage, but only 1 fill (need 3)
       await maybeAutoTune(ET_DAY_1);
       expect(isExcluded('CJMB')).toBe(false);
+      expect(mockDispatch).not.toHaveBeenCalled();
     });
 
     it('does not exclude a symbol whose average slippage is below the threshold', async () => {
@@ -161,6 +178,7 @@ describe('maybeAutoTune', () => {
       slippageFill('CJMB', 1.2, 1.21, '2026-08-02');
       await maybeAutoTune(ET_DAY_1);
       expect(isExcluded('CJMB')).toBe(false);
+      expect(mockDispatch).not.toHaveBeenCalled();
     });
 
     it('excludes a symbol at/above the threshold with enough fills, and journals it', async () => {
@@ -175,6 +193,10 @@ describe('maybeAutoTune', () => {
       expect(events).toHaveLength(1);
       expect(events[0].symbol).toBe('CJMB');
       expect(JSON.parse(events[0].detail!)).toMatchObject({ avgPct: 2.5, trades: 2, thresholdPct: 2 });
+      expect(mockDispatch).toHaveBeenCalledTimes(1);
+      const dispatched = mockDispatch.mock.calls[0][0];
+      expect(dispatched[0].title).toBe('Autotrade auto-tune: CJMB excluded');
+      expect(dispatched[0].message).toMatch(/Avg slippage 2\.5% over 2 fills/);
     });
 
     it('does not re-exclude (or re-journal) a symbol that is already excluded', async () => {
@@ -182,9 +204,11 @@ describe('maybeAutoTune', () => {
       slippageFill('CJMB', 1.2, 1.23, '2026-08-01');
       slippageFill('CJMB', 1.2, 1.23, '2026-08-02');
       await maybeAutoTune(ET_DAY_1);
+      mockDispatch.mockClear();
       const result2 = await maybeAutoTune(ET_DAY_2); // a fresh day, so the once-per-day gate doesn't block it
       expect(result2.symbolsExcluded).toEqual([]);
       expect(listAutotradeEvents({ actions: ['auto_tune_symbol_excluded'] })).toHaveLength(1); // still just the first
+      expect(mockDispatch).not.toHaveBeenCalled(); // no re-exclusion -> no repeat notification either
     });
 
     it('excludes multiple qualifying symbols independently in the same run', async () => {
@@ -198,6 +222,9 @@ describe('maybeAutoTune', () => {
       const result = await maybeAutoTune(ET_DAY_1);
       expect(result.symbolsExcluded.sort()).toEqual(['CJMB', 'SLND']);
       expect(isExcluded('AAPL')).toBe(false);
+      expect(mockDispatch).toHaveBeenCalledTimes(2); // one dispatch per excluded symbol, none for AAPL
+      const titles = mockDispatch.mock.calls.map((c) => c[0][0].title).sort();
+      expect(titles).toEqual(['Autotrade auto-tune: CJMB excluded', 'Autotrade auto-tune: SLND excluded']);
     });
   });
 });

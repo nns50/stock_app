@@ -817,9 +817,11 @@ shouldn't be a tab-switch away.
   trades can't move things, and the risk change is capped per day so one noisy reading
   can't swing live sizing. A symbol it excludes lands on the same exclusion list your
   manual entries use (Settings), so it's visible and reversible there, not a hidden
-  blocklist. Every adjustment shows up in **Recent activity** the moment it happens. See
-  `docs/STRATEGY_PLAYBOOK.md`'s sizing and execution-quality sections for how to read the
-  numbers this is reacting to.
+  blocklist. Every adjustment shows up in **Recent activity** the moment it happens, and
+  also pushes a notification through your configured webhooks (see **Alerts** below) —
+  a live change to what the loop does is worth more than a line you'd only see if you
+  went looking. See `docs/STRATEGY_PLAYBOOK.md`'s sizing and execution-quality sections
+  for how to read the numbers this is reacting to.
   The **kill switch** button above these settings is a separate, sticky
   emergency halt —
   engaging it (one click, no confirmation needed, mirroring the same button on the
@@ -920,8 +922,13 @@ shouldn't be a tab-switch away.
   simply never finds anything real if you're on Tradier or Webull for everything else,
   same as it never does under the `mock` demo provider). This is detection only — it
   does **not** adjust the position's own quantity or price; treat it as a prompt to go
-  check and fix that position yourself. All alerts here are best-effort: with no
-  webhook configured, nothing is sent and nothing fails.
+  check and fix that position yourself. **Auto-tune from realized edge** (see Config tab,
+  below) also notifies for each of its own two actions — a risk-per-trade adjustment
+  names the old/new percentage and the Kelly suggestion behind it, and a symbol
+  exclusion names the symbol and the slippage reading that triggered it — since both
+  change what the loop does going forward, not just something worth a quiet log line.
+  All alerts here are best-effort: with no webhook configured, nothing is sent and
+  nothing fails.
 - **Refresh** (top of the page, next to the title) — Monitoring, Paper trading, and
   Recent activity all reflect state the background loop can change on its own, every
   minute, with nothing clicked — unlike Configuration, the exclusion list, and the
