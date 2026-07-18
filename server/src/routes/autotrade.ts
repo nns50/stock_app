@@ -20,6 +20,7 @@ import { defaultScreenerConfig, ScreenerConfig } from '../indicators/screener';
 import { computeBacktestStats, runBacktest, runWalkForwardBacktest } from '../services/autotrading/backtest';
 import { runOptionsBacktest, runOptionsWalkForwardBacktest } from '../services/autotrading/optionsBacktest';
 import { runCombinedBacktest, runCombinedWalkForwardBacktest } from '../services/autotrading/combinedBacktest';
+import { computeSignificanceStats } from '../services/autotrading/significance';
 import { listPaperPositions, PaperPosition } from '../db/autotradePaperPositions';
 import { listOptionsPaperPositions, OptionsPaperPosition } from '../db/autotradeOptionsPaperPositions';
 import { listAutotradeLivePositions, syncAccountEquityFromBroker } from '../services/autotrading/liveExecute';
@@ -804,8 +805,16 @@ autotradeRouter.post(
       directionMode: body.directionMode,
     });
     res.json({
-      inSample: { report: wf.inSample, stats: computeBacktestStats(wf.inSample) },
-      outOfSample: { report: wf.outOfSample, stats: computeBacktestStats(wf.outOfSample) },
+      inSample: {
+        report: wf.inSample,
+        stats: computeBacktestStats(wf.inSample),
+        significance: computeSignificanceStats(wf.inSample.trades),
+      },
+      outOfSample: {
+        report: wf.outOfSample,
+        stats: computeBacktestStats(wf.outOfSample),
+        significance: computeSignificanceStats(wf.outOfSample.trades),
+      },
       excludedSymbols: wf.excludedSymbols,
       errors: wf.errors,
     });
@@ -907,8 +916,16 @@ autotradeRouter.post(
       optionsPartialExitPct: body.optionsPartialExitPct,
     });
     res.json({
-      inSample: { report: wf.inSample, stats: computeBacktestStats(wf.inSample) },
-      outOfSample: { report: wf.outOfSample, stats: computeBacktestStats(wf.outOfSample) },
+      inSample: {
+        report: wf.inSample,
+        stats: computeBacktestStats(wf.inSample),
+        significance: computeSignificanceStats(wf.inSample.trades),
+      },
+      outOfSample: {
+        report: wf.outOfSample,
+        stats: computeBacktestStats(wf.outOfSample),
+        significance: computeSignificanceStats(wf.outOfSample.trades),
+      },
       excludedSymbols: wf.excludedSymbols,
       errors: wf.errors,
     });
@@ -931,6 +948,12 @@ function combinedStats(report: {
     startingEquity: report.startingEquity,
     finalEquity: report.finalEquity,
   });
+}
+
+/** Same both-books concatenation as combinedStats() above, for the
+ *  significance check — {pnl} is already satisfied by both trade shapes. */
+function combinedSignificance(report: { equityTrades: { pnl: number }[]; optionsTrades: { pnl: number }[] }) {
+  return computeSignificanceStats([...report.equityTrades, ...report.optionsTrades]);
 }
 
 const combinedBacktestBodyBase = z.object({
@@ -1049,8 +1072,16 @@ autotradeRouter.post(
       optionsPartialExitPct: body.optionsPartialExitPct,
     });
     res.json({
-      inSample: { report: wf.inSample, stats: combinedStats(wf.inSample) },
-      outOfSample: { report: wf.outOfSample, stats: combinedStats(wf.outOfSample) },
+      inSample: {
+        report: wf.inSample,
+        stats: combinedStats(wf.inSample),
+        significance: combinedSignificance(wf.inSample),
+      },
+      outOfSample: {
+        report: wf.outOfSample,
+        stats: combinedStats(wf.outOfSample),
+        significance: combinedSignificance(wf.outOfSample),
+      },
       excludedSymbols: wf.excludedSymbols,
       errors: wf.errors,
     });

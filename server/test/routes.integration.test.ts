@@ -1244,13 +1244,33 @@ describe('autotrade backtest routes (integration)', () => {
     const res = await post('/api/autotrade/backtest/walk-forward', { ...baseBody, splitDate: '2024-02-01' });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      inSample: { report: { excludedSymbols: { symbol: string }[] }; stats: { totalTrades: number } };
-      outOfSample: { report: { excludedSymbols: { symbol: string }[] }; stats: { totalTrades: number } };
+      inSample: {
+        report: { excludedSymbols: { symbol: string }[] };
+        stats: { totalTrades: number };
+        significance: { sampleSize: number; pValue: number | null; reliable: boolean };
+      };
+      outOfSample: {
+        report: { excludedSymbols: { symbol: string }[] };
+        stats: { totalTrades: number };
+        significance: { sampleSize: number; pValue: number | null; reliable: boolean };
+      };
       excludedSymbols: { symbol: string }[];
     };
     expect(body.excludedSymbols).toEqual([{ symbol: 'VNQ', reason: 'On the real-estate exclusion list' }]);
     expect(body.inSample.stats.totalTrades).toBe(0);
     expect(body.outOfSample.stats.totalTrades).toBe(0);
+    // No trades (VNQ is excluded pre-fetch) -> significance comes back
+    // all-null/not-reliable rather than a fabricated number.
+    expect(body.inSample.significance).toEqual({
+      sampleSize: 0,
+      expectancy: null,
+      ciLow: null,
+      ciHigh: null,
+      pValue: null,
+      resamples: 0,
+      reliable: false,
+    });
+    expect(body.outOfSample.significance).toEqual(body.inSample.significance);
   });
 
   it('rejects a walk-forward request when splitDate is not between from and to', async () => {
@@ -1331,13 +1351,23 @@ describe('autotrade options backtest routes (integration)', () => {
     const res = await post('/api/autotrade/backtest-options/walk-forward', { ...baseBody, splitDate: '2024-02-01' });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      inSample: { report: { excludedSymbols: { symbol: string }[] }; stats: { totalTrades: number } };
-      outOfSample: { report: { excludedSymbols: { symbol: string }[] }; stats: { totalTrades: number } };
+      inSample: {
+        report: { excludedSymbols: { symbol: string }[] };
+        stats: { totalTrades: number };
+        significance: { sampleSize: number; reliable: boolean };
+      };
+      outOfSample: {
+        report: { excludedSymbols: { symbol: string }[] };
+        stats: { totalTrades: number };
+        significance: { sampleSize: number; reliable: boolean };
+      };
       excludedSymbols: { symbol: string }[];
     };
     expect(body.excludedSymbols).toEqual([{ symbol: 'VNQ', reason: 'On the real-estate exclusion list' }]);
     expect(body.inSample.stats.totalTrades).toBe(0);
     expect(body.outOfSample.stats.totalTrades).toBe(0);
+    expect(body.inSample.significance).toEqual(expect.objectContaining({ sampleSize: 0, reliable: false }));
+    expect(body.outOfSample.significance).toEqual(expect.objectContaining({ sampleSize: 0, reliable: false }));
   });
 
   it('rejects an options walk-forward request when splitDate is not between from and to', async () => {
@@ -1423,13 +1453,23 @@ describe('autotrade combined backtest routes (integration)', () => {
     const res = await post('/api/autotrade/backtest-combined/walk-forward', { ...baseBody, splitDate: '2024-02-01' });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      inSample: { report: { excludedSymbols: { symbol: string }[] }; stats: { totalTrades: number } };
-      outOfSample: { report: { excludedSymbols: { symbol: string }[] }; stats: { totalTrades: number } };
+      inSample: {
+        report: { excludedSymbols: { symbol: string }[] };
+        stats: { totalTrades: number };
+        significance: { sampleSize: number; reliable: boolean };
+      };
+      outOfSample: {
+        report: { excludedSymbols: { symbol: string }[] };
+        stats: { totalTrades: number };
+        significance: { sampleSize: number; reliable: boolean };
+      };
       excludedSymbols: { symbol: string }[];
     };
     expect(body.excludedSymbols).toEqual([{ symbol: 'VNQ', reason: 'On the real-estate exclusion list' }]);
     expect(body.inSample.stats.totalTrades).toBe(0);
     expect(body.outOfSample.stats.totalTrades).toBe(0);
+    expect(body.inSample.significance).toEqual(expect.objectContaining({ sampleSize: 0, reliable: false }));
+    expect(body.outOfSample.significance).toEqual(expect.objectContaining({ sampleSize: 0, reliable: false }));
   });
 
   it('rejects a combined walk-forward request when splitDate is not between from and to', async () => {

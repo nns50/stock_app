@@ -1120,9 +1120,17 @@ shouldn't be a tab-switch away.
   window (unseen data) — a strategy that only performs in-sample is exactly what this
   split is meant to expose. Each run shows a stat grid (trades, win rate, expectancy,
   profit factor, average R, return, max drawdown, win/loss streaks), an equity curve,
-  and the full trade-by-trade list. This tool doesn't render a pass/fail verdict —
-  reviewing in-sample vs. out-of-sample and deciding whether a configuration held up is
-  yours to make, same as the eventual live-trading flag. At most 50 symbols per run and a
+  and the full trade-by-trade list. A walk-forward run (in-sample/out-of-sample split
+  set) additionally shows a **significance** panel per window — a 95% confidence
+  interval on expectancy (bootstrap resampling: the range of average $/trade you'd
+  plausibly see if this same window played out again) and a p-value against "no real
+  edge" (a sign-flip permutation test — the fraction of random win/loss re-signings
+  that produce a mean at least this extreme; conventionally, under 0.05 reads as
+  unlikely to be noise). A thin trade count (under 20) is flagged rather than hidden,
+  since a CI or p-value from only a few trades is itself too noisy to lean on hard.
+  Like the rest of this tool, it renders no pass/fail verdict — reviewing in-sample vs.
+  out-of-sample, and weighing the significance numbers alongside everything else, is
+  yours to do, same as the eventual live-trading flag. At most 50 symbols per run and a
   3-year maximum date span; if one symbol's historical data can't be fetched (bad ticker,
   provider rate limit), it's called out separately and excluded — the rest of the run
   still completes.
@@ -1140,6 +1148,8 @@ shouldn't be a tab-switch away.
   estimate the human Options page already uses, and open interest/bid-ask spread can't be
   backtested at all (no historical feed exists at any data tier) — both are still fully
   enforced once a real order is ever on the table, just not checkable against history.
+  Its own walk-forward run shows the identical significance panel (CI + p-value on
+  expectancy) per window, described above.
   **Run combined backtest** / **Run combined walk-forward** replays the same window a
   third way: equity and options share
   ONE risk budget for real, the same way the live paper-execution loop already combines
@@ -1147,7 +1157,10 @@ shouldn't be a tab-switch away.
   that same day, and vice versa, so a correlated pair of trades that would jointly
   breach a cap gets caught here too, not just independently underestimated by the two
   overlays above. Shows one stat grid and equity curve for the whole account, with the
-  equity and options trade lists underneath it. Additive — the two independent overlays
+  equity and options trade lists underneath it — and, for a walk-forward run, one
+  significance panel per window computed over both books together (the same
+  concatenated trade list the stat grid itself uses), not two separate ones to weigh by
+  hand. Additive — the two independent overlays
   above are unchanged and still available side by side.
 - **Paper trading** — the execution loop itself. When **Auto-trading enabled** is checked
   above, the server runs Screen → Decision → Risk Check → Execution on its own every

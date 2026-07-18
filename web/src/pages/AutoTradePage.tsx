@@ -34,17 +34,21 @@ import type {
   ClosePositionResult,
   CombinedBacktestRunResponse,
   CombinedWalkForwardResponse,
+  CombinedWalkForwardWindowResult,
   LiveOptionsPosition,
   LoopTickSummary,
   OptionsBacktestRunResponse,
   OptionsPaperPosition,
   OptionsWalkForwardResponse,
+  OptionsWalkForwardWindowResult,
   PaperPosition,
   PortfolioGreeks,
   Position,
+  SignificanceStats,
   SimulatedOptionsTrade,
   SimulatedTrade,
   WalkForwardResponse,
+  WalkForwardWindowResult,
 } from '../api/types';
 
 // Phases 1-8 of docs/AUTOTRADING_SPEC.md: config, real-estate exclusions,
@@ -133,6 +137,41 @@ function BacktestStatsGrid({ stats }: { stats: BacktestStats }) {
       />
       <StatTile label="Max drawdown" value={fmtUsd(stats.maxDrawdown)} valueClass="text-bear" />
       <StatTile label="Streaks" value={`${stats.longestWinStreak}W / ${stats.longestLossStreak}L`} />
+    </div>
+  );
+}
+
+/** Bootstrap CI + sign-flip permutation p-value on a walk-forward window's
+ *  own expectancy (services/autotrading/significance.ts) — additional
+ *  evidence toward "is this edge real or noise," not a pass/fail verdict;
+ *  the human reviewing in-sample vs. out-of-sample results still judges
+ *  that, same framing as the rest of this card (see the two hint strings
+ *  passed into *WindowResult below). Only rendered for a walk-forward
+ *  window — a plain single-window backtest has no held-out data to test an
+ *  edge's significance against, so it isn't computed for one server-side. */
+function SignificancePanel({ significance }: { significance: SignificanceStats }) {
+  if (significance.sampleSize === 0) {
+    return <p className="text-xs text-slate-500">No trades in this window — nothing to test for significance.</p>;
+  }
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+      <StatTile
+        label="95% CI on expectancy"
+        value={`${fmtSignedUsd(significance.ciLow)} to ${fmtSignedUsd(significance.ciHigh)}`}
+        info="Bootstrap resampling (2000 draws): the range of average $/trade you'd plausibly see if this same trade-generating process played out again."
+      />
+      <StatTile
+        label="p-value vs. no edge"
+        value={fmtNum(significance.pValue, 3)}
+        valueClass={significance.pValue !== null && significance.pValue < 0.05 ? 'text-bull' : 'text-slate-300'}
+        info="Sign-flip permutation test: the fraction of random sign reassignments (the 'no true edge' null) that produce a mean at least this extreme. Lower is stronger evidence against pure noise — this is evidence, not a verdict."
+      />
+      <StatTile
+        label="Sample size"
+        value={significance.sampleSize}
+        sub={significance.reliable ? undefined : 'Thin sample — treat with caution'}
+        valueClass={significance.reliable ? undefined : 'text-amber-400'}
+      />
     </div>
   );
 }
@@ -285,7 +324,7 @@ function OptionsBacktestWindowResult({
 }: {
   title: string;
   hint: string;
-  run: OptionsBacktestRunResponse;
+  run: OptionsWalkForwardWindowResult;
   gradientId: string;
 }) {
   return (
@@ -295,6 +334,7 @@ function OptionsBacktestWindowResult({
         <p className="text-[11px] text-slate-500">{hint}</p>
       </div>
       <BacktestStatsGrid stats={run.stats} />
+      <SignificancePanel significance={run.significance} />
       <BacktestEquityChart equityCurve={run.report.equityCurve} gradientId={gradientId} />
       <OptionsBacktestTradesTable trades={run.report.trades} />
     </div>
@@ -313,7 +353,7 @@ function CombinedBacktestWindowResult({
 }: {
   title: string;
   hint: string;
-  run: CombinedBacktestRunResponse;
+  run: CombinedWalkForwardWindowResult;
   gradientId: string;
 }) {
   return (
@@ -323,6 +363,7 @@ function CombinedBacktestWindowResult({
         <p className="text-[11px] text-slate-500">{hint}</p>
       </div>
       <BacktestStatsGrid stats={run.stats} />
+      <SignificancePanel significance={run.significance} />
       <BacktestEquityChart equityCurve={run.report.equityCurve} gradientId={gradientId} />
       <BacktestTradesTable trades={run.report.equityTrades} />
       <OptionsBacktestTradesTable trades={run.report.optionsTrades} />
@@ -1606,7 +1647,7 @@ function BacktestWindowResult({
 }: {
   title: string;
   hint: string;
-  run: BacktestRunResponse;
+  run: WalkForwardWindowResult;
   gradientId: string;
 }) {
   return (
@@ -1616,6 +1657,7 @@ function BacktestWindowResult({
         <p className="text-[11px] text-slate-500">{hint}</p>
       </div>
       <BacktestStatsGrid stats={run.stats} />
+      <SignificancePanel significance={run.significance} />
       <BacktestEquityChart equityCurve={run.report.equityCurve} gradientId={gradientId} />
       <BacktestTradesTable trades={run.report.trades} />
     </div>
