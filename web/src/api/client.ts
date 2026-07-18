@@ -34,6 +34,7 @@ import type {
   WebullPositionsPreview,
   WebullImportSummary,
   WebullSyncResult,
+  PositionComparison,
   WebullSyncConfig,
   WebullMoversResult,
   OptionLiveQuotesResult,
@@ -169,6 +170,8 @@ export const client = {
   webullPositionsImport: (accountId: string) =>
     api<WebullImportSummary>('/webull/positions/import', post({ accountId })),
   webullPositionsSync: (accountId: string) => api<WebullSyncResult>('/webull/positions/sync', post({ accountId })),
+  webullPositionsCompare: (accountId: string) =>
+    api<PositionComparison>('/webull/positions/compare', post({ accountId })),
   webullSyncSchedulerStatus: () => api<WebullSyncConfig>('/webull/positions/scheduler'),
   setWebullSyncScheduler: (patch: Partial<WebullSyncConfig>) =>
     api<WebullSyncConfig>('/webull/positions/scheduler', post(patch)),

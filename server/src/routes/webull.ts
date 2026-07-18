@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, parseBody, parseQuery } from './_helpers';
 import { ProbeKind, webullProbe, webullStatus } from '../providers/webull/account';
-import { importWebullPositions, previewWebullPositions } from '../providers/webull/positions';
+import { comparePositionsToBroker, importWebullPositions, previewWebullPositions } from '../providers/webull/positions';
 import {
   getWebullSyncConfig,
   setWebullSyncConfig,
@@ -65,6 +65,18 @@ webullRouter.post(
   asyncHandler(async (req, res) => {
     const { accountId } = parseBody(accountBody, req);
     res.json(await importWebullPositions(accountId));
+  }),
+);
+
+// On-demand, read-only side-by-side: every contract the broker currently
+// shows held for this account vs. what the journal shows open, matches
+// included — unlike sync/preview above, writes nothing and reports
+// everything, not just confirmed gaps, so a mismatch is visible immediately.
+webullRouter.post(
+  '/positions/compare',
+  asyncHandler(async (req, res) => {
+    const { accountId } = parseBody(accountBody, req);
+    res.json(await comparePositionsToBroker(accountId));
   }),
 );
 

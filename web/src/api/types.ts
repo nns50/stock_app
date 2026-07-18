@@ -708,6 +708,28 @@ export interface WebullSyncResult {
   error?: string;
 }
 
+/** One contract's side-by-side broker vs. journal quantity (positions/compare). */
+export interface PositionComparisonRow {
+  symbol: string;
+  assetType: 'stock' | 'option';
+  optionType: 'call' | 'put' | null;
+  strike: number | null;
+  expiration: string | null;
+  brokerQty: number;
+  journalQty: number;
+  matches: boolean;
+}
+
+/** On-demand, read-only snapshot of every contract the broker currently
+ *  shows held vs. what the journal shows open for this account — matches
+ *  included, not just gaps, so a mismatch is visible immediately. */
+export interface PositionComparison {
+  ok: boolean;
+  accountId: string;
+  rows: PositionComparisonRow[];
+  error?: string;
+}
+
 export interface WebullSyncConfig {
   enabled: boolean;
   intervalSeconds: number;

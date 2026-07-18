@@ -1208,7 +1208,17 @@ One home (⚙ or `⌘K → Settings`) for everything:
   *estimate* from the latest quote, noted as such on the exit — edit it if you have your
   broker confirmation. Enter an account ID once, flip on **Sync automatically in the
   background**, and pick an interval (1m–30m); it then keeps itself current with no further
-  clicking, independent of any open tab.
+  clicking, independent of any open tab. Every broker-truth close or quantity correction a
+  sync makes (equity or options) also shows up as its own **Recent activity** entry on the
+  Auto-Trade page — visible the moment it happens, not just discoverable later from a wrong
+  P&L number.
+  >
+  > **Compare against broker (2026-07-18).** Next to Preview/Sync now is a **Compare against
+  > broker** button — a read-only, on-demand snapshot listing every contract the broker
+  > currently shows held for that account side-by-side with what the journal shows open,
+  > flagging any mismatch. Unlike a sync, it writes nothing and reports *everything*,
+  > matches included, so drift is visible the moment you check rather than only inferable
+  > later from the P&L or open quantity looking wrong.
   >
   > **Multiple real accounts (2026-07-17).** Every synced position (and every live position
   > the Auto-Trade page itself opens) now remembers which Webull account it actually came

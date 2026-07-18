@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError, client } from '../api/client';
+import type { PositionComparison } from '../api/types';
 import { useAsync, useLocalStorage } from '../lib/hooks';
 import { cx } from '../lib/format';
 import { CHECKLIST_SETTING_KEY, DEFAULT_CHECKLIST_RULES, rulesFromSetting } from '../lib/checklist';
@@ -570,9 +571,10 @@ const SYNC_INTERVALS = [
 function WebullPositionsSync({ configured }: { configured: boolean }) {
   const { toast } = useToast();
   const [accountId, setAccountId] = useState('');
-  const [busy, setBusy] = useState<'preview' | 'import' | 'sync' | null>(null);
+  const [busy, setBusy] = useState<'preview' | 'import' | 'sync' | 'compare' | null>(null);
   const [preview, setPreview] = useState<Awaited<ReturnType<typeof client.webullPositionsPreview>> | null>(null);
   const [showRaw, setShowRaw] = useState(false);
+  const [comparison, setComparison] = useState<PositionComparison | null>(null);
 
   const scheduler = useAsync(() => client.webullSyncSchedulerStatus(), []);
   const [autoEnabled, setAutoEnabled] = useState(true);
@@ -647,6 +649,19 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
     }
   };
 
+  const runCompare = async () => {
+    if (!accountId) return;
+    setBusy('compare');
+    setComparison(null);
+    try {
+      setComparison(await client.webullPositionsCompare(accountId));
+    } catch (e) {
+      setComparison({ ok: false, accountId, rows: [], error: (e as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <div className="border-t border-ink-700 pt-3 space-y-2">
       <div className="text-sm font-medium">Sync positions → journal</div>
@@ -679,6 +694,9 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
         )}
         <button className="btn-ghost" onClick={runSyncNow} disabled={!configured || !accountId || busy !== null}>
           {busy === 'sync' ? 'Syncing…' : 'Sync now'}
+        </button>
+        <button className="btn-ghost" onClick={runCompare} disabled={!configured || !accountId || busy !== null}>
+          {busy === 'compare' ? 'Comparing…' : 'Compare against broker'}
         </button>
       </div>
 
@@ -732,6 +750,45 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
             <pre className="max-h-64 overflow-auto rounded border border-ink-600 bg-ink-900 p-2 text-[11px] text-slate-300">
               {JSON.stringify(preview.raw, null, 2)}
             </pre>
+          )}
+        </div>
+      )}
+
+      {comparison && !comparison.ok && <div className="text-sm text-bear">✕ {comparison.error ?? 'failed'}</div>}
+      {comparison?.ok && (
+        <div className="text-sm space-y-2">
+          <p className="text-[11px] text-slate-500">
+            Every contract the broker currently shows held vs. what the journal shows open for this account — a
+            read-only snapshot, nothing is written. A mismatch here is exactly what a sync would eventually act on;
+            checking it directly catches drift immediately instead of noticing later from a wrong P&L number.
+          </p>
+          {comparison.rows.length === 0 ? (
+            <span className="text-slate-400">Nothing held at the broker or open in the journal for this account.</span>
+          ) : (
+            <table className="w-full text-[11px]">
+              <thead className="text-slate-500">
+                <tr className="text-left">
+                  <th className="pr-2">Symbol</th>
+                  <th className="pr-2">Contract</th>
+                  <th className="pr-2">Broker qty</th>
+                  <th className="pr-2">Journal qty</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {comparison.rows.map((r, i) => (
+                  <tr key={i} className="border-t border-ink-800">
+                    <td className="pr-2 font-medium">{r.symbol}</td>
+                    <td className="pr-2 text-slate-400">
+                      {r.assetType === 'option' ? `${r.optionType} ${r.strike} ${r.expiration}` : '—'}
+                    </td>
+                    <td className="pr-2">{r.brokerQty}</td>
+                    <td className="pr-2">{r.journalQty}</td>
+                    <td className={r.matches ? 'text-bull' : 'text-bear'}>{r.matches ? 'match' : 'mismatch'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
       )}

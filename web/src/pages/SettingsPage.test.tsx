@@ -123,4 +123,66 @@ describe('SettingsPage', () => {
     expect(screen.getByText(/imported 1/)).toBeInTheDocument();
     expect(sync).toHaveBeenCalledWith('ACC1');
   });
+
+  it('"Compare against broker" shows a read-only match/mismatch table without writing anything', async () => {
+    vi.spyOn(client, 'webullStatus').mockResolvedValue({
+      configured: true,
+      region: 'us',
+      hasAccessToken: false,
+    } as never);
+    const compare = vi.spyOn(client, 'webullPositionsCompare').mockResolvedValue({
+      ok: true,
+      accountId: 'ACC1',
+      rows: [
+        {
+          symbol: 'AAPL',
+          assetType: 'stock',
+          optionType: null,
+          strike: null,
+          expiration: null,
+          brokerQty: 10,
+          journalQty: 10,
+          matches: true,
+        },
+        {
+          symbol: 'CJMB',
+          assetType: 'stock',
+          optionType: null,
+          strike: null,
+          expiration: null,
+          brokerQty: 356,
+          journalQty: 427,
+          matches: false,
+        },
+      ],
+    } as never);
+    renderPage();
+    fireEvent.change(await screen.findByPlaceholderText('account_id'), { target: { value: 'ACC1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Compare against broker' }));
+
+    expect(await screen.findByText('AAPL')).toBeInTheDocument();
+    expect(screen.getByText('CJMB')).toBeInTheDocument();
+    expect(screen.getByText('match')).toBeInTheDocument();
+    expect(screen.getByText('mismatch')).toBeInTheDocument();
+    expect(compare).toHaveBeenCalledWith('ACC1');
+  });
+
+  it('"Compare against broker" surfaces an error without a table', async () => {
+    vi.spyOn(client, 'webullStatus').mockResolvedValue({
+      configured: true,
+      region: 'us',
+      hasAccessToken: false,
+    } as never);
+    vi.spyOn(client, 'webullPositionsCompare').mockResolvedValue({
+      ok: false,
+      accountId: 'ACC1',
+      rows: [],
+      error: 'Webull is not configured.',
+    } as never);
+    renderPage();
+    fireEvent.change(await screen.findByPlaceholderText('account_id'), { target: { value: 'ACC1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Compare against broker' }));
+
+    expect(await screen.findByText(/Webull is not configured/)).toBeInTheDocument();
+  });
 });
