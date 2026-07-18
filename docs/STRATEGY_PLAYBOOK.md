@@ -242,7 +242,13 @@ premium), while respecting that **time and volatility work against long options.
   trade. A spread that looks fine on delayed data can be materially wider live.
 - Mind **IV rank.** Buying long premium when **IV rank is high** means you're paying up
   and exposed to an IV crush (e.g. after earnings). Prefer **low-to-moderate IV rank**
-  for long options, or accept the risk knowingly.
+  for long options, or **switch structure instead of skipping the trade**: a debit
+  spread's short leg sells back some of that rich premium, capping the cost (at the cost
+  of capping the upside too). Running the automated loop? **Auto-Trade → Configuration →
+  Options strategy → `Auto (by IV rank)`** makes exactly this call for you, per
+  candidate, every cycle — debit spread once a candidate's IV rank reaches 50, single
+  leg below that — instead of one structure locked in for every trade regardless of
+  where premium actually sits that day.
 - Give yourself **enough DTE** that time decay isn't brutal for your hold (swing trades
   generally want weeks, not days).
 

@@ -146,7 +146,7 @@ const configBody = z.object({
   liveOptionsProbationTrades: z.number().int().nonnegative().optional(),
   liveOptionsProbationSizeMultiplier: z.number().positive().max(1).optional(),
   // --- Options strategy shape -------------------------------------------------
-  optionsStrategyType: z.enum(['single_leg', 'debit_spread']).optional(),
+  optionsStrategyType: z.enum(['single_leg', 'debit_spread', 'auto']).optional(),
   // --- Options stop-loss / take-profit (paper + backtest only; 0 disables) ----
   optionsStopLossPct: z.number().min(0).max(100).optional(),
   optionsTakeProfitPct: z.number().min(0).max(100).optional(),

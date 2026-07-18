@@ -680,9 +680,13 @@ shouldn't be a tab-switch away.
   Switching to Aggressive still always pops a confirmation dialog, since flipping the
   label that's baked into your trade journal should be a deliberate choice, not a
   default, never a silent dropdown change. Next to it, the **options strategy** the
-  loop builds (`Single leg` — a long call/put, uncapped upside, the default — or
-  `Debit spread` — the same long leg plus a further out-of-the-money short leg that
-  caps both max loss and max gain; switch anytime, no confirmation needed), and
+  loop builds (`Single leg` — a long call/put, uncapped upside, the default; `Debit
+  spread` — the same long leg plus a further out-of-the-money short leg that caps both
+  max loss and max gain; or `Auto (by IV rank)` — picks per candidate from that
+  candidate's own IV rank at signal time: debit spread once IV rank reaches **50**
+  (rich premium — cap the cost), single leg below that (cheap premium — keep the
+  uncapped upside), same live/paper/backtest engines either way; switch anytime, no
+  confirmation needed), and
   **account equity ($)** — what the risk engine sizes trades and computes its % caps
   against. Type it in manually, or click **Sync from Webull** to pull your live
   account's net liquidation value instead (needs a Webull account ID set under **Live
@@ -1078,7 +1082,11 @@ shouldn't be a tab-switch away.
   `Debit spread` instead of the default `Single leg`, the column shows both strikes
   (long/short) and the net debit paid instead of a single strike and premium — the short
   leg is picked from the same chain, further out-of-the-money than the long leg, so the
-  trade caps both max loss and max gain instead of just max loss. Each options signal is
+  trade caps both max loss and max gain instead of just max loss. Under `Auto (by IV
+  rank)`, different rows in the same table can show either shape — each candidate's own
+  IV rank at signal time decides its shape, so a high-IV-rank name and a low-IV-rank name
+  in the same screen can resolve differently; hover a row's rationale to see which way it
+  went and why. Each options signal is
   also risk-checked — a single leg sized by full premium paid (contracts × $100, the
   option's real worst case), a debit spread sized by max loss per spread instead (there's
   no price stop for either shape) — against the same configured risk caps, showing an
@@ -1122,7 +1130,10 @@ shouldn't be a tab-switch away.
   symbols/dates/profile/equity through the options overlay instead — single leg or debit
   spread, whichever the **Options strategy** setting above is set to, gated by the same
   equity screen and risk caps — a separate, independent run shown below the equity
-  results, not combined with it. A spread's short leg is found the same way the live loop
+  results, not combined with it. Under `Auto (by IV rank)`, the backtest resolves each
+  day's shape the same way live/paper does — from that candidate's own IV rank on that
+  historical day — so the trade list can mix both shapes across the run, exactly
+  reflecting what the loop would actually have built. A spread's short leg is found the same way the live loop
   finds one (nearest contract further out-of-the-money whose delta clears the confirmed
   band), and its trade row shows both strikes with Entry/Exit $ as the spread's net value
   (long leg minus short leg). IV rank here falls back to the same realized-volatility

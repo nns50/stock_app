@@ -697,6 +697,123 @@ describe('simulateCombinedBacktest', () => {
     });
   });
 
+  describe("strategyType: 'auto' (IV-rank-adaptive, 2026-07-18)", () => {
+    // Same delta-calibrated strikes as the 'debit spreads' describe block
+    // above, redeclared here since that block's own consts are scoped to it.
+    const AUTO_LONG_STRIKE = 102;
+    const AUTO_SHORT_STRIKE = 107;
+    const AUTO_LONG_TICKER = 'O:AUTO-LONG';
+    const AUTO_SHORT_TICKER = 'O:AUTO-SHORT';
+
+    function flatBar(day: string): Candle {
+      return { time: Date.parse(`${day}T00:00:00Z`), open: 100, high: 100, low: 100, close: 100, volume: 500_000 };
+    }
+    function flatHistory(signalDay: string, extraDays: string[]): Candle[] {
+      const days: Candle[] = [];
+      for (let i = 60; i >= 1; i--) days.push(flatBar(d(signalDay, -i)));
+      days.push(flatBar(signalDay), ...extraDays.map(flatBar));
+      return days;
+    }
+
+    it('resolves to debit_spread per-day when IV rank is at/above AUTO_STRATEGY_IV_RANK_THRESHOLD (50)', async () => {
+      // Perfectly flat underlying (rank falls back to 50 — see
+      // optionsBacktestSimulate.test.ts's own identical fixture/reasoning)
+      // also keeps BBB's own equity signal from firing, isolating this test
+      // to the options side alone.
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, DTE_DAYS);
+      const T = yearsFor(DTE_DAYS);
+      const longEntry = premiumFor(100, AUTO_LONG_STRIKE, T);
+      const shortEntry = premiumFor(100, AUTO_SHORT_STRIKE, T);
+      mockContractBars({
+        [AUTO_LONG_TICKER]: [optionBar(signalDay, longEntry), optionBar(entryDay, longEntry, { open: longEntry })],
+        [AUTO_SHORT_TICKER]: [optionBar(signalDay, shortEntry), optionBar(entryDay, shortEntry, { open: shortEntry })],
+      });
+      const historyBySymbol = new Map([['BBB', flatHistory(signalDay, [entryDay])]]);
+      const contractsBySymbol = new Map([
+        [
+          'BBB',
+          [
+            contractRef(AUTO_LONG_TICKER, AUTO_LONG_STRIKE, expiration),
+            contractRef(AUTO_SHORT_TICKER, AUTO_SHORT_STRIKE, expiration),
+          ],
+        ],
+      ]);
+
+      const report = await simulateCombinedBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        baseConfig({
+          symbols: ['BBB'],
+          from: signalDay,
+          to: entryDay,
+          optionsDecisionConfig: { strategyType: 'auto' },
+        }),
+      );
+      expect(report.optionsTrades).toHaveLength(1);
+      expect(report.optionsTrades[0].kind).toBe('debit_spread');
+      expect(report.optionsTrades[0].shortContractTicker).toBe(AUTO_SHORT_TICKER);
+    });
+
+    it('resolves to single_leg per-day when IV rank is below AUTO_STRATEGY_IV_RANK_THRESHOLD (50)', async () => {
+      // A genuinely varying close series (large-amplitude early, tiny-amplitude
+      // recent) so computeIvContext's hv-estimate fallback derives a REAL
+      // [~0.016, ~0.98] realized-vol range (confirmed numerically in
+      // optionsBacktestSimulate.test.ts) — the fixed TARGET_SIGMA (0.3) used
+      // to price this test's option premium lands at roughly the 30th
+      // percentile: below the 50 auto threshold, but still under the 70
+      // ivRankMax ceiling, so entry rules don't reject the contract first.
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const expiration = d(signalDay, DTE_DAYS);
+      const T = yearsFor(DTE_DAYS);
+      const closes: number[] = [];
+      for (let i = 60; i >= 0; i--) {
+        const amplitude = i > 30 ? 3 : 0.05;
+        closes.push(100 + (i % 2 === 0 ? 1 : -1) * amplitude);
+      }
+      const underlyingCandles: Candle[] = closes.map((close, idx) => {
+        const day = d(signalDay, -(60 - idx));
+        return {
+          time: Date.parse(`${day}T00:00:00Z`),
+          open: close,
+          high: close + 0.1,
+          low: close - 0.1,
+          close,
+          volume: 500_000,
+        };
+      });
+      const lastClose = closes[closes.length - 1];
+      const premium = premiumFor(lastClose, STRIKE, T, TARGET_SIGMA);
+      mockContractBars({
+        [CALL_TICKER]: [optionBar(signalDay, premium), optionBar(entryDay, premium, { open: premium })],
+      });
+      const historyBySymbol = new Map([['BBB', [...underlyingCandles, equityBar(entryDay, { close: lastClose })]]]);
+      const contractsBySymbol = new Map([['BBB', [contractRef(CALL_TICKER, STRIKE, expiration)]]]);
+
+      const report = await simulateCombinedBacktest(
+        historyBySymbol,
+        contractsBySymbol,
+        baseConfig({
+          symbols: ['BBB'],
+          from: signalDay,
+          to: entryDay,
+          // This fixture's real (non-degenerate) price variance — needed for
+          // a genuine sub-50 IV rank — otherwise trips max_correlated_exposure
+          // against the (unmocked) benchmark series; relaxed here since
+          // correlated-exposure interaction isn't what this test is about
+          // (same convention as the "net-debit riskAmount" test above).
+          maxCorrelatedExposurePct: 100,
+          optionsDecisionConfig: { strategyType: 'auto' },
+        }),
+      );
+      expect(report.optionsTrades).toHaveLength(1);
+      expect(report.optionsTrades[0].kind).toBe('single_leg');
+      expect(report.optionsTrades[0].shortContractTicker).toBeUndefined();
+    });
+  });
+
   describe('directionMode', () => {
     it("'both' produces a BUY equity signal + CALL options signal on an uptrending underlying, and a SELL equity signal + PUT options signal on a downtrending one — sharing ONE combined run", async () => {
       const signalDay = '2024-03-01';

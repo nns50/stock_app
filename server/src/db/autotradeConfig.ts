@@ -38,8 +38,12 @@ export type TradeDirectionMode = 'long' | 'short' | 'both';
  *  phase 9/10's own deferred "debit spread" follow-up). 'single_leg' (long
  *  call/put) by default — a debit spread caps both max loss AND max gain, a
  *  genuinely different risk/reward trade a human should opt into explicitly,
- *  not something the loop silently switches to based on market conditions. */
-export type OptionsStrategyType = 'single_leg' | 'debit_spread';
+ *  not something the loop silently switches to based on market conditions.
+ *  'auto' (2026-07-18) is the one deliberate exception to that: it picks
+ *  single_leg vs. debit_spread PER CANDIDATE from that candidate's own IV
+ *  rank (see optionsDecide.ts's AUTO_STRATEGY_IV_RANK_THRESHOLD) — still an
+ *  explicit opt-in a human chooses once, not a silent default. */
+export type OptionsStrategyType = 'single_leg' | 'debit_spread' | 'auto';
 
 export interface AutotradeConfig {
   /** Master on/off for the auto-trading execution loop. */
@@ -742,7 +746,9 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       return Number.isFinite(n) && n > 0 && n <= 1 ? n : d.liveOptionsProbationSizeMultiplier;
     })(),
     optionsStrategyType:
-      input.optionsStrategyType === 'debit_spread' || input.optionsStrategyType === 'single_leg'
+      input.optionsStrategyType === 'debit_spread' ||
+      input.optionsStrategyType === 'single_leg' ||
+      input.optionsStrategyType === 'auto'
         ? input.optionsStrategyType
         : d.optionsStrategyType,
     optionsStopLossPct: pct(input.optionsStopLossPct, d.optionsStopLossPct),
