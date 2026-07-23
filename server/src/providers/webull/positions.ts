@@ -76,16 +76,23 @@ const today = () => new Date().toISOString().slice(0, 10);
  *  unusable). `accountId` is stamped onto the result so the reconciliation
  *  below can tell one brokerage account's holdings apart from another's — see
  *  the account_id column comment in db/index.ts for why that matters. */
-// Field-name aliases for an option's three defining attributes. Webull's
-// positions payload shape isn't published and hasn't been confirmed against a
-// real account holding options, so these cover both the snake_case the rest of
-// this mapper reads and the camelCase Webull's v2 OpenAPI uses on some
-// surfaces, plus a few common broker synonyms (`right` = C/P, `strikePrice`,
-// `expirationDate`). Broadening these is safe — an extra alias can only help a
-// real option row parse; a stock row won't carry all three (see
-// hasFullOptionShape below).
+// Field-name aliases for an option's three defining attributes. A real Webull
+// account confirmed (2026-07-23) that options come back as a STRATEGY container
+// whose contract details live one level down in a `legs` array — the strike is
+// `option_exercise_price`, the type `option_type`, the expiry
+// `option_expire_date` — NOT at the top level. The extra snake_case/camelCase/
+// synonym aliases (`right` = C/P, `strikePrice`, `expirationDate`, …) are kept
+// for robustness against other shapes. Broadening these is safe — an extra
+// alias can only help a real option row parse; a stock row won't carry all
+// three (see hasFullOptionShape below).
 const OPTION_TYPE_KEYS = ['option_type', 'put_call', 'call_or_put', 'optionType', 'contract_type', 'right', 'cp_flag'];
-const OPTION_STRIKE_KEYS = ['strike_price', 'strike', 'strikePrice', 'exercise_price'];
+const OPTION_STRIKE_KEYS = [
+  'option_exercise_price', // confirmed Webull field
+  'strike_price',
+  'strike',
+  'strikePrice',
+  'exercise_price',
+];
 const OPTION_EXPIRY_KEYS = [
   'option_expire_date',
   'expiration',
@@ -95,17 +102,38 @@ const OPTION_EXPIRY_KEYS = [
   'expirationDate',
   'maturity_date',
 ];
+const OPTION_MULTIPLIER_KEYS = ['option_contract_multiplier', 'multiplier', 'unit'];
 
-/** True when a raw row carries any option-defining field or an option asset
- *  type — used to tell "this looked like an option but couldn't be parsed"
- *  (worth surfacing to the user) apart from an ordinary unmappable row. Does
- *  NOT require the full shape (unlike the mapper's own gate): a partial option
- *  row is exactly the case we most want to flag. */
+/** For a single-leg option strategy, Webull nests the contract details in a
+ *  one-element `legs` array; returns that leg so the mapper can read the
+ *  option fields from it. Returns null for a flat row (no legs — the leg
+ *  fields are read from the top level instead) OR a genuine MULTI-leg strategy
+ *  (a spread), which the journal's one-contract-per-row `positions` table
+ *  can't represent as a single row — and which the payload gives no per-leg
+ *  buy/sell side to split correctly — so it's deliberately left unmapped
+ *  (surfaced via the preview's unmappedOptions count) rather than imported
+ *  wrong. */
+function singleOptionLeg(p: Record<string, unknown>): Record<string, unknown> | null {
+  const legs = p.legs;
+  if (Array.isArray(legs) && legs.length === 1 && legs[0] && typeof legs[0] === 'object') {
+    return legs[0] as Record<string, unknown>;
+  }
+  return null;
+}
+
+/** True when a raw row carries any option-defining field, an option asset
+ *  type, or a nested legs array — used to tell "this looked like an option but
+ *  couldn't be parsed" (worth surfacing to the user) apart from an ordinary
+ *  unmappable row. Does NOT require the full shape (unlike the mapper's own
+ *  gate): a partial or multi-leg option row is exactly the case we most want
+ *  to flag. */
 export function looksLikeOption(p: Record<string, unknown>): boolean {
   const rawType = String(pick(p, ['asset_type', 'instrument_type', 'category', 'sec_type']) ?? '').toUpperCase();
   if (rawType.includes('OPTION')) return true;
+  if (Array.isArray(p.legs) && p.legs.length > 0) return true;
+  const leg = singleOptionLeg(p) ?? p;
   return [...OPTION_TYPE_KEYS, ...OPTION_STRIKE_KEYS, ...OPTION_EXPIRY_KEYS].some(
-    (k) => p[k] !== null && p[k] !== undefined && p[k] !== '',
+    (k) => leg[k] !== null && leg[k] !== undefined && leg[k] !== '',
   );
 }
 
@@ -126,14 +154,16 @@ export function mapWebullPosition(p: Record<string, unknown>, accountId: string)
   const entryDate =
     toIsoDate(pick(p, ['open_date', 'entry_date', 'position_date', 'create_time', 'created_at'])) ?? today();
 
-  // Parse the option attributes up front so the asset type can be INFERRED
-  // from a fully-formed option shape even when the payload's own type field is
-  // missing or a code we don't recognize (a real cause of options silently
-  // never importing). Requiring all three (type + strike + expiration) keeps a
-  // plain stock — which never carries all three — from being misclassified.
-  const optionType = toOptionType(pick(p, OPTION_TYPE_KEYS));
-  const strike = num(pick(p, OPTION_STRIKE_KEYS));
-  const expiration = toIsoDate(pick(p, OPTION_EXPIRY_KEYS));
+  // The option's defining fields live in the single leg (Webull's confirmed
+  // shape) when present, else at the top level (a flat row). Parse them up
+  // front so the asset type can be INFERRED from a fully-formed option shape
+  // even when the top-level type field is missing/unrecognized. Requiring all
+  // three (type + strike + expiration) keeps a plain stock — which never
+  // carries all three — from being misclassified.
+  const optSrc = singleOptionLeg(p) ?? p;
+  const optionType = toOptionType(pick(optSrc, OPTION_TYPE_KEYS));
+  const strike = num(pick(optSrc, OPTION_STRIKE_KEYS));
+  const expiration = toIsoDate(pick(optSrc, OPTION_EXPIRY_KEYS));
   const hasFullOptionShape = !!optionType && strike !== undefined && !!expiration;
   const assetType: AssetType = rawType.includes('OPTION') || hasFullOptionShape ? 'option' : 'stock';
 
@@ -154,10 +184,12 @@ export function mapWebullPosition(p: Record<string, unknown>, accountId: string)
     out.optionType = optionType;
     out.strike = strike;
     out.expiration = expiration;
-    out.multiplier = num(pick(p, ['multiplier', 'unit'])) ?? 100;
-    // An option we can't fully describe can't be journaled. (The preview's
-    // unmappedOptions count surfaces how often this happens, so a payload
-    // shape these aliases still don't cover is visible rather than silent.)
+    out.multiplier = num(pick(optSrc, OPTION_MULTIPLIER_KEYS)) ?? 100;
+    // An option we can't fully describe can't be journaled — this is the path a
+    // genuine MULTI-leg strategy (a spread) also falls through, since
+    // singleOptionLeg() returns null for it and the top level has no strike/
+    // expiration. The preview's unmappedOptions count surfaces how often this
+    // happens, so a shape these aliases still don't cover stays visible.
     if (!out.optionType || !out.strike || !out.expiration) return null;
   }
 
