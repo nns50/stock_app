@@ -16,6 +16,7 @@ import {
   Modal,
   NumberInput,
   PageHeader,
+  Segmented,
   Spinner,
   StatTile,
 } from '../components/ui';
@@ -49,6 +50,10 @@ import type {
   SimulatedOptionsTrade,
   SimulatedTrade,
   SymbolEvents,
+  TargetTuneResult,
+  TunablePatch,
+  TuneBand,
+  TuneBasis,
   WalkForwardResponse,
   WalkForwardWindowResult,
 } from '../api/types';
@@ -1802,6 +1807,272 @@ function ParameterSweepTable({ rows, baseValue }: { rows: SweepRow[]; baseValue:
   );
 }
 
+// Human labels + formatting for the tunable-patch keys the "Tune from target"
+// preview shows before -> after. Only these keys are ever in a tune patch (see
+// TunablePatch / targetTune.ts's allowlist).
+const TUNE_FIELD_LABELS: Record<keyof TunablePatch, string> = {
+  riskProfile: 'Risk profile (label)',
+  maxConcurrentPositions: 'Max concurrent positions',
+  riskPerTradePct: 'Risk per trade',
+  maxDailyDrawdownPct: 'Daily drawdown halt',
+  stepDownAfterLosses: 'Step-down after losses',
+  stepDownSizeCutPct: 'Step-down size cut',
+  maxAggregateOpenRiskPct: 'Max aggregate open risk',
+  maxCorrelatedExposurePct: 'Max correlated exposure',
+  maxSectorExposurePct: 'Max sector exposure',
+  maxTradesPerDay: 'Max trades/day',
+  minRelVol: 'Min relative volume',
+  maxTickerAtrPct: 'Max ticker ATR%',
+  maxMarketAtrPct: 'Max market ATR%',
+  targetRMultiple: 'Target R multiple',
+  liveMaxOrderUsd: 'Live max order',
+  liveMaxDailyLossUsd: 'Live max daily loss',
+  liveMaxOrdersPerDay: 'Live max orders/day',
+  liveOptionsMaxOrderUsd: 'Live options max order',
+  liveOptionsMaxDailyLossUsd: 'Live options max daily loss',
+  liveOptionsMaxOrdersPerDay: 'Live options max orders/day',
+  optionsDeltaMin: 'Options delta min',
+  optionsDeltaMax: 'Options delta max',
+  optionsMaxSpreadPct: 'Options max spread%',
+  optionsMinDte: 'Options min DTE',
+  optionsMaxDte: 'Options max DTE',
+  optionsIvRankMax: 'Options IV-rank max',
+  optionsStopLossPct: 'Options stop-loss%',
+  optionsTakeProfitPct: 'Options take-profit%',
+};
+
+const USD_TUNE_KEYS = new Set<keyof TunablePatch>([
+  'liveMaxOrderUsd',
+  'liveMaxDailyLossUsd',
+  'liveOptionsMaxOrderUsd',
+  'liveOptionsMaxDailyLossUsd',
+]);
+const PCT_TUNE_KEYS = new Set<keyof TunablePatch>([
+  'riskPerTradePct',
+  'maxDailyDrawdownPct',
+  'stepDownSizeCutPct',
+  'maxAggregateOpenRiskPct',
+  'maxCorrelatedExposurePct',
+  'maxSectorExposurePct',
+  'maxTickerAtrPct',
+  'maxMarketAtrPct',
+  'optionsMaxSpreadPct',
+  'optionsIvRankMax',
+  'optionsStopLossPct',
+  'optionsTakeProfitPct',
+]);
+
+function fmtTuneValue(key: keyof TunablePatch, value: TunablePatch[keyof TunablePatch]): string {
+  if (typeof value === 'string') return value; // riskProfile
+  if (USD_TUNE_KEYS.has(key)) return fmtUsd(value);
+  if (PCT_TUNE_KEYS.has(key)) return `${fmtNum(value)}%`;
+  return fmtNum(value);
+}
+
+const BAND_LABEL: Record<TuneBand, string> = {
+  conservative: 'Conservative',
+  moderate: 'Moderate',
+  aggressive: 'Aggressive',
+};
+
+/**
+ * "Tune from target" — set a target daily gain % and let it derive the whole
+ * risk/aggressiveness config from that plus your account equity, under either
+ * sizing basis. A preview (every changed field, before -> after) + warnings;
+ * nothing is written until you Apply. Mirrors the one-shot, review-then-apply
+ * shape of "Suggest from equity" — every field stays editable afterward. Gated
+ * on equity being set, since every derived number scales with it.
+ */
+export function TuneFromTargetSection({
+  config,
+  onApply,
+  applying,
+}: {
+  config: AutotradeConfig;
+  onApply: (patch: TunablePatch, band: TuneBand) => Promise<void>;
+  applying: boolean;
+}) {
+  const [target, setTarget] = useState<number | undefined>(5);
+  const [basis, setBasis] = useState<TuneBasis>('expected');
+  const [preview, setPreview] = useState<TargetTuneResult | undefined>();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  const equitySet = config.accountEquityUsd != null;
+
+  // Re-preview whenever target/basis change (debounced), so the table + risk %
+  // update live as the user flips the basis toggle — the whole point of having
+  // both bases one click apart.
+  useEffect(() => {
+    if (!equitySet || target == null || target <= 0) {
+      setPreview(undefined);
+      setError(undefined);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    const t = setTimeout(() => {
+      client
+        .tuneFromTargetPreview({ targetDailyGainPct: target, basis })
+        .then((r) => {
+          if (!cancelled) {
+            setPreview(r);
+            setError(undefined);
+          }
+        })
+        .catch((e) => {
+          if (!cancelled) {
+            setPreview(undefined);
+            setError((e as Error).message);
+          }
+        })
+        .finally(() => !cancelled && setLoading(false));
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [target, basis, equitySet]);
+
+  const changedRows = preview
+    ? (Object.keys(preview.patch) as (keyof TunablePatch)[])
+        .map((key) => ({ key, before: config[key], after: preview.patch[key] }))
+        .filter((r) => r.before !== r.after)
+    : [];
+
+  const resetToModerate = async () => {
+    try {
+      const { patch } = await client.tuneModerateBaseline();
+      await onApply(patch, 'moderate');
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  return (
+    <CollapsibleCard id="autotrade.config.tuneFromTarget" title="Tune from target daily gain" defaultCollapsed>
+      {!equitySet ? (
+        <div className="text-sm text-slate-400 py-2">
+          Set <span className="font-medium text-slate-200">Account equity</span> above first — every tuned number scales
+          with it.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-xs text-slate-500">
+            Pick a target daily gain % and a sizing basis; this derives the whole risk config (sizing, exposure caps,
+            screening filters, options selection, and the equity-scaled dollar caps) from it plus your{' '}
+            {fmtUsd(config.accountEquityUsd)} equity. A preview only — nothing changes until you Apply, and every field
+            stays editable afterward. <span className="text-slate-400">This is decision-support, not a promise:</span>{' '}
+            higher targets mean bigger swings both ways.
+          </p>
+
+          <div className="grid sm:grid-cols-2 gap-3 items-end">
+            <Field label="Target daily gain %" hint="On a good day, under the basis chosen at right.">
+              <NumberInput value={target} onChange={setTarget} step={1} placeholder="e.g. 5" />
+            </Field>
+            <Field
+              label="Sizing basis"
+              hint={
+                basis === 'expected'
+                  ? 'Expected: sizes so the target is your AVERAGE day (~45% win rate). More risk per trade.'
+                  : 'Perfect day: sizes so the target is your BEST-CASE ceiling (every trade wins). Less risk per trade.'
+              }
+            >
+              <Segmented
+                value={basis}
+                onChange={(v) => setBasis(v as TuneBasis)}
+                options={[
+                  { value: 'expected', label: 'Expected day' },
+                  { value: 'perfectDay', label: 'Perfect day' },
+                ]}
+              />
+            </Field>
+          </div>
+
+          {error && <div className="text-bear text-sm">{error}</div>}
+          {loading && !preview && <Spinner label="Computing tune…" />}
+
+          {preview && (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+                <span>
+                  Band: <span className="font-medium text-slate-200">{BAND_LABEL[preview.band]}</span>
+                </span>
+                <span>
+                  Risk / trade:{' '}
+                  <span
+                    className={cx('font-medium tabular-nums', preview.patch.riskPerTradePct >= 3 && 'text-amber-400')}
+                  >
+                    {fmtNum(preview.patch.riskPerTradePct)}%
+                  </span>
+                </span>
+                <span className="text-slate-500 text-xs">
+                  edge {fmtNum(preview.edgeR)}R/trade ·{' '}
+                  {preview.basis === 'expected' ? '~45% win assumption' : 'every-trade-wins ceiling'}
+                </span>
+              </div>
+
+              {preview.warnings.length > 0 && (
+                <ul className="space-y-1 text-[13px] text-amber-400/90">
+                  {preview.warnings.map((w, i) => (
+                    <li key={i}>⚠ {w}</li>
+                  ))}
+                </ul>
+              )}
+
+              {changedRows.length === 0 ? (
+                <div className="text-sm text-slate-500">No changes from your current settings.</div>
+              ) : (
+                <div className="overflow-x-auto rounded border border-ink-700/60">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-ink-600/60">
+                        <th className="py-1.5 px-2 font-medium">Setting</th>
+                        <th className="py-1.5 px-2 font-medium text-right">Current</th>
+                        <th className="py-1.5 px-2 font-medium text-right">Tuned</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {changedRows.map((r) => (
+                        <tr key={r.key} className="border-b border-ink-700/40 last:border-0">
+                          <td className="py-1 px-2 text-slate-300">{TUNE_FIELD_LABELS[r.key]}</td>
+                          <td className="py-1 px-2 text-right tabular-nums text-slate-500">
+                            {fmtTuneValue(r.key, r.before as TunablePatch[keyof TunablePatch])}
+                          </td>
+                          <td className="py-1 px-2 text-right tabular-nums text-slate-100">
+                            {fmtTuneValue(r.key, r.after)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  className="btn-primary"
+                  disabled={applying || changedRows.length === 0}
+                  onClick={() => onApply(preview.patch, preview.band)}
+                >
+                  {applying ? 'Applying…' : 'Apply tuned settings'}
+                </button>
+                <button className="btn-ghost" disabled={applying} onClick={resetToModerate}>
+                  Reset to moderate
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Never changes your live-enable switch, kill switch, account ID, or probation ramps — only the
+                risk/aggressiveness settings and the equity-scaled dollar caps. Not financial advice.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+    </CollapsibleCard>
+  );
+}
+
 export default function AutoTradePage() {
   const config = useAsync(() => client.autotradeConfig(), []);
   const exclusions = useAsync(() => client.autotradeExclusions(), []);
@@ -2161,6 +2432,38 @@ export default function AutoTradePage() {
       toast('Auto-trading settings saved', { type: 'success' });
     } catch (e) {
       toast((e as Error).message || 'Could not save settings', { type: 'error' });
+    }
+  };
+
+  // Apply a whole "tune from target" patch at once. Uses client.setAutotradeConfig
+  // directly (not saveConfig) because the tune patch also carries the live-cap
+  // fields, which saveConfig's narrower patch type doesn't include. Same
+  // AGGRESSIVE-confirm gate as saveConfig; config.reload() re-seeds every draft
+  // (including the live caps) via the [config.data] effect.
+  const [applyingTune, setApplyingTune] = useState(false);
+  const applyTunePatch = async (patch: TunablePatch, band: TuneBand) => {
+    if (patch.riskProfile === 'AGGRESSIVE' && riskProfile !== 'AGGRESSIVE') {
+      const ok = await confirm({
+        title: 'Apply an aggressive tune?',
+        body: `This ${BAND_LABEL[band].toLowerCase()} tune sizes up per-trade risk to ${fmtNum(patch.riskPerTradePct)}% and loosens the guardrails to chase a bigger daily gain. Losing streaks compound fast at this size. It never enables live trading on its own — but review every changed field before you do.`,
+        confirmLabel: 'Apply tuned settings',
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    setApplyingTune(true);
+    try {
+      await client.setAutotradeConfig({
+        ...patch,
+        confirmAggressive: patch.riskProfile === 'AGGRESSIVE' ? true : undefined,
+      });
+      config.reload();
+      refreshLiveData();
+      toast('Applied tuned settings — review the fields below', { type: 'success' });
+    } catch (e) {
+      toast((e as Error).message || 'Could not apply tuned settings', { type: 'error' });
+    } finally {
+      setApplyingTune(false);
     }
   };
 
@@ -3088,6 +3391,10 @@ export default function AutoTradePage() {
                   </Field>
                 </div>
               </CollapsibleCard>
+
+              {config.data && (
+                <TuneFromTargetSection config={config.data} onApply={applyTunePatch} applying={applyingTune} />
+              )}
 
               <CollapsibleCard id="autotrade.config.risk" title="Position sizing & risk guardrails">
                 <div className="grid sm:grid-cols-2 gap-3 items-end">

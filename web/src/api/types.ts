@@ -1338,6 +1338,58 @@ export interface SuggestedLiveCaps {
   liveMaxOrdersPerDay: number;
 }
 
+/** Which sizing assumption maps a target daily gain % to per-trade risk —
+ *  mirrors server/src/services/autotrading/targetTune.ts. */
+export type TuneBasis = 'expected' | 'perfectDay';
+export type TuneBand = 'conservative' | 'moderate' | 'aggressive';
+
+/** The subset of AutotradeConfig fields the "tune from target" generator
+ *  writes — the risk/aggressiveness axis, contract selection, and
+ *  equity-scaled dollar caps. Everything else in AutotradeConfig is left
+ *  untouched by the tuner (safety gates, methodology, exit-refinement,
+ *  autotune, etc.). Shape mirrors targetTune.ts's TunablePatch. */
+export type TunablePatch = Pick<
+  AutotradeConfig,
+  | 'riskProfile'
+  | 'maxConcurrentPositions'
+  | 'riskPerTradePct'
+  | 'maxDailyDrawdownPct'
+  | 'stepDownAfterLosses'
+  | 'stepDownSizeCutPct'
+  | 'maxAggregateOpenRiskPct'
+  | 'maxCorrelatedExposurePct'
+  | 'maxSectorExposurePct'
+  | 'maxTradesPerDay'
+  | 'minRelVol'
+  | 'maxTickerAtrPct'
+  | 'maxMarketAtrPct'
+  | 'targetRMultiple'
+  | 'liveMaxOrderUsd'
+  | 'liveMaxDailyLossUsd'
+  | 'liveMaxOrdersPerDay'
+  | 'liveOptionsMaxOrderUsd'
+  | 'liveOptionsMaxDailyLossUsd'
+  | 'liveOptionsMaxOrdersPerDay'
+  | 'optionsDeltaMin'
+  | 'optionsDeltaMax'
+  | 'optionsMaxSpreadPct'
+  | 'optionsMinDte'
+  | 'optionsMaxDte'
+  | 'optionsIvRankMax'
+  | 'optionsStopLossPct'
+  | 'optionsTakeProfitPct'
+>;
+
+export interface TargetTuneResult {
+  band: TuneBand;
+  basis: TuneBasis;
+  targetDailyGainPct: number;
+  edgeR: number;
+  rawRiskPerTradePct: number;
+  patch: TunablePatch;
+  warnings: string[];
+}
+
 export interface EquitySyncResult {
   ok: boolean;
   accountId?: string;

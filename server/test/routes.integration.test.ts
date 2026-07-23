@@ -867,6 +867,69 @@ describe('autotrade config routes (integration)', () => {
     });
   });
 
+  describe('tune-from-target routes', () => {
+    it('POST /tune/preview fails closed (400) when equity is unset', async () => {
+      const res = await post('/api/autotrade/tune/preview', { targetDailyGainPct: 5, basis: 'expected' });
+      expect(res.status).toBe(400);
+    });
+
+    it('POST /tune/preview returns a full patch + warnings once equity is set', async () => {
+      await put('/api/autotrade/config', { accountEquityUsd: 1000 });
+      const out = (await (
+        await post('/api/autotrade/tune/preview', { targetDailyGainPct: 5, basis: 'expected' })
+      ).json()) as {
+        band: string;
+        patch: { riskPerTradePct: number; liveMaxOrderUsd: number; riskProfile: string };
+        warnings: string[];
+      };
+      expect(out.band).toBe('moderate');
+      expect(out.patch.riskPerTradePct).toBeCloseTo(2.38, 1);
+      expect(out.patch.liveMaxOrderUsd).toBe(250); // 1000 * 0.25
+      // Preview alone must NOT persist anything — the config is untouched until
+      // the returned patch is applied through the ordinary PUT.
+      expect((await getJson('/api/autotrade/config')) as { riskPerTradePct: number }).toMatchObject({
+        riskPerTradePct: 1,
+      });
+    });
+
+    it('applying a preview patch through PUT /config actually persists it', async () => {
+      await put('/api/autotrade/config', { accountEquityUsd: 1000 });
+      const { patch } = (await (
+        await post('/api/autotrade/tune/preview', { targetDailyGainPct: 20, basis: 'expected' })
+      ).json()) as { patch: Record<string, unknown> };
+      // Aggressive band -> the patch carries riskProfile AGGRESSIVE, so the
+      // apply must include the confirmation the config route already enforces.
+      await put('/api/autotrade/config', { ...patch, confirmAggressive: true });
+      const final = (await getJson('/api/autotrade/config')) as { riskProfile: string; maxTradesPerDay: number };
+      expect(final.riskProfile).toBe('AGGRESSIVE');
+      expect(final.maxTradesPerDay).toBe(10);
+    });
+
+    it('every band shape the tuner emits is within the config route bounds (round-trips cleanly)', async () => {
+      await put('/api/autotrade/config', { accountEquityUsd: 1000 });
+      // conservative (2%), moderate (5%), aggressive (20%) — apply each preview
+      // and assert the route accepts it (200), catching any band value that
+      // falls outside the PUT's own Zod bounds.
+      for (const targetDailyGainPct of [2, 5, 20]) {
+        const { patch } = (await (
+          await post('/api/autotrade/tune/preview', { targetDailyGainPct, basis: 'expected' })
+        ).json()) as { patch: Record<string, unknown> };
+        const res = await put('/api/autotrade/config', { ...patch, confirmAggressive: true });
+        expect(res.status, `target ${targetDailyGainPct}% patch should be accepted`).toBe(200);
+      }
+    });
+
+    it('GET /tune/moderate returns the equity-scaled moderate baseline', async () => {
+      await put('/api/autotrade/config', { accountEquityUsd: 10000 });
+      const out = (await getJson('/api/autotrade/tune/moderate')) as {
+        patch: { riskPerTradePct: number; liveMaxOrderUsd: number; riskProfile: string };
+      };
+      expect(out.patch.riskPerTradePct).toBe(1);
+      expect(out.patch.liveMaxOrderUsd).toBe(2500); // 10000 * 0.25
+      expect(out.patch.riskProfile).toBe('MODERATE');
+    });
+  });
+
   describe('Phase 8: live-trading enable gate', () => {
     it('rejects enabling live trading with no confirmation phrase at all', async () => {
       const res = await put('/api/autotrade/config', { liveAccountId: 'ACC1', liveTradingEnabled: true });

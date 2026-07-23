@@ -766,6 +766,25 @@ shouldn't be a tab-switch away.
   once a minute even if you've picked a faster cadence, and skipping a refresh whenever
   the field has an unsaved manual edit so it never clobbers
   in-progress typing.
+- **Tune from target daily gain** (2026-07-23, collapsed by default, right below Core
+  settings) — instead of hand-setting the ~30 risk fields below one at a time, set a
+  **target daily gain %** and let it derive the whole risk config from that plus your
+  account equity. A **sizing basis** toggle decides how the target maps to per-trade
+  risk: **Expected day** sizes so the target is your _average_ outcome (assumes ~45% win
+  rate — more risk per trade), **Perfect day** sizes so it's your _best-case ceiling_
+  (every trade wins — less risk per trade). Higher targets loosen everything, not just
+  position size: the tool picks an aggressiveness band (conservative / moderate /
+  aggressive) from the target and sets exposure caps, screening filters, options
+  delta/DTE/IV selection, and the equity-scaled dollar caps to match. It shows a full
+  **preview — every changed field, current → tuned — plus warnings** (e.g. when the
+  target would need a dangerous per-trade risk, or when auto-tune is on and will later
+  move the risk % anyway); **nothing changes until you click Apply**, and every field
+  stays editable afterward. A **Reset to moderate** button restores the standard moderate
+  baseline, equity-scaled for your account. It deliberately **never touches your
+  live-enable switch, kill switch, account ID, or probation ramps** — only the
+  risk/aggressiveness settings and the dollar caps. Deliberately lets you push the target
+  high (it's your call), but higher targets mean bigger swings both ways — decision
+  support, never a promise of the gain. Needs account equity set first.
   Every guardrail the risk engine actually enforces is its own directly-editable field
   below account equity, independent of the risk-profile label above — switching
   Moderate ↔ Aggressive never silently changes any of them, matching how **max

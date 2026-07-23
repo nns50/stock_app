@@ -109,6 +109,9 @@ import type {
   AutotradeDashboard,
   PortfolioGreeks,
   SuggestedLiveCaps,
+  TuneBasis,
+  TargetTuneResult,
+  TunablePatch,
 } from './types';
 
 export class ApiError extends Error {
@@ -593,4 +596,7 @@ export const client = {
     api<AutotradeConfig>('/autotrade/kill-switch', { method: 'POST', body: JSON.stringify({ on }) }),
   syncAutotradeEquity: () => api<EquitySyncResult>('/autotrade/sync-equity', { method: 'POST' }),
   suggestAutotradeLiveCaps: () => api<SuggestedLiveCaps>('/autotrade/live-caps/suggest'),
+  tuneFromTargetPreview: (body: { targetDailyGainPct: number; basis: TuneBasis }) =>
+    api<TargetTuneResult>('/autotrade/tune/preview', { method: 'POST', body: JSON.stringify(body) }),
+  tuneModerateBaseline: () => api<{ patch: TunablePatch }>('/autotrade/tune/moderate'),
 };
