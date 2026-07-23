@@ -461,9 +461,13 @@ nudge, not a blocker — you can still save with items unchecked.
 - When a position has a stop/target, the row shows a **management line**: distance to
   stop (SL) and target (TP), plus the trade's **current open P&L in R** (`+1.4R`) — so
   you always know how the trade is doing *relative to what you risked*.
-- **exit** (manually-logged positions) records a (partial or full) exit — a journal entry
-  only, since there's no broker order to place against a trade you tracked by hand.
-- **close** (broker-tracked positions — imported from Webull, opened by a live fill, or
+- **exit** records a (partial or full) exit — a **journal entry only, no broker order**.
+  Available on **every** open position, including broker-tracked (live/Webull) ones: use it
+  when you've **already sold a position outside the app** (directly in the Webull app, or in
+  an account the sync doesn't cover) and just want to record the exit, rather than place a
+  redundant real order or delete the row and lose its P&L. (Before 2026-07-23 a live position
+  only offered **close**, leaving no clean way to log an already-sold one.)
+- **close** (broker-tracked positions only — imported from Webull, opened by a live fill, or
   linked to a live order) instead places a **real closing order** at your broker: full
   remaining quantity, a marketable-limit price near the current market, cancelling any
   resting stop/target first. Gated by the same type-to-confirm phrase (`SELL <qty>
@@ -471,7 +475,9 @@ nudge, not a blocker — you can still save with items unchecked.
   type it, enter your Webull cash account_id (remembered from Trade), and the server
   re-checks `TRADING_ENABLED`, every guardrail, and the kill switch before it fires. The
   order can take a few minutes to fill; the position updates once it does (automatically,
-  via the same background Webull sync that reconciles any other live order).
+  via the same background Webull sync that reconciles any other live order). Use **close**
+  when you still hold the position and want the app to sell it; use **exit** when you've
+  already sold it elsewhere.
 - **journal** edits tags/grade/notes, and (2026-07-17) which **Webull account** the lot
   lives in — shown as a small chip next to the symbol whenever it's set, so you can tell
   positions in different real accounts (e.g. cash vs. margin) apart at a glance. The same

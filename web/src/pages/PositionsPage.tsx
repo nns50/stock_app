@@ -344,20 +344,33 @@ const PositionRow = memo(
           <PnL value={pnl.returnPct} format={fmtPct} />
         </td>
         <td className="td text-right whitespace-nowrap">
-          {p.status === 'open' &&
-            (isLivePosition(p) ? (
+          {p.status === 'open' && (
+            <>
+              {/* Every open position can record a manual exit — including a
+                  live/Webull one you already sold OUTSIDE the app (directly at
+                  the broker). This just writes the exit to your journal; it does
+                  NOT place an order. Previously a live position only offered
+                  "close" (a real broker order), leaving no clean way to record
+                  an already-sold position without placing a redundant order or
+                  deleting it. */}
               <button
-                className="text-xs text-bear hover:underline mr-2"
-                onClick={() => onClose(p)}
-                title="Place a real closing order at your broker"
+                className="text-xs text-accent hover:underline mr-2"
+                onClick={() => onExit(p)}
+                title="Record an exit in your journal — no broker order (use this if you already sold it at the broker)"
               >
-                close
-              </button>
-            ) : (
-              <button className="text-xs text-accent hover:underline mr-2" onClick={() => onExit(p)}>
                 exit
               </button>
-            ))}
+              {isLivePosition(p) && (
+                <button
+                  className="text-xs text-bear hover:underline mr-2"
+                  onClick={() => onClose(p)}
+                  title="Place a real closing order at your broker"
+                >
+                  close
+                </button>
+              )}
+            </>
+          )}
           <button className="text-xs text-slate-400 hover:text-slate-200 mr-2" onClick={() => onEdit(p)}>
             journal
           </button>
