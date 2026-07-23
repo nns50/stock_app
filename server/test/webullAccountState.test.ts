@@ -48,9 +48,20 @@ describe('webull account state', () => {
       realizedPnlTodayUsd: 0,
       ordersToday: 0,
       currentPositionQty: 0,
+      settledCashUsd: 10.81,
     });
     expect(r.optionBuyingPowerUsd).toBe(10.81);
     expect(r.netLiquidationUsd).toBe(15.31);
+  });
+
+  it('leaves settledCashUsd undefined (not a fabricated 0) when the broker omits it', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const { settled_cash, ...assetWithoutSettledCash } = BALANCE.account_currency_assets[0];
+    void settled_cash;
+    const balanceWithoutSettledCash = { ...BALANCE, account_currency_assets: [assetWithoutSettledCash] };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp(balanceWithoutSettledCash));
+    const r = await webullAccountState('ACC1');
+    expect(r.state?.settledCashUsd).toBeUndefined();
   });
 
   it('sums the signed position for the requested symbol', async () => {

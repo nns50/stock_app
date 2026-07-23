@@ -345,7 +345,12 @@ strikes); other structures (straddles, iron condors) aren't live-placeable yet.
   banner) appears when US regular hours (**9:30 a.m.–4:00 p.m. ET**) are closed — options can't
   fill outside them, and a regular-session stock order will wait for the open. It's a warning,
   not a block (the broker is the final authority); off-hours stock orders you've set to
-  Extended/Overnight don't trigger it.
+  Extended/Overnight don't trigger it. A **⚠ settled_cash** warning (2026-07-19) appears when a
+  buy's notional exceeds your account's **settled cash** — a cash account risks a Good Faith
+  Violation if you sell a position bought with proceeds that haven't cleared yet (T+1) before
+  that funding trade settles. Also just a warning, since exact GFV detection would need
+  per-trade settlement-date tracking this app doesn't keep; it flags the risk rather than
+  guessing at it.
 - **Place order** — appears only when a live preview **would submit**. Type the shown phrase
   (e.g. `BUY 1 NUVB`) to arm, then place. The **server** re-pulls your account, re-runs every
   guardrail, checks the kill switch + `TRADING_ENABLED`, and writes the intent + broker
