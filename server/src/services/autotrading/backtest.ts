@@ -11,6 +11,7 @@ import {
 } from '../../indicators/screener';
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } from './decide';
+import { computeScaleIn } from './scaleIn';
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
 import { RiskProfileName } from '../../db/autotradeConfig';
 import { defaultAutotradeScreenerConfig, pickDirection } from './screen';
@@ -155,6 +156,9 @@ export interface BacktestConfig extends Partial<BacktestRiskParams> {
   trailStopRMultiple?: number;
   partialExitRMultiple?: number;
   partialExitPct?: number;
+  addOnTriggerRMultiple?: number;
+  addOnSizePct?: number;
+  maxAddOns?: number;
   screenerConfig?: Partial<ScreenerConfig>;
   decisionConfig?: Partial<DecisionConfig>;
   /** 'long' (default, matches every backtest before this existed) | 'short' |
@@ -232,6 +236,8 @@ interface OpenPosition {
   /** Whether the one-time partial-exit trigger has already fired for this
    *  position. */
   partialExitTaken: boolean;
+  /** How many times this position has been scaled into (pyramided). */
+  addOnsTaken: number;
   quantity: number;
   riskAmount: number;
   notional: number;
@@ -478,6 +484,7 @@ export function simulateBacktest(
           initialStop: p.signal.stop,
           bestPrice: candles![idx].open,
           partialExitTaken: false,
+          addOnsTaken: 0,
           quantity: p.quantity,
           riskAmount: p.riskAmount,
           notional: p.notional,
@@ -546,6 +553,7 @@ export function simulateBacktest(
             ? (bar.close - pos.entryPrice) / initialStopDistance
             : (pos.entryPrice - bar.close) / initialStopDistance;
 
+          let partialFiredThisBar = false;
           const partialExitRMultiple = cfg.partialExitRMultiple ?? 0;
           if (partialExitRMultiple > 0 && !pos.partialExitTaken && rMultiple >= partialExitRMultiple) {
             const closeQty = Math.floor(pos.quantity * ((cfg.partialExitPct ?? 0) / 100));
@@ -569,6 +577,7 @@ export function simulateBacktest(
               equity += partialPnl;
               pos.quantity -= closeQty;
               pos.partialExitTaken = true;
+              partialFiredThisBar = true;
             }
           }
 
@@ -589,6 +598,37 @@ export function simulateBacktest(
               : Math.min(candidateStop, trailingCandidate);
           }
           pos.stop = candidateStop;
+
+          // Scale into a winner (pyramiding) — mirrors execute.ts's paper loop:
+          // add against the bar CLOSE, never in the same bar as a partial
+          // scale-out, blending the entry and raising the stop. The added
+          // shares realize their P&L at exit via the blended entryPrice. See
+          // services/autotrading/scaleIn.ts.
+          if (!partialFiredThisBar) {
+            const add = computeScaleIn(
+              {
+                side: pos.side,
+                entryPrice: pos.entryPrice,
+                initialStopPrice: pos.initialStop,
+                stopPrice: pos.stop,
+                quantity: pos.quantity,
+                addOnsTaken: pos.addOnsTaken,
+              },
+              bar.close,
+              {
+                addOnTriggerRMultiple: cfg.addOnTriggerRMultiple ?? 0,
+                addOnSizePct: cfg.addOnSizePct ?? 0,
+                maxAddOns: cfg.maxAddOns ?? 0,
+              },
+            );
+            if (add) {
+              pos.quantity = add.newQuantity;
+              pos.entryPrice = add.blendedEntry;
+              pos.initialStop = add.newInitialStopPrice;
+              pos.stop = add.newStopPrice;
+              pos.addOnsTaken += 1;
+            }
+          }
         }
         stillOpen.push(pos);
       }

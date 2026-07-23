@@ -77,6 +77,9 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     trailStopRMultiple: 0,
     partialExitRMultiple: 0,
     partialExitPct: 50,
+    addOnTriggerRMultiple: 0,
+    addOnSizePct: 50,
+    maxAddOns: 0,
     optionsStopLossPct: 0,
     optionsTakeProfitPct: 0,
     optionsBreakevenTriggerPct: 0,
@@ -636,6 +639,26 @@ describe('AutoTradePage', () => {
 
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ optionsTrailStartPct: 20, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new scale-in (add-on) trigger R-multiple', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Scale-in trigger (R-multiple)').closest('label')!;
+    const input = within(field).getByRole('textbox');
+    fireEvent.change(input, { target: { value: '1.5' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save scale-in trigger' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ addOnTriggerRMultiple: 1.5, confirmAggressive: undefined }),
     );
   });
 

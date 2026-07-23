@@ -19,9 +19,11 @@ import {
   partialClosePaperPosition,
   ratchetPaperPositionStop,
   updatePaperPositionBestPrice,
+  addToPaperPosition,
   PaperExitReason,
   PaperPosition,
 } from '../../db/autotradePaperPositions';
+import { computeScaleIn } from './scaleIn';
 import { getProvider } from '../../providers';
 import { mapPool } from '../../util/async';
 
@@ -457,6 +459,7 @@ function applyPositionManagement(pos: PaperPosition, last: number, cfg: ReturnTy
   // Partial exit — one-time, checked first (a scale-out is the "bigger"
   // action; breakeven/trailing below just adjust where the remainder's stop
   // sits). partialExitTaken guards against re-firing every cycle once done.
+  let partialFired = false;
   if (cfg.partialExitRMultiple > 0 && !pos.partialExitTaken && rMultiple >= cfg.partialExitRMultiple) {
     const closeQty = Math.floor(pos.quantity * (cfg.partialExitPct / 100));
     // Skip (retried next cycle) rather than force an edge case: 0 rounds to
@@ -465,6 +468,7 @@ function applyPositionManagement(pos: PaperPosition, last: number, cfg: ReturnTy
     if (closeQty > 0 && closeQty < pos.quantity) {
       const updated = partialClosePaperPosition(pos.id, { quantity: closeQty, exitPrice: last });
       if (updated) {
+        partialFired = true;
         const pnl = (last - pos.entryPrice) * closeQty * (long ? 1 : -1);
         logAutotradeEvent({
           symbol: pos.symbol,
@@ -505,5 +509,48 @@ function applyPositionManagement(pos: PaperPosition, last: number, cfg: ReturnTy
       detail: { from: pos.stopPrice, to: candidateStop, rMultiple },
       riskProfile: pos.riskProfile,
     });
+  }
+
+  // Scale into a winner (pyramiding) — last, and never in the same cycle as a
+  // partial scale-OUT (they'd fight over the same quantity). Uses the stop as
+  // it stands AFTER any ratchet above (candidateStop), so the add can only
+  // raise it further, never undo a trail. See services/autotrading/scaleIn.ts.
+  if (!partialFired) {
+    const add = computeScaleIn(
+      {
+        side: pos.side,
+        entryPrice: pos.entryPrice,
+        initialStopPrice: pos.initialStopPrice,
+        stopPrice: candidateStop,
+        quantity: pos.quantity,
+        addOnsTaken: pos.addOnsTaken,
+      },
+      last,
+      cfg,
+    );
+    if (add) {
+      const updated = addToPaperPosition(pos.id, {
+        addQty: add.addQty,
+        blendedEntry: add.blendedEntry,
+        newInitialStopPrice: add.newInitialStopPrice,
+        newStopPrice: add.newStopPrice,
+      });
+      if (updated) {
+        logAutotradeEvent({
+          symbol: pos.symbol,
+          stage: 'execution',
+          action: 'paper_scaled_in',
+          detail: {
+            addQty: add.addQty,
+            addPrice: last,
+            blendedEntry: add.blendedEntry,
+            newStop: add.newStopPrice,
+            addOnsTaken: updated.addOnsTaken,
+            rMultiple: add.rMultiple,
+          },
+          riskProfile: pos.riskProfile,
+        });
+      }
+    }
   }
 }

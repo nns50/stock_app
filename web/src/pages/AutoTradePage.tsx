@@ -2175,6 +2175,9 @@ export default function AutoTradePage() {
   const [trailStopRMultipleDraft, setTrailStopRMultipleDraft] = useState<number | undefined>();
   const [partialExitRMultipleDraft, setPartialExitRMultipleDraft] = useState<number | undefined>();
   const [partialExitPctDraft, setPartialExitPctDraft] = useState<number | undefined>();
+  const [addOnTriggerRMultipleDraft, setAddOnTriggerRMultipleDraft] = useState<number | undefined>();
+  const [addOnSizePctDraft, setAddOnSizePctDraft] = useState<number | undefined>();
+  const [maxAddOnsDraft, setMaxAddOnsDraft] = useState<number | undefined>();
   const [optionsStopLossPctDraft, setOptionsStopLossPctDraft] = useState<number | undefined>();
   const [optionsTakeProfitPctDraft, setOptionsTakeProfitPctDraft] = useState<number | undefined>();
   const [optionsBreakevenTriggerPctDraft, setOptionsBreakevenTriggerPctDraft] = useState<number | undefined>();
@@ -2255,6 +2258,9 @@ export default function AutoTradePage() {
     setTrailStopRMultipleDraft(config.data.trailStopRMultiple);
     setPartialExitRMultipleDraft(config.data.partialExitRMultiple);
     setPartialExitPctDraft(config.data.partialExitPct);
+    setAddOnTriggerRMultipleDraft(config.data.addOnTriggerRMultiple);
+    setAddOnSizePctDraft(config.data.addOnSizePct);
+    setMaxAddOnsDraft(config.data.maxAddOns);
     setOptionsStopLossPctDraft(config.data.optionsStopLossPct);
     setOptionsTakeProfitPctDraft(config.data.optionsTakeProfitPct);
     setOptionsBreakevenTriggerPctDraft(config.data.optionsBreakevenTriggerPct);
@@ -2324,6 +2330,9 @@ export default function AutoTradePage() {
     trailStopRMultiple?: number;
     partialExitRMultiple?: number;
     partialExitPct?: number;
+    addOnTriggerRMultiple?: number;
+    addOnSizePct?: number;
+    maxAddOns?: number;
     optionsStopLossPct?: number;
     optionsTakeProfitPct?: number;
     optionsBreakevenTriggerPct?: number;
@@ -2407,6 +2416,9 @@ export default function AutoTradePage() {
       setTrailStopRMultipleDraft(saved.trailStopRMultiple);
       setPartialExitRMultipleDraft(saved.partialExitRMultiple);
       setPartialExitPctDraft(saved.partialExitPct);
+      setAddOnTriggerRMultipleDraft(saved.addOnTriggerRMultiple);
+      setAddOnSizePctDraft(saved.addOnSizePct);
+      setMaxAddOnsDraft(saved.maxAddOns);
       setOptionsStopLossPctDraft(saved.optionsStopLossPct);
       setOptionsTakeProfitPctDraft(saved.optionsTakeProfitPct);
       setOptionsBreakevenTriggerPctDraft(saved.optionsBreakevenTriggerPct);
@@ -4179,6 +4191,79 @@ export default function AutoTradePage() {
                           partialExitPctDraft < 0 ||
                           partialExitPctDraft > 100 ||
                           partialExitPctDraft === config.data?.partialExitPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Scale-in trigger (R-multiple)"
+                    hint="Scale into winners (PAPER + BACKTEST only): once unrealized gain reaches this many R, add more shares. Each add blends the entry, keeps the R denominator on the original risk, and raises the stop. 0 disables it. LIVE positions are unaffected."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={addOnTriggerRMultipleDraft}
+                        onChange={setAddOnTriggerRMultipleDraft}
+                        min={0}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save scale-in trigger"
+                        onClick={() =>
+                          addOnTriggerRMultipleDraft != null &&
+                          saveConfig({ addOnTriggerRMultiple: addOnTriggerRMultipleDraft })
+                        }
+                        disabled={
+                          addOnTriggerRMultipleDraft == null ||
+                          addOnTriggerRMultipleDraft < 0 ||
+                          addOnTriggerRMultipleDraft === config.data?.addOnTriggerRMultiple
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Scale-in size (% of current)"
+                    hint="Size of each add-on as a % of the position's current quantity. Only meaningful when the scale-in trigger and max add-ons are both nonzero."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={addOnSizePctDraft}
+                        onChange={setAddOnSizePctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save scale-in size"
+                        onClick={() => addOnSizePctDraft != null && saveConfig({ addOnSizePct: addOnSizePctDraft })}
+                        disabled={
+                          addOnSizePctDraft == null ||
+                          addOnSizePctDraft < 0 ||
+                          addOnSizePctDraft > 100 ||
+                          addOnSizePctDraft === config.data?.addOnSizePct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Max add-ons"
+                    hint="Hard cap on how many times a single position may be scaled into. 0 disables scaling in (same as a 0 trigger). Bounds how top-heavy a pyramid can get."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput value={maxAddOnsDraft} onChange={setMaxAddOnsDraft} min={0} step={1} />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max add-ons"
+                        onClick={() => maxAddOnsDraft != null && saveConfig({ maxAddOns: maxAddOnsDraft })}
+                        disabled={
+                          maxAddOnsDraft == null || maxAddOnsDraft < 0 || maxAddOnsDraft === config.data?.maxAddOns
                         }
                       >
                         Save

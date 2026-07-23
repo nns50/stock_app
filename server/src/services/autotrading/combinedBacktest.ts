@@ -11,6 +11,7 @@ import {
   scoreSymbolBothDirections,
 } from '../../indicators/screener';
 import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } from './decide';
+import { computeScaleIn } from './scaleIn';
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
 import { evaluateOptionsRiskCheck } from './optionsRiskCheck';
 import {
@@ -134,6 +135,9 @@ export interface CombinedBacktestConfig extends Partial<BacktestRiskParams> {
   trailStopRMultiple?: number;
   partialExitRMultiple?: number;
   partialExitPct?: number;
+  addOnTriggerRMultiple?: number;
+  addOnSizePct?: number;
+  maxAddOns?: number;
   screenerConfig?: Partial<ScreenerConfig>;
   decisionConfig?: Partial<DecisionConfig>;
   optionsDecisionConfig?: Partial<OptionsDecisionConfig>;
@@ -195,6 +199,8 @@ interface OpenEquityPosition {
    *  backtest.ts's own OpenPosition.bestPrice. */
   bestPrice: number;
   partialExitTaken: boolean;
+  /** How many times this position has been scaled into (pyramided). */
+  addOnsTaken: number;
   quantity: number;
   riskAmount: number;
   notional: number;
@@ -403,6 +409,7 @@ export async function simulateCombinedBacktest(
           initialStop: p.signal.stop,
           bestPrice: candles![idx].open,
           partialExitTaken: false,
+          addOnsTaken: 0,
           quantity: p.quantity,
           riskAmount: p.riskAmount,
           notional: p.notional,
@@ -462,6 +469,7 @@ export async function simulateCombinedBacktest(
             ? (bar.close - pos.entryPrice) / initialStopDistance
             : (pos.entryPrice - bar.close) / initialStopDistance;
 
+          let partialFiredThisBar = false;
           const partialExitRMultiple = cfg.partialExitRMultiple ?? 0;
           if (partialExitRMultiple > 0 && !pos.partialExitTaken && rMultiple >= partialExitRMultiple) {
             const closeQty = Math.floor(pos.quantity * ((cfg.partialExitPct ?? 0) / 100));
@@ -486,6 +494,7 @@ export async function simulateCombinedBacktest(
               equity += partialPnl;
               pos.quantity -= closeQty;
               pos.partialExitTaken = true;
+              partialFiredThisBar = true;
             }
           }
 
@@ -506,6 +515,35 @@ export async function simulateCombinedBacktest(
               : Math.min(candidateStop, trailingCandidate);
           }
           pos.stop = candidateStop;
+
+          // Scale into a winner (pyramiding) — mirrors backtest.ts's equity
+          // leg: add against the bar CLOSE, never in the same bar as a partial
+          // scale-out. See services/autotrading/scaleIn.ts.
+          if (!partialFiredThisBar) {
+            const add = computeScaleIn(
+              {
+                side: pos.side,
+                entryPrice: pos.entryPrice,
+                initialStopPrice: pos.initialStop,
+                stopPrice: pos.stop,
+                quantity: pos.quantity,
+                addOnsTaken: pos.addOnsTaken,
+              },
+              bar.close,
+              {
+                addOnTriggerRMultiple: cfg.addOnTriggerRMultiple ?? 0,
+                addOnSizePct: cfg.addOnSizePct ?? 0,
+                maxAddOns: cfg.maxAddOns ?? 0,
+              },
+            );
+            if (add) {
+              pos.quantity = add.newQuantity;
+              pos.entryPrice = add.blendedEntry;
+              pos.initialStop = add.newInitialStopPrice;
+              pos.stop = add.newStopPrice;
+              pos.addOnsTaken += 1;
+            }
+          }
         }
         stillOpenEquity.push(pos);
       }

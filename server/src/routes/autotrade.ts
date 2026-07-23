@@ -155,6 +155,10 @@ const configBody = z.object({
   trailStopRMultiple: z.number().nonnegative().optional(),
   partialExitRMultiple: z.number().nonnegative().optional(),
   partialExitPct: z.number().min(0).max(100).optional(),
+  // --- Scale into winners / pyramiding (0 disables) -------------------------
+  addOnTriggerRMultiple: z.number().nonnegative().optional(),
+  addOnSizePct: z.number().min(0).max(100).optional(),
+  maxAddOns: z.number().int().min(0).optional(),
   // --- Correlation methodology (feeds maxCorrelatedExposurePct above) -------
   correlationLookbackDays: z.number().int().min(1).optional(),
   correlationThreshold: z.number().min(0).max(1).optional(),
@@ -274,6 +278,9 @@ autotradeRouter.put(
     if (body.trailStopRMultiple !== undefined) patch.trailStopRMultiple = body.trailStopRMultiple;
     if (body.partialExitRMultiple !== undefined) patch.partialExitRMultiple = body.partialExitRMultiple;
     if (body.partialExitPct !== undefined) patch.partialExitPct = body.partialExitPct;
+    if (body.addOnTriggerRMultiple !== undefined) patch.addOnTriggerRMultiple = body.addOnTriggerRMultiple;
+    if (body.addOnSizePct !== undefined) patch.addOnSizePct = body.addOnSizePct;
+    if (body.maxAddOns !== undefined) patch.maxAddOns = body.maxAddOns;
     if (body.correlationLookbackDays !== undefined) patch.correlationLookbackDays = body.correlationLookbackDays;
     if (body.correlationThreshold !== undefined) patch.correlationThreshold = body.correlationThreshold;
     if (body.liveMaxOrderUsd !== undefined) patch.liveMaxOrderUsd = body.liveMaxOrderUsd;
@@ -797,6 +804,9 @@ const backtestBodyBase = z.object({
   trailStopRMultiple: z.number().nonnegative().optional(),
   partialExitRMultiple: z.number().nonnegative().optional(),
   partialExitPct: z.number().min(0).max(100).optional(),
+  addOnTriggerRMultiple: z.number().nonnegative().optional(),
+  addOnSizePct: z.number().min(0).max(100).optional(),
+  maxAddOns: z.number().int().min(0).optional(),
   ...backtestRiskParamsSchema,
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   decisionConfig: z.record(z.string(), z.unknown()).optional(),
@@ -841,6 +851,9 @@ autotradeRouter.post(
       trailStopRMultiple: body.trailStopRMultiple,
       partialExitRMultiple: body.partialExitRMultiple,
       partialExitPct: body.partialExitPct,
+      addOnTriggerRMultiple: body.addOnTriggerRMultiple,
+      addOnSizePct: body.addOnSizePct,
+      maxAddOns: body.maxAddOns,
       ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
@@ -868,6 +881,9 @@ autotradeRouter.post(
       trailStopRMultiple: body.trailStopRMultiple,
       partialExitRMultiple: body.partialExitRMultiple,
       partialExitPct: body.partialExitPct,
+      addOnTriggerRMultiple: body.addOnTriggerRMultiple,
+      addOnSizePct: body.addOnSizePct,
+      maxAddOns: body.maxAddOns,
       ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
@@ -1038,6 +1054,9 @@ const combinedBacktestBodyBase = z.object({
   trailStopRMultiple: z.number().nonnegative().optional(),
   partialExitRMultiple: z.number().nonnegative().optional(),
   partialExitPct: z.number().min(0).max(100).optional(),
+  addOnTriggerRMultiple: z.number().nonnegative().optional(),
+  addOnSizePct: z.number().min(0).max(100).optional(),
+  maxAddOns: z.number().int().min(0).optional(),
   ...backtestRiskParamsSchema,
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   decisionConfig: z.record(z.string(), z.unknown()).optional(),
@@ -1092,6 +1111,9 @@ autotradeRouter.post(
       trailStopRMultiple: body.trailStopRMultiple,
       partialExitRMultiple: body.partialExitRMultiple,
       partialExitPct: body.partialExitPct,
+      addOnTriggerRMultiple: body.addOnTriggerRMultiple,
+      addOnSizePct: body.addOnSizePct,
+      maxAddOns: body.maxAddOns,
       ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
@@ -1127,6 +1149,9 @@ autotradeRouter.post(
       trailStopRMultiple: body.trailStopRMultiple,
       partialExitRMultiple: body.partialExitRMultiple,
       partialExitPct: body.partialExitPct,
+      addOnTriggerRMultiple: body.addOnTriggerRMultiple,
+      addOnSizePct: body.addOnSizePct,
+      maxAddOns: body.maxAddOns,
       ...backtestRiskParamsFrom(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,

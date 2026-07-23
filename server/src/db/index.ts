@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS autotrade_paper_positions (
   initial_stop_price      REAL,          -- snapshot of stop_price at open; never mutated again
   best_price_since_entry  REAL,          -- running high/low-water mark since entry
   partial_exit_taken      INTEGER NOT NULL DEFAULT 0,
+  add_ons_taken           INTEGER NOT NULL DEFAULT 0,  -- scale-into-winners count
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );`;
@@ -773,6 +774,9 @@ function migrate(): void {
   }
   if (!hasApp('partial_exit_taken')) {
     db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN partial_exit_taken INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!hasApp('add_ons_taken')) {
+    db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN add_ons_taken INTEGER NOT NULL DEFAULT 0');
   }
 
   // autotrade_options_paper_positions gained a debit-spread shape (Task #69):
