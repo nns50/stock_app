@@ -1690,15 +1690,23 @@ describe('autotrade options paper execution routes (integration)', () => {
 
     const mark = contract.mark ?? contract.last!;
     const body = (await getJson('/api/autotrade/options-paper-positions')) as {
-      positions: { id: number; symbol: string; currentPrice: number | null; unrealizedPnl: number | null }[];
+      positions: {
+        id: number;
+        symbol: string;
+        currentPrice: number | null;
+        underlyingPrice: number | null;
+        unrealizedPnl: number | null;
+      }[];
     };
 
     const openRow = body.positions.find((p) => p.id === open.id)!;
     expect(openRow.currentPrice).toBe(mark);
+    expect(openRow.underlyingPrice).toBe(chain.underlyingPrice);
     expect(openRow.unrealizedPnl).toBeCloseTo((mark - 0.01) * 2 * 100, 2);
 
     const closedRow = body.positions.find((p) => p.id === closed.id)!;
     expect(closedRow.currentPrice).toBeNull();
+    expect(closedRow.underlyingPrice).toBeNull();
     expect(closedRow.unrealizedPnl).toBeNull();
   });
 
@@ -1798,6 +1806,77 @@ describe('autotrade live positions route (integration)', () => {
 // options chain fetch (getOptionsExpirations/getOptionsChain) still needs to
 // succeed to reach that gate, so the fixture uses a REAL contract, same as
 // the options-paper-execution route suite above.
+describe('autotrade live options positions route (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_live_options_orders; DELETE FROM autotrade_live_options_positions;');
+  });
+
+  it('lists live options positions (empty when none exist)', async () => {
+    const body = (await getJson('/api/autotrade/live-options-positions')) as { positions: unknown[] };
+    expect(body.positions).toEqual([]);
+  });
+
+  it('enriches an OPEN position with a live contract mark, underlyingPrice, and unrealized P&L, leaving a closed one alone', async () => {
+    const [expiration] = await getProvider().getOptionsExpirations('AAPL');
+    const chain = await getProvider().getOptionsChain('AAPL', expiration);
+    const contract = chain.calls[0];
+
+    const open = createLiveOptionsPosition({
+      symbol: 'AAPL',
+      side: 'call',
+      contractSymbol: contract.symbol,
+      strike: contract.strike,
+      expiration,
+      quantity: 1,
+      entryPrice: 0.01, // far below any real/mock mark, so unrealizedPnl is unambiguously positive
+      riskAmount: 1,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    const closed = createLiveOptionsPosition({
+      symbol: 'AAPL',
+      side: 'put',
+      contractSymbol: `${contract.symbol}-closed`,
+      strike: contract.strike,
+      expiration,
+      quantity: 1,
+      entryPrice: 1,
+      riskAmount: 100,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    db.prepare(
+      "UPDATE autotrade_live_options_positions SET status='closed', exit_price=0.5, exit_at=?, exit_reason='manual' WHERE id=?",
+    ).run(Date.now(), closed.id);
+
+    const mark = contract.mark ?? contract.last!;
+    const body = (await getJson('/api/autotrade/live-options-positions')) as {
+      positions: {
+        id: number;
+        symbol: string;
+        currentPrice: number | null;
+        underlyingPrice: number | null;
+        unrealizedPnl: number | null;
+      }[];
+    };
+
+    const openRow = body.positions.find((p) => p.id === open.id)!;
+    expect(openRow.currentPrice).toBe(mark);
+    expect(openRow.underlyingPrice).toBe(chain.underlyingPrice);
+    expect(openRow.unrealizedPnl).toBeCloseTo((mark - 0.01) * 1 * 100, 2);
+
+    const closedRow = body.positions.find((p) => p.id === closed.id)!;
+    expect(closedRow.currentPrice).toBeNull();
+    expect(closedRow.underlyingPrice).toBeNull();
+    expect(closedRow.unrealizedPnl).toBeNull();
+  });
+
+  it('rejects an invalid status filter', async () => {
+    const res = await fetch(`${base}/api/autotrade/live-options-positions?status=bogus`);
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('autotrade live options positions close route (integration)', () => {
   beforeEach(() => {
     db.exec('DELETE FROM autotrade_live_options_orders; DELETE FROM autotrade_live_options_positions;');

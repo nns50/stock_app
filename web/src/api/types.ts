@@ -1817,6 +1817,11 @@ export interface OptionsPaperPosition {
   /** The short leg's live mark — null for single_leg, a closed position, or
    *  a chain-fetch failure. */
   shortCurrentPrice: number | null;
+  /** The chain fetch's own underlying stock price as of this request — null
+   *  for a closed position, a chain-fetch failure, or a provider that
+   *  doesn't report it. Used to derive a short leg's intrinsic/extrinsic
+   *  value (see components/AssignmentRiskBadge.tsx). */
+  underlyingPrice: number | null;
   /** Single-leg: (currentPrice - entryPrice) * quantity * 100. Debit spread:
    *  net-value-now minus net-debit-at-entry, x quantity x 100. Null for a
    *  closed position or when a needed mark is unavailable. */
@@ -1874,6 +1879,9 @@ export interface LiveOptionsPosition {
    *  for a closed position or if the chain fetch failed. */
   currentPrice: number | null;
   shortCurrentPrice: number | null;
+  /** See OptionsPaperPosition's own doc comment — same free byproduct of the
+   *  chain fetch, same null-when-unavailable semantics. */
+  underlyingPrice: number | null;
   unrealizedPnl: number | null;
 }
 
