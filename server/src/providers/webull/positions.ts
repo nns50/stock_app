@@ -6,6 +6,7 @@ import {
   Side,
   addExit,
   createPosition,
+  listKnownAccountIds,
   listPositions,
   updatePosition,
 } from '../../db/positions';
@@ -309,19 +310,30 @@ async function closePositionsFromPreview(
     liveQtyByKey.set(key, (liveQtyByKey.get(key) ?? 0) + p.quantity);
   }
 
-  // Strictly this account's own rows — deliberately NOT includeUnassignedAccount
-  // (unlike importFromPreview's add-side): closing something we're not certain
-  // belongs to THIS account is exactly the false-close bug this exists to
-  // prevent. A legacy unassigned row only becomes close-eligible once some
-  // account's import pass has claimed it (see importFromPreview above).
-  const open = listPositions({ status: 'open', accountId: preview.accountId }).filter(isWebullTracked);
+  // This account's own rows are always close-eligible. A legacy row with NO
+  // account recorded (never claimed by an import — e.g. it was already sold
+  // before any sync ran against it, so the claim-on-match path never fired)
+  // is close-eligible ONLY when this is a single-account setup: if the journal
+  // has never recorded any OTHER account, an unassigned row can only belong to
+  // the account we're syncing, so closing it here can't be a cross-account
+  // false close (the exact bug the strict scoping below was added to prevent —
+  // see task #120). The moment a second account is known, unassigned rows go
+  // back to being left strictly alone (surfaced via the Compare-to-broker view
+  // instead), since we can no longer be certain which account they belong to.
+  const otherAccountKnown = listKnownAccountIds().some((a) => a !== preview.accountId);
+  const scoped = listPositions({ status: 'open', accountId: preview.accountId });
+  const unassigned = otherAccountKnown ? [] : listPositions({ status: 'open' }).filter((p) => p.accountId === null);
+  const open = [...scoped, ...unassigned].filter(isWebullTracked);
   const lotsByKey = new Map<string, Position[]>();
   for (const p of open) {
     const key = contractKey(p);
     (lotsByKey.get(key) ?? lotsByKey.set(key, []).get(key)!).push(p);
   }
 
-  const toClose = new Map<string, { lots: Position[]; qty: number; journalQtyBefore: number; brokerQty: number }>();
+  const toClose = new Map<
+    string,
+    { lots: Position[]; qty: number; journalQtyBefore: number; brokerQty: number; justConfirmed: boolean }
+  >();
   for (const [key, lots] of lotsByKey) {
     lots.sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.id - b.id); // FIFO: oldest first
     const journalQty = lots.reduce((s, p) => s + p.remainingQuantity, 0);
@@ -335,7 +347,16 @@ async function closePositionsFromPreview(
       // table comment for the flapping bug this prevents.
       const streak = bumpMissStreak(preview.accountId, key);
       if (streak >= MISS_CONFIRM_THRESHOLD)
-        toClose.set(key, { lots, qty: gap, journalQtyBefore: journalQty, brokerQty });
+        toClose.set(key, {
+          lots,
+          qty: gap,
+          journalQtyBefore: journalQty,
+          brokerQty,
+          // True only on the sync that first crosses the threshold, so the
+          // "confirmed gone but couldn't price it" diagnostic below logs once
+          // per stuck episode rather than on every subsequent sync.
+          justConfirmed: streak === MISS_CONFIRM_THRESHOLD,
+        });
     } else {
       // Fully accounted for in this preview — any earlier miss streak was wrong.
       clearMissStreak(preview.accountId, key);
@@ -349,11 +370,34 @@ async function closePositionsFromPreview(
   const exitDate = today();
   const closedSymbols = new Set<string>();
   let closed = 0;
-  for (const [key, { lots, qty, journalQtyBefore, brokerQty }] of toClose) {
+  for (const [key, { lots, qty, journalQtyBefore, brokerQty, justConfirmed }] of toClose) {
     const exitPrice = prices.get(lots[0].id)?.price;
-    if (exitPrice == null) continue; // can't price it — leave open, retry next sync
+    if (exitPrice == null) {
+      // Confirmed gone at the broker but there's no price to record the exit at
+      // (e.g. an illiquid contract the quote resolver can't reach right now).
+      // Left open to retry next sync — but log it ONCE so a position that stays
+      // stuck this way is visible on Recent Activity instead of silently never
+      // closing. Only on the confirming sync, to avoid one event per tick.
+      if (justConfirmed) {
+        logAutotradeEvent({
+          symbol: lots[0].symbol,
+          stage: 'execution',
+          action: 'position_reconcile_skipped',
+          detail: {
+            via: 'broker_sync',
+            accountId: preview.accountId,
+            reason: 'no_price',
+            journalQty: journalQtyBefore,
+            brokerQty,
+            note: 'Confirmed sold at the broker but no live price was available to record the exit — will retry on the next sync. Close it manually from Positions if it stays stuck.',
+          },
+        });
+      }
+      continue; // can't price it — leave open, retry next sync
+    }
     let remaining = qty;
     let reconciled = 0;
+    let claimedUnassigned = false;
     for (const p of lots) {
       if (remaining <= 1e-9) break;
       const take = Math.min(remaining, p.remainingQuantity);
@@ -363,6 +407,14 @@ async function closePositionsFromPreview(
         closed++;
         reconciled += take;
         closedSymbols.add(p.symbol);
+        // A previously-unassigned legacy row being closed here (single-account
+        // setup only) — claim it to this account too, so its now-closed record
+        // is attributed like every other row and future syncs treat it
+        // normally, mirroring importFromPreview's own claim-on-match.
+        if (p.accountId === null) {
+          updatePosition(p.id, { accountId: preview.accountId });
+          claimedUnassigned = true;
+        }
       }
       remaining -= take;
     }
@@ -387,6 +439,10 @@ async function closePositionsFromPreview(
           gapClosed: reconciled,
           exitPrice,
           fullyClosed: journalQtyBefore - reconciled <= 1e-9,
+          // Flags the self-heal path (a legacy unassigned row closed + claimed
+          // in a single-account setup) so it's auditable as distinct from a
+          // normal same-account reconciliation.
+          claimedFromUnassigned: claimedUnassigned,
         },
       });
     }
