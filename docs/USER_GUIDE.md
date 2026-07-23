@@ -113,8 +113,8 @@ If the app ever looks out of date, check that the footer build matches the lates
 Your at-a-glance morning screen.
 
 - **Collapsible tiles:** every section below — **Today's setups**, **Market movers**,
-  **Needs attention**, **Watchlist**, **Upcoming expirations**, and **Latest screener
-  snapshot** — collapses independently (see "The interface" above).
+  **Needs attention**, **Watchlist**, **Upcoming expirations**, **Upcoming catalysts**,
+  and **Latest screener snapshot** — collapses independently (see "The interface" above).
 - **Stat tiles:** Open P&L, Unrealized, Open positions, Gross exposure, and **Needs
   attention** (a count that turns amber when something wants a decision).
 - **Today's setups** — a morning shortlist that **auto-scans once** when you first land
@@ -135,7 +135,14 @@ Your at-a-glance morning screen.
   rules, plus any triggered symbol alerts, each linking to where you act.
 - **Watchlist** mini-view with last price and % change.
 - **Upcoming expirations** — your open option positions sorted by days-to-expiry (≤ 7
-  days turns amber).
+  days turns amber). A short position also shows an **assignment risk** badge (2026-07-23)
+  when it's deep ITM with essentially no time value left — the same badge and pure
+  intrinsic/extrinsic math the Auto page's options tables use, applied here to your own
+  logged/imported option positions.
+- **Upcoming catalysts** (2026-07-23) — earnings and ex-dividend dates within the next 14
+  days, across the union of your **open positions'** underlyings and your **watchlist**,
+  soonest first (≤ 7 days turns amber). One place to see what's coming up before you plan
+  the day, instead of checking each symbol's page individually.
 - **Latest screener snapshot** — the most recent run you saved.
 - **Getting started** — a dismissible checklist for new accounts (build a watchlist →
   run the screener → log a trade → set an alert). It reflects your *real* progress and
@@ -1357,7 +1364,11 @@ One home (⚙ or `⌘K → Settings`) for everything:
 ## A recommended daily workflow
 
 1. **Open Today.** Clear the *Needs attention* panel first — act on any stop/target/
-   exit-rule hits and triggered alerts.
+   exit-rule hits and triggered alerts. Then scan **Upcoming catalysts** (earnings/ex-div
+   within 14 days across your positions and watchlist) and **Upcoming expirations**
+   (option DTE, plus an **assignment risk** badge on any short position that's deep ITM
+   with little time value left) — the two-minute "what could surprise me today" check
+   before you plan anything else.
 2. **Get your shortlist.** The fastest path at the open is **Today's setups** on the
    dashboard (one **Scan**). For the full controls, open the **Screener** (long and/or
    short), expand the top names, and sanity-check the breakdown. **Save a snapshot** so

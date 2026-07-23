@@ -10,9 +10,34 @@ import { GettingStarted } from '../components/GettingStarted';
 import { DayGuardCard } from '../components/DayGuardCard';
 import { TodaysSetups } from '../components/TodaysSetups';
 import { MarketMovers } from '../components/MarketMovers';
+import { AssignmentRiskBadge } from '../components/AssignmentRiskBadge';
+import { daysUntil } from '../components/EarningsBadge';
+import type { SymbolEvents } from '../api/types';
 
 function daysToExpiry(exp: string): number {
   return Math.ceil((Date.parse(exp) - Date.now()) / 86_400_000);
+}
+
+interface CatalystRow {
+  symbol: string;
+  kind: 'earnings' | 'exDividend';
+  date: string;
+  dte: number;
+  estimated?: boolean;
+}
+
+/** Both catalyst types for one symbol's events, each only if upcoming (not past). */
+function catalystRowsOf(e: SymbolEvents): CatalystRow[] {
+  const rows: CatalystRow[] = [];
+  const erDte = daysUntil(e.earningsDate);
+  if (e.earningsDate && erDte !== null && erDte >= 0) {
+    rows.push({ symbol: e.symbol, kind: 'earnings', date: e.earningsDate, dte: erDte, estimated: e.earningsEstimated });
+  }
+  const exDte = daysUntil(e.exDividendDate);
+  if (e.exDividendDate && exDte !== null && exDte >= 0) {
+    rows.push({ symbol: e.symbol, kind: 'exDividend', date: e.exDividendDate, dte: exDte });
+  }
+  return rows;
 }
 
 export default function DashboardPage() {
@@ -24,6 +49,25 @@ export default function DashboardPage() {
     return { symbols: w.symbols, quotes };
   }, []);
   const snapshots = useAsync(() => client.listSnapshots(), []);
+
+  // Catalysts (earnings / ex-dividend) across everything worth checking before
+  // the open: every open position's underlying + the watchlist. Waits for
+  // both those loads to settle (the key is '' until then, which short-
+  // circuits to an empty fetch) rather than firing twice.
+  const eventSymbolsKey = Array.from(
+    new Set(
+      [...(positions.data?.positions ?? []).map((p) => p.position.symbol), ...(watch.data?.symbols ?? [])].map((s) =>
+        s.toUpperCase(),
+      ),
+    ),
+  )
+    .sort()
+    .join(',');
+  const events = useAsync(
+    () =>
+      eventSymbolsKey ? client.events(eventSymbolsKey.split(',')) : Promise.resolve({ events: [] as SymbolEvents[] }),
+    [eventSymbolsKey],
+  );
 
   // Refresh open positions when a trade is logged from the global modal.
   useEffect(() => {
@@ -42,11 +86,33 @@ export default function DashboardPage() {
 
   const expiring = (positions.data?.positions ?? [])
     .filter((p) => p.position.assetType === 'option' && p.position.expiration)
-    .map((p) => ({ p: p.position, dte: daysToExpiry(p.position.expiration as string) }))
+    .map((p) => ({ p: p.position, price: p.price, dte: daysToExpiry(p.position.expiration as string) }))
     .sort((a, b) => a.dte - b.dte)
     .slice(0, 5);
 
+  // Assignment risk needs each expiring option's UNDERLYING price, not its own
+  // mark (already on hand as `price` above) — a dedicated quotes fetch scoped
+  // to just these symbols, since the underlying isn't necessarily on the
+  // watchlist too.
+  const expiringUnderlyingsKey = Array.from(new Set(expiring.map(({ p }) => p.symbol.toUpperCase())))
+    .sort()
+    .join(',');
+  const underlyingQuotes = useAsync(
+    () =>
+      expiringUnderlyingsKey
+        ? client.quotes(expiringUnderlyingsKey.split(','))
+        : Promise.resolve({ quotes: [], asOf: 0 }),
+    [expiringUnderlyingsKey],
+  );
+  const underlyingBySymbol = new Map((underlyingQuotes.data?.quotes ?? []).map((q) => [q.symbol.toUpperCase(), q]));
+
   const watchBySymbol = new Map((watch.data?.quotes ?? []).map((q) => [q.symbol.toUpperCase(), q]));
+  const eventsBySymbol = new Map((events.data?.events ?? []).map((e) => [e.symbol.toUpperCase(), e]));
+  const catalysts = (events.data?.events ?? [])
+    .flatMap(catalystRowsOf)
+    .filter((r) => r.dte <= 14)
+    .sort((a, b) => a.dte - b.dte)
+    .slice(0, 8);
   const latestSnapshot = snapshots.data?.snapshots?.[0];
 
   return (
@@ -169,19 +235,61 @@ export default function DashboardPage() {
             <div className="text-sm text-slate-500 py-2">No open option positions.</div>
           ) : (
             <ul className="divide-y divide-ink-700/50">
-              {expiring.map(({ p, dte }) => (
-                <li key={p.id} className="flex items-center justify-between py-1.5 text-sm">
-                  <Link to={`/symbol/${p.symbol}`} className="hover:text-accent">
+              {expiring.map(({ p, price, dte }) => (
+                <li key={p.id} className="flex items-center justify-between py-1.5 text-sm gap-2">
+                  <Link to={`/symbol/${p.symbol}`} className="hover:text-accent min-w-0">
                     <span className="font-medium">{p.symbol}</span>{' '}
                     <span className="text-slate-500 text-xs">
                       {p.strike} {p.optionType === 'call' ? 'C' : 'P'}
                     </span>
                   </Link>
-                  <span className="tabular-nums text-xs">
-                    <span className="text-slate-400">{p.expiration}</span>{' '}
-                    <span className={dte <= 7 ? 'text-amber-400' : 'text-slate-500'}>
-                      {dte < 0 ? 'expired' : `${dte}d`}
+                  <span className="flex items-center gap-1.5 shrink-0">
+                    {p.side === 'short' && p.optionType && p.strike != null && (
+                      <AssignmentRiskBadge
+                        side={p.optionType}
+                        strike={p.strike}
+                        mark={price}
+                        underlyingPrice={underlyingBySymbol.get(p.symbol.toUpperCase())?.last ?? null}
+                        events={eventsBySymbol.get(p.symbol.toUpperCase())}
+                      />
+                    )}
+                    <span className="tabular-nums text-xs">
+                      <span className="text-slate-400">{p.expiration}</span>{' '}
+                      <span className={dte <= 7 ? 'text-amber-400' : 'text-slate-500'}>
+                        {dte < 0 ? 'expired' : `${dte}d`}
+                      </span>
                     </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CollapsibleCard>
+
+        <CollapsibleCard
+          id="dashboard.catalysts"
+          title="Upcoming catalysts"
+          icon={<CalendarClock className="h-4 w-4 text-slate-500" />}
+        >
+          {events.loading ? (
+            <Spinner label="Checking earnings & ex-dividend dates…" />
+          ) : catalysts.length === 0 ? (
+            <div className="text-sm text-slate-500 py-2">
+              No earnings or ex-dividend dates in the next 14 days for your positions or watchlist.
+            </div>
+          ) : (
+            <ul className="divide-y divide-ink-700/50">
+              {catalysts.map((c) => (
+                <li key={`${c.symbol}-${c.kind}`} className="flex items-center justify-between py-1.5 text-sm">
+                  <Link to={`/symbol/${c.symbol}`} className="font-medium hover:text-accent">
+                    {c.symbol}
+                  </Link>
+                  <span className="tabular-nums text-xs">
+                    <span className="text-slate-400">
+                      {c.kind === 'earnings' ? 'Earnings' : 'Ex-div'}
+                      {c.estimated ? ' (est.)' : ''}
+                    </span>{' '}
+                    <span className={c.dte <= 7 ? 'text-amber-400' : 'text-slate-500'}>{c.dte}d</span>
                   </span>
                 </li>
               ))}
