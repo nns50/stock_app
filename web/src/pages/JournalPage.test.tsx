@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import JournalPage from './JournalPage';
 import { client } from '../api/client';
-import type { AutoTuneRiskAdjustmentEfficacy, JournalStats } from '../api/types';
+import type { AutoTuneRiskAdjustmentEfficacy, JournalStats, Position, PositionWithPnl } from '../api/types';
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -63,6 +63,75 @@ function efficacyFixture(overrides: Partial<AutoTuneRiskAdjustmentEfficacy> = {}
   };
 }
 
+function positionFixture(overrides: Partial<Position> = {}): Position {
+  return {
+    id: 1,
+    assetType: 'stock',
+    symbol: 'WASH',
+    side: 'long',
+    quantity: 10,
+    entryPrice: 100,
+    entryDate: '2026-04-01',
+    entryTime: null,
+    fees: 0,
+    optionType: null,
+    strike: null,
+    expiration: null,
+    multiplier: 1,
+    status: 'closed',
+    tags: [],
+    grade: null,
+    notes: null,
+    checklist: [],
+    stopPrice: null,
+    targetPrice: null,
+    sourceIntentId: null,
+    accountId: null,
+    createdAt: 0,
+    updatedAt: 0,
+    exits: [
+      {
+        id: 1,
+        positionId: 1,
+        quantity: 10,
+        exitPrice: 90,
+        exitDate: '2026-04-10',
+        fees: 0,
+        notes: null,
+        sourceIntentId: null,
+        createdAt: 0,
+      },
+    ],
+    remainingQuantity: 0,
+    ...overrides,
+  };
+}
+
+function positionWithPnlFixture(overrides: Partial<PositionWithPnl> = {}): PositionWithPnl {
+  const position = overrides.position ?? positionFixture();
+  return {
+    position,
+    price: null,
+    stale: false,
+    asOf: null,
+    pnl: {
+      positionId: position.id,
+      currentPrice: null,
+      costBasis: 1000,
+      realizedPnl: -100,
+      unrealizedPnl: null,
+      totalPnl: -100,
+      returnPct: -10,
+      rMultiple: null,
+      marketValue: null,
+      remainingQuantity: 0,
+      closedQuantity: 10,
+    },
+    washSale: null,
+    ...overrides,
+  };
+}
+
 describe('JournalPage', () => {
   it('mounts and shows its loading state without crashing', () => {
     vi.spyOn(client, 'journalStats').mockReturnValue(new Promise(() => {}) as never);
@@ -73,6 +142,37 @@ describe('JournalPage', () => {
       </MemoryRouter>,
     );
     expect(screen.getByText(/Loading journal/)).toBeInTheDocument();
+  });
+
+  it('shows a wash-sale warning badge on a closed loss flagged by the server', async () => {
+    vi.spyOn(client, 'journalStats').mockResolvedValue(journalStatsFixture({ totalClosed: 1, totalRealized: -100 }));
+    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({
+      positions: [
+        positionWithPnlFixture({
+          washSale: { triggerPositionId: 2, triggerEntryDate: '2026-04-20', daysApart: 10 },
+        }),
+      ],
+    });
+    render(
+      <MemoryRouter>
+        <JournalPage />
+      </MemoryRouter>,
+    );
+    const badge = await screen.findByText('wash sale?');
+    expect(badge).toBeInTheDocument();
+    expect(badge.closest('span')).toHaveAttribute('title', expect.stringContaining('2026-04-20'));
+  });
+
+  it('shows no wash-sale badge for a closed trade the server did not flag', async () => {
+    vi.spyOn(client, 'journalStats').mockResolvedValue(journalStatsFixture({ totalClosed: 1, totalRealized: 100 }));
+    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({ positions: [positionWithPnlFixture()] });
+    render(
+      <MemoryRouter>
+        <JournalPage />
+      </MemoryRouter>,
+    );
+    await screen.findByText('WASH');
+    expect(screen.queryByText('wash sale?')).toBeNull();
   });
 
   it('does not show the auto-tune efficacy card when there are no past adjustments', async () => {
