@@ -84,7 +84,10 @@ function sqnLabel(sqn: number): string {
   return 'hard to trade';
 }
 
-/** Compact "realized P&L grouped by X" table used in the Performance breakdown. */
+/** Compact "realized P&L grouped by X" table used in the Performance breakdown.
+ *  Profit factor and avg R (2026-07-23) are what separate a genuine edge from a
+ *  merely-frequent one — a low-win-rate group with a big payoff can out-earn a
+ *  high-win-rate group with a small one, which win%/P&L alone can't show. */
 function Breakdown({ id, title, colLabel, rows }: { id: string; title: string; colLabel: string; rows: GroupStat[] }) {
   if (!rows.length) return null;
   return (
@@ -95,6 +98,12 @@ function Breakdown({ id, title, colLabel, rows }: { id: string; title: string; c
             <th className="py-1 pr-2 font-medium">{colLabel}</th>
             <th className="py-1 px-2 font-medium text-right">Trades</th>
             <th className="py-1 px-2 font-medium text-right">Win%</th>
+            <th className="py-1 px-2 font-medium text-right" title="Gross profit ÷ gross loss">
+              PF
+            </th>
+            <th className="py-1 px-2 font-medium text-right" title="Mean R-multiple, over trades that logged a stop">
+              Avg R
+            </th>
             <th className="py-1 pl-2 font-medium text-right">Realized P&L</th>
           </tr>
         </thead>
@@ -106,6 +115,12 @@ function Breakdown({ id, title, colLabel, rows }: { id: string; title: string; c
               </td>
               <td className="py-1 px-2 text-right tabular-nums text-slate-400">{r.trades}</td>
               <td className="py-1 px-2 text-right tabular-nums text-slate-400">{fmtNum(r.winRate, 0)}%</td>
+              <td className="py-1 px-2 text-right tabular-nums text-slate-400">
+                {r.profitFactor === null ? '∞' : fmtNum(r.profitFactor, 1)}
+              </td>
+              <td className="py-1 px-2 text-right tabular-nums text-slate-400">
+                {r.avgR === null ? '—' : `${fmtNum(r.avgR, 1)}R`}
+              </td>
               <td className="py-1 pl-2 text-right">
                 <PnL value={r.totalPnl} />
               </td>

@@ -346,6 +346,58 @@ describe('computeJournalStats', () => {
     expect(b['-2 to -1R']).toBe(1);
   });
 
+  it('computes profit factor and avg R within each tag group', () => {
+    const ts: Position[] = [
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        stopPrice: 95,
+        tags: ['breakout'],
+        exits: [exit({ quantity: 10, exitPrice: 110, exitDate: '2026-03-01' })],
+      }), // risk 50, +100 -> +2R
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        stopPrice: 95,
+        tags: ['breakout'],
+        exits: [exit({ quantity: 10, exitPrice: 95, exitDate: '2026-03-02' })],
+      }), // risk 50, -50 -> -1R
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        tags: ['breakout', 'earnings'],
+        exits: [exit({ quantity: 10, exitPrice: 105, exitDate: '2026-03-03' })],
+      }), // no stop -> +50, excluded from R
+      makePosition({
+        assetType: 'stock',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        stopPrice: 95,
+        tags: ['earnings'],
+        exits: [exit({ quantity: 10, exitPrice: 120, exitDate: '2026-03-04' })],
+      }), // risk 50, +200 -> +4R
+    ];
+    const r = computeJournalStats(ts);
+
+    const breakout = r.byTag.find((g) => g.key === 'breakout')!;
+    expect(breakout.trades).toBe(3);
+    expect(breakout.profitFactor).toBeCloseTo(3); // 150 gross profit / 50 gross loss
+    expect(breakout.avgR).toBeCloseTo(0.5); // only the 2 stopped trades count: (2 + -1) / 2
+
+    // all-winners group -> infinite profit factor (null), same convention as the headline stat
+    const earnings = r.byTag.find((g) => g.key === 'earnings')!;
+    expect(earnings.trades).toBe(2);
+    expect(earnings.profitFactor).toBeNull();
+    expect(earnings.avgR).toBeCloseTo(4); // only 1 of its 2 trades logged a stop
+  });
+
   it('computes Kelly over decisive trades — break-evens do not dilute its win probability', () => {
     const e = (exitPrice: number, exitDate: string) => exit({ quantity: 10, exitPrice, exitDate });
     const ts: Position[] = [
