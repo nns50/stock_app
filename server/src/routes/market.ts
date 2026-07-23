@@ -8,6 +8,7 @@ import { saveQuote } from '../services/quotes';
 import { runProviderTest } from '../services/providerTest';
 import { smaSeries } from '../indicators/indicators';
 import { computeIndicators, defaultScreenerConfig } from '../indicators/screener';
+import { computeMarketRegime } from '../services/marketRegime';
 
 export const marketRouter = Router();
 
@@ -23,6 +24,18 @@ marketRouter.get(
   asyncHandler(async (req, res) => {
     const symbol = typeof req.query.symbol === 'string' && req.query.symbol ? req.query.symbol : 'AAPL';
     res.json(await runProviderTest(symbol));
+  }),
+);
+
+// Read-only market-regime gauge (Risk-on / Neutral / Risk-off) for the Today
+// dashboard — see services/marketRegime.ts. Cached ~1h in the service; `force`
+// bypasses that cache for a manual refresh.
+const regimeQuery = z.object({ force: z.coerce.boolean().optional() });
+marketRouter.get(
+  '/market/regime',
+  asyncHandler(async (req, res) => {
+    const q = parseQuery(regimeQuery, req);
+    res.json(await computeMarketRegime({ force: q.force }));
   }),
 );
 

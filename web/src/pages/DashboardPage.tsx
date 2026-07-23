@@ -10,6 +10,7 @@ import { GettingStarted } from '../components/GettingStarted';
 import { DayGuardCard } from '../components/DayGuardCard';
 import { TodaysSetups } from '../components/TodaysSetups';
 import { MarketMovers } from '../components/MarketMovers';
+import { MarketRegimeGauge } from '../components/MarketRegimeGauge';
 import { AssignmentRiskBadge } from '../components/AssignmentRiskBadge';
 import { daysUntil } from '../components/EarningsBadge';
 import type { SymbolEvents } from '../api/types';
@@ -139,6 +140,8 @@ export default function DashboardPage() {
       </div>
 
       <TodaysSetups />
+
+      <MarketRegimeGauge />
 
       <MarketMovers />
 

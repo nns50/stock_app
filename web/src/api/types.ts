@@ -428,6 +428,31 @@ export interface PortfolioCorrelation {
   lookbackDays: number;
 }
 
+export type RegimeSignal = 'risk-on' | 'neutral' | 'risk-off' | 'unknown';
+export type RegimeLabel = 'risk-on' | 'neutral' | 'risk-off';
+
+export interface RegimeComponent {
+  key: 'trend200' | 'trend50' | 'breadth' | 'volatility';
+  label: string;
+  signal: RegimeSignal;
+  detail: string;
+  value: number | null;
+}
+
+export interface MarketRegime {
+  proxySymbol: string;
+  label: RegimeLabel;
+  /** Sum of component signals (+1 risk-on, −1 risk-off, 0 otherwise). */
+  score: number;
+  /** How many components resolved (were not `unknown`). */
+  resolvedComponents: number;
+  components: RegimeComponent[];
+  breadthPct: number | null;
+  breadthSampleSize: number;
+  marketAtrPct: number | null;
+  asOf: number;
+}
+
 export interface JournalStats {
   totalClosed: number;
   wins: number;
