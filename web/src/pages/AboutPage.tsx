@@ -185,6 +185,11 @@ export default function AboutPage() {
             Probability of profit — a lognormal estimate of finishing past breakeven, given your inputs. An estimate,
             not a guarantee.
           </Term>
+          <Term term="Expected value (options)">
+            The same lognormal model’s probability-weighted average P&amp;L at expiration, in dollars (Strategy Builder,
+            Roll analyzer). A structure with a lower POP can still have a higher EV if its payoff is more favorably
+            skewed — POP alone can’t show that.
+          </Term>
           <Term term="Expectancy">Average profit/loss per trade = (win rate × avg win) − (loss rate × avg loss).</Term>
           <Term term="Profit factor">Gross profit ÷ gross loss. Above 1 means winners outweigh losers.</Term>
           <Term term="SQN">

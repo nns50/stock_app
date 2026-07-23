@@ -24,6 +24,7 @@ import {
 const StrategyBuilder = lazy(() =>
   import('../components/StrategyBuilder').then((m) => ({ default: m.StrategyBuilder })),
 );
+const RollAnalyzer = lazy(() => import('../components/RollAnalyzer').then((m) => ({ default: m.RollAnalyzer })));
 import type {
   AlertPreset,
   EntryCandidate,
@@ -144,8 +145,17 @@ export default function OptionsPage() {
       {tab === 'entry' && <EntryScanView symbol={activeSymbol} expiration={expiration} />}
       {tab === 'exit' && <ExitRulesView />}
       {tab === 'strategy' && (
-        <Suspense fallback={<Spinner label="Loading strategy builder…" />}>
-          <StrategyBuilder />
+        <Suspense fallback={<Spinner label="Loading strategy tools…" />}>
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-300 mb-2">Strategy builder</h2>
+              <StrategyBuilder />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-slate-300 mb-2">Roll analyzer</h2>
+              <RollAnalyzer />
+            </div>
+          </div>
         </Suspense>
       )}
     </div>

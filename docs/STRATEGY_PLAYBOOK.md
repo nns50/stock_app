@@ -264,6 +264,15 @@ pin risk). The engine flags which rule is live; the same logic feeds your exit a
 A simple, robust default: **take profit into strength, cut at your stop %, and never
 hold a long option into the last few days unless it's deep ITM.**
 
+**Considering a roll instead of closing outright? (Options → Strategy → Roll analyzer,
+2026-07-23.)** A time-exit trigger, or an ITM short leg risking assignment, doesn't have
+to mean flat — rolling to a later expiration (and often a different strike) keeps the
+thesis alive. Before you do, run it through the roll analyzer: it shows the **net
+debit/credit to roll** and, critically, whether the new contract's **probability of
+profit and expected value actually improve** versus the one you hold — a later
+expiration alone doesn't guarantee a better trade, and paying a large debit to roll a
+structurally worse position is how a small loss becomes a chase.
+
 **Watch the whole book, not just one contract.** Once you're running more than one
 options position at a time, per-contract delta/theta only tells you about that one
 trade — Auto-Trade's Dashboard tab has a **Portfolio Greeks** section that sums net

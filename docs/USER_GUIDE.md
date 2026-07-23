@@ -263,14 +263,38 @@ Evaluate exit logic against your **open option positions**:
 
 Build **verticals, straddles, strangles, iron condors, or a custom combo** and see the
 whole risk picture before you commit: net **debit/credit**, a **payoff diagram**,
-**breakevens**, **max profit/loss**, **combined Greeks**, and a lognormal
-**probability-of-profit (POP)**. Use it to compare structures (e.g. a debit spread vs a
-naked long call) on risk-defined terms.
+**breakevens**, **max profit/loss**, **combined Greeks**, a lognormal
+**probability-of-profit (POP)**, and (2026-07-23) an **expected value** — the same
+lognormal model's probability-weighted average P&L at expiration, in dollars. Use it to
+compare structures (e.g. a debit spread vs a naked long call) on risk-defined terms; a
+structure with a lower POP can still have a higher EV if its payoff is more favorably
+skewed, which POP alone can't show.
 
 Once you've built a single leg or a 2-leg vertical, **Trade this structure →** hands it to the
 **Trade** page — it prefills the order builder with the strategy and each leg's buy/sell, call/put,
 and strike. The analyzer carries no symbol or expiry, so you set those (the chain picker fills real
 strikes); other structures (straddles, iron condors) aren't live-placeable yet.
+
+### Roll analyzer (2026-07-23)
+
+Also on the **Strategy** tab, below the builder. Answers "should I roll this option, and to
+what?" — compare the position you hold today against a candidate replacement (same side and
+quantity; a roll keeps your directional bet, it doesn't flip it):
+
+- Enter the **current** contract (type, strike, DTE, premium) and the contract you'd **roll
+  to**, plus the underlying price, side, and quantity. IV is optional per leg — omit it and
+  the same solver the Strategy Builder uses backs it out of the premium.
+- **Net debit/credit to roll** — the cash flow of closing the old contract and opening the
+  new one as a single transaction.
+- Side-by-side **breakeven, max profit/loss, probability of profit, and expected value**
+  for the current position vs. after the roll, plus the **shift** in each — so you can see
+  at a glance whether the roll actually improves your odds, not just whether it costs money.
+  Breakeven shift has no universal "better" direction (it depends on call/put and long/short),
+  so read it alongside the probability-of-profit and expected-value shifts, which always do:
+  higher is better for both.
+
+Decision-support only — like the Strategy Builder, it never places the roll; place it
+yourself once you've decided.
 
 ### Key option terms
 
