@@ -13,6 +13,7 @@ import type {
   StressResult,
   PortfolioCorrelation,
   MarketRegime,
+  SectorRotation,
   IvContext,
   OptionsIv,
   JournalStats,
@@ -268,6 +269,8 @@ export const client = {
     maxSymbols?: number;
     includeFailed?: boolean;
   }) => api<ScreenerResult>('/screener/run', { method: 'POST', body: JSON.stringify(body) }),
+  sectorRotation: (lookbackDays?: number) =>
+    api<SectorRotation>(`/screener/sector-rotation${lookbackDays ? `?lookbackDays=${lookbackDays}` : ''}`),
 
   // --- presets ---
   presets: (kind?: string) => api<{ presets: Preset[] }>(`/presets${kind ? `?kind=${kind}` : ''}`),

@@ -187,6 +187,25 @@ export default function AboutPage() {
         </p>
       </Section>
 
+      <Section id="sectorRotation" title="How the sector-rotation board works">
+        <p>
+          The Screener’s <strong className="text-slate-200">Sector rotation</strong> panel ranks your universe’s sectors
+          by the <strong className="text-slate-200">median relative strength</strong> of their members over a 20-day
+          lookback. A member’s relative strength is its own lookback return minus the benchmark’s (
+          <strong className="text-slate-200">SPY</strong>) over the same window — the same idea as the screener’s{' '}
+          <em>Rel. Strength</em> component above. Taking the <strong className="text-slate-200">median</strong> (not the
+          mean) across a sector keeps one runaway member from carrying the whole group.
+        </p>
+        <p className="mt-2">
+          Sectors sort strongest → weakest. If SPY’s own history can’t be fetched, the board degrades to ranking by{' '}
+          <strong className="text-slate-200">absolute return</strong> and labels itself as such; a member whose history
+          can’t be fetched is dropped from its sector’s sample (never a fake 0), and a sector with no resolvable members
+          is listed rather than ranked. It’s a read-only ranking and a navigation aid — clicking a sector scans just its
+          members — and it does <strong className="text-slate-200">not</strong> add any bonus to a symbol’s screener
+          score. Cached hourly.
+        </p>
+      </Section>
+
       <Section id="glossary" title="Glossary">
         <dl>
           <Term term="Moving average">
