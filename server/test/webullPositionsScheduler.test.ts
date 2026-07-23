@@ -10,6 +10,7 @@ import {
   stopWebullPositionsSync,
   MIN_SYNC_INTERVAL_SECONDS,
 } from '../src/services/webullPositionsScheduler';
+import { setSetting } from '../src/db/settings';
 import { priceMap } from '../src/services/quotes';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
@@ -35,8 +36,8 @@ afterEach(() => {
 });
 
 describe('scheduler config', () => {
-  it('defaults to enabled, 300s, no account id', () => {
-    expect(getWebullSyncConfig()).toEqual({ enabled: true, intervalSeconds: 300, accountId: null });
+  it('defaults to enabled, 300s, no accounts', () => {
+    expect(getWebullSyncConfig()).toEqual({ enabled: true, intervalSeconds: 300, accountIds: [] });
   });
 
   it('clamps the interval to the minimum', () => {
@@ -45,33 +46,42 @@ describe('scheduler config', () => {
     expect(getWebullSyncConfig().intervalSeconds).toBe(MIN_SYNC_INTERVAL_SECONDS);
   });
 
+  it('stores a list of accounts, trimmed and de-duplicated', () => {
+    const saved = setWebullSyncConfig({ accountIds: [' CASH ', 'MARGIN', 'CASH', '  '] });
+    expect(saved.accountIds).toEqual(['CASH', 'MARGIN']);
+    expect(getWebullSyncConfig().accountIds).toEqual(['CASH', 'MARGIN']);
+  });
+
   it('merges a partial patch (keeps unspecified fields)', () => {
-    setWebullSyncConfig({ enabled: false, intervalSeconds: 600, accountId: 'ACC1' });
+    setWebullSyncConfig({ enabled: false, intervalSeconds: 600, accountIds: ['ACC1'] });
     const saved = setWebullSyncConfig({ intervalSeconds: 900 });
-    expect(saved).toEqual({ enabled: false, intervalSeconds: 900, accountId: 'ACC1' });
+    expect(saved).toEqual({ enabled: false, intervalSeconds: 900, accountIds: ['ACC1'] });
   });
 
-  it('accepts and clears an account id', () => {
+  it('accepts a legacy single accountId patch (back-compat) and stores it as a one-element list', () => {
     setWebullSyncConfig({ accountId: 'ACC1' });
-    expect(getWebullSyncConfig().accountId).toBe('ACC1');
+    expect(getWebullSyncConfig().accountIds).toEqual(['ACC1']);
     setWebullSyncConfig({ accountId: null });
-    expect(getWebullSyncConfig().accountId).toBeNull();
+    expect(getWebullSyncConfig().accountIds).toEqual([]);
+    setWebullSyncConfig({ accountId: '   ' });
+    expect(getWebullSyncConfig().accountIds).toEqual([]);
   });
 
-  it('treats a blank account id as unset', () => {
-    setWebullSyncConfig({ accountId: '   ' });
-    expect(getWebullSyncConfig().accountId).toBeNull();
+  it('migrates a persisted legacy single-accountId config to the accountIds list on read', () => {
+    // Simulate a config saved before the multi-account change.
+    setSetting('webullPositionsScheduler', { enabled: true, intervalSeconds: 300, accountId: 'LEGACY1' });
+    expect(getWebullSyncConfig().accountIds).toEqual(['LEGACY1']);
   });
 });
 
 describe('runSchedulerTick', () => {
   it('no-ops when disabled', async () => {
-    setWebullSyncConfig({ enabled: false, accountId: 'ACC1' });
+    setWebullSyncConfig({ enabled: false, accountIds: ['ACC1'] });
     expect(await runSchedulerTick()).toBeNull();
   });
 
-  it('no-ops when enabled but no account id is configured yet', async () => {
-    setWebullSyncConfig({ enabled: true, accountId: null });
+  it('no-ops when enabled but no account is configured yet', async () => {
+    setWebullSyncConfig({ enabled: true, accountIds: [] });
     expect(await runSchedulerTick()).toBeNull();
   });
 
@@ -93,15 +103,60 @@ describe('runSchedulerTick', () => {
       status: 200,
       text: async () => JSON.stringify([]), // Webull shows nothing held -> VRAX should close
     } as Response);
-    setWebullSyncConfig({ enabled: true, accountId: 'ACC1' });
+    setWebullSyncConfig({ enabled: true, accountIds: ['ACC1'] });
 
     // First tick's miss isn't enough by itself — see webull_miss_streak's
     // table comment (db/index.ts) for the flapping-close bug this debounce
     // prevents; a real close is confirmed on the 2nd consecutive tick.
     await runSchedulerTick();
     const r = await runSchedulerTick();
-    expect(r).toMatchObject({ ok: true, accountId: 'ACC1', closed: 1, closedSymbols: ['VRAX'] });
+    expect(r).toHaveLength(1);
+    expect(r![0]).toMatchObject({ ok: true, accountId: 'ACC1', closed: 1, closedSymbols: ['VRAX'] });
     expect(getPosition(p.id)!.status).toBe('closed');
+  });
+
+  it('reconciles EVERY configured account in one tick — a cash AND a margin account (the reported multi-account bug)', async () => {
+    // Each account holds a position that was sold at the broker; the sync must
+    // close BOTH, not just whichever one happens to be first — the whole point
+    // of the multi-account fix.
+    const cash = createPosition({
+      assetType: 'stock',
+      symbol: 'AMC',
+      side: 'long',
+      quantity: 33,
+      entryPrice: 2.39,
+      entryDate: '2026-01-02',
+      tags: ['webull'],
+      accountId: 'CASH',
+    });
+    const margin = createPosition({
+      assetType: 'stock',
+      symbol: 'SLND',
+      side: 'long',
+      quantity: 39,
+      entryPrice: 1.08,
+      entryDate: '2026-01-02',
+      tags: ['webull'],
+      accountId: 'MARGIN',
+    });
+    vi.mocked(priceMap).mockImplementation(
+      async (positions) => new Map(positions.map((pos) => [pos.id, { price: 1, stale: false, asOf: 0 }])),
+    );
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    // Both accounts' broker holdings come back empty -> both positions should close.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify([]),
+    } as Response);
+    setWebullSyncConfig({ enabled: true, accountIds: ['CASH', 'MARGIN'] });
+
+    await runSchedulerTick(); // first miss (per account) — not yet confirmed
+    const r = await runSchedulerTick();
+    expect(r).toHaveLength(2);
+    expect(r!.map((x) => x.accountId).sort()).toEqual(['CASH', 'MARGIN']);
+    expect(getPosition(cash.id)!.status).toBe('closed');
+    expect(getPosition(margin.id)!.status).toBe('closed');
   });
 
   it('also reconciles a working order in the same tick — a filled bracket exit leg', async () => {
@@ -155,10 +210,10 @@ describe('runSchedulerTick', () => {
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(okResp([bracketStopFilledEnvelope])) // reconcileAllWorking: open orders, matches
       .mockResolvedValueOnce(okResp([])); // position-truth sync: nothing else to close/import
-    setWebullSyncConfig({ enabled: true, accountId: 'ACC1' });
+    setWebullSyncConfig({ enabled: true, accountIds: ['ACC1'] });
 
     const r = await runSchedulerTick();
-    expect(r).toMatchObject({ ok: true, ordersReconciled: 1, ordersChanged: 1 });
+    expect(r![0]).toMatchObject({ ok: true, ordersReconciled: 1, ordersChanged: 1 });
     const closed = listPositions().find((x) => x.id === pos.id)!;
     expect(closed.status).toBe('closed');
     expect(closed.exits[0]).toMatchObject({ exitPrice: 1.75 });

@@ -764,8 +764,17 @@ export interface PositionComparison {
 export interface WebullSyncConfig {
   enabled: boolean;
   intervalSeconds: number;
-  accountId: string | null;
+  /** Every Webull account the background sync reconciles each tick — list all
+   *  of your real accounts (e.g. cash AND margin) so none get left un-synced. */
+  accountIds: string[];
 }
+
+/** Patch shape for the scheduler config — `accountIds` is canonical; the
+ *  legacy single `accountId` is still accepted server-side for back-compat. */
+export type WebullSyncConfigPatch = Partial<Omit<WebullSyncConfig, 'accountIds'>> & {
+  accountIds?: string[];
+  accountId?: string | null;
+};
 
 export type MoverList = 'gainers' | 'losers' | 'active' | 'unusual';
 export type MoverSession = 'regular' | 'premarket' | 'afterhours';

@@ -592,18 +592,34 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
   const scheduler = useAsync(() => client.webullSyncSchedulerStatus(), []);
   const [autoEnabled, setAutoEnabled] = useState(true);
   const [autoInterval, setAutoInterval] = useState(300);
+  // Comma-separated editable mirror of the scheduler's accountIds list — a user
+  // with more than one real account (cash + margin) lists all of them here so
+  // the background sync reconciles every account, not just one.
+  const [autoAccounts, setAutoAccounts] = useState('');
 
   useEffect(() => {
     if (!scheduler.data) return;
     setAutoEnabled(scheduler.data.enabled);
     setAutoInterval(scheduler.data.intervalSeconds);
-    setAccountId((cur) => cur || scheduler.data!.accountId || '');
+    setAutoAccounts(scheduler.data.accountIds.join(', '));
+    // Seed the manual field with the first configured account for convenience.
+    setAccountId((cur) => cur || scheduler.data!.accountIds[0] || '');
   }, [scheduler.data]);
 
-  const saveScheduler = async (patch: { enabled?: boolean; intervalSeconds?: number; accountId?: string | null }) => {
+  const parseAccounts = (s: string) => [
+    ...new Set(
+      s
+        .split(',')
+        .map((a) => a.trim())
+        .filter(Boolean),
+    ),
+  ];
+
+  const saveScheduler = async (patch: { enabled?: boolean; intervalSeconds?: number; accountIds?: string[] }) => {
     const saved = await client.setWebullSyncScheduler(patch);
     setAutoEnabled(saved.enabled);
     setAutoInterval(saved.intervalSeconds);
+    setAutoAccounts(saved.accountIds.join(', '));
   };
 
   const runSyncNow = async () => {
@@ -688,12 +704,11 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
         does.
       </p>
       <div className="flex flex-wrap items-end gap-2">
-        <Field label="Account ID" hint="Copy an account_id from Account list">
+        <Field label="Account ID" hint="For Preview / Sync now / Compare — one account at a time.">
           <input
             className="input max-w-[260px] font-mono text-xs"
             value={accountId}
             onChange={(e) => setAccountId(e.target.value.trim())}
-            onBlur={() => accountId && saveScheduler({ accountId })}
             placeholder="account_id"
           />
         </Field>
@@ -833,16 +848,40 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
             className="mt-0.5 accent-accent"
             checked={autoEnabled}
             disabled={!configured}
-            onChange={(e) => saveScheduler({ enabled: e.target.checked, accountId: accountId || undefined })}
+            onChange={(e) => saveScheduler({ enabled: e.target.checked })}
           />
           <span>
             Sync automatically in the background
             <span className="block text-[11px] text-slate-500">
-              Runs on the server on a schedule — no button needed.
-              {accountId ? '' : ' Enter an account ID above first.'}
+              Runs on the server on a schedule — no button needed. Reconciles every account listed below.
+              {parseAccounts(autoAccounts).length ? '' : ' Add at least one account below first.'}
             </span>
           </span>
         </label>
+        <Field
+          label="Auto-sync accounts"
+          hint="Comma-separate ALL your real accounts (e.g. cash AND margin) so none are left un-synced."
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              className="input max-w-[420px] font-mono text-xs"
+              value={autoAccounts}
+              disabled={!configured}
+              onChange={(e) => setAutoAccounts(e.target.value)}
+              onBlur={() => saveScheduler({ accountIds: parseAccounts(autoAccounts) })}
+              placeholder="account_id_1, account_id_2"
+            />
+            {accountId && !parseAccounts(autoAccounts).includes(accountId) && (
+              <button
+                type="button"
+                className="btn-ghost text-xs"
+                onClick={() => saveScheduler({ accountIds: [...parseAccounts(autoAccounts), accountId] })}
+              >
+                + Add {accountId.length > 10 ? `…${accountId.slice(-6)}` : accountId}
+              </button>
+            )}
+          </div>
+        </Field>
         <Field label="Sync interval">
           <select
             className="input max-w-[200px]"
