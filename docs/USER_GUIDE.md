@@ -1400,6 +1400,25 @@ One home (⚙ or `⌘K → Settings`) for everything:
   > or two, but one bad response can no longer fabricate a close/reopen cycle. If your journal
   > or P/L already looks inflated with repeating same-symbol entries from before this fix,
   > see **Settings → Data** below to export, review, and clean up affected rows.
+  >
+  > **Self-heal for legacy unassigned rows + stuck-close visibility (2026-07-23).** Two gaps
+  > that could leave a *sold* position showing open forever are now handled:
+  > - A **legacy row with no account recorded** (imported before per-account tracking, or
+  >   manually tagged `webull`) that was already sold *before* any sync claimed it never got
+  >   closed, because the account-scoped close pass conservatively skips rows it can't attribute
+  >   to the synced account. It now **closes and claims** such a row automatically — but *only*
+  >   when the journal has never recorded any **other** account (a single-account setup, where an
+  >   unassigned row can only belong to the one account being synced). The moment a second account
+  >   exists, unassigned rows are left strictly alone again (surfaced via **Compare against broker**
+  >   instead), preserving the cross-account protection above.
+  > - A position confirmed sold at the broker but which **can't be priced** right now (an illiquid
+  >   or delisted contract the quote resolver can't reach) is still left open to retry — but now logs
+  >   a one-time **`position_reconcile_skipped`** entry on **Recent activity** so it's visible rather
+  >   than silently never closing. If a position stays stuck this way, close it manually from the
+  >   Positions page. If instead a sold position is stuck because it's tagged to a **different/older
+  >   account ID** than the one you now sync (e.g. you re-entered the ID), that stays deliberately
+  >   untouched — run **Compare against broker** to confirm, then close it from its **journal** dialog
+  >   (or re-import under the current account to re-stamp it) rather than have the app guess.
 - **Quotes may be delayed** (commonly ~15 min on free tiers). The provider chip shows
   live vs demo. Responses are cached briefly and pages with a **Refresh** control
   auto-poll every **1 minute** by default (adjustable, including off).

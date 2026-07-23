@@ -290,7 +290,11 @@ describe('syncClosedWebullPositions', () => {
     expect(getPosition(p.id)!.remainingQuantity).toBe(50);
   });
 
-  it('does NOT close a Webull-tracked position with no account recorded (legacy row, conservative default)', async () => {
+  it('self-heals a Webull-tracked legacy row with no account recorded when this is the only account known (single-account setup)', async () => {
+    // A legacy row (tagged 'webull', never account-stamped) that was already
+    // sold before any sync claimed it — the stuck-open-forever case. With no
+    // OTHER account ever recorded, it can only belong to the account being
+    // synced, so it's safe to close + claim it here.
     const p = createPosition({
       assetType: 'stock',
       symbol: 'VRAX',
@@ -303,9 +307,46 @@ describe('syncClosedWebullPositions', () => {
     });
     mockPositions([]);
 
+    await syncClosedWebullPositions('ACC1'); // first miss — not confirmed yet
+    const r = await syncClosedWebullPositions('ACC1');
+    expect(r).toMatchObject({ ok: true, closed: 1, closedSymbols: ['VRAX'] });
+    const after = getPosition(p.id)!;
+    expect(after.status).toBe('closed');
+    expect(after.accountId).toBe('ACC1'); // claimed to the syncing account
+  });
+
+  it('does NOT close an unassigned legacy row once a SECOND account is known (multi-account: can no longer be certain which account it belongs to)', async () => {
+    // A different account's presence in the journal means an unassigned row is
+    // no longer unambiguously this account's — closing it could be a
+    // cross-account false close, so it's left strictly alone (surfaced via the
+    // Compare-to-broker view instead), preserving the task #120 protection.
+    createPosition({
+      assetType: 'stock',
+      symbol: 'KEEP',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 5,
+      entryDate: '2026-01-01',
+      tags: ['webull'],
+      accountId: 'ACC2', // a second, distinct account exists
+    });
+    const legacy = createPosition({
+      assetType: 'stock',
+      symbol: 'VRAX',
+      side: 'long',
+      quantity: 50,
+      entryPrice: 20,
+      entryDate: '2026-01-02',
+      tags: ['webull'],
+      // No accountId.
+    });
+    mockPositions([{ symbol: 'KEEP', asset_type: 'STOCK', quantity: '10', cost_price: '5' }]); // ACC1 shows nothing of VRAX
+
+    await syncClosedWebullPositions('ACC1');
     const r = await syncClosedWebullPositions('ACC1');
     expect(r).toMatchObject({ ok: true, closed: 0, closedSymbols: [] });
-    expect(getPosition(p.id)!.status).toBe('open');
+    expect(getPosition(legacy.id)!.status).toBe('open'); // preserved, not false-closed
+    expect(getPosition(legacy.id)!.accountId).toBeNull();
   });
 
   it('never closes a plain manually-logged position with no Webull provenance', async () => {
@@ -401,6 +442,34 @@ describe('syncClosedWebullPositions', () => {
     expect(r1).toMatchObject({ closed: 0, closedSymbols: [] });
     const r = await syncClosedWebullPositions('ACC1');
     expect(r).toMatchObject({ closed: 0, closedSymbols: [] });
+    expect(getPosition(p.id)!.status).toBe('open');
+  });
+
+  it('logs a one-time position_reconcile_skipped event when a confirmed-gone position cannot be priced, so it is not silently stuck', async () => {
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'ILLQ',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 3,
+      entryDate: '2026-01-02',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+    // Unpriceable on both confirmed syncs (2nd and 3rd).
+    vi.mocked(priceMap).mockResolvedValue(new Map([[p.id, { price: null, stale: false, asOf: null }]]));
+    mockPositions([]);
+
+    await syncClosedWebullPositions('ACC1'); // 1st miss — unconfirmed, no price attempt, no event
+    expect(listAutotradeEvents({ actions: ['position_reconcile_skipped'] })).toHaveLength(0);
+
+    await syncClosedWebullPositions('ACC1'); // 2nd miss — confirmed, priced null → one skip event
+    await syncClosedWebullPositions('ACC1'); // still missing + unpriceable — must NOT log again (no spam)
+
+    const events = listAutotradeEvents({ actions: ['position_reconcile_skipped'] });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ symbol: 'ILLQ', stage: 'execution' });
+    expect(JSON.parse(events[0].detail!)).toMatchObject({ via: 'broker_sync', reason: 'no_price', brokerQty: 0 });
     expect(getPosition(p.id)!.status).toBe('open');
   });
 

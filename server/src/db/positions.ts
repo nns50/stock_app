@@ -245,6 +245,19 @@ export function getPosition(id: number): Position | undefined {
   return row ? mapPosition(row) : undefined;
 }
 
+/** Every distinct non-null account_id the journal has ever recorded (any
+ *  status). Used by the Webull close-sync to tell a single-account setup —
+ *  where an unassigned legacy row can only belong to the one account being
+ *  synced — apart from a genuine multi-account one, where auto-closing an
+ *  unassigned row could be a cross-account false close. A closed position
+ *  still counts: it's proof that account existed. */
+export function listKnownAccountIds(): string[] {
+  const rows = db
+    .prepare("SELECT DISTINCT account_id FROM positions WHERE account_id IS NOT NULL AND account_id != ''")
+    .all() as { account_id: string }[];
+  return rows.map((r) => r.account_id);
+}
+
 export function createPosition(input: PositionInput): Position {
   const now = Date.now();
   const multiplier = input.multiplier ?? (input.assetType === 'option' ? 100 : 1);
