@@ -204,6 +204,7 @@ beforeEach(() => {
   });
   vi.spyOn(client, 'autotradeMacroEvents').mockResolvedValue({ events: [] });
   vi.spyOn(client, 'autotradeEvents').mockResolvedValue({ events: [] });
+  vi.spyOn(client, 'events').mockResolvedValue({ events: [] });
   vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({ positions: [] });
@@ -2127,6 +2128,7 @@ describe('AutoTradePage', () => {
       updatedAt: Date.now(),
       currentPrice: null,
       shortCurrentPrice: null,
+      underlyingPrice: null,
       unrealizedPnl: null,
       ...overrides,
     };
@@ -2275,6 +2277,95 @@ describe('AutoTradePage', () => {
     expect(screen.getByText('$3.00')).toBeInTheDocument(); // Current $ = net value now
     expect(screen.getAllByText('+$200.00').length).toBeGreaterThan(0);
     expect(screen.getByText('0.50R')).toBeInTheDocument(); // 200 / 400
+  });
+
+  it('shows the general assignment-risk badge on a deep-ITM, near-zero-extrinsic short leg of an OPEN debit spread', async () => {
+    vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({
+      positions: [
+        optionsPaperPosition({
+          id: 1,
+          symbol: 'SPRD',
+          side: 'call',
+          kind: 'debit_spread',
+          strike: 100,
+          shortStrike: 90,
+          status: 'open',
+          currentPrice: 25,
+          shortCurrentPrice: 20.02, // 20 intrinsic (110 underlying - 90 strike) + 0.02 extrinsic
+          underlyingPrice: 110,
+        }),
+      ],
+    });
+    renderDashboard();
+    expect(await screen.findByText('SPRD')).toBeInTheDocument();
+    expect(screen.getByText('Assignment risk')).toBeInTheDocument();
+  });
+
+  it('does not show an assignment-risk badge on a single-leg position, even deep ITM — this app never writes a naked short', async () => {
+    vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({
+      positions: [
+        optionsPaperPosition({
+          id: 1,
+          symbol: 'AAPL',
+          side: 'call',
+          kind: 'single_leg',
+          strike: 90,
+          status: 'open',
+          currentPrice: 20.02,
+          underlyingPrice: 110,
+        }),
+      ],
+    });
+    renderDashboard();
+    expect(await screen.findByText('AAPL')).toBeInTheDocument();
+    expect(screen.queryByText('Assignment risk')).toBeNull();
+  });
+
+  it('does not show an assignment-risk badge while the short leg still has real time value', async () => {
+    vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({
+      positions: [
+        optionsPaperPosition({
+          id: 1,
+          symbol: 'SPRD',
+          side: 'call',
+          kind: 'debit_spread',
+          strike: 100,
+          shortStrike: 90,
+          status: 'open',
+          currentPrice: 25,
+          shortCurrentPrice: 21, // 20 intrinsic + 1.00 extrinsic — well above the low-extrinsic threshold
+          underlyingPrice: 110,
+        }),
+      ],
+    });
+    renderDashboard();
+    expect(await screen.findByText('SPRD')).toBeInTheDocument();
+    expect(screen.queryByText('Assignment risk')).toBeNull();
+  });
+
+  it('shows the dividend-specific badge when a deep-ITM short call meets an imminent ex-dividend date', async () => {
+    const soon = new Date(Date.now() + 2 * 86_400_000).toISOString().slice(0, 10);
+    vi.spyOn(client, 'events').mockResolvedValue({ events: [{ symbol: 'SPRD', exDividendDate: soon }] });
+    vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({
+      positions: [
+        optionsPaperPosition({
+          id: 1,
+          symbol: 'SPRD',
+          side: 'call',
+          kind: 'debit_spread',
+          strike: 100,
+          shortStrike: 90,
+          status: 'open',
+          currentPrice: 25,
+          shortCurrentPrice: 20.02,
+          underlyingPrice: 110,
+        }),
+      ],
+    });
+    renderDashboard();
+    expect(await screen.findByText('SPRD')).toBeInTheDocument();
+    expect(await screen.findByText('Div. assignment risk')).toBeInTheDocument();
+    expect(screen.queryByText('Assignment risk')).toBeNull();
   });
 
   it('runs one loop cycle, shows the summary, and reloads positions', async () => {
@@ -3223,6 +3314,7 @@ describe('AutoTradePage', () => {
         updatedAt: Date.now(),
         currentPrice: null,
         shortCurrentPrice: null,
+        underlyingPrice: null,
         unrealizedPnl: null,
         ...overrides,
       };

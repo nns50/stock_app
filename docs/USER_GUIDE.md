@@ -1235,6 +1235,17 @@ shouldn't be a tab-switch away.
   open/closed counts, realized/unrealized P&L, and full trade history (contract,
   strike/expiration, entry, a live **Current $** for open positions from a fresh
   contract quote, exit, reason, contracts, P&L, R) as equity's own paper trading above.
+  A debit spread's **short leg** — the only leg this app ever writes short; a
+  single-leg position is always a long call/put — gets a passive **Assignment risk**
+  chip on its Contract cell, in both this table and its live-options counterpart,
+  once it's deep in-the-money with essentially no time value left (≤ $0.05/share of
+  extrinsic value), the point where the holder loses nothing by exercising early. A
+  short **call** specifically shows a **Div. assignment risk** variant instead when
+  the underlying's ex-dividend date is within 5 days — the classic dividend-capture
+  early-exercise case (a put's early-exercise driver is interest rates, a different
+  mechanism not modeled here). Display-only, like the earnings badge above — it
+  doesn't change sizing, exits, or entries; roll or close the spread yourself if you
+  want to avoid it.
 - **Recent activity** — a journal of what the screen, decision, and risk-check stages
   did and why (candidate found, excluded, signal generated, passed/blocked, a paper
   order placed or closed, a setting changed) — the same feed the execution loop above

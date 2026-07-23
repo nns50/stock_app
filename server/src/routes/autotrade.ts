@@ -1191,6 +1191,13 @@ export interface OptionsPaperPositionLive extends OptionsPaperPosition {
   /** The short leg's live mark — null for single_leg, a closed position, or
    *  a chain-fetch failure. */
   shortCurrentPrice: number | null;
+  /** The chain fetch's own underlyingPrice as of this request — null for a
+   *  closed position, a chain-fetch failure, or a provider that doesn't
+   *  report it. Free byproduct of the SAME chain fetch marks/shortMarks
+   *  already use, not an extra provider call — lets the web badge derive a
+   *  short leg's intrinsic/extrinsic value (assignment risk) without its
+   *  own stock-quote round trip. */
+  underlyingPrice: number | null;
   /** See computeOptionsPaperUnrealizedPnl — null for a closed position or
    *  when a needed mark is unavailable. */
   unrealizedPnl: number | null;
@@ -1208,6 +1215,7 @@ async function withLiveOptionMarks(positions: OptionsPaperPosition[]): Promise<O
   const open = positions.filter((p) => p.status === 'open');
   const marks = new Map<number, number | null>();
   const shortMarks = new Map<number, number | null>();
+  const underlyingPrices = new Map<number, number | null>();
   if (open.length) {
     const groups = new Map<string, OptionsPaperPosition[]>();
     for (const p of open) {
@@ -1230,11 +1238,13 @@ async function withLiveOptionMarks(positions: OptionsPaperPosition[]): Promise<O
             if (p.kind === 'debit_spread' && p.shortStrike !== null) {
               shortMarks.set(p.id, markFor(p.shortStrike, p.side));
             }
+            underlyingPrices.set(p.id, chain.underlyingPrice ?? null);
           }
         } catch {
           for (const p of members) {
             marks.set(p.id, null);
             if (p.kind === 'debit_spread') shortMarks.set(p.id, null);
+            underlyingPrices.set(p.id, null);
           }
         }
       }),
@@ -1243,10 +1253,12 @@ async function withLiveOptionMarks(positions: OptionsPaperPosition[]): Promise<O
   return positions.map((p) => {
     const currentPrice = p.status === 'open' ? (marks.get(p.id) ?? null) : null;
     const shortCurrentPrice = p.status === 'open' && p.kind === 'debit_spread' ? (shortMarks.get(p.id) ?? null) : null;
+    const underlyingPrice = p.status === 'open' ? (underlyingPrices.get(p.id) ?? null) : null;
     return {
       ...p,
       currentPrice,
       shortCurrentPrice,
+      underlyingPrice,
       unrealizedPnl: computeOptionsPaperUnrealizedPnl(p, currentPrice, shortCurrentPrice),
     };
   });
@@ -1268,6 +1280,9 @@ export interface LiveOptionsPositionLive extends LiveOptionsPosition {
   /** The short leg's live mark — null for single_leg, a closed position, or
    *  a chain-fetch failure. */
   shortCurrentPrice: number | null;
+  /** See OptionsPaperPositionLive's own doc comment — same free byproduct of
+   *  the chain fetch, same null-when-unavailable semantics. */
+  underlyingPrice: number | null;
   /** See computeOptionsPaperUnrealizedPnl — null for a closed position or
    *  when a needed mark is unavailable. Reused as-is (not a live-options
    *  variant): the formula is asset/book-agnostic, keyed structurally off
@@ -1287,6 +1302,7 @@ async function withLiveOptionsPositionMarks(positions: LiveOptionsPosition[]): P
   const open = positions.filter((p) => p.status === 'open');
   const marks = new Map<number, number | null>();
   const shortMarks = new Map<number, number | null>();
+  const underlyingPrices = new Map<number, number | null>();
   if (open.length) {
     const groups = new Map<string, LiveOptionsPosition[]>();
     for (const p of open) {
@@ -1309,11 +1325,13 @@ async function withLiveOptionsPositionMarks(positions: LiveOptionsPosition[]): P
             if (p.kind === 'debit_spread' && p.shortStrike !== null) {
               shortMarks.set(p.id, markFor(p.shortStrike, p.side));
             }
+            underlyingPrices.set(p.id, chain.underlyingPrice ?? null);
           }
         } catch {
           for (const p of members) {
             marks.set(p.id, null);
             if (p.kind === 'debit_spread') shortMarks.set(p.id, null);
+            underlyingPrices.set(p.id, null);
           }
         }
       }),
@@ -1322,10 +1340,12 @@ async function withLiveOptionsPositionMarks(positions: LiveOptionsPosition[]): P
   return positions.map((p) => {
     const currentPrice = p.status === 'open' ? (marks.get(p.id) ?? null) : null;
     const shortCurrentPrice = p.status === 'open' && p.kind === 'debit_spread' ? (shortMarks.get(p.id) ?? null) : null;
+    const underlyingPrice = p.status === 'open' ? (underlyingPrices.get(p.id) ?? null) : null;
     return {
       ...p,
       currentPrice,
       shortCurrentPrice,
+      underlyingPrice,
       unrealizedPnl: computeOptionsPaperUnrealizedPnl(p, currentPrice, shortCurrentPrice),
     };
   });

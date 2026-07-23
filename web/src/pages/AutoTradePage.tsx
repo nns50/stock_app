@@ -5,6 +5,7 @@ import { useToast } from '../components/ToastContext';
 import { useConfirm } from '../components/ConfirmContext';
 import { RefreshBar } from '../components/RefreshBar';
 import { CloseModal } from '../components/PositionForms';
+import { AssignmentRiskBadge } from '../components/AssignmentRiskBadge';
 import { ago, cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd, fmtUsd } from '../lib/format';
 import {
   Badge,
@@ -47,6 +48,7 @@ import type {
   SignificanceStats,
   SimulatedOptionsTrade,
   SimulatedTrade,
+  SymbolEvents,
   WalkForwardResponse,
   WalkForwardWindowResult,
 } from '../api/types';
@@ -545,7 +547,17 @@ function optionsPaperPnl(p: OptionsValueShape): number | null {
 }
 
 const OptionsPaperPositionsTable = memo(
-  function OptionsPaperPositionsTable({ positions }: { positions: OptionsPaperPosition[] }) {
+  function OptionsPaperPositionsTable({
+    positions,
+    events,
+  }: {
+    positions: OptionsPaperPosition[];
+    /** Ex-dividend/earnings events for the listed symbols, for the short
+     *  leg's assignment-risk badge — raw array (not a pre-built Map) so the
+     *  outer memo's content-equality comparator below can still see it. */
+    events: SymbolEvents[];
+  }) {
+    const eventsBySymbol = new Map(events.map((e) => [e.symbol.toUpperCase(), e]));
     if (positions.length === 0) {
       return (
         <EmptyState
@@ -590,6 +602,18 @@ const OptionsPaperPositionsTable = memo(
                       {p.kind === 'debit_spread' ? `/${p.shortStrike}` : ''}
                     </Badge>{' '}
                     <span className="text-[11px] text-slate-500">{fmtDate(p.expiration)}</span>
+                    {p.status === 'open' && p.kind === 'debit_spread' && p.shortStrike !== null && (
+                      <>
+                        {' '}
+                        <AssignmentRiskBadge
+                          side={p.side}
+                          strike={p.shortStrike}
+                          mark={p.shortCurrentPrice}
+                          underlyingPrice={p.underlyingPrice}
+                          events={eventsBySymbol.get(p.symbol.toUpperCase())}
+                        />
+                      </>
+                    )}
                   </td>
                   <td className="td">
                     <Badge color={p.status === 'open' ? 'blue' : 'slate'}>{p.status}</Badge>
@@ -643,7 +667,7 @@ const OptionsPaperPositionsTable = memo(
       </div>
     );
   },
-  (prev, next) => samePositions(prev.positions, next.positions),
+  (prev, next) => samePositions(prev.positions, next.positions) && samePositions(prev.events, next.events),
 );
 
 /** Manually close a live options position autotrade itself opened
@@ -779,10 +803,13 @@ const LiveOptionsPositionsTable = memo(
   function LiveOptionsPositionsTable({
     positions,
     onClose,
+    events,
   }: {
     positions: LiveOptionsPosition[];
     onClose: (p: LiveOptionsPosition) => void;
+    events: SymbolEvents[];
   }) {
+    const eventsBySymbol = new Map(events.map((e) => [e.symbol.toUpperCase(), e]));
     if (positions.length === 0) {
       return (
         <EmptyState
@@ -836,6 +863,18 @@ const LiveOptionsPositionsTable = memo(
                       {p.kind === 'debit_spread' ? `/${p.shortStrike}` : ''}
                     </Badge>{' '}
                     <span className="text-[11px] text-slate-500">{fmtDate(p.expiration)}</span>
+                    {p.status === 'open' && p.kind === 'debit_spread' && p.shortStrike !== null && (
+                      <>
+                        {' '}
+                        <AssignmentRiskBadge
+                          side={p.side}
+                          strike={p.shortStrike}
+                          mark={p.shortCurrentPrice}
+                          underlyingPrice={p.underlyingPrice}
+                          events={eventsBySymbol.get(p.symbol.toUpperCase())}
+                        />
+                      </>
+                    )}
                   </td>
                   <td className="td">
                     <Badge color={p.status === 'open' ? 'blue' : 'slate'}>{p.status}</Badge>
@@ -886,7 +925,7 @@ const LiveOptionsPositionsTable = memo(
       </div>
     );
   },
-  (prev, next) => samePositions(prev.positions, next.positions),
+  (prev, next) => samePositions(prev.positions, next.positions) && samePositions(prev.events, next.events),
 );
 
 /** REAL, live-money positions the autotrade loop itself placed — the exact
@@ -1673,6 +1712,21 @@ export default function AutoTradePage() {
   const optionsPaperPositions = useAsync(() => client.autotradeOptionsPaperPositions({ limit: 100 }), []);
   const livePositions = useAsync(() => client.autotradeLivePositions({ limit: 100 }), []);
   const liveOptionsPositions = useAsync(() => client.autotradeLiveOptionsPositions({ limit: 100 }), []);
+  // Ex-dividend/earnings awareness for the options tables' assignment-risk
+  // badge (AssignmentRiskBadge) — same batched-by-symbol fetch PositionsPage
+  // uses for EarningsBadge, just keyed off both options position lists
+  // instead of the human journal's positions.
+  const optionSymbolsKey = [
+    ...new Set(
+      [...(optionsPaperPositions.data?.positions ?? []), ...(liveOptionsPositions.data?.positions ?? [])].map((p) =>
+        p.symbol.toUpperCase(),
+      ),
+    ),
+  ].join(',');
+  const symbolEvents = useAsync(
+    () => (optionSymbolsKey ? client.events(optionSymbolsKey.split(',')) : Promise.resolve({ events: [] })),
+    [optionSymbolsKey],
+  );
   const dashboard = useAsync(() => client.autotradeDashboard(), []);
   // Deliberately NOT part of refreshLiveData()'s 60s-poll bundle below —
   // unlike every other dashboard figure (a pure DB read), this needs a live
@@ -1707,6 +1761,7 @@ export default function AutoTradePage() {
     livePositions.reload();
     liveOptionsPositions.reload();
     events.reload();
+    symbolEvents.reload();
   };
 
   const [enabled, setEnabled] = useState(false);
@@ -4324,7 +4379,11 @@ export default function AutoTradePage() {
                         />
                       </div>
                     )}
-                    <LiveOptionsPositionsTable positions={rows} onClose={setCloseOptionsPos} />
+                    <LiveOptionsPositionsTable
+                      positions={rows}
+                      onClose={setCloseOptionsPos}
+                      events={symbolEvents.data?.events ?? []}
+                    />
                   </>
                 );
               })()
@@ -5064,7 +5123,7 @@ export default function AutoTradePage() {
                         />
                       </div>
                     )}
-                    <OptionsPaperPositionsTable positions={rows} />
+                    <OptionsPaperPositionsTable positions={rows} events={symbolEvents.data?.events ?? []} />
                   </>
                 );
               })()
