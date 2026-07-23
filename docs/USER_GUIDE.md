@@ -526,6 +526,16 @@ nudge, not a blocker — you can still save with items unchecked.
   resolved are **excluded and listed**, never assumed zero-risk — the panel says plainly
   when its coverage is partial. A model of sensitivity, not a prediction: real market moves
   aren't linear and beta drifts over time.
+- A **Correlation heatmap** panel (2026-07-23, collapsed by default — click to load) shows a
+  pairwise **Pearson correlation of daily returns** across every open position's underlying
+  over the last 30 sessions (a stock and an option on the same name collapse to one row).
+  <span class="text-bear">Red</span> cells are pairs that move **together** — five "different"
+  tickers that all trade as one become obvious at a glance, which the single
+  "correlated exposure %" guardrail can only hint at as one number; <span class="text-bull">green</span>
+  cells move **opposite** (a natural hedge); near-zero stays neutral. The strongest pair is
+  called out above the grid, with a note when it's tight enough (|r| ≥ 0.7) to be effectively
+  one bet. Names whose daily history can't be fetched are **excluded and listed**, never
+  assumed uncorrelated. Correlation is backward-looking and drifts — not a prediction.
 
 ---
 

@@ -406,6 +406,28 @@ export interface StressResult {
   totalCount: number;
 }
 
+export interface CorrelationPair {
+  a: string;
+  b: string;
+  r: number;
+}
+
+export interface PortfolioCorrelation {
+  /** Uppercased underlyings, in the row/column order of `matrix`. */
+  symbols: string[];
+  /** symbols.length × symbols.length. matrix[i][j] = corr(symbols[i],
+   *  symbols[j]); diagonal is 1; a cell is null when either symbol is
+   *  unresolved or the pair has too little overlapping history. */
+  matrix: (number | null)[][];
+  /** Most-correlated distinct pair (highest |r|), or null when fewer than two
+   *  symbols resolved. */
+  topPair: CorrelationPair | null;
+  /** Symbols whose daily history couldn't be fetched — never assumed
+   *  uncorrelated. */
+  unresolved: string[];
+  lookbackDays: number;
+}
+
 export interface JournalStats {
   totalClosed: number;
   wins: number;

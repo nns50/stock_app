@@ -16,6 +16,7 @@ import { priceMap } from '../services/quotes';
 import { aggregatePnl, computePositionPnl } from '../services/pnl';
 import { computeExposure, ExposureInput } from '../services/exposure';
 import { computePortfolioStress } from '../services/portfolioStress';
+import { computePortfolioCorrelation } from '../services/portfolioCorrelation';
 import { listUniverse } from '../db/universe';
 import { isWebullTracked } from '../providers/webull/positions';
 import { closeLivePosition } from '../services/trading/closePosition';
@@ -149,6 +150,20 @@ positionsRouter.get(
   asyncHandler(async (_req, res) => {
     const open = listPositions({ status: 'open' });
     res.json(await computePortfolioStress(open));
+  }),
+);
+
+const DEFAULT_CORRELATION_LOOKBACK_DAYS = 30;
+const correlationQuery = z.object({ lookbackDays: z.coerce.number().int().min(5).max(250).optional() });
+
+// Pairwise correlation of daily returns across the open book's underlyings —
+// see services/portfolioCorrelation.ts. Registered ahead of '/:id' too.
+positionsRouter.get(
+  '/correlation',
+  asyncHandler(async (req, res) => {
+    const q = parseQuery(correlationQuery, req);
+    const open = listPositions({ status: 'open' });
+    res.json(await computePortfolioCorrelation(open, q.lookbackDays ?? DEFAULT_CORRELATION_LOOKBACK_DAYS));
   }),
 );
 
