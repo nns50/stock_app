@@ -12,6 +12,7 @@ import type {
   Exposure,
   StressResult,
   PortfolioCorrelation,
+  MarketRegime,
   IvContext,
   OptionsIv,
   JournalStats,
@@ -201,6 +202,7 @@ export const client = {
   testProvider: (symbol?: string) =>
     api<ProviderTestResult>(`/provider/test${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ''}`),
   refresh: () => api<{ ok: boolean }>('/refresh', { method: 'POST' }),
+  marketRegime: (force?: boolean) => api<MarketRegime>(`/market/regime${force ? '?force=true' : ''}`),
 
   // --- tools ---
   positionSize: (body: {

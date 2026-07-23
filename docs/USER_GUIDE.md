@@ -112,9 +112,10 @@ If the app ever looks out of date, check that the footer build matches the lates
 
 Your at-a-glance morning screen.
 
-- **Collapsible tiles:** every section below — **Today's setups**, **Market movers**,
-  **Needs attention**, **Watchlist**, **Upcoming expirations**, **Upcoming catalysts**,
-  and **Latest screener snapshot** — collapses independently (see "The interface" above).
+- **Collapsible tiles:** every section below — **Today's setups**, **Market regime**,
+  **Market movers**, **Needs attention**, **Watchlist**, **Upcoming expirations**,
+  **Upcoming catalysts**, and **Latest screener snapshot** — collapses independently (see
+  "The interface" above).
 - **Stat tiles:** Open P&L, Unrealized, Open positions, Gross exposure, and **Needs
   attention** (a count that turns amber when something wants a decision).
 - **Today's setups** — a morning shortlist that **auto-scans once** when you first land
@@ -131,6 +132,15 @@ Your at-a-glance morning screen.
   Optional **min-price** and **min-market-cap** filters narrow to liquid names (nothing's
   excluded by default). Powered by Webull's server-side screeners, so it only appears when
   Webull is configured (distinct from _Today's setups_, which ranks _your_ universe).
+- **Market regime** (2026-07-23) — a single **Risk-on / Neutral / Risk-off** read of the
+  broad tape, folding four independent, explainable signals: the proxy (SPY) vs its own
+  **200-day** and **50-day** averages, market **breadth** (% of your universe trading above
+  its own 50-day average), and the proxy's **volatility** (ATR%). Each contributes +1
+  (risk-on), −1 (risk-off), or 0; the sum crosses into Risk-on at +2 or Risk-off at −2,
+  otherwise Neutral. A signal whose data can't be fetched reads **"no data"** and is left
+  out of the score — never counted as a fake neutral. It's **context, not a signal**: it
+  does not place, size, or block any trade, and it's cached hourly (regime turns on the
+  daily close). Formula details live on the **About** page.
 - **Needs attention** panel — positions that hit their stop/target or option exit
   rules, plus any triggered symbol alerts, each linking to where you act.
 - **Watchlist** mini-view with last price and % change.

@@ -147,6 +147,46 @@ export default function AboutPage() {
         </ul>
       </Section>
 
+      <Section id="marketRegime" title="How the market-regime gauge works">
+        <p>
+          The Today dashboard’s <strong className="text-slate-200">Market regime</strong> tile folds four independent,
+          backward-looking signals into one <strong className="text-slate-200">Risk-on / Neutral / Risk-off</strong>{' '}
+          read. It’s context for you — it does <strong className="text-slate-200">not</strong> place, size, or block any
+          trade.
+        </p>
+        <p className="mt-2">Each signal contributes +1 (risk-on), −1 (risk-off), or 0 (neutral):</p>
+        <ul className="list-disc pl-5 space-y-1.5 text-slate-400 mt-2">
+          <li>
+            <strong className="text-slate-200">Primary trend (200-day):</strong> the proxy (SPY) vs its own 200-day
+            average. More than <span className="tabular-nums">+1%</span> above → risk-on; more than{' '}
+            <span className="tabular-nums">1%</span> below → risk-off; inside that band → neutral.
+          </li>
+          <li>
+            <strong className="text-slate-200">Intermediate trend (50-day):</strong> the same ±1% test against the
+            proxy’s 50-day average.
+          </li>
+          <li>
+            <strong className="text-slate-200">Breadth:</strong> the share of your universe (up to 120 names) trading
+            above <em>its own</em> 50-day average. <span className="tabular-nums">≥ 55%</span> → risk-on;{' '}
+            <span className="tabular-nums">≤ 45%</span> → risk-off; between → neutral.
+          </li>
+          <li>
+            <strong className="text-slate-200">Volatility:</strong> the proxy’s ATR as a % of price. Below{' '}
+            <span className="tabular-nums">2%</span> (calm) → risk-on; above <span className="tabular-nums">4%</span>{' '}
+            (stressed) → risk-off; between → neutral.
+          </li>
+        </ul>
+        <p className="mt-2">
+          The four points are summed: <span className="tabular-nums">+2 or more</span> reads{' '}
+          <strong className="text-slate-200">Risk-on</strong>, <span className="tabular-nums">−2 or less</span> reads{' '}
+          <strong className="text-slate-200">Risk-off</strong>, and anything in between stays{' '}
+          <strong className="text-slate-200">Neutral</strong> — a 2-point margin, not a bare majority, is needed to
+          leave neutral. A signal whose data can’t be fetched reads{' '}
+          <strong className="text-slate-200">“no data”</strong> and is dropped from the sum entirely, never counted as a
+          fake neutral in any regime’s favor. The read is cached for an hour, since it turns on the daily close.
+        </p>
+      </Section>
+
       <Section id="glossary" title="Glossary">
         <dl>
           <Term term="Moving average">
