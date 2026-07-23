@@ -6,13 +6,14 @@ for each using round numbers so the math is easy to follow. It's written for som
 who wants to understand the settings well enough to tune them with confidence, not
 just click around.
 
-> Looking for a page-by-page tour of the whole app? See the
-> **[User Guide](./USER_GUIDE.md)**. Looking for how to trade profitably in general
-> (position sizing, R-multiples, the Edge Report)? See the
-> **[Strategy Playbook](./STRATEGY_PLAYBOOK.md)**. Looking for the original
-> engineering spec these settings implement? See
-> **[AUTOTRADING_SPEC.md](./AUTOTRADING_SPEC.md)**. Looking for install/config? See
-> the main **[README](../README.md)**.
+> Want to set all of these at once from a target daily gain % instead of one at a time?
+> See **[Tune from target daily gain](./TUNE_FROM_TARGET.md)**. Looking for a
+> page-by-page tour of the whole app? See the **[User Guide](./USER_GUIDE.md)**. Looking
+> for how to trade profitably in general (position sizing, R-multiples, the Edge
+> Report)? See the **[Strategy Playbook](./STRATEGY_PLAYBOOK.md)**. Looking for the
+> original engineering spec these settings implement? See
+> **[AUTOTRADING_SPEC.md](./AUTOTRADING_SPEC.md)**. Looking for install/config? See the
+> main **[README](../README.md)**.
 
 ---
 
