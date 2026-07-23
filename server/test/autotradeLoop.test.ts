@@ -784,7 +784,19 @@ describe('runAutotradeLoopTick', () => {
 
     const summary = await runAutotradeLoopTick();
 
-    expect(mockOptionsDecide).toHaveBeenCalledWith([candidate('AAPL', 2)], { strategyType: 'single_leg' });
+    expect(mockOptionsDecide).toHaveBeenCalledWith([candidate('AAPL', 2)], {
+      strategyType: 'single_leg',
+      entryConfig: {
+        deltaMin: 0.3,
+        deltaMax: 0.6,
+        maxSpreadPct: 10,
+        minOpenInterest: 100,
+        minVolume: 10,
+        minDaysToExpiration: 7,
+        maxDaysToExpiration: 60,
+        ivRankMax: 70,
+      },
+    });
     expect(summary.optionsSignalsGenerated).toBe(1);
   });
 
@@ -819,7 +831,19 @@ describe('runAutotradeLoopTick', () => {
       targetRMultiple: 2,
     });
     // Options decision sees ONLY the universe-sourced one.
-    expect(mockOptionsDecide).toHaveBeenCalledWith([universeCandidate], { strategyType: 'single_leg' });
+    expect(mockOptionsDecide).toHaveBeenCalledWith([universeCandidate], {
+      strategyType: 'single_leg',
+      entryConfig: {
+        deltaMin: 0.3,
+        deltaMax: 0.6,
+        maxSpreadPct: 10,
+        minOpenInterest: 100,
+        minVolume: 10,
+        minDaysToExpiration: 7,
+        maxDaysToExpiration: 60,
+        ivRankMax: 70,
+      },
+    });
     expect(summary.optionsCandidatesConsidered).toBe(1);
   });
 

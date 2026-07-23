@@ -473,7 +473,19 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // breakout, unaffected.
     const universeOnly = passedVolatility.filter((c) => c.discoverySource === 'universe');
     summary.optionsCandidatesConsidered = universeOnly.length;
-    const optionsDecision = await runOptionsDecision(universeOnly, { strategyType: config.optionsStrategyType });
+    const optionsDecision = await runOptionsDecision(universeOnly, {
+      strategyType: config.optionsStrategyType,
+      entryConfig: {
+        deltaMin: config.optionsDeltaMin,
+        deltaMax: config.optionsDeltaMax,
+        maxSpreadPct: config.optionsMaxSpreadPct,
+        minOpenInterest: config.optionsMinOpenInterest,
+        minVolume: config.optionsMinVolume,
+        minDaysToExpiration: config.optionsMinDte,
+        maxDaysToExpiration: config.optionsMaxDte,
+        ivRankMax: config.optionsIvRankMax,
+      },
+    });
     summary.optionsSignalsGenerated = optionsDecision.signals.length;
 
     // Re-check right before executing: screening + deciding above is

@@ -406,6 +406,39 @@ export interface AutotradeConfig {
    *  (options backtests remain single-leg only). */
   optionsStrategyType: OptionsStrategyType;
 
+  // --- Options entry-rule thresholds (the contract-quality screen the
+  // decision stage runs BEFORE risk-check ever sees a candidate — see
+  // entryRules.ts's EntryStrategyConfig/scanEntries and optionsDecide.ts's
+  // generateOptionsSignal). Previously fixed constants (entryRules.ts's
+  // defaultEntryConfig() plus optionsDecide.ts's own ivRankMax:70 layered on
+  // top) with no way to tune them — same treatment as the screening/decision
+  // thresholds above: a candidate failing the 'delta band'/'max spread %'/
+  // 'min open interest'/'min volume'/DTE/'IV rank' rule (entryRules.ts) could
+  // only be reported, never adjusted. Defaults below match those constants
+  // exactly, so an untouched config's behavior doesn't change. Threaded into
+  // generateOptionsSignal() via OptionsDecisionConfig.entryConfig (an
+  // override already merged onto defaultAutotradeEntryConfig(side) — see that
+  // function's own doc comment) by loop.ts and the /decide preview route,
+  // mirroring exactly how every other screening/decision field above is
+  // wired in. Backtesting is unaffected — optionsBacktest.ts/
+  // combinedBacktest.ts call defaultAutotradeEntryConfig() directly, same
+  // self-contained-hypothesis convention as every other screening/decision
+  // field's own backtest treatment. --------------------------------------
+
+  /** Absolute delta band (0-1) a contract's |delta| must fall within. */
+  optionsDeltaMin: number;
+  optionsDeltaMax: number;
+  /** Max (ask - bid) / mid, as a percentage of mid price. */
+  optionsMaxSpreadPct: number;
+  optionsMinOpenInterest: number;
+  optionsMinVolume: number;
+  optionsMinDte: number;
+  optionsMaxDte: number;
+  /** Underlying IV-rank ceiling (0-100) — this system only ever buys premium,
+   *  so guarding against a high-IV underlying is the one direction that
+   *  matters here. */
+  optionsIvRankMax: number;
+
   // --- Options stop-loss / take-profit (docs/AUTOTRADING_SPEC.md — follow-up
   // to phase 12's own confirmed close-only, time-based exit design; added
   // 2026-07-16). PAPER and BACKTEST options positions only, mirroring the
@@ -599,6 +632,14 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveOptionsProbationTrades: 20,
     liveOptionsProbationSizeMultiplier: 0.5,
     optionsStrategyType: 'single_leg',
+    optionsDeltaMin: 0.3,
+    optionsDeltaMax: 0.6,
+    optionsMaxSpreadPct: 10,
+    optionsMinOpenInterest: 100,
+    optionsMinVolume: 10,
+    optionsMinDte: 7,
+    optionsMaxDte: 60,
+    optionsIvRankMax: 70,
     optionsStopLossPct: 0,
     optionsTakeProfitPct: 0,
     optionsBreakevenTriggerPct: 0,
@@ -751,6 +792,14 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       input.optionsStrategyType === 'auto'
         ? input.optionsStrategyType
         : d.optionsStrategyType,
+    optionsDeltaMin: unitInterval(input.optionsDeltaMin, d.optionsDeltaMin),
+    optionsDeltaMax: unitInterval(input.optionsDeltaMax, d.optionsDeltaMax),
+    optionsMaxSpreadPct: pct(input.optionsMaxSpreadPct, d.optionsMaxSpreadPct),
+    optionsMinOpenInterest: posInt(input.optionsMinOpenInterest, d.optionsMinOpenInterest),
+    optionsMinVolume: posInt(input.optionsMinVolume, d.optionsMinVolume),
+    optionsMinDte: posInt(input.optionsMinDte, d.optionsMinDte),
+    optionsMaxDte: posIntMin1(input.optionsMaxDte, d.optionsMaxDte),
+    optionsIvRankMax: pct(input.optionsIvRankMax, d.optionsIvRankMax),
     optionsStopLossPct: pct(input.optionsStopLossPct, d.optionsStopLossPct),
     optionsTakeProfitPct: pct(input.optionsTakeProfitPct, d.optionsTakeProfitPct),
     optionsBreakevenTriggerPct: pct(input.optionsBreakevenTriggerPct, d.optionsBreakevenTriggerPct),
