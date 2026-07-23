@@ -142,6 +142,62 @@ describe('positions + journal routes (integration)', () => {
     expect(stats.totalRealized).toBe(520); // (131 − 118) × 40
   });
 
+  it('flags a closed loss as a possible wash sale when the same symbol was reopened within 30 days', async () => {
+    const loss = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'WASH',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-04-01',
+    });
+    const lossPos = (await loss.json()) as { id: number };
+    await post(`/api/positions/${lossPos.id}/exits`, { quantity: 10, exitPrice: 90, exitDate: '2026-04-10' }); // -100 loss
+
+    const reopen = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'WASH',
+      side: 'long',
+      quantity: 5,
+      entryPrice: 88,
+      entryDate: '2026-04-20', // 10 days after the loss closed
+    });
+    const reopenPos = (await reopen.json()) as { id: number };
+
+    const body = (await getJson('/api/positions?status=closed&withPnl=true')) as {
+      positions: { position: { id: number; symbol: string }; washSale: { triggerPositionId: number } | null }[];
+    };
+    const row = body.positions.find((r) => r.position.id === lossPos.id)!;
+    expect(row.washSale).toMatchObject({ triggerPositionId: reopenPos.id, triggerEntryDate: '2026-04-20' });
+  });
+
+  it('does not flag a closed WINNING trade even if the symbol was reopened nearby', async () => {
+    const win = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'GAINR',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-04-01',
+    });
+    const winPos = (await win.json()) as { id: number };
+    await post(`/api/positions/${winPos.id}/exits`, { quantity: 10, exitPrice: 110, exitDate: '2026-04-10' }); // +100 gain
+    await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'GAINR',
+      side: 'long',
+      quantity: 5,
+      entryPrice: 111,
+      entryDate: '2026-04-15',
+    });
+
+    const body = (await getJson('/api/positions?status=closed&withPnl=true')) as {
+      positions: { position: { id: number }; washSale: unknown }[];
+    };
+    const row = body.positions.find((r) => r.position.id === winPos.id)!;
+    expect(row.washSale).toBeNull();
+  });
+
   it('slippage compares live fills to their order limit price (entry + exit)', async () => {
     const entryIntent = createIntent(
       {

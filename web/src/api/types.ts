@@ -344,12 +344,22 @@ export interface PositionPnl {
   closedQuantity: number;
 }
 
+/** services/washSale.ts — informational only, never a trading gate. Non-null
+ *  only for a closed position with a realized LOSS whose same underlying
+ *  symbol was also entered within 30 days either side of when it closed. */
+export interface WashSaleWarning {
+  triggerPositionId: number;
+  triggerEntryDate: string;
+  daysApart: number;
+}
+
 export interface PositionWithPnl {
   position: Position;
   price: number | null;
   stale: boolean;
   asOf: number | null;
   pnl: PositionPnl;
+  washSale: WashSaleWarning | null;
 }
 
 export interface AggregatePnl {

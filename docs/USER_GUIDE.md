@@ -508,6 +508,19 @@ trades.
   its own count, total, win rate, and expectancy. This is how you discover *which
   setups and which behaviors* make you money.
 
+### Wash-sale awareness
+
+- Each row in the closed-trades table shows a **⚠ wash sale?** badge (2026-07-19) next
+  to its Realized P&L when that trade closed at a **loss** and the same underlying
+  symbol — stock or option — was also entered within **30 days** either side of when
+  it closed (the IRS's 61-day wash-sale window: 30 days before, the day itself, 30
+  days after). Hover the badge for the matching position's entry date. This is
+  **informational only** — not tax advice, and this app never blocks or discourages a
+  trade over it; confirm anything it flags against your 1099-B or a tax professional.
+  It also doesn't try to match two *different* option contracts on the same underlying
+  as "substantially identical" (genuinely gray-area even under IRS guidance) and only
+  sees positions logged in this app — not other brokers or accounts.
+
 ### Auto-tune efficacy
 
 - Only shown once **Auto-tune from realized edge** (Auto-Trade → Config) has made at

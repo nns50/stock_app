@@ -18,6 +18,7 @@ import { computeExposure, ExposureInput } from '../services/exposure';
 import { listUniverse } from '../db/universe';
 import { isWebullTracked } from '../providers/webull/positions';
 import { closeLivePosition } from '../services/trading/closePosition';
+import { detectWashSale } from '../services/washSale';
 
 export const positionsRouter = Router();
 
@@ -85,6 +86,17 @@ const listQuery = z.object({
 
 async function withPnlPayload(positions: Position[]) {
   const prices = await priceMap(positions);
+  // Wash-sale detection needs visibility into EVERY position sharing a
+  // symbol, not just the ones this call was filtered to (e.g. status:
+  // 'closed' for the Journal) — a reopened lot might still be open. Fetched
+  // once, unfiltered, and grouped in memory rather than one query per
+  // closed position.
+  const bySymbol = new Map<string, Position[]>();
+  for (const p of listPositions()) {
+    const arr = bySymbol.get(p.symbol);
+    if (arr) arr.push(p);
+    else bySymbol.set(p.symbol, [p]);
+  }
   const items = positions.map((p) => {
     const info = prices.get(p.id) ?? { price: null, stale: false, asOf: null };
     return {
@@ -93,6 +105,7 @@ async function withPnlPayload(positions: Position[]) {
       stale: info.stale,
       asOf: info.asOf,
       pnl: computePositionPnl(p, info.price),
+      washSale: detectWashSale(p, bySymbol.get(p.symbol) ?? []),
     };
   });
   const aggregate = aggregatePnl(
