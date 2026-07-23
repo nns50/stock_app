@@ -1573,6 +1573,98 @@ describe('AutoTradePage', () => {
     expect(screen.getAllByText('No trades in this window — nothing to test for significance.')).toHaveLength(2);
   });
 
+  describe('Task #153: parameter sweep', () => {
+    const wfAt = (oosExpectancy: number, oosTrades = 10): WalkForwardResponse => ({
+      inSample: { ...btRun(), significance: sigStats() },
+      outOfSample: {
+        ...btRun({ expectancy: oosExpectancy, totalTrades: oosTrades, returnPct: oosExpectancy > 0 ? 0.1 : -0.05 }),
+        significance: sigStats({ expectancy: oosExpectancy, sampleSize: oosTrades }),
+      },
+      excludedSymbols: [],
+      errors: [],
+    });
+
+    it('reruns the walk-forward split once per nearby risk-per-trade value and highlights the base row', async () => {
+      const run = vi.spyOn(client, 'runAutotradeWalkForward').mockImplementation(async (body) =>
+        // The base (1%) looks great; its neighbors look ordinary — the classic
+        // "lucky spike, not a real edge" shape this table exists to surface.
+        wfAt(body.riskPerTradePct === 1 ? 300 : 50),
+      );
+      renderDashboard();
+      await screen.findByText('Monitoring');
+
+      fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'AAPL' } });
+      const dateInputs = document.querySelectorAll('input[type="date"]');
+      fireEvent.change(dateInputs[2], { target: { value: '2024-06-01' } });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Run sweep' }));
+
+      await waitFor(() => expect(run).toHaveBeenCalledTimes(5));
+      expect(run).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ symbols: ['AAPL'], splitDate: '2024-06-01', riskPerTradePct: 0.5 }),
+      );
+      expect(run).toHaveBeenNthCalledWith(2, expect.objectContaining({ riskPerTradePct: 0.75 }));
+      expect(run).toHaveBeenNthCalledWith(3, expect.objectContaining({ riskPerTradePct: 1 }));
+      expect(run).toHaveBeenNthCalledWith(4, expect.objectContaining({ riskPerTradePct: 1.25 }));
+      expect(run).toHaveBeenNthCalledWith(5, expect.objectContaining({ riskPerTradePct: 1.5 }));
+
+      expect(await screen.findByText('1.00% (base)')).toBeInTheDocument();
+      expect(screen.getByText('0.50%')).toBeInTheDocument();
+      expect(screen.getByText('1.50%')).toBeInTheDocument();
+      // Base row's out-of-sample expectancy; neighbor rows share the same
+      // ordinary figure — appears 4 times (0.5, 0.75, 1.25, 1.5%).
+      expect(screen.getByText('+$300.00')).toBeInTheDocument();
+      expect(screen.getAllByText('+$50.00')).toHaveLength(4);
+    });
+
+    it('requires an out-of-sample split date — the sweep has nothing to compare without one', async () => {
+      const run = vi.spyOn(client, 'runAutotradeWalkForward');
+      renderDashboard();
+      await screen.findByText('Monitoring');
+
+      fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'AAPL' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Run sweep' }));
+
+      expect(await screen.findByText(/out-of-sample split date/i)).toBeInTheDocument();
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it('requires a positive center risk-per-trade value', async () => {
+      const run = vi.spyOn(client, 'runAutotradeWalkForward');
+      renderDashboard();
+      await screen.findByText('Monitoring');
+
+      fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'AAPL' } });
+      const dateInputs = document.querySelectorAll('input[type="date"]');
+      fireEvent.change(dateInputs[2], { target: { value: '2024-06-01' } });
+      fireEvent.change(screen.getByPlaceholderText('e.g. 1'), { target: { value: '0' } });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Run sweep' }));
+
+      expect(await screen.findByText(/Enter a risk-per-trade % to sweep around/)).toBeInTheDocument();
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it("marks one value's failure in its own row without losing the others", async () => {
+      vi.spyOn(client, 'runAutotradeWalkForward').mockImplementation(async (body) => {
+        if (body.riskPerTradePct === 1) throw new Error('provider timeout');
+        return wfAt(50);
+      });
+      renderDashboard();
+      await screen.findByText('Monitoring');
+
+      fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'AAPL' } });
+      const dateInputs = document.querySelectorAll('input[type="date"]');
+      fireEvent.change(dateInputs[2], { target: { value: '2024-06-01' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Run sweep' }));
+
+      expect(await screen.findByText('provider timeout')).toBeInTheDocument();
+      // The other four values still rendered their own results.
+      expect(screen.getAllByText('+$50.00')).toHaveLength(4);
+    });
+  });
+
   it('shows an inline error and does not call the API when no symbols are entered', async () => {
     const run = vi.spyOn(client, 'runAutotradeBacktest');
     renderDashboard();

@@ -1703,6 +1703,105 @@ function BacktestWindowResult({
   );
 }
 
+/** Multipliers applied to the sweep's own center risk-per-trade % — a small,
+ *  symmetric-in-log-space neighborhood (half to 1.5x) rather than an
+ *  arbitrary additive step, so it behaves sensibly whether the center is
+ *  0.5% or 2%. Five points: enough to see a trend either side of center
+ *  without firing off an excessive number of walk-forward runs (each one
+ *  simulates the whole date range twice — in-sample and out-of-sample). */
+const SWEEP_MULTIPLIERS = [0.5, 0.75, 1, 1.25, 1.5];
+
+interface SweepRow {
+  riskPerTradePct: number;
+  /** null when this value's own walk-forward run failed — recorded, not
+   *  allowed to abort the rest of the sweep, same best-effort-per-item
+   *  convention as resolveOptionMarks/resolveOptionGreeks server-side. */
+  response: WalkForwardResponse | null;
+  error?: string;
+}
+
+/** Out-of-sample stats + significance side-by-side across nearby
+ *  risk-per-trade % values — a stable run of similar numbers across the row
+ *  reads as a real, size-insensitive edge; one value spiking while its
+ *  neighbors look ordinary or negative reads as a lucky overfit on that
+ *  exact setting rather than a genuine edge. In-sample is deliberately not
+ *  shown here (it almost always looks monotonically "better" with more risk
+ *  per trade regardless of whether the edge is real — see BacktestWindowResult's
+ *  own in-sample hint above); out-of-sample is the number this view exists
+ *  to stress-test. */
+function ParameterSweepTable({ rows, baseValue }: { rows: SweepRow[]; baseValue: number }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead className="border-b border-ink-600/60">
+          <tr>
+            <th className="th text-right">Risk/trade %</th>
+            <th className="th text-right">OOS trades</th>
+            <th className="th text-right">Win rate</th>
+            <th className="th text-right">Expectancy</th>
+            <th className="th text-right">Return</th>
+            <th className="th text-right">Max DD</th>
+            <th className="th text-right">p-value</th>
+            <th className="th">Reliable</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const isBase = Math.abs(row.riskPerTradePct - baseValue) < 1e-9;
+            const labelCell = (
+              <td className={cx('td text-right tabular-nums', isBase && 'font-semibold text-slate-100')}>
+                {fmtNum(row.riskPerTradePct)}%{isBase ? ' (base)' : ''}
+              </td>
+            );
+            if (!row.response) {
+              return (
+                <tr key={row.riskPerTradePct} className={cx('border-b border-ink-700/50', isBase && 'bg-ink-700/40')}>
+                  {labelCell}
+                  <td className="td text-bear" colSpan={7}>
+                    {row.error ?? 'Failed'}
+                  </td>
+                </tr>
+              );
+            }
+            const oos = row.response.outOfSample;
+            return (
+              <tr key={row.riskPerTradePct} className={cx('border-b border-ink-700/50', isBase && 'bg-ink-700/40')}>
+                {labelCell}
+                <td className="td text-right tabular-nums">{oos.stats.totalTrades}</td>
+                <td className="td text-right tabular-nums">{fmtPct(oos.stats.winRate, 0, false)}</td>
+                <td className={cx('td text-right tabular-nums', oos.stats.expectancy >= 0 ? 'text-bull' : 'text-bear')}>
+                  {fmtSignedUsd(oos.stats.expectancy)}
+                </td>
+                <td className={cx('td text-right tabular-nums', oos.stats.returnPct >= 0 ? 'text-bull' : 'text-bear')}>
+                  {fmtPct(oos.stats.returnPct, 1)}
+                </td>
+                <td className="td text-right tabular-nums text-bear">{fmtUsd(oos.stats.maxDrawdown)}</td>
+                <td
+                  className={cx(
+                    'td text-right tabular-nums',
+                    oos.significance.pValue !== null && oos.significance.pValue < 0.05 ? 'text-bull' : 'text-slate-300',
+                  )}
+                >
+                  {oos.significance.pValue === null ? '—' : fmtNum(oos.significance.pValue, 3)}
+                </td>
+                <td className="td">
+                  {oos.significance.sampleSize === 0 ? (
+                    '—'
+                  ) : (
+                    <Badge color={oos.significance.reliable ? 'blue' : 'slate'}>
+                      {oos.significance.reliable ? 'yes' : 'thin sample'}
+                    </Badge>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function AutoTradePage() {
   const config = useAsync(() => client.autotradeConfig(), []);
   const exclusions = useAsync(() => client.autotradeExclusions(), []);
@@ -2417,6 +2516,77 @@ export default function AutoTradePage() {
     } finally {
       setBtBusy(false);
     }
+  };
+
+  // Parameter sweep (Task #153): a client-side loop over the SAME
+  // walk-forward route above — no server/schema changes — re-running it once
+  // per nearby riskPerTradePct value so a stable plateau vs. a lucky overfit
+  // spike is visually obvious. Shares symbols/from/to/splitDate/riskProfile/
+  // equity/maxPositions/directionMode with the equity form above (same
+  // "don't make the human fill out a second form" reasoning as the options/
+  // combined backtest buttons already share it).
+  const [sweepRiskPerTradePct, setSweepRiskPerTradePct] = useState<number | undefined>(1);
+  const [sweepBusy, setSweepBusy] = useState(false);
+  const [sweepErr, setSweepErr] = useState<string>();
+  const [sweepRows, setSweepRows] = useState<SweepRow[]>();
+  const [sweepBaseSubmitted, setSweepBaseSubmitted] = useState<number>();
+
+  const runParameterSweep = async () => {
+    const symbols = Array.from(
+      new Set(
+        btSymbols
+          .split(',')
+          .map((s) => s.trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    );
+    if (!symbols.length) {
+      setSweepErr('Enter at least one symbol');
+      return;
+    }
+    if (!btFrom || !btTo || !btEquity || !btMaxPositions) {
+      setSweepErr('From, to, starting equity, and max concurrent positions are required');
+      return;
+    }
+    if (!btSplitDate) {
+      setSweepErr('Set an out-of-sample split date above — the sweep needs a held-out window to compare against.');
+      return;
+    }
+    if (!sweepRiskPerTradePct || sweepRiskPerTradePct <= 0) {
+      setSweepErr('Enter a risk-per-trade % to sweep around');
+      return;
+    }
+    setSweepBusy(true);
+    setSweepErr(undefined);
+    setSweepRows(undefined);
+    setSweepBaseSubmitted(sweepRiskPerTradePct);
+    const values = Array.from(new Set(SWEEP_MULTIPLIERS.map((m) => Math.round(sweepRiskPerTradePct * m * 100) / 100)))
+      .filter((v) => v > 0)
+      .sort((a, b) => a - b);
+    const rows: SweepRow[] = [];
+    // Sequential, not Promise.all — each run replays the whole date range
+    // twice (in-sample + out-of-sample); five of those firing at once is
+    // needless server load for a read-only exploratory tool.
+    for (const v of values) {
+      try {
+        const response = await client.runAutotradeWalkForward({
+          symbols,
+          from: btFrom,
+          to: btTo,
+          riskProfile: btRiskProfile,
+          startingEquity: btEquity,
+          maxConcurrentPositions: btMaxPositions,
+          directionMode: btDirectionMode,
+          splitDate: btSplitDate,
+          riskPerTradePct: v,
+        });
+        rows.push({ riskPerTradePct: v, response });
+      } catch (e) {
+        rows.push({ riskPerTradePct: v, response: null, error: (e as Error).message || 'Failed' });
+      }
+    }
+    setSweepRows(rows);
+    setSweepBusy(false);
   };
 
   const [optBtBusy, setOptBtBusy] = useState(false);
@@ -4911,6 +5081,36 @@ export default function AutoTradePage() {
                 />
               </div>
             )}
+
+            <div className="mt-5 pt-5 border-t border-ink-700/60">
+              <h4 className="font-medium text-sm mb-1">Parameter sweep — risk per trade</h4>
+              <p className="text-xs text-slate-500 mb-3">
+                Reruns the SAME walk-forward split above once per nearby risk-per-trade % (half to 1.5x the value
+                below), using the symbols/dates/split/risk profile/equity/max positions/direction set above. Out-of-
+                sample results that stay similar across the row read as a real, size-insensitive edge; one value spiking
+                while its neighbors look ordinary or negative reads as a lucky overfit on that exact setting, not a
+                genuine edge. Read-only — nothing here changes the live Configuration above.
+              </p>
+              <div className="flex gap-3 items-end flex-wrap mb-3">
+                <Field label="Risk per trade % (center)" hint="Swept from 0.5x to 1.5x this value.">
+                  <NumberInput
+                    value={sweepRiskPerTradePct}
+                    onChange={setSweepRiskPerTradePct}
+                    min={0.1}
+                    step={0.1}
+                    placeholder="e.g. 1"
+                  />
+                </Field>
+                <button className="btn-primary" onClick={runParameterSweep} disabled={sweepBusy}>
+                  {sweepBusy ? 'Running…' : 'Run sweep'}
+                </button>
+              </div>
+              {sweepErr && <div className="text-bear text-sm mb-2">{sweepErr}</div>}
+              {sweepRows && sweepBaseSubmitted !== undefined && (
+                <ParameterSweepTable rows={sweepRows} baseValue={sweepBaseSubmitted} />
+              )}
+            </div>
+
             {optBtErr && <div className="text-bear text-sm mb-2">{optBtErr}</div>}
             {optBtResult && (
               <div className="space-y-3">
