@@ -10,6 +10,7 @@ import type {
   ExitCheckRow,
   ExitRulesConfig,
   Exposure,
+  StressResult,
   IvContext,
   OptionsIv,
   JournalStats,
@@ -292,6 +293,7 @@ export const client = {
     const qs = new URLSearchParams({ ...params, withPnl: 'true' } as Record<string, string>).toString();
     return api<{ positions: PositionWithPnl[]; aggregate: AggregatePnl; exposure: Exposure }>(`/positions?${qs}`);
   },
+  portfolioStress: () => api<StressResult>('/positions/stress-test'),
   createPosition: (body: Record<string, unknown>) =>
     api<Position>('/positions', { method: 'POST', body: JSON.stringify(body) }),
   updatePosition: (id: number, patch: Record<string, unknown>) =>

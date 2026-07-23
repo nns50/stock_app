@@ -387,6 +387,25 @@ export interface Exposure {
   largest: { symbol: string; pct: number } | null;
 }
 
+export interface StressScenario {
+  pct: number;
+  estimatedPnl: number;
+}
+
+export interface StressUnresolvedPosition {
+  positionId: number;
+  symbol: string;
+  reason: 'no-beta' | 'no-price' | 'no-delta';
+}
+
+export interface StressResult {
+  scenarios: StressScenario[];
+  netDollarDeltaPerPct: number;
+  unresolved: StressUnresolvedPosition[];
+  resolvedCount: number;
+  totalCount: number;
+}
+
 export interface JournalStats {
   totalClosed: number;
   wins: number;

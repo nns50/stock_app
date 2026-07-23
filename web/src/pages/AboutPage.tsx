@@ -164,6 +164,11 @@ export default function AboutPage() {
           <Term term="Rel. volume">
             Today’s volume relative to its recent average; &gt;1× means heavier-than-usual trading.
           </Term>
+          <Term term="Beta">
+            A symbol’s historical sensitivity to the broad market, from your data provider — 1.0 moves with the market,
+            &gt;1 amplifies it, &lt;1 dampens it. Positions → Market stress test uses it to estimate P&L for a
+            hypothetical market move.
+          </Term>
           <Term term="Gap">Overnight move from the prior close to today’s open, as a %.</Term>
           <Term term="Delta">
             Option Greek: ≈ how much the option price moves per $1 move in the underlying; also a rough proxy for the
