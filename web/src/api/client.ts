@@ -11,6 +11,7 @@ import type {
   ExitRulesConfig,
   Exposure,
   StressResult,
+  PortfolioCorrelation,
   IvContext,
   OptionsIv,
   JournalStats,
@@ -307,6 +308,8 @@ export const client = {
     return api<{ positions: PositionWithPnl[]; aggregate: AggregatePnl; exposure: Exposure }>(`/positions?${qs}`);
   },
   portfolioStress: () => api<StressResult>('/positions/stress-test'),
+  portfolioCorrelation: (lookbackDays?: number) =>
+    api<PortfolioCorrelation>(`/positions/correlation${lookbackDays ? `?lookbackDays=${lookbackDays}` : ''}`),
   createPosition: (body: Record<string, unknown>) =>
     api<Position>('/positions', { method: 'POST', body: JSON.stringify(body) }),
   updatePosition: (id: number, patch: Record<string, unknown>) =>
