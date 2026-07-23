@@ -1714,6 +1714,14 @@ export default function AutoTradePage() {
   const [riskProfile, setRiskProfile] = useState<AutotradeRiskProfile>('MODERATE');
   const [optionsStrategyType, setOptionsStrategyType] = useState<AutotradeOptionsStrategyType>('single_leg');
   const [tradeDirection, setTradeDirection] = useState<AutotradeTradeDirectionMode>('long');
+  const [optionsDeltaMinDraft, setOptionsDeltaMinDraft] = useState<number | undefined>();
+  const [optionsDeltaMaxDraft, setOptionsDeltaMaxDraft] = useState<number | undefined>();
+  const [optionsMaxSpreadPctDraft, setOptionsMaxSpreadPctDraft] = useState<number | undefined>();
+  const [optionsMinOpenInterestDraft, setOptionsMinOpenInterestDraft] = useState<number | undefined>();
+  const [optionsMinVolumeDraft, setOptionsMinVolumeDraft] = useState<number | undefined>();
+  const [optionsMinDteDraft, setOptionsMinDteDraft] = useState<number | undefined>();
+  const [optionsMaxDteDraft, setOptionsMaxDteDraft] = useState<number | undefined>();
+  const [optionsIvRankMaxDraft, setOptionsIvRankMaxDraft] = useState<number | undefined>();
   const [equityDraft, setEquityDraft] = useState<number | undefined>();
   const [maxPositionsDraft, setMaxPositionsDraft] = useState<number | undefined>();
   const [riskPerTradePctDraft, setRiskPerTradePctDraft] = useState<number | undefined>();
@@ -1786,6 +1794,14 @@ export default function AutoTradePage() {
     setRiskProfile(config.data.riskProfile);
     setOptionsStrategyType(config.data.optionsStrategyType);
     setTradeDirection(config.data.tradeDirection);
+    setOptionsDeltaMinDraft(config.data.optionsDeltaMin);
+    setOptionsDeltaMaxDraft(config.data.optionsDeltaMax);
+    setOptionsMaxSpreadPctDraft(config.data.optionsMaxSpreadPct);
+    setOptionsMinOpenInterestDraft(config.data.optionsMinOpenInterest);
+    setOptionsMinVolumeDraft(config.data.optionsMinVolume);
+    setOptionsMinDteDraft(config.data.optionsMinDte);
+    setOptionsMaxDteDraft(config.data.optionsMaxDte);
+    setOptionsIvRankMaxDraft(config.data.optionsIvRankMax);
     setEquityDraft(config.data.accountEquityUsd ?? undefined);
     setMaxPositionsDraft(config.data.maxConcurrentPositions);
     setRiskPerTradePctDraft(config.data.riskPerTradePct);
@@ -1896,6 +1912,14 @@ export default function AutoTradePage() {
     correlationLookbackDays?: number;
     correlationThreshold?: number;
     optionsStrategyType?: AutotradeOptionsStrategyType;
+    optionsDeltaMin?: number;
+    optionsDeltaMax?: number;
+    optionsMaxSpreadPct?: number;
+    optionsMinOpenInterest?: number;
+    optionsMinVolume?: number;
+    optionsMinDte?: number;
+    optionsMaxDte?: number;
+    optionsIvRankMax?: number;
     autoPromoteMoversEnabled?: boolean;
     autoPromoteThreshold?: number;
     autoPromoteWindowDays?: number;
@@ -1923,6 +1947,14 @@ export default function AutoTradePage() {
       setRiskProfile(saved.riskProfile);
       setOptionsStrategyType(saved.optionsStrategyType);
       setTradeDirection(saved.tradeDirection);
+      setOptionsDeltaMinDraft(saved.optionsDeltaMin);
+      setOptionsDeltaMaxDraft(saved.optionsDeltaMax);
+      setOptionsMaxSpreadPctDraft(saved.optionsMaxSpreadPct);
+      setOptionsMinOpenInterestDraft(saved.optionsMinOpenInterest);
+      setOptionsMinVolumeDraft(saved.optionsMinVolume);
+      setOptionsMinDteDraft(saved.optionsMinDte);
+      setOptionsMaxDteDraft(saved.optionsMaxDte);
+      setOptionsIvRankMaxDraft(saved.optionsIvRankMax);
       setMaxPositionsDraft(saved.maxConcurrentPositions);
       setRiskPerTradePctDraft(saved.riskPerTradePct);
       setMaxDailyDrawdownPctDraft(saved.maxDailyDrawdownPct);
@@ -2567,6 +2599,213 @@ export default function AutoTradePage() {
                       <option value="debit_spread">Debit spread</option>
                       <option value="auto">Auto (by IV rank)</option>
                     </select>
+                  </Field>
+                  <Field
+                    label="Options delta band — min"
+                    hint="A contract's |delta| must fall within [min, max] to pass the entry screen. Lower = further out-of-the-money (cheaper premium, lower probability of expiring in the money)."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsDeltaMinDraft}
+                        onChange={setOptionsDeltaMinDraft}
+                        min={0}
+                        max={1}
+                        step={0.05}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options delta min"
+                        onClick={() =>
+                          optionsDeltaMinDraft != null && saveConfig({ optionsDeltaMin: optionsDeltaMinDraft })
+                        }
+                        disabled={
+                          optionsDeltaMinDraft == null ||
+                          optionsDeltaMinDraft < 0 ||
+                          optionsDeltaMinDraft > 1 ||
+                          optionsDeltaMinDraft === config.data?.optionsDeltaMin
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options delta band — max"
+                    hint="Upper bound of the same delta band. Higher = closer to the money (pricier premium, higher probability of expiring in the money)."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsDeltaMaxDraft}
+                        onChange={setOptionsDeltaMaxDraft}
+                        min={0}
+                        max={1}
+                        step={0.05}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options delta max"
+                        onClick={() =>
+                          optionsDeltaMaxDraft != null && saveConfig({ optionsDeltaMax: optionsDeltaMaxDraft })
+                        }
+                        disabled={
+                          optionsDeltaMaxDraft == null ||
+                          optionsDeltaMaxDraft < 0 ||
+                          optionsDeltaMaxDraft > 1 ||
+                          optionsDeltaMaxDraft === config.data?.optionsDeltaMax
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options max spread (%)"
+                    hint="A contract's (ask − bid) / mid, as a percentage, must be at or below this to pass. Lower = tighter, more liquid markets only; raising it lets in wider-spread (often lower-volume) contracts."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsMaxSpreadPctDraft}
+                        onChange={setOptionsMaxSpreadPctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options max spread"
+                        onClick={() =>
+                          optionsMaxSpreadPctDraft != null &&
+                          saveConfig({ optionsMaxSpreadPct: optionsMaxSpreadPctDraft })
+                        }
+                        disabled={
+                          optionsMaxSpreadPctDraft == null ||
+                          optionsMaxSpreadPctDraft < 0 ||
+                          optionsMaxSpreadPctDraft > 100 ||
+                          optionsMaxSpreadPctDraft === config.data?.optionsMaxSpreadPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options min open interest"
+                    hint="A contract must have at least this much open interest to pass the entry screen — a liquidity floor. Lowering it lets in thinner-traded contracts."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsMinOpenInterestDraft}
+                        onChange={setOptionsMinOpenInterestDraft}
+                        min={0}
+                        step={10}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options min open interest"
+                        onClick={() =>
+                          optionsMinOpenInterestDraft != null &&
+                          saveConfig({ optionsMinOpenInterest: optionsMinOpenInterestDraft })
+                        }
+                        disabled={
+                          optionsMinOpenInterestDraft == null ||
+                          optionsMinOpenInterestDraft < 0 ||
+                          optionsMinOpenInterestDraft === config.data?.optionsMinOpenInterest
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options min volume"
+                    hint="A contract must have traded at least this many contracts today to pass — another liquidity floor, independent of open interest."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput value={optionsMinVolumeDraft} onChange={setOptionsMinVolumeDraft} min={0} step={1} />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options min volume"
+                        onClick={() =>
+                          optionsMinVolumeDraft != null && saveConfig({ optionsMinVolume: optionsMinVolumeDraft })
+                        }
+                        disabled={
+                          optionsMinVolumeDraft == null ||
+                          optionsMinVolumeDraft < 0 ||
+                          optionsMinVolumeDraft === config.data?.optionsMinVolume
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options min days to expiration"
+                    hint="A contract's expiration must be at least this many days out to pass — filters out expiring-soon contracts whose price can move erratically."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput value={optionsMinDteDraft} onChange={setOptionsMinDteDraft} min={0} step={1} />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options min DTE"
+                        onClick={() => optionsMinDteDraft != null && saveConfig({ optionsMinDte: optionsMinDteDraft })}
+                        disabled={
+                          optionsMinDteDraft == null ||
+                          optionsMinDteDraft < 0 ||
+                          optionsMinDteDraft === config.data?.optionsMinDte
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options max days to expiration"
+                    hint="A contract's expiration must be at or within this many days out to pass — the far end of the same DTE window as the min above."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput value={optionsMaxDteDraft} onChange={setOptionsMaxDteDraft} min={1} step={1} />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options max DTE"
+                        onClick={() => optionsMaxDteDraft != null && saveConfig({ optionsMaxDte: optionsMaxDteDraft })}
+                        disabled={
+                          optionsMaxDteDraft == null ||
+                          optionsMaxDteDraft < 1 ||
+                          optionsMaxDteDraft === config.data?.optionsMaxDte
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options IV rank ceiling"
+                    hint="Skip an underlying whose IV rank (0-100) exceeds this — this loop only ever buys premium, so guarding against already-expensive implied volatility is the direction that matters."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsIvRankMaxDraft}
+                        onChange={setOptionsIvRankMaxDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options IV rank ceiling"
+                        onClick={() =>
+                          optionsIvRankMaxDraft != null && saveConfig({ optionsIvRankMax: optionsIvRankMaxDraft })
+                        }
+                        disabled={
+                          optionsIvRankMaxDraft == null ||
+                          optionsIvRankMaxDraft < 0 ||
+                          optionsIvRankMaxDraft > 100 ||
+                          optionsIvRankMaxDraft === config.data?.optionsIvRankMax
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
                   </Field>
                   <Field
                     label="Account equity ($)"

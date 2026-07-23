@@ -148,6 +148,16 @@ const configBody = z.object({
   liveOptionsProbationSizeMultiplier: z.number().positive().max(1).optional(),
   // --- Options strategy shape -------------------------------------------------
   optionsStrategyType: z.enum(['single_leg', 'debit_spread', 'auto']).optional(),
+  // --- Options entry-rule thresholds (the contract-quality screen run before
+  // risk-check) ---------------------------------------------------------------
+  optionsDeltaMin: z.number().min(0).max(1).optional(),
+  optionsDeltaMax: z.number().min(0).max(1).optional(),
+  optionsMaxSpreadPct: z.number().min(0).max(100).optional(),
+  optionsMinOpenInterest: z.number().int().nonnegative().optional(),
+  optionsMinVolume: z.number().int().nonnegative().optional(),
+  optionsMinDte: z.number().int().nonnegative().optional(),
+  optionsMaxDte: z.number().int().min(1).optional(),
+  optionsIvRankMax: z.number().min(0).max(100).optional(),
   // --- Options stop-loss / take-profit (paper + backtest only; 0 disables) ----
   optionsStopLossPct: z.number().min(0).max(100).optional(),
   optionsTakeProfitPct: z.number().min(0).max(100).optional(),
@@ -251,6 +261,14 @@ autotradeRouter.put(
       patch.liveOptionsProbationSizeMultiplier = body.liveOptionsProbationSizeMultiplier;
     }
     if (body.optionsStrategyType !== undefined) patch.optionsStrategyType = body.optionsStrategyType;
+    if (body.optionsDeltaMin !== undefined) patch.optionsDeltaMin = body.optionsDeltaMin;
+    if (body.optionsDeltaMax !== undefined) patch.optionsDeltaMax = body.optionsDeltaMax;
+    if (body.optionsMaxSpreadPct !== undefined) patch.optionsMaxSpreadPct = body.optionsMaxSpreadPct;
+    if (body.optionsMinOpenInterest !== undefined) patch.optionsMinOpenInterest = body.optionsMinOpenInterest;
+    if (body.optionsMinVolume !== undefined) patch.optionsMinVolume = body.optionsMinVolume;
+    if (body.optionsMinDte !== undefined) patch.optionsMinDte = body.optionsMinDte;
+    if (body.optionsMaxDte !== undefined) patch.optionsMaxDte = body.optionsMaxDte;
+    if (body.optionsIvRankMax !== undefined) patch.optionsIvRankMax = body.optionsIvRankMax;
     if (body.optionsStopLossPct !== undefined) patch.optionsStopLossPct = body.optionsStopLossPct;
     if (body.optionsTakeProfitPct !== undefined) patch.optionsTakeProfitPct = body.optionsTakeProfitPct;
     if (body.optionsBreakevenTriggerPct !== undefined) {
@@ -547,7 +565,19 @@ autotradeRouter.post(
       screen.candidates,
       decisionConfigOverride(config, body.decision as Partial<DecisionConfig> | undefined),
     );
-    const optionsDecision = await runOptionsDecision(screen.candidates, { strategyType: config.optionsStrategyType });
+    const optionsDecision = await runOptionsDecision(screen.candidates, {
+      strategyType: config.optionsStrategyType,
+      entryConfig: {
+        deltaMin: config.optionsDeltaMin,
+        deltaMax: config.optionsDeltaMax,
+        maxSpreadPct: config.optionsMaxSpreadPct,
+        minOpenInterest: config.optionsMinOpenInterest,
+        minVolume: config.optionsMinVolume,
+        minDaysToExpiration: config.optionsMinDte,
+        maxDaysToExpiration: config.optionsMaxDte,
+        ivRankMax: config.optionsIvRankMax,
+      },
+    });
     res.json({ screen, decision, optionsDecision });
   }),
 );

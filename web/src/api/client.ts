@@ -496,6 +496,14 @@ export const client = {
     liveOptionsProbationTrades?: number;
     liveOptionsProbationSizeMultiplier?: number;
     optionsStrategyType?: AutotradeOptionsStrategyType;
+    optionsDeltaMin?: number;
+    optionsDeltaMax?: number;
+    optionsMaxSpreadPct?: number;
+    optionsMinOpenInterest?: number;
+    optionsMinVolume?: number;
+    optionsMinDte?: number;
+    optionsMaxDte?: number;
+    optionsIvRankMax?: number;
     optionsStopLossPct?: number;
     optionsTakeProfitPct?: number;
     optionsBreakevenTriggerPct?: number;
