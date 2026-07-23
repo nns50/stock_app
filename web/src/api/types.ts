@@ -935,6 +935,33 @@ export interface StrategyAnalysis {
   greeks: { delta: number; gamma: number; theta: number; vega: number };
   payoff: { price: number; pnl: number }[];
   probabilityOfProfit: number | null;
+  expectedValue: number | null;
+}
+
+export interface RollLegInput {
+  optionType: 'call' | 'put';
+  strike: number;
+  dte: number;
+  premium: number;
+  iv?: number;
+}
+
+export interface RollLegOutlook {
+  breakevens: number[];
+  maxProfit: number | null;
+  maxLoss: number | null;
+  probabilityOfProfit: number | null;
+  expectedValue: number | null;
+  delta: number;
+}
+
+export interface RollAnalysis {
+  netCost: number;
+  current: RollLegOutlook;
+  target: RollLegOutlook;
+  breakevenShift: number | null;
+  probabilityOfProfitShift: number | null;
+  expectedValueShift: number | null;
 }
 
 // --- live trading (dry-run safety surface) ---

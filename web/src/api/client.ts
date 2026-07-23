@@ -56,6 +56,8 @@ import type {
   SnapshotSummary,
   StrategyAnalysis,
   StrategyLeg,
+  RollLegInput,
+  RollAnalysis,
   SymbolDetail,
   UniverseSymbol,
   TradingConfig,
@@ -221,6 +223,14 @@ export const client = {
     riskFreeRate?: number;
     legs: StrategyLeg[];
   }) => api<StrategyAnalysis>('/tools/strategy', post(body)),
+  analyzeRoll: (body: {
+    side: 'long' | 'short';
+    quantity: number;
+    underlyingPrice: number;
+    riskFreeRate?: number;
+    current: RollLegInput;
+    target: RollLegInput;
+  }) => api<RollAnalysis>('/tools/roll', post(body)),
 
   // --- market data ---
   quote: (symbol: string) => api<Quote>(`/quotes/${encodeURIComponent(symbol)}`),

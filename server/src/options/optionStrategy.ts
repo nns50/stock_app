@@ -45,6 +45,15 @@ export interface StrategyAnalysis {
   greeks: StrategyGreeks;
   payoff: { price: number; pnl: number }[];
   probabilityOfProfit: number | null; // 0..1
+  /** $ expected value at expiration under the same lognormal model used for
+   *  probabilityOfProfit — Σ(bin P&L × bin probability) over the modeled price
+   *  range. An approximation, not a rigorous closed-form integral: like
+   *  probabilityOfProfit, it only sums probability mass within the modeled
+   *  grid (see analyzeStrategy's own price ceiling), so a strategy with
+   *  meaningful probability mass beyond that ceiling (very high IV or DTE)
+   *  slightly understates the true value. Null under the same conditions
+   *  probabilityOfProfit is null (no usable IV, or T/S <= 0). */
+  expectedValue: number | null;
 }
 
 const MULTIPLIER = 100;
@@ -94,8 +103,14 @@ function combinedGreeks(input: StrategyInput): StrategyGreeks {
   };
 }
 
-/** Probability the underlying expires in a profitable region (lognormal model). */
-function probabilityOfProfit(input: StrategyInput, grid: { price: number; pnl: number }[]): number | null {
+/** Probability of profit AND expected value at expiration, both from the same
+ *  lognormal model of the underlying and the same payoff grid — computed
+ *  together since they share every input (vol pick, distribution, per-bin
+ *  probability). */
+function probabilityAndExpectedValue(
+  input: StrategyInput,
+  grid: { price: number; pnl: number }[],
+): { probabilityOfProfit: number | null; expectedValue: number | null } {
   const r = input.riskFreeRate ?? 0.04;
   const T = Math.max(input.dte, 0) / 365;
   const S = input.underlyingPrice;
@@ -107,18 +122,24 @@ function probabilityOfProfit(input: StrategyInput, grid: { price: number; pnl: n
       .filter((v): v is number => typeof v === 'number' && v > 0);
     if (ivs.length) sigma = ivs.reduce((a, b) => a + b, 0) / ivs.length;
   }
-  if (!sigma || T <= 0 || S <= 0) return null;
+  if (!sigma || T <= 0 || S <= 0) return { probabilityOfProfit: null, expectedValue: null };
 
   const mu = Math.log(S) + (r - 0.5 * sigma * sigma) * T;
   const s = sigma * Math.sqrt(T);
   const lnCdf = (x: number) => (x <= 0 ? 0 : normCdf((Math.log(x) - mu) / s));
 
   let prob = 0;
+  let ev = 0;
   for (let i = 0; i < grid.length - 1; i++) {
+    const binProb = lnCdf(grid[i + 1].price) - lnCdf(grid[i].price);
     const midPnl = (grid[i].pnl + grid[i + 1].pnl) / 2;
-    if (midPnl > 0) prob += lnCdf(grid[i + 1].price) - lnCdf(grid[i].price);
+    if (midPnl > 0) prob += binProb;
+    ev += midPnl * binProb;
   }
-  return Math.max(0, Math.min(1, round4(prob)));
+  return {
+    probabilityOfProfit: Math.max(0, Math.min(1, round4(prob))),
+    expectedValue: round2(ev),
+  };
 }
 
 export function analyzeStrategy(input: StrategyInput): StrategyAnalysis {
@@ -155,6 +176,8 @@ export function analyzeStrategy(input: StrategyInput): StrategyAnalysis {
     }
   }
 
+  const { probabilityOfProfit, expectedValue } = probabilityAndExpectedValue(input, payoff);
+
   return {
     netPremium: round2(netPremium(legs)),
     maxProfit: unboundedProfit ? null : round2(maxP),
@@ -164,7 +187,8 @@ export function analyzeStrategy(input: StrategyInput): StrategyAnalysis {
     breakevens,
     greeks: combinedGreeks(input),
     payoff,
-    probabilityOfProfit: probabilityOfProfit(input, payoff),
+    probabilityOfProfit,
+    expectedValue,
   };
 }
 
