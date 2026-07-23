@@ -77,13 +77,16 @@ beforeEach(() => {
 });
 
 describe('PositionsPage — close vs exit action gating', () => {
-  it('shows "close" (not "exit") for a broker-tracked (live) open position', async () => {
+  it('shows BOTH "exit" (record a manual exit) and "close" (real order) for a broker-tracked (live) open position', async () => {
+    // A live position you already sold OUTSIDE the app needs a way to just
+    // record the exit, not only place a redundant real order — so it offers
+    // both, unlike before when it only offered "close".
     const pos = positionFixture({ id: 1, tags: ['live'] });
     renderWithRows([rowFixture(pos)]);
 
     expect(await screen.findByText('AAPL')).toBeInTheDocument();
+    expect(screen.getByText('exit')).toBeInTheDocument();
     expect(screen.getByText('close')).toBeInTheDocument();
-    expect(screen.queryByText('exit')).toBeNull();
   });
 
   it('shows "close" for a position with a sourceIntentId even without a "live" tag', async () => {
@@ -92,6 +95,7 @@ describe('PositionsPage — close vs exit action gating', () => {
 
     expect(await screen.findByText('AAPL')).toBeInTheDocument();
     expect(screen.getByText('close')).toBeInTheDocument();
+    expect(screen.getByText('exit')).toBeInTheDocument(); // manual-exit path is available too
   });
 
   it('shows "exit" (not "close") for a plain manually-logged position', async () => {
@@ -121,5 +125,18 @@ describe('PositionsPage — close vs exit action gating', () => {
     await userEvent.click(screen.getByText('close'));
 
     expect(await screen.findByText(/Close AAPL — real order/)).toBeInTheDocument();
+  });
+
+  it('opens the (journal-only) Exit modal — not the real-order Close modal — when "exit" is clicked on a live position', async () => {
+    const pos = positionFixture({ id: 6, tags: ['live'] });
+    const { default: userEvent } = await import('@testing-library/user-event');
+    renderWithRows([rowFixture(pos)]);
+
+    await screen.findByText('AAPL');
+    await userEvent.click(screen.getByText('exit'));
+
+    // The Exit modal opened (records a journal exit); the real-order Close copy did NOT.
+    expect(await screen.findByRole('button', { name: /Record exit/i })).toBeInTheDocument();
+    expect(screen.queryByText(/Close AAPL — real order/)).toBeNull();
   });
 });
