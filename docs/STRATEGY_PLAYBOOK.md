@@ -162,6 +162,24 @@ genuinely bad adjustment apart from an unrelated cold streak or regime shift is
 genuinely hard even with a full sample. You stay in the loop; the system never
 silently walks its own sizing back on your behalf.
 
+**Sizing from ambition, not edge — "Tune from target daily gain."** The two tools above
+size from what your edge _has done_. Auto-Trade's **Tune from target** (Config tab, 2026-07-23)
+goes the other way: you name a **target daily gain %**, and it back-solves the per-trade
+risk (and loosens the exposure caps, filters, and options selection to match) so that
+target is _reachable_. Two honest framings share one formula,
+`riskPerTradePct = target ÷ (tradesPerDay × edgeR)`: on the **Expected** basis, `edgeR` is
+your average R per trade (assuming ~45% win at the band's reward:risk), so the target is
+your _average_ day; on the **Perfect-day** basis, `edgeR = R`, so the target is the
+_ceiling_ you'd hit only if every trade wins. The same 5%/day target implies **~2.4%**
+risk on the first basis and **~0.4%** on the second — the toggle is you choosing which
+assumption to bet the account on. This is a legitimate way to set an aggressive posture
+_deliberately_, but respect what it is: unlike Kelly, it is **not** derived from a proven
+edge — it will happily size up to chase a number your system may not actually produce.
+The higher the target, the faster a losing streak compounds; the tool caps its own
+_suggestion_ and warns loudly past a survivable per-trade risk, but it won't stop you
+hand-entering more. Preview every changed field, and remember the daily-drawdown halt it
+sets is the number you have to be willing to lose on a bad day to have a shot at the good one.
+
 ---
 
 ## Playbook A — Momentum/trend swing (long)

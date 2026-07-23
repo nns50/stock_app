@@ -46,6 +46,7 @@ import {
 import { getProvider } from '../providers';
 import { dispatchNotifications } from '../services/notifier';
 import { suggestLiveCaps } from '../services/autotrading/liveCaps';
+import { computeTargetTune, resetToModerate } from '../services/autotrading/targetTune';
 
 export const autotradeRouter = Router();
 
@@ -67,6 +68,44 @@ autotradeRouter.get('/live-caps/suggest', (_req, res) => {
     throw new HttpError(400, 'Set account equity before requesting suggested live caps.');
   }
   res.json(suggestLiveCaps(config.accountEquityUsd, config.maxDailyDrawdownPct, config.maxTradesPerDay));
+});
+
+/** Preview a full "tune from target" — derive the whole risk/aggressiveness
+ *  config from the stored account equity plus a target daily gain % and the
+ *  chosen sizing basis (services/autotrading/targetTune.ts). Pure preview only:
+ *  returns the patch + warnings the UI shows; applying it goes through the
+ *  ordinary PUT /config (so the AGGRESSIVE-label confirmation and per-field
+ *  validation there still apply). Fails closed (400) when equity is unset,
+ *  same posture as /live-caps/suggest — every derived number scales with it. */
+const tunePreviewBody = z.object({
+  targetDailyGainPct: z.number().positive().max(1000),
+  basis: z.enum(['expected', 'perfectDay']),
+});
+
+autotradeRouter.post('/tune/preview', (req, res) => {
+  const body = parseBody(tunePreviewBody, req);
+  const config = getAutotradeConfig();
+  if (config.accountEquityUsd == null) {
+    throw new HttpError(400, 'Set account equity before tuning from a target.');
+  }
+  res.json(
+    computeTargetTune({
+      equityUsd: config.accountEquityUsd,
+      targetDailyGainPct: body.targetDailyGainPct,
+      basis: body.basis,
+      config: { autoTuneEnabled: config.autoTuneEnabled },
+    }),
+  );
+});
+
+/** The moderate baseline for the current account — the "reset to moderate"
+ *  patch, equity-scaled. Same fail-closed-on-unset-equity posture. */
+autotradeRouter.get('/tune/moderate', (_req, res) => {
+  const config = getAutotradeConfig();
+  if (config.accountEquityUsd == null) {
+    throw new HttpError(400, 'Set account equity before resetting to moderate.');
+  }
+  res.json({ patch: resetToModerate(config.accountEquityUsd) });
 });
 
 const configBody = z.object({
