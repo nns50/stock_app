@@ -21,6 +21,7 @@ import { CloseModal, ExitModal, JournalEditModal } from '../components/PositionF
 import { OPEN_LOG_TRADE_EVENT, TRADE_LOGGED_EVENT } from '../components/GlobalLogTrade';
 import { RiskSizingModal } from '../components/RiskSizingModal';
 import { ExposurePanel } from '../components/ExposurePanel';
+import { PortfolioStressPanel } from '../components/PortfolioStressPanel';
 import { EarningsBadge } from '../components/EarningsBadge';
 import type { SymbolEvents } from '../api/types';
 import { useToast } from '../components/ToastContext';
@@ -165,6 +166,7 @@ export default function PositionsPage() {
       ) : null}
 
       {data.data?.exposure && data.data.exposure.gross > 0 && <ExposurePanel exposure={data.data.exposure} />}
+      <PortfolioStressPanel />
 
       <Segmented
         options={[

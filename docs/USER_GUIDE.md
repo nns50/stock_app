@@ -487,6 +487,14 @@ nudge, not a blocker — you can still save with items unchecked.
   wrong account, before this fix).
 - **del** removes the whole position (with confirm + Undo).
 - An **Exposure panel** summarizes gross/net exposure across the book.
+- A **Market stress test** panel (2026-07-23, collapsed by default — click to load) shows
+  estimated P&L for a small set of hypothetical broad-market moves (−10% / −5% / −2% / 0 /
+  +2% / +5% / +10%), beta-weighting every open stock and option position by its own beta
+  (from your market-data provider) against its current market value (stocks) or its live
+  delta and underlying price (options). Positions whose beta, price, or delta can't be
+  resolved are **excluded and listed**, never assumed zero-risk — the panel says plainly
+  when its coverage is partial. A model of sensitivity, not a prediction: real market moves
+  aren't linear and beta drifts over time.
 
 ---
 

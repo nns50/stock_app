@@ -15,6 +15,7 @@ import {
 import { priceMap } from '../services/quotes';
 import { aggregatePnl, computePositionPnl } from '../services/pnl';
 import { computeExposure, ExposureInput } from '../services/exposure';
+import { computePortfolioStress } from '../services/portfolioStress';
 import { listUniverse } from '../db/universe';
 import { isWebullTracked } from '../providers/webull/positions';
 import { closeLivePosition } from '../services/trading/closePosition';
@@ -138,6 +139,16 @@ positionsRouter.get(
     } else {
       res.json({ positions });
     }
+  }),
+);
+
+// Registered ahead of '/:id' — otherwise Express would match this literal path
+// as an :id param instead.
+positionsRouter.get(
+  '/stress-test',
+  asyncHandler(async (_req, res) => {
+    const open = listPositions({ status: 'open' });
+    res.json(await computePortfolioStress(open));
   }),
 );
 

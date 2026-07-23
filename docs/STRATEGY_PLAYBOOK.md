@@ -442,6 +442,15 @@ window. If alpha is persistently **negative**, the honest move is to trade small
 buy the index — and the app will have just saved you a lot of money. If it's
 **positive and stable**, you've earned the right to keep going (and maybe scale).
 
+**"What does a bad market day do to my whole book?" → Market stress test (Positions,
+2026-07-23).** Beta-weights every open stock and option position against a fixed set of
+hypothetical broad-market moves (±2/5/10%) and shows the estimated P&L for each — a quick
+answer to "am I overexposed to a market-wide selloff, not just any one position?" It's a
+sensitivity model built from each symbol's own historical beta, not a forecast; a position
+whose beta, price, or delta can't be resolved is excluded and listed, not silently ignored.
+If the −10% scenario would hurt more than you can stomach, that's a signal to trim gross
+exposure or add a hedge — independent of what any single stop-loss says.
+
 ---
 
 ## The weekly review checklist
@@ -469,6 +478,7 @@ Spend 20 minutes every weekend in the **Journal**:
       actually respect?
 - [ ] **Risk of ruin** — still comfortably low at your current risk %?
 - [ ] **Alpha vs SPY** — beating buy-and-hold?
+- [ ] **Market stress test** — could you stomach the −10% scenario? Trim gross exposure if not.
 - [ ] **Back up your data** (Journal → export `.db`).
 
 ---
