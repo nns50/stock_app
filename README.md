@@ -119,6 +119,9 @@ npm run seed       # 5 closed + 2 open trades, 7 watchlist symbols (idempotent)
   guide to every risk setting on the Auto-Trade page's Configuration card (risk per
   trade, daily drawdown, aggregate open risk, correlated exposure, and more), with
   worked examples for each.
+- **[Tune from target daily gain](docs/TUNE_FROM_TARGET.md)** — how to set up the whole
+  Auto-Trade risk config at once from a target daily gain % + your equity, with the
+  Expected/Perfect-day basis explained and worked examples.
 - In-app **About** page — the live, authoritative description of the scoring formulas
   and glossary.
 

@@ -784,7 +784,9 @@ shouldn't be a tab-switch away.
   live-enable switch, kill switch, account ID, or probation ramps** — only the
   risk/aggressiveness settings and the dollar caps. Deliberately lets you push the target
   high (it's your call), but higher targets mean bigger swings both ways — decision
-  support, never a promise of the gain. Needs account equity set first.
+  support, never a promise of the gain. Needs account equity set first. Full walkthrough,
+  including the exact formula and the band table:
+  [Tune from target daily gain](TUNE_FROM_TARGET.md).
   Every guardrail the risk engine actually enforces is its own directly-editable field
   below account equity, independent of the risk-profile label above — switching
   Moderate ↔ Aggressive never silently changes any of them, matching how **max
