@@ -93,12 +93,15 @@ webullRouter.post(
   }),
 );
 
-// Background sync scheduler config — enable/interval/account id. The loop
+// Background sync scheduler config — enable/interval/account ids. The loop
 // itself starts unconditionally at boot (services/webullPositionsScheduler.ts)
-// and no-ops until enabled with an account id set here.
+// and no-ops until enabled with at least one account id set here. accountIds
+// is the canonical field (a user with a cash AND a margin account lists both);
+// the legacy single accountId is still accepted for back-compat.
 const schedulerBody = z.object({
   enabled: z.boolean().optional(),
   intervalSeconds: z.number().int().min(MIN_SYNC_INTERVAL_SECONDS).max(86400).optional(),
+  accountIds: z.array(z.string().max(64)).max(20).optional(),
   accountId: z.string().max(64).nullable().optional(),
 });
 

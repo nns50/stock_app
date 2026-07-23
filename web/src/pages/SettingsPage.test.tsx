@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import SettingsPage from './SettingsPage';
 import { ToastProvider } from '../components/ToastContext';
@@ -31,7 +31,7 @@ beforeEach(() => {
   vi.spyOn(client, 'webullSyncSchedulerStatus').mockResolvedValue({
     enabled: true,
     intervalSeconds: 300,
-    accountId: null,
+    accountIds: [],
   } as never);
 });
 
@@ -75,27 +75,45 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('button', { name: 'Send test notification' })).toBeDisabled();
   });
 
-  it('loads the persisted Webull sync schedule into the controls', async () => {
+  it('loads the persisted Webull sync schedule (multiple accounts) into the controls', async () => {
     vi.spyOn(client, 'webullSyncSchedulerStatus').mockResolvedValue({
       enabled: false,
       intervalSeconds: 900,
-      accountId: 'ACC42',
+      accountIds: ['CASH42', 'MARGIN99'],
     } as never);
     renderPage();
-    expect(await screen.findByDisplayValue('ACC42')).toBeInTheDocument();
+    // Both accounts land in the comma-separated auto-sync field (findByDisplayValue
+    // waits for the async scheduler load to populate it).
+    await screen.findByDisplayValue('CASH42, MARGIN99');
     expect(screen.getByRole('checkbox', { name: /Sync automatically in the background/ })).not.toBeChecked();
     expect(screen.getByLabelText('Sync interval')).toHaveValue('900');
+  });
+
+  it('saves the account list when the auto-sync accounts field is edited', async () => {
+    const setScheduler = vi
+      .spyOn(client, 'setWebullSyncScheduler')
+      .mockResolvedValue({ enabled: true, intervalSeconds: 300, accountIds: ['CASH', 'MARGIN'] } as never);
+    renderPage();
+    // Wait for the scheduler load to settle first (default mock: enabled) so its
+    // useEffect can't reset the field back to empty after we've typed into it.
+    const checkbox = await screen.findByRole('checkbox', { name: /Sync automatically in the background/ });
+    await waitFor(() => expect(checkbox).toBeChecked());
+    const field = screen.getByPlaceholderText('account_id_1, account_id_2');
+    fireEvent.change(field, { target: { value: 'CASH, MARGIN , CASH' } });
+    fireEvent.blur(field);
+    // Trimmed + de-duplicated before saving.
+    expect(setScheduler).toHaveBeenCalledWith({ accountIds: ['CASH', 'MARGIN'] });
   });
 
   it('saves a scheduler patch when the automatic-sync checkbox is toggled', async () => {
     const setScheduler = vi
       .spyOn(client, 'setWebullSyncScheduler')
-      .mockResolvedValue({ enabled: false, intervalSeconds: 300, accountId: null } as never);
+      .mockResolvedValue({ enabled: false, intervalSeconds: 300, accountIds: [] } as never);
     renderPage();
     const checkbox = await screen.findByRole('checkbox', { name: /Sync automatically in the background/ });
     expect(checkbox).toBeChecked(); // default mock: enabled true
     fireEvent.click(checkbox);
-    expect(setScheduler).toHaveBeenCalledWith({ enabled: false, accountId: undefined });
+    expect(setScheduler).toHaveBeenCalledWith({ enabled: false });
   });
 
   it('"Sync now" reports what changed, including reconciled orders and closed positions', async () => {

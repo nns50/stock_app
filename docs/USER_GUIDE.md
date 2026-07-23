@@ -1377,9 +1377,15 @@ One home (⚙ or `⌘K → Settings`) for everything:
   previously kept showing a position as open long after it was actually sold. When the exit
   price comes from the close-detection side (no fill to read a price from), it's an
   *estimate* from the latest quote, noted as such on the exit — edit it if you have your
-  broker confirmation. Enter an account ID once, flip on **Sync automatically in the
-  background**, and pick an interval (1m–30m); it then keeps itself current with no further
-  clicking, independent of any open tab. Every broker-truth close or quantity correction a
+  broker confirmation. List your account IDs once under **Auto-sync accounts**, flip on
+  **Sync automatically in the background**, and pick an interval (1m–30m); it then keeps
+  itself current with no further clicking, independent of any open tab. If you trade **more
+  than one real account** (e.g. a cash account *and* a margin account), put **all** of them
+  in that comma-separated field — the background sync reconciles every account each tick, so
+  a position sold in one account no longer sits open just because a different account was the
+  one being synced. (The single **Account ID** field above it is separate — it's only for the
+  one-account-at-a-time **Preview**/**Sync now**/**Compare** buttons; a **+ Add** shortcut
+  copies it into the auto-sync list.) Every broker-truth close or quantity correction a
   sync makes (equity or options) also shows up as its own **Recent activity** entry on the
   Auto-Trade page — visible the moment it happens, not just discoverable later from a wrong
   P&L number.
