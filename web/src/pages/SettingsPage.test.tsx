@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import SettingsPage from './SettingsPage';
 import { ToastProvider } from '../components/ToastContext';
@@ -90,15 +90,24 @@ describe('SettingsPage', () => {
   });
 
   it('saves the account list when the auto-sync accounts field is edited', async () => {
+    // Seed values distinct from the field's own initial empty state, so waiting for
+    // the joined pair below proves the async scheduler load actually landed — the
+    // default mock (enabled: true, accountIds: []) is indistinguishable from the
+    // pre-load state, so a checkbox-checked or empty-field wait would be a no-op
+    // guard. A single seed account won't do either: the first account also seeds
+    // the separate manual "Account ID" field, so its display value would be
+    // ambiguous between the two inputs — two accounts makes the auto-sync field's
+    // comma-joined value distinct from the manual field's single-account value.
+    vi.spyOn(client, 'webullSyncSchedulerStatus').mockResolvedValue({
+      enabled: true,
+      intervalSeconds: 300,
+      accountIds: ['SEED1', 'SEED2'],
+    } as never);
     const setScheduler = vi
       .spyOn(client, 'setWebullSyncScheduler')
       .mockResolvedValue({ enabled: true, intervalSeconds: 300, accountIds: ['CASH', 'MARGIN'] } as never);
     renderPage();
-    // Wait for the scheduler load to settle first (default mock: enabled) so its
-    // useEffect can't reset the field back to empty after we've typed into it.
-    const checkbox = await screen.findByRole('checkbox', { name: /Sync automatically in the background/ });
-    await waitFor(() => expect(checkbox).toBeChecked());
-    const field = screen.getByPlaceholderText('account_id_1, account_id_2');
+    const field = await screen.findByDisplayValue('SEED1, SEED2');
     fireEvent.change(field, { target: { value: 'CASH, MARGIN , CASH' } });
     fireEvent.blur(field);
     // Trimmed + de-duplicated before saving.
