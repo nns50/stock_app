@@ -303,6 +303,23 @@ export interface AutotradeConfig {
   /** % of the position closed at the partialExitRMultiple trigger. Only
    *  meaningful when partialExitRMultiple is nonzero. */
   partialExitPct: number;
+  /** Scale into winners (pyramiding): once unrealized gain reaches this many R
+   *  — measured from the position's CURRENT (blended) entry against its frozen
+   *  original per-share risk — add addOnSizePct% more shares, up to maxAddOns
+   *  times. Each add blends the entry up (long) / down (short), shifts the
+   *  recorded initial-stop level by the same amount so the R denominator stays
+   *  the original per-share risk, and RAISES the protective stop to 1R below
+   *  (long) / above (short) the new blended entry — never loosening it. 0
+   *  disables scaling in entirely. PAPER + BACKTEST equity only (LIVE is
+   *  untouched); mutually exclusive with a partial exit in the same cycle. */
+  addOnTriggerRMultiple: number;
+  /** Size of each add-on as a % of the position's CURRENT quantity. Only
+   *  meaningful when addOnTriggerRMultiple and maxAddOns are both nonzero. */
+  addOnSizePct: number;
+  /** Hard cap on how many times a single position may be scaled into. 0
+   *  disables scaling in (same as addOnTriggerRMultiple = 0). Bounds how
+   *  top-heavy a pyramid can get. */
+  maxAddOns: number;
 
   // --- Correlation methodology (docs/AUTOTRADING_SPEC.md — RESOLVED
   // DECISIONS). Formerly riskProfiles.ts's CORRELATION_LOOKBACK_DAYS/
@@ -611,6 +628,9 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     trailStopRMultiple: 0,
     partialExitRMultiple: 0,
     partialExitPct: 50,
+    addOnTriggerRMultiple: 0,
+    addOnSizePct: 50,
+    maxAddOns: 0,
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
     liveTradingEnabled: false,
@@ -759,6 +779,9 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     trailStopRMultiple: nonNeg(input.trailStopRMultiple, d.trailStopRMultiple),
     partialExitRMultiple: nonNeg(input.partialExitRMultiple, d.partialExitRMultiple),
     partialExitPct: pct(input.partialExitPct, d.partialExitPct),
+    addOnTriggerRMultiple: nonNeg(input.addOnTriggerRMultiple, d.addOnTriggerRMultiple),
+    addOnSizePct: pct(input.addOnSizePct, d.addOnSizePct),
+    maxAddOns: posInt(input.maxAddOns, d.maxAddOns),
     correlationLookbackDays: posIntMin1(input.correlationLookbackDays, d.correlationLookbackDays),
     correlationThreshold: unitInterval(input.correlationThreshold, d.correlationThreshold),
     liveTradingEnabled: typeof input.liveTradingEnabled === 'boolean' ? input.liveTradingEnabled : d.liveTradingEnabled,

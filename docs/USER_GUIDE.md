@@ -937,6 +937,20 @@ shouldn't be a tab-switch away.
   whenever its trigger gets turned on — so leaving them untouched changes nothing.
   R-multiples here are always measured against the position's own original stop
   distance, fixed at entry, even after the stop itself has since moved.
+- **Scale into winners** (2026-07-23, **paper + backtest** equity only — live is
+  untouched) — three more fields let a _winning_ position **pyramid**: **scale-in
+  trigger (R-multiple)** (once unrealized gain reaches this many R, add more shares),
+  **scale-in size (% of current)** (how big each add is, as a % of the current
+  quantity), and **max add-ons** (a hard cap on how many times one position may be
+  added to). Each add **blends the entry** toward the current price, **shifts the
+  recorded initial-stop level by the same amount** so the R-multiple denominator stays
+  the _original_ per-share risk (which naturally spaces the adds ~1R apart), and
+  **raises the protective stop** to 1R below the new blended entry — never loosening
+  it. A scale-in never fires in the same cycle as a partial scale-out. All three
+  default to **0/off** (max add-ons 0 ⇒ disabled), so leaving them alone changes
+  nothing. It's an edge _amplifier_, not a signal — validate it in the backtester
+  before trusting it. This is the one place the app _adds_ risk to a live-feeling
+  paper position, which is exactly why it's capped and paper/backtest-only.
   Seven more fields do the same for an already-open **paper or backtest options**
   position (**live options positions are untouched — still time-exit only**, the
   same scope boundary as the five equity fields above): **Options stop-loss (%)**

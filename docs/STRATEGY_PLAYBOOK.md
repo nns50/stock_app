@@ -182,6 +182,35 @@ sets is the number you have to be willing to lose on a bad day to have a shot at
 
 ---
 
+## Scaling into winners (pyramiding)
+
+The five disciplines above size the trade **once, at entry**. Scaling in is the opposite
+move — **adding to a position that's already working** — and it's the one technique here
+that _adds_ risk after the fact, so it earns its own rules. The Auto-Trade config exposes
+it (**paper + backtest only**; live positions keep their fixed stop/target): a **scale-in
+trigger** in R, a **scale-in size** as a % of the current position, and a **max add-ons**
+cap.
+
+Why it can help: a trend that pays 3–5R rewards a bigger position through the fat part of
+the move, and adding _only after_ the trade proves itself keeps your initial risk small.
+Why it usually hurts beginners: adds raise your average entry, so a normal pullback can
+turn a green trade red, and an uncapped pyramid quietly becomes a huge undiversified bet
+right before the reversal. The implementation defends against both — each add **blends the
+entry** and immediately **raises the stop to 1R below the new blended entry** (so the whole
+larger position still risks about 1R), and **max add-ons** hard-caps the pyramid. The
+R-multiple that triggers the next add is measured from the _blended_ entry, so adds
+naturally space out ~1R apart instead of piling on at one price.
+
+Rules of thumb: keep add size **≤ the original** (a 100% → 50% → 25% taper, not the
+reverse), cap add-ons at **1–3**, and **never** scale into a mean-reversion fade — pyramiding
+belongs to trends, where being wrong shows up fast as a stop-out, not to a fade that "should"
+turn around. Above all: **prove it in the backtester first.** Run the same window with the
+scale-in fields off, then on, and compare — expectancy per _initial_ R, max drawdown, and
+the R-standard-deviation. If pyramiding only lifts the average by widening the tails, you've
+added variance, not edge. It shines exactly where discipline #4 (exit by rule) already holds.
+
+---
+
 ## Playbook A — Momentum/trend swing (long)
 
 **Idea:** buy strength that's confirmed by trend and participation; ride it to a

@@ -1330,6 +1330,10 @@ export interface AutotradeConfig {
   trailStopRMultiple: number;
   partialExitRMultiple: number;
   partialExitPct: number;
+  // --- Scale into winners / pyramiding (0 disables). PAPER + BACKTEST only. ---
+  addOnTriggerRMultiple: number;
+  addOnSizePct: number;
+  maxAddOns: number;
 
   // --- Correlation methodology (feeds maxCorrelatedExposurePct above) ---
   correlationLookbackDays: number;
@@ -1741,6 +1745,9 @@ export interface BacktestRequest extends BacktestRiskParams {
   trailStopRMultiple?: number;
   partialExitRMultiple?: number;
   partialExitPct?: number;
+  addOnTriggerRMultiple?: number;
+  addOnSizePct?: number;
+  maxAddOns?: number;
   /** Own value here, NOT inherited from the live Configuration's
    *  tradeDirection if omitted — a backtest is a self-contained
    *  hypothesis. Defaults to 'long' (server-side) when omitted entirely. */
@@ -1880,6 +1887,9 @@ export interface CombinedBacktestRequest extends BacktestRiskParams {
   trailStopRMultiple?: number;
   partialExitRMultiple?: number;
   partialExitPct?: number;
+  addOnTriggerRMultiple?: number;
+  addOnSizePct?: number;
+  maxAddOns?: number;
   optionsDecisionConfig?: { strategyType?: AutotradeOptionsStrategyType };
   /** Own value here, NOT inherited from the live Configuration's
    *  tradeDirection if omitted — a backtest is a self-contained

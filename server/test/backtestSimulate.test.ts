@@ -319,6 +319,34 @@ describe('simulateBacktest', () => {
       expect(final.exitPrice).toBe(106);
     });
 
+    it('scales into a winner (single grown trade row, no extra exit) then exits the larger size at target', () => {
+      const signalDay = '2024-03-01';
+      const entryDay = d(signalDay, 1);
+      const day2 = d(signalDay, 2); // close 104 -> ~1.33R, past the 1R add-on trigger
+      const targetDay = d(signalDay, 3); // hits the 106 target for the whole grown position
+      const history = new Map([
+        [
+          'TEST',
+          [
+            ...warmupThrough(signalDay),
+            bar(entryDay),
+            bar(day2, { open: 101, high: 105, low: 100, close: 104 }),
+            bar(targetDay, { open: 104, high: 107, low: 103, close: 106 }),
+          ],
+        ],
+      ]);
+      const report = simulateBacktest(
+        history,
+        baseConfig({ from: signalDay, to: targetDay, addOnTriggerRMultiple: 1, addOnSizePct: 50, maxAddOns: 1 }),
+      );
+      // A scale-in is NOT a closed slice, so it never adds a trade row (unlike a
+      // partial exit) — there's exactly one exit, at the grown quantity.
+      expect(report.trades).toHaveLength(1);
+      expect(report.trades[0].exitReason).toBe('target');
+      expect(report.trades[0].exitPrice).toBe(106);
+      expect(report.trades[0].quantity).toBe(499); // 333 + floor(333 * 50%)
+    });
+
     it('never fires any of the five when all are left at their defaults (0)', () => {
       const signalDay = '2024-03-01';
       const entryDay = d(signalDay, 1);
