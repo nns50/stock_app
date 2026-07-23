@@ -200,4 +200,37 @@ describe('JournalPage', () => {
     expect(screen.getByText(/Before \(15 trades\)/)).toBeInTheDocument();
     expect(screen.getByText(/After \(4 trades\)/)).toBeInTheDocument();
   });
+
+  it('shows profit factor and avg R in the by-tag breakdown, including the null cases', async () => {
+    vi.spyOn(client, 'journalStats').mockResolvedValue(
+      journalStatsFixture({
+        totalClosed: 3,
+        profitFactor: 2, // distinct from the byTag row's values so the '∞' assertion below stays unambiguous
+        byTag: [
+          { key: 'breakout', trades: 3, wins: 2, winRate: 67, totalPnl: 150, avgPnl: 50, profitFactor: 3, avgR: 0.5 },
+          {
+            key: 'earnings',
+            trades: 2,
+            wins: 2,
+            winRate: 100,
+            totalPnl: 250,
+            avgPnl: 125,
+            profitFactor: null,
+            avgR: null,
+          },
+        ],
+      }),
+    );
+    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({ positions: [] });
+    render(
+      <MemoryRouter>
+        <JournalPage />
+      </MemoryRouter>,
+    );
+    await screen.findByText('breakout');
+    expect(screen.getByText('3.0')).toBeInTheDocument(); // breakout's profit factor
+    expect(screen.getByText('0.5R')).toBeInTheDocument(); // breakout's avg R
+    expect(screen.getByText('∞')).toBeInTheDocument(); // earnings: all winners, no losses
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0); // earnings: no trade logged a stop
+  });
 });

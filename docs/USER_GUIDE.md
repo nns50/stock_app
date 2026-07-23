@@ -511,8 +511,12 @@ trades.
 - **By tag**, **by grade**, **by discipline** (checklist adherence), and **by timing**
   (which **weekday** you closed on, how long you **held**, and — for trades with a logged
   entry time — the **entry session**: open / late-AM / midday / power hour) — each with
-  its own count, total, win rate, and expectancy. This is how you discover *which
-  setups and which behaviors* make you money.
+  its own count, win rate, **profit factor** and **avg R** (2026-07-23), and realized P&L.
+  Profit factor and avg R are what separate a genuine edge from a merely-frequent one — a
+  low-win-rate setup with a big payoff can out-earn a high-win-rate one with a small payoff,
+  which win rate and P&L alone can't show. Same null conventions as the headline stats: `∞`
+  for a group with wins and no losses yet, `—` for a group where no trade logged a stop.
+  This is how you discover *which setups and which behaviors* make you money.
 
 ### Wash-sale awareness
 

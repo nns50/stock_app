@@ -537,6 +537,12 @@ export interface GroupStat {
   winRate: number;
   totalPnl: number;
   avgPnl: number;
+  /** Gross profit ÷ gross loss within the group; null means "infinite" (wins,
+   *  zero losses) — same convention as the headline profitFactor stat. */
+  profitFactor: number | null;
+  /** Mean R-multiple over the group's own trades that logged a stop; null
+   *  when none did. */
+  avgR: number | null;
 }
 
 export interface SymbolDetail {

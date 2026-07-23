@@ -186,6 +186,16 @@ export interface GroupStat {
   winRate: number; // %
   totalPnl: number;
   avgPnl: number; // expectancy within the group
+  /** Gross profit ÷ gross loss within the group — the "does this setup have a
+   *  real edge" number win rate/avgPnl alone can't show (a 40%-win-rate setup
+   *  with a 3:1 payoff can out-earn a 60%-win-rate one with a 1:1 payoff).
+   *  null means "infinite" (wins with zero losses in the group), same
+   *  convention as the top-level profitFactor above. */
+  profitFactor: number | null;
+  /** Mean R-multiple within the group, over just the group's own trades that
+   *  logged a stop (a subset of `trades` — mirrors the top-level avgR's own
+   *  "only trades with a stop" scope). null when none did. */
+  avgR: number | null;
 }
 
 export interface JournalStats {
@@ -334,13 +344,29 @@ interface Acc {
   trades: number;
   wins: number;
   total: number;
+  grossProfit: number;
+  grossLoss: number; // stored positive, mirrors the top-level grossLoss convention
+  rSum: number;
+  rCount: number;
 }
 
-function accumulate(map: Map<string, Acc>, key: string, pnl: number): void {
-  const a = map.get(key) ?? { trades: 0, wins: 0, total: 0 };
+/** `r` is this trade's R-multiple (null if it never logged a stop) — same
+ *  per-trade value the top-level avgR/rBuckets are computed from, just also
+ *  folded into whichever group(s) this trade belongs to. */
+function accumulate(map: Map<string, Acc>, key: string, pnl: number, r: number | null): void {
+  const a = map.get(key) ?? { trades: 0, wins: 0, total: 0, grossProfit: 0, grossLoss: 0, rSum: 0, rCount: 0 };
   a.trades += 1;
-  if (pnl > 0) a.wins += 1;
+  if (pnl > 0) {
+    a.wins += 1;
+    a.grossProfit += pnl;
+  } else if (pnl < 0) {
+    a.grossLoss += -pnl;
+  }
   a.total += pnl;
+  if (r !== null) {
+    a.rSum += r;
+    a.rCount += 1;
+  }
   map.set(key, a);
 }
 
@@ -352,6 +378,8 @@ function toGroupStats(map: Map<string, Acc>): GroupStat[] {
     winRate: a.trades ? round2((a.wins / a.trades) * 100) : 0,
     totalPnl: round2(a.total),
     avgPnl: a.trades ? round2(a.total / a.trades) : 0,
+    profitFactor: a.grossLoss > 0 ? round2(a.grossProfit / a.grossLoss) : a.grossProfit > 0 ? null : 0,
+    avgR: a.rCount ? round2(a.rSum / a.rCount) : null,
   }));
 }
 
@@ -441,15 +469,16 @@ export function computeJournalStats(closed: Position[]): JournalStats {
   const sessionMap = new Map<string, Acc>();
   for (const p of closed) {
     const pnl = round2(realizedPnlOf(p));
-    for (const tag of new Set(p.tags)) accumulate(tagMap, tag, pnl);
-    accumulate(gradeMap, p.grade || 'Ungraded', pnl);
-    accumulate(discMap, disciplineBucket(p), pnl);
+    const r = rMultipleOf(p, pnl);
+    for (const tag of new Set(p.tags)) accumulate(tagMap, tag, pnl, r);
+    accumulate(gradeMap, p.grade || 'Ungraded', pnl, r);
+    accumulate(discMap, disciplineBucket(p), pnl, r);
     const exitDate = lastExitDate(p) ?? p.entryDate;
-    accumulate(weekdayMap, WEEKDAYS[new Date(`${exitDate}T00:00:00Z`).getUTCDay()], pnl);
-    accumulate(holdMap, holdBucket(holdDaysOf(p, exitDate)), pnl);
+    accumulate(weekdayMap, WEEKDAYS[new Date(`${exitDate}T00:00:00Z`).getUTCDay()], pnl, r);
+    accumulate(holdMap, holdBucket(holdDaysOf(p, exitDate)), pnl, r);
     if (p.entryTime) {
       const s = sessionOf(p.entryTime);
-      if (s) accumulate(sessionMap, s, pnl);
+      if (s) accumulate(sessionMap, s, pnl, r);
     }
   }
   const byTotalDesc = (a: GroupStat, b: GroupStat) => b.totalPnl - a.totalPnl;
