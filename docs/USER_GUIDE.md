@@ -1199,6 +1199,17 @@ shouldn't be a tab-switch away.
   concatenated trade list the stat grid itself uses), not two separate ones to weigh by
   hand. Additive — the two independent overlays
   above are unchanged and still available side by side.
+  **Parameter sweep — risk per trade**, below the equity walk-forward results, reruns
+  that identical walk-forward split (same symbols/dates/profile/equity/max
+  positions/direction) once per nearby **risk per trade %** — half to 1.5x whatever
+  center value you enter — and lays each value's out-of-sample stats and significance
+  side by side in one table, the base (center) value's row marked. A real edge tends to
+  hold up across nearby settings; one value spiking while its neighbors look ordinary or
+  negative is the classic sign of a lucky overfit on that exact number rather than a
+  genuine edge (see the Strategy Playbook's own section on this). Needs an out-of-sample
+  split date set above — there's nothing to compare a sweep against otherwise. Client-side
+  only (five walk-forward calls in sequence, not a new server endpoint) and read-only,
+  same as everything else in this card.
 - **Paper trading** — the execution loop itself. When **Auto-trading enabled** is checked
   above, the server runs Screen → Decision → Risk Check → Execution on its own every
   minute; **Run one cycle now** runs the exact same cycle immediately, so you can watch

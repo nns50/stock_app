@@ -23,11 +23,12 @@ app's tools, not a "buy signal."
 5. [Playbook C — Directional options (long calls/puts)](#playbook-c--directional-options-long-callsputs)
 6. [Validating an edge with the Edge Report](#validating-an-edge-with-the-edge-report)
 7. [Is a backtested edge real, or noise?](#is-a-backtested-edge-real-or-noise)
-8. [Tuning stops & targets with MAE/MFE](#tuning-stops--targets-with-maemfe)
-9. [Reducing slippage with execution quality](#reducing-slippage-with-execution-quality)
-10. [Guardrails: risk of ruin & the benchmark](#guardrails-risk-of-ruin--the-benchmark)
-11. [The weekly review checklist](#the-weekly-review-checklist)
-12. [Anti-patterns to avoid](#anti-patterns-to-avoid)
+8. [Is it a real edge, or a lucky setting? — the parameter sweep](#is-it-a-real-edge-or-a-lucky-setting--the-parameter-sweep)
+9. [Tuning stops & targets with MAE/MFE](#tuning-stops--targets-with-maemfe)
+10. [Reducing slippage with execution quality](#reducing-slippage-with-execution-quality)
+11. [Guardrails: risk of ruin & the benchmark](#guardrails-risk-of-ruin--the-benchmark)
+12. [The weekly review checklist](#the-weekly-review-checklist)
+13. [Anti-patterns to avoid](#anti-patterns-to-avoid)
 
 ---
 
@@ -322,6 +323,39 @@ CI or a p-value near 1 doesn't mean the config is bad; it means you don't yet ha
 enough out-of-sample data to tell. The fix is usually the same one that applies
 anywhere sample size is thin: widen the date range, add more symbols, or keep paper
 trading it a while longer before trusting the number.
+
+---
+
+## Is it a real edge, or a lucky setting? — the parameter sweep
+
+The significance panel above answers "is this window's edge distinguishable from
+noise." A related but different question: is the edge sensitive to the *exact* risk
+setting you happened to pick, or would a nearby setting have worked about as well? A
+config that only looks good at one precise value and falls apart half a point either
+side was probably fit to that window's noise, not to a real, size-insensitive edge.
+
+**Parameter sweep — risk per trade** (Auto-Trade → Configuration → Backtest &
+walk-forward, below the equity walk-forward results) automates this check. Give it a
+center **risk per trade %** and it reruns the same walk-forward split — same symbols,
+dates, out-of-sample split, risk profile, equity, position cap, and direction — once
+each at half, three-quarters, 1x, 1.25x, and 1.5x that center, and lays each run's
+out-of-sample stats and significance side by side in one table, the center value's own
+row marked.
+
+Read it as a shape, not a single number:
+
+- **A stable plateau** — expectancy, win rate, and return stay in the same ballpark
+  across all five values, moving gradually as risk per trade scales — is what a real
+  edge looks like. The strategy is finding genuinely good trades; how hard you press the
+  size dial is a separate, secondary decision.
+- **A lucky spike** — one value (often the center you already had in mind) looks
+  dramatically better than its immediate neighbors, with no consistent trend — is a red
+  flag for overfitting to that window's specific path, not a discovered edge. Widen the
+  date range or add more symbols before trusting it.
+
+Like everything else in this backtest tool, the sweep renders no verdict — it's one
+more piece of evidence to weigh alongside the in-sample/out-of-sample comparison and the
+significance stats above, not a pass/fail gate.
 
 ---
 
