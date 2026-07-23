@@ -124,6 +124,25 @@ describe('live preview pipeline', () => {
     expect(String(fetchSpy.mock.calls[2][0])).toContain('/openapi/trade/order/preview');
   });
 
+  it('surfaces the settled_cash warning end-to-end when a buy exceeds settled cash', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    setTradingConfig({ enabled: true });
+    const balanceWithThinSettledCash = {
+      ...BALANCE,
+      account_currency_assets: [{ ...BALANCE.account_currency_assets[0], settled_cash: '1.00' }],
+    };
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(balanceWithThinSettledCash))
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp({ estimated_cost: '5.00' }));
+
+    // intent()'s default: 1 share x $5 limit = $5 notional, exceeding the $1 settled cash above.
+    const r = await livePreview(intent(), 'ACC1');
+    expect(r.ok).toBe(true); // a warning never blocks
+    const settledCashCheck = r.guardrails?.checks.find((c) => c.rule === 'settled_cash');
+    expect(settledCashCheck).toMatchObject({ severity: 'warn', passed: false });
+  });
+
   it('still fetches the broker estimate for a guardrail-blocked (but valid) order', async () => {
     Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
     setTradingConfig({ enabled: true });

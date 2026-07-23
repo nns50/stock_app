@@ -431,6 +431,39 @@ describe('trading guardrails', () => {
     expect(check(r, 'market_hours')).toMatchObject({ severity: 'warn', passed: false });
   });
 
+  it('warns (without blocking) when a buy exceeds settled cash (Good Faith Violation risk)', () => {
+    const r = evaluateGuardrails(
+      order({ orderType: 'limit', limitPrice: 10, quantity: 10 }), // $100 notional
+      acct({ buyingPowerUsd: 100_000, settledCashUsd: 50 }),
+      cfg(),
+    );
+    expect(r.ok).toBe(true);
+    expect(check(r, 'settled_cash')).toMatchObject({ severity: 'warn', passed: false });
+  });
+
+  it('passes settled_cash silently when the buy is within settled cash', () => {
+    const r = evaluateGuardrails(
+      order({ orderType: 'limit', limitPrice: 10, quantity: 10 }), // $100 notional
+      acct({ settledCashUsd: 1000 }),
+      cfg(),
+    );
+    expect(check(r, 'settled_cash')).toMatchObject({ severity: 'warn', passed: true });
+  });
+
+  it('skips settled_cash entirely when the broker did not report it (not a fabricated warning)', () => {
+    const r = evaluateGuardrails(order(), acct(), cfg()); // acct() leaves settledCashUsd undefined
+    expect(check(r, 'settled_cash')).toBeUndefined();
+  });
+
+  it('never checks settled_cash on a sell (selling frees cash, no GFV risk)', () => {
+    const r = evaluateGuardrails(
+      order({ side: 'sell', openClose: 'close' }),
+      acct({ settledCashUsd: 0, currentPositionQty: 10 }),
+      cfg(),
+    );
+    expect(check(r, 'settled_cash')).toBeUndefined();
+  });
+
   it('default config is OFF and blocks short selling', () => {
     const d = defaultTradingConfig();
     expect(d.enabled).toBe(false);
