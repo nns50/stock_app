@@ -5,6 +5,8 @@ import { config } from '../src/config';
 import {
   extractPositions,
   mapWebullPosition,
+  looksLikeOption,
+  previewWebullPositions,
   importWebullPositions,
   syncClosedWebullPositions,
   runWebullPositionsSync,
@@ -96,6 +98,82 @@ describe('webull positions mapping', () => {
     expect(
       mapWebullPosition({ symbol: 'Y', instrument_type: 'OPTION', quantity: '1', cost_price: '1' }, 'ACC1'),
     ).toBeNull(); // option missing legs
+  });
+
+  it('parses camelCase / synonym option field names (strikePrice, expirationDate, right)', () => {
+    const p = mapWebullPosition(
+      {
+        symbol: 'AMD',
+        assetType: 'OPTION',
+        quantity: '3',
+        avgCost: '2.10',
+        right: 'P',
+        strikePrice: '120',
+        expirationDate: '2027-01-15',
+      },
+      'ACC1',
+    );
+    expect(p).toMatchObject({
+      assetType: 'option',
+      symbol: 'AMD',
+      optionType: 'put',
+      strike: 120,
+      expiration: '2027-01-15',
+    });
+  });
+
+  it('infers an option from a full option shape even when the payload gives no option asset type', () => {
+    // A real cause of options never importing: the row carries strike +
+    // expiration + type but its asset_type is blank/unrecognized. All three
+    // present is a strong enough signal to classify it as an option.
+    const p = mapWebullPosition(
+      {
+        symbol: 'SPY',
+        quantity: '1',
+        cost_price: '3.00',
+        option_type: 'CALL',
+        strike: '500',
+        expiration: '2026-09-18',
+        // no asset_type / instrument_type at all
+      },
+      'ACC1',
+    );
+    expect(p).toMatchObject({ assetType: 'option', optionType: 'call', strike: 500, expiration: '2026-09-18' });
+  });
+
+  it('does NOT misclassify a plain stock as an option from a stray partial field', () => {
+    // Only a FULL option shape triggers inference — a stock with, say, a lone
+    // strike-like field must stay a stock, not get dropped as an unparseable option.
+    const p = mapWebullPosition({ symbol: 'KO', quantity: '10', cost_price: '60', strike: '999' }, 'ACC1');
+    expect(p).toMatchObject({ assetType: 'stock', symbol: 'KO', quantity: 10 });
+  });
+});
+
+describe('previewWebullPositions unmapped-options diagnostics', () => {
+  it('flags a stock vs an option-looking row via looksLikeOption', () => {
+    expect(looksLikeOption({ symbol: 'AAPL', asset_type: 'STOCK', quantity: '10' })).toBe(false);
+    expect(looksLikeOption({ symbol: 'AAPL', asset_type: 'OPTION', quantity: '1' })).toBe(true);
+    expect(looksLikeOption({ symbol: 'AAPL', strikePrice: '100', quantity: '1' })).toBe(true); // option-defining field
+  });
+
+  it('counts how many unmapped rows looked like options and samples their keys', async () => {
+    mockPositions([
+      { symbol: 'AAPL', asset_type: 'STOCK', quantity: '10', cost_price: '150' }, // maps fine
+      // Option-looking but unparseable (no expiration) — the "why aren't my options showing" case.
+      { symbol: 'TSLA', asset_type: 'OPTION', quantity: '1', cost_price: '5', option_type: 'CALL', strike: '400' },
+      { nonsense: true }, // unmapped, not option-like
+    ]);
+
+    const preview = await previewWebullPositions('ACC1');
+    expect(preview.ok).toBe(true);
+    expect(preview.positions.map((p) => p.symbol)).toEqual(['AAPL']);
+    expect(preview.unmapped).toBe(2);
+    expect(preview.unmappedOptions).toBe(1);
+    // Option-looking sample sorted first, exposing the row's field names.
+    expect(preview.unmappedSample[0]).toMatchObject({ looksLikeOption: true });
+    expect(preview.unmappedSample[0].keys).toEqual(
+      expect.arrayContaining(['symbol', 'asset_type', 'option_type', 'strike']),
+    );
   });
 });
 

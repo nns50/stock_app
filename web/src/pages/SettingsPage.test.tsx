@@ -185,4 +185,26 @@ describe('SettingsPage', () => {
 
     expect(await screen.findByText(/Webull is not configured/)).toBeInTheDocument();
   });
+
+  it('Preview surfaces how many unmapped rows looked like options, with their field names', async () => {
+    vi.spyOn(client, 'webullStatus').mockResolvedValue({
+      configured: true,
+      region: 'us',
+      hasAccessToken: false,
+    } as never);
+    vi.spyOn(client, 'webullPositionsPreview').mockResolvedValue({
+      ok: true,
+      accountId: 'ACC1',
+      positions: [],
+      raw: [{ symbol: 'TSLA', asset_type: 'OPTION', option_type: 'CALL', strike: '400' }],
+      unmapped: 1,
+      unmappedOptions: 1,
+      unmappedSample: [{ keys: ['symbol', 'asset_type', 'option_type', 'strike'], looksLikeOption: true }],
+    } as never);
+    renderPage();
+    fireEvent.change(await screen.findByPlaceholderText('account_id'), { target: { value: 'ACC1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+
+    expect(await screen.findByText(/1 of them option-like/)).toBeInTheDocument();
+  });
 });

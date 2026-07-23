@@ -719,7 +719,12 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
           {preview.positions.length === 0 ? (
             <span className="text-slate-400">
               No open positions to import
-              {preview.unmapped ? ` (${preview.unmapped} row(s) couldn't be parsed)` : ''}.
+              {preview.unmapped
+                ? ` (${preview.unmapped} row(s) couldn't be parsed${
+                    preview.unmappedOptions ? `, ${preview.unmappedOptions} of them option-like` : ''
+                  })`
+                : ''}
+              .
             </span>
           ) : (
             <>
@@ -750,8 +755,23 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
                 </tbody>
               </table>
               {preview.unmapped > 0 && (
-                <div className="text-[11px] text-amber-400">
-                  {preview.unmapped} row(s) couldn't be parsed — check the raw payload.
+                <div className="text-[11px] text-amber-400 space-y-1">
+                  <div>
+                    {preview.unmapped} row(s) couldn&apos;t be parsed
+                    {preview.unmappedOptions
+                      ? ` — ${preview.unmappedOptions} looked like an option (Webull returns options in a field shape the importer doesn't recognize yet). `
+                      : ' — '}
+                    check the raw payload below.
+                  </div>
+                  {preview.unmappedSample && preview.unmappedSample.some((s) => s.looksLikeOption) && (
+                    <div className="text-slate-500">
+                      Unparsed option row fields:{' '}
+                      {preview.unmappedSample
+                        .filter((s) => s.looksLikeOption)
+                        .map((s) => s.keys.join(', '))
+                        .join(' | ')}
+                    </div>
+                  )}
                 </div>
               )}
             </>

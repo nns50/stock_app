@@ -76,12 +76,44 @@ const today = () => new Date().toISOString().slice(0, 10);
  *  unusable). `accountId` is stamped onto the result so the reconciliation
  *  below can tell one brokerage account's holdings apart from another's — see
  *  the account_id column comment in db/index.ts for why that matters. */
+// Field-name aliases for an option's three defining attributes. Webull's
+// positions payload shape isn't published and hasn't been confirmed against a
+// real account holding options, so these cover both the snake_case the rest of
+// this mapper reads and the camelCase Webull's v2 OpenAPI uses on some
+// surfaces, plus a few common broker synonyms (`right` = C/P, `strikePrice`,
+// `expirationDate`). Broadening these is safe — an extra alias can only help a
+// real option row parse; a stock row won't carry all three (see
+// hasFullOptionShape below).
+const OPTION_TYPE_KEYS = ['option_type', 'put_call', 'call_or_put', 'optionType', 'contract_type', 'right', 'cp_flag'];
+const OPTION_STRIKE_KEYS = ['strike_price', 'strike', 'strikePrice', 'exercise_price'];
+const OPTION_EXPIRY_KEYS = [
+  'option_expire_date',
+  'expiration',
+  'expire_date',
+  'exp_date',
+  'expireDate',
+  'expirationDate',
+  'maturity_date',
+];
+
+/** True when a raw row carries any option-defining field or an option asset
+ *  type — used to tell "this looked like an option but couldn't be parsed"
+ *  (worth surfacing to the user) apart from an ordinary unmappable row. Does
+ *  NOT require the full shape (unlike the mapper's own gate): a partial option
+ *  row is exactly the case we most want to flag. */
+export function looksLikeOption(p: Record<string, unknown>): boolean {
+  const rawType = String(pick(p, ['asset_type', 'instrument_type', 'category', 'sec_type']) ?? '').toUpperCase();
+  if (rawType.includes('OPTION')) return true;
+  return [...OPTION_TYPE_KEYS, ...OPTION_STRIKE_KEYS, ...OPTION_EXPIRY_KEYS].some(
+    (k) => p[k] !== null && p[k] !== undefined && p[k] !== '',
+  );
+}
+
 export function mapWebullPosition(p: Record<string, unknown>, accountId: string): ImportablePosition | null {
   const symbol = String(pick(p, ['symbol', 'ticker', 'instrument_symbol', 'underlying_symbol']) ?? '').toUpperCase();
   if (!symbol) return null;
 
   const rawType = String(pick(p, ['asset_type', 'instrument_type', 'category', 'sec_type']) ?? '').toUpperCase();
-  const assetType: AssetType = rawType.includes('OPTION') ? 'option' : 'stock';
 
   const signedQty = num(pick(p, ['quantity', 'position', 'qty', 'holding_quantity', 'total_quantity']));
   const quantity = signedQty === undefined ? 0 : Math.abs(signedQty);
@@ -93,6 +125,17 @@ export function mapWebullPosition(p: Record<string, unknown>, accountId: string)
   const entryPrice = num(pick(p, ['cost_price', 'avg_cost', 'average_cost', 'cost', 'avg_price', 'open_price'])) ?? 0;
   const entryDate =
     toIsoDate(pick(p, ['open_date', 'entry_date', 'position_date', 'create_time', 'created_at'])) ?? today();
+
+  // Parse the option attributes up front so the asset type can be INFERRED
+  // from a fully-formed option shape even when the payload's own type field is
+  // missing or a code we don't recognize (a real cause of options silently
+  // never importing). Requiring all three (type + strike + expiration) keeps a
+  // plain stock — which never carries all three — from being misclassified.
+  const optionType = toOptionType(pick(p, OPTION_TYPE_KEYS));
+  const strike = num(pick(p, OPTION_STRIKE_KEYS));
+  const expiration = toIsoDate(pick(p, OPTION_EXPIRY_KEYS));
+  const hasFullOptionShape = !!optionType && strike !== undefined && !!expiration;
+  const assetType: AssetType = rawType.includes('OPTION') || hasFullOptionShape ? 'option' : 'stock';
 
   const out: ImportablePosition = {
     assetType,
@@ -108,11 +151,13 @@ export function mapWebullPosition(p: Record<string, unknown>, accountId: string)
   };
 
   if (assetType === 'option') {
-    out.optionType = toOptionType(pick(p, ['option_type', 'put_call', 'call_or_put']));
-    out.strike = num(pick(p, ['strike_price', 'strike']));
-    out.expiration = toIsoDate(pick(p, ['option_expire_date', 'expiration', 'expire_date', 'exp_date']));
+    out.optionType = optionType;
+    out.strike = strike;
+    out.expiration = expiration;
     out.multiplier = num(pick(p, ['multiplier', 'unit'])) ?? 100;
-    // An option we can't fully describe can't be journaled.
+    // An option we can't fully describe can't be journaled. (The preview's
+    // unmappedOptions count surfaces how often this happens, so a payload
+    // shape these aliases still don't cover is visible rather than silent.)
     if (!out.optionType || !out.strike || !out.expiration) return null;
   }
 
@@ -129,6 +174,16 @@ export interface PositionsPreview {
   raw?: unknown;
   /** Rows present in the payload that couldn't be mapped. */
   unmapped: number;
+  /** Of those unmapped rows, how many LOOKED like an option (had an option
+   *  asset type or an option-defining field) but couldn't be fully parsed —
+   *  the specific "why aren't my options showing up" signal. Non-zero means
+   *  the payload carries options whose field shape these aliases still don't
+   *  cover; check unmappedSample / the raw payload to see which fields to add. */
+  unmappedOptions: number;
+  /** The top-level keys of the first few unmapped rows (option-looking ones
+   *  first), so an unrecognized payload shape can be diagnosed from the UI
+   *  without dumping the whole raw payload. */
+  unmappedSample: { keys: string[]; looksLikeOption: boolean }[];
   error?: string;
 }
 
@@ -140,10 +195,12 @@ async function fetchPositions(accountId: string): Promise<{ ok: boolean; url: st
   return { ok: r.ok, url: r.url, status: r.status, raw: r.data };
 }
 
+const EMPTY_UNMAPPED = { unmappedOptions: 0, unmappedSample: [] as { keys: string[]; looksLikeOption: boolean }[] };
+
 /** Fetch + map live Webull positions for an account, writing nothing. */
 export async function previewWebullPositions(accountId: string): Promise<PositionsPreview> {
   if (!webullConfigured()) {
-    return { ok: false, accountId, positions: [], unmapped: 0, error: 'Webull is not configured.' };
+    return { ok: false, accountId, positions: [], unmapped: 0, ...EMPTY_UNMAPPED, error: 'Webull is not configured.' };
   }
   const r = await fetchPositions(accountId);
   if (!r.ok) {
@@ -154,15 +211,36 @@ export async function previewWebullPositions(accountId: string): Promise<Positio
       accountId,
       positions: [],
       unmapped: 0,
+      ...EMPTY_UNMAPPED,
       raw: r.raw,
       error: j.msg || j.message || `Webull request failed (${r.status})`,
     };
   }
   const rows = extractPositions(r.raw);
-  const positions = rows
-    .map((row) => mapWebullPosition(row, accountId))
-    .filter((p): p is ImportablePosition => p !== null);
-  return { ok: true, url: r.url, accountId, positions, raw: r.raw, unmapped: rows.length - positions.length };
+  const positions: ImportablePosition[] = [];
+  const unmappedRows: Record<string, unknown>[] = [];
+  for (const row of rows) {
+    const mapped = mapWebullPosition(row, accountId);
+    if (mapped) positions.push(mapped);
+    else unmappedRows.push(row);
+  }
+  const unmappedOptions = unmappedRows.filter(looksLikeOption).length;
+  // Option-looking rows first (the ones the user most needs to see), then a
+  // few others — capped so this stays a diagnostic hint, not a payload dump.
+  const unmappedSample = [...unmappedRows]
+    .sort((a, b) => Number(looksLikeOption(b)) - Number(looksLikeOption(a)))
+    .slice(0, 5)
+    .map((row) => ({ keys: Object.keys(row), looksLikeOption: looksLikeOption(row) }));
+  return {
+    ok: true,
+    url: r.url,
+    accountId,
+    positions,
+    raw: r.raw,
+    unmapped: unmappedRows.length,
+    unmappedOptions,
+    unmappedSample,
+  };
 }
 
 /** The existing open journal position an importable position matches, if any.

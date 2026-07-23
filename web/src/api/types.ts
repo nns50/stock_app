@@ -705,6 +705,12 @@ export interface WebullPositionsPreview {
   positions: WebullImportablePosition[];
   raw?: unknown;
   unmapped: number;
+  /** Of the unmapped rows, how many looked like an option but couldn't be
+   *  fully parsed — the "why aren't my options importing" signal. */
+  unmappedOptions?: number;
+  /** Top-level keys of the first few unmapped rows (option-looking first), to
+   *  diagnose an unrecognized payload shape without dumping the whole payload. */
+  unmappedSample?: { keys: string[]; looksLikeOption: boolean }[];
   error?: string;
 }
 
