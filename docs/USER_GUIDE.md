@@ -841,6 +841,25 @@ shouldn't be a tab-switch away.
   its trigger gets turned on — leaving them untouched changes nothing, and the
   loop's only automated options exit stays time-based (closing as expiration
   approaches, see "Options paper positions" below).
+  **Options entry rules** control the contract-quality screen the options decision
+  stage runs on every candidate **before** risk-check ever sees it — a candidate that
+  fails here is what shows up in **Recent activity** as `No contract passed entry
+  rules (liquidity/spread/delta/IV band)`. **Options delta band (min/max)** bound a
+  contract's absolute delta (0-1) — lower is further out-of-the-money (cheaper
+  premium, lower probability of expiring in the money), higher is closer to the
+  money. **Options max spread (%)** caps (ask − bid) / mid; **options min open
+  interest** and **options min volume** are independent liquidity floors; **options
+  min/max days to expiration** bound the DTE window a contract's expiration must fall
+  within; **options IV rank ceiling** skips an underlying whose IV rank (0-100)
+  exceeds it — this loop only ever buys premium, so guarding against an
+  already-expensive underlying is the direction that matters. All eight default to
+  the values these checks always used before they were configurable (delta
+  0.30-0.60, max spread 10%, min open interest 100, min volume 10, DTE 7-60 days, IV
+  rank ceiling 70), so leaving them untouched changes nothing; the manual
+  Screen/Decision preview below defaults to these same saved values too. Backtesting
+  is unaffected — options backtests keep using these same original fixed constants
+  regardless of what's saved here, the same self-contained-hypothesis convention
+  every other screening/decision field in this section already follows.
   **Auto-promote recurring movers** (on by default) grows your universe automatically:
   a symbol Webull's premarket movers surface that also clears screening on **3 distinct
   days within a 10-day window** (both tunable, along with a **50-symbol lifetime cap** on

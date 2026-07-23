@@ -1213,6 +1213,17 @@ export interface AutotradeConfig {
   // --- Options strategy shape ---
   optionsStrategyType: AutotradeOptionsStrategyType;
 
+  // --- Options entry-rule thresholds (the contract-quality screen run before
+  // risk-check — delta band, spread, liquidity, DTE window, IV rank ceiling) -
+  optionsDeltaMin: number;
+  optionsDeltaMax: number;
+  optionsMaxSpreadPct: number;
+  optionsMinOpenInterest: number;
+  optionsMinVolume: number;
+  optionsMinDte: number;
+  optionsMaxDte: number;
+  optionsIvRankMax: number;
+
   // --- Options stop-loss / take-profit (PAPER + BACKTEST only; 0 disables) --
   optionsStopLossPct: number;
   optionsTakeProfitPct: number;
