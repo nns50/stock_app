@@ -147,6 +147,66 @@ describe('webull positions mapping', () => {
     const p = mapWebullPosition({ symbol: 'KO', quantity: '10', cost_price: '60', strike: '999' }, 'ACC1');
     expect(p).toMatchObject({ assetType: 'stock', symbol: 'KO', quantity: 10 });
   });
+
+  it('maps a real single-leg Webull option strategy from its nested legs[] (strike in option_exercise_price)', () => {
+    // The exact shape a real account returns: a SINGLE strategy container whose
+    // contract details live in legs[0], with the strike under
+    // option_exercise_price — the field the old mapper never looked for.
+    const p = mapWebullPosition(
+      {
+        quantity: '20',
+        cost: '680.00',
+        symbol: 'NFLX',
+        option_strategy: 'SINGLE',
+        instrument_type: 'OPTION',
+        cost_price: '0.34',
+        legs: [
+          {
+            symbol: 'NFLX',
+            cost: '0.34',
+            instrument_type: 'OPTION',
+            option_type: 'PUT',
+            option_expire_date: '2026-07-24',
+            option_exercise_price: '68.00',
+            option_contract_multiplier: '100',
+          },
+        ],
+      },
+      'ACC1',
+    );
+    expect(p).toMatchObject({
+      assetType: 'option',
+      symbol: 'NFLX',
+      side: 'long',
+      quantity: 20,
+      entryPrice: 0.34,
+      optionType: 'put',
+      strike: 68,
+      expiration: '2026-07-24',
+      multiplier: 100,
+    });
+  });
+
+  it('leaves a genuine MULTI-leg option strategy (a spread) unmapped — the journal is one contract per row', () => {
+    // Two legs, and no per-leg buy/sell side in the payload — can't be
+    // represented as a single journal row, so it's left for the unmappedOptions
+    // diagnostic rather than imported wrong.
+    const p = mapWebullPosition(
+      {
+        quantity: '1',
+        symbol: 'SPY',
+        option_strategy: 'VERTICAL',
+        instrument_type: 'OPTION',
+        cost_price: '1.20',
+        legs: [
+          { symbol: 'SPY', option_type: 'CALL', option_expire_date: '2026-09-18', option_exercise_price: '500' },
+          { symbol: 'SPY', option_type: 'CALL', option_expire_date: '2026-09-18', option_exercise_price: '510' },
+        ],
+      },
+      'ACC1',
+    );
+    expect(p).toBeNull();
+  });
 });
 
 describe('previewWebullPositions unmapped-options diagnostics', () => {

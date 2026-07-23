@@ -1363,15 +1363,17 @@ One home (⚙ or `⌘K → Settings`) for everything:
   they show on the **Positions**/**Journal** pages once imported. (The Auto-Trade page's
   **Live options positions** table is a different thing — it lists only options the *bot*
   itself placed, never ones you opened yourself in the Webull app, so don't expect a manual
-  option to show there.) If your options don't show up after a Preview/Sync, the **Preview**
-  now tells you why: it counts how many payload rows **looked like an option but couldn't be
-  parsed** ("N of them option-like") and lists those rows' field names, so a payload shape the
-  importer doesn't recognize yet is visible instead of silently dropped — check the **raw
-  payload** to confirm. (The importer already accepts the common snake_case and camelCase
-  option field names, and will treat a row as an option whenever it carries a full
-  strike + expiration + call/put shape even if its asset-type field is blank.) If they're not
-  in the raw payload at all, Webull's positions endpoint isn't returning options for your
-  account, and there's nothing to import.
+  option to show there.) **Single-leg options** — long calls/puts — import correctly: Webull
+  returns each as a strategy container with the contract nested in a `legs` array (strike
+  under `option_exercise_price`), and the importer reads that shape. **Multi-leg strategies
+  (spreads)** are the one case still left out, on purpose: the journal is one contract per
+  row and Webull's payload gives no per-leg buy/sell side to split a spread correctly, so a
+  spread is skipped rather than imported wrong. If any option *doesn't* import, the
+  **Preview** tells you why — it counts how many payload rows **looked like an option but
+  couldn't be parsed** ("N of them option-like") and lists their field names; check the **raw
+  payload** to confirm (and send those field names along if a shape still isn't recognized).
+  If they're not in the raw payload at all, Webull's positions endpoint isn't returning
+  options for your account, and there's nothing to import.
   **Sync now** and the **automatic background sync** below it go further, in two ways:
   - They **reconcile orders this app already placed** — including a bracket's stop-loss/
     take-profit exit leg, which used to be missed by "Refresh status"/"Refresh all" once the
