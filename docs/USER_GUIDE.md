@@ -201,6 +201,20 @@ breakdown)"** to see everything, including why each was excluded.
 - All weights, periods, and scales are **editable**, and you can **save presets** to
   reuse a configuration.
 
+### Sector rotation (2026-07-23)
+
+A collapsible **Sector rotation** panel in the sidebar ranks your universe's sectors
+by the **median relative strength** of their members over a 20-day lookback — each
+member's own return minus the benchmark's (**SPY**) over the same window, then the
+**median** across the sector (so one runaway name can't carry a whole sector).
+Strongest sectors sit on top, with a green/red bar and the median figure. **Click any
+sector** to load its member symbols into the custom-symbols box and scan just those —
+the leaderboard doubles as navigation, so you can go from "Tech is leading" to a scored
+list of tech names in one click. If SPY's own history can't be fetched, the board
+**falls back to ranking by absolute return** and says so; sectors with no fetchable
+history are listed, never ranked zero. Cached hourly (momentum turns on the daily
+close). Like the rest of the screener it's a **transparent ranking, not a buy signal**.
+
 ### Snapshots & the Edge Report (this is the profitability engine)
 
 - Click **Save snapshot** to freeze the current ranked picks with their prices.

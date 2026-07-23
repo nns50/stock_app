@@ -453,6 +453,30 @@ export interface MarketRegime {
   asOf: number;
 }
 
+export type RotationBasis = 'relative-to-benchmark' | 'absolute-return';
+
+export interface SectorRotationEntry {
+  sector: string;
+  medianRelStrengthPct: number;
+  memberCount: number;
+  sampledCount: number;
+  /** Resolved member symbols — used to scope a Screener scan. */
+  members: string[];
+  topSymbol: { symbol: string; relStrengthPct: number } | null;
+}
+
+export interface SectorRotation {
+  benchmarkSymbol: string;
+  benchmarkReturnPct: number | null;
+  basis: RotationBasis;
+  lookbackDays: number;
+  /** Sectors ranked strongest → weakest by medianRelStrengthPct. */
+  sectors: SectorRotationEntry[];
+  /** Sectors that had members but none resolved — never ranked 0. */
+  unresolvedSectors: string[];
+  asOf: number;
+}
+
 export interface JournalStats {
   totalClosed: number;
   wins: number;
