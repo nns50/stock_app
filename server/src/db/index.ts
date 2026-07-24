@@ -959,10 +959,21 @@ export function rebuildOrderIntentsTable(database: Database.Database): void {
  * column being absent, so it runs once. Exported (and db-injectable) so the
  * old→new copy can be tested directly.
  */
+/** Run a table-rebuild's multi-statement DDL (RENAME → CREATE → INSERT…SELECT →
+ *  DROP) atomically. Without this, a throw mid-way (a constraint violation, a
+ *  full disk) leaves the original table already renamed to *_old and the new
+ *  table empty or missing — a half-migrated DB that crashes startup with no
+ *  recovery. A transaction rolls the whole thing back so the original survives. */
+function execAtomic(database: Database.Database, sql: string): void {
+  database.transaction(() => database.exec(sql))();
+}
+
 export function rebuildAlertsTable(database: Database.Database): void {
   const cols = database.prepare('PRAGMA table_info(alerts)').all() as { name: string }[];
   if (cols.some((c) => c.name === 'asset_type')) return; // already on the new schema
-  database.exec(`
+  execAtomic(
+    database,
+    `
     ALTER TABLE alerts RENAME TO alerts_old;
     ${ALERTS_TABLE_SQL}
     INSERT INTO alerts (id, symbol, kind, operator, threshold, note, enabled, triggered,
@@ -971,7 +982,8 @@ export function rebuildAlertsTable(database: Database.Database): void {
              last_value, trigger_message, last_triggered_at, created_at, updated_at
       FROM alerts_old;
     DROP TABLE alerts_old;
-  `);
+  `,
+  );
 }
 
 /**
@@ -989,7 +1001,9 @@ export function rebuildAutotradePaperPositionsTable(database: Database.Database)
     .get() as { sql: string | null } | undefined;
   if (!row?.sql || /time_exit/i.test(row.sql)) return;
 
-  database.exec(`
+  execAtomic(
+    database,
+    `
     ALTER TABLE autotrade_paper_positions RENAME TO autotrade_paper_positions_old;
     ${AUTOTRADE_PAPER_POSITIONS_TABLE_SQL}
     INSERT INTO autotrade_paper_positions (id, symbol, side, quantity, entry_price, entry_at, stop_price,
@@ -1001,7 +1015,8 @@ export function rebuildAutotradePaperPositionsTable(database: Database.Database)
       FROM autotrade_paper_positions_old;
     DROP TABLE autotrade_paper_positions_old;
     CREATE INDEX IF NOT EXISTS idx_autotrade_paper_positions_status ON autotrade_paper_positions(status, symbol);
-  `);
+  `,
+  );
 }
 
 /**
@@ -1018,7 +1033,9 @@ export function rebuildAutotradeOptionsPaperPositionsTable(database: Database.Da
     .get() as { sql: string | null } | undefined;
   if (!row?.sql || /stop_loss/i.test(row.sql)) return;
 
-  database.exec(`
+  execAtomic(
+    database,
+    `
     ALTER TABLE autotrade_options_paper_positions RENAME TO autotrade_options_paper_positions_old;
     CREATE TABLE autotrade_options_paper_positions (
       id                     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1056,7 +1073,8 @@ export function rebuildAutotradeOptionsPaperPositionsTable(database: Database.Da
       FROM autotrade_options_paper_positions_old;
     DROP TABLE autotrade_options_paper_positions_old;
     CREATE INDEX IF NOT EXISTS idx_autotrade_options_paper_positions_status ON autotrade_options_paper_positions(status, symbol);
-  `);
+  `,
+  );
 }
 
 /**
@@ -1079,7 +1097,9 @@ export function rebuildAutotradeLiveOrdersTable(database: Database.Database): vo
   // BEFORE this rebuild in migrate()); omitting them here would drop those
   // columns and their data on any pre-CASCADE DB, then break recordLiveOrder /
   // recordLiveAddOnOrder at runtime ("no column named account_id").
-  database.exec(`
+  execAtomic(
+    database,
+    `
     ALTER TABLE autotrade_live_orders RENAME TO autotrade_live_orders_old;
     CREATE TABLE autotrade_live_orders (
       intent_id     INTEGER PRIMARY KEY REFERENCES order_intents(id) ON DELETE CASCADE,
@@ -1102,7 +1122,8 @@ export function rebuildAutotradeLiveOrdersTable(database: Database.Database): vo
       FROM autotrade_live_orders_old;
     DROP TABLE autotrade_live_orders_old;
     CREATE INDEX IF NOT EXISTS idx_autotrade_live_orders_symbol ON autotrade_live_orders(symbol);
-  `);
+  `,
+  );
 }
 
 /**
@@ -1120,7 +1141,9 @@ export function rebuildAutotradeLiveOptionsOrdersTable(database: Database.Databa
   // rebuild in migrate()); omitting them here would drop those columns and
   // their data on any pre-CASCADE DB, then break recordLiveOptionsEntryOrder /
   // recordLiveOptionsExitOrder at runtime.
-  database.exec(`
+  execAtomic(
+    database,
+    `
     ALTER TABLE autotrade_live_options_orders RENAME TO autotrade_live_options_orders_old;
     CREATE TABLE autotrade_live_options_orders (
       intent_id             INTEGER PRIMARY KEY REFERENCES order_intents(id) ON DELETE CASCADE,
@@ -1149,7 +1172,8 @@ export function rebuildAutotradeLiveOptionsOrdersTable(database: Database.Databa
       FROM autotrade_live_options_orders_old;
     DROP TABLE autotrade_live_options_orders_old;
     CREATE INDEX IF NOT EXISTS idx_autotrade_live_options_orders_symbol ON autotrade_live_options_orders(symbol);
-  `);
+  `,
+  );
 }
 
 /** Run migrations and seed the default universe. Call once at startup. */
