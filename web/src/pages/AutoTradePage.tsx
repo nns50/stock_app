@@ -2247,6 +2247,8 @@ export default function AutoTradePage() {
   const [autoTuneMinTradesDraft, setAutoTuneMinTradesDraft] = useState<number | undefined>();
   const [autoTuneMaxStepPctDraft, setAutoTuneMaxStepPctDraft] = useState<number | undefined>();
   const [autoTuneSlippageExcludePctDraft, setAutoTuneSlippageExcludePctDraft] = useState<number | undefined>();
+  const [autoTuneExitsEnabled, setAutoTuneExitsEnabled] = useState(false);
+  const [autoTuneExitMaxStepDraft, setAutoTuneExitMaxStepDraft] = useState<number | undefined>();
   useEffect(() => {
     if (!config.data) return;
     setEnabled(config.data.enabled);
@@ -2330,6 +2332,8 @@ export default function AutoTradePage() {
     setAutoTuneMinTradesDraft(config.data.autoTuneMinTrades);
     setAutoTuneMaxStepPctDraft(config.data.autoTuneMaxStepPct);
     setAutoTuneSlippageExcludePctDraft(config.data.autoTuneSlippageExcludePct);
+    setAutoTuneExitsEnabled(config.data.autoTuneExitsEnabled);
+    setAutoTuneExitMaxStepDraft(config.data.autoTuneExitMaxStep);
   }, [config.data]);
 
   const saveConfig = async (patch: {
@@ -2396,6 +2400,8 @@ export default function AutoTradePage() {
     autoTuneMinTrades?: number;
     autoTuneMaxStepPct?: number;
     autoTuneSlippageExcludePct?: number;
+    autoTuneExitsEnabled?: boolean;
+    autoTuneExitMaxStep?: number;
   }) => {
     if (patch.riskProfile === 'AGGRESSIVE' && riskProfile !== 'AGGRESSIVE') {
       const ok = await confirm({
@@ -2473,6 +2479,8 @@ export default function AutoTradePage() {
       setAutoTuneMinTradesDraft(saved.autoTuneMinTrades);
       setAutoTuneMaxStepPctDraft(saved.autoTuneMaxStepPct);
       setAutoTuneSlippageExcludePctDraft(saved.autoTuneSlippageExcludePct);
+      setAutoTuneExitsEnabled(saved.autoTuneExitsEnabled);
+      setAutoTuneExitMaxStepDraft(saved.autoTuneExitMaxStep);
       config.reload(); // keeps config.data — the equity-not-set warning's source of truth — fresh
       refreshLiveData(); // risk profile / equity changes shift the dashboard's caps, and get journaled
       toast('Auto-trading settings saved', { type: 'success' });
@@ -4796,6 +4804,51 @@ export default function AutoTradePage() {
                           autoTuneSlippageExcludePctDraft == null ||
                           autoTuneSlippageExcludePctDraft < 0 ||
                           autoTuneSlippageExcludePctDraft === config.data?.autoTuneSlippageExcludePct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={autoTuneExitsEnabled}
+                      onChange={(e) => saveConfig({ autoTuneExitsEnabled: e.target.checked })}
+                    />
+                    <span>
+                      Also auto-tune exit geometry
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default, independent of the risk-% tune above. Once a day, nudges the stop (× ATR) and
+                        target (R) toward what your <em>winning</em> autotrade trades actually did — their worst
+                        drawdown (MAE) sizes the stop, their favorable peak (MFE) sizes the target — bounded by the step
+                        below and journaled every time it fires.
+                      </span>
+                    </span>
+                  </label>
+                  <Field
+                    label="Max daily exit step"
+                    hint="Largest change to the stop (× ATR) or target (R) allowed in a single day's exit-tune (in multiple units, not a %) — the exit-geometry analogue of the risk-% step, so one noisy sample can't swing the loop's exits."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={autoTuneExitMaxStepDraft}
+                        onChange={setAutoTuneExitMaxStepDraft}
+                        min={0}
+                        step={0.05}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max daily exit step"
+                        onClick={() =>
+                          autoTuneExitMaxStepDraft != null &&
+                          saveConfig({ autoTuneExitMaxStep: autoTuneExitMaxStepDraft })
+                        }
+                        disabled={
+                          autoTuneExitMaxStepDraft == null ||
+                          autoTuneExitMaxStepDraft <= 0 ||
+                          autoTuneExitMaxStepDraft === config.data?.autoTuneExitMaxStep
                         }
                       >
                         Save

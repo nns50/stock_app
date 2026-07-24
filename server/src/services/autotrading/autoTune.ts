@@ -1,7 +1,10 @@
-import { listPositions } from '../../db/positions';
+import { listPositions, Position } from '../../db/positions';
 import { getIntents } from '../../db/orders';
+import { getProvider } from '../../providers';
 import { computeSlippage, groupSlippageBySymbol, SlippageRow } from '../slippage';
-import { computeJournalStats } from '../pnl';
+import { computeJournalStats, realizedPnlOf } from '../pnl';
+import { aggregateExcursions, computeExcursion, ExcursionReport, TradeExcursion } from '../excursion';
+import { computeExcursionTune } from './excursionTune';
 import { getAutotradeConfig, setAutotradeConfig } from '../../db/autotradeConfig';
 import { addExclusion, isExcluded } from '../../db/autotradeExclusions';
 import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
@@ -106,12 +109,73 @@ function buildSlippageRows(): SlippageRow[] {
   return rows;
 }
 
+/** Autotrade's own closed trades — the tag every autotrade fill carries (live or
+ *  paper-adopted), matching autoTuneEfficacy.ts's identical local predicate. */
+function isAutotradePosition(p: Position): boolean {
+  return p.tags.includes('autotrade');
+}
+
+const lastExitDateOf = (p: Position): string =>
+  p.exits.length
+    ? p.exits
+        .map((e) => e.exitDate)
+        .sort()
+        .slice(-1)[0]
+    : p.entryDate;
+
+// Bound the once-per-day candle fetch: most-recent closed autotrade stock trades
+// are the ones whose excursion is relevant to today's exit geometry.
+const EXCURSION_TUNE_MAX_TRADES = 100;
+
+/** Build the MAE/MFE excursion report over closed autotrade stock trades — the
+ *  same per-trade daily-candle fetch routes/journal.ts's '/excursions' does,
+ *  scoped to autotrade's own fills. Best-effort per trade (a symbol whose
+ *  candles can't be fetched is skipped, not fatal). */
+async function buildAutotradeExcursionReport(): Promise<ExcursionReport> {
+  const closed = listPositions({ status: 'closed', assetType: 'stock' })
+    .filter(isAutotradePosition)
+    .sort((a, b) => b.entryDate.localeCompare(a.entryDate))
+    .slice(0, EXCURSION_TUNE_MAX_TRADES);
+  const provider = getProvider();
+  const rows: TradeExcursion[] = [];
+  await Promise.all(
+    closed.map(async (p) => {
+      try {
+        const candles = await provider.getCandles(p.symbol, 'daily', {
+          start: p.entryDate,
+          end: lastExitDateOf(p),
+        });
+        const ex = computeExcursion(
+          {
+            positionId: p.id,
+            symbol: p.symbol,
+            side: p.side,
+            entryPrice: p.entryPrice,
+            quantity: p.quantity,
+            multiplier: p.multiplier,
+            stopPrice: p.stopPrice,
+            realizedPnl: realizedPnlOf(p),
+            entryDate: p.entryDate,
+          },
+          candles,
+        );
+        if (ex) rows.push(ex);
+      } catch {
+        // skip trades whose candles can't be fetched — best effort
+      }
+    }),
+  );
+  return aggregateExcursions(rows);
+}
+
 export interface AutoTuneResult {
   /** False when disabled or already run today — everything below is
    *  meaningless in that case. */
   ran: boolean;
   riskAdjusted: boolean;
   symbolsExcluded: string[];
+  /** True when the exit-geometry tune changed stopAtrMultiple/targetRMultiple. */
+  exitsAdjusted: boolean;
 }
 
 /**
@@ -130,10 +194,10 @@ export interface AutoTuneResult {
  */
 export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneResult> {
   const config = getAutotradeConfig();
-  if (!config.autoTuneEnabled) return { ran: false, riskAdjusted: false, symbolsExcluded: [] };
+  if (!config.autoTuneEnabled) return { ran: false, riskAdjusted: false, symbolsExcluded: [], exitsAdjusted: false };
 
   const today = etDateStr(now);
-  if (alreadyRanToday(today)) return { ran: false, riskAdjusted: false, symbolsExcluded: [] };
+  if (alreadyRanToday(today)) return { ran: false, riskAdjusted: false, symbolsExcluded: [], exitsAdjusted: false };
 
   // Journal the marker BEFORE acting — same reasoning as dailyHaltAlert.ts's
   // own once-per-day throttle: the journal is the source of truth even if
@@ -200,5 +264,44 @@ export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneR
     symbolsExcluded.push(g.symbol);
   }
 
-  return { ran: true, riskAdjusted, symbolsExcluded };
+  // Exit-geometry tune (independent of the risk-% tune above; own flag). Nudge
+  // stopAtrMultiple / targetRMultiple toward what winning autotrade trades'
+  // MAE/MFE actually did, bounded by autoTuneExitMaxStep per run.
+  let exitsAdjusted = false;
+  if (config.autoTuneExitsEnabled) {
+    const report = await buildAutotradeExcursionReport();
+    const result = computeExcursionTune(
+      report,
+      { stopAtrMultiple: config.stopAtrMultiple, targetRMultiple: config.targetRMultiple },
+      { minTrades: config.autoTuneMinTrades, maxStep: config.autoTuneExitMaxStep },
+    );
+    if (result.patch.stopAtrMultiple !== undefined || result.patch.targetRMultiple !== undefined) {
+      setAutotradeConfig(result.patch);
+      const nextStop = result.patch.stopAtrMultiple ?? config.stopAtrMultiple;
+      const nextTarget = result.patch.targetRMultiple ?? config.targetRMultiple;
+      logAutotradeEvent({
+        stage: 'config',
+        action: 'auto_tune_exits_adjusted',
+        detail: {
+          from: { stopAtrMultiple: config.stopAtrMultiple, targetRMultiple: config.targetRMultiple },
+          to: { stopAtrMultiple: nextStop, targetRMultiple: nextTarget },
+          winners: result.diagnostics.winners,
+          avgWinnerHeatR: result.diagnostics.avgWinnerHeatR,
+          avgWinnerMfeR: result.diagnostics.avgWinnerMfeR,
+        },
+      });
+      await dispatchNotifications([
+        {
+          title: 'Autotrade auto-tune: exit geometry adjusted',
+          message:
+            `stop ${config.stopAtrMultiple}×ATR → ${nextStop}×ATR, ` +
+            `target ${config.targetRMultiple}R → ${nextTarget}R ` +
+            `(from ${result.diagnostics.winners} winning trades' MAE/MFE).`,
+        },
+      ]);
+      exitsAdjusted = true;
+    }
+  }
+
+  return { ran: true, riskAdjusted, symbolsExcluded, exitsAdjusted };
 }
