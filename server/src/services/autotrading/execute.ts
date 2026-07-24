@@ -1,5 +1,5 @@
 import { getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
-import { TradeSignal } from './decide';
+import { TradeSignal, convictionGrade } from './decide';
 import {
   correlatedNotional,
   sectorNotional,
@@ -83,6 +83,9 @@ export async function attemptPaperEntry(
   signal: TradeSignal,
   riskResult: RiskCheckResult,
   riskProfile: RiskProfileName,
+  /** Conviction grade (A/B/C) to stamp on the position, or null. Computed by the
+   *  caller from the signal's score + the configured thresholds. */
+  grade: string | null = null,
 ): Promise<ExecutionOutcome> {
   if (!riskResult.ok) return { symbol: signal.symbol, ok: false, reason: 'Risk check did not pass' };
   if (hasOpenPaperPosition(signal.symbol)) {
@@ -138,6 +141,7 @@ export async function attemptPaperEntry(
       riskAmount: riskResult.approvedRiskAmount,
       riskProfile,
       rationale: signal.rationale,
+      grade,
     });
   } catch (err) {
     // A single candidate's persistence failure must not abort the rest of
@@ -375,7 +379,11 @@ export async function runPaperExecution(
       continue;
     }
 
-    const outcome = await attemptPaperEntry(signal, result, config.riskProfile);
+    const grade = convictionGrade(signal.score, {
+      aMinScore: config.convictionGradeAMinScore,
+      bMinScore: config.convictionGradeBMinScore,
+    });
+    const outcome = await attemptPaperEntry(signal, result, config.riskProfile, grade);
     outcomes.push(outcome);
     if (outcome.ok && outcome.position) {
       runningRisk += result.approvedRiskAmount;

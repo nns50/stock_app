@@ -866,7 +866,12 @@ shouldn't be a tab-switch away.
   bigger than you could exit cleanly — a liquidity backstop the risk-based sizing
   doesn't otherwise enforce (options already gate on their own open-interest/volume
   floors, so this is equity-only). When a name's average volume can't be resolved the
-  cap is skipped, not blocked. Every field here
+  cap is skipped, not blocked. Finally, **conviction grade A ≥ score** and **B ≥ score**
+  (2026-07-24) stamp every autotrade entry with a grade from its screener total score —
+  **A** at or above the A threshold, **B** at or above the B threshold, else **C**. This is
+  always on (it doesn't change what trades, only labels them): the grade flows into the
+  Journal's per-grade edge report so you can see whether your high-conviction picks actually
+  outperform, and it's the key a later opt-in feature can size by. Every field here
   applies to paper and live trading alike, and each has its own **Save** button, so
   you can change one without touching the rest. For a plain-English walkthrough of each of these — with worked
   examples and guidance on what to change when nothing's trading — see

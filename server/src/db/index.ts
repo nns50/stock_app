@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS autotrade_paper_positions (
   best_price_since_entry  REAL,          -- running high/low-water mark since entry
   partial_exit_taken      INTEGER NOT NULL DEFAULT 0,
   add_ons_taken           INTEGER NOT NULL DEFAULT 0,  -- scale-into-winners count
+  grade         TEXT,                  -- conviction grade (A/B/C) from the screener score at entry
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );`;
@@ -474,6 +475,7 @@ CREATE TABLE IF NOT EXISTS autotrade_live_orders (
                                        -- exit: known upfront (the position this order will close).
   account_id    TEXT,                 -- entry: the Webull account this order executed in, carried to positions.account_id at materialization. null for exit rows and legacy rows.
   addon_of_position_id INTEGER,       -- scale-in add-on: the already-open position this order pyramids into. null for normal entries/exits. Its fill MERGES into that position (blended entry) rather than creating a new one.
+  grade         TEXT,                 -- entry: conviction grade (A/B/C) from the signal's screener score, carried to positions.grade at materialization. null for exit rows and legacy rows.
   created_at    INTEGER NOT NULL
 );
 
@@ -779,6 +781,9 @@ function migrate(): void {
   if (!hasApp('add_ons_taken')) {
     db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN add_ons_taken INTEGER NOT NULL DEFAULT 0');
   }
+  if (!hasApp('grade')) {
+    db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN grade TEXT');
+  }
 
   // autotrade_options_paper_positions gained a debit-spread shape (Task #69):
   // a kind discriminator plus the short leg's contract/strike/entry/exit.
@@ -856,6 +861,11 @@ function migrate(): void {
   // pyramids into here (null for every pre-existing row — none were add-ons).
   if (!aloEquityCols.some((c) => c.name === 'addon_of_position_id')) {
     db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN addon_of_position_id INTEGER');
+  }
+  // Conviction grade carried from the signal to positions.grade at materialization
+  // (null for every pre-existing/legacy row — they predate grading).
+  if (!aloEquityCols.some((c) => c.name === 'grade')) {
+    db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN grade TEXT');
   }
 
   // Must run AFTER the ADD COLUMNs above so the explicit-column copy finds them.

@@ -1284,6 +1284,8 @@ export interface AutotradeConfig {
   equityCurveLookbackDays: number;
   equityCurveDeriskCutPct: number;
   maxAdvParticipationPct: number;
+  convictionGradeAMinScore: number;
+  convictionGradeBMinScore: number;
 
   // --- Screening/decision thresholds ---
   tradeDirection: AutotradeTradeDirectionMode;

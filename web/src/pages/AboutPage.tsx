@@ -91,6 +91,13 @@ export default function AboutPage() {
           Every result ships with its full breakdown — raw value, sub-score, weight, and contribution — so nothing is
           hidden. All weights, periods, and scales are editable in the screener config.
         </p>
+        <p className="mt-2">
+          When auto-trading acts on a candidate, that total score is also bucketed into a{' '}
+          <strong className="text-slate-200">conviction grade</strong> stamped on the position — <strong>A</strong> at
+          or above the configured A threshold (75 by default), <strong>B</strong> at or above the B threshold (60), else{' '}
+          <strong>C</strong>. The grade is metadata, not a filter: it doesn’t change which trades are taken, but it lets
+          the Journal report realized edge <em>per conviction tier</em>, and a later opt-in can size positions by it.
+        </p>
         <div className="mt-2 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>

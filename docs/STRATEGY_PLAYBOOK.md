@@ -79,7 +79,11 @@ isn't the entry — it's that *you never enter without a written exit.*
 Edge decays and habits drift. The **Edge Report**, **by-tag/by-grade/by-discipline**
 breakdowns, **drawdown**, and **alpha vs SPY** exist so you can prune what doesn't work
 and double down on what does. A trade you don't journal is a lesson you paid for and
-threw away.
+threw away. Auto-traded entries are now graded automatically — **A/B/C from the screener
+score** (thresholds in Config → risk settings) — so the **by-grade** breakdown answers a
+concrete question for the loop: do your A-grade (high-conviction) setups actually out-earn
+the B/C ones? If they don't, the conviction score isn't measuring edge, and any plan to size
+up on it is premature.
 
 ---
 

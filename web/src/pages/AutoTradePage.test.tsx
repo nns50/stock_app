@@ -64,6 +64,8 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,
     maxAdvParticipationPct: 0,
+    convictionGradeAMinScore: 75,
+    convictionGradeBMinScore: 60,
     tradeDirection: 'long',
     minRelVol: 1.5,
     requireWeeklyTrendAlignment: false,
@@ -356,6 +358,25 @@ describe('AutoTradePage', () => {
 
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ maxAdvParticipationPct: 2, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new conviction grade A threshold', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Conviction grade A ≥ score').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '80' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save conviction grade A threshold' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ convictionGradeAMinScore: 80, confirmAggressive: undefined }),
     );
   });
 
