@@ -3236,6 +3236,7 @@ describe('AutoTradePage', () => {
           remainingQuantity: 10,
           closedQuantity: 0,
         },
+        addOnsTaken: 0,
         ...overrides,
       };
     }
@@ -3335,6 +3336,31 @@ describe('AutoTradePage', () => {
       await screen.findByText('AAPL');
       expect(screen.getByText('$108.00')).toBeInTheDocument();
       expect(screen.getAllByText('+$80.00').length).toBeGreaterThan(0);
+    });
+
+    it('badges a pyramided position with its add-on count, and omits the badge when none were taken', async () => {
+      vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({
+        positions: [
+          livePosition({ id: 1, symbol: 'AAPL', status: 'open', addOnsTaken: 2 }),
+          livePosition({ id: 2, symbol: 'MSFT', status: 'open', addOnsTaken: 0 }),
+        ],
+      });
+      renderDashboard();
+      await screen.findByText('AAPL');
+      // Pyramided position shows a "+2 adds" chip...
+      expect(screen.getByText('+2 adds')).toBeInTheDocument();
+      // ...and it's the only add badge — the un-pyramided MSFT row shows none.
+      expect(screen.getAllByText(/^\+\d+ add/)).toHaveLength(1);
+      expect(screen.queryByText('+0 adds')).not.toBeInTheDocument();
+    });
+
+    it('singularizes the add-on badge for a single add', async () => {
+      vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({
+        positions: [livePosition({ id: 1, symbol: 'AAPL', status: 'open', addOnsTaken: 1 })],
+      });
+      renderDashboard();
+      await screen.findByText('AAPL');
+      expect(screen.getByText('+1 add')).toBeInTheDocument();
     });
 
     describe('closing a live equity position (real order)', () => {

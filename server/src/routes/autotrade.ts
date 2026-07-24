@@ -24,6 +24,7 @@ import { computeSignificanceStats } from '../services/autotrading/significance';
 import { listPaperPositions, PaperPosition } from '../db/autotradePaperPositions';
 import { listOptionsPaperPositions, OptionsPaperPosition } from '../db/autotradeOptionsPaperPositions';
 import { listAutotradeLivePositions, syncAccountEquityFromBroker } from '../services/autotrading/liveExecute';
+import { countLiveAddOns } from '../db/autotradeLiveOrders';
 import {
   listLiveOptionsPositions,
   getLiveOptionsPosition,
@@ -1469,6 +1470,10 @@ export interface AutotradeLivePositionLive extends Position {
    *  and the stock/option multiplier difference correctly, unlike paper
    *  trading's simpler single-entry/single-exit shape. */
   pnl: PositionPnl;
+  /** How many scale-in add-ons this live position has had committed (0 unless
+   *  liveScaleInEnabled pyramided it) — surfaced so the Live positions table
+   *  can badge a pyramided position. */
+  addOnsTaken: number;
 }
 
 /** Enrich real autotrade-placed positions with a live price/mark + full P&L —
@@ -1479,7 +1484,13 @@ async function withLivePositionPnl(positions: Position[]): Promise<AutotradeLive
   const prices = await priceMap(positions);
   return positions.map((p) => {
     const info = prices.get(p.id) ?? { price: null, stale: false, asOf: null };
-    return { ...p, currentPrice: info.price, stale: info.stale, pnl: computePositionPnl(p, info.price) };
+    return {
+      ...p,
+      currentPrice: info.price,
+      stale: info.stale,
+      pnl: computePositionPnl(p, info.price),
+      addOnsTaken: countLiveAddOns(p.id),
+    };
   });
 }
 
