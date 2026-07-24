@@ -5,6 +5,7 @@ import { placeOrder, placeConfirmation } from '../src/services/trading/placeOrde
 import { setTradingConfig } from '../src/db/trading';
 import { getEvents, listIntents } from '../src/db/orders';
 import type { OrderIntent } from '../src/services/trading/guardrails';
+import * as providersModule from '../src/providers';
 
 // placeOrder re-derives the fat-finger reference from a fresh stock quote
 // (never the client's). Mock that source so it's deterministic and doesn't
@@ -95,6 +96,35 @@ describe('place order (live)', () => {
     expect(r.broker?.orderId).toBe('WB-OPT-1');
     const placeBody = JSON.parse((fetchSpy.mock.calls[2][1] as RequestInit).body as string);
     expect(placeBody.new_orders[0]).toMatchObject({ instrument_type: 'OPTION', option_strategy: 'SINGLE' });
+  });
+
+  it('re-derives a single-leg OPTION fat-finger reference server-side (a spoofed client mark cannot defeat it)', async () => {
+    // The current contract mark is $5, but the client sends referencePrice equal
+    // to its absurd $0.10 limit (deviation 0 — would pass fat_finger). The server
+    // must re-derive the reference from the chain and block.
+    vi.spyOn(providersModule, 'getProvider').mockReturnValue({
+      getOptionsChain: async () => ({ calls: [{ strike: 200, mark: 5, last: 5 }], puts: [] }),
+    } as unknown as ReturnType<typeof providersModule.getProvider>);
+    const opt = intent({
+      symbol: 'NVDA',
+      assetKind: 'option',
+      optionType: 'call',
+      strike: 200,
+      expiration: '2026-12-19',
+      quantity: 1,
+      orderType: 'limit',
+      limitPrice: 0.1,
+      referencePrice: 0.1, // spoofed to equal the limit
+    });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE))
+      .mockResolvedValueOnce(okResp([]));
+
+    const r = await placeOrder(opt, 'ACC1', placeConfirmation(opt));
+    expect(r).toMatchObject({ placed: false, reason: 'blocked' });
+    expect(r.guardrails?.checks.find((c) => c.rule === 'fat_finger')?.passed).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalledWith(expect.stringContaining('/order/place'), expect.anything());
   });
 
   it('blocks (and never calls the broker) when a guardrail fails — kill switch', async () => {

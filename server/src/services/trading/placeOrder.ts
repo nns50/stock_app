@@ -14,6 +14,7 @@ import { webullAccountState, webullAccountType } from '../../providers/webull/ac
 import { marketOpenContext } from './marketHours';
 import { WebullPlaceResult, newClientOrderId, webullPlaceOrder } from '../../providers/webull/orders';
 import { resolveStockPrices } from '../quotes';
+import { getProvider } from '../../providers';
 
 // ---------------------------------------------------------------------------
 // Place a single live order (stock or single-leg option) — the ONLY path that
@@ -57,21 +58,35 @@ export function placeConfirmation(intent: OrderIntent): string {
   return `${intent.side.toUpperCase()} ${intent.quantity} ${intent.symbol.toUpperCase()}`;
 }
 
-/** Re-derive the fat-finger reference SERVER-side for a STOCK LIMIT order,
- *  overriding whatever the client sent — a client can otherwise omit
- *  `referencePrice` (downgrading fat_finger to a warning) or set it equal to an
- *  absurd limit (making the deviation 0). Uses a fresh quote (cache-resilient
- *  via resolveStockPrices); a market-data miss falls back to the client value
- *  (no worse than before). `referencePrice` is guardrail-only — never sent to
- *  the broker — so overriding it is safe. Options keep the client's mark for now
- *  (a per-contract chain fetch on the place path is heavier; the confirmed
- *  weakening was on the stock path). */
+/** Re-derive the fat-finger reference SERVER-side for a LIMIT order, overriding
+ *  whatever the client sent — a client can otherwise omit `referencePrice`
+ *  (downgrading fat_finger to a warning) or set it equal to an absurd limit
+ *  (making the deviation 0, defeating the check entirely). `referencePrice` is
+ *  guardrail-only — never sent to the broker — so overriding it is safe. A
+ *  market-data miss falls back to the client value (no worse than before).
+ *  Stocks use a fresh quote; single-leg options use the current contract mark
+ *  from the chain. Multi-leg spreads (net-premium reference) keep the client
+ *  value — they don't come through this single-order /place path. */
 async function withServerReference(intent: OrderIntent): Promise<OrderIntent> {
-  if (intent.orderType !== 'limit' || intent.assetKind !== 'stock') return intent;
+  if (intent.orderType !== 'limit') return intent;
   let ref: number | undefined;
   try {
-    const px = (await resolveStockPrices([intent.symbol])).get(intent.symbol.toUpperCase())?.price;
-    if (typeof px === 'number' && Number.isFinite(px) && px > 0) ref = px;
+    if (intent.assetKind === 'stock') {
+      const px = (await resolveStockPrices([intent.symbol])).get(intent.symbol.toUpperCase())?.price;
+      if (typeof px === 'number' && Number.isFinite(px) && px > 0) ref = px;
+    } else if (
+      intent.assetKind === 'option' &&
+      intent.optionType &&
+      intent.strike !== undefined &&
+      intent.expiration &&
+      (intent.optionStrategy ?? 'SINGLE') === 'SINGLE'
+    ) {
+      const chain = await getProvider().getOptionsChain(intent.symbol, intent.expiration);
+      const pool = intent.optionType === 'call' ? chain.calls : chain.puts;
+      const match = pool.find((c) => Math.abs(c.strike - intent.strike!) < 1e-6);
+      const mark = match?.mark ?? match?.last;
+      if (typeof mark === 'number' && Number.isFinite(mark) && mark > 0) ref = mark;
+    }
   } catch {
     // market-data miss — fall back to the client value below
   }
