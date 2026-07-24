@@ -6,11 +6,17 @@ import { realizedPnlOf } from './pnl';
 // can be unit-tested directly.
 // ---------------------------------------------------------------------------
 
-/** Quote a CSV field iff it contains a comma, quote, or newline (RFC 4180). */
+/** Quote a CSV field iff it contains a comma, quote, or newline (RFC 4180),
+ *  and neutralize spreadsheet formula injection. A TEXT field beginning with
+ *  =, +, -, @ (or a tab/CR) is evaluated as a formula by Excel/Sheets (e.g.
+ *  `=HYPERLINK(...)`, `=cmd|...`); prefix it with a single quote so it stays
+ *  literal. Only strings are guarded — numeric columns are passed as numbers
+ *  (incl. negative P&L like -100) and must keep their numeric type. */
 export function csvField(value: unknown): string {
   if (value === null || value === undefined) return '';
   const s = String(value);
-  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  const guarded = typeof value === 'string' && /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+  return /[",\n\r]/.test(guarded) ? `"${guarded.replace(/"/g, '""')}"` : guarded;
 }
 
 export function toCsv(headers: string[], rows: unknown[][]): string {
