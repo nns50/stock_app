@@ -1120,6 +1120,18 @@ shouldn't be a tab-switch away.
   are enforced by the broker directly. Live trading is blocked if *either* kill switch is
   engaged — this page's own, or the **Trade** page's — since both places orders through
   the same real account; either one's "Halt trading" is a genuine, shared emergency stop.
+  A live order that fills only **partly** is recorded as soon as the loop sees it, rather
+  than waiting for the order to complete — and later instalments of the same order are
+  blended into that one position (bigger size, averaged entry), not opened as a second row.
+  This matters because an autotrade order that is cancelled after filling partly stops
+  being polled for good, so anything not recorded at that moment would never be recorded at
+  all. If the broker reports a fill the loop can't fully record — more filled than was
+  ordered, say — it records only what it can justify and journals a
+  **`live_fill_not_fully_materialized`** entry on **Recent activity** explaining the
+  difference. It deliberately errs toward recording **less** rather than inflating a
+  position's size or cost basis, since every risk figure on this page is derived from those
+  numbers; treat such an entry as "check this order against the broker".
+
   A **Live positions** table (Dashboard tab) shows every real position the loop has actually
   placed — the exact same `positions` rows your own manual trades use on the
   **Positions**/**Journal** pages, filtered here to just autotrade's own fills (tagged

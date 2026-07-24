@@ -24,7 +24,7 @@ import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { listPositions } from '../src/db/positions';
 import * as positionsDb from '../src/db/positions';
 import { getLiveOrder, listPendingLiveOrders, countLiveAddOns } from '../src/db/autotradeLiveOrders';
-import { listIntents, transitionIntent } from '../src/db/orders';
+import { getIntent, listIntents, transitionIntent } from '../src/db/orders';
 import { evaluateRiskCheck, RiskCheckResult } from '../src/services/autotrading/riskCheck';
 import { TradeSignal } from '../src/services/autotrading/decide';
 import {
@@ -1322,16 +1322,21 @@ describe('checkLiveScaleIns', () => {
     const cfg = liveConfig(overrides);
     setAutotradeConfig(cfg);
     await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
+    // The quantity actually ORDERED — probation/cap adjustments can make this
+    // smaller than the raw suggestion, and a broker can't fill more than was
+    // ordered. Mocking the suggestion would describe an impossible fill, which
+    // reconcile now (correctly) refuses to book in full.
+    const orderedQty = listIntents()[0].quantity;
     mockOrderStatus.mockResolvedValue({
       ok: true,
       found: true,
       status: 'FILLED',
-      filledQty: okResult.sizing.suggestedQuantity,
+      filledQty: orderedQty,
       filledPrice: 100,
       legs: [{ comboType: 'MASTER', status: 'FILLED' }],
     } as WebullOrderStatus);
     await reconcileLiveOrders();
-    return { pos: listPositions({ status: 'open' })[0], qty: okResult.sizing.suggestedQuantity };
+    return { pos: listPositions({ status: 'open' })[0], qty: orderedQty };
   }
 
   const SCALE_ON = { liveScaleInEnabled: true, liveMaxAddOns: 2, addOnTriggerRMultiple: 1, addOnSizePct: 50 };
@@ -1470,5 +1475,153 @@ describe('checkLiveScaleIns', () => {
     expect(merged.quantity).toBe(qty + Math.floor(qty * 0.5)); // 200 + 100
     // Blended: (100*200 + 105*100) / 300 = 101.6667
     expect(merged.entryPrice).toBeCloseTo(101.6667, 3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Partial fills on the AUTOTRADE path. Same defect as the human path — booking
+// only at a terminal `filled` — but with a sharper edge here: an intent that
+// goes cancelled/rejected/expired leaves listPendingLiveOrders() for good, so a
+// partial that is cancelled between two 60s ticks would never be booked by
+// anything, ever. Real autotrade-opened shares, permanently invisible to the
+// Auto page's risk and P&L accounting.
+//
+// autotrade_live_orders.position_id is a SINGLE column, so unlike the human
+// ledger's independent lots, later instalments must BLEND into the one position
+// the first instalment created.
+// ---------------------------------------------------------------------------
+describe('reconcileLiveOrders — partial fills', () => {
+  async function placeEntry() {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-P1' });
+    const cfg = liveConfig();
+    const okResult = evaluateRiskCheck(signal(), {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      maxConcurrentPositions: 2,
+      correlatedNotional: 0,
+      riskPerTradePct: 1,
+      maxDailyDrawdownPct: 3,
+      stepDownAfterLosses: 2,
+      stepDownSizeCutPct: 50,
+      maxAggregateOpenRiskPct: 2,
+      maxCorrelatedExposurePct: 6,
+      maxTradesPerDay: 6,
+    });
+    await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
+    const intentId = listIntents()[0].id;
+    return { intentId, orderedQty: getIntent(intentId)!.quantity };
+  }
+
+  const brokerSays = (status: string, filledQty: number, filledPrice: number) =>
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status,
+      filledQty,
+      filledPrice,
+      legs: [{ comboType: 'MASTER', status }],
+    } as WebullOrderStatus);
+
+  it('opens a position on a partial fill instead of waiting for the order to complete', async () => {
+    const { intentId, orderedQty } = await placeEntry();
+    const part = Math.floor(orderedQty / 2);
+    brokerSays('PARTIAL_FILLED', part, 100.5);
+
+    await reconcileLiveOrders();
+
+    const open = listPositions({ status: 'open' });
+    expect(open).toHaveLength(1);
+    expect(open[0].quantity).toBe(part);
+    expect(getLiveOrder(intentId)?.positionId).toBe(open[0].id);
+    expect(getIntent(intentId)!.materializedQty).toBe(part);
+  });
+
+  it('BLENDS a later instalment into the same position rather than opening a second', async () => {
+    const { intentId, orderedQty } = await placeEntry();
+    const part = Math.floor(orderedQty / 2);
+    brokerSays('PARTIAL_FILLED', part, 100);
+    await reconcileLiveOrders();
+
+    // Running average across the full order: half at 100, the rest at 102.
+    const rest = orderedQty - part;
+    brokerSays('FILLED', orderedQty, (part * 100 + rest * 102) / orderedQty);
+    await reconcileLiveOrders();
+
+    const open = listPositions({ status: 'open' });
+    expect(open).toHaveLength(1); // one position, not two
+    expect(open[0].quantity).toBe(orderedQty);
+    // Blended cost basis reflects both instalments at their own prices.
+    expect(open[0].entryPrice).toBeCloseTo((part * 100 + rest * 102) / orderedQty, 4);
+    expect(getIntent(intentId)!.materializedQty).toBe(orderedQty);
+  });
+
+  it('books a partial that the broker reports as CANCELLED in one shot', async () => {
+    // The order is cancelled between ticks, so reconcile never sees a
+    // PARTIAL_FILLED status — only a CANCELLED response still carrying its
+    // filled quantity. Booking on the STATUS rather than the reported quantity
+    // would drop these shares permanently: the intent is terminal, so
+    // listPendingLiveOrders() never returns it again.
+    const { intentId, orderedQty } = await placeEntry();
+    const part = Math.floor(orderedQty / 2);
+    brokerSays('CANCELLED', part, 100.25);
+
+    await reconcileLiveOrders();
+
+    const open = listPositions({ status: 'open' });
+    expect(open).toHaveLength(1);
+    expect(open[0].quantity).toBe(part);
+    expect(open[0].entryPrice).toBeCloseTo(100.25);
+    expect(getIntent(intentId)!.state).toBe('cancelled');
+    // And it is genuinely gone from the polling set now.
+    expect(listPendingLiveOrders().some((o) => o.intentId === intentId)).toBe(false);
+  });
+
+  it('does not double-book when the same fill is seen on two ticks', async () => {
+    const { intentId, orderedQty } = await placeEntry();
+    brokerSays('PARTIAL_FILLED', orderedQty / 2, 100);
+    await reconcileLiveOrders();
+    await reconcileLiveOrders();
+
+    expect(listPositions({ status: 'open' })).toHaveLength(1);
+    expect(listPositions({ status: 'open' })[0].quantity).toBe(orderedQty / 2);
+    expect(getIntent(intentId)!.materializedQty).toBe(orderedQty / 2);
+  });
+
+  it('refuses to book, and journals it, when the reported quantity decreases', async () => {
+    const { intentId, orderedQty } = await placeEntry();
+    brokerSays('PARTIAL_FILLED', orderedQty, 100);
+    await reconcileLiveOrders();
+
+    brokerSays('PARTIAL_FILLED', Math.floor(orderedQty / 4), 100);
+    await reconcileLiveOrders();
+
+    // Still the original booking — nothing rewound, nothing added.
+    expect(getIntent(intentId)!.materializedQty).toBe(orderedQty);
+    expect(listPositions({ status: 'open' })[0].quantity).toBe(orderedQty);
+    const journaled = listAutotradeEvents({ symbol: 'AAPL', stage: 'execution' }).find(
+      (e) => e.action === 'live_fill_not_fully_materialized',
+    );
+    expect(journaled).toBeTruthy();
+    expect(JSON.parse(journaled!.detail!).warning).toMatch(/decreased/i);
+  });
+
+  it('never opens a position larger than the order that was placed', async () => {
+    const { intentId, orderedQty } = await placeEntry();
+    brokerSays('FILLED', orderedQty * 2, 100);
+
+    await reconcileLiveOrders();
+
+    expect(listPositions({ status: 'open' })[0].quantity).toBe(orderedQty);
+    // Priced at the reported average, NOT the full notional divided by the
+    // clamped quantity (which would double it).
+    expect(listPositions({ status: 'open' })[0].entryPrice).toBeCloseTo(100);
+    expect(getIntent(intentId)!.materializedQty).toBe(orderedQty);
   });
 });

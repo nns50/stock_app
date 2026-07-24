@@ -12,9 +12,17 @@ import {
 import { marketOpenContext } from '../trading/marketHours';
 import { webullAccountState, webullAccountType } from '../../providers/webull/accountState';
 import { newClientOrderId, webullPlaceOrder, webullOrderStatus } from '../../providers/webull/orders';
-import { createIntent, transitionIntent, countTodaysOrders, getIntents, OrderIntentRecord } from '../../db/orders';
+import {
+  advanceMaterialized,
+  createIntent,
+  transitionIntent,
+  countTodaysOrders,
+  getIntents,
+  OrderIntentRecord,
+} from '../../db/orders';
 import { canTransition, isTerminal } from '../trading/orderLifecycle';
 import { mapWebullStatus } from '../trading/reconcile';
+import { computeFillDelta } from '../trading/fillDelta';
 import {
   recordLiveOptionsEntryOrder,
   recordLiveOptionsExitOrder,
@@ -29,6 +37,7 @@ import {
   listOpenLiveOptionsPositions,
   listLiveOptionsPositions,
   createLiveOptionsPosition,
+  blendLiveOptionsPositionEntry,
   closeLiveOptionsPosition,
   LiveOptionsPosition,
 } from '../../db/autotradeLiveOptionsPositions';
@@ -961,16 +970,31 @@ export async function reconcileLiveOptionsOrders(): Promise<LiveOptionsReconcile
 
     // Forward-transition the intent if the broker moved it, and materialize a
     // fresh fill in the same pass.
-    if (target && !isTerminal(intent.state) && target !== intent.state && canTransition(intent.state, target)) {
-      transitionIntent(intent.id, target, {
-        detail: `broker ${broker.status?.toLowerCase()}`,
-        brokerOrderId: broker.brokerOrderId,
-      });
-      if (target !== 'filled') {
+    const canMove =
+      !!target && !isTerminal(intent.state) && target !== intent.state && canTransition(intent.state, target);
+    // A contract count resting at `partially_filled` across ticks hasn't changed
+    // state but may have filled further.
+    const restingPartial = target === 'partially_filled' && intent.state === 'partially_filled';
+    if (canMove || restingPartial) {
+      if (canMove) {
+        transitionIntent(intent.id, target!, {
+          detail: `broker ${broker.status?.toLowerCase()}`,
+          brokerOrderId: broker.brokerOrderId,
+        });
+      }
+      // Materialize whenever the broker REPORTS contracts filled, not only on a
+      // terminal `filled`: a partial that gets cancelled between ticks arrives
+      // as one CANCELLED response still carrying its filled quantity, and that
+      // intent then leaves listPendingLiveOptionsOrders() permanently (its WHERE
+      // excludes cancelled/rejected/expired). A terminal FILLED implies the
+      // whole order even when the quantity field is absent; any other status
+      // with no quantity filled nothing.
+      const observedQty = broker.filledQty ?? (target === 'filled' ? intent.quantity : 0);
+      if (observedQty <= 0) {
         outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: true });
         continue;
       }
-      outcomes.push(materializeLiveOptionsFill(intent, meta, broker));
+      outcomes.push(materializeLiveOptionsFill(intent, meta, broker, observedQty));
       continue;
     }
 
@@ -1007,14 +1031,31 @@ function materializeLiveOptionsFill(
   intent: OrderIntentRecord,
   meta: LiveOptionsOrderMeta,
   broker: Awaited<ReturnType<typeof webullOrderStatus>>,
+  observedQty = broker.filledQty ?? intent.quantity,
 ): LiveOptionsReconcileOutcome {
-  const filledQty = broker.filledQty ?? intent.quantity;
-  const filledPrice = broker.filledPrice ?? intent.limitPrice ?? 0;
+  const observedPrice = broker.filledPrice ?? intent.limitPrice ?? 0;
+  // Book only the contracts not already recorded, under the same shared guards
+  // the equity and human paths use (trading/fillDelta.ts) — every ambiguous
+  // case there resolves toward recording LESS, never toward inflating a
+  // position's size or cost basis.
+  const { qty, price, warning } = computeFillDelta(intent, observedQty, observedPrice);
+  if (warning) {
+    logAutotradeEvent({
+      symbol: intent.symbol,
+      stage: 'execution',
+      action: 'live_options_fill_not_fully_materialized',
+      detail: { intentId: intent.id, role: meta.role, observedQty, alreadyBooked: intent.materializedQty, warning },
+      riskProfile: meta.riskProfile,
+    });
+  }
+  if (qty <= 0) return { intentId: intent.id, symbol: meta.symbol, changed: true, error: warning };
+
   try {
     const action =
       meta.role === 'entry'
-        ? materializeOptionsEntryFill(intent, meta, filledQty, filledPrice)
-        : materializeOptionsExitFill(intent, meta, filledPrice);
+        ? materializeOptionsEntryFill(intent, meta, qty, price)
+        : materializeOptionsExitFill(intent, meta, price);
+    advanceMaterialized(intent.id, qty, qty * price);
     return { intentId: intent.id, symbol: meta.symbol, changed: true, action };
   } catch (err) {
     const message = (err as Error).message;
@@ -1040,6 +1081,24 @@ function materializeOptionsEntryFill(
   filledQty: number,
   filledPrice: number,
 ): 'entry_filled' {
+  // A later instalment of an order that already opened a position BLENDS into
+  // it — this table holds one row per entry order (its position id is a single
+  // column), so a second row would have nothing to link it. Keyed on our own
+  // materialization mark, which is only ever advanced after a successful book.
+  if (intent.materializedQty > 0 && meta.positionId !== null) {
+    const blended = blendLiveOptionsPositionEntry(meta.positionId, filledQty, filledPrice);
+    logAutotradeEvent({
+      symbol: intent.symbol,
+      stage: 'execution',
+      action: blended ? 'live_options_position_scaled' : 'live_options_partial_orphaned',
+      detail: blended
+        ? { positionId: meta.positionId, addQty: filledQty, addPrice: filledPrice, newQuantity: blended.quantity }
+        : { positionId: meta.positionId, filledQty, reason: 'position not open at later-instalment fill time' },
+      riskProfile: meta.riskProfile,
+    });
+    return 'entry_filled';
+  }
+
   const position = createLiveOptionsPosition({
     symbol: intent.symbol,
     side: meta.side!,

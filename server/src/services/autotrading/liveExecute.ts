@@ -20,7 +20,9 @@ import {
   WebullOpenOrder,
 } from '../../providers/webull/orders';
 import { mapWebullStatus } from '../trading/reconcile';
+import { computeFillDelta } from '../trading/fillDelta';
 import {
+  advanceMaterialized,
   createIntent,
   transitionIntent,
   countTodaysOrders,
@@ -859,17 +861,39 @@ function reconcileOneLiveOrder(
   // (and only) status -- a time-exit closing order is never a bracket, so
   // its fill is exactly this simple, same as a plain non-bracket order.
   const masterTarget = broker.status ? mapWebullStatus(broker.status) : undefined;
-  if (
-    masterTarget &&
+  const canMove =
+    !!masterTarget &&
     !isTerminal(intent.state) &&
     masterTarget !== intent.state &&
-    canTransition(intent.state, masterTarget)
-  ) {
-    transitionIntent(intent.id, masterTarget, {
-      detail: `broker ${broker.status?.toLowerCase()}`,
-      brokerOrderId: broker.brokerOrderId,
-    });
-    if (masterTarget === 'filled') {
+    canTransition(intent.state, masterTarget);
+  // An order resting at `partially_filled` across two ticks hasn't changed
+  // state but may have filled further, and a partial that is later CANCELLED
+  // leaves this table's polling set entirely (listPendingLiveOrders excludes
+  // cancelled intents). Both are handled by materializing on every observed
+  // fill rather than only on the terminal one — see materializeLiveFill.
+  const restingPartial = masterTarget === 'partially_filled' && intent.state === 'partially_filled';
+  if (canMove || restingPartial) {
+    if (canMove) {
+      transitionIntent(intent.id, masterTarget!, {
+        detail: `broker ${broker.status?.toLowerCase()}`,
+        brokerOrderId: broker.brokerOrderId,
+      });
+    }
+    // How much the broker says is filled. A terminal FILLED implies the whole
+    // order even when the response omits the quantity outright (some do), which
+    // is why this falls back to the intent's own size there but to ZERO on any
+    // other status — a CANCELLED with no quantity field filled nothing, and
+    // assuming otherwise would fabricate a position.
+    const observedQty = broker.filledQty ?? (masterTarget === 'filled' ? intent.quantity : 0);
+
+    // Keyed on the broker REPORTING a fill, not on which state it reported: a
+    // partial that gets cancelled between two 60s ticks arrives as a single
+    // CANCELLED response still carrying its filled quantity, and that intent
+    // then leaves listPendingLiveOrders() for good (its WHERE clause excludes
+    // cancelled/rejected/expired). If this tick doesn't book it, nothing ever
+    // will — real autotrade-opened shares, permanently invisible to the Auto
+    // page's risk and P&L accounting.
+    if (observedQty > 0) {
       // The intent transition above has ALREADY committed by this point — if
       // materializing the position throws, the intent is left at terminal
       // 'filled' with no positions row and, since listPendingLiveOrders()
@@ -884,17 +908,36 @@ function reconcileOneLiveOrder(
       // reconcile.ts's recordFillAsPosition, deliberately does) would leave
       // a real fill permanently invisible with no trace anywhere.
       try {
+        // Book only the part of the broker's running fill total we haven't
+        // recorded yet, under the shared guards the human path uses too (see
+        // trading/fillDelta.ts). Every ambiguous case there resolves toward
+        // recording LESS, so a broker whose semantics differ from our reading
+        // can leave a fill under-recorded — recoverable, and loudly logged —
+        // but can never inflate an autotrade position's size or cost basis,
+        // which would corrupt every risk figure derived from it.
+        const observedPrice = broker.filledPrice ?? intent.limitPrice ?? 0;
+        const { qty, price, warning } = computeFillDelta(intent, observedQty, observedPrice);
+
+        if (warning) {
+          logAutotradeEvent({
+            symbol: intent.symbol,
+            stage: 'execution',
+            action: 'live_fill_not_fully_materialized',
+            detail: { intentId: intent.id, observedQty, alreadyBooked: intent.materializedQty, warning },
+            riskProfile,
+          });
+        }
+        // Nothing new to record — either this fill was already booked on an
+        // earlier tick, or the guards refused it.
+        if (qty <= 0) return { changed: canMove, error: warning };
+
         if (meta.role === 'exit') {
           // A time-exit closing order — meta.positionId is known upfront
           // (recordLiveExitOrder), unlike an entry's positionId which is
           // null until THIS materialization sets it.
-          const recorded = materializeTimeExitFill(
-            meta.positionId!,
-            intent,
-            broker.filledPrice ?? intent.limitPrice ?? 0,
-            riskProfile,
-          );
-          return recorded ? { changed: true, action: 'exit_filled' } : { changed: false };
+          const recorded = materializeTimeExitFill(meta.positionId!, intent, price, riskProfile, qty);
+          if (recorded) advanceMaterialized(intent.id, qty, qty * price);
+          return recorded ? { changed: true, action: 'exit_filled' } : { changed: canMove };
         }
         if (meta.addonOfPositionId !== null) {
           // A scale-in ADD-ON fill — MERGE into the already-open position
@@ -902,25 +945,50 @@ function reconcileOneLiveOrder(
           // position row. Its own protective bracket (raised stop + the
           // position's target) rests separately, watched via the bracket-leg
           // block below on later ticks once position_id is linked here.
-          materializeAddOnFill(
-            meta.addonOfPositionId,
-            intent,
-            broker.filledQty ?? intent.quantity,
-            broker.filledPrice ?? intent.limitPrice ?? 0,
-            riskProfile,
-          );
+          materializeAddOnFill(meta.addonOfPositionId, intent, qty, price, riskProfile);
+          advanceMaterialized(intent.id, qty, qty * price);
           return { changed: true, action: 'entry_filled' };
         }
-        materializeEntryFill(
+
+        // A plain entry. autotrade_live_orders.position_id is a SINGLE column,
+        // so one intent maps to exactly ONE position — unlike the human ledger,
+        // a later instalment must BLEND into the position the first instalment
+        // created rather than opening a second row that nothing could link to.
+        //
+        // The discriminator is OUR OWN materialization mark, not whether
+        // position_id is set: adoptOrphanedLivePositions() also sets that column
+        // (for a position imported whole from the broker), so treating a linked
+        // id as "we booked an earlier instalment" would blend a full fill into
+        // an already-complete adopted position and double its quantity — the
+        // very duplication adoption exists to prevent. materializedQty is only
+        // ever advanced by this function, so it means exactly what's needed here.
+        const linkedId = getLiveOrder(intent.id)?.positionId ?? null;
+        if (intent.materializedQty > 0 && linkedId !== null) {
+          materializeAddOnFill(linkedId, intent, qty, price, riskProfile);
+          advanceMaterialized(intent.id, qty, qty * price);
+          return { changed: true, action: 'entry_filled' };
+        }
+
+        const outcome = materializeEntryFill(
           intent,
           stopPrice,
           targetPrice,
           riskAmount,
           riskProfile,
           accountId,
-          broker.filledQty ?? intent.quantity,
-          broker.filledPrice ?? intent.limitPrice ?? 0,
+          qty,
+          price,
         );
+        // An ADOPTED position was imported from the broker whole, so it already
+        // reflects every instalment of this order — including ones we never
+        // observed. Mark the intent fully booked so a later partial can't blend
+        // quantity into it a second time.
+        if (outcome === 'linked_adopted') {
+          const remaining = intent.quantity - intent.materializedQty;
+          if (remaining > 0) advanceMaterialized(intent.id, remaining, remaining * price);
+        } else {
+          advanceMaterialized(intent.id, qty, qty * price);
+        }
         return { changed: true, action: 'entry_filled' };
       } catch (err) {
         const message = (err as Error).message;
@@ -1003,7 +1071,7 @@ function materializeEntryFill(
   accountId: string | null,
   filledQty: number,
   filledPrice: number,
-): void {
+): 'created' | 'linked_adopted' {
   // This fill may belong to a position adoptOrphanedLivePositions() already
   // adopted under this SAME intent, earlier: reconcile missed the fill on an
   // earlier tick, the generic Webull position-sync backstop imported the real
@@ -1032,7 +1100,7 @@ function materializeEntryFill(
       detail: { positionId: adopted.id, quantity: filledQty, entryPrice: filledPrice },
       riskProfile,
     });
-    return;
+    return 'linked_adopted';
   }
 
   const position = createPosition({
@@ -1058,6 +1126,7 @@ function materializeEntryFill(
     detail: { quantity: filledQty, entryPrice: filledPrice, stopPrice, targetPrice, riskAmount },
     riskProfile,
   });
+  return 'created';
 }
 
 /** Merge a scale-in ADD-ON fill into an already-open live position: blend the
@@ -1149,13 +1218,19 @@ function materializeTimeExitFill(
   intent: OrderIntentRecord,
   exitPrice: number,
   riskProfile: string,
+  quantity?: number,
 ): boolean {
   const position = listPositions({ status: 'open', symbol: intent.symbol }).find(
     (p) => p.id === positionId && isAutotradePosition(p),
   );
   if (!position) return false;
+  // A partly-filled close reduces the position by what actually filled; the
+  // rest stays open (and keeps being polled) rather than being booked as a
+  // full exit at a price only part of the order achieved.
+  const closeQty = Math.min(quantity ?? position.remainingQuantity, position.remainingQuantity);
+  if (closeQty <= 0) return false;
   const closed = addExit(position.id, {
-    quantity: position.remainingQuantity,
+    quantity: closeQty,
     exitPrice,
     exitDate: etDateStr(),
     sourceIntentId: intent.id,

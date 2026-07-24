@@ -11,6 +11,7 @@ import { OrderState, canTransition, isTerminal } from './orderLifecycle';
 import { WebullOrderStatus, webullOrderStatus } from '../../providers/webull/orders';
 import { isAutotradeIntent } from '../../db/autotradeLiveOrders';
 import { isAutotradeOptionsIntent } from '../../db/autotradeLiveOptionsOrders';
+import { computeFillDelta, isShortBooked } from './fillDelta';
 
 // ---------------------------------------------------------------------------
 // Reconcile an order intent's state with the broker (design §6 "status reconcile").
@@ -68,9 +69,6 @@ export interface ReconcileResult {
   fillWarning?: string;
 }
 
-/** Quantities are REAL columns; compare with a tolerance rather than exactly. */
-const QTY_EPS = 1e-9;
-
 interface MaterializeOutcome {
   booked: number;
   warning?: string;
@@ -79,74 +77,22 @@ interface MaterializeOutcome {
 /**
  * Mirror the not-yet-booked part of an observed fill into the Positions ledger.
  *
- * The broker reports a RUNNING total (`filled_quantity`) and an AVERAGE price
- * over all executions, so the new lot is the difference against what we already
- * booked: quantity by subtraction, price by differencing notionals. Booking the
- * delta rather than the total is what makes this safe to call repeatedly — all
- * three reconcile callers (human Refresh, the Webull scheduler, autotrade's own
- * loop) can observe the same fill and only the unbooked remainder is written.
- *
- * That running-total reading is an ASSUMPTION about the broker — it has not
- * been confirmed against a real partial fill (see `npm run capture:broker`).
- * So rather than trust it, every way it could be wrong is checked here and
- * fails toward under-booking with a loud note, never toward silently booking
- * phantom shares:
- *
- *   - a DECREASE means the field reports each execution separately instead of a
- *     running total, and differencing is invalid — refuse and flag.
- *   - a total exceeding the order's own size means the same thing (or broker
- *     inconsistency) — book only up to what was actually ordered, and flag.
- *   - a non-sensical implied price (from an inconsistent average) falls back to
- *     the reported average, and flags.
- *
- * Under-booking is recoverable: the shares show up in the next Webull positions
- * sync and the note says why. Over-booking would invent cost basis that never
- * existed, which silently corrupts P&L — so every ambiguous case resolves the
- * conservative way.
+ * How MUCH is safe to book (and whether to book at all) is decided by the
+ * shared computeFillDelta — the same core autotrade's own reconcile uses, so
+ * the safety guards behind partial handling can't drift between the two paths.
+ * This function only decides the SHAPE of the write: the human ledger records
+ * each instalment as its own lot at its own price, which is what actually
+ * happened and what FIFO exit matching already expects.
  */
 function materializeFill(intent: OrderIntentRecord, observedQty: number, observedAvgPrice: number): MaterializeOutcome {
-  if (!Number.isFinite(observedQty) || observedQty <= QTY_EPS) return { booked: 0 };
+  const { qty, price, warning } = computeFillDelta(intent, observedQty, observedAvgPrice);
+  if (qty <= 0) return { booked: 0, warning };
 
-  let delta = observedQty - intent.materializedQty;
-  if (delta < -QTY_EPS) {
-    return {
-      booked: 0,
-      warning:
-        `broker reported ${observedQty} filled after ${intent.materializedQty} was already booked — ` +
-        `filled_quantity decreased, so it is NOT a running total and cannot be differenced. ` +
-        `Refusing to book; reconcile this order manually.`,
-    };
-  }
-  if (delta <= QTY_EPS) return { booked: 0 };
+  if (intent.openClose === 'open') recordFillAsPosition(intent, qty, price);
+  else recordCloseAsExit(intent, qty, price);
 
-  let warning: string | undefined;
-
-  // Never book more than the order actually asked for.
-  const bookable = intent.quantity - intent.materializedQty;
-  if (delta > bookable + QTY_EPS) {
-    warning =
-      `broker reported ${observedQty} filled on an order for ${intent.quantity} — ` +
-      `booking only the ${Math.max(0, bookable)} outstanding.`;
-    delta = Math.max(0, bookable);
-    if (delta <= QTY_EPS) return { booked: 0, warning };
-  }
-
-  // Price of THIS lot, backed out of the running average.
-  const observedNotional = observedQty * observedAvgPrice;
-  const incrementalNotional = observedNotional - intent.materializedNotional;
-  let price = incrementalNotional / delta;
-  if (!Number.isFinite(price) || price <= 0) {
-    price = observedAvgPrice;
-    warning = [warning, `implied incremental price was not usable — falling back to the average fill price.`]
-      .filter(Boolean)
-      .join(' ');
-  }
-
-  if (intent.openClose === 'open') recordFillAsPosition(intent, delta, price);
-  else recordCloseAsExit(intent, delta, price);
-
-  advanceMaterialized(intent.id, delta, delta * price);
-  return { booked: delta, warning };
+  advanceMaterialized(intent.id, qty, qty * price);
+  return { booked: qty, warning };
 }
 
 /** True when `intent`'s own entry fill produced a position that's still open —
@@ -273,22 +219,34 @@ export async function reconcileIntent(id: number, accountId: string): Promise<Re
   // invisible to Positions, to exposure, to the open-risk caps, and to every
   // exit rule. materializeFill() books the unbooked delta, so the shares appear
   // as soon as the broker reports them and repeated observations are harmless.
+  //
+  // Keyed on the broker REPORTING a fill, not on which state it reported —
+  // because a partial that is cancelled between two refreshes arrives as a
+  // single CANCELLED response still carrying `filled_quantity: 30`. Gating on
+  // filled/partially_filled would book nothing for it and lose those shares
+  // exactly as before, just in a narrower window.
+  //
+  // A terminal FILLED implies the whole order even when the response omits the
+  // quantity outright (some do), which is why this falls back to the order's own
+  // size there but to ZERO on any other status — a CANCELLED carrying no
+  // quantity field filled nothing, and assuming otherwise would fabricate a
+  // position out of an order that never executed.
   const singleName = intent.assetKind === 'stock' || intent.optionType !== null;
-  const sawFill = target === 'filled' || target === 'partially_filled';
+  const observedQty = broker.filledQty ?? (target === 'filled' ? intent.quantity : 0);
   let outcome: MaterializeOutcome = { booked: 0 };
-  if (singleName && sawFill && broker.filledQty !== undefined) {
-    outcome = materializeFill(updated, broker.filledQty, broker.filledPrice ?? updated.limitPrice ?? 0);
+  if (singleName && observedQty > 0) {
+    outcome = materializeFill(updated, observedQty, broker.filledPrice ?? updated.limitPrice ?? 0);
   }
 
   // A fully-filled order whose booked quantity doesn't match what was ordered is
   // a real discrepancy — the ledger is now out of step with the account. Say so
   // in the audit trail rather than letting it pass as a clean reconcile.
   if (target === 'filled' && singleName) {
-    const booked = (getIntent(id) ?? updated).materializedQty;
-    if (Math.abs(booked - intent.quantity) > QTY_EPS) {
+    const fresh = getIntent(id) ?? updated;
+    if (isShortBooked(fresh)) {
       outcome.warning = [
         outcome.warning,
-        `order filled but only ${booked} of ${intent.quantity} is reflected in Positions.`,
+        `order filled but only ${fresh.materializedQty} of ${intent.quantity} is reflected in Positions.`,
       ]
         .filter(Boolean)
         .join(' ');
