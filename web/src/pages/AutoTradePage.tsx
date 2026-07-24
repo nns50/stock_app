@@ -991,6 +991,14 @@ const LivePositionsTable = memo(
                         {p.accountId.length > 14 ? `…${p.accountId.slice(-11)}` : p.accountId}
                       </span>
                     )}
+                    {p.addOnsTaken > 0 && (
+                      <span
+                        className="ml-2 chip bg-accent/15 text-accent text-[10px] font-normal"
+                        title={`Scaled into ${p.addOnsTaken}× after entry (pyramided)`}
+                      >
+                        +{p.addOnsTaken} add{p.addOnsTaken > 1 ? 's' : ''}
+                      </span>
+                    )}
                   </td>
                   <td className="td">
                     <Badge color={p.side === 'long' ? 'green' : 'red'}>{p.side}</Badge>

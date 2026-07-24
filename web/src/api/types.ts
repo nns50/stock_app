@@ -2187,4 +2187,6 @@ export interface AutotradeLivePosition extends Position {
   currentPrice: number | null;
   stale: boolean;
   pnl: PositionPnl;
+  /** Scale-in add-ons committed on this live position (0 unless it pyramided). */
+  addOnsTaken: number;
 }

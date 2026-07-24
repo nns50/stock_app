@@ -1054,8 +1054,10 @@ shouldn't be a tab-switch away.
   counts and realized/unrealized P&L stat tiles as the paper tables, plus each position's
   live price/mark, quantity (showing the remaining fraction once partially closed), P&L,
   and R-multiple — stock and option positions both render here, with option contract
-  details (strike/type/expiration) shown inline. This is the dedicated place to see your
-  real autotrade fills at a glance; they also appear, unmarked, mixed in with your manual
+  details (strike/type/expiration) shown inline. A position that has **pyramided** (see
+  _Scale into live winners_ below) carries a small **+N add** badge next to its symbol, so
+  you can tell at a glance which live positions were scaled into and how many times. This is
+  the dedicated place to see your real autotrade fills at a glance; they also appear, unmarked, mixed in with your manual
   trades on the Positions/Journal pages and the Trade page's Orders panel. Kept accurate
   every cycle by a broker-truth check (diffs against what Webull actually shows open) as
   a backstop for anything a specific order's own status doesn't catch on its own — no
@@ -1103,9 +1105,10 @@ shouldn't be a tab-switch away.
   **two stops** — original shares at the original stop, added shares at the tighter one — which
   stops the newer shares out first on a pullback. It runs behind the same kill-switch / market-
   hours / guardrail gates as a fresh entry, fails closed on any hiccup (logged, skipped, never
-  a naked position), and pushes a **scale-in** notification. Like the rest of the live-order
-  surface, treat the first few real adds as confirmation before trusting it with size —
-  **validate in paper + backtest first.**
+  a naked position), and pushes a **scale-in** notification. The **Live positions** table then
+  badges that position with a **+N add** count so a pyramid is visible at a glance. Like the
+  rest of the live-order surface, treat the first few real adds as confirmation before trusting
+  it with size — **validate in paper + backtest first.**
 - **Alerts** — a few loop events push a notification through whichever webhooks you've
   configured in [Settings → Server-side watching](#server-side-watching-alerts-with-the-app-closed)
   (Slack/Discord/generic) — the same destinations the price-alert poller uses, so
