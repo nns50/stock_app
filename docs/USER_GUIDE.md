@@ -1091,6 +1091,21 @@ shouldn't be a tab-switch away.
   guardrails and kill-switch checks. A close you trigger this way is recorded as a
   **manual** exit (vs. the automated **time exit**), so the table's Reason badge tells
   the two apart.
+- **Scale into live winners** (2026-07-24) — a checkbox in the live-trading settings (with a
+  **max live add-ons** cap you can set below the paper one), **off by default** and gated
+  behind live trading being enabled. When on, it applies the **same** scale-in trigger / size
+  (from **Equity exits**) to real positions: once a live winner reaches the trigger R, the
+  loop adds shares. It's the one live setting that _adds_ risk to an already-open position, so
+  it's built to never leave the position unprotected — each add is placed as its **own
+  bracket** (the added shares get a raised stop at ~1R below the new blended entry, plus the
+  position's target), and your **original bracket is never touched**. The add's fill then
+  merges into the position (blended cost basis, larger size); the result is a live position on
+  **two stops** — original shares at the original stop, added shares at the tighter one — which
+  stops the newer shares out first on a pullback. It runs behind the same kill-switch / market-
+  hours / guardrail gates as a fresh entry, fails closed on any hiccup (logged, skipped, never
+  a naked position), and pushes a **scale-in** notification. Like the rest of the live-order
+  surface, treat the first few real adds as confirmation before trusting it with size —
+  **validate in paper + backtest first.**
 - **Alerts** — a few loop events push a notification through whichever webhooks you've
   configured in [Settings → Server-side watching](#server-side-watching-alerts-with-the-app-closed)
   (Slack/Discord/generic) — the same destinations the price-alert poller uses, so

@@ -19,6 +19,7 @@ import {
   reconcileLiveOrders,
   syncAccountEquityFromBroker,
   checkLiveEquityTimeExits,
+  checkLiveScaleIns,
   adoptOrphanedLivePositions,
 } from './liveExecute';
 import {
@@ -108,6 +109,9 @@ export interface LoopTickSummary {
    *  reports a position it actually attempted to close), not "closed" —
    *  that's a later liveOrdersReconciled/livePositionsClosed. */
   liveTimeExitsRequested: number;
+  /** Live scale-in add-ons actually placed at the broker this tick (0 unless
+   *  liveScaleInEnabled and a position hit its add-on trigger). */
+  liveScaleInsRequested: number;
   candidatesScreened: number;
   candidatesPassedVolatility: number;
   signalsGenerated: number;
@@ -184,6 +188,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     liveOptionsPositionsClosed: 0,
     liveOptionsExitsRequested: 0,
     liveTimeExitsRequested: 0,
+    liveScaleInsRequested: 0,
     candidatesScreened: 0,
     candidatesPassedVolatility: 0,
     signalsGenerated: 0,
@@ -322,6 +327,13 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // unexpected throw here surfaces the same way an unexpected throw there
     // would (caught by this function's own outer try, below).
     const liveEquityTimeExitOutcomes = await checkLiveEquityTimeExits();
+    // Scale into winners on LIVE positions — gated like an ENTRY (it ADDS risk
+    // to real money), so behind isLiveEntryActive (kill switch, master gate,
+    // market hours) ON TOP OF checkLiveScaleIns' own liveScaleInEnabled/cap
+    // checks. Unlike the time-exit above (which must fire even when entries are
+    // halted, to close), a scale-in must NOT fire while entries are halted.
+    // Fail-closed inside — one position's broker hiccup never crashes the loop.
+    const liveScaleInOutcomes = isLiveEntryActive(getAutotradeConfig()) ? await checkLiveScaleIns() : [];
     // Reconcile before checking for NEW triggers: catches up on anything an
     // earlier cycle already placed (an entry that filled, an exit that
     // filled) so a position closed by reconcile this same tick is already
@@ -387,6 +399,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       liveOptionsPositionsClosed: liveOptionsReconcileOutcomes.filter((o) => o.action === 'exit_filled').length,
       liveOptionsExitsRequested: liveOptionsExitOutcomes.filter((o) => o.requested).length,
       liveTimeExitsRequested: liveEquityTimeExitOutcomes.filter((o) => o.requested).length,
+      liveScaleInsRequested: liveScaleInOutcomes.filter((o) => o.requested).length,
     };
 
     const config = getAutotradeConfig();

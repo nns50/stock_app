@@ -80,6 +80,8 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     addOnTriggerRMultiple: 0,
     addOnSizePct: 50,
     maxAddOns: 0,
+    liveScaleInEnabled: false,
+    liveMaxAddOns: 0,
     optionsStopLossPct: 0,
     optionsTakeProfitPct: 0,
     optionsBreakevenTriggerPct: 0,

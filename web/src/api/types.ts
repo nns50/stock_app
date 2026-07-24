@@ -1351,6 +1351,9 @@ export interface AutotradeConfig {
   liveAllowNakedShort: boolean;
   liveProbationTrades: number;
   liveProbationSizeMultiplier: number;
+  // --- Live scale-into-winners (nested under liveTradingEnabled) ---
+  liveScaleInEnabled: boolean;
+  liveMaxAddOns: number;
 
   // --- Task #70: live options trading (nested under liveTradingEnabled) ---
   liveOptionsEnabled: boolean;
