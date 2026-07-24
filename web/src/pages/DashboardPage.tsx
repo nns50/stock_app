@@ -43,7 +43,10 @@ function catalystRowsOf(e: SymbolEvents): CatalystRow[] {
 
 export default function DashboardPage() {
   const positions = useAsync(() => client.positionsWithPnl({ status: 'open' }), []);
-  const alerts = useAsync(() => client.evaluateAlerts(), []);
+  // Read-only snapshot — merely viewing the Dashboard must not flip one-shot
+  // alert triggers (which would suppress the background scheduler's notification
+  // for them). The AlertsContext poller owns the mutating evaluate.
+  const alerts = useAsync(() => client.alertsState(), []);
   const watch = useAsync(async () => {
     const w = await client.watchlist();
     const quotes = w.symbols.length ? (await client.quotes(w.symbols)).quotes : [];
@@ -71,11 +74,14 @@ export default function DashboardPage() {
   );
 
   // Refresh open positions when a trade is logged from the global modal.
+  // reloadPositions is useAsync's stable run() — depend on it directly so the
+  // listener isn't re-bound every render.
+  const reloadPositions = positions.reload;
   useEffect(() => {
-    const onLogged = () => positions.reload();
+    const onLogged = () => reloadPositions();
     window.addEventListener(TRADE_LOGGED_EVENT, onLogged);
     return () => window.removeEventListener(TRADE_LOGGED_EVENT, onLogged);
-  }, [positions.reload]);
+  }, [reloadPositions]);
 
   const agg = positions.data?.aggregate;
   const exposure = positions.data?.exposure;

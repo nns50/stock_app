@@ -138,7 +138,15 @@ async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
     ...opts,
   });
   const text = await res.text();
-  const body = text ? JSON.parse(text) : {};
+  // A proxy/gateway can return non-JSON (an HTML 502/504, a plain-text 413).
+  // Parse defensively so an error response surfaces as a clean ApiError instead
+  // of an opaque "Unexpected token '<'" SyntaxError that no error UI can read.
+  let body: { error?: string; code?: string } & Record<string, unknown>;
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = { error: text.trim().slice(0, 300) || `Request failed (${res.status})` };
+  }
   if (!res.ok) {
     // A gate rejection (not a wrong-password reply) flips the app to the login screen.
     if (res.status === 401 && body.code === 'unauthenticated') {
@@ -418,6 +426,9 @@ export const client = {
       positionAlerts: PositionExitAlert[];
       checkedAt: number;
     }>('/alerts/evaluate', { method: 'POST' }),
+  // Read-only alert + position-exit snapshot for display; does NOT flip one-shot
+  // triggers (use for pages that merely show state, like the Dashboard).
+  alertsState: () => api<{ alerts: Alert[]; positionAlerts: PositionExitAlert[]; checkedAt: number }>('/alerts/state'),
 
   // Background poller + webhook notifications (server-side watching).
   notifications: () => api<NotificationStatus>('/alerts/notifications'),

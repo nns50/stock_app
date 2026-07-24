@@ -474,6 +474,23 @@ export function ExitModal({
   const [busy, setBusy] = useState(false);
   const { toast } = useToast();
 
+  // Re-sync when a different position is opened. The modal stays mounted
+  // (hidden via Modal `open`), so its state is created once (when position was
+  // null); without this the previous position's exit price/date/fees/notes
+  // bleed into the next one and the Quantity default never populates. Mirrors
+  // CloseModal/JournalEditModal's re-sync-on-key-change pattern.
+  const key = position?.id;
+  const [lastKey, setLastKey] = useState(key);
+  if (key !== lastKey) {
+    setLastKey(key);
+    setQuantity(position?.remainingQuantity);
+    setExitPrice(undefined);
+    setExitDate(todayISO());
+    setFees(0);
+    setNotes('');
+    setError(undefined);
+  }
+
   const submit = async () => {
     if (!position) return;
     if (!quantity || exitPrice === undefined) return setError('Quantity and exit price are required.');

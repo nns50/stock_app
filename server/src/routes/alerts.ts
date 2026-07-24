@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { asyncHandler, HttpError, parseBody } from './_helpers';
 import { AlertInput, AlertPatch, AlertPlan, createAlert, deleteAlert, listAlerts, updateAlert } from '../db/alerts';
 import { runAlertEvaluation } from '../services/alertRun';
+import { evaluateOpenPositionExits } from '../services/positionExits';
 import { dispatchNotifications, notificationStatus } from '../services/notifier';
 import { getSchedulerConfig, MIN_INTERVAL_SECONDS, setSchedulerConfig } from '../services/alertScheduler';
 import { suggestedExitText } from '../services/optionAlertPlan';
@@ -136,6 +137,19 @@ alertsRouter.post(
   '/evaluate',
   asyncHandler(async (_req, res) => {
     res.json(await runAlertEvaluation());
+  }),
+);
+
+// Read-only snapshot for display (the Dashboard): the current persisted alert
+// rows plus a fresh, side-effect-free evaluation of open-position exit rules.
+// Unlike POST /evaluate this does NOT call applyEvaluation, so it never flips a
+// one-shot alert's `triggered` flag — a page merely being viewed must not
+// consume a trigger the background scheduler is the one meant to notify on.
+alertsRouter.get(
+  '/state',
+  asyncHandler(async (_req, res) => {
+    const positionAlerts = await evaluateOpenPositionExits().catch(() => []);
+    res.json({ alerts: listAlerts(), positionAlerts, checkedAt: Date.now() });
   }),
 );
 

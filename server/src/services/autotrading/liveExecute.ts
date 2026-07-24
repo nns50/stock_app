@@ -1683,6 +1683,46 @@ async function placeLiveScaleInAddOn(
   const buffer = 1 + (side === 'buy' ? 1 : -1) * (MARKETABLE_LIMIT_BUFFER_PCT / 100);
   const limitPrice = Math.round(last * buffer * 100) / 100;
 
+  // Risk-LAYER gates (distinct from the per-order guardrails below). A fresh
+  // entry goes through evaluateRiskCheck, which blocks on the realized
+  // daily-drawdown halt and the aggregate open-risk cap; an add-on adds REAL
+  // risk to the book, so it must respect those too — otherwise pyramiding into
+  // winners can push total open risk past maxAggregateOpenRiskPct, and add-ons
+  // keep firing on a day already halted for realized drawdown. equity ?? 0
+  // mirrors evaluateRiskCheck (snapshot.equity ?? 0): with equity unconfigured
+  // the cap is 0, so any add is blocked — same as a fresh entry.
+  const equity = cfg.accountEquityUsd ?? 0;
+  const addRisk = Math.abs(limitPrice - add.newStopPrice) * add.addQty;
+  const dailyPnl = getLivePortfolioSnapshot().dailyPnl;
+  const dailyHaltLevel = -(cfg.maxDailyDrawdownPct / 100) * equity;
+  if (!(dailyPnl > dailyHaltLevel)) {
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_scale_in_blocked',
+      detail: { reason: 'daily_drawdown_halt', dailyPnl, dailyHaltLevel, positionId: pos.id },
+      riskProfile,
+    });
+    return { symbol, positionId: pos.id, requested: false, reason: `Daily drawdown halt (today ${dailyPnl})` };
+  }
+  const aggregateCap = (cfg.maxAggregateOpenRiskPct / 100) * equity;
+  const aggregateAfter = combinedLiveOpenRisk().risk + addRisk;
+  if (aggregateAfter > aggregateCap) {
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_scale_in_blocked',
+      detail: { reason: 'max_aggregate_open_risk', aggregateAfter, aggregateCap, positionId: pos.id },
+      riskProfile,
+    });
+    return {
+      symbol,
+      positionId: pos.id,
+      requested: false,
+      reason: `Aggregate open-risk cap (${aggregateAfter.toFixed(0)} vs ${aggregateCap.toFixed(0)})`,
+    };
+  }
+
   const intent: OrderIntent = {
     symbol,
     assetKind: 'stock',

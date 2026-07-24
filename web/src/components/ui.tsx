@@ -317,11 +317,14 @@ export function Field({ label, children, hint }: { label: string; children: Reac
 export function NumberInput({
   value,
   onChange,
+  min,
+  max,
   placeholder,
 }: {
   value: number | undefined;
   onChange: (v: number | undefined) => void;
-  // step/min/max kept for call-site compatibility; validation is done in `onChange`.
+  // step is a display hint only (this is a text field, no spinner); min/max are
+  // enforced in `onChange` below so an out-of-range value can't reach the caller.
   step?: number;
   min?: number;
   max?: number;
@@ -347,11 +350,21 @@ export function NumberInput({
       onChange={(e) => {
         let t = e.target.value;
         if (t !== '' && !/^-?\d*\.?\d*$/.test(t)) return; // ignore non-numeric keystrokes
+        // No minus sign at all when the field has a non-negative floor (min >= 0),
+        // so a negative strike/quantity/threshold can't be entered. (A lower
+        // bound > 0 is NOT enforced per-keystroke — every prefix of a valid
+        // number, e.g. "0" while typing "0.5", would be below it — so that stays
+        // an app-level validation concern.)
+        if (t.startsWith('-') && min !== undefined && min >= 0) return;
         // Drop a leading zero once a real digit follows it (so a default "0" + "4"
         // becomes "4", not "04") — but keep "0", "0.x" and "-0.x" intact.
         t = t.replace(/^(-?)0+(\d)/, '$1$2');
-        setText(t);
         const n = t === '' || t === '-' || t === '.' || t === '-.' ? undefined : Number(t);
+        // Reject a keystroke that would push the value ABOVE max (e.g. an exit
+        // qty over the remaining size) rather than silently sending it to the
+        // API. Safe per-keystroke: any left-prefix of a positive number is <= it.
+        if (n !== undefined && !Number.isNaN(n) && max !== undefined && n > max) return;
+        setText(t);
         onChange(n !== undefined && Number.isNaN(n) ? undefined : n);
       }}
     />

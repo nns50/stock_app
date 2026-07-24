@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ago, cx, fmtCompact, fmtNum, fmtPct, fmtSignedUsd, fmtUsd, pnlClass } from './format';
+import { ago, cx, fmtCompact, fmtDate, fmtNum, fmtPct, fmtSignedUsd, fmtUsd, pnlClass } from './format';
 
 describe('currency formatting', () => {
   it('fmtUsd', () => {
@@ -52,5 +52,26 @@ describe('cx / ago', () => {
     expect(ago(null)).toBe('never');
     expect(ago(Date.now() - 65_000)).toBe('1m ago');
     expect(ago(Date.now() - 2 * 3_600_000)).toBe('2h ago');
+  });
+});
+
+describe('fmtDate', () => {
+  it('renders a date-only string as its own calendar day (no UTC-midnight off-by-one)', () => {
+    // Must equal the LOCAL calendar day for those Y/M/D parts, in any timezone.
+    // The old `new Date("2026-01-17")` parsed as UTC midnight and rendered the
+    // previous day in every US (negative-UTC) zone.
+    const expected = new Date(2026, 0, 17).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+    expect(fmtDate('2026-01-17')).toBe(expected);
+    expect(fmtDate('2026-01-17')).toContain('17');
+  });
+
+  it('returns the em dash for empty input', () => {
+    expect(fmtDate(null)).toBe('—');
+    expect(fmtDate(undefined)).toBe('—');
+    expect(fmtDate('')).toBe('—');
   });
 });

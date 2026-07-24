@@ -453,6 +453,9 @@ export async function webullPlaceOrder(
   const r = await webullClient().call('POST', '/openapi/trade/order/place', {
     body: { account_id: accountId, ...buildOrderRequest(intent, clientOrderId, isShort) },
     surface: 'trade',
+    // Never transparently retry a placement — a lost response could hide a fill,
+    // and a retry would double-submit. Reconcile against broker state instead.
+    nonIdempotent: true,
   });
   if (!r.ok) {
     const j = (r.data ?? {}) as { msg?: string; message?: string; error_msg?: string };
@@ -725,6 +728,9 @@ export async function webullReplaceOrder(
   const r = await webullClient().call('POST', '/openapi/trade/order/replace', {
     body: { account_id: accountId, modify_orders: [modify] },
     surface: 'trade',
+    // A modify is a state change on a live order; don't blind-retry a lost
+    // response (the first may have applied). Reconcile instead.
+    nonIdempotent: true,
   });
   if (!r.ok) {
     const j = (r.data ?? {}) as { msg?: string; message?: string; error_msg?: string };

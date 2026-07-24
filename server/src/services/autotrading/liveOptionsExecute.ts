@@ -697,6 +697,47 @@ async function placeLiveOptionsExit(
   const buffer = 1 - OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT / 100;
   const liveCfg = buildLiveOptionsTradingConfig(cfg);
 
+  // Naked-short guard: the exit quantity MUST NOT exceed what's actually held at
+  // the broker. pos.quantity can be STALE — a prior closing order that partially
+  // filled then cancelled/expired is never booked, so the ledger still shows the
+  // original size while fewer contracts are really held. Selling pos.quantity
+  // there would short the difference (an uncovered short option = unbounded
+  // risk), and the naked_short guardrail can't catch it because it's fed this
+  // same stale ledger qty as the override. Re-query the broker's real held
+  // quantity (long leg for a spread — the leg the sell-to-close would short) and
+  // cap to it; fail closed (skip, retry next cycle) if it can't be read or is 0.
+  let heldQty: number;
+  try {
+    const preview = await previewWebullPositions(accountId);
+    if (!preview.ok) return { symbol, requested: false, reason: `Broker positions unavailable: ${preview.error}` };
+    const wantKey = contractKey({
+      symbol,
+      assetType: 'option',
+      optionType: pos.side,
+      strike: pos.strike,
+      expiration: pos.expiration,
+    });
+    heldQty = preview.positions
+      .filter((p) => p.assetType === 'option')
+      .filter(
+        (p) =>
+          contractKey({
+            symbol: p.symbol,
+            assetType: 'option',
+            optionType: p.optionType,
+            strike: p.strike,
+            expiration: p.expiration,
+          }) === wantKey,
+      )
+      .reduce((s, p) => s + (p.quantity ?? 0), 0);
+  } catch (err) {
+    return { symbol, requested: false, reason: `Broker positions fetch failed: ${(err as Error).message}` };
+  }
+  if (heldQty <= 0) {
+    return { symbol, requested: false, reason: 'Broker shows 0 contracts held — nothing to close (sync reconciles)' };
+  }
+  const exitQty = Math.min(pos.quantity, heldQty);
+
   let intent: OrderIntent;
   if (pos.kind === 'debit_spread') {
     let longMark: number;
@@ -730,7 +771,7 @@ async function placeLiveOptionsExit(
       assetKind: 'option',
       side: 'sell', // selling the spread to close — net credit
       openClose: 'close',
-      quantity: pos.quantity,
+      quantity: exitQty,
       orderType: 'limit',
       limitPrice,
       referencePrice: netValue,
@@ -763,7 +804,7 @@ async function placeLiveOptionsExit(
       assetKind: 'option',
       side: 'sell',
       openClose: 'close',
-      quantity: pos.quantity,
+      quantity: exitQty,
       orderType: 'limit',
       limitPrice,
       referencePrice: mark,
@@ -781,8 +822,9 @@ async function placeLiveOptionsExit(
     pos.kind === 'debit_spread',
     // Multi-leg spreads skip the naked_short check entirely (isMultiLeg in
     // guardrails.ts), so the override only matters -- and is only passed --
-    // for a single-leg close.
-    pos.kind === 'debit_spread' ? undefined : pos.quantity,
+    // for a single-leg close. Use the capped exit qty (== broker-held), so the
+    // naked_short check sees resultingQty 0 only when we truly hold what we sell.
+    pos.kind === 'debit_spread' ? undefined : exitQty,
   );
   if (!loaded.ok) return { symbol, requested: false, reason: loaded.reason };
 

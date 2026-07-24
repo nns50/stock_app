@@ -72,6 +72,75 @@ describe('positions + journal routes (integration)', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects a zero entry price (would book full market value as fake gain)', async () => {
+    const res = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 0,
+      entryDate: '2026-05-01',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a stock exit at price 0 but allows an option to expire worthless at 0', async () => {
+    // Stock: a $0 exit silently books a full-loss realized P&L — reject it.
+    const stock = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-05-01',
+    });
+    const stockPos = (await stock.json()) as { id: number };
+    const badExit = await post(`/api/positions/${stockPos.id}/exits`, {
+      quantity: 10,
+      exitPrice: 0,
+      exitDate: '2026-05-10',
+    });
+    expect(badExit.status).toBe(400);
+
+    // Option: $0 is legitimate (expired worthless) — allow it.
+    const opt = await post('/api/positions', {
+      assetType: 'option',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 1,
+      entryPrice: 2.5,
+      entryDate: '2026-05-01',
+      optionType: 'call',
+      strike: 200,
+      expiration: '2026-05-16',
+    });
+    const optPos = (await opt.json()) as { id: number };
+    const worthless = await post(`/api/positions/${optPos.id}/exits`, {
+      quantity: 1,
+      exitPrice: 0,
+      exitDate: '2026-05-16',
+    });
+    expect(worthless.status).toBe(201);
+  });
+
+  it('rejects an exit dated before the entry', async () => {
+    const created = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-05-10',
+    });
+    const pos = (await created.json()) as { id: number };
+    const res = await post(`/api/positions/${pos.id}/exits`, {
+      quantity: 5,
+      exitPrice: 110,
+      exitDate: '2026-05-01', // before entry
+    });
+    expect(res.status).toBe(400);
+  });
+
   // Regression (2026-07-17): the Zod body schemas for both routes were
   // written before accountId existed and didn't list it, so Zod silently
   // stripped it from the parsed body before it ever reached the DB layer —
@@ -388,6 +457,20 @@ describe('alerts routes (integration)', () => {
     expect(Array.isArray(out.alerts)).toBe(true);
     expect(Array.isArray(out.newlyTriggered)).toBe(true);
     expect(Array.isArray(out.positionAlerts)).toBe(true);
+  });
+
+  it('state returns a read-only alert + position-exit snapshot (no newlyTriggered side-effect envelope)', async () => {
+    await post('/api/alerts', { symbol: 'aapl', kind: 'price', operator: 'above', threshold: 100 });
+    const out = (await getJson('/api/alerts/state')) as {
+      alerts: { symbol: string; triggered: boolean }[];
+      positionAlerts: unknown[];
+      newlyTriggered?: unknown;
+    };
+    expect(Array.isArray(out.alerts)).toBe(true);
+    expect(out.alerts.some((a) => a.symbol === 'AAPL')).toBe(true);
+    expect(Array.isArray(out.positionAlerts)).toBe(true);
+    // Read-only: it does not run the mutating evaluation envelope.
+    expect(out.newlyTriggered).toBeUndefined();
   });
 
   it('reports notification status (channels + scheduler) and toggles the poller', async () => {

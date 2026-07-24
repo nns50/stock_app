@@ -74,14 +74,17 @@ function positionSortVal(row: PositionWithPnl, key: string): number | string | n
 
 export default function PositionsPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('open');
-  const data = useAsync(
-    () => client.positionsWithPnl(statusFilter === 'all' ? {} : { status: statusFilter }),
-    [statusFilter],
-  );
-  const { sorted: sortedPositions, sortKey, sortDir, onSort } = useSort(data.data?.positions ?? [], positionSortVal);
+  // Fetch the WHOLE book once — the headline tiles and exposure describe the
+  // portfolio ("open and closed", per the subtitle), so they must not be
+  // scoped to the tab. The status tab only filters which rows the table shows,
+  // done client-side below; switching tabs no longer triggers a refetch.
+  const data = useAsync(() => client.positionsWithPnl({}), []);
+  const allRows = data.data?.positions ?? [];
+  const visibleRows = statusFilter === 'all' ? allRows : allRows.filter((r) => r.position.status === statusFilter);
+  const { sorted: sortedPositions, sortKey, sortDir, onSort } = useSort(visibleRows, positionSortVal);
 
   // Earnings/ex-div for the listed symbols, to flag positions with events approaching.
-  const symbolsKey = [...new Set((data.data?.positions ?? []).map((r) => r.position.symbol.toUpperCase()))].join(',');
+  const symbolsKey = [...new Set(visibleRows.map((r) => r.position.symbol.toUpperCase()))].join(',');
   const events = useAsync(
     () => (symbolsKey ? client.events(symbolsKey.split(',')) : Promise.resolve({ events: [] })),
     [symbolsKey],
@@ -97,18 +100,21 @@ export default function PositionsPage() {
   const confirm = useConfirm();
 
   // Refresh when a trade is logged from the global modal (header / `n` / palette).
+  // reloadData is useAsync's stable run() — depend on it directly so the
+  // listener isn't re-bound every render.
+  const reloadData = data.reload;
   useEffect(() => {
     const onLogged = () => {
       setLastUpdated(Date.now());
-      data.reload();
+      reloadData();
     };
     window.addEventListener(TRADE_LOGGED_EVENT, onLogged);
     return () => window.removeEventListener(TRADE_LOGGED_EVENT, onLogged);
-  }, [data.reload]);
+  }, [reloadData]);
 
   const reload = () => {
     setLastUpdated(Date.now());
-    data.reload();
+    reloadData();
   };
 
   const remove = async (id: number) => {
@@ -185,7 +191,7 @@ export default function PositionsPage() {
           <SkeletonTable rows={6} cols={11} />
         ) : data.error ? (
           <ErrorState error={data.error} onRetry={reload} />
-        ) : data.data && data.data.positions.length === 0 ? (
+        ) : data.data && sortedPositions.length === 0 ? (
           <EmptyState
             title="No positions yet"
             hint="Log your stock and option trades to track live P&L, realized vs unrealized, and build your journal."

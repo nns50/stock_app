@@ -70,7 +70,15 @@ export function useAsync<T>(loader: () => Promise<T>, deps: unknown[] = []): Asy
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
-  useEffect(() => run(), [run]);
+  useEffect(() => {
+    // Deps changed (a new query — e.g. a different symbol): drop the previous
+    // result so consumers gating on `!data` show a loading state instead of the
+    // PRIOR entity's data under the new one. A manual reload() calls run()
+    // directly (not via this effect), so it still keeps showing data while
+    // refreshing. On first mount data is already undefined, so this is a no-op.
+    setData(undefined);
+    run();
+  }, [run]);
   return { data, error, loading, reload: run };
 }
 

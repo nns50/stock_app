@@ -29,9 +29,8 @@ beforeEach(() => {
     } as never,
     exposure: { gross: 0, net: 0, long: 0, short: 0, bySector: [], largest: null },
   });
-  vi.spyOn(client, 'evaluateAlerts').mockResolvedValue({
+  vi.spyOn(client, 'alertsState').mockResolvedValue({
     alerts: [],
-    newlyTriggered: [],
     positionAlerts: [],
     checkedAt: 0,
   });

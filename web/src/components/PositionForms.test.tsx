@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { CloseModal, JournalEditModal } from './PositionForms';
+import { CloseModal, ExitModal, JournalEditModal } from './PositionForms';
 import { ToastProvider } from './ToastContext';
 import { ConfirmProvider } from './ConfirmContext';
 import { client } from '../api/client';
@@ -134,6 +134,41 @@ describe('CloseModal', () => {
     );
     expect(screen.getByPlaceholderText('SELL 100 MSFT')).toBeInTheDocument();
     expect((screen.getByLabelText('type to confirm closing this position') as HTMLInputElement).value).toBe('');
+  });
+});
+
+describe('ExitModal — state re-sync between positions', () => {
+  it('does not bleed exit price/notes from one position into the next, and defaults quantity to the new remaining', async () => {
+    const { rerender } = render(
+      <ToastProvider>
+        <ExitModal
+          position={positionFixture({ id: 1, symbol: 'AAPL', remainingQuantity: 100 })}
+          onClose={vi.fn()}
+          onSaved={vi.fn()}
+        />
+      </ToastProvider>,
+    );
+
+    // Fill an exit for position A.
+    await userEvent.type(screen.getByLabelText('Exit price'), '50');
+    await userEvent.type(screen.getByLabelText('Notes'), 'scalp');
+    expect((screen.getByLabelText('Exit price') as HTMLInputElement).value).toBe('50');
+
+    // Switch to a different position — the modal stays mounted, so without a
+    // re-sync the price/notes would bleed over and Quantity would stay at A's.
+    rerender(
+      <ToastProvider>
+        <ExitModal
+          position={positionFixture({ id: 2, symbol: 'MSFT', remainingQuantity: 25 })}
+          onClose={vi.fn()}
+          onSaved={vi.fn()}
+        />
+      </ToastProvider>,
+    );
+
+    expect((screen.getByLabelText('Exit price') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('Notes') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('Quantity') as HTMLInputElement).value).toBe('25');
   });
 });
 

@@ -30,7 +30,9 @@ const createBody = z
     symbol: z.string().min(1),
     side: z.enum(['long', 'short']),
     quantity: z.number().positive(),
-    entryPrice: z.number().nonnegative(),
+    // Must be > 0: a 0 entry makes costBasis 0, so computePositionPnl books the
+    // entire market value as unrealized "gain" and returnPct/rMultiple go null.
+    entryPrice: z.number().positive(),
     entryDate: z.string().min(8),
     entryTime: z
       .string()
@@ -57,7 +59,7 @@ const patchBody = z.object({
   tags: z.array(z.string()).optional(),
   grade: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
-  entryPrice: z.number().nonnegative().optional(),
+  entryPrice: z.number().positive().optional(),
   quantity: z.number().positive().optional(),
   fees: z.number().nonnegative().optional(),
   entryDate: z.string().min(8).optional(),
@@ -226,6 +228,17 @@ positionsRouter.post(
     if (!pos) throw new HttpError(404, 'position not found');
     if (body.quantity > pos.remainingQuantity + 1e-9) {
       throw new HttpError(400, `exit quantity ${body.quantity} exceeds remaining ${pos.remainingQuantity}`);
+    }
+    // A $0 exit is legitimate for an option that expired worthless, but for a
+    // stock it silently books a full-loss realized P&L (the schema allows 0 so
+    // the option case works — guard the stock case here instead).
+    if (pos.assetType === 'stock' && body.exitPrice <= 0) {
+      throw new HttpError(400, 'exit price must be greater than 0 for a stock position');
+    }
+    // An exit before the entry yields negative hold-days and a negative
+    // wash-sale window; reject rather than corrupt the journal's time stats.
+    if (body.exitDate < pos.entryDate) {
+      throw new HttpError(400, `exit date ${body.exitDate} is before entry date ${pos.entryDate}`);
     }
     const updated = addExit(pos.id, body);
     res.status(201).json(updated);

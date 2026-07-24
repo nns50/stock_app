@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { config } from '../../config';
 import {
   AccountState,
@@ -13,6 +14,7 @@ import { webullAccountState, webullAccountType } from '../../providers/webull/ac
 import { marketOpenContext } from './marketHours';
 import { WebullPlaceResult, newClientOrderId, webullPlaceOrder } from '../../providers/webull/orders';
 import { resolveStockPrices } from '../quotes';
+import { getProvider } from '../../providers';
 
 // ---------------------------------------------------------------------------
 // Place a single live order (stock or single-leg option) — the ONLY path that
@@ -35,6 +37,7 @@ export type PlaceReason =
   | 'account_error'
   | 'blocked'
   | 'broker_rejected'
+  | 'duplicate'
   | 'placed';
 
 export interface PlaceResult {
@@ -55,28 +58,47 @@ export function placeConfirmation(intent: OrderIntent): string {
   return `${intent.side.toUpperCase()} ${intent.quantity} ${intent.symbol.toUpperCase()}`;
 }
 
-/** Re-derive the fat-finger reference SERVER-side for a STOCK LIMIT order,
- *  overriding whatever the client sent — a client can otherwise omit
- *  `referencePrice` (downgrading fat_finger to a warning) or set it equal to an
- *  absurd limit (making the deviation 0). Uses a fresh quote (cache-resilient
- *  via resolveStockPrices); a market-data miss falls back to the client value
- *  (no worse than before). `referencePrice` is guardrail-only — never sent to
- *  the broker — so overriding it is safe. Options keep the client's mark for now
- *  (a per-contract chain fetch on the place path is heavier; the confirmed
- *  weakening was on the stock path). */
+/** Re-derive the fat-finger reference SERVER-side for a LIMIT order, overriding
+ *  whatever the client sent — a client can otherwise omit `referencePrice`
+ *  (downgrading fat_finger to a warning) or set it equal to an absurd limit
+ *  (making the deviation 0, defeating the check entirely). `referencePrice` is
+ *  guardrail-only — never sent to the broker — so overriding it is safe. A
+ *  market-data miss falls back to the client value (no worse than before).
+ *  Stocks use a fresh quote; single-leg options use the current contract mark
+ *  from the chain. Multi-leg spreads (net-premium reference) keep the client
+ *  value — they don't come through this single-order /place path. */
 async function withServerReference(intent: OrderIntent): Promise<OrderIntent> {
-  if (intent.orderType !== 'limit' || intent.assetKind !== 'stock') return intent;
+  if (intent.orderType !== 'limit') return intent;
   let ref: number | undefined;
   try {
-    const px = (await resolveStockPrices([intent.symbol])).get(intent.symbol.toUpperCase())?.price;
-    if (typeof px === 'number' && Number.isFinite(px) && px > 0) ref = px;
+    if (intent.assetKind === 'stock') {
+      const px = (await resolveStockPrices([intent.symbol])).get(intent.symbol.toUpperCase())?.price;
+      if (typeof px === 'number' && Number.isFinite(px) && px > 0) ref = px;
+    } else if (
+      intent.assetKind === 'option' &&
+      intent.optionType &&
+      intent.strike !== undefined &&
+      intent.expiration &&
+      (intent.optionStrategy ?? 'SINGLE') === 'SINGLE'
+    ) {
+      const chain = await getProvider().getOptionsChain(intent.symbol, intent.expiration);
+      const pool = intent.optionType === 'call' ? chain.calls : chain.puts;
+      const match = pool.find((c) => Math.abs(c.strike - intent.strike!) < 1e-6);
+      const mark = match?.mark ?? match?.last;
+      if (typeof mark === 'number' && Number.isFinite(mark) && mark > 0) ref = mark;
+    }
   } catch {
     // market-data miss — fall back to the client value below
   }
   return ref !== undefined ? { ...intent, referencePrice: ref } : intent;
 }
 
-export async function placeOrder(intent: OrderIntent, accountId: string, confirmation: string): Promise<PlaceResult> {
+export async function placeOrder(
+  intent: OrderIntent,
+  accountId: string,
+  confirmation: string,
+  idempotencyKey?: string,
+): Promise<PlaceResult> {
   // 1) Deploy-level master gate — dead unless TRADING_ENABLED is set on the box.
   if (!config.trading.placeEnabled) {
     return {
@@ -134,8 +156,21 @@ export async function placeOrder(intent: OrderIntent, accountId: string, confirm
   // plain SELL so the broker's real-time locate/borrow check runs at order time.
   const isShort = wouldOpenShort(priced, accountState);
 
-  const clientOrderId = newClientOrderId();
+  // Idempotency: a client-supplied key makes retries/double-clicks/proxy-replays
+  // safe. Deriving the broker client_order_id deterministically from it means a
+  // repeated request produces the SAME order id (so the broker dedups too) and
+  // the SAME intent row (createIntent is keyed on it). If that intent already
+  // advanced past 'draft', a prior request already placed (or is placing) it —
+  // decline to submit a second time. Without a key, each call is unique (prior
+  // behavior). The transitions below up to submit are synchronous, so a
+  // concurrent duplicate sees 'submitted', never a second 'draft'.
+  const clientOrderId = idempotencyKey
+    ? createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32)
+    : newClientOrderId();
   const intentRec = createIntent(priced, clientOrderId); // draft (audited)
+  if (intentRec.state !== 'draft') {
+    return { ok: true, placed: false, reason: 'duplicate', guardrails, accountState, intent: intentRec };
+  }
 
   if (!guardrails.ok) {
     const reasons = blockingFailures(guardrails)
