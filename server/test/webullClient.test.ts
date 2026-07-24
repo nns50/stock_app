@@ -126,4 +126,26 @@ describe('WebullClient', () => {
     expect((r.data as { error?: string })?.error).toMatch(/timed out|abort/i);
     expect(f).toHaveBeenCalledTimes(2); // initial + 1 retry
   });
+
+  it('does NOT retry a nonIdempotent call on a network error (no double-submit of a placed order)', async () => {
+    const f = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNRESET'));
+    const r = await client.call('POST', '/openapi/trade/order/place', {
+      surface: 'trade',
+      body: { x: 1 },
+      nonIdempotent: true,
+    });
+    expect(r.ok).toBe(false);
+    expect(f).toHaveBeenCalledTimes(1); // exactly one attempt — the lost response is NOT retried
+  });
+
+  it('does NOT retry a nonIdempotent call on HTTP 429', async () => {
+    const f = vi.spyOn(globalThis, 'fetch').mockResolvedValue(rateLimited());
+    const r = await client.call('POST', '/openapi/trade/order/place', {
+      surface: 'trade',
+      body: { x: 1 },
+      nonIdempotent: true,
+    });
+    expect(r.status).toBe(429);
+    expect(f).toHaveBeenCalledTimes(1); // no retry even on 429 — a 429 can post-date acceptance
+  });
 });

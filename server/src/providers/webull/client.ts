@@ -106,11 +106,16 @@ export class WebullClient {
     return r.data as T;
   }
 
-  /** Low-level request that never throws — returns the URL, status and parsed body. */
+  /** Low-level request that never throws — returns the URL, status and parsed body.
+   *  Pass `nonIdempotent: true` for a request that must NOT be transparently
+   *  retried (order placement): a retry after a lost response/timeout could
+   *  double-submit a real order, since we can't confirm from here whether the
+   *  first attempt reached the broker. Such calls fail fast instead and let the
+   *  caller reconcile against broker state. */
   async call(
     method: 'GET' | 'POST',
     path: string,
-    opts: { query?: Record<string, string>; body?: unknown; surface?: Surface } = {},
+    opts: { query?: Record<string, string>; body?: unknown; surface?: Surface; nonIdempotent?: boolean } = {},
   ): Promise<CallResult> {
     const surface = opts.surface ?? 'market';
     const host = this.host(surface);
@@ -146,11 +151,12 @@ export class WebullClient {
         // method's contract is "never throws", and a caller like
         // webullPlaceOrder relies on it (a throw would unwind BEFORE the intent
         // is recorded, orphaning an order that may have reached the broker).
-        // Retry transient failures (the client_order_id is built once outside
-        // this loop, so a retried POST is idempotent at the broker — same as
-        // the 429 path); otherwise return a clean non-throwing failure.
+        // Retry transient failures — EXCEPT for a nonIdempotent call (order
+        // placement): the first attempt may have reached the broker and filled
+        // before the response was lost, so a blind retry could double-submit.
+        // Fail fast there and let the caller reconcile against broker state.
         clearTimeout(timer);
-        if (attempt < this.maxRetries) {
+        if (attempt < this.maxRetries && !opts.nonIdempotent) {
           await sleep(250 * 2 ** attempt + Math.random() * 100);
           continue;
         }
@@ -164,8 +170,10 @@ export class WebullClient {
       }
       const text = await res.text();
 
-      // Back off on rate limiting (429); honor Retry-After when present.
-      if (res.status === 429 && attempt < this.maxRetries) {
+      // Back off on rate limiting (429); honor Retry-After when present. A
+      // nonIdempotent call (order placement) still must not retry — a 429 can
+      // be returned AFTER the order was accepted, so treat it as terminal here.
+      if (res.status === 429 && attempt < this.maxRetries && !opts.nonIdempotent) {
         const retryAfter = Number(res.headers.get('retry-after'));
         const waitMs =
           Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 250 * 2 ** attempt + Math.random() * 100;
