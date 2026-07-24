@@ -426,6 +426,9 @@ export const client = {
       positionAlerts: PositionExitAlert[];
       checkedAt: number;
     }>('/alerts/evaluate', { method: 'POST' }),
+  // Read-only alert + position-exit snapshot for display; does NOT flip one-shot
+  // triggers (use for pages that merely show state, like the Dashboard).
+  alertsState: () => api<{ alerts: Alert[]; positionAlerts: PositionExitAlert[]; checkedAt: number }>('/alerts/state'),
 
   // Background poller + webhook notifications (server-side watching).
   notifications: () => api<NotificationStatus>('/alerts/notifications'),

@@ -459,6 +459,20 @@ describe('alerts routes (integration)', () => {
     expect(Array.isArray(out.positionAlerts)).toBe(true);
   });
 
+  it('state returns a read-only alert + position-exit snapshot (no newlyTriggered side-effect envelope)', async () => {
+    await post('/api/alerts', { symbol: 'aapl', kind: 'price', operator: 'above', threshold: 100 });
+    const out = (await getJson('/api/alerts/state')) as {
+      alerts: { symbol: string; triggered: boolean }[];
+      positionAlerts: unknown[];
+      newlyTriggered?: unknown;
+    };
+    expect(Array.isArray(out.alerts)).toBe(true);
+    expect(out.alerts.some((a) => a.symbol === 'AAPL')).toBe(true);
+    expect(Array.isArray(out.positionAlerts)).toBe(true);
+    // Read-only: it does not run the mutating evaluation envelope.
+    expect(out.newlyTriggered).toBeUndefined();
+  });
+
   it('reports notification status (channels + scheduler) and toggles the poller', async () => {
     const status = (await getJson('/api/alerts/notifications')) as {
       channels: { label: string; format: string }[];
