@@ -5,6 +5,7 @@ import { getTradingConfig } from '../../db/trading';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { runAutotradeScreen, ScreenCandidate } from './screen';
 import { defaultScreenerConfig } from '../../indicators/screener';
+import { selectCorrelationAware } from './correlationSelection';
 import { runAutotradeDecision } from './decide';
 import { runOptionsDecision } from './optionsDecide';
 import { runPaperExecution, checkPaperExits } from './execute';
@@ -464,7 +465,30 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     const passedVolatility = filterByVolatility(screenResult.candidates, marketAtrPct, volCfg);
     summary.candidatesPassedVolatility = passedVolatility.length;
 
-    const decision = runAutotradeDecision(passedVolatility, {
+    // Correlation-aware selection (2026-07-24, default off): re-rank the
+    // score-sorted survivors so that among mutually-correlated names the
+    // higher-scored one keeps its rank and the redundant lower one is demoted
+    // to the back — diverse picks win the downstream caps instead of a
+    // correlated huddle. Reorders only (never drops; the correlated-exposure
+    // veto in risk-check stays the real backstop), and feeds BOTH the equity
+    // decision and the options universeOnly filter below so the two stay in
+    // sync. Own gate + no-op when disabled, so the default path does no extra
+    // candle fetching.
+    const selection = await selectCorrelationAware(passedVolatility, (c) => c.symbol, {
+      enabled: config.correlationAwareSelectionEnabled,
+      threshold: config.correlationThreshold,
+      lookbackDays: config.correlationLookbackDays,
+    });
+    if (selection.demoted.length > 0) {
+      logAutotradeEvent({
+        stage: 'screen',
+        action: 'correlation_demoted',
+        detail: { count: selection.demoted.length, demoted: selection.demoted },
+      });
+    }
+    const selectedCandidates = selection.ordered;
+
+    const decision = runAutotradeDecision(selectedCandidates, {
       stopAtrMultiple: config.stopAtrMultiple,
       targetRMultiple: config.targetRMultiple,
     });
@@ -484,7 +508,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // every cycle, so it's exactly where that history can actually compound
     // over time — equity autotrading keeps using movers for momentum/
     // breakout, unaffected.
-    const universeOnly = passedVolatility.filter((c) => c.discoverySource === 'universe');
+    const universeOnly = selectedCandidates.filter((c) => c.discoverySource === 'universe');
     summary.optionsCandidatesConsidered = universeOnly.length;
     const optionsDecision = await runOptionsDecision(universeOnly, {
       strategyType: config.optionsStrategyType,

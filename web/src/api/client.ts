@@ -502,6 +502,7 @@ export const client = {
     macroEventBlackoutHours?: number;
     correlationLookbackDays?: number;
     correlationThreshold?: number;
+    correlationAwareSelectionEnabled?: boolean;
     liveTradingEnabled?: boolean;
     confirmLiveTrading?: string;
     liveAccountId?: string | null;

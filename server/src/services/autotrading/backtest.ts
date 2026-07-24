@@ -10,6 +10,7 @@ import {
   scoreSymbolBothDirections,
 } from '../../indicators/screener';
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
+import { reorderByCorrelation } from './correlationSelection';
 import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } from './decide';
 import { computeScaleIn } from './scaleIn';
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
@@ -80,6 +81,7 @@ const LEGACY_BACKTEST_RISK_DEFAULTS: Record<RiskProfileName, BacktestRiskParams>
     // all nine fields, not eight from this table plus two special-cased.
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
+    correlationAwareSelectionEnabled: false,
   },
   AGGRESSIVE: {
     riskPerTradePct: 1.5,
@@ -91,6 +93,7 @@ const LEGACY_BACKTEST_RISK_DEFAULTS: Record<RiskProfileName, BacktestRiskParams>
     maxTradesPerDay: 10,
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
+    correlationAwareSelectionEnabled: false,
   },
 };
 
@@ -104,6 +107,11 @@ export interface BacktestRiskParams {
   maxTradesPerDay: number;
   correlationLookbackDays: number;
   correlationThreshold: number;
+  /** Correlation-aware candidate selection (2026-07-24, default off) — re-ranks
+   *  the score-sorted candidates so a correlated cluster's lower-scored members
+   *  are demoted behind diverse picks before the caps bind. Mirrors the live
+   *  loop; default false so an unspecified backtest matches today's behavior. */
+  correlationAwareSelectionEnabled: boolean;
 }
 
 /** Resolves each risk param from an explicit override on `cfg`, falling back
@@ -124,6 +132,7 @@ export function resolveBacktestRiskParams(
     maxTradesPerDay: cfg.maxTradesPerDay ?? d.maxTradesPerDay,
     correlationLookbackDays: cfg.correlationLookbackDays ?? d.correlationLookbackDays,
     correlationThreshold: cfg.correlationThreshold ?? d.correlationThreshold,
+    correlationAwareSelectionEnabled: cfg.correlationAwareSelectionEnabled ?? d.correlationAwareSelectionEnabled,
   };
 }
 
@@ -716,6 +725,31 @@ export function simulateBacktest(
     // against identical cached data must produce identical results).
     candidates.sort((a, b) => b.score.total - a.score.total || a.score.symbol.localeCompare(b.score.symbol));
 
+    // Correlation-aware selection (2026-07-24, default off): re-rank so a
+    // correlated cluster's lower-scored members are demoted behind diverse
+    // picks before the caps below bind — the same reorder the live loop
+    // applies, fed from this engine's own no-lookahead daily closes (sliced up
+    // to today exactly like backtestCorrelatedNotional's closesUpTo). A no-op
+    // when disabled, so an unspecified backtest is byte-identical to before.
+    let orderedCandidates = candidates;
+    if (riskParams.correlationAwareSelectionEnabled && candidates.length > 1) {
+      const returnsBySymbol = new Map<string, number[]>();
+      for (const { score } of candidates) {
+        const candles = historyBySymbol.get(score.symbol);
+        if (!candles) continue;
+        const idx = indexAsOf(candles, dayMs, indexCursor.get(score.symbol) ?? 0);
+        if (idx < 1) continue;
+        const start = Math.max(0, idx - riskParams.correlationLookbackDays);
+        const returns = dailyReturns(candles.slice(start, idx + 1).map((c) => c.close));
+        if (returns.length >= 2) returnsBySymbol.set(score.symbol.toUpperCase(), returns);
+      }
+      orderedCandidates = reorderByCorrelation(candidates, (c) => c.score.symbol, returnsBySymbol, {
+        enabled: true,
+        threshold: riskParams.correlationThreshold,
+        lookbackDays: riskParams.correlationLookbackDays,
+      }).ordered;
+    }
+
     let runningRisk = openPositions.reduce((s, p) => s + p.riskAmount, 0);
     let runningCount = openPositions.length;
     const runningPositions: { symbol: string; notional: number; side: 'long' | 'short' }[] = openPositions.map((p) => ({
@@ -724,7 +758,7 @@ export function simulateBacktest(
       side: p.side === 'buy' ? 'long' : 'short',
     }));
 
-    for (const { signal } of candidates) {
+    for (const { signal } of orderedCandidates) {
       // Threaded through runningPositions (open + already-approved-this-batch),
       // not the pre-batch openPositions snapshot — matches riskCheck.ts's
       // runAutotradeRiskCheck, which correctly counts a signal approved
