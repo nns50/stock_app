@@ -735,7 +735,7 @@ describe('checkLiveOptionsExits', () => {
 
   it('caps the exit quantity to the broker-held size (no naked short after an unbooked partial fill)', async () => {
     setAutotradeConfig(liveConfig());
-    const pos = openLivePosition({ expiration: '2024-06-05', quantity: 10 });
+    openLivePosition({ expiration: '2024-06-05', quantity: 10 });
     // The ledger still shows 10 — a prior close partially filled 4 then
     // cancelled and was never booked — but the broker really holds only 6.
     // Selling the stale 10 would short 4 (uncovered short call = unbounded risk).
