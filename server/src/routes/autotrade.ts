@@ -137,6 +137,8 @@ const configBody = z.object({
   equityCurveLookbackDays: z.number().int().min(1).optional(),
   equityCurveDeriskCutPct: z.number().min(0).max(100).optional(),
   maxAdvParticipationPct: z.number().min(0).max(100).optional(),
+  convictionGradeAMinScore: z.number().min(0).max(100).optional(),
+  convictionGradeBMinScore: z.number().min(0).max(100).optional(),
   // --- Screening/decision thresholds ------------------------------------------
   tradeDirection: z.enum(['long', 'short', 'both']).optional(),
   minRelVol: z.number().nonnegative().optional(),
@@ -268,6 +270,8 @@ autotradeRouter.put(
     if (body.equityCurveLookbackDays !== undefined) patch.equityCurveLookbackDays = body.equityCurveLookbackDays;
     if (body.equityCurveDeriskCutPct !== undefined) patch.equityCurveDeriskCutPct = body.equityCurveDeriskCutPct;
     if (body.maxAdvParticipationPct !== undefined) patch.maxAdvParticipationPct = body.maxAdvParticipationPct;
+    if (body.convictionGradeAMinScore !== undefined) patch.convictionGradeAMinScore = body.convictionGradeAMinScore;
+    if (body.convictionGradeBMinScore !== undefined) patch.convictionGradeBMinScore = body.convictionGradeBMinScore;
     if (body.tradeDirection !== undefined) patch.tradeDirection = body.tradeDirection;
     if (body.minRelVol !== undefined) patch.minRelVol = body.minRelVol;
     if (body.requireWeeklyTrendAlignment !== undefined)

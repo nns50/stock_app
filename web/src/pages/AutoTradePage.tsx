@@ -2193,6 +2193,8 @@ export default function AutoTradePage() {
   const [equityCurveLookbackDaysDraft, setEquityCurveLookbackDaysDraft] = useState<number | undefined>();
   const [equityCurveDeriskCutPctDraft, setEquityCurveDeriskCutPctDraft] = useState<number | undefined>();
   const [maxAdvParticipationPctDraft, setMaxAdvParticipationPctDraft] = useState<number | undefined>();
+  const [convictionGradeAMinScoreDraft, setConvictionGradeAMinScoreDraft] = useState<number | undefined>();
+  const [convictionGradeBMinScoreDraft, setConvictionGradeBMinScoreDraft] = useState<number | undefined>();
   const [minRelVolDraft, setMinRelVolDraft] = useState<number | undefined>();
   const [requireWeeklyTrendAlignment, setRequireWeeklyTrendAlignment] = useState(false);
   const [relativeStrengthWeightDraft, setRelativeStrengthWeightDraft] = useState<number | undefined>();
@@ -2284,6 +2286,8 @@ export default function AutoTradePage() {
     setEquityCurveLookbackDaysDraft(config.data.equityCurveLookbackDays);
     setEquityCurveDeriskCutPctDraft(config.data.equityCurveDeriskCutPct);
     setMaxAdvParticipationPctDraft(config.data.maxAdvParticipationPct);
+    setConvictionGradeAMinScoreDraft(config.data.convictionGradeAMinScore);
+    setConvictionGradeBMinScoreDraft(config.data.convictionGradeBMinScore);
     setMinRelVolDraft(config.data.minRelVol);
     setRequireWeeklyTrendAlignment(config.data.requireWeeklyTrendAlignment);
     setRelativeStrengthWeightDraft(config.data.relativeStrengthWeight);
@@ -2363,6 +2367,8 @@ export default function AutoTradePage() {
     equityCurveLookbackDays?: number;
     equityCurveDeriskCutPct?: number;
     maxAdvParticipationPct?: number;
+    convictionGradeAMinScore?: number;
+    convictionGradeBMinScore?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     requireWeeklyTrendAlignment?: boolean;
@@ -2456,6 +2462,8 @@ export default function AutoTradePage() {
       setEquityCurveLookbackDaysDraft(saved.equityCurveLookbackDays);
       setEquityCurveDeriskCutPctDraft(saved.equityCurveDeriskCutPct);
       setMaxAdvParticipationPctDraft(saved.maxAdvParticipationPct);
+      setConvictionGradeAMinScoreDraft(saved.convictionGradeAMinScore);
+      setConvictionGradeBMinScoreDraft(saved.convictionGradeBMinScore);
       setMinRelVolDraft(saved.minRelVol);
       setRequireWeeklyTrendAlignment(saved.requireWeeklyTrendAlignment);
       setRelativeStrengthWeightDraft(saved.relativeStrengthWeight);
@@ -3916,6 +3924,66 @@ export default function AutoTradePage() {
                           maxAdvParticipationPctDraft < 0 ||
                           maxAdvParticipationPctDraft > 100 ||
                           maxAdvParticipationPctDraft === config.data?.maxAdvParticipationPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Conviction grade A ≥ score"
+                    hint="Every autotrade entry is stamped with a conviction grade from its screener total score (0–100): A at or above this, B at or above the B threshold, else C. The grade always populates the Journal's per-grade edge report, and (behind a separate flag) can drive expectancy-weighted sizing."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={convictionGradeAMinScoreDraft}
+                        onChange={setConvictionGradeAMinScoreDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save conviction grade A threshold"
+                        onClick={() =>
+                          convictionGradeAMinScoreDraft != null &&
+                          saveConfig({ convictionGradeAMinScore: convictionGradeAMinScoreDraft })
+                        }
+                        disabled={
+                          convictionGradeAMinScoreDraft == null ||
+                          convictionGradeAMinScoreDraft < 0 ||
+                          convictionGradeAMinScoreDraft > 100 ||
+                          convictionGradeAMinScoreDraft === config.data?.convictionGradeAMinScore
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Conviction grade B ≥ score"
+                    hint="Screener score at or above which an entry grades B (below the A threshold); anything under this grades C. Keep it below the A threshold."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={convictionGradeBMinScoreDraft}
+                        onChange={setConvictionGradeBMinScoreDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save conviction grade B threshold"
+                        onClick={() =>
+                          convictionGradeBMinScoreDraft != null &&
+                          saveConfig({ convictionGradeBMinScore: convictionGradeBMinScoreDraft })
+                        }
+                        disabled={
+                          convictionGradeBMinScoreDraft == null ||
+                          convictionGradeBMinScoreDraft < 0 ||
+                          convictionGradeBMinScoreDraft > 100 ||
+                          convictionGradeBMinScoreDraft === config.data?.convictionGradeBMinScore
                         }
                       >
                         Save

@@ -877,6 +877,10 @@ describe('reconcileLiveOrders', () => {
     expect(positions).toHaveLength(1);
     expect(positions[0]).toMatchObject({ symbol: 'AAPL', stopPrice: 95, targetPrice: 110, sourceIntentId: intentId });
     expect(positions[0].tags).toEqual(expect.arrayContaining(['live', 'autotrade']));
+    // Conviction grade (signal score 70 → B at the default 75/60 thresholds) is
+    // carried from the order metadata onto the materialized position.
+    expect(getLiveOrder(intentId)?.grade).toBe('B');
+    expect(positions[0].grade).toBe('B');
     expect(getLiveOrder(intentId)?.positionId).toBe(positions[0].id);
   });
 

@@ -160,6 +160,14 @@ export interface AutotradeConfig {
    *  guardrail — untouched changes nothing). LIVE + PAPER equity only; options
    *  already gate on their own OI/volume floors, and a backtest doesn't set it. */
   maxAdvParticipationPct: number;
+  /** Conviction-grade score thresholds (2026-07-24): every autotrade entry is
+   *  stamped with a grade from its screener total score — A at/above
+   *  `convictionGradeAMinScore`, B at/above `convictionGradeBMinScore`, else C.
+   *  The grade is metadata that enriches the Journal's per-grade report and (behind
+   *  a separate flag) can drive expectancy-weighted sizing. Grading is always on;
+   *  only the sizing that reads it is gated. */
+  convictionGradeAMinScore: number;
+  convictionGradeBMinScore: number;
 
   // --- Screening/decision thresholds (docs/AUTOTRADING_SPEC.md — RESEARCH &
   // SCREEN / DECISION). Same treatment, extraction, and reasoning as the
@@ -656,6 +664,8 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,
     maxAdvParticipationPct: 0,
+    convictionGradeAMinScore: 75,
+    convictionGradeBMinScore: 60,
     tradeDirection: 'long',
     minRelVol: 1.5,
     requireWeeklyTrendAlignment: false,
@@ -807,6 +817,8 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     equityCurveLookbackDays: posIntMin1(input.equityCurveLookbackDays, d.equityCurveLookbackDays),
     equityCurveDeriskCutPct: pct(input.equityCurveDeriskCutPct, d.equityCurveDeriskCutPct),
     maxAdvParticipationPct: pct(input.maxAdvParticipationPct, d.maxAdvParticipationPct),
+    convictionGradeAMinScore: pct(input.convictionGradeAMinScore, d.convictionGradeAMinScore),
+    convictionGradeBMinScore: pct(input.convictionGradeBMinScore, d.convictionGradeBMinScore),
     tradeDirection:
       input.tradeDirection === 'long' || input.tradeDirection === 'short' || input.tradeDirection === 'both'
         ? input.tradeDirection

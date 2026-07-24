@@ -138,6 +138,19 @@ describe('runPaperExecution', () => {
     expect(hasOpenPaperPosition('AAPL')).toBe(true);
   });
 
+  it('stamps a conviction grade on the opened paper position from the signal score', async () => {
+    setAutotradeConfig({ maxConcurrentPositions: 5, maxAggregateOpenRiskPct: 50 }); // room for all three
+    mockGetProvider.mockReturnValue(quoteReturning({ AAA: 101, BBB: 101, CCC: 101 }) as never);
+    // Default thresholds: A ≥ 75, B ≥ 60. Three signals across the bands.
+    await runPaperExecution([
+      { signal: signal({ symbol: 'AAA', score: 82 }) },
+      { signal: signal({ symbol: 'BBB', score: 65 }) },
+      { signal: signal({ symbol: 'CCC', score: 50 }) },
+    ]);
+    const bySymbol = Object.fromEntries(listPaperPositions({ status: 'open' }).map((p) => [p.symbol, p.grade]));
+    expect(bySymbol).toMatchObject({ AAA: 'A', BBB: 'B', CCC: 'C' });
+  });
+
   it('skips a candidate whose symbol already has an open paper position', async () => {
     openPaperPosition({
       symbol: 'AAPL',

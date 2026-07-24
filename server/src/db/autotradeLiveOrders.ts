@@ -39,6 +39,10 @@ export interface LiveOrderMeta {
    *  into — its fill MERGES into that position (blended entry) rather than
    *  creating a new one. Null for normal entries and exits. */
   addonOfPositionId: number | null;
+  /** Entry rows: conviction grade (A/B/C) from the signal's screener score,
+   *  carried to positions.grade at materialization. Null for exit rows and
+   *  legacy rows. */
+  grade: string | null;
   createdAt: number;
 }
 
@@ -53,6 +57,7 @@ interface Row {
   position_id: number | null;
   account_id: string | null;
   addon_of_position_id: number | null;
+  grade: string | null;
   created_at: number;
 }
 
@@ -68,6 +73,7 @@ function mapRow(r: Row): LiveOrderMeta {
     positionId: r.position_id,
     accountId: r.account_id,
     addonOfPositionId: r.addon_of_position_id ?? null,
+    grade: r.grade ?? null,
     createdAt: r.created_at,
   };
 }
@@ -83,11 +89,14 @@ export function recordLiveOrder(input: {
   riskAmount: number;
   riskProfile: string;
   accountId?: string | null;
+  /** Conviction grade (A/B/C) from the signal's screener score, carried to
+   *  positions.grade once the fill materializes. */
+  grade?: string | null;
 }): LiveOrderMeta {
   const now = Date.now();
   db.prepare(
-    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, created_at)
-     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?)`,
+    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, grade, created_at)
+     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?)`,
   ).run(
     input.intentId,
     input.symbol.toUpperCase(),
@@ -96,6 +105,7 @@ export function recordLiveOrder(input: {
     input.riskAmount,
     input.riskProfile,
     input.accountId ?? null,
+    input.grade ?? null,
     now,
   );
   return getLiveOrder(input.intentId)!;

@@ -18,6 +18,20 @@ import { ScreenCandidate } from './screen';
 
 export type SignalSide = 'buy' | 'sell';
 
+/** A conviction grade stamped on an autotrade position at entry, derived from
+ *  the screener's 0..100 total score. Lets realized outcomes be grouped by the
+ *  system's own conviction (the Journal's byGrade report, and — behind a flag —
+ *  expectancy-weighted sizing). 'A' = highest conviction. */
+export type ConvictionGrade = 'A' | 'B' | 'C';
+
+/** Bucket a screener score into a conviction grade: A at/above aMinScore, B
+ *  at/above bMinScore, else C. Pure — the thresholds are AutotradeConfig fields. */
+export function convictionGrade(score: number, cfg: { aMinScore: number; bMinScore: number }): ConvictionGrade {
+  if (score >= cfg.aMinScore) return 'A';
+  if (score >= cfg.bMinScore) return 'B';
+  return 'C';
+}
+
 export interface DecisionConfig {
   /** Stop distance = this many ATRs from entry. */
   stopAtrMultiple: number;

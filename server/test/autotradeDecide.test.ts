@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { initDb, db } from '../src/db';
-import { defaultDecisionConfig, generateSignal, runAutotradeDecision } from '../src/services/autotrading/decide';
+import {
+  convictionGrade,
+  defaultDecisionConfig,
+  generateSignal,
+  runAutotradeDecision,
+} from '../src/services/autotrading/decide';
 import { ScreenCandidate } from '../src/services/autotrading/screen';
 import { IndicatorSnapshot } from '../src/indicators/screener';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
@@ -147,5 +152,27 @@ describe('runAutotradeDecision', () => {
     const shortSignal = result.signals.find((s) => s.symbol === 'SHORTCO')!;
     expect(longSignal.side).toBe('buy');
     expect(shortSignal.side).toBe('sell');
+  });
+});
+
+describe('convictionGrade', () => {
+  const cfg = { aMinScore: 75, bMinScore: 60 };
+  it('grades A at or above the A threshold', () => {
+    expect(convictionGrade(75, cfg)).toBe('A');
+    expect(convictionGrade(92, cfg)).toBe('A');
+  });
+  it('grades B between the B and A thresholds', () => {
+    expect(convictionGrade(60, cfg)).toBe('B');
+    expect(convictionGrade(74.9, cfg)).toBe('B');
+  });
+  it('grades C below the B threshold', () => {
+    expect(convictionGrade(59.9, cfg)).toBe('C');
+    expect(convictionGrade(0, cfg)).toBe('C');
+  });
+  it('sets the entry signal’s grade indirectly via score — generateSignal carries the score used to grade', () => {
+    // Sanity: generateSignal exposes the score the grade is derived from.
+    const c = candidate({ total: 82 });
+    const sig = generateSignal(c, defaultDecisionConfig())!;
+    expect(convictionGrade(sig.score, cfg)).toBe('A');
   });
 });

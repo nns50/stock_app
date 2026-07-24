@@ -36,6 +36,8 @@ export interface OpenPaperPositionInput {
   riskAmount: number;
   riskProfile: string;
   rationale: string;
+  /** Conviction grade (A/B/C) from the screener score at entry, or null. */
+  grade?: string | null;
 }
 
 export interface ClosePaperPositionInput {
@@ -70,6 +72,9 @@ export interface PaperPosition {
   partialExitTaken: boolean;
   /** How many times this position has been scaled into (pyramided). */
   addOnsTaken: number;
+  /** Conviction grade (A/B/C) from the screener score at entry, or null for a
+   *  row that predates grading. */
+  grade: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -101,6 +106,7 @@ interface Row {
   best_price_since_entry: number | null;
   partial_exit_taken: number;
   add_ons_taken: number;
+  grade: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -126,6 +132,7 @@ function map(r: Row): PaperPosition {
     bestPriceSinceEntry: r.best_price_since_entry,
     partialExitTaken: r.partial_exit_taken === 1,
     addOnsTaken: r.add_ons_taken ?? 0,
+    grade: r.grade ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -142,8 +149,8 @@ export function openPaperPosition(input: OpenPaperPositionInput): PaperPosition 
       `INSERT INTO autotrade_paper_positions
          (symbol, side, quantity, entry_price, entry_at, stop_price, target_price,
           risk_amount, risk_profile, rationale, status, initial_stop_price,
-          best_price_since_entry, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`,
+          best_price_since_entry, grade, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`,
     )
     .run(
       input.symbol.toUpperCase(),
@@ -158,6 +165,7 @@ export function openPaperPosition(input: OpenPaperPositionInput): PaperPosition 
       input.rationale,
       input.stopPrice,
       input.entryPrice,
+      input.grade ?? null,
       now,
       now,
     );

@@ -50,7 +50,7 @@ import { pendingLiveOptionsOrdersRisk } from '../../db/autotradeLiveOptionsOrder
 import { listOpenLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
 import { createPosition, getPosition, listPositions, updatePosition, addExit, Position } from '../../db/positions';
 import { realizedPnlOf, initialRiskOf, computeStreaksAndDrawdown } from '../pnl';
-import { TradeSignal } from './decide';
+import { TradeSignal, convictionGrade } from './decide';
 import {
   RiskCheckContext,
   RiskCheckResult,
@@ -587,6 +587,10 @@ export async function attemptLiveEntry(
     riskAmount: riskResult.approvedRiskAmount,
     riskProfile,
     accountId,
+    grade: convictionGrade(signal.score, {
+      aMinScore: autotradeCfg.convictionGradeAMinScore,
+      bMinScore: autotradeCfg.convictionGradeBMinScore,
+    }),
   });
   logAutotradeEvent({
     symbol,
@@ -1016,6 +1020,7 @@ function materializeEntryFill(
     targetPrice,
     notes: `Auto-placed by autotrade — order #${intent.id}${intent.brokerOrderId ? ` (broker ${intent.brokerOrderId})` : ''}`,
     tags: AUTOTRADE_TAGS,
+    grade: getLiveOrder(intent.id)?.grade ?? null,
     sourceIntentId: intent.id,
     accountId,
   });
