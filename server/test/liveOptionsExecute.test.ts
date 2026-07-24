@@ -646,19 +646,27 @@ describe('runLiveOptionsExecution', () => {
 });
 
 function openLivePosition(overrides: Partial<Parameters<typeof createLiveOptionsPosition>[0]> = {}) {
-  return createLiveOptionsPosition({
+  const input = {
     symbol: 'AAPL',
-    side: 'call',
+    side: 'call' as const,
     contractSymbol: 'AAPL-fixture',
     strike: 100,
     expiration: '2030-01-18', // comfortably outside the exit window unless overridden
     quantity: 2,
     entryPrice: 3,
     riskAmount: 600,
-    riskProfile: 'MODERATE',
+    riskProfile: 'MODERATE' as const,
     rationale: 'fixture',
     ...overrides,
-  });
+  };
+  const pos = createLiveOptionsPosition(input);
+  // By default the broker reports the opened contract as held (999), so the exit
+  // path's held-qty naked-short cap is a no-op — a test that wants a partial or
+  // absent holding overrides mockPreviewPositions after opening.
+  mockPreviewPositions.mockResolvedValue(
+    previewOf([{ symbol: input.symbol, optionType: input.side, strike: input.strike, expiration: input.expiration }]),
+  );
+  return pos;
 }
 
 describe('checkLiveOptionsExits', () => {
@@ -723,6 +731,53 @@ describe('checkLiveOptionsExits', () => {
 
     const events = listAutotradeEvents({});
     expect(events.some((e) => e.action === 'live_options_exit_placed')).toBe(true);
+  });
+
+  it('caps the exit quantity to the broker-held size (no naked short after an unbooked partial fill)', async () => {
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({ expiration: '2024-06-05', quantity: 10 });
+    // The ledger still shows 10 — a prior close partially filled 4 then
+    // cancelled and was never booked — but the broker really holds only 6.
+    // Selling the stale 10 would short 4 (uncovered short call = unbounded risk).
+    mockPreviewPositions.mockResolvedValue(
+      previewOf([{ symbol: 'AAPL', optionType: 'call', strike: 100, expiration: '2024-06-05', quantity: 6 }]),
+    );
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 5 } }) as never);
+    mockAccountState.mockResolvedValue(holdingAccountState(6) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-EXIT-CAP' });
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', requested: true });
+    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    expect(placedIntent.quantity).toBe(6); // capped to broker-held, NOT the stale ledger 10
+  });
+
+  it('skips the exit (no order) when the broker shows 0 contracts held', async () => {
+    setAutotradeConfig(liveConfig());
+    openLivePosition({ expiration: '2024-06-05', quantity: 10 });
+    mockPreviewPositions.mockResolvedValue(previewOf([])); // broker holds nothing matching
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 5 } }) as never);
+    mockPlaceOrder.mockClear();
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes[0].requested).toBe(false);
+    expect(outcomes[0].reason).toMatch(/0 contracts held/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('fails closed (no order) when the broker positions can not be read', async () => {
+    setAutotradeConfig(liveConfig());
+    openLivePosition({ expiration: '2024-06-05' });
+    mockPreviewPositions.mockResolvedValue({ ok: false, error: 'timeout' } as Awaited<
+      ReturnType<typeof previewWebullPositions>
+    >);
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 5 } }) as never);
+    mockPlaceOrder.mockClear();
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes[0].requested).toBe(false);
+    expect(outcomes[0].reason).toMatch(/Broker positions unavailable/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 
   it('closes a single-leg position even when the broker-reported currentPositionQty is contaminated by an unrelated holding', async () => {
@@ -876,6 +931,14 @@ describe('checkLiveOptionsExits', () => {
     setAutotradeConfig(liveConfig());
     openLivePosition({ symbol: 'AAPL', expiration: '2024-06-05' });
     openLivePosition({ symbol: 'MSFT', contractSymbol: 'MSFT-fixture', expiration: '2024-06-05' });
+    // Both contracts are held at the broker (each openLivePosition only sets the
+    // preview to its OWN contract, so set both here for this two-position case).
+    mockPreviewPositions.mockResolvedValue(
+      previewOf([
+        { symbol: 'AAPL', optionType: 'call', strike: 100, expiration: '2024-06-05' },
+        { symbol: 'MSFT', optionType: 'call', strike: 100, expiration: '2024-06-05' },
+      ]),
+    );
     mockGetProvider.mockReturnValue(
       chainsFor({
         AAPL: { side: 'call', strike: 100, mark: 5 },
@@ -1076,7 +1139,13 @@ describe('reconcileLiveOptionsOrders', () => {
 });
 
 function previewOf(
-  positions: Array<{ symbol: string; optionType: 'call' | 'put'; strike: number; expiration: string }>,
+  positions: Array<{
+    symbol: string;
+    optionType: 'call' | 'put';
+    strike: number;
+    expiration: string;
+    quantity?: number;
+  }>,
 ) {
   return {
     ok: true as const,
@@ -1085,7 +1154,7 @@ function previewOf(
       assetType: 'option' as const,
       symbol: p.symbol,
       side: 'long' as const,
-      quantity: 1,
+      quantity: p.quantity ?? 999, // held qty; high by default so the exit-qty cap is a no-op unless a test sets it
       entryPrice: 0,
       entryDate: '2024-01-01',
       optionType: p.optionType,
@@ -1097,10 +1166,10 @@ function previewOf(
 }
 
 function openSpreadPosition(overrides: Partial<Parameters<typeof createLiveOptionsPosition>[0]> = {}) {
-  return createLiveOptionsPosition({
+  const input = {
     symbol: 'AAPL',
-    side: 'call',
-    kind: 'debit_spread',
+    side: 'call' as const,
+    kind: 'debit_spread' as const,
     contractSymbol: 'AAPL-long',
     strike: 100,
     shortContractSymbol: 'AAPL-short',
@@ -1110,10 +1179,17 @@ function openSpreadPosition(overrides: Partial<Parameters<typeof createLiveOptio
     quantity: 2,
     entryPrice: 3,
     riskAmount: 400,
-    riskProfile: 'MODERATE',
+    riskProfile: 'MODERATE' as const,
     rationale: 'fixture',
     ...overrides,
-  });
+  };
+  const pos = createLiveOptionsPosition(input);
+  // Broker reports the LONG leg held by default (the leg the sell-to-close would
+  // short) so the exit-qty cap is a no-op unless a test overrides it.
+  mockPreviewPositions.mockResolvedValue(
+    previewOf([{ symbol: input.symbol, optionType: input.side, strike: input.strike, expiration: input.expiration }]),
+  );
+  return pos;
 }
 
 describe('syncLiveOptionsPositionsFromBroker', () => {
