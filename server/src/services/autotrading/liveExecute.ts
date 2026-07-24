@@ -43,6 +43,7 @@ import {
 } from '../../db/autotradeLiveOrders';
 import { computeScaleIn } from './scaleIn';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
+import { computeGradeExpectancyMultipliers } from './expectancySizing';
 // DB-layer reads only (NOT the options execution service) -- so the combined
 // live budget can fold in the options book without a liveExecute <-> options
 // service import cycle.
@@ -191,6 +192,9 @@ export interface LivePortfolioSnapshot {
   /** Equity-curve de-risk decision from the live book's own realized curve
    *  (2026-07-24) — false when disabled or above the average. */
   equityCurveDeriskActive: boolean;
+  /** grade → sizing multiplier from the live book's realized per-grade edge
+   *  (2026-07-24); empty when expectancy weighting is off. */
+  gradeExpectancyMultipliers: Record<string, number>;
 }
 
 /** The real-money counterpart to execute.ts's getPaperPortfolioSnapshot() —
@@ -234,6 +238,20 @@ export function getLivePortfolioSnapshot(): LivePortfolioSnapshot {
     cutPct: config.equityCurveDeriskCutPct,
   }).active;
 
+  // Per-grade expectancy multipliers from the live book's OWN closed trades.
+  const gradeExpectancyMultipliers = computeGradeExpectancyMultipliers(
+    closedAutotrade.flatMap((p) => {
+      const risk = initialRiskOf(p);
+      return risk && risk > 0 ? [{ grade: p.grade, realizedR: realizedPnlOf(p) / risk }] : [];
+    }),
+    {
+      enabled: config.expectancyWeightingEnabled,
+      minTrades: config.expectancyMinTrades,
+      minMultiplier: config.expectancyMinMultiplier,
+      maxMultiplier: config.expectancyMaxMultiplier,
+    },
+  );
+
   return {
     today,
     openPositions,
@@ -243,6 +261,7 @@ export function getLivePortfolioSnapshot(): LivePortfolioSnapshot {
     consecutiveLosses,
     tradesToday,
     equityCurveDeriskActive,
+    gradeExpectancyMultipliers,
   };
 }
 
@@ -727,6 +746,13 @@ export async function runLiveExecution(
       equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
       equityCurveDeriskCutPct: cfg.equityCurveDeriskCutPct,
       maxAdvParticipationPct: cfg.maxAdvParticipationPct,
+      expectancyMultiplier:
+        snapshot.gradeExpectancyMultipliers[
+          convictionGrade(signal.score, {
+            aMinScore: cfg.convictionGradeAMinScore,
+            bMinScore: cfg.convictionGradeBMinScore,
+          })
+        ] ?? 1,
     };
     const result = evaluateRiskCheck(signal, ctx);
     if (!result.ok) {

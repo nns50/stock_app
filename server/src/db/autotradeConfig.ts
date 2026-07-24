@@ -168,6 +168,17 @@ export interface AutotradeConfig {
    *  only the sizing that reads it is gated. */
   convictionGradeAMinScore: number;
   convictionGradeBMinScore: number;
+  /** Expectancy-weighted sizing (2026-07-24, services/autotrading/expectancySizing.ts).
+   *  When on, each conviction grade's OWN realized average R shifts new-position
+   *  size around baseline (`multiplier = clamp(1 + avgR, min, max)`), stacking
+   *  with the other sizing multipliers. A grade with fewer than
+   *  `expectancyMinTrades` closed trades stays neutral (1×). Off by default; the
+   *  aggregate-open-risk veto still binds regardless. LIVE + PAPER only (each on
+   *  its own book's edge) — a backtest has no realized per-grade history. */
+  expectancyWeightingEnabled: boolean;
+  expectancyMinTrades: number;
+  expectancyMinMultiplier: number;
+  expectancyMaxMultiplier: number;
 
   // --- Screening/decision thresholds (docs/AUTOTRADING_SPEC.md — RESEARCH &
   // SCREEN / DECISION). Same treatment, extraction, and reasoning as the
@@ -666,6 +677,10 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     maxAdvParticipationPct: 0,
     convictionGradeAMinScore: 75,
     convictionGradeBMinScore: 60,
+    expectancyWeightingEnabled: false,
+    expectancyMinTrades: 10,
+    expectancyMinMultiplier: 0.5,
+    expectancyMaxMultiplier: 1.5,
     tradeDirection: 'long',
     minRelVol: 1.5,
     requireWeeklyTrendAlignment: false,
@@ -819,6 +834,13 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     maxAdvParticipationPct: pct(input.maxAdvParticipationPct, d.maxAdvParticipationPct),
     convictionGradeAMinScore: pct(input.convictionGradeAMinScore, d.convictionGradeAMinScore),
     convictionGradeBMinScore: pct(input.convictionGradeBMinScore, d.convictionGradeBMinScore),
+    expectancyWeightingEnabled:
+      typeof input.expectancyWeightingEnabled === 'boolean'
+        ? input.expectancyWeightingEnabled
+        : d.expectancyWeightingEnabled,
+    expectancyMinTrades: posIntMin1(input.expectancyMinTrades, d.expectancyMinTrades),
+    expectancyMinMultiplier: posDecimal(input.expectancyMinMultiplier, d.expectancyMinMultiplier),
+    expectancyMaxMultiplier: posDecimal(input.expectancyMaxMultiplier, d.expectancyMaxMultiplier),
     tradeDirection:
       input.tradeDirection === 'long' || input.tradeDirection === 'short' || input.tradeDirection === 'both'
         ? input.tradeDirection

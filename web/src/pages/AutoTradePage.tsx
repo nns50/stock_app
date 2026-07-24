@@ -2195,6 +2195,10 @@ export default function AutoTradePage() {
   const [maxAdvParticipationPctDraft, setMaxAdvParticipationPctDraft] = useState<number | undefined>();
   const [convictionGradeAMinScoreDraft, setConvictionGradeAMinScoreDraft] = useState<number | undefined>();
   const [convictionGradeBMinScoreDraft, setConvictionGradeBMinScoreDraft] = useState<number | undefined>();
+  const [expectancyWeightingEnabled, setExpectancyWeightingEnabled] = useState(false);
+  const [expectancyMinTradesDraft, setExpectancyMinTradesDraft] = useState<number | undefined>();
+  const [expectancyMinMultiplierDraft, setExpectancyMinMultiplierDraft] = useState<number | undefined>();
+  const [expectancyMaxMultiplierDraft, setExpectancyMaxMultiplierDraft] = useState<number | undefined>();
   const [minRelVolDraft, setMinRelVolDraft] = useState<number | undefined>();
   const [requireWeeklyTrendAlignment, setRequireWeeklyTrendAlignment] = useState(false);
   const [relativeStrengthWeightDraft, setRelativeStrengthWeightDraft] = useState<number | undefined>();
@@ -2288,6 +2292,10 @@ export default function AutoTradePage() {
     setMaxAdvParticipationPctDraft(config.data.maxAdvParticipationPct);
     setConvictionGradeAMinScoreDraft(config.data.convictionGradeAMinScore);
     setConvictionGradeBMinScoreDraft(config.data.convictionGradeBMinScore);
+    setExpectancyWeightingEnabled(config.data.expectancyWeightingEnabled);
+    setExpectancyMinTradesDraft(config.data.expectancyMinTrades);
+    setExpectancyMinMultiplierDraft(config.data.expectancyMinMultiplier);
+    setExpectancyMaxMultiplierDraft(config.data.expectancyMaxMultiplier);
     setMinRelVolDraft(config.data.minRelVol);
     setRequireWeeklyTrendAlignment(config.data.requireWeeklyTrendAlignment);
     setRelativeStrengthWeightDraft(config.data.relativeStrengthWeight);
@@ -2369,6 +2377,10 @@ export default function AutoTradePage() {
     maxAdvParticipationPct?: number;
     convictionGradeAMinScore?: number;
     convictionGradeBMinScore?: number;
+    expectancyWeightingEnabled?: boolean;
+    expectancyMinTrades?: number;
+    expectancyMinMultiplier?: number;
+    expectancyMaxMultiplier?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     requireWeeklyTrendAlignment?: boolean;
@@ -2464,6 +2476,10 @@ export default function AutoTradePage() {
       setMaxAdvParticipationPctDraft(saved.maxAdvParticipationPct);
       setConvictionGradeAMinScoreDraft(saved.convictionGradeAMinScore);
       setConvictionGradeBMinScoreDraft(saved.convictionGradeBMinScore);
+      setExpectancyWeightingEnabled(saved.expectancyWeightingEnabled);
+      setExpectancyMinTradesDraft(saved.expectancyMinTrades);
+      setExpectancyMinMultiplierDraft(saved.expectancyMinMultiplier);
+      setExpectancyMaxMultiplierDraft(saved.expectancyMaxMultiplier);
       setMinRelVolDraft(saved.minRelVol);
       setRequireWeeklyTrendAlignment(saved.requireWeeklyTrendAlignment);
       setRelativeStrengthWeightDraft(saved.relativeStrengthWeight);
@@ -3987,6 +4003,101 @@ export default function AutoTradePage() {
                         }
                       >
                         Save
+                      </button>
+                    </div>
+                  </Field>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={expectancyWeightingEnabled}
+                      onChange={(e) => saveConfig({ expectancyWeightingEnabled: e.target.checked })}
+                    />
+                    <span>
+                      Expectancy-weighted sizing
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default. Sizes each conviction grade by its <em>own</em> realized edge: a grade whose
+                        closed trades average a positive R is sized up, one that bleeds is sized down, breakeven stays
+                        flat (multiplier = 1 + avg R, clamped to the bounds below). A grade with fewer than the
+                        min-sample closed trades stays neutral. Stacks with the other sizing multipliers; the
+                        aggregate-risk cap still binds. Live + paper only, each on its own book.
+                      </span>
+                    </span>
+                  </label>
+                  <Field
+                    label="Expectancy min sample (trades/grade)"
+                    hint="Closed trades a grade needs before its realized edge sizes anything. Below this, that grade stays at 1× (neutral)."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={expectancyMinTradesDraft}
+                        onChange={setExpectancyMinTradesDraft}
+                        min={1}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save expectancy min sample"
+                        onClick={() =>
+                          expectancyMinTradesDraft != null &&
+                          saveConfig({ expectancyMinTrades: expectancyMinTradesDraft })
+                        }
+                        disabled={
+                          expectancyMinTradesDraft == null ||
+                          expectancyMinTradesDraft < 1 ||
+                          expectancyMinTradesDraft === config.data?.expectancyMinTrades
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Expectancy multiplier bounds (min / max)"
+                    hint="Clamp on the per-grade size multiplier. Min (e.g. 0.5) is the smallest a weak grade shrinks to; max (e.g. 1.5) the largest a strong grade grows to."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={expectancyMinMultiplierDraft}
+                        onChange={setExpectancyMinMultiplierDraft}
+                        min={0}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save expectancy min multiplier"
+                        onClick={() =>
+                          expectancyMinMultiplierDraft != null &&
+                          saveConfig({ expectancyMinMultiplier: expectancyMinMultiplierDraft })
+                        }
+                        disabled={
+                          expectancyMinMultiplierDraft == null ||
+                          expectancyMinMultiplierDraft <= 0 ||
+                          expectancyMinMultiplierDraft === config.data?.expectancyMinMultiplier
+                        }
+                      >
+                        Save min
+                      </button>
+                      <NumberInput
+                        value={expectancyMaxMultiplierDraft}
+                        onChange={setExpectancyMaxMultiplierDraft}
+                        min={0}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save expectancy max multiplier"
+                        onClick={() =>
+                          expectancyMaxMultiplierDraft != null &&
+                          saveConfig({ expectancyMaxMultiplier: expectancyMaxMultiplierDraft })
+                        }
+                        disabled={
+                          expectancyMaxMultiplierDraft == null ||
+                          expectancyMaxMultiplierDraft <= 0 ||
+                          expectancyMaxMultiplierDraft === config.data?.expectancyMaxMultiplier
+                        }
+                      >
+                        Save max
                       </button>
                     </div>
                   </Field>
