@@ -1055,7 +1055,15 @@ shouldn't be a tab-switch away.
   math shown there), and auto-excludes any symbol whose average live-fill slippage
   crosses a threshold — both gated on a configurable minimum sample size so a handful of
   trades can't move things, and the risk change is capped per day so one noisy reading
-  can't swing live sizing. A symbol it excludes lands on the same exclusion list your
+  can't swing live sizing. On top of that, a **walk-forward guard** — **Require
+  out-of-sample confirmation before raising risk** (2026-07-24, **on by default**) — only
+  lets it _raise_ risk-per-trade if the edge still holds out-of-sample: the most recent
+  half of your closed trades must be a large-enough sample whose expectancy confidence
+  interval sits entirely above zero (the same bootstrap the backtest's significance panel
+  uses). A _cut_ is always applied — down is the safe direction — but an in-sample edge
+  that hasn't held up on recent trades won't talk the loop into sizing up; a blocked
+  increase is journaled with its reason. Turn it off only if you deliberately want the
+  Kelly nudge to raise risk on the full-history edge alone. A symbol it excludes lands on the same exclusion list your
   manual entries use (Settings), so it's visible and reversible there, not a hidden
   blocklist. A separate, independently-toggled **Also auto-tune exit geometry** (2026-07-24,
   off by default) extends the same once-a-day pass to your **stop (× ATR)** and **target

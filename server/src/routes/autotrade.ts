@@ -249,6 +249,7 @@ const configBody = z.object({
   autoTuneSlippageExcludePct: z.number().min(0).max(100).optional(),
   autoTuneExitsEnabled: z.boolean().optional(),
   autoTuneExitMaxStep: z.number().positive().optional(),
+  autoTuneRequireOosConfirmation: z.boolean().optional(),
 });
 autotradeRouter.put(
   '/config',
@@ -393,6 +394,8 @@ autotradeRouter.put(
     }
     if (body.autoTuneExitsEnabled !== undefined) patch.autoTuneExitsEnabled = body.autoTuneExitsEnabled;
     if (body.autoTuneExitMaxStep !== undefined) patch.autoTuneExitMaxStep = body.autoTuneExitMaxStep;
+    if (body.autoTuneRequireOosConfirmation !== undefined)
+      patch.autoTuneRequireOosConfirmation = body.autoTuneRequireOosConfirmation;
 
     // liveTradingEnabled and liveAccountId are handled together, NOT in the
     // generic patch above: going false -> true requires the typed

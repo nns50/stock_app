@@ -140,6 +140,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     autoTuneSlippageExcludePct: 2,
     autoTuneExitsEnabled: false,
     autoTuneExitMaxStep: 0.25,
+    autoTuneRequireOosConfirmation: true,
     ...overrides,
   };
 }
@@ -649,6 +650,22 @@ describe('AutoTradePage', () => {
 
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ autoTuneExitsEnabled: true, confirmAggressive: undefined }),
+    );
+  });
+
+  it('toggling the out-of-sample confirmation guard saves immediately (on by default → off)', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const checkbox = await screen.findByRole('checkbox', { name: /Require out-of-sample confirmation/ });
+    await waitFor(() => expect((checkbox as HTMLInputElement).checked).toBe(true)); // on by default
+    fireEvent.click(checkbox);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ autoTuneRequireOosConfirmation: false, confirmAggressive: undefined }),
     );
   });
 

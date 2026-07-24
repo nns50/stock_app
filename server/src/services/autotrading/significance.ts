@@ -147,3 +147,63 @@ export function computeSignificanceStats(
     reliable: n >= MIN_RELIABLE_TRADES,
   };
 }
+
+/** Fraction of the chronological trade list treated as OUT-OF-SAMPLE (the most
+ *  recent trades) for the auto-tune walk-forward guard (2026-07-24). Half is a
+ *  balanced split — recent enough to catch a decayed edge, deep enough to be
+ *  worth a significance read. */
+export const DEFAULT_OOS_FRACTION = 0.5;
+
+export interface OosConfirmation {
+  /** True only when the out-of-sample slice is a RELIABLE sample AND its
+   *  expectancy CI excludes zero on the positive side — i.e. the edge still
+   *  looks real on the trades the tune hasn't already been fit to. */
+  confirmed: boolean;
+  oosSampleSize: number;
+  oosExpectancy: number | null;
+  oosCiLow: number | null;
+  reliable: boolean;
+  /** Plain-English one-liner for journaling. */
+  reason: string;
+}
+
+/**
+ * Walk-forward guard for the auto-tune risk-% INCREASE (docs/AUTOTRADING_SPEC.md
+ * — VALIDATION GATE, applied live). Given all decisive closed trades in
+ * chronological order (oldest → newest), split off the most recent
+ * `oosFraction` as an out-of-sample window and ask whether the edge still holds
+ * THERE — because the in-sample edge the Kelly suggestion is fit to is already
+ * selected to look good. Confirmed only when that OOS window is a reliable
+ * sample and its bootstrap expectancy CI sits entirely above zero. A thin OOS
+ * window is treated as "not confirmed" (conservative — no evidence is not
+ * positive evidence), never as a pass.
+ *
+ * Pure: reuses computeSignificanceStats, no I/O, deterministic under a seeded
+ * rng. Only ever used to GATE an increase — decreases never call it.
+ */
+export function checkOosEdgeConfirmation(
+  chronoTrades: { pnl: number }[],
+  opts: { rng?: () => number; resamples?: number; oosFraction?: number } = {},
+): OosConfirmation {
+  const frac = opts.oosFraction ?? DEFAULT_OOS_FRACTION;
+  const n = chronoTrades.length;
+  const oosCount = n === 0 ? 0 : Math.min(n, Math.max(1, Math.floor(n * frac)));
+  const oos = chronoTrades.slice(n - oosCount);
+  const stats = computeSignificanceStats(oos, { rng: opts.rng, resamples: opts.resamples });
+  const confirmed = stats.reliable && stats.ciLow !== null && stats.ciLow > 0;
+  const reason = confirmed
+    ? `out-of-sample edge holds: ${stats.sampleSize} recent trades, expectancy ${stats.expectancy} ` +
+      `(95% CI ${stats.ciLow}…${stats.ciHigh}, entirely positive)`
+    : !stats.reliable
+      ? `out-of-sample window too thin to confirm (${stats.sampleSize} recent trades, needs ${MIN_RELIABLE_TRADES})`
+      : `out-of-sample edge not confirmed: expectancy ${stats.expectancy}, 95% CI ${stats.ciLow}…${stats.ciHigh} ` +
+        `includes zero or below`;
+  return {
+    confirmed,
+    oosSampleSize: stats.sampleSize,
+    oosExpectancy: stats.expectancy,
+    oosCiLow: stats.ciLow,
+    reliable: stats.reliable,
+    reason,
+  };
+}

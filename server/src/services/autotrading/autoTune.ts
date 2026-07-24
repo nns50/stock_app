@@ -5,6 +5,7 @@ import { computeSlippage, groupSlippageBySymbol, SlippageRow } from '../slippage
 import { computeJournalStats, realizedPnlOf } from '../pnl';
 import { aggregateExcursions, computeExcursion, ExcursionReport, TradeExcursion } from '../excursion';
 import { computeExcursionTune } from './excursionTune';
+import { checkOosEdgeConfirmation } from './significance';
 import { getAutotradeConfig, setAutotradeConfig } from '../../db/autotradeConfig';
 import { addExclusion, isExcluded } from '../../db/autotradeExclusions';
 import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
@@ -205,31 +206,62 @@ export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneR
   logAutotradeEvent({ stage: 'config', action: RAN_ACTION, detail: { date: today } satisfies RanMarkerDetail });
 
   let riskAdjusted = false;
-  const stats = computeJournalStats(listPositions({ status: 'closed' }));
+  const closedPositions = listPositions({ status: 'closed' });
+  const stats = computeJournalStats(closedPositions);
   if (stats.kelly && stats.kelly.sampleSize >= config.autoTuneMinTrades) {
     const target = stats.kelly.suggestedRiskPct;
     const current = config.riskPerTradePct;
     const delta = Math.max(-config.autoTuneMaxStepPct, Math.min(config.autoTuneMaxStepPct, target - current));
     const next = round2(Math.max(0, current + delta));
     if (Math.abs(next - current) > 1e-9) {
-      setAutotradeConfig({ riskPerTradePct: next });
-      logAutotradeEvent({
-        stage: 'config',
-        action: 'auto_tune_risk_adjusted',
-        detail: { from: current, to: next, kellySuggested: target, sampleSize: stats.kelly.sampleSize },
-      });
-      // Same "push it, don't just journal it" treatment as the daily-drawdown
-      // halt — a live risk-% change is consequential enough to surface
-      // immediately, not just discoverable later on Recent Activity.
-      await dispatchNotifications([
-        {
-          title: 'Autotrade auto-tune: risk-per-trade adjusted',
-          message:
-            `riskPerTradePct ${current}% → ${next}% (Kelly suggests ${target}% from ` +
-            `${stats.kelly.sampleSize} decisive closed trades).`,
-        },
-      ]);
-      riskAdjusted = true;
+      // Walk-forward guard (2026-07-24): before RAISING risk, require the edge to
+      // still hold out-of-sample — the in-sample edge the Kelly number is fit to
+      // is already selected to look good. A DECREASE is always applied (the safe
+      // direction). Same closed-trade population the Kelly suggestion is derived
+      // from, oldest → newest.
+      let oosBlocked = false;
+      if (next > current && config.autoTuneRequireOosConfirmation) {
+        const chrono = closedPositions
+          .map((p) => ({ pnl: realizedPnlOf(p), date: lastExitDateOf(p) }))
+          .sort((a, b) => a.date.localeCompare(b.date));
+        const guard = checkOosEdgeConfirmation(chrono);
+        if (!guard.confirmed) {
+          oosBlocked = true;
+          logAutotradeEvent({
+            stage: 'config',
+            action: 'auto_tune_risk_increase_blocked',
+            detail: {
+              from: current,
+              wouldRaiseTo: next,
+              kellySuggested: target,
+              reason: guard.reason,
+              oosSampleSize: guard.oosSampleSize,
+              oosExpectancy: guard.oosExpectancy,
+              oosCiLow: guard.oosCiLow,
+            },
+          });
+        }
+      }
+      if (!oosBlocked) {
+        setAutotradeConfig({ riskPerTradePct: next });
+        logAutotradeEvent({
+          stage: 'config',
+          action: 'auto_tune_risk_adjusted',
+          detail: { from: current, to: next, kellySuggested: target, sampleSize: stats.kelly.sampleSize },
+        });
+        // Same "push it, don't just journal it" treatment as the daily-drawdown
+        // halt — a live risk-% change is consequential enough to surface
+        // immediately, not just discoverable later on Recent Activity.
+        await dispatchNotifications([
+          {
+            title: 'Autotrade auto-tune: risk-per-trade adjusted',
+            message:
+              `riskPerTradePct ${current}% → ${next}% (Kelly suggests ${target}% from ` +
+              `${stats.kelly.sampleSize} decisive closed trades).`,
+          },
+        ]);
+        riskAdjusted = true;
+      }
     }
   }
 

@@ -456,6 +456,13 @@ enough out-of-sample data to tell. The fix is usually the same one that applies
 anywhere sample size is thin: widen the date range, add more symbols, or keep paper
 trading it a while longer before trusting the number.
 
+The one place this exact test _does_ act as a gate is live: when **auto-tune** (Config →
+auto-tune) is on, its **out-of-sample confirmation** guard (default on) runs this same
+bootstrap CI over the recent half of your real closed trades before letting the Kelly
+nudge _raise_ risk-per-trade — if that recent-half CI isn't entirely above zero, the
+increase is held. It's the walk-forward discipline above, applied automatically to the
+one decision where over-fitting your own history costs real money. Cuts are never gated.
+
 ---
 
 ## Is it a real edge, or a lucky setting? — the parameter sweep

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { computeSignificanceStats, MIN_RELIABLE_TRADES } from '../src/services/autotrading/significance';
+import {
+  computeSignificanceStats,
+  checkOosEdgeConfirmation,
+  MIN_RELIABLE_TRADES,
+} from '../src/services/autotrading/significance';
 
 /** mulberry32 — deterministic RNG so the Monte Carlo is reproducible in tests.
  *  Same copy riskOfRuin.test.ts uses for its own seeded Monte Carlo. */
@@ -108,5 +112,43 @@ describe('computeSignificanceStats', () => {
   it('defaults resamples to DEFAULT_RESAMPLES (2000) when not specified', () => {
     const stats = computeSignificanceStats(oscillating(10, 10, 3), { rng: mulberry32(1) });
     expect(stats.resamples).toBe(2000);
+  });
+});
+
+describe('checkOosEdgeConfirmation (auto-tune walk-forward guard)', () => {
+  it('confirms when the RECENT (out-of-sample) half is a reliable, entirely-positive sample', () => {
+    // Old half bad, recent half good — the guard must judge on the RECENT half.
+    const chrono = [...oscillating(40, -100, 5), ...oscillating(40, 100, 5)];
+    const r = checkOosEdgeConfirmation(chrono, { rng: mulberry32(1) });
+    expect(r.confirmed).toBe(true);
+    expect(r.oosSampleSize).toBe(40); // recent 50%
+    expect(r.oosCiLow).toBeGreaterThan(0);
+  });
+
+  it('does NOT confirm when the out-of-sample CI includes zero (edge decayed)', () => {
+    const chrono = [...oscillating(40, 100, 5), ...oscillating(40, 0, 100)];
+    const r = checkOosEdgeConfirmation(chrono, { rng: mulberry32(2) });
+    expect(r.confirmed).toBe(false);
+  });
+
+  it('does NOT confirm when the out-of-sample edge is negative', () => {
+    const chrono = [...oscillating(40, 100, 5), ...oscillating(40, -50, 5)];
+    const r = checkOosEdgeConfirmation(chrono, { rng: mulberry32(3) });
+    expect(r.confirmed).toBe(false);
+  });
+
+  it('does NOT confirm (conservatively) when the out-of-sample window is too thin to be reliable', () => {
+    // 20 total → recent 50% = 10 trades < MIN_RELIABLE_TRADES, even though positive.
+    const chrono = oscillating(20, 100, 5);
+    const r = checkOosEdgeConfirmation(chrono, { rng: mulberry32(4) });
+    expect(r.confirmed).toBe(false);
+    expect(r.reliable).toBe(false);
+    expect(r.oosSampleSize).toBeLessThan(MIN_RELIABLE_TRADES);
+  });
+
+  it('honors a custom oosFraction for the window size', () => {
+    const chrono = oscillating(100, 100, 5);
+    const r = checkOosEdgeConfirmation(chrono, { rng: mulberry32(5), oosFraction: 0.25 });
+    expect(r.oosSampleSize).toBe(25);
   });
 });
