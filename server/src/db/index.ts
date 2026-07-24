@@ -473,6 +473,7 @@ CREATE TABLE IF NOT EXISTS autotrade_live_orders (
   position_id   INTEGER,              -- entry: set once the fill materializes into positions.
                                        -- exit: known upfront (the position this order will close).
   account_id    TEXT,                 -- entry: the Webull account this order executed in, carried to positions.account_id at materialization. null for exit rows and legacy rows.
+  addon_of_position_id INTEGER,       -- scale-in add-on: the already-open position this order pyramids into. null for normal entries/exits. Its fill MERGES into that position (blended entry) rather than creating a new one.
   created_at    INTEGER NOT NULL
 );
 
@@ -850,6 +851,11 @@ function migrate(): void {
   const aloEquityCols = db.prepare('PRAGMA table_info(autotrade_live_orders)').all() as { name: string }[];
   if (!aloEquityCols.some((c) => c.name === 'role')) {
     db.exec("ALTER TABLE autotrade_live_orders ADD COLUMN role TEXT NOT NULL DEFAULT 'entry'");
+  }
+  // Scale-into-winners on LIVE positions: an add-on order marks the position it
+  // pyramids into here (null for every pre-existing row — none were add-ons).
+  if (!aloEquityCols.some((c) => c.name === 'addon_of_position_id')) {
+    db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN addon_of_position_id INTEGER');
   }
 
   // Must run AFTER the ADD COLUMNs above so the explicit-column copy finds them.

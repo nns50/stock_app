@@ -178,6 +178,9 @@ const configBody = z.object({
   liveAllowNakedShort: z.boolean().optional(),
   liveProbationTrades: z.number().int().nonnegative().optional(),
   liveProbationSizeMultiplier: z.number().positive().max(1).optional(),
+  // --- Live scale-into-winners (nested under liveTradingEnabled) --------------
+  liveScaleInEnabled: z.boolean().optional(),
+  liveMaxAddOns: z.number().int().min(0).optional(),
   // --- Task #70: live options trading ----------------------------------------
   /** Nested under liveTradingEnabled — no separate typed confirmation (the
    *  master phrase already covers "real money is now live"); see route
@@ -400,6 +403,16 @@ autotradeRouter.put(
     } else if (body.liveOptionsEnabled !== undefined) {
       patch.liveOptionsEnabled = body.liveOptionsEnabled;
     }
+
+    // liveScaleInEnabled — same "plain checkbox nested under the master gate,
+    // fails closed if requested while the master isn't (concurrently) on" shape
+    // as liveOptionsEnabled above. It ADDS risk to real positions, but the
+    // master's typed confirmation already covers "real money is live".
+    if (body.liveScaleInEnabled === true && !masterWillBeEnabled) {
+      throw new HttpError(400, 'Enabling live scale-in requires live trading to be enabled first');
+    }
+    if (body.liveScaleInEnabled !== undefined) patch.liveScaleInEnabled = body.liveScaleInEnabled;
+    if (body.liveMaxAddOns !== undefined) patch.liveMaxAddOns = body.liveMaxAddOns;
 
     const next = setAutotradeConfig(patch);
     if (next.riskProfile !== before.riskProfile) {

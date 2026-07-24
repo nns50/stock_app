@@ -21,6 +21,7 @@ vi.mock('../src/services/autotrading/liveExecute', () => ({
   reconcileLiveOrders: vi.fn(),
   syncAccountEquityFromBroker: vi.fn(),
   checkLiveEquityTimeExits: vi.fn(),
+  checkLiveScaleIns: vi.fn(),
 }));
 vi.mock('../src/services/autotrading/liveOptionsExecute', () => ({
   runLiveOptionsExecution: vi.fn(),
@@ -65,6 +66,7 @@ import {
   reconcileLiveOrders,
   syncAccountEquityFromBroker,
   checkLiveEquityTimeExits,
+  checkLiveScaleIns,
 } from '../src/services/autotrading/liveExecute';
 import {
   runLiveOptionsExecution,
@@ -99,6 +101,7 @@ const mockLiveExecute = vi.mocked(runLiveExecution);
 const mockReconcileLive = vi.mocked(reconcileLiveOrders);
 const mockSyncEquity = vi.mocked(syncAccountEquityFromBroker);
 const mockCheckLiveTimeExits = vi.mocked(checkLiveEquityTimeExits);
+const mockCheckLiveScaleIns = vi.mocked(checkLiveScaleIns);
 const mockLiveOptionsExecute = vi.mocked(runLiveOptionsExecution);
 const mockCheckLiveOptionsExits = vi.mocked(checkLiveOptionsExits);
 const mockReconcileLiveOptions = vi.mocked(reconcileLiveOptionsOrders);
@@ -193,6 +196,7 @@ beforeEach(() => {
   mockLiveExecute.mockReset();
   mockReconcileLive.mockReset().mockResolvedValue([]);
   mockCheckLiveTimeExits.mockReset().mockResolvedValue([]);
+  mockCheckLiveScaleIns.mockReset().mockResolvedValue([]);
   mockSyncEquity.mockReset().mockResolvedValue({ ok: false, error: 'No liveAccountId configured' });
   mockPositionsSync.mockReset().mockResolvedValue({
     ok: true,

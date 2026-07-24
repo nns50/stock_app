@@ -187,9 +187,10 @@ sets is the number you have to be willing to lose on a bad day to have a shot at
 The five disciplines above size the trade **once, at entry**. Scaling in is the opposite
 move — **adding to a position that's already working** — and it's the one technique here
 that _adds_ risk after the fact, so it earns its own rules. The Auto-Trade config exposes
-it (**paper + backtest only**; live positions keep their fixed stop/target): a **scale-in
-trigger** in R, a **scale-in size** as a % of the current position, and a **max add-ons**
-cap.
+it with a **scale-in trigger** in R, a **scale-in size** as a % of the current position, and
+a **max add-ons** cap. It runs in **paper and backtest** by default; a separate, off-by-
+default **live** toggle (below) extends the exact same rules to real positions once you've
+validated them.
 
 Why it can help: a trend that pays 3–5R rewards a bigger position through the fat part of
 the move, and adding _only after_ the trade proves itself keeps your initial risk small.
@@ -208,6 +209,19 @@ turn around. Above all: **prove it in the backtester first.** Run the same windo
 scale-in fields off, then on, and compare — expectancy per _initial_ R, max drawdown, and
 the R-standard-deviation. If pyramiding only lifts the average by widening the tails, you've
 added variance, not edge. It shines exactly where discipline #4 (exit by rule) already holds.
+
+**Taking it live.** Once the backtest and a paper run have convinced you, the live toggle
+(**Auto-Trade → live-trading settings → "Scale into live winners"**, plus a **max live
+add-ons** cap you can set below the paper one) applies the same rules to real positions. It's
+**off by default** and gated behind live trading being enabled. Mechanically it's the safest
+shape available: each add is placed as its **own bracket order** — the added shares are born
+with their own protective stop (1R below the new blended entry) and the position's target,
+so nothing is ever left un-stopped and your original bracket is never disturbed. One
+consequence to know: your live position then rides **two stops** — the original shares at the
+original stop, the added shares at the tighter raised stop — so a pullback stops the added
+shares out first, protecting that newer profit, while the core keeps running. Start with
+**max live add-ons = 1**, and treat the first few live adds as confirmation that the
+broker-order path behaves before trusting it with more.
 
 ---
 

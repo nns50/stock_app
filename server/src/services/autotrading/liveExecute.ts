@@ -32,6 +32,8 @@ import { canTransition, isTerminal } from '../trading/orderLifecycle';
 import {
   recordLiveOrder,
   recordLiveExitOrder,
+  recordLiveAddOnOrder,
+  countLiveAddOns,
   setLiveOrderPositionId,
   listPendingLiveOrders,
   countLiveOrdersSince,
@@ -39,12 +41,13 @@ import {
   getLiveOrder,
   LiveOrderMeta,
 } from '../../db/autotradeLiveOrders';
+import { computeScaleIn } from './scaleIn';
 // DB-layer reads only (NOT the options execution service) -- so the combined
 // live budget can fold in the options book without a liveExecute <-> options
 // service import cycle.
 import { pendingLiveOptionsOrdersRisk } from '../../db/autotradeLiveOptionsOrders';
 import { listOpenLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
-import { createPosition, listPositions, updatePosition, addExit, Position } from '../../db/positions';
+import { createPosition, getPosition, listPositions, updatePosition, addExit, Position } from '../../db/positions';
 import { realizedPnlOf, initialRiskOf, computeStreaksAndDrawdown } from '../pnl';
 import { TradeSignal } from './decide';
 import {
@@ -837,6 +840,21 @@ function reconcileOneLiveOrder(
           );
           return recorded ? { changed: true, action: 'exit_filled' } : { changed: false };
         }
+        if (meta.addonOfPositionId !== null) {
+          // A scale-in ADD-ON fill — MERGE into the already-open position
+          // (blended entry, bigger quantity) rather than creating a second
+          // position row. Its own protective bracket (raised stop + the
+          // position's target) rests separately, watched via the bracket-leg
+          // block below on later ticks once position_id is linked here.
+          materializeAddOnFill(
+            meta.addonOfPositionId,
+            intent,
+            broker.filledQty ?? intent.quantity,
+            broker.filledPrice ?? intent.limitPrice ?? 0,
+            riskProfile,
+          );
+          return { changed: true, action: 'entry_filled' };
+        }
         materializeEntryFill(
           intent,
           stopPrice,
@@ -981,6 +999,48 @@ function materializeEntryFill(
     stage: 'execution',
     action: 'live_position_opened',
     detail: { quantity: filledQty, entryPrice: filledPrice, stopPrice, targetPrice, riskAmount },
+    riskProfile,
+  });
+}
+
+/** Merge a scale-in ADD-ON fill into an already-open live position: blend the
+ *  entry toward the fill and grow the quantity, so cost basis and P&L stay
+ *  honest. The position's own stop/target (its ORIGINAL bracket, still resting
+ *  and protecting the original shares) are deliberately left untouched — the
+ *  ADDED shares are protected by the add-on's OWN bracket, whose stop/target
+ *  legs reconcile independently via the bracket-leg block. Links the add-on
+ *  order's intent to the position (so it stops re-materializing and its bracket
+ *  legs get watched). Fails closed if the position is gone/closed — never
+ *  fabricates a position. */
+function materializeAddOnFill(
+  positionId: number,
+  intent: OrderIntentRecord,
+  filledQty: number,
+  filledPrice: number,
+  riskProfile: string,
+): void {
+  setLiveOrderPositionId(intent.id, positionId);
+  const position = getPosition(positionId);
+  if (!position || position.status !== 'open') {
+    logAutotradeEvent({
+      symbol: intent.symbol,
+      stage: 'execution',
+      action: 'live_scale_in_orphaned',
+      detail: { positionId, filledQty, filledPrice, reason: 'position not open at add-on fill time' },
+      riskProfile,
+    });
+    return;
+  }
+  const oldQty = position.quantity;
+  const newQty = oldQty + filledQty;
+  const blendedEntry =
+    newQty > 0 ? (position.entryPrice * oldQty + filledPrice * filledQty) / newQty : position.entryPrice;
+  updatePosition(positionId, { quantity: newQty, entryPrice: blendedEntry });
+  logAutotradeEvent({
+    symbol: intent.symbol,
+    stage: 'execution',
+    action: 'live_scaled_in_filled',
+    detail: { positionId, addQty: filledQty, addPrice: filledPrice, blendedEntry, newQuantity: newQty },
     riskProfile,
   });
 }
@@ -1436,4 +1496,229 @@ export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutc
     outcomes.push(await placeLiveEquityTimeExitClose(pos, freshAccountId, riskProfile));
   }
   return outcomes;
+}
+
+// ---------------------------------------------------------------------------
+// Scale into winners on LIVE equity positions (opt-in via liveScaleInEnabled).
+// The RISKIEST autotrade action — it ADDS to a real, already-open position —
+// so it's built to NEVER leave the position under-protected: the add is placed
+// as its OWN bracket order (raised stop + the position's target), so the added
+// shares are born protected and the ORIGINAL bracket is never touched (no
+// cancel-and-replace, no naked window, and it never leans on the
+// still-unconfirmed bracket-cancel path). Its fill later MERGES into the
+// position (blended entry, bigger quantity) via materializeAddOnFill.
+//
+// Fails closed at every step: a bad quote, blocked guardrail, or broker
+// rejection for ONE position is logged and skipped, never crashing the loop or
+// touching another position. Same "unconfirmed against a real account" caveat
+// the rest of this file's live-order surface carries — validate in paper +
+// backtest first.
+// ---------------------------------------------------------------------------
+
+export interface LiveScaleInOutcome {
+  symbol: string;
+  positionId: number;
+  /** True when a real add-on order was actually placed at the broker. */
+  requested: boolean;
+  reason?: string;
+}
+
+export async function checkLiveScaleIns(): Promise<LiveScaleInOutcome[]> {
+  if (!config.trading.placeEnabled) return []; // server master (TRADING_ENABLED)
+  const cfg = getAutotradeConfig();
+  if (!cfg.liveAccountId) return [];
+  if (!cfg.liveScaleInEnabled) return [];
+  if (cfg.liveMaxAddOns <= 0 || cfg.addOnTriggerRMultiple <= 0 || cfg.addOnSizePct <= 0) return [];
+
+  const open = listAutotradeLivePositions({ status: 'open' }).filter((p) => p.assetType === 'stock');
+  if (open.length === 0) return [];
+
+  // Dedup: skip a position if any UNMATERIALIZED order for its symbol is in
+  // flight (position_id IS NULL) — a fresh entry still working, or an add-on
+  // placed a prior tick that hasn't filled/merged yet. A fresh add would race
+  // it. Deliberately NOT keyed on the position's own filled entry bracket (its
+  // position_id is set — it's what we're adding TO) nor on an ALREADY-merged
+  // add-on (position_id set too — the liveMaxAddOns cap governs how many of
+  // those, checked below, not this dedup).
+  const inFlightSymbols = new Set(
+    listPendingLiveOrders()
+      .filter((o) => o.positionId === null)
+      .map((o) => o.symbol),
+  );
+
+  const outcomes: LiveScaleInOutcome[] = [];
+  for (const pos of open) {
+    try {
+      if (inFlightSymbols.has(pos.symbol)) continue;
+      if (pos.sourceIntentId === null) continue; // can't locate the original risk
+      const entryOrder = getLiveOrder(pos.sourceIntentId);
+      if (!entryOrder || !(entryOrder.stopPrice > 0)) continue;
+      if (countLiveAddOns(pos.id) >= cfg.liveMaxAddOns) continue;
+
+      const targetPrice = pos.targetPrice ?? entryOrder.targetPrice;
+      if (!(targetPrice > 0)) continue; // the add-on's own bracket needs a target
+
+      let last: number;
+      try {
+        last = (await getProvider().getQuote(pos.symbol)).last;
+      } catch (err) {
+        outcomes.push({
+          symbol: pos.symbol,
+          positionId: pos.id,
+          requested: false,
+          reason: `Quote fetch failed: ${(err as Error).message}`,
+        });
+        continue;
+      }
+      if (!Number.isFinite(last) || last <= 0) continue;
+
+      const add = computeScaleIn(
+        {
+          side: pos.side === 'long' ? 'buy' : 'sell',
+          entryPrice: pos.entryPrice,
+          initialStopPrice: entryOrder.stopPrice, // frozen original stop = the R denominator
+          stopPrice: pos.stopPrice ?? entryOrder.stopPrice,
+          quantity: pos.remainingQuantity,
+          addOnsTaken: countLiveAddOns(pos.id),
+        },
+        last,
+        {
+          addOnTriggerRMultiple: cfg.addOnTriggerRMultiple,
+          addOnSizePct: cfg.addOnSizePct,
+          maxAddOns: cfg.liveMaxAddOns,
+        },
+      );
+      if (!add) continue;
+
+      outcomes.push(await placeLiveScaleInAddOn(pos, add, last, targetPrice, cfg));
+    } catch (err) {
+      // Fail closed per position — a broker hiccup never crashes the loop.
+      outcomes.push({
+        symbol: pos.symbol,
+        positionId: pos.id,
+        requested: false,
+        reason: `Scale-in error: ${(err as Error).message}`,
+      });
+    }
+  }
+  return outcomes;
+}
+
+/** Place a single scale-in add-on as its own bracket order — mirrors
+ *  attemptLiveEntry's guardrails→place→record→notify sequence exactly, so the
+ *  add gets the SAME fresh-account-state guardrail gate (buying power, per-order
+ *  $, daily loss, orders/day, naked-short) a fresh entry does. */
+async function placeLiveScaleInAddOn(
+  pos: Position,
+  add: ReturnType<typeof computeScaleIn> & object,
+  last: number,
+  targetPrice: number,
+  cfg: AutotradeConfig,
+): Promise<LiveScaleInOutcome> {
+  const symbol = pos.symbol.toUpperCase();
+  // Fresh account id per position — a kill switch flipped mid-loop must stop
+  // the next add immediately (same reasoning as the time-exit loop).
+  const accountId = getAutotradeConfig().liveAccountId;
+  if (!accountId) return { symbol, positionId: pos.id, requested: false, reason: 'No liveAccountId configured' };
+  const side: 'buy' | 'sell' = pos.side === 'long' ? 'buy' : 'sell';
+  const riskProfile = getLiveOrder(pos.sourceIntentId!)?.riskProfile ?? cfg.riskProfile;
+
+  const buffer = 1 + (side === 'buy' ? 1 : -1) * (MARKETABLE_LIMIT_BUFFER_PCT / 100);
+  const limitPrice = Math.round(last * buffer * 100) / 100;
+
+  const intent: OrderIntent = {
+    symbol,
+    assetKind: 'stock',
+    side,
+    openClose: 'open',
+    quantity: add.addQty,
+    orderType: 'limit',
+    limitPrice,
+    referencePrice: last,
+    // The added shares' OWN protective bracket: 1R below/above the new blended
+    // entry, and the position's original target. The original bracket keeps
+    // protecting the original shares untouched.
+    bracket: { takeProfitPrice: targetPrice, stopLossPrice: add.newStopPrice },
+  };
+
+  const liveCfg = buildLiveTradingConfig(cfg);
+  const acct = await webullAccountState(accountId, symbol);
+  if (!acct.ok || !acct.state) {
+    return { symbol, positionId: pos.id, requested: false, reason: acct.error ?? 'Could not load account state' };
+  }
+  const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
+  const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
+  const isShort = wouldOpenShort(intent, accountState);
+
+  const clientOrderId = newClientOrderId();
+  const intentRec = createIntent(intent, clientOrderId);
+  if (!guardrails.ok) {
+    const reasons = blockingFailures(guardrails)
+      .map((c) => `${c.rule}: ${c.detail}`)
+      .join('; ');
+    transitionIntent(intentRec.id, 'rejected', { detail: `blocked: ${reasons}` });
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_scale_in_blocked',
+      detail: { reasons, positionId: pos.id },
+      riskProfile,
+    });
+    return { symbol, positionId: pos.id, requested: false, reason: `Guardrails blocked: ${reasons}` };
+  }
+
+  transitionIntent(intentRec.id, 'validated', { detail: 'guardrails passed (live scale-in)' });
+  transitionIntent(intentRec.id, 'confirmed', { detail: 'autotrade scale-in — no per-order confirmation' });
+  transitionIntent(intentRec.id, 'submitted', { detail: `submitting add-on (cid ${clientOrderId})` });
+
+  const broker = await webullPlaceOrder(accountId, intent, clientOrderId, isShort);
+  if (!broker.ok) {
+    transitionIntent(intentRec.id, 'rejected', { detail: `broker rejected: ${broker.error}` });
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_scale_in_failed',
+      detail: { reason: broker.error, positionId: pos.id },
+      riskProfile,
+    });
+    return { symbol, positionId: pos.id, requested: false, reason: `Broker rejected: ${broker.error}` };
+  }
+
+  transitionIntent(intentRec.id, 'acknowledged', {
+    brokerOrderId: broker.orderId,
+    detail: `broker accepted${broker.orderId ? ` (order ${broker.orderId})` : ''}`,
+  });
+  const riskAmount = Math.abs(limitPrice - add.newStopPrice) * add.addQty;
+  recordLiveAddOnOrder({
+    intentId: intentRec.id,
+    symbol,
+    stopPrice: add.newStopPrice,
+    targetPrice,
+    riskAmount,
+    riskProfile,
+    addonOfPositionId: pos.id,
+    accountId,
+  });
+  logAutotradeEvent({
+    symbol,
+    stage: 'execution',
+    action: 'live_scaled_in',
+    detail: {
+      positionId: pos.id,
+      addQty: add.addQty,
+      limitPrice,
+      stop: add.newStopPrice,
+      target: targetPrice,
+      orderId: broker.orderId,
+      rMultiple: add.rMultiple,
+    },
+    riskProfile,
+  });
+  await dispatchNotifications([
+    {
+      title: symbol,
+      message: `Autotrade LIVE SCALE-IN: +${add.addQty} ${symbol} @ ~$${limitPrice.toFixed(2)} (stop ${add.newStopPrice.toFixed(2)}, target ${targetPrice.toFixed(2)})`,
+    },
+  ]);
+  return { symbol, positionId: pos.id, requested: true };
 }

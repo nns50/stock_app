@@ -512,6 +512,8 @@ export const client = {
     liveAllowNakedShort?: boolean;
     liveProbationTrades?: number;
     liveProbationSizeMultiplier?: number;
+    liveScaleInEnabled?: boolean;
+    liveMaxAddOns?: number;
     liveOptionsEnabled?: boolean;
     liveOptionsMaxOrderUsd?: number;
     liveOptionsMaxDailyLossUsd?: number;

@@ -380,6 +380,20 @@ export interface AutotradeConfig {
    *  sizing and any loss-streak step-down already active (Phase 8 Step B). */
   liveProbationTrades: number;
   liveProbationSizeMultiplier: number;
+  /** Scale into winners on LIVE equity positions — a plain opt-in nested UNDER
+   *  liveTradingEnabled (same relationship liveOptionsEnabled has to the master
+   *  gate). The autotrade loop only pyramids a live position when BOTH this and
+   *  liveTradingEnabled are true (and the shared addOnTriggerRMultiple /
+   *  addOnSizePct drive the WHEN/how-much, same as paper). Defaults false — this
+   *  is the one live setting that ADDS risk to an already-open real position, so
+   *  it's off until deliberately turned on. Each add is placed as its OWN
+   *  bracket (raised stop + the position's target), so the added shares are
+   *  never naked and the original bracket is never touched. */
+  liveScaleInEnabled: boolean;
+  /** Hard cap on live pyramids per position — can be set LOWER than the paper
+   *  maxAddOns for extra caution on real money. 0 disables live scaling in
+   *  entirely regardless of liveScaleInEnabled. */
+  liveMaxAddOns: number;
 
   // --- Task #70: live options trading -----------------------------------
 
@@ -643,6 +657,8 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveAllowNakedShort: false,
     liveProbationTrades: 20,
     liveProbationSizeMultiplier: 0.5,
+    liveScaleInEnabled: false,
+    liveMaxAddOns: 0,
     liveOptionsEnabled: false,
     liveOptionsEnabledAt: null,
     liveOptionsMaxOrderUsd: 500,
@@ -798,6 +814,8 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       const n = Number(input.liveProbationSizeMultiplier);
       return Number.isFinite(n) && n > 0 && n <= 1 ? n : d.liveProbationSizeMultiplier;
     })(),
+    liveScaleInEnabled: typeof input.liveScaleInEnabled === 'boolean' ? input.liveScaleInEnabled : d.liveScaleInEnabled,
+    liveMaxAddOns: posInt(input.liveMaxAddOns, d.liveMaxAddOns),
     liveOptionsEnabled: typeof input.liveOptionsEnabled === 'boolean' ? input.liveOptionsEnabled : d.liveOptionsEnabled,
     liveOptionsEnabledAt: optionsEnabledAt,
     liveOptionsMaxOrderUsd: nonNeg(input.liveOptionsMaxOrderUsd, d.liveOptionsMaxOrderUsd),

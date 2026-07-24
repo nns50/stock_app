@@ -1093,6 +1093,10 @@ interface LiveTradingSectionProps {
   setLiveProbationTradesDraft: (v: number | undefined) => void;
   liveProbationSizeMultiplierDraft: number | undefined;
   setLiveProbationSizeMultiplierDraft: (v: number | undefined) => void;
+  liveScaleInEnabledDraft: boolean;
+  setLiveScaleInEnabledDraft: (v: boolean) => void;
+  liveMaxAddOnsDraft: number | undefined;
+  setLiveMaxAddOnsDraft: (v: number | undefined) => void;
   liveCapsBusy: boolean;
   onSaveLiveCaps: () => void;
   suggestLiveCapsBusy: boolean;
@@ -1205,6 +1209,24 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
           />
           Allow naked short (defined-risk only is strongly recommended — leave unchecked)
         </label>
+        <label className="flex items-center gap-2 text-sm mt-3">
+          <input
+            type="checkbox"
+            checked={p.liveScaleInEnabledDraft}
+            onChange={(e) => p.setLiveScaleInEnabledDraft(e.target.checked)}
+          />
+          Scale into live winners (pyramiding) — ⚠ the one live setting that ADDS risk to an open position
+        </label>
+        <p className="text-[11px] text-amber-400/80 mt-1">
+          Uses the shared scale-in trigger / size (in Equity exits). Each add is placed as its own bracket, so the added
+          shares are never naked and your original stop/target is untouched. Off by default — validate in paper/backtest
+          first.
+        </p>
+        <div className="mt-2">
+          <Field label="Max live add-ons (0 disables)">
+            <NumberInput value={p.liveMaxAddOnsDraft} onChange={p.setLiveMaxAddOnsDraft} min={0} placeholder="e.g. 1" />
+          </Field>
+        </div>
         <button className="btn-ghost mt-3" onClick={p.onSaveLiveCaps} disabled={p.liveCapsBusy}>
           {p.liveCapsBusy ? 'Saving…' : 'Save live-trading settings'}
         </button>
@@ -2198,6 +2220,8 @@ export default function AutoTradePage() {
   const [liveAllowNakedShortDraft, setLiveAllowNakedShortDraft] = useState(false);
   const [liveProbationTradesDraft, setLiveProbationTradesDraft] = useState<number | undefined>();
   const [liveProbationSizeMultiplierDraft, setLiveProbationSizeMultiplierDraft] = useState<number | undefined>();
+  const [liveScaleInEnabledDraft, setLiveScaleInEnabledDraft] = useState(false);
+  const [liveMaxAddOnsDraft, setLiveMaxAddOnsDraft] = useState<number | undefined>();
   const [liveOptionsEnabledDraft, setLiveOptionsEnabledDraft] = useState(false);
   const [liveOptionsMaxOrderUsdDraft, setLiveOptionsMaxOrderUsdDraft] = useState<number | undefined>();
   const [liveOptionsMaxDailyLossUsdDraft, setLiveOptionsMaxDailyLossUsdDraft] = useState<number | undefined>();
@@ -2281,6 +2305,8 @@ export default function AutoTradePage() {
     setLiveAllowNakedShortDraft(config.data.liveAllowNakedShort);
     setLiveProbationTradesDraft(config.data.liveProbationTrades);
     setLiveProbationSizeMultiplierDraft(config.data.liveProbationSizeMultiplier);
+    setLiveScaleInEnabledDraft(config.data.liveScaleInEnabled);
+    setLiveMaxAddOnsDraft(config.data.liveMaxAddOns);
     setLiveOptionsEnabledDraft(config.data.liveOptionsEnabled);
     setLiveOptionsMaxOrderUsdDraft(config.data.liveOptionsMaxOrderUsd);
     setLiveOptionsMaxDailyLossUsdDraft(config.data.liveOptionsMaxDailyLossUsd);
@@ -2591,6 +2617,8 @@ export default function AutoTradePage() {
         liveAllowNakedShort: liveAllowNakedShortDraft,
         liveProbationTrades: liveProbationTradesDraft,
         liveProbationSizeMultiplier: liveProbationSizeMultiplierDraft,
+        liveScaleInEnabled: liveScaleInEnabledDraft,
+        liveMaxAddOns: liveMaxAddOnsDraft,
       });
       config.reload();
       refreshLiveData();
@@ -4821,6 +4849,10 @@ export default function AutoTradePage() {
                 setLiveProbationTradesDraft={setLiveProbationTradesDraft}
                 liveProbationSizeMultiplierDraft={liveProbationSizeMultiplierDraft}
                 setLiveProbationSizeMultiplierDraft={setLiveProbationSizeMultiplierDraft}
+                liveScaleInEnabledDraft={liveScaleInEnabledDraft}
+                setLiveScaleInEnabledDraft={setLiveScaleInEnabledDraft}
+                liveMaxAddOnsDraft={liveMaxAddOnsDraft}
+                setLiveMaxAddOnsDraft={setLiveMaxAddOnsDraft}
                 liveCapsBusy={liveCapsBusy}
                 onSaveLiveCaps={saveLiveCaps}
                 suggestLiveCapsBusy={suggestLiveCapsBusy}
