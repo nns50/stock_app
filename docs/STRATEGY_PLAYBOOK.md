@@ -201,6 +201,15 @@ patch, just smaller, which blunts the string of full-size losses a drawdown can 
 without the whiplash of a hard stop. It stacks multiplicatively with step-down and regime
 sizing, and like them applies to paper and live only, not backtests.
 
+**Don't size bigger than you can exit.** Risk-based sizing only looks at your stop
+distance, not the stock's liquidity — so a tight stop on a thin name can hand you a
+position that takes days to unwind without moving the price against yourself. **Max ADV
+participation (%)** (Config → risk settings, 0 = off) caps any single equity position at
+that percent of the name's ~20-day average daily volume. A small cap (1–3%) keeps you in
+liquid territory; it binds only on thin names or oversized budgets, and silently skips
+when a name's volume can't be resolved rather than blocking the trade. Options are exempt
+(they already screen on open-interest and volume floors).
+
 ---
 
 ## Scaling into winners (pyramiding)

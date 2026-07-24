@@ -722,6 +722,7 @@ export async function runLiveExecution(
       regimeSizeCutPct: cfg.regimeSizeCutPct,
       equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
       equityCurveDeriskCutPct: cfg.equityCurveDeriskCutPct,
+      maxAdvParticipationPct: cfg.maxAdvParticipationPct,
     };
     const result = evaluateRiskCheck(signal, ctx);
     if (!result.ok) {

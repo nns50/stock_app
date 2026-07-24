@@ -63,6 +63,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     equityCurveDeriskEnabled: false,
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,
+    maxAdvParticipationPct: 0,
     tradeDirection: 'long',
     minRelVol: 1.5,
     requireWeeklyTrendAlignment: false,
@@ -336,6 +337,25 @@ describe('AutoTradePage', () => {
 
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ equityCurveLookbackDays: 20, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new max ADV participation value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Max ADV participation (%)').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '2' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save max ADV participation' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ maxAdvParticipationPct: 2, confirmAggressive: undefined }),
     );
   });
 

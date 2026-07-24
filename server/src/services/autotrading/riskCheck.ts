@@ -329,6 +329,12 @@ export interface RiskCheckContext {
    *  snapshot did the history math); `cutPct` is the configured size cut. */
   equityCurveDeriskActive?: boolean;
   equityCurveDeriskCutPct?: number;
+  /** ADV participation cap (2026-07-24): the max % of a name's ~20-day average
+   *  daily volume a single position may take. Optional — only the equity
+   *  live/paper/preview paths set it (from AutotradeConfig.maxAdvParticipationPct);
+   *  0 or undefined means no cap. Needs the signal's own `avgVolume` to apply;
+   *  when that's unresolved the cap is skipped (reported, not blocked). */
+  maxAdvParticipationPct?: number;
 }
 
 export interface RiskCheckRule {
@@ -420,6 +426,15 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
       : 'inactive — strategy equity at/above its recent average (or disabled)',
   );
 
+  // ADV participation cap (optional): never take more than maxAdvParticipationPct%
+  // of the name's average daily volume, so a position stays exitable. Needs the
+  // signal's own avgVolume; skipped (not blocked) when that's unresolved.
+  const advCapPct = ctx.maxAdvParticipationPct ?? 0;
+  const advMaxQty =
+    advCapPct > 0 && signal.avgVolume != null && signal.avgVolume > 0
+      ? Math.floor((advCapPct / 100) * signal.avgVolume)
+      : undefined;
+
   const sizing = computeRiskSizing({
     accountSize: ctx.equity,
     riskPct: effectiveRiskPct,
@@ -427,6 +442,7 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     stopPrice: signal.stop,
     assetType: 'stock',
     side: signal.side === 'buy' ? 'long' : 'short',
+    maxQuantity: advMaxQty,
   });
 
   const qtyOk = sizing.suggestedQuantity > 0;
@@ -436,6 +452,15 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     qtyOk
       ? `${sizing.suggestedQuantity} shares`
       : 'risk budget is too small to size even one share at this stop distance',
+  );
+  check(
+    'adv_participation_cap',
+    true,
+    advCapPct === 0
+      ? 'inactive — no ADV participation cap set'
+      : signal.avgVolume == null || signal.avgVolume <= 0
+        ? `skipped — ${advCapPct}% cap set but this name's avg daily volume is unavailable`
+        : `${advCapPct}% of ${Math.round(signal.avgVolume).toLocaleString()} ADV = ${advMaxQty} share cap`,
   );
   if (!qtyOk) return blocked(sizing, stepDownActive, regimeActive, equityCurveDeriskActive);
 
@@ -596,6 +621,7 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
       regimeSizeCutPct: config.regimeSizeCutPct,
       equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
       equityCurveDeriskCutPct: config.equityCurveDeriskCutPct,
+      maxAdvParticipationPct: config.maxAdvParticipationPct,
     };
     const result = evaluateRiskCheck(signal, ctx);
     results.push(result);

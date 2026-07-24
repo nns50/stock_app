@@ -2192,6 +2192,7 @@ export default function AutoTradePage() {
   const [equityCurveDeriskEnabled, setEquityCurveDeriskEnabled] = useState(false);
   const [equityCurveLookbackDaysDraft, setEquityCurveLookbackDaysDraft] = useState<number | undefined>();
   const [equityCurveDeriskCutPctDraft, setEquityCurveDeriskCutPctDraft] = useState<number | undefined>();
+  const [maxAdvParticipationPctDraft, setMaxAdvParticipationPctDraft] = useState<number | undefined>();
   const [minRelVolDraft, setMinRelVolDraft] = useState<number | undefined>();
   const [requireWeeklyTrendAlignment, setRequireWeeklyTrendAlignment] = useState(false);
   const [relativeStrengthWeightDraft, setRelativeStrengthWeightDraft] = useState<number | undefined>();
@@ -2282,6 +2283,7 @@ export default function AutoTradePage() {
     setEquityCurveDeriskEnabled(config.data.equityCurveDeriskEnabled);
     setEquityCurveLookbackDaysDraft(config.data.equityCurveLookbackDays);
     setEquityCurveDeriskCutPctDraft(config.data.equityCurveDeriskCutPct);
+    setMaxAdvParticipationPctDraft(config.data.maxAdvParticipationPct);
     setMinRelVolDraft(config.data.minRelVol);
     setRequireWeeklyTrendAlignment(config.data.requireWeeklyTrendAlignment);
     setRelativeStrengthWeightDraft(config.data.relativeStrengthWeight);
@@ -2360,6 +2362,7 @@ export default function AutoTradePage() {
     equityCurveDeriskEnabled?: boolean;
     equityCurveLookbackDays?: number;
     equityCurveDeriskCutPct?: number;
+    maxAdvParticipationPct?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     requireWeeklyTrendAlignment?: boolean;
@@ -2452,6 +2455,7 @@ export default function AutoTradePage() {
       setEquityCurveDeriskEnabled(saved.equityCurveDeriskEnabled);
       setEquityCurveLookbackDaysDraft(saved.equityCurveLookbackDays);
       setEquityCurveDeriskCutPctDraft(saved.equityCurveDeriskCutPct);
+      setMaxAdvParticipationPctDraft(saved.maxAdvParticipationPct);
       setMinRelVolDraft(saved.minRelVol);
       setRequireWeeklyTrendAlignment(saved.requireWeeklyTrendAlignment);
       setRelativeStrengthWeightDraft(saved.relativeStrengthWeight);
@@ -3881,6 +3885,37 @@ export default function AutoTradePage() {
                           equityCurveDeriskCutPctDraft < 0 ||
                           equityCurveDeriskCutPctDraft > 100 ||
                           equityCurveDeriskCutPctDraft === config.data?.equityCurveDeriskCutPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Max ADV participation (%)"
+                    hint="Cap a single equity position at this % of the name's ~20-day average daily volume, so it stays exitable without moving the market. 0 disables it (default). Options already gate on their own open-interest/volume floors; live + paper only."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={maxAdvParticipationPctDraft}
+                        onChange={setMaxAdvParticipationPctDraft}
+                        min={0}
+                        max={100}
+                        step={0.5}
+                        placeholder="0 (no cap)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max ADV participation"
+                        onClick={() =>
+                          maxAdvParticipationPctDraft != null &&
+                          saveConfig({ maxAdvParticipationPct: maxAdvParticipationPctDraft })
+                        }
+                        disabled={
+                          maxAdvParticipationPctDraft == null ||
+                          maxAdvParticipationPctDraft < 0 ||
+                          maxAdvParticipationPctDraft > 100 ||
+                          maxAdvParticipationPctDraft === config.data?.maxAdvParticipationPct
                         }
                       >
                         Save

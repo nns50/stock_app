@@ -860,7 +860,13 @@ shouldn't be a tab-switch away.
   (%)**, restoring full size once the curve climbs back above its average. A softer,
   graduated companion to the binary **max daily drawdown** halt above; it stacks
   multiplicatively with step-down and regime sizing, and (like them) is live + paper
-  only with no backtest equivalent. Every field here
+  only with no backtest equivalent. Separately, **max ADV participation (%)**
+  (2026-07-24, 0 = off by default) caps a single equity position at that % of the
+  name's ~20-day **average daily volume**, so the risk engine never builds a position
+  bigger than you could exit cleanly — a liquidity backstop the risk-based sizing
+  doesn't otherwise enforce (options already gate on their own open-interest/volume
+  floors, so this is equity-only). When a name's average volume can't be resolved the
+  cap is skipped, not blocked. Every field here
   applies to paper and live trading alike, and each has its own **Save** button, so
   you can change one without touching the rest. For a plain-English walkthrough of each of these — with worked
   examples and guidance on what to change when nothing's trading — see

@@ -154,6 +154,12 @@ export interface AutotradeConfig {
   equityCurveDeriskEnabled: boolean;
   equityCurveLookbackDays: number;
   equityCurveDeriskCutPct: number;
+  /** ADV participation cap (2026-07-24): max % of a name's ~20-day average
+   *  daily volume a single equity position may take, so a position stays
+   *  exitable without moving the market. Defaults to 0 = off (a brand-new
+   *  guardrail — untouched changes nothing). LIVE + PAPER equity only; options
+   *  already gate on their own OI/volume floors, and a backtest doesn't set it. */
+  maxAdvParticipationPct: number;
 
   // --- Screening/decision thresholds (docs/AUTOTRADING_SPEC.md — RESEARCH &
   // SCREEN / DECISION). Same treatment, extraction, and reasoning as the
@@ -649,6 +655,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     equityCurveDeriskEnabled: false,
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,
+    maxAdvParticipationPct: 0,
     tradeDirection: 'long',
     minRelVol: 1.5,
     requireWeeklyTrendAlignment: false,
@@ -799,6 +806,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       typeof input.equityCurveDeriskEnabled === 'boolean' ? input.equityCurveDeriskEnabled : d.equityCurveDeriskEnabled,
     equityCurveLookbackDays: posIntMin1(input.equityCurveLookbackDays, d.equityCurveLookbackDays),
     equityCurveDeriskCutPct: pct(input.equityCurveDeriskCutPct, d.equityCurveDeriskCutPct),
+    maxAdvParticipationPct: pct(input.maxAdvParticipationPct, d.maxAdvParticipationPct),
     tradeDirection:
       input.tradeDirection === 'long' || input.tradeDirection === 'short' || input.tradeDirection === 'both'
         ? input.tradeDirection

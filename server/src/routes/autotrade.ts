@@ -136,6 +136,7 @@ const configBody = z.object({
   equityCurveDeriskEnabled: z.boolean().optional(),
   equityCurveLookbackDays: z.number().int().min(1).optional(),
   equityCurveDeriskCutPct: z.number().min(0).max(100).optional(),
+  maxAdvParticipationPct: z.number().min(0).max(100).optional(),
   // --- Screening/decision thresholds ------------------------------------------
   tradeDirection: z.enum(['long', 'short', 'both']).optional(),
   minRelVol: z.number().nonnegative().optional(),
@@ -266,6 +267,7 @@ autotradeRouter.put(
     if (body.equityCurveDeriskEnabled !== undefined) patch.equityCurveDeriskEnabled = body.equityCurveDeriskEnabled;
     if (body.equityCurveLookbackDays !== undefined) patch.equityCurveLookbackDays = body.equityCurveLookbackDays;
     if (body.equityCurveDeriskCutPct !== undefined) patch.equityCurveDeriskCutPct = body.equityCurveDeriskCutPct;
+    if (body.maxAdvParticipationPct !== undefined) patch.maxAdvParticipationPct = body.maxAdvParticipationPct;
     if (body.tradeDirection !== undefined) patch.tradeDirection = body.tradeDirection;
     if (body.minRelVol !== undefined) patch.minRelVol = body.minRelVol;
     if (body.requireWeeklyTrendAlignment !== undefined)
