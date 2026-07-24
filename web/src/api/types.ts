@@ -1286,6 +1286,10 @@ export interface AutotradeConfig {
   maxAdvParticipationPct: number;
   convictionGradeAMinScore: number;
   convictionGradeBMinScore: number;
+  expectancyWeightingEnabled: boolean;
+  expectancyMinTrades: number;
+  expectancyMinMultiplier: number;
+  expectancyMaxMultiplier: number;
 
   // --- Screening/decision thresholds ---
   tradeDirection: AutotradeTradeDirectionMode;

@@ -96,7 +96,15 @@ export default function AboutPage() {
           <strong className="text-slate-200">conviction grade</strong> stamped on the position — <strong>A</strong> at
           or above the configured A threshold (75 by default), <strong>B</strong> at or above the B threshold (60), else{' '}
           <strong>C</strong>. The grade is metadata, not a filter: it doesn’t change which trades are taken, but it lets
-          the Journal report realized edge <em>per conviction tier</em>, and a later opt-in can size positions by it.
+          the Journal report realized edge <em>per conviction tier</em>. An opt-in{' '}
+          <strong className="text-slate-200">expectancy-weighted sizing</strong> setting (off by default) then acts on
+          that edge: each grade’s position size is scaled by its own realized average R —{' '}
+          <span className="tabular-nums">multiplier = 1 + avg&nbsp;R</span>, clamped to a min/max bound you choose (e.g.{' '}
+          <span className="tabular-nums">0.5×–1.5×</span>), so a grade that has proven positive expectancy risks more
+          and one that bleeds risks less, while a grade with too few closed trades stays neutral at{' '}
+          <span className="tabular-nums">1×</span>. It multiplies with the other sizing factors (step-down, regime,
+          equity-curve) and never lifts total exposure past the aggregate-risk cap; paper and live are scored on
+          separate books.
         </p>
         <div className="mt-2 overflow-x-auto">
           <table className="w-full text-sm">

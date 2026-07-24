@@ -247,6 +247,42 @@ describe('evaluateRiskCheck — pure evaluator', () => {
     });
   });
 
+  describe('expectancy-weighted sizing', () => {
+    it('is neutral (full size) when the multiplier is unset', () => {
+      const result = evaluateRiskCheck(signal(), baseCtx());
+      expect(result.sizing.suggestedQuantity).toBe(200);
+      expect(findCheck(result, 'expectancy_sizing').detail).toMatch(/inactive/);
+    });
+
+    it('sizes up for a grade with proven positive edge', () => {
+      // 1% * 1.5 = 1.5% of 100,000 = 1,500 / $5 stop = 300 shares
+      const result = evaluateRiskCheck(signal(), baseCtx({ expectancyMultiplier: 1.5 }));
+      expect(result.sizing.suggestedQuantity).toBe(300);
+      expect(findCheck(result, 'expectancy_sizing').detail).toMatch(/1\.5× size multiplier/);
+    });
+
+    it('sizes down for a bleeding grade', () => {
+      // 1% * 0.5 = 0.5% of 100,000 = 500 / $5 = 100 shares
+      const result = evaluateRiskCheck(signal(), baseCtx({ expectancyMultiplier: 0.5 }));
+      expect(result.sizing.suggestedQuantity).toBe(100);
+    });
+
+    it('stacks multiplicatively with step-down and regime sizing', () => {
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({
+          consecutiveLosses: 2,
+          marketAtrPct: 6,
+          regimeAtrThresholdPct: 3,
+          regimeSizeCutPct: 30,
+          expectancyMultiplier: 1.2,
+        }),
+      );
+      // 1% * (1−50%) * (1−30%) * 1.2 = 0.42% of 100,000 = 420 / $5 = 84 shares
+      expect(result.sizing.suggestedQuantity).toBe(84);
+    });
+  });
+
   describe('daily drawdown halt', () => {
     it('passes when today is flat or positive', () => {
       const result = evaluateRiskCheck(signal(), baseCtx({ dailyPnl: 0 }));

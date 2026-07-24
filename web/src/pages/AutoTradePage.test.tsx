@@ -66,6 +66,10 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     maxAdvParticipationPct: 0,
     convictionGradeAMinScore: 75,
     convictionGradeBMinScore: 60,
+    expectancyWeightingEnabled: false,
+    expectancyMinTrades: 10,
+    expectancyMinMultiplier: 0.5,
+    expectancyMaxMultiplier: 1.5,
     tradeDirection: 'long',
     minRelVol: 1.5,
     requireWeeklyTrendAlignment: false,
@@ -377,6 +381,59 @@ describe('AutoTradePage', () => {
 
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ convictionGradeAMinScore: 80, confirmAggressive: undefined }),
+    );
+  });
+
+  it('toggling expectancy-weighted sizing saves immediately (no separate Save button)', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Expectancy-weighted sizing/ }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ expectancyWeightingEnabled: true, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new expectancy min sample value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Expectancy min sample (trades/grade)').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '20' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save expectancy min sample' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ expectancyMinTrades: 20, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves new expectancy multiplier bounds independently', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Expectancy multiplier bounds (min / max)').closest('label')!;
+    const inputs = within(field).getAllByRole('textbox');
+    fireEvent.change(inputs[1], { target: { value: '2' } });
+
+    const saveMax = screen.getByRole('button', { name: 'Save expectancy max multiplier' });
+    await waitFor(() => expect(saveMax).not.toBeDisabled());
+    fireEvent.click(saveMax);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ expectancyMaxMultiplier: 2, confirmAggressive: undefined }),
     );
   });
 

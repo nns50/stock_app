@@ -139,6 +139,10 @@ const configBody = z.object({
   maxAdvParticipationPct: z.number().min(0).max(100).optional(),
   convictionGradeAMinScore: z.number().min(0).max(100).optional(),
   convictionGradeBMinScore: z.number().min(0).max(100).optional(),
+  expectancyWeightingEnabled: z.boolean().optional(),
+  expectancyMinTrades: z.number().int().min(1).optional(),
+  expectancyMinMultiplier: z.number().positive().optional(),
+  expectancyMaxMultiplier: z.number().positive().optional(),
   // --- Screening/decision thresholds ------------------------------------------
   tradeDirection: z.enum(['long', 'short', 'both']).optional(),
   minRelVol: z.number().nonnegative().optional(),
@@ -272,6 +276,11 @@ autotradeRouter.put(
     if (body.maxAdvParticipationPct !== undefined) patch.maxAdvParticipationPct = body.maxAdvParticipationPct;
     if (body.convictionGradeAMinScore !== undefined) patch.convictionGradeAMinScore = body.convictionGradeAMinScore;
     if (body.convictionGradeBMinScore !== undefined) patch.convictionGradeBMinScore = body.convictionGradeBMinScore;
+    if (body.expectancyWeightingEnabled !== undefined)
+      patch.expectancyWeightingEnabled = body.expectancyWeightingEnabled;
+    if (body.expectancyMinTrades !== undefined) patch.expectancyMinTrades = body.expectancyMinTrades;
+    if (body.expectancyMinMultiplier !== undefined) patch.expectancyMinMultiplier = body.expectancyMinMultiplier;
+    if (body.expectancyMaxMultiplier !== undefined) patch.expectancyMaxMultiplier = body.expectancyMaxMultiplier;
     if (body.tradeDirection !== undefined) patch.tradeDirection = body.tradeDirection;
     if (body.minRelVol !== undefined) patch.minRelVol = body.minRelVol;
     if (body.requireWeeklyTrendAlignment !== undefined)

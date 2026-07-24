@@ -214,6 +214,23 @@ liquid territory; it binds only on thin names or oversized budgets, and silently
 when a name's volume can't be resolved rather than blocking the trade. Options are exempt
 (they already screen on open-interest and volume floors).
 
+**Let the edge you've measured set the size.** The by-grade Edge Report answers whether your
+A-grade setups actually out-earn your C-grade ones; **expectancy-weighted sizing** (Config →
+risk settings, off by default) is what acts on that answer instead of leaving it on a chart.
+When it's on, each conviction grade is sized by its _own_ realized edge — a grade whose closed
+trades average a positive R risks more, a grade that bleeds risks less, breakeven stays flat
+(multiplier = 1 + average R, clamped to the min/max bounds you set, e.g. 0.5×–1.5×). This is
+the disciplined version of "add to what's working": it only sizes up a grade once that grade
+has _earned_ it in your own results, and only within a bound you chose in advance — no
+single grade can run away with the book, and the aggregate-risk cap still binds on top. Two
+guardrails keep it honest. First, a grade with fewer than your **expectancy min sample** closed
+trades stays neutral at 1×, so a lucky handful of early wins can't inflate size before the
+sample means anything — set this to the number of trades you'd want before trusting a per-setup
+win rate (10–20 is reasonable). Second, paper and live are scored on separate books, so a paper
+hot streak never sizes up real money. It stacks multiplicatively with step-down, regime, and
+equity-curve sizing, and like them is live + paper only, with no backtest equivalent — prove a
+grade's edge in the by-grade report first, then let this size to it.
+
 ---
 
 ## Scaling into winners (pyramiding)

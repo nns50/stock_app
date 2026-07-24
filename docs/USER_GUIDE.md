@@ -871,7 +871,17 @@ shouldn't be a tab-switch away.
   **A** at or above the A threshold, **B** at or above the B threshold, else **C**. This is
   always on (it doesn't change what trades, only labels them): the grade flows into the
   Journal's per-grade edge report so you can see whether your high-conviction picks actually
-  outperform, and it's the key a later opt-in feature can size by. Every field here
+  outperform, and it's the key the next field sizes by. That next field —
+  **expectancy-weighted sizing** (2026-07-24, off by default) — closes the loop: instead of
+  every grade risking the same base %, each grade is sized by its _own_ realized edge. A
+  grade whose closed trades average a positive R is sized up, one that bleeds is sized down,
+  and breakeven stays flat (multiplier = 1 + average R, clamped to the **expectancy multiplier
+  bounds (min / max)** you set, e.g. 0.5×–1.5×). A grade with fewer than the **expectancy min
+  sample (trades/grade)** closed trades stays neutral at 1×, so a thin sample never moves
+  anything. Each book tunes itself from its own history (paper and live are scored separately),
+  the multiplier recomputes every tick from realized results, and it stacks multiplicatively
+  with step-down, regime, and equity-curve sizing — the aggregate-risk cap still binds on top.
+  Live + paper only, no backtest equivalent (same as the other sizing multipliers). Every field here
   applies to paper and live trading alike, and each has its own **Save** button, so
   you can change one without touching the rest. For a plain-English walkthrough of each of these — with worked
   examples and guidance on what to change when nothing's trading — see

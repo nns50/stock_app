@@ -1,6 +1,6 @@
 import { getProvider } from '../../providers';
 import { listPositions, Position } from '../../db/positions';
-import { realizedPnlOf, computeStreaksAndDrawdown } from '../pnl';
+import { realizedPnlOf, initialRiskOf, computeStreaksAndDrawdown } from '../pnl';
 import { computeRiskSizing, RiskSizingResult } from '../riskSizing';
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
@@ -8,7 +8,8 @@ import { logAutotradeEvent, listAutotradeEvents } from '../../db/autotradeEvents
 import { listUniverse } from '../../db/universe';
 import { getMarketAtrPct } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
-import { TradeSignal } from './decide';
+import { computeGradeExpectancyMultipliers } from './expectancySizing';
+import { TradeSignal, convictionGrade } from './decide';
 
 // ---------------------------------------------------------------------------
 // The Risk Check stage (docs/AUTOTRADING_SPEC.md — EXECUTION LOOP, stage 3;
@@ -121,6 +122,9 @@ export interface PortfolioSnapshot {
   /** Equity-curve de-risk decision from this book's own realized curve (2026-07-24) —
    *  false when disabled or above the average. */
   equityCurveDeriskActive: boolean;
+  /** grade → sizing multiplier from this book's realized per-grade edge
+   *  (2026-07-24); empty when expectancy weighting is off. */
+  gradeExpectancyMultipliers: Record<string, number>;
   openPositions: OpenRiskItem[];
 }
 
@@ -130,8 +134,8 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
   const equity = getAutotradeConfig().accountEquityUsd;
 
   const todayStr = etDateStr();
-  const closedTrades = listPositions({ status: 'closed' })
-    .filter(isAutotradePosition)
+  const closedPositions = listPositions({ status: 'closed' }).filter(isAutotradePosition);
+  const closedTrades = closedPositions
     .map((p) => ({ date: lastExitDate(p), pnl: realizedPnlOf(p) }))
     .sort((a, b) => a.date.localeCompare(b.date));
   const dailyPnl = closedTrades.filter((t) => t.date === todayStr).reduce((s, t) => s + t.pnl, 0);
@@ -143,6 +147,18 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
     lookbackDays: cfg.equityCurveLookbackDays,
     cutPct: cfg.equityCurveDeriskCutPct,
   }).active;
+  const gradeExpectancyMultipliers = computeGradeExpectancyMultipliers(
+    closedPositions.flatMap((p) => {
+      const risk = initialRiskOf(p);
+      return risk && risk > 0 ? [{ grade: p.grade, realizedR: realizedPnlOf(p) / risk }] : [];
+    }),
+    {
+      enabled: cfg.expectancyWeightingEnabled,
+      minTrades: cfg.expectancyMinTrades,
+      minMultiplier: cfg.expectancyMinMultiplier,
+      maxMultiplier: cfg.expectancyMaxMultiplier,
+    },
+  );
 
   const tradesToday = listAutotradeEvents({ stage: 'execution', limit: 1000 }).filter(
     (e) => e.action === 'order_placed' && etDateStr(e.createdAt) === todayStr,
@@ -156,7 +172,15 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
       notional: p.entryPrice * p.remainingQuantity * p.multiplier,
     }));
 
-  return { equity, dailyPnl, tradesToday, consecutiveLosses, equityCurveDeriskActive, openPositions };
+  return {
+    equity,
+    dailyPnl,
+    tradesToday,
+    consecutiveLosses,
+    equityCurveDeriskActive,
+    gradeExpectancyMultipliers,
+    openPositions,
+  };
 }
 
 /** Capital (across `positions`) statistically correlated with `symbol` —
@@ -335,6 +359,11 @@ export interface RiskCheckContext {
    *  0 or undefined means no cap. Needs the signal's own `avgVolume` to apply;
    *  when that's unresolved the cap is skipped (reported, not blocked). */
   maxAdvParticipationPct?: number;
+  /** Expectancy-weighted sizing multiplier (2026-07-24) for THIS candidate's
+   *  conviction grade, pre-computed by the caller from the book's realized
+   *  per-grade edge (services/autotrading/expectancySizing.ts). Optional — only
+   *  the equity live/paper/preview paths set it; 1 or undefined = neutral. */
+  expectancyMultiplier?: number;
 }
 
 export interface RiskCheckRule {
@@ -399,11 +428,13 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   const regimeActive = ctx.marketAtrPct != null && ctx.marketAtrPct > ctx.regimeAtrThresholdPct;
   const equityCurveDeriskActive = ctx.equityCurveDeriskActive === true;
   const equityCurveCutPct = ctx.equityCurveDeriskCutPct ?? 0;
+  const expectancyMultiplier = ctx.expectancyMultiplier ?? 1;
   const effectiveRiskPct =
     ctx.riskPerTradePct *
     (stepDownActive ? 1 - ctx.stepDownSizeCutPct / 100 : 1) *
     (regimeActive ? 1 - ctx.regimeSizeCutPct / 100 : 1) *
-    (equityCurveDeriskActive ? 1 - equityCurveCutPct / 100 : 1);
+    (equityCurveDeriskActive ? 1 - equityCurveCutPct / 100 : 1) *
+    expectancyMultiplier;
   check(
     'step_down_sizing',
     true,
@@ -424,6 +455,13 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     equityCurveDeriskActive
       ? `active — strategy equity below its recent average, sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}% (${equityCurveCutPct}% cut)`
       : 'inactive — strategy equity at/above its recent average (or disabled)',
+  );
+  check(
+    'expectancy_sizing',
+    true,
+    expectancyMultiplier !== 1
+      ? `active — this grade's realized edge applies a ${expectancyMultiplier}× size multiplier`
+      : 'inactive — expectancy weighting off, or this grade has no proven edge yet',
   );
 
   // ADV participation cap (optional): never take more than maxAdvParticipationPct%
@@ -622,6 +660,13 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
       equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
       equityCurveDeriskCutPct: config.equityCurveDeriskCutPct,
       maxAdvParticipationPct: config.maxAdvParticipationPct,
+      expectancyMultiplier:
+        snapshot.gradeExpectancyMultipliers[
+          convictionGrade(signal.score, {
+            aMinScore: config.convictionGradeAMinScore,
+            bMinScore: config.convictionGradeBMinScore,
+          })
+        ] ?? 1,
     };
     const result = evaluateRiskCheck(signal, ctx);
     results.push(result);
