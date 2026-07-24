@@ -7,6 +7,7 @@ import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { logAutotradeEvent, listAutotradeEvents } from '../../db/autotradeEvents';
 import { listUniverse } from '../../db/universe';
 import { getMarketAtrPct } from './executionGuards';
+import { computeEquityCurveDerisk } from './equityCurveDerisk';
 import { TradeSignal } from './decide';
 
 // ---------------------------------------------------------------------------
@@ -117,6 +118,9 @@ export interface PortfolioSnapshot {
   tradesToday: number;
   /** Length of the current losing streak (0 if the last closed trade wasn't a loss). */
   consecutiveLosses: number;
+  /** Equity-curve de-risk decision from this book's own realized curve (2026-07-24) —
+   *  false when disabled or above the average. */
+  equityCurveDeriskActive: boolean;
   openPositions: OpenRiskItem[];
 }
 
@@ -133,6 +137,12 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
   const dailyPnl = closedTrades.filter((t) => t.date === todayStr).reduce((s, t) => s + t.pnl, 0);
   const streak = computeStreaksAndDrawdown(closedTrades.map((t) => t.pnl)).currentStreak;
   const consecutiveLosses = streak.type === 'loss' ? streak.count : 0;
+  const cfg = getAutotradeConfig();
+  const equityCurveDeriskActive = computeEquityCurveDerisk(closedTrades, {
+    enabled: cfg.equityCurveDeriskEnabled,
+    lookbackDays: cfg.equityCurveLookbackDays,
+    cutPct: cfg.equityCurveDeriskCutPct,
+  }).active;
 
   const tradesToday = listAutotradeEvents({ stage: 'execution', limit: 1000 }).filter(
     (e) => e.action === 'order_placed' && etDateStr(e.createdAt) === todayStr,
@@ -146,7 +156,7 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
       notional: p.entryPrice * p.remainingQuantity * p.multiplier,
     }));
 
-  return { equity, dailyPnl, tradesToday, consecutiveLosses, openPositions };
+  return { equity, dailyPnl, tradesToday, consecutiveLosses, equityCurveDeriskActive, openPositions };
 }
 
 /** Capital (across `positions`) statistically correlated with `symbol` —
@@ -310,6 +320,15 @@ export interface RiskCheckContext {
   marketAtrPct: number | null;
   regimeAtrThresholdPct: number;
   regimeSizeCutPct: number;
+  /** Equity-curve de-risking (2026-07-24, services/autotrading/equityCurveDerisk.ts).
+   *  Optional — only the LIVE and PAPER equity paths (which have a per-book
+   *  realized equity curve) set these; every other caller (backtest engines,
+   *  options) leaves them undefined, which reads as inactive, exactly like
+   *  `marketAtrPct: null` scopes regime sizing out of those paths. `active` is
+   *  the pre-computed "curve below its N-day average" decision (the caller's
+   *  snapshot did the history math); `cutPct` is the configured size cut. */
+  equityCurveDeriskActive?: boolean;
+  equityCurveDeriskCutPct?: number;
 }
 
 export interface RiskCheckRule {
@@ -327,6 +346,8 @@ export interface RiskCheckResult {
   /** Regime-aware sizing cut active this check (2026-07-16) — see
    *  RiskCheckContext.marketAtrPct's own doc comment. */
   regimeActive: boolean;
+  /** Equity-curve de-risking cut active this check (2026-07-24). */
+  equityCurveDeriskActive: boolean;
   /** What this trade would add to running totals if approved (0 when blocked) —
    *  the batch orchestration accumulates these across signals. */
   approvedRiskAmount: number;
@@ -343,13 +364,19 @@ export interface RiskCheckResult {
 export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): RiskCheckResult {
   const checks: RiskCheckRule[] = [];
   const check = (rule: string, passed: boolean, detail: string) => checks.push({ rule, passed, detail });
-  const blocked = (sizing: RiskSizingResult, stepDownActive: boolean, regimeActive: boolean): RiskCheckResult => ({
+  const blocked = (
+    sizing: RiskSizingResult,
+    stepDownActive: boolean,
+    regimeActive: boolean,
+    equityCurveDeriskActive: boolean,
+  ): RiskCheckResult => ({
     symbol: signal.symbol,
     ok: false,
     checks,
     sizing,
     stepDownActive,
     regimeActive,
+    equityCurveDeriskActive,
     approvedRiskAmount: 0,
     approvedNotional: 0,
   });
@@ -360,14 +387,17 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     equityOk,
     equityOk ? usd(ctx.equity) : 'account equity is not set — configure it before auto-trading can size positions',
   );
-  if (!equityOk) return blocked(ZERO_SIZING, false, false);
+  if (!equityOk) return blocked(ZERO_SIZING, false, false, false);
 
   const stepDownActive = ctx.consecutiveLosses >= ctx.stepDownAfterLosses;
   const regimeActive = ctx.marketAtrPct != null && ctx.marketAtrPct > ctx.regimeAtrThresholdPct;
+  const equityCurveDeriskActive = ctx.equityCurveDeriskActive === true;
+  const equityCurveCutPct = ctx.equityCurveDeriskCutPct ?? 0;
   const effectiveRiskPct =
     ctx.riskPerTradePct *
     (stepDownActive ? 1 - ctx.stepDownSizeCutPct / 100 : 1) *
-    (regimeActive ? 1 - ctx.regimeSizeCutPct / 100 : 1);
+    (regimeActive ? 1 - ctx.regimeSizeCutPct / 100 : 1) *
+    (equityCurveDeriskActive ? 1 - equityCurveCutPct / 100 : 1);
   check(
     'step_down_sizing',
     true,
@@ -381,6 +411,13 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     regimeActive
       ? `active — market ATR ${ctx.marketAtrPct!.toFixed(1)}% exceeds ${ctx.regimeAtrThresholdPct}%, sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}% (${ctx.regimeSizeCutPct}% cut)`
       : `inactive — market ATR ${ctx.marketAtrPct == null ? 'unavailable' : ctx.marketAtrPct.toFixed(1) + '%'} (triggers above ${ctx.regimeAtrThresholdPct}%)`,
+  );
+  check(
+    'equity_curve_derisk',
+    true,
+    equityCurveDeriskActive
+      ? `active — strategy equity below its recent average, sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}% (${equityCurveCutPct}% cut)`
+      : 'inactive — strategy equity at/above its recent average (or disabled)',
   );
 
   const sizing = computeRiskSizing({
@@ -400,7 +437,7 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
       ? `${sizing.suggestedQuantity} shares`
       : 'risk budget is too small to size even one share at this stop distance',
   );
-  if (!qtyOk) return blocked(sizing, stepDownActive, regimeActive);
+  if (!qtyOk) return blocked(sizing, stepDownActive, regimeActive, equityCurveDeriskActive);
 
   const dailyHaltLevel = -(ctx.maxDailyDrawdownPct / 100) * ctx.equity;
   const haltOk = ctx.dailyPnl > dailyHaltLevel;
@@ -475,6 +512,7 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     sizing,
     stepDownActive,
     regimeActive,
+    equityCurveDeriskActive,
     approvedRiskAmount: ok ? sizing.riskOfPosition : 0,
     approvedNotional: ok ? sizing.positionCost : 0,
   };
@@ -556,6 +594,8 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
       marketAtrPct,
       regimeAtrThresholdPct: config.regimeAtrThresholdPct,
       regimeSizeCutPct: config.regimeSizeCutPct,
+      equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
+      equityCurveDeriskCutPct: config.equityCurveDeriskCutPct,
     };
     const result = evaluateRiskCheck(signal, ctx);
     results.push(result);

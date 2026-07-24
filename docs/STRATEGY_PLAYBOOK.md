@@ -190,6 +190,17 @@ _suggestion_ and warns loudly past a survivable per-trade risk, but it won't sto
 hand-entering more. Preview every changed field, and remember the daily-drawdown halt it
 sets is the number you have to be willing to lose on a bad day to have a shot at the good one.
 
+**A softer brake than the daily halt.** The daily-drawdown halt is all-or-nothing — full
+size until a hard floor, then nothing. **Equity-curve de-risking** (Config → risk settings,
+off by default) is the graduated version, keyed to your own results rather than the clock:
+it tracks the strategy's cumulative closed-P&L curve (paper and live kept separate) and,
+whenever the latest point sits below its N-day moving average, cuts new-position size by a
+set %, restoring full size once the curve climbs back above the average. It's the classic
+"trade your equity curve like a price series" filter — you keep trading through a rough
+patch, just smaller, which blunts the string of full-size losses a drawdown can inflict
+without the whiplash of a hard stop. It stacks multiplicatively with step-down and regime
+sizing, and like them applies to paper and live only, not backtests.
+
 ---
 
 ## Scaling into winners (pyramiding)

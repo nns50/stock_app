@@ -114,6 +114,8 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
     sizing,
     stepDownActive,
     regimeActive,
+    // Equity-curve de-risk is an equity-only sizing factor; options never sets it.
+    equityCurveDeriskActive: false,
     approvedRiskAmount: 0,
     approvedNotional: 0,
   });
@@ -271,6 +273,7 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
     sizing,
     stepDownActive,
     regimeActive,
+    equityCurveDeriskActive: false,
     approvedRiskAmount: ok ? riskOfPosition : 0,
     approvedNotional: ok ? positionNotional : 0,
   };

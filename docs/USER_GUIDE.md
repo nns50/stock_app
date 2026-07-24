@@ -852,7 +852,15 @@ shouldn't be a tab-switch away.
   with it if both are active at once. Regime size cut defaults to 0% — disabled, so
   leaving it untouched changes nothing regardless of the threshold's own value. **Live
   and paper only — no backtest equivalent**, same as max market ATR itself; watch
-  **Recent activity**'s risk-check entries to see it fire). Every field here
+  **Recent activity**'s risk-check entries to see it fire). Finally, **equity-curve
+  de-risking** (2026-07-24, off by default) is the same idea keyed to your _own_
+  results instead of the market: when the strategy's cumulative closed-P&L curve —
+  tracked separately for paper and live — is below its **equity-curve lookback
+  (days)**-day moving average, new positions size down by the **equity-curve size cut
+  (%)**, restoring full size once the curve climbs back above its average. A softer,
+  graduated companion to the binary **max daily drawdown** halt above; it stacks
+  multiplicatively with step-down and regime sizing, and (like them) is live + paper
+  only with no backtest equivalent. Every field here
   applies to paper and live trading alike, and each has its own **Save** button, so
   you can change one without touching the rest. For a plain-English walkthrough of each of these — with worked
   examples and guidance on what to change when nothing's trading — see
