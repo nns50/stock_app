@@ -104,6 +104,16 @@ CREATE TABLE IF NOT EXISTS ${name} (
   is_bracket      INTEGER NOT NULL DEFAULT 0,  -- 1 = placed as a bracket (MASTER + exit legs)
   state           TEXT NOT NULL,         -- OrderState (validated by the lifecycle machine)
   broker_order_id TEXT,
+  -- How much of this order has already been mirrored into the Positions ledger,
+  -- and at what total cost. Partial fills are materialized INCREMENTALLY (see
+  -- services/trading/reconcile.ts), so these two are the high-water mark that
+  -- makes repeated reconciles idempotent: three independent callers can observe
+  -- the same fill and only the unbooked delta is ever written. Notional is
+  -- tracked alongside quantity because the broker reports an AVERAGE fill price
+  -- over all executions — the incremental price of a new partial is only
+  -- recoverable by differencing notionals.
+  materialized_qty      REAL NOT NULL DEFAULT 0,
+  materialized_notional REAL NOT NULL DEFAULT 0,
   created_at      INTEGER NOT NULL,
   updated_at      INTEGER NOT NULL
 );`;
@@ -112,7 +122,8 @@ CREATE TABLE IF NOT EXISTS ${name} (
  *  the rebuild (so it's robust to ALTER-appended columns in an older table). */
 const ORDER_INTENTS_COLS =
   'id, idempotency_key, symbol, asset_kind, side, open_close, quantity, order_type, limit_price, ' +
-  'option_type, strike, expiration, option_strategy, is_bracket, state, broker_order_id, created_at, updated_at';
+  'option_type, strike, expiration, option_strategy, is_bracket, state, broker_order_id, ' +
+  'materialized_qty, materialized_notional, created_at, updated_at';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS universe (
@@ -755,6 +766,29 @@ function migrate(): void {
   const hasOi = (c: string) => oiCols.some((col) => col.name === c);
   if (!hasOi('option_strategy')) db.exec('ALTER TABLE order_intents ADD COLUMN option_strategy TEXT');
   if (!hasOi('is_bracket')) db.exec('ALTER TABLE order_intents ADD COLUMN is_bracket INTEGER NOT NULL DEFAULT 0');
+  // order_intents gained incremental-materialization tracking so partial fills
+  // can be mirrored into Positions as they happen (reconcile.ts) instead of only
+  // at the terminal `filled` state.
+  //
+  // The backfill is the load-bearing part: an intent already sitting at `filled`
+  // had its position booked in full by the OLD code, so it must start at its
+  // full quantity or the first reconcile after this upgrade would book it a
+  // SECOND time. (`filled` is terminal and returns early, so this is belt-and-
+  // braces — but a default of 0 would be a live double-booking hazard the moment
+  // any future path re-examines a filled intent, which is exactly the class of
+  // bug the migration audit found.) Notional is backfilled at the intent's own
+  // limit price purely so the column is self-consistent; it is never read again
+  // for these rows, since a fully-materialized order has no remaining delta.
+  if (!hasOi('materialized_qty')) {
+    db.exec('ALTER TABLE order_intents ADD COLUMN materialized_qty REAL NOT NULL DEFAULT 0');
+    db.exec("UPDATE order_intents SET materialized_qty = quantity WHERE state = 'filled'");
+  }
+  if (!hasOi('materialized_notional')) {
+    db.exec('ALTER TABLE order_intents ADD COLUMN materialized_notional REAL NOT NULL DEFAULT 0');
+    db.exec(
+      "UPDATE order_intents SET materialized_notional = quantity * COALESCE(limit_price, 0) WHERE state = 'filled'",
+    );
+  }
   // Must run AFTER the ADD COLUMNs above so the explicit-column copy finds them.
   rebuildOrderIntentsTable(db);
 
@@ -934,14 +968,26 @@ export function rebuildOrderIntentsTable(database: Database.Database): void {
   // Fresh DBs create it without the CHECK; a rebuilt DB has none either → bail.
   if (!row?.sql || !/CHECK\s*\(\s*order_type/i.test(row.sql)) return;
 
+  // Copy only the columns the OLD table actually has. ORDER_INTENTS_COLS is the
+  // full modern list, including ALTER-added ones — intersecting it with the live
+  // table keeps the "never silently drop an ALTER-added column" property while
+  // staying safe on a table that predates the newest ones (they take the new
+  // table's DEFAULT instead of failing the copy with "no such column"). Without
+  // this the rebuild is correct only if every ADD COLUMN happened to run first —
+  // the exact ordering fragility behind the earlier rebuild data loss.
+  const present = new Set(
+    (database.prepare('PRAGMA table_info(order_intents)').all() as { name: string }[]).map((c) => c.name),
+  );
+  const cols = ORDER_INTENTS_COLS.split(', ')
+    .filter((c) => present.has(c))
+    .join(', ');
+
   const hadForeignKeys = database.pragma('foreign_keys', { simple: true }) === 1;
   database.pragma('foreign_keys = OFF'); // so dropping the old table doesn't cascade order_events
   try {
     database.transaction(() => {
       database.exec(orderIntentsTableSql('order_intents_new'));
-      database.exec(
-        `INSERT INTO order_intents_new (${ORDER_INTENTS_COLS}) SELECT ${ORDER_INTENTS_COLS} FROM order_intents;`,
-      );
+      database.exec(`INSERT INTO order_intents_new (${cols}) SELECT ${cols} FROM order_intents;`);
       database.exec('DROP TABLE order_intents;');
       database.exec('ALTER TABLE order_intents_new RENAME TO order_intents;');
     })();

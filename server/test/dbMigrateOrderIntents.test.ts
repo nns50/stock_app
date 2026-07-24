@@ -87,3 +87,44 @@ describe('rebuildOrderIntentsTable', () => {
     expect(db.prepare('PRAGMA table_info(order_intents)').all().length).toBe(cols);
   });
 });
+
+describe('rebuildOrderIntentsTable — ALTER-added columns', () => {
+  it('preserves an ALTER-added materialization mark instead of resetting it to the default', () => {
+    // The data-loss shape this rebuild has hit before: a column added by ALTER
+    // is absent from the hard-coded copy list, so the rebuild silently resets
+    // it. For materialized_qty that is not cosmetic — a `filled` intent whose
+    // mark resets to 0 looks entirely unbooked, so the next reconcile would
+    // book its position a SECOND time and invent cost basis that never existed.
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    db.exec(OLD_SCHEMA);
+    db.exec('ALTER TABLE order_intents ADD COLUMN materialized_qty REAL NOT NULL DEFAULT 0');
+    db.exec('ALTER TABLE order_intents ADD COLUMN materialized_notional REAL NOT NULL DEFAULT 0');
+    insertIntent(db, 'k-filled', 'limit');
+    db.prepare("UPDATE order_intents SET state = 'filled', materialized_qty = 1, materialized_notional = 4.5").run();
+
+    rebuildOrderIntentsTable(db);
+
+    const row = db.prepare('SELECT materialized_qty, materialized_notional FROM order_intents WHERE id = 1').get() as {
+      materialized_qty: number;
+      materialized_notional: number;
+    };
+    expect(row.materialized_qty).toBe(1);
+    expect(row.materialized_notional).toBe(4.5);
+  });
+
+  it('still rebuilds a table that predates those columns, defaulting them', () => {
+    // Order-independence: the rebuild must not require the ADD COLUMNs to have
+    // run first. Before the column-intersection fix this threw "no such column".
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    db.exec(OLD_SCHEMA);
+    insertIntent(db, 'k1', 'limit');
+
+    expect(() => rebuildOrderIntentsTable(db)).not.toThrow();
+    const row = db.prepare('SELECT materialized_qty FROM order_intents WHERE id = 1').get() as {
+      materialized_qty: number;
+    };
+    expect(row.materialized_qty).toBe(0);
+  });
+});

@@ -1139,6 +1139,12 @@ export interface ReconcileResult {
   intent?: OrderIntentRecord;
   broker?: WebullOrderStatus;
   error?: string;
+  /** Quantity newly mirrored into Positions by this reconcile (partial fills
+   *  are booked as they happen, not only once the order fully fills). */
+  materialized?: number;
+  /** Set when the broker's fill data couldn't be fully mirrored — e.g. it
+   *  reported more filled than was ordered. Always shown to the user. */
+  fillWarning?: string;
 }
 
 export interface ReconcileAllResult {
@@ -1147,7 +1153,17 @@ export interface ReconcileAllResult {
   reconciled: number;
   /** How many of those advanced to a new state. */
   changed: number;
-  results: Array<{ id: number; changed: boolean; state?: string; status?: string; error?: string }>;
+  results: Array<{
+    id: number;
+    changed: boolean;
+    state?: string;
+    status?: string;
+    error?: string;
+    materialized?: number;
+    fillWarning?: string;
+  }>;
+  /** How many orders reported a fill the ledger couldn't fully mirror. */
+  warnings: number;
 }
 
 export interface CancelResult {

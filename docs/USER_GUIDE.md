@@ -420,6 +420,16 @@ yourself once you've decided.
   **close** fill **records an exit** against the matching open position(s) — oldest lot first (FIFO),
   a sell-to-close reducing a long and a buy-to-close a short — so the Journal's realized P&L tracks
   live trades automatically. (Spreads aren't auto-tracked — their single-leg fields are null.)
+  **Partial fills are recorded as they happen**, not only once an order completes: each instalment
+  is booked as its own lot at its own fill price, and the refresh line says how much it booked
+  (`partial_filled · 30/100 · booked 30 to Positions`). This matters most when a partly-filled
+  order is then **cancelled** — those shares are real, and they're now tracked instead of being
+  held invisibly. Refreshing the same order repeatedly is safe: only the not-yet-recorded part is
+  ever added. If the broker reports something the ledger can't fully mirror — more filled than you
+  ordered, say — the refresh line shows a **⚠ warning** explaining what was and wasn't recorded
+  (and **Refresh all** flags how many orders need a look), and the reason is written to the order's
+  audit trail. The app deliberately records **less** than it's unsure of rather than inventing
+  shares you don't own, so treat a warning as "check this order against your broker".
   **Cancel** appears on an order that's still working
   (acknowledged / partially filled): it requests a broker cancel, then reconciles to show the
   result. Cancel is risk-reducing, so it works even when `TRADING_ENABLED` is off. **Modify**

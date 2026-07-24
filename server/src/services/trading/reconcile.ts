@@ -1,4 +1,11 @@
-import { OrderIntentRecord, getIntent, listIntents, transitionIntent } from '../../db/orders';
+import {
+  OrderIntentRecord,
+  advanceMaterialized,
+  getIntent,
+  listIntents,
+  recordIntentNote,
+  transitionIntent,
+} from '../../db/orders';
 import { Position, addExit, createPosition, listPositions } from '../../db/positions';
 import { OrderState, canTransition, isTerminal } from './orderLifecycle';
 import { WebullOrderStatus, webullOrderStatus } from '../../providers/webull/orders';
@@ -48,11 +55,98 @@ export function mapWebullStatus(status: string): OrderState | undefined {
 
 export interface ReconcileResult {
   ok: boolean;
-  /** True when this call advanced the intent's state. */
+  /** True when this call advanced the intent's state OR booked new fill
+   *  quantity into the Positions ledger. */
   changed: boolean;
   intent?: OrderIntentRecord;
   broker?: WebullOrderStatus;
   error?: string;
+  /** Quantity newly mirrored into Positions by this call (0 when none). */
+  materialized?: number;
+  /** Set when the broker's fill data contradicted an assumption this code
+   *  depends on. Surfaced rather than swallowed — see materializeFill. */
+  fillWarning?: string;
+}
+
+/** Quantities are REAL columns; compare with a tolerance rather than exactly. */
+const QTY_EPS = 1e-9;
+
+interface MaterializeOutcome {
+  booked: number;
+  warning?: string;
+}
+
+/**
+ * Mirror the not-yet-booked part of an observed fill into the Positions ledger.
+ *
+ * The broker reports a RUNNING total (`filled_quantity`) and an AVERAGE price
+ * over all executions, so the new lot is the difference against what we already
+ * booked: quantity by subtraction, price by differencing notionals. Booking the
+ * delta rather than the total is what makes this safe to call repeatedly — all
+ * three reconcile callers (human Refresh, the Webull scheduler, autotrade's own
+ * loop) can observe the same fill and only the unbooked remainder is written.
+ *
+ * That running-total reading is an ASSUMPTION about the broker — it has not
+ * been confirmed against a real partial fill (see `npm run capture:broker`).
+ * So rather than trust it, every way it could be wrong is checked here and
+ * fails toward under-booking with a loud note, never toward silently booking
+ * phantom shares:
+ *
+ *   - a DECREASE means the field reports each execution separately instead of a
+ *     running total, and differencing is invalid — refuse and flag.
+ *   - a total exceeding the order's own size means the same thing (or broker
+ *     inconsistency) — book only up to what was actually ordered, and flag.
+ *   - a non-sensical implied price (from an inconsistent average) falls back to
+ *     the reported average, and flags.
+ *
+ * Under-booking is recoverable: the shares show up in the next Webull positions
+ * sync and the note says why. Over-booking would invent cost basis that never
+ * existed, which silently corrupts P&L — so every ambiguous case resolves the
+ * conservative way.
+ */
+function materializeFill(intent: OrderIntentRecord, observedQty: number, observedAvgPrice: number): MaterializeOutcome {
+  if (!Number.isFinite(observedQty) || observedQty <= QTY_EPS) return { booked: 0 };
+
+  let delta = observedQty - intent.materializedQty;
+  if (delta < -QTY_EPS) {
+    return {
+      booked: 0,
+      warning:
+        `broker reported ${observedQty} filled after ${intent.materializedQty} was already booked — ` +
+        `filled_quantity decreased, so it is NOT a running total and cannot be differenced. ` +
+        `Refusing to book; reconcile this order manually.`,
+    };
+  }
+  if (delta <= QTY_EPS) return { booked: 0 };
+
+  let warning: string | undefined;
+
+  // Never book more than the order actually asked for.
+  const bookable = intent.quantity - intent.materializedQty;
+  if (delta > bookable + QTY_EPS) {
+    warning =
+      `broker reported ${observedQty} filled on an order for ${intent.quantity} — ` +
+      `booking only the ${Math.max(0, bookable)} outstanding.`;
+    delta = Math.max(0, bookable);
+    if (delta <= QTY_EPS) return { booked: 0, warning };
+  }
+
+  // Price of THIS lot, backed out of the running average.
+  const observedNotional = observedQty * observedAvgPrice;
+  const incrementalNotional = observedNotional - intent.materializedNotional;
+  let price = incrementalNotional / delta;
+  if (!Number.isFinite(price) || price <= 0) {
+    price = observedAvgPrice;
+    warning = [warning, `implied incremental price was not usable — falling back to the average fill price.`]
+      .filter(Boolean)
+      .join(' ');
+  }
+
+  if (intent.openClose === 'open') recordFillAsPosition(intent, delta, price);
+  else recordCloseAsExit(intent, delta, price);
+
+  advanceMaterialized(intent.id, delta, delta * price);
+  return { booked: delta, warning };
 }
 
 /** True when `intent`'s own entry fill produced a position that's still open —
@@ -136,7 +230,11 @@ export async function reconcileIntent(id: number, accountId: string): Promise<Re
         side: intent.side === 'buy' ? 'sell' : 'buy',
         openClose: 'close',
       };
-      recordCloseAsExit(asClose, { ...broker, filledQty: leg.filledQty, filledPrice: leg.filledPrice });
+      // The exit leg's own fill — NOT routed through materializeFill, whose
+      // high-water mark tracks this intent's ENTRY quantity. Re-entry is
+      // bounded instead by hasOpenPositionForIntent above: once the exit is
+      // booked the position is no longer open, so this stops firing.
+      recordCloseAsExit(asClose, leg.filledQty ?? intent.quantity, leg.filledPrice ?? intent.limitPrice ?? 0);
       return { ok: true, changed: true, intent, broker };
     }
     return { ok: true, changed: false, intent, broker };
@@ -145,50 +243,90 @@ export async function reconcileIntent(id: number, accountId: string): Promise<Re
   if (!broker.status) return { ok: true, changed: false, intent, broker };
 
   const target = mapWebullStatus(broker.status);
-  // Only move when the broker reports a genuinely new, legal next state.
-  if (!target || target === intent.state || !canTransition(intent.state, target)) {
-    return { ok: true, changed: false, intent, broker };
-  }
+  const canMove = !!target && target !== intent.state && canTransition(intent.state, target);
+  // An order that stays `partially_filled` across two observations has NOT
+  // changed state, but it may well have filled further — the old code's
+  // `target === intent.state` early return meant every partial after the first
+  // was ignored, so a 30/100 that became 90/100 booked nothing for the extra 60.
+  const restingPartial = target === 'partially_filled' && intent.state === 'partially_filled';
+  if (!canMove && !restingPartial) return { ok: true, changed: false, intent, broker };
 
   const fill = broker.filledQty !== undefined ? ` ${broker.filledQty}/${broker.totalQty ?? intent.quantity}` : '';
   const at = broker.filledPrice !== undefined ? ` @ ${broker.filledPrice}` : '';
-  const updated = transitionIntent(id, target, {
-    detail: `broker ${broker.status.toLowerCase()}${fill}${at}`,
-    brokerOrderId: broker.brokerOrderId,
-  });
+  let updated = intent;
+  if (canMove) {
+    updated = transitionIntent(id, target, {
+      detail: `broker ${broker.status.toLowerCase()}${fill}${at}`,
+      brokerOrderId: broker.brokerOrderId,
+    });
+  }
 
   // A live single-leg/stock fill is mirrored into the Positions ledger so live
   // trades show on Positions / Journal like a manually-logged trade: an OPEN fill
   // creates a Position, a CLOSE fill records an exit against the matching open
   // position(s). A spread/combo doesn't map to one position (its single-leg
-  // fields are null), so it's skipped. `filled` is terminal, so each runs at most
-  // once. Both are best-effort — the order reconcile has already succeeded.
-  const singleNameFill = target === 'filled' && (intent.assetKind === 'stock' || intent.optionType !== null);
-  if (singleNameFill && intent.openClose === 'open') {
-    recordFillAsPosition(updated, broker);
-  } else if (singleNameFill && intent.openClose === 'close') {
-    recordCloseAsExit(updated, broker);
+  // fields are null), so it's skipped.
+  //
+  // PARTIAL fills are mirrored too, not just the terminal `filled`. Booking only
+  // at `filled` meant a partial that was then CANCELLED — a legal, terminal
+  // lifecycle path — left real shares held with no position row at all:
+  // invisible to Positions, to exposure, to the open-risk caps, and to every
+  // exit rule. materializeFill() books the unbooked delta, so the shares appear
+  // as soon as the broker reports them and repeated observations are harmless.
+  const singleName = intent.assetKind === 'stock' || intent.optionType !== null;
+  const sawFill = target === 'filled' || target === 'partially_filled';
+  let outcome: MaterializeOutcome = { booked: 0 };
+  if (singleName && sawFill && broker.filledQty !== undefined) {
+    outcome = materializeFill(updated, broker.filledQty, broker.filledPrice ?? updated.limitPrice ?? 0);
   }
 
-  return { ok: true, changed: true, intent: updated, broker };
+  // A fully-filled order whose booked quantity doesn't match what was ordered is
+  // a real discrepancy — the ledger is now out of step with the account. Say so
+  // in the audit trail rather than letting it pass as a clean reconcile.
+  if (target === 'filled' && singleName) {
+    const booked = (getIntent(id) ?? updated).materializedQty;
+    if (Math.abs(booked - intent.quantity) > QTY_EPS) {
+      outcome.warning = [
+        outcome.warning,
+        `order filled but only ${booked} of ${intent.quantity} is reflected in Positions.`,
+      ]
+        .filter(Boolean)
+        .join(' ');
+    }
+  }
+
+  if (outcome.warning) recordIntentNote(id, `materialization: ${outcome.warning}`);
+  else if (outcome.booked > 0) recordIntentNote(id, `materialized ${outcome.booked} into Positions`);
+
+  return {
+    ok: true,
+    changed: canMove || outcome.booked > 0,
+    intent: getIntent(id) ?? updated,
+    broker,
+    materialized: outcome.booked,
+    fillWarning: outcome.warning,
+  };
 }
 
-/** Record a filled OPEN order as a tracked Position. Best-effort: a logging
- *  failure must not break order reconciliation. */
-function recordFillAsPosition(intent: OrderIntentRecord, broker: WebullOrderStatus): void {
+/** Record a filled OPEN order (or one instalment of it) as a tracked Position.
+ *  A partially-filled order books one lot per observed instalment, each at its
+ *  own price — which is what actually happened, and what FIFO exit matching
+ *  already expects. Best-effort: a logging failure must not break order
+ *  reconciliation. */
+function recordFillAsPosition(intent: OrderIntentRecord, quantity: number, entryPrice: number): void {
   try {
     createPosition({
       assetType: intent.assetKind,
       symbol: intent.symbol,
       side: intent.side === 'buy' ? 'long' : 'short',
-      quantity: broker.filledQty ?? intent.quantity,
-      entryPrice: broker.filledPrice ?? intent.limitPrice ?? 0,
+      quantity,
+      entryPrice,
       entryDate: new Date().toISOString().slice(0, 10),
       optionType: intent.optionType,
       strike: intent.strike,
       expiration: intent.expiration,
       multiplier: intent.assetKind === 'option' ? 100 : undefined,
-      notes: `Auto-recorded from live order #${intent.id}${broker.brokerOrderId ? ` (broker ${broker.brokerOrderId})` : ''}`,
+      notes: `Auto-recorded from live order #${intent.id}${intent.brokerOrderId ? ` (broker ${intent.brokerOrderId})` : ''}`,
       tags: ['live'],
       sourceIntentId: intent.id,
     });
@@ -209,11 +347,10 @@ function sameContract(p: Position, intent: OrderIntentRecord): boolean {
  *  A sell-to-close reduces a long; a buy-to-close reduces a short. Best-effort:
  *  a logging failure must not break order reconciliation, and an unmatched close
  *  (e.g. the open leg was a spread, or never logged here) is simply a no-op. */
-function recordCloseAsExit(intent: OrderIntentRecord, broker: WebullOrderStatus): void {
+function recordCloseAsExit(intent: OrderIntentRecord, quantity: number, exitPrice: number): void {
   try {
-    let remaining = broker.filledQty ?? intent.quantity;
+    let remaining = quantity;
     if (remaining <= 0) return;
-    const exitPrice = broker.filledPrice ?? intent.limitPrice ?? 0;
     const exitDate = new Date().toISOString().slice(0, 10);
     // The position being closed is the OPPOSITE side of the closing order.
     const closingSide = intent.side === 'sell' ? 'long' : 'short';
@@ -228,7 +365,7 @@ function recordCloseAsExit(intent: OrderIntentRecord, broker: WebullOrderStatus)
         quantity: take,
         exitPrice,
         exitDate,
-        notes: `Auto-recorded from live close order #${intent.id}${broker.brokerOrderId ? ` (broker ${broker.brokerOrderId})` : ''}`,
+        notes: `Auto-recorded from live close order #${intent.id}${intent.brokerOrderId ? ` (broker ${intent.brokerOrderId})` : ''}`,
         sourceIntentId: intent.id,
       });
       remaining -= take;
@@ -244,7 +381,18 @@ export interface ReconcileAllResult {
   reconciled: number;
   /** How many of those advanced to a new state. */
   changed: number;
-  results: Array<{ id: number; changed: boolean; state?: OrderState; status?: string; error?: string }>;
+  results: Array<{
+    id: number;
+    changed: boolean;
+    state?: OrderState;
+    status?: string;
+    error?: string;
+    materialized?: number;
+    fillWarning?: string;
+  }>;
+  /** How many orders reported a fill the ledger could not fully mirror. Surfaced
+   *  so a bulk refresh can't quietly hide a discrepancy behind a tidy count. */
+  warnings: number;
 }
 
 /**
@@ -263,16 +411,20 @@ export async function reconcileAllWorking(accountId: string): Promise<ReconcileA
   );
   const results: ReconcileAllResult['results'] = [];
   let changed = 0;
+  let warnings = 0;
   for (const intent of working) {
     const r = await reconcileIntent(intent.id, accountId);
     if (r.changed) changed++;
+    if (r.fillWarning) warnings++;
     results.push({
       id: intent.id,
       changed: r.changed,
       state: r.intent?.state,
       status: r.broker?.status,
       error: r.error,
+      materialized: r.materialized,
+      fillWarning: r.fillWarning,
     });
   }
-  return { ok: true, reconciled: working.length, changed, results };
+  return { ok: true, reconciled: working.length, changed, results, warnings };
 }
