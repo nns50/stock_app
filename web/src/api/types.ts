@@ -2237,3 +2237,26 @@ export interface AutotradeLivePosition extends Position {
   /** Scale-in add-ons committed on this live position (0 unless it pyramided). */
   addOnsTaken: number;
 }
+
+/** One expired-but-still-open option position, and what the sweep concluded
+ *  about it. `worthless` is the only disposition safe to close automatically. */
+export interface ExpiredOptionFinding {
+  positionId: number;
+  symbol: string;
+  label: string;
+  expiration: string;
+  side: 'long' | 'short';
+  remainingQuantity: number;
+  disposition: 'worthless' | 'in_the_money' | 'unknown';
+  underlyingAtExpiry: number | null;
+  intrinsic: number | null;
+  reason: string;
+}
+
+export interface ExpiredOptionsSweepResult {
+  examined: number;
+  /** Closed at $0 (or, from the dry-run endpoint, WOULD be closed). */
+  closed: ExpiredOptionFinding[];
+  /** Left open on purpose — exercised/assigned, or undeterminable. */
+  needsReview: ExpiredOptionFinding[];
+}

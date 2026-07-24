@@ -21,6 +21,7 @@ import { CloseModal, ExitModal, JournalEditModal } from '../components/PositionF
 import { OPEN_LOG_TRADE_EVENT, TRADE_LOGGED_EVENT } from '../components/GlobalLogTrade';
 import { RiskSizingModal } from '../components/RiskSizingModal';
 import { ExposurePanel } from '../components/ExposurePanel';
+import { ExpiredOptionsBanner } from '../components/ExpiredOptionsBanner';
 import { PortfolioStressPanel } from '../components/PortfolioStressPanel';
 import { CorrelationHeatmapPanel } from '../components/CorrelationHeatmapPanel';
 import { EarningsBadge } from '../components/EarningsBadge';
@@ -171,6 +172,8 @@ export default function PositionsPage() {
       ) : data.loading ? (
         <SkeletonStats count={6} />
       ) : null}
+
+      <ExpiredOptionsBanner onChanged={reload} />
 
       {data.data?.exposure && data.data.exposure.gross > 0 && <ExposurePanel exposure={data.data.exposure} />}
       <PortfolioStressPanel />

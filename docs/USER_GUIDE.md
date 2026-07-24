@@ -543,6 +543,23 @@ nudge, not a blocker — you can still save with items unchecked.
   via the same background Webull sync that reconciles any other live order). Use **close**
   when you still hold the position and want the app to sell it; use **exit** when you've
   already sold it elsewhere.
+- **Expired options** — an option held **through** expiry never produces a closing order,
+  so nothing ever records an exit and the position would sit "open" forever, quietly
+  inflating your open exposure, position count, risk caps and unrealized P&L with a contract
+  that no longer exists. When any open option's expiry has passed, a banner appears at the
+  top of the page listing them, split into two groups:
+  - Ones that **expired worthless** (the underlying finished clearly out of the money on the
+    expiry date). One button records a **$0 exit** for all of them, dated on the **expiry
+    itself** rather than today — so the realized loss lands in the period it actually
+    belongs to. Nothing is written until you press it: $0 exits change your realized P&L in
+    both the Journal and the CSV/tax export, so it's a deliberate action, not a background one.
+  - Ones that need **you** — finished **in the money** (so it was exercised or assigned,
+    which creates or removes a *stock* position this app doesn't track), or too close to the
+    strike to call, or with no price available for that date. These are **never** closed
+    automatically; the banner explains why for each, and you record the real outcome with
+    **exit** (or delete the row if the trade never happened). Guessing here would write a
+    realized P&L number that never occurred, which is worse than a row you can see is stale.
+  Positions on their own expiration day are left alone — they're still tradeable all session.
 - **journal** edits tags/grade/notes, and (2026-07-17) which **Webull account** the lot
   lives in — shown as a small chip next to the symbol whenever it's set, so you can tell
   positions in different real accounts (e.g. cash vs. margin) apart at a glance. The same
