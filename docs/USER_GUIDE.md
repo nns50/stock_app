@@ -933,7 +933,12 @@ shouldn't be a tab-switch away.
   and RSI/mean-reversion more when it's off. Each preset governs only the six core
   weights — relative strength and sentiment keep their own weights above — and all three
   default to the standard weights, so enabling changes nothing until you edit a preset.
-  Live and paper; backtest support is separate), **max ticker ATR**
+  Live, paper, **and backtests** — a backtest run derives each historical day's regime
+  from the benchmark (SPY) series it already loads, so you can measure a differentiated
+  preset before enabling it live. (The backtest regime is a documented simplification of
+  the live gauge: it uses the proxy's trend and volatility only — breadth is omitted, since
+  a backtest doesn't rescan the universe each day — and the 200-day trend reads as
+  "unknown" until 200 bars of proxy history exist.)), **max ticker ATR**
   and **max market
   ATR** (skip a candidate whose own volatility is too high, or skip every new entry
   this cycle if SPY's own volatility is too high — stricter than the manual Screen/

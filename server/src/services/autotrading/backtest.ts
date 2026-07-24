@@ -11,10 +11,11 @@ import {
 } from '../../indicators/screener';
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { reorderByCorrelation } from './correlationSelection';
+import { regimeLabelFromProxy, backtestRegimeWeights } from './regimeWeights';
 import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } from './decide';
 import { computeScaleIn } from './scaleIn';
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
-import { RiskProfileName } from '../../db/autotradeConfig';
+import { RiskProfileName, RegimeWeightPresets } from '../../db/autotradeConfig';
 import { defaultAutotradeScreenerConfig, pickDirection } from './screen';
 import { isExcluded } from '../../db/autotradeExclusions';
 import { classifySector, buildUniverseSectorMap } from './realEstateClassifier';
@@ -180,6 +181,13 @@ export interface BacktestConfig extends Partial<BacktestRiskParams> {
    *  "separate option, doesn't force picking a meaningless single
    *  screenerConfig.direction" reasoning as the live/paper version. */
   directionMode?: 'long' | 'short' | 'both';
+  /** Regime-conditional scoring weights (2026-07-24, off by default). When on,
+   *  each simulated day is scored with the weight preset matching the proxy-
+   *  derived market regime as of that day (breadth omitted — see
+   *  regimeWeights.ts). Needs `regimeWeightPresets`; both default to today's
+   *  fixed-weight behavior. */
+  regimeAdaptiveWeightsEnabled?: boolean;
+  regimeWeightPresets?: RegimeWeightPresets;
 }
 
 export interface SimulatedTrade {
@@ -661,6 +669,21 @@ export function simulateBacktest(
         ? lookbackReturnPct(benchmarkCandles, screenerCfg.relativeStrengthLookbackDays, benchmarkIdx)
         : null;
 
+    // Regime-conditional weights (2026-07-24, off by default): score THIS day
+    // with the preset matching the proxy-derived regime as of today — benchmarkIdx
+    // is the proxy bar as-of today, so no lookahead. The cached indicator series
+    // above is weight-independent (weights only affect scoreSymbol's final
+    // aggregation), so swapping weights per day is safe. No-op when disabled or
+    // when no proxy series was loaded, so an unspecified run is byte-identical.
+    const dayWeights = cfg.regimeAdaptiveWeightsEnabled
+      ? backtestRegimeWeights(
+          screenerCfg.weights,
+          cfg.regimeWeightPresets ?? null,
+          benchmarkCandles ? regimeLabelFromProxy(benchmarkCandles, benchmarkIdx) : null,
+        )
+      : screenerCfg.weights;
+    const dayScreenerCfg = dayWeights === screenerCfg.weights ? screenerCfg : { ...screenerCfg, weights: dayWeights };
+
     const candidates: { score: SymbolScore; signal: TradeSignal }[] = [];
     for (const [symbol, candles] of historyBySymbol) {
       if (openSymbols.has(symbol)) continue; // don't stack a second position in the same name
@@ -692,7 +715,7 @@ export function simulateBacktest(
                 symbol,
                 candles,
                 undefined,
-                screenerCfg,
+                dayScreenerCfg,
                 cached,
                 idx,
                 weeklyCached,
@@ -704,7 +727,7 @@ export function simulateBacktest(
                 symbol,
                 candles,
                 undefined,
-                { ...screenerCfg, direction: directionMode },
+                { ...dayScreenerCfg, direction: directionMode },
                 cached,
                 idx,
                 weeklyCached,
@@ -1078,8 +1101,11 @@ export async function runBacktest(cfg: BacktestConfig): Promise<BacktestReport> 
     ? await loadWeeklyBacktestHistory(Array.from(historyBySymbol.keys()), cfg.from, cfg.to)
     : undefined;
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
+  // The proxy (benchmark) series is needed for relative-strength scoring AND for
+  // regime-adaptive weights (which derive the per-day regime from it), so load it
+  // when EITHER is active.
   const benchmarkCandles =
-    (cfg.screenerConfig?.weights?.relativeStrength ?? 0)
+    (cfg.screenerConfig?.weights?.relativeStrength ?? 0) || cfg.regimeAdaptiveWeightsEnabled
       ? await loadBenchmarkBacktestHistory(screenerCfg.benchmarkSymbol, cfg.from, cfg.to)
       : undefined;
   const report = simulateBacktest(historyBySymbol, cfg, weeklyHistoryBySymbol, benchmarkCandles);
@@ -1117,7 +1143,7 @@ export async function runWalkForwardBacktest(cfg: WalkForwardConfig): Promise<Wa
     : undefined;
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
   const benchmarkCandles =
-    (cfg.screenerConfig?.weights?.relativeStrength ?? 0)
+    (cfg.screenerConfig?.weights?.relativeStrength ?? 0) || cfg.regimeAdaptiveWeightsEnabled
       ? await loadBenchmarkBacktestHistory(screenerCfg.benchmarkSymbol, cfg.from, cfg.to)
       : undefined;
   const outOfSampleFrom = addDays(cfg.splitDate, 1);

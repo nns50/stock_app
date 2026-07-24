@@ -1,9 +1,36 @@
 import { describe, it, expect } from 'vitest';
-import { resolveScoringWeights } from '../src/services/autotrading/regimeWeights';
+import {
+  resolveScoringWeights,
+  regimeLabelFromProxy,
+  backtestRegimeWeights,
+} from '../src/services/autotrading/regimeWeights';
 import { defaultAutotradeConfig } from '../src/db/autotradeConfig';
 import { defaultScreenerConfig } from '../src/indicators/screener';
+import { Candle } from '../src/providers/types';
 
 const DEFAULTS = defaultScreenerConfig().weights;
+
+// A 210-bar proxy series (enough for the 200-day SMA) with a controllable trend
+// and daily range, so the proxy-derived regime is deterministic.
+function proxySeries(kind: 'up-calm' | 'down-stressed' | 'flat-mid'): Candle[] {
+  const bars: Candle[] = [];
+  for (let i = 0; i < 210; i++) {
+    let close: number;
+    let range: number;
+    if (kind === 'up-calm') {
+      close = 100 + i * 0.5; // steadily rising → price well above both SMAs
+      range = 1; // ~<1% ATR at these prices → calm
+    } else if (kind === 'down-stressed') {
+      close = 205 - i * 0.5; // steadily falling → price below both SMAs
+      range = 10; // large daily swings → high ATR% → stressed
+    } else {
+      close = 100; // flat → price ≈ both SMAs (neutral trend)
+      range = 3; // ~3% ATR → neutral volatility band
+    }
+    bars.push({ time: i * 86_400_000, open: close, high: close + range / 2, low: close - range / 2, close, volume: 1 });
+  }
+  return bars;
+}
 
 describe('resolveScoringWeights', () => {
   it('returns the fixed default weights when regime-adaptive weighting is off', () => {
@@ -57,5 +84,62 @@ describe('resolveScoringWeights', () => {
     expect(w.relativeStrength).toBe(20);
     expect(w.sentiment).toBe(8);
     expect(w.momentum).toBe(DEFAULTS.momentum);
+  });
+});
+
+describe('regimeLabelFromProxy (backtest proxy-derived regime)', () => {
+  it('reads a rising, calm proxy as risk-on', () => {
+    const s = proxySeries('up-calm');
+    expect(regimeLabelFromProxy(s, s.length - 1)).toBe('risk-on');
+  });
+
+  it('reads a falling, high-volatility proxy as risk-off', () => {
+    const s = proxySeries('down-stressed');
+    expect(regimeLabelFromProxy(s, s.length - 1)).toBe('risk-off');
+  });
+
+  it('reads a flat, mid-volatility proxy as neutral', () => {
+    const s = proxySeries('flat-mid');
+    expect(regimeLabelFromProxy(s, s.length - 1)).toBe('neutral');
+  });
+
+  it('classifies from the closes UP TO asOfIdx only (no lookahead)', () => {
+    // A series that falls then rises: early on (index 100, still in the decline)
+    // it must not "see" the later recovery.
+    const bars: Candle[] = [];
+    for (let i = 0; i < 210; i++) {
+      const close = i < 120 ? 205 - i * 0.5 : 145 + (i - 120) * 0.5;
+      bars.push({ time: i * 86_400_000, open: close, high: close + 5, low: close - 5, close, volume: 1 });
+    }
+    // As of the decline, it should not read risk-on despite the later rally.
+    expect(regimeLabelFromProxy(bars, 100)).not.toBe('risk-on');
+  });
+
+  it('returns null when there is no bar as of the index', () => {
+    expect(regimeLabelFromProxy(proxySeries('flat-mid'), -1)).toBeNull();
+  });
+});
+
+describe('backtestRegimeWeights', () => {
+  const base = { ...DEFAULTS, relativeStrength: 25, sentiment: 12 };
+
+  it('returns the base weights unchanged when presets are null (feature off)', () => {
+    expect(backtestRegimeWeights(base, null, 'risk-off')).toEqual(base);
+  });
+
+  it('returns the base weights unchanged when there is no regime label', () => {
+    const presets = { riskOn: DEFAULTS, neutral: DEFAULTS, riskOff: { ...DEFAULTS, momentum: 5 } };
+    expect(backtestRegimeWeights(base, presets, null)).toEqual(base);
+  });
+
+  it('applies the matching preset core, keeping relativeStrength/sentiment from the base', () => {
+    const riskOff = { ...DEFAULTS, momentum: 5, trend: 40 };
+    const presets = { riskOn: DEFAULTS, neutral: DEFAULTS, riskOff };
+    const w = backtestRegimeWeights(base, presets, 'risk-off');
+    expect(w.momentum).toBe(5);
+    expect(w.trend).toBe(40);
+    // rel/sentiment come from the base, NOT the preset:
+    expect(w.relativeStrength).toBe(25);
+    expect(w.sentiment).toBe(12);
   });
 });

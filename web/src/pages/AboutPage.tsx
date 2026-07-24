@@ -139,7 +139,10 @@ export default function AboutPage() {
           screener can, say, reward trend more when risk is on and RSI/mean-reversion more when it’s off. The presets
           default to the standard weights (so enabling changes nothing until you edit one), and{' '}
           <em>relative strength</em> and <em>sentiment</em> always keep their own separate weights regardless. Off, the
-          weights are the fixed defaults shown above.
+          weights are the fixed defaults shown above. It applies in live, paper, and{' '}
+          <strong className="text-slate-200">backtests</strong> — a backtest derives each historical day’s regime from
+          the benchmark series it already loads (proxy trend + volatility only; breadth is omitted), so a differentiated
+          preset can be measured before it’s trusted live.
         </p>
       </Section>
 
