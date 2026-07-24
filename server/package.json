@@ -12,6 +12,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "check:provider": "tsx src/scripts/checkProvider.ts",
+    "capture:broker": "tsx src/scripts/captureBrokerFields.ts",
     "seed": "tsx src/scripts/seed.ts"
   },
   "dependencies": {

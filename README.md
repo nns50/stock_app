@@ -234,9 +234,43 @@ npm run typecheck      # typecheck both packages
 npm run lint           # ESLint (flat config) over the monorepo
 npm run format         # Prettier --write
 npm run check:provider # verify the configured market-data provider
+npm run capture:broker # dump raw Webull field shapes (read-only; see below)
 ```
 
 CI runs lint, format-check, typecheck, tests, and build on every PR.
+
+### `capture:broker` — confirming broker field semantics
+
+A **strictly read-only** diagnostic for live trading. It calls the same
+whitelisted GET endpoints as the Settings → Webull probe (balance, positions,
+open orders, order history) and writes the raw payloads to
+`broker-capture.json` (gitignored) with account identifiers masked, so the
+mappers that read those fields can be built against confirmed responses rather
+than a plausible reading of a field name. It places nothing, cancels nothing,
+and writes nothing to the database.
+
+It highlights two fields the app currently has to assume the meaning of:
+
+- `total_day_profit_loss` — mapped to `realizedPnlTodayUsd` and used by the
+  daily-loss halt, which treats it as **realized only**. If the broker includes
+  unrealized mark-to-market, the halt can trip on paper drawdown or be masked by
+  an open gain.
+- `filled_quantity` — whether it is **cumulative** across executions or reports
+  each execution separately. Only cumulative values can be safely differenced
+  when recording partial fills.
+
+```bash
+npm run capture:broker                              # snapshot + field report
+npm run capture:broker -- --shapes-only             # field names/types, no balances
+npm run capture:broker -- --watch <client_order_id> # poll one order while it fills
+```
+
+The `--watch` mode is the only way to settle `filled_quantity`: it samples one
+order's reported fill over time and reports `cumulative`, `per-execution`, or
+`inconclusive`. It deliberately fails to `inconclusive` rather than guessing.
+
+The default output contains real balances and positions — review it before
+sharing, or use `--shapes-only`.
 
 ## How the screener score works (no black boxes)
 
