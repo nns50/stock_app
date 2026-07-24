@@ -104,6 +104,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     macroEventBlackoutHours: 0,
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
+    correlationAwareSelectionEnabled: false,
     liveTradingEnabled: false,
     liveEnabledAt: null,
     liveAccountId: null,
@@ -434,6 +435,20 @@ describe('AutoTradePage', () => {
 
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ expectancyMaxMultiplier: 2, confirmAggressive: undefined }),
+    );
+  });
+
+  it('toggling correlation-aware selection saves immediately (no separate Save button)', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Correlation-aware selection/ }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ correlationAwareSelectionEnabled: true, confirmAggressive: undefined }),
     );
   });
 

@@ -2230,6 +2230,7 @@ export default function AutoTradePage() {
   const [macroEventBlackoutHoursDraft, setMacroEventBlackoutHoursDraft] = useState<number | undefined>();
   const [correlationLookbackDaysDraft, setCorrelationLookbackDaysDraft] = useState<number | undefined>();
   const [correlationThresholdDraft, setCorrelationThresholdDraft] = useState<number | undefined>();
+  const [correlationAwareSelectionEnabled, setCorrelationAwareSelectionEnabled] = useState(false);
   const [liveAccountIdDraft, setLiveAccountIdDraft] = useState('');
   const [liveMaxOrderUsdDraft, setLiveMaxOrderUsdDraft] = useState<number | undefined>();
   const [liveMaxDailyLossUsdDraft, setLiveMaxDailyLossUsdDraft] = useState<number | undefined>();
@@ -2327,6 +2328,7 @@ export default function AutoTradePage() {
     setMacroEventBlackoutHoursDraft(config.data.macroEventBlackoutHours);
     setCorrelationLookbackDaysDraft(config.data.correlationLookbackDays);
     setCorrelationThresholdDraft(config.data.correlationThreshold);
+    setCorrelationAwareSelectionEnabled(config.data.correlationAwareSelectionEnabled);
     setLiveAccountIdDraft(config.data.liveAccountId ?? '');
     setLiveMaxOrderUsdDraft(config.data.liveMaxOrderUsd);
     setLiveMaxDailyLossUsdDraft(config.data.liveMaxDailyLossUsd);
@@ -2413,6 +2415,7 @@ export default function AutoTradePage() {
     macroEventBlackoutHours?: number;
     correlationLookbackDays?: number;
     correlationThreshold?: number;
+    correlationAwareSelectionEnabled?: boolean;
     optionsStrategyType?: AutotradeOptionsStrategyType;
     optionsDeltaMin?: number;
     optionsDeltaMax?: number;
@@ -2511,6 +2514,7 @@ export default function AutoTradePage() {
       setMacroEventBlackoutHoursDraft(saved.macroEventBlackoutHours);
       setCorrelationLookbackDaysDraft(saved.correlationLookbackDays);
       setCorrelationThresholdDraft(saved.correlationThreshold);
+      setCorrelationAwareSelectionEnabled(saved.correlationAwareSelectionEnabled);
       setAutoPromoteMoversEnabled(saved.autoPromoteMoversEnabled);
       setAutoPromoteThresholdDraft(saved.autoPromoteThreshold);
       setAutoPromoteWindowDaysDraft(saved.autoPromoteWindowDays);
@@ -3728,6 +3732,24 @@ export default function AutoTradePage() {
                       </button>
                     </div>
                   </Field>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={correlationAwareSelectionEnabled}
+                      onChange={(e) => saveConfig({ correlationAwareSelectionEnabled: e.target.checked })}
+                    />
+                    <span>
+                      Correlation-aware selection
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default. Before the caps above bind, re-ranks the score-sorted candidates so that among
+                        names correlated at ≥ the threshold above, the higher-scored one keeps its rank and the
+                        redundant lower one is demoted to the back — diverse picks win the caps instead of a correlated
+                        huddle. Reorders only; it never drops a candidate (the correlated-exposure cap stays the
+                        backstop). Applies to live, paper, and backtests.
+                      </span>
+                    </span>
+                  </label>
                   <Field
                     label="Max sector exposure (%)"
                     hint="Cap on capital (not risk) already concentrated in the candidate's own universe sector, regardless of price correlation — a cheaper backstop to the correlation cap above (two names in the same sector can carry low price correlation and still share the same macro risk)."

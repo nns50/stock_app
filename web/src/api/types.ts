@@ -1349,6 +1349,9 @@ export interface AutotradeConfig {
   correlationLookbackDays: number;
   /** |Pearson r| at or above this counts as "correlated". 0-1, not a percentage. */
   correlationThreshold: number;
+  /** Correlation-aware candidate selection (default off): re-rank so diverse
+   *  high-scorers win the caps over a correlated huddle. Reorders only. */
+  correlationAwareSelectionEnabled: boolean;
 
   // --- Phase 8: live trading ---
   liveTradingEnabled: boolean;
@@ -1741,6 +1744,7 @@ export interface BacktestRiskParams {
   maxTradesPerDay?: number;
   correlationLookbackDays?: number;
   correlationThreshold?: number;
+  correlationAwareSelectionEnabled?: boolean;
 }
 
 export interface BacktestRequest extends BacktestRiskParams {

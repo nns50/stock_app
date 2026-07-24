@@ -838,7 +838,14 @@ shouldn't be a tab-switch away.
   correlated exposure** (% of equity cap on capital, not risk, already concentrated in
   tickers statistically correlated with a candidate — by default |r| ≥ 0.7 over 30
   trading days, both now their own **correlation lookback (days)** and **correlation
-  threshold (|r|)** fields right below it), **max sector exposure** (a cheaper backstop
+  threshold (|r|)** fields right below it), **correlation-aware selection**
+  (2026-07-24, off by default — the opt-in toggle right under the correlation
+  threshold: before the caps above bind, it re-ranks the score-sorted candidates so
+  that among names correlated at ≥ that threshold, the higher-scored one keeps its
+  rank and the redundant lower one is demoted to the back of the list, so diverse
+  picks — not a correlated huddle — win the position and trade caps; it only
+  reorders, never drops anyone, and the correlated-exposure cap above stays the
+  backstop; applies to live, paper, and backtests), **max sector exposure** (a cheaper backstop
   to the correlation cap right above it — % of equity cap on capital already
   concentrated in the candidate's own universe sector, regardless of price correlation;
   two names in the same sector can carry low correlation today and still share the same

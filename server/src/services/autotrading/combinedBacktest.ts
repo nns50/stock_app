@@ -10,7 +10,9 @@ import {
   scoreSymbol,
   scoreSymbolBothDirections,
 } from '../../indicators/screener';
+import { dailyReturns } from '../../indicators/indicators';
 import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } from './decide';
+import { reorderByCorrelation } from './correlationSelection';
 import { computeScaleIn } from './scaleIn';
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
 import { evaluateOptionsRiskCheck } from './optionsRiskCheck';
@@ -874,7 +876,25 @@ export async function simulateCombinedBacktest(
       .map(([, v]) => v)
       .sort((a, b) => b.score.total - a.score.total || a.score.symbol.localeCompare(b.score.symbol));
 
-    for (const candidate of equityCandidates) {
+    // Correlation-aware selection (2026-07-24, default off): same reorder as
+    // simulateBacktest / the live loop, fed from each candidate's own
+    // no-lookahead `history` slice (closes through today). No-op when disabled.
+    let orderedEquityCandidates = equityCandidates;
+    if (riskParams.correlationAwareSelectionEnabled && equityCandidates.length > 1) {
+      const returnsBySymbol = new Map<string, number[]>();
+      for (const c of equityCandidates) {
+        const closes = c.history.slice(-(riskParams.correlationLookbackDays + 1)).map((k) => k.close);
+        const returns = dailyReturns(closes);
+        if (returns.length >= 2) returnsBySymbol.set(c.score.symbol.toUpperCase(), returns);
+      }
+      orderedEquityCandidates = reorderByCorrelation(equityCandidates, (c) => c.score.symbol, returnsBySymbol, {
+        enabled: true,
+        threshold: riskParams.correlationThreshold,
+        lookbackDays: riskParams.correlationLookbackDays,
+      }).ordered;
+    }
+
+    for (const candidate of orderedEquityCandidates) {
       const signal = generateSignal(
         { ...candidate.score, discoverySource: 'universe', direction: candidate.direction },
         decisionCfg,

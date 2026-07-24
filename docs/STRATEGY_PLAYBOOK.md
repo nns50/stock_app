@@ -572,6 +572,21 @@ whose beta, price, or delta can't be resolved is excluded and listed, not silent
 If the −10% scenario would hurt more than you can stomach, that's a signal to trim gross
 exposure or add a hedge — independent of what any single stop-loss says.
 
+**"Am I holding one bet wearing three tickers?" → Correlation-aware selection (Config →
+risk settings, 2026-07-24, off by default).** The autotrader approves candidates top-down
+by score until a cap binds — so on a day when your three highest scorers all move as one
+sector, the top two can fill your whole book and crowd out a genuinely different,
+only-slightly-lower-scored name further down. The correlated-exposure cap catches the
+extreme version after the fact; this catches it at selection. Turn it on and, before the
+caps bind, the loop re-ranks the candidates: among names correlated at or above your
+correlation threshold, the highest-scored keeps its rank and the redundant lower ones are
+demoted to the back — so the diverse picks win the position and trade caps and your book
+spreads across the edge instead of tripling down on one factor. It only reorders (it never
+drops a candidate, and the correlated-exposure cap still binds as the backstop), so with a
+book that isn't correlated it changes nothing. Because it's genuinely a selection change,
+it runs in the **backtest** engines too — so you can measure whether de-crowding actually
+improved your historical risk-adjusted return before enabling it live.
+
 ---
 
 ## The weekly review checklist

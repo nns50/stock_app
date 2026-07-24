@@ -173,6 +173,7 @@ const configBody = z.object({
   // --- Correlation methodology (feeds maxCorrelatedExposurePct above) -------
   correlationLookbackDays: z.number().int().min(1).optional(),
   correlationThreshold: z.number().min(0).max(1).optional(),
+  correlationAwareSelectionEnabled: z.boolean().optional(),
   // --- Phase 8: live trading -------------------------------------------------
   liveTradingEnabled: z.boolean().optional(),
   /** Required (and must exactly match LIVE_TRADING_CONFIRMATION_PHRASE) only
@@ -310,6 +311,8 @@ autotradeRouter.put(
     if (body.maxAddOns !== undefined) patch.maxAddOns = body.maxAddOns;
     if (body.correlationLookbackDays !== undefined) patch.correlationLookbackDays = body.correlationLookbackDays;
     if (body.correlationThreshold !== undefined) patch.correlationThreshold = body.correlationThreshold;
+    if (body.correlationAwareSelectionEnabled !== undefined)
+      patch.correlationAwareSelectionEnabled = body.correlationAwareSelectionEnabled;
     if (body.liveMaxOrderUsd !== undefined) patch.liveMaxOrderUsd = body.liveMaxOrderUsd;
     if (body.liveMaxDailyLossUsd !== undefined) patch.liveMaxDailyLossUsd = body.liveMaxDailyLossUsd;
     if (body.liveMaxOrdersPerDay !== undefined) patch.liveMaxOrdersPerDay = body.liveMaxOrdersPerDay;
@@ -803,10 +806,11 @@ const backtestRiskParamsSchema = {
   maxTradesPerDay: z.number().int().nonnegative().optional(),
   correlationLookbackDays: z.number().int().min(1).optional(),
   correlationThreshold: z.number().min(0).max(1).optional(),
+  correlationAwareSelectionEnabled: z.boolean().optional(),
 };
-/** Pulls the nine optional risk-param overrides off an already-parsed
- *  backtest body, for spreading into a runXBacktest({...}) call — avoids
- *  repeating all nine field names at each of the six call sites below. */
+/** Pulls the optional risk-param overrides off an already-parsed backtest
+ *  body, for spreading into a runXBacktest({...}) call — avoids repeating all
+ *  the field names at each of the six call sites below. */
 function backtestRiskParamsFrom(body: {
   riskPerTradePct?: number;
   maxDailyDrawdownPct?: number;
@@ -817,6 +821,7 @@ function backtestRiskParamsFrom(body: {
   maxTradesPerDay?: number;
   correlationLookbackDays?: number;
   correlationThreshold?: number;
+  correlationAwareSelectionEnabled?: boolean;
 }) {
   return {
     riskPerTradePct: body.riskPerTradePct,
@@ -828,6 +833,7 @@ function backtestRiskParamsFrom(body: {
     maxTradesPerDay: body.maxTradesPerDay,
     correlationLookbackDays: body.correlationLookbackDays,
     correlationThreshold: body.correlationThreshold,
+    correlationAwareSelectionEnabled: body.correlationAwareSelectionEnabled,
   };
 }
 const backtestBodyBase = z.object({

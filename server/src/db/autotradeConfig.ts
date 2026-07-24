@@ -375,6 +375,15 @@ export interface AutotradeConfig {
   /** |Pearson r| at or above this counts as "correlated" for
    *  maxCorrelatedExposurePct's purposes. 0-1, not a percentage. */
   correlationThreshold: number;
+  /** Correlation-aware candidate selection (2026-07-24, default OFF). When on,
+   *  the score-sorted candidate list is re-ranked before the decision stage so
+   *  that among names correlated at ≥ correlationThreshold, the higher-scored
+   *  one keeps its rank and the redundant lower one is demoted to the back —
+   *  diverse picks win the caps instead of a correlated huddle. Reuses
+   *  correlationThreshold / correlationLookbackDays; reorders only, never drops
+   *  (the exposure veto stays the backstop). Applies to live, paper, and the
+   *  backtest engines. */
+  correlationAwareSelectionEnabled: boolean;
 
   // --- Phase 8: live-trading gate (docs/AUTOTRADING_SPEC.md) -----------------
 
@@ -706,6 +715,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     maxAddOns: 0,
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
+    correlationAwareSelectionEnabled: false,
     liveTradingEnabled: false,
     liveEnabledAt: null,
     liveAccountId: null,
@@ -875,6 +885,10 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     maxAddOns: posInt(input.maxAddOns, d.maxAddOns),
     correlationLookbackDays: posIntMin1(input.correlationLookbackDays, d.correlationLookbackDays),
     correlationThreshold: unitInterval(input.correlationThreshold, d.correlationThreshold),
+    correlationAwareSelectionEnabled:
+      typeof input.correlationAwareSelectionEnabled === 'boolean'
+        ? input.correlationAwareSelectionEnabled
+        : d.correlationAwareSelectionEnabled,
     liveTradingEnabled: typeof input.liveTradingEnabled === 'boolean' ? input.liveTradingEnabled : d.liveTradingEnabled,
     liveEnabledAt: enabledAt,
     liveAccountId: accountId,
