@@ -121,6 +121,8 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     autoTuneMinTrades: 20,
     autoTuneMaxStepPct: 0.5,
     autoTuneSlippageExcludePct: 2,
+    autoTuneExitsEnabled: false,
+    autoTuneExitMaxStep: 0.25,
     ...overrides,
   };
 }
@@ -441,6 +443,39 @@ describe('AutoTradePage', () => {
 
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ autoTuneSlippageExcludePct: 3, confirmAggressive: undefined }),
+    );
+  });
+
+  it('toggling the exit-geometry auto-tune saves immediately', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Also auto-tune exit geometry/ }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ autoTuneExitsEnabled: true, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new max daily exit step value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Max daily exit step').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '0.5' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save max daily exit step' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ autoTuneExitMaxStep: 0.5, confirmAggressive: undefined }),
     );
   });
 

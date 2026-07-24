@@ -588,6 +588,17 @@ export interface AutotradeConfig {
    *  convention as services/slippage.ts — positive always cost money) at or
    *  above this gets auto-excluded from future autotrade candidates. */
   autoTuneSlippageExcludePct: number;
+  /** Exit-geometry auto-tune (2026-07-24, services/autotrading/excursionTune.ts).
+   *  When on (and autoTuneEnabled), the same once-per-ET-day pass nudges
+   *  stopAtrMultiple / targetRMultiple toward what WINNING autotrade trades
+   *  actually did — a good trade's worst drawdown (MAE) sizes the stop, its
+   *  favorable peak (MFE) sizes the target. Off by default; independent of the
+   *  Kelly risk-% tune above so you can adopt one without the other. */
+  autoTuneExitsEnabled: boolean;
+  /** Max change to stopAtrMultiple or targetRMultiple in a single day's
+   *  exit-tune (in multiple units, not a %), so one noisy sample can't swing
+   *  the loop's exits — the exit-geometry analogue of autoTuneMaxStepPct. */
+  autoTuneExitMaxStep: number;
 }
 
 interface ConfigRow {
@@ -691,6 +702,8 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     autoTuneMinTrades: 20,
     autoTuneMaxStepPct: 0.5,
     autoTuneSlippageExcludePct: 2,
+    autoTuneExitsEnabled: false,
+    autoTuneExitMaxStep: 0.25,
   };
 }
 
@@ -857,6 +870,9 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     autoTuneMinTrades: posIntMin1(input.autoTuneMinTrades, d.autoTuneMinTrades),
     autoTuneMaxStepPct: pct(input.autoTuneMaxStepPct, d.autoTuneMaxStepPct),
     autoTuneSlippageExcludePct: pct(input.autoTuneSlippageExcludePct, d.autoTuneSlippageExcludePct),
+    autoTuneExitsEnabled:
+      typeof input.autoTuneExitsEnabled === 'boolean' ? input.autoTuneExitsEnabled : d.autoTuneExitsEnabled,
+    autoTuneExitMaxStep: posDecimal(input.autoTuneExitMaxStep, d.autoTuneExitMaxStep),
   };
 }
 

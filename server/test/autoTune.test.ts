@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 vi.mock('../src/services/notifier', () => ({
   dispatchNotifications: vi.fn().mockResolvedValue({ delivered: true, count: 1, results: [] }),
 }));
+vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
 
 import { initDb, db } from '../src/db';
 import { createPosition, addExit } from '../src/db/positions';
@@ -12,9 +13,36 @@ import { isExcluded, listExclusions } from '../src/db/autotradeExclusions';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { kellySuggestion } from '../src/services/pnl';
 import { dispatchNotifications } from '../src/services/notifier';
+import { getProvider } from '../src/providers';
 import { maybeAutoTune } from '../src/services/autotrading/autoTune';
 
 const mockDispatch = vi.mocked(dispatchNotifications);
+const mockGetProvider = vi.mocked(getProvider);
+
+/** A provider whose getCandles returns one bar with the given high/low — enough
+ *  for computeExcursion to read MFE (high) and MAE (low) for the exit-tune. */
+function candleReturning(high: number, low: number) {
+  return {
+    getCandles: vi.fn(async () => [{ time: 0, open: 100, high, low, close: 100, volume: 1000 }]),
+  };
+}
+
+/** A closed WINNING autotrade stock trade: tagged so buildAutotradeExcursionReport
+ *  picks it up, with a stop (for the R denominator) and a profitable exit. */
+function closedAutotradeWinner(symbol: string, day: string) {
+  const p = createPosition({
+    assetType: 'stock',
+    symbol,
+    side: 'long',
+    quantity: 1,
+    entryPrice: 100,
+    entryDate: day,
+    stopPrice: 95, // initial risk = 5/share
+    tags: ['autotrade'],
+  });
+  addExit(p.id, { quantity: 1, exitPrice: 110, exitDate: day }); // +10 => realizedR +2 (winner)
+  return p;
+}
 
 const ET_DAY_1 = Date.parse('2026-08-03T15:00:00Z'); // a Monday, well inside market hours ET
 const ET_DAY_2 = Date.parse('2026-08-04T15:00:00Z'); // the next day
@@ -67,6 +95,7 @@ beforeEach(() => {
   );
   setAutotradeConfig(defaultAutotradeConfig());
   mockDispatch.mockClear();
+  mockGetProvider.mockReset();
 });
 
 describe('maybeAutoTune', () => {
@@ -75,7 +104,7 @@ describe('maybeAutoTune', () => {
     closedTrade(-50, '2026-08-02');
     const before = getAutotradeConfig().riskPerTradePct;
     const result = await maybeAutoTune(ET_DAY_1);
-    expect(result).toEqual({ ran: false, riskAdjusted: false, symbolsExcluded: [] });
+    expect(result).toEqual({ ran: false, riskAdjusted: false, symbolsExcluded: [], exitsAdjusted: false });
     expect(getAutotradeConfig().riskPerTradePct).toBe(before);
     expect(mockDispatch).not.toHaveBeenCalled();
   });
@@ -85,7 +114,7 @@ describe('maybeAutoTune', () => {
     const r1 = await maybeAutoTune(ET_DAY_1);
     expect(r1.ran).toBe(true);
     const r2 = await maybeAutoTune(ET_DAY_1 + 60 * 60_000); // later, same day
-    expect(r2).toEqual({ ran: false, riskAdjusted: false, symbolsExcluded: [] });
+    expect(r2).toEqual({ ran: false, riskAdjusted: false, symbolsExcluded: [], exitsAdjusted: false });
   });
 
   it('re-runs the next (ET) day', async () => {
@@ -225,6 +254,74 @@ describe('maybeAutoTune', () => {
       expect(mockDispatch).toHaveBeenCalledTimes(2); // one dispatch per excluded symbol, none for AAPL
       const titles = mockDispatch.mock.calls.map((c) => c[0][0].title).sort();
       expect(titles).toEqual(['Autotrade auto-tune: CJMB excluded', 'Autotrade auto-tune: SLND excluded']);
+    });
+  });
+
+  describe('exit-geometry tuning', () => {
+    it('leaves exits untouched when the exit-tune flag is off (even with the master tune on)', async () => {
+      setAutotradeConfig({ autoTuneEnabled: true }); // autoTuneExitsEnabled stays false (default)
+      closedAutotradeWinner('AAA', '2026-08-01');
+      closedAutotradeWinner('BBB', '2026-08-02');
+      const result = await maybeAutoTune(ET_DAY_1);
+      expect(result.exitsAdjusted).toBe(false);
+      expect(getAutotradeConfig().stopAtrMultiple).toBe(1.5); // untouched defaults
+      expect(getAutotradeConfig().targetRMultiple).toBe(2);
+      expect(mockGetProvider).not.toHaveBeenCalled(); // no excursion fetch when disabled
+    });
+
+    it('tunes the stop/target from winner MAE/MFE, journals it, and pushes a notification', async () => {
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneExitsEnabled: true,
+        autoTuneMinTrades: 2,
+        autoTuneExitMaxStep: 5,
+      });
+      mockGetProvider.mockReturnValue(candleReturning(120, 98) as never); // winner: MFE 4R, MAE −0.4R
+      closedAutotradeWinner('AAA', '2026-08-01');
+      closedAutotradeWinner('BBB', '2026-08-02');
+      const result = await maybeAutoTune(ET_DAY_1);
+      expect(result.exitsAdjusted).toBe(true);
+      // stop: 0.4R heat × 1.3 buffer × 1.5 = 0.78×ATR; target: 4R MFE × 0.8 = 3.2R
+      expect(getAutotradeConfig().stopAtrMultiple).toBeCloseTo(0.78, 5);
+      expect(getAutotradeConfig().targetRMultiple).toBeCloseTo(3.2, 5);
+      const events = listAutotradeEvents({ actions: ['auto_tune_exits_adjusted'] });
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0].detail!)).toMatchObject({
+        from: { stopAtrMultiple: 1.5, targetRMultiple: 2 },
+        winners: 2,
+      });
+      const dispatched = mockDispatch.mock.calls.map((c) => c[0][0].title);
+      expect(dispatched).toContain('Autotrade auto-tune: exit geometry adjusted');
+    });
+
+    it('clamps the exit change to autoTuneExitMaxStep', async () => {
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneExitsEnabled: true,
+        autoTuneMinTrades: 2,
+        autoTuneExitMaxStep: 0.25,
+      });
+      mockGetProvider.mockReturnValue(candleReturning(120, 98) as never);
+      closedAutotradeWinner('AAA', '2026-08-01');
+      closedAutotradeWinner('BBB', '2026-08-02');
+      await maybeAutoTune(ET_DAY_1);
+      expect(getAutotradeConfig().stopAtrMultiple).toBeCloseTo(1.25, 5); // 1.5 − 0.25, not the full drop to 0.78
+      expect(getAutotradeConfig().targetRMultiple).toBeCloseTo(2.25, 5); // 2 + 0.25, not the full jump to 3.2
+    });
+
+    it('does not tune below the winner sample floor', async () => {
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneExitsEnabled: true,
+        autoTuneMinTrades: 5,
+        autoTuneExitMaxStep: 5,
+      });
+      mockGetProvider.mockReturnValue(candleReturning(120, 98) as never);
+      closedAutotradeWinner('AAA', '2026-08-01');
+      closedAutotradeWinner('BBB', '2026-08-02'); // only 2 winners, need 5
+      const result = await maybeAutoTune(ET_DAY_1);
+      expect(result.exitsAdjusted).toBe(false);
+      expect(getAutotradeConfig().stopAtrMultiple).toBe(1.5);
     });
   });
 });

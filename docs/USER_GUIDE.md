@@ -1008,7 +1008,13 @@ shouldn't be a tab-switch away.
   trades can't move things, and the risk change is capped per day so one noisy reading
   can't swing live sizing. A symbol it excludes lands on the same exclusion list your
   manual entries use (Settings), so it's visible and reversible there, not a hidden
-  blocklist. Every adjustment shows up in **Recent activity** the moment it happens, and
+  blocklist. A separate, independently-toggled **Also auto-tune exit geometry** (2026-07-24,
+  off by default) extends the same once-a-day pass to your **stop (× ATR)** and **target
+  (R)**: it reads the **MAE/MFE** of your _winning_ autotrade trades — how much heat a good
+  trade actually took sizes the stop, how far it actually ran sizes the target — and nudges
+  each toward that, capped per day by its own **max exit step** so one sample can't swing
+  your exits. Winners only, deliberately: a stopped-out loser can't tell you whether a
+  different stop was better. Every adjustment shows up in **Recent activity** the moment it happens, and
   also pushes a notification through your configured webhooks (see **Alerts** below) —
   a live change to what the loop does is worth more than a line you'd only see if you
   went looking. See `docs/STRATEGY_PLAYBOOK.md`'s sizing and execution-quality sections

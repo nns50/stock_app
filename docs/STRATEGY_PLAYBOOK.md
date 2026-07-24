@@ -152,6 +152,16 @@ webhooks, same as the other consequential loop events. It's still worth checking
 Journal's own Kelly panel periodically — auto-tune only ever moves *toward* it a little
 at a time, it doesn't replace understanding where the number comes from.
 
+A separate **Also auto-tune exit geometry** toggle (off by default, independent of the
+risk-% tune) does the same thing for your **stop and target** using the
+[MAE/MFE](#tuning-stops--targets-with-maemfe) math below: once a day it reads the excursion
+of your _winning_ autotrade trades and nudges `stopAtrMultiple` toward the heat a good trade
+actually takes (plus a buffer) and `targetRMultiple` toward how far a good trade actually
+runs — winners only, since a stopped-out loser's drawdown is censored at the stop and can't
+tell you whether a wider or tighter one was better. Bounded by its own max daily step, and
+journaled/notified the same way. Same caveat as the risk-% tune: it moves toward the reading
+a little at a time and never replaces reading the MAE/MFE report yourself.
+
 Did a past adjustment actually help? The Journal page's **Auto-tune efficacy** card
 answers that directly — before/after win rate and expectancy around each adjustment's
 own date. Deliberately informational only: it never auto-reverts a change that looks
