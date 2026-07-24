@@ -15,8 +15,10 @@
 // DB-free so it's directly unit-testable.
 
 import { IndicatorWeights, defaultScreenerConfig } from '../../indicators/screener';
-import { RegimeLabel } from '../marketRegime';
-import { AutotradeConfig } from '../../db/autotradeConfig';
+import { RegimeLabel, classifyRegime } from '../marketRegime';
+import { AutotradeConfig, RegimeWeightPresets } from '../../db/autotradeConfig';
+import { Candle } from '../../providers/types';
+import { sma, atr } from '../../indicators/indicators';
 
 /** Gauge label → the config's camelCase preset key. */
 const REGIME_KEY: Record<RegimeLabel, 'riskOn' | 'neutral' | 'riskOff'> = {
@@ -40,5 +42,58 @@ export function resolveScoringWeights(config: AutotradeConfig, regimeLabel: Regi
     ...base,
     relativeStrength: config.relativeStrengthWeight,
     sentiment: config.sentimentWeight,
+  };
+}
+
+// --- Backtest support (2026-07-24) -----------------------------------------
+// The backtest engines can't call the live async computeMarketRegime (it fetches
+// live candles + a universe breadth scan). Instead they derive the regime per
+// historical day from the proxy (SPY) series they already hold — a documented
+// simplification: trend200/trend50/volatility only, BREADTH is omitted (no
+// universe scan in a backtest), and trend200 reads `unknown` until 200 bars of
+// proxy history exist. classifyRegime already treats every missing signal as
+// unknown → 0, so the label degrades gracefully rather than faking a regime.
+
+/**
+ * The regime label as of `asOfIdx` in a proxy candle series, from the closes up
+ * to and including that bar (no lookahead). null when there's no bar yet.
+ * Breadth is passed as null — see the note above.
+ */
+export function regimeLabelFromProxy(proxyCandles: Candle[], asOfIdx: number): RegimeLabel | null {
+  if (asOfIdx < 0 || asOfIdx >= proxyCandles.length) return null;
+  const window = proxyCandles.slice(0, asOfIdx + 1);
+  const closes = window.map((c) => c.close);
+  const proxyClose = closes[closes.length - 1] ?? null;
+  if (proxyClose === null) return null;
+  const atrVal = atr(window, 14);
+  return classifyRegime({
+    proxySymbol: 'PROXY',
+    proxyClose,
+    proxySma50: sma(closes, 50),
+    proxySma200: sma(closes, 200),
+    marketAtrPct: atrVal !== null && proxyClose ? (atrVal / proxyClose) * 100 : null,
+    breadthPct: null,
+    breadthSampleSize: 0,
+    asOf: 0,
+  }).label;
+}
+
+/**
+ * Backtest counterpart of resolveScoringWeights: the weight set to score with on
+ * a given simulated day. `presets` null (feature off) or `regimeLabel` null ⇒
+ * the run's own base weights unchanged. Otherwise the matching preset's six core
+ * weights, with relativeStrength/sentiment kept from `baseWeights` — the same
+ * "presets govern only the core six" rule the live path uses.
+ */
+export function backtestRegimeWeights(
+  baseWeights: IndicatorWeights,
+  presets: RegimeWeightPresets | null,
+  regimeLabel: RegimeLabel | null,
+): IndicatorWeights {
+  if (!presets || !regimeLabel) return baseWeights;
+  return {
+    ...presets[REGIME_KEY[regimeLabel]],
+    relativeStrength: baseWeights.relativeStrength,
+    sentiment: baseWeights.sentiment,
   };
 }

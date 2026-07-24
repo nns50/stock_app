@@ -847,6 +847,9 @@ const backtestRiskParamsSchema = {
   correlationLookbackDays: z.number().int().min(1).optional(),
   correlationThreshold: z.number().min(0).max(1).optional(),
   correlationAwareSelectionEnabled: z.boolean().optional(),
+  // Scoring flag (not a risk param), accepted on every backtest body via the
+  // shared spread; the presets it uses are pulled from the live config.
+  regimeAdaptiveWeightsEnabled: z.boolean().optional(),
 };
 /** Pulls the optional risk-param overrides off an already-parsed backtest
  *  body, for spreading into a runXBacktest({...}) call — avoids repeating all
@@ -874,6 +877,17 @@ function backtestRiskParamsFrom(body: {
     correlationLookbackDays: body.correlationLookbackDays,
     correlationThreshold: body.correlationThreshold,
     correlationAwareSelectionEnabled: body.correlationAwareSelectionEnabled,
+  };
+}
+
+/** Regime-adaptive-weights fields for a backtest run. The flag comes from the
+ *  request; the presets themselves are pulled from the LIVE config, so a user
+ *  edits their presets once (on the Config page) and validates them in a
+ *  backtest by just flipping this on — no need to re-send 18 numbers per run. */
+function regimeBacktestFields(body: { regimeAdaptiveWeightsEnabled?: boolean }) {
+  return {
+    regimeAdaptiveWeightsEnabled: body.regimeAdaptiveWeightsEnabled,
+    regimeWeightPresets: body.regimeAdaptiveWeightsEnabled ? getAutotradeConfig().regimeWeightPresets : undefined,
   };
 }
 const backtestBodyBase = z.object({
@@ -940,6 +954,7 @@ autotradeRouter.post(
       addOnSizePct: body.addOnSizePct,
       maxAddOns: body.maxAddOns,
       ...backtestRiskParamsFrom(body),
+      ...regimeBacktestFields(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
       directionMode: body.directionMode,
@@ -970,6 +985,7 @@ autotradeRouter.post(
       addOnSizePct: body.addOnSizePct,
       maxAddOns: body.maxAddOns,
       ...backtestRiskParamsFrom(body),
+      ...regimeBacktestFields(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
       directionMode: body.directionMode,
@@ -1200,6 +1216,7 @@ autotradeRouter.post(
       addOnSizePct: body.addOnSizePct,
       maxAddOns: body.maxAddOns,
       ...backtestRiskParamsFrom(body),
+      ...regimeBacktestFields(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
@@ -1238,6 +1255,7 @@ autotradeRouter.post(
       addOnSizePct: body.addOnSizePct,
       maxAddOns: body.maxAddOns,
       ...backtestRiskParamsFrom(body),
+      ...regimeBacktestFields(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,

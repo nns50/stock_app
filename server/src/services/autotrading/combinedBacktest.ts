@@ -13,6 +13,7 @@ import {
 import { dailyReturns } from '../../indicators/indicators';
 import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } from './decide';
 import { reorderByCorrelation } from './correlationSelection';
+import { regimeLabelFromProxy, backtestRegimeWeights } from './regimeWeights';
 import { computeScaleIn } from './scaleIn';
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
 import { evaluateOptionsRiskCheck } from './optionsRiskCheck';
@@ -22,7 +23,7 @@ import {
   OptionsDecisionConfig,
   OptionsSignalSide,
 } from './optionsDecide';
-import { RiskProfileName, OptionsStrategyType } from '../../db/autotradeConfig';
+import { RiskProfileName, OptionsStrategyType, RegimeWeightPresets } from '../../db/autotradeConfig';
 import { defaultAutotradeScreenerConfig, pickDirection } from './screen';
 import { getHistoricalBars } from './historicalData';
 import { getHistoricalOptionContracts } from './optionsHistoricalData';
@@ -170,6 +171,12 @@ export interface CombinedBacktestConfig extends Partial<BacktestRiskParams> {
   optionsTrailStopPct?: number;
   optionsPartialExitTriggerPct?: number;
   optionsPartialExitPct?: number;
+  /** Regime-conditional scoring weights (2026-07-24, off by default) — scores
+   *  each simulated day with the preset matching the proxy-derived regime as of
+   *  that day. Governs the EQUITY-leg scoring pass (which the options leg reads
+   *  its direction from). Mirrors BacktestConfig; both default to fixed weights. */
+  regimeAdaptiveWeightsEnabled?: boolean;
+  regimeWeightPresets?: RegimeWeightPresets;
 }
 
 export interface CombinedBacktestReport {
@@ -779,6 +786,19 @@ export async function simulateCombinedBacktest(
         ? lookbackReturnPct(benchmarkCandles, screenerCfg.relativeStrengthLookbackDays, benchmarkIdx)
         : null;
 
+    // Regime-conditional weights (2026-07-24, off by default) — score THIS day
+    // with the preset matching the proxy-derived regime as of today. Same
+    // no-lookahead, weight-independent-cache reasoning as simulateBacktest; a
+    // no-op when disabled or with no proxy series.
+    const dayWeights = cfg.regimeAdaptiveWeightsEnabled
+      ? backtestRegimeWeights(
+          screenerCfg.weights,
+          cfg.regimeWeightPresets ?? null,
+          benchmarkCandles ? regimeLabelFromProxy(benchmarkCandles, benchmarkIdx) : null,
+        )
+      : screenerCfg.weights;
+    const dayScreenerCfg = dayWeights === screenerCfg.weights ? screenerCfg : { ...screenerCfg, weights: dayWeights };
+
     // 6) Score every symbol ONCE per day (asset-agnostic) — filtered
     // separately below per instrument type's own "already open" exclusion.
     // 'both': score each symbol as a long AND a short from the same
@@ -819,7 +839,7 @@ export async function simulateCombinedBacktest(
                 symbol,
                 candles,
                 undefined,
-                screenerCfg,
+                dayScreenerCfg,
                 cached,
                 idx,
                 weeklyCached,
@@ -831,7 +851,7 @@ export async function simulateCombinedBacktest(
                 symbol,
                 candles,
                 undefined,
-                { ...screenerCfg, direction: directionMode },
+                { ...dayScreenerCfg, direction: directionMode },
                 cached,
                 idx,
                 weeklyCached,
@@ -1301,7 +1321,7 @@ export async function runCombinedBacktest(cfg: CombinedBacktestConfig): Promise<
     : undefined;
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
   const benchmarkCandles =
-    (cfg.screenerConfig?.weights?.relativeStrength ?? 0)
+    (cfg.screenerConfig?.weights?.relativeStrength ?? 0) || cfg.regimeAdaptiveWeightsEnabled
       ? await loadBenchmarkBacktestHistory(screenerCfg.benchmarkSymbol, cfg.from, cfg.to)
       : undefined;
   const maxDte = defaultAutotradeEntryConfig('call').maxDaysToExpiration ?? 60;
@@ -1345,7 +1365,7 @@ export async function runCombinedWalkForwardBacktest(
     : undefined;
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
   const benchmarkCandles =
-    (cfg.screenerConfig?.weights?.relativeStrength ?? 0)
+    (cfg.screenerConfig?.weights?.relativeStrength ?? 0) || cfg.regimeAdaptiveWeightsEnabled
       ? await loadBenchmarkBacktestHistory(screenerCfg.benchmarkSymbol, cfg.from, cfg.to)
       : undefined;
   const maxDte = defaultAutotradeEntryConfig('call').maxDaysToExpiration ?? 60;
