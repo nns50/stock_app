@@ -1074,6 +1074,11 @@ export function rebuildAutotradeLiveOrdersTable(database: Database.Database): vo
     .get() as { sql: string | null } | undefined;
   if (!row?.sql || /ON DELETE CASCADE/i.test(row.sql)) return;
 
+  // The column list MUST stay in sync with the canonical CREATE TABLE in SCHEMA
+  // above (account_id/addon_of_position_id/grade were added by ALTERs that run
+  // BEFORE this rebuild in migrate()); omitting them here would drop those
+  // columns and their data on any pre-CASCADE DB, then break recordLiveOrder /
+  // recordLiveAddOnOrder at runtime ("no column named account_id").
   database.exec(`
     ALTER TABLE autotrade_live_orders RENAME TO autotrade_live_orders_old;
     CREATE TABLE autotrade_live_orders (
@@ -1085,12 +1090,15 @@ export function rebuildAutotradeLiveOrdersTable(database: Database.Database): vo
       risk_amount   REAL NOT NULL,
       risk_profile  TEXT NOT NULL,
       position_id   INTEGER,
+      account_id    TEXT,
+      addon_of_position_id INTEGER,
+      grade         TEXT,
       created_at    INTEGER NOT NULL
     );
     INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount,
-                        risk_profile, position_id, created_at)
+                        risk_profile, position_id, account_id, addon_of_position_id, grade, created_at)
       SELECT intent_id, symbol, role, stop_price, target_price, risk_amount,
-             risk_profile, position_id, created_at
+             risk_profile, position_id, account_id, addon_of_position_id, grade, created_at
       FROM autotrade_live_orders_old;
     DROP TABLE autotrade_live_orders_old;
     CREATE INDEX IF NOT EXISTS idx_autotrade_live_orders_symbol ON autotrade_live_orders(symbol);
@@ -1107,6 +1115,11 @@ export function rebuildAutotradeLiveOptionsOrdersTable(database: Database.Databa
     .get() as { sql: string | null } | undefined;
   if (!row?.sql || /ON DELETE CASCADE/i.test(row.sql)) return;
 
+  // The column list MUST stay in sync with the canonical CREATE TABLE in SCHEMA
+  // above (exit_reason/account_id were added by ALTERs that run BEFORE this
+  // rebuild in migrate()); omitting them here would drop those columns and
+  // their data on any pre-CASCADE DB, then break recordLiveOptionsEntryOrder /
+  // recordLiveOptionsExitOrder at runtime.
   database.exec(`
     ALTER TABLE autotrade_live_options_orders RENAME TO autotrade_live_options_orders_old;
     CREATE TABLE autotrade_live_options_orders (
@@ -1123,13 +1136,16 @@ export function rebuildAutotradeLiveOptionsOrdersTable(database: Database.Databa
       risk_amount   REAL,
       risk_profile  TEXT NOT NULL,
       position_id   INTEGER,
+      exit_reason   TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL),
+      account_id    TEXT,
       created_at    INTEGER NOT NULL
     );
     INSERT INTO autotrade_live_options_orders (intent_id, symbol, role, kind, side, contract_symbol, strike,
                         short_contract_symbol, short_strike, expiration, risk_amount, risk_profile, position_id,
-                        created_at)
+                        exit_reason, account_id, created_at)
       SELECT intent_id, symbol, role, kind, side, contract_symbol, strike,
-             short_contract_symbol, short_strike, expiration, risk_amount, risk_profile, position_id, created_at
+             short_contract_symbol, short_strike, expiration, risk_amount, risk_profile, position_id,
+             exit_reason, account_id, created_at
       FROM autotrade_live_options_orders_old;
     DROP TABLE autotrade_live_options_orders_old;
     CREATE INDEX IF NOT EXISTS idx_autotrade_live_options_orders_symbol ON autotrade_live_options_orders(symbol);
