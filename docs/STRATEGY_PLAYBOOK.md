@@ -413,6 +413,17 @@ A setup is only worth trading if it **outperforms**. The workflow:
 This loop — hypothesize → snapshot → measure forward returns → re-weight — is the
 single highest-leverage thing the app enables.
 
+**One weight set may not fit every market.** The same weights that reward fresh trend
+breakouts in a risk-on tape can chop you up in a risk-off one, where fading extremes pays
+better. **Regime-adaptive scoring weights** (auto-trade config, off by default) lets the
+loop carry three weight presets — risk-on, neutral, risk-off — and pick the one matching
+the **market-regime gauge** at scoring time, so the strategy leans on trend/momentum when
+risk is on and on RSI/mean-reversion when it's off. Don't guess the presets: use the Edge
+Report loop above _within each regime_ to learn which weights actually earned in that
+environment, then encode that. It's opt-in and the presets default to your standard
+weights, so it changes nothing until you deliberately differentiate them — and like any
+scoring change, prove it forward (or in a backtest) before trusting it live.
+
 ---
 
 ## Is a backtested edge real, or noise?

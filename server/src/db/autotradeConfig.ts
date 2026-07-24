@@ -1,4 +1,13 @@
 import { db } from './index';
+import { IndicatorKey, IndicatorWeights, defaultScreenerConfig } from '../indicators/screener';
+
+/** The three regimes the market-regime gauge (services/marketRegime.ts) resolves
+ *  to. Keyed camelCase here to match the config field names. */
+export interface RegimeWeightPresets {
+  riskOn: IndicatorWeights;
+  neutral: IndicatorWeights;
+  riskOff: IndicatorWeights;
+}
 
 // ---------------------------------------------------------------------------
 // Persistence for the auto-trading master switch + active risk profile (see
@@ -385,6 +394,23 @@ export interface AutotradeConfig {
    *  backtest engines. */
   correlationAwareSelectionEnabled: boolean;
 
+  // --- Regime-conditional scoring weights (2026-07-24) -----------------------
+
+  /** Regime-adaptive screener weights (default OFF). When on, the loop computes
+   *  the market regime (services/marketRegime.ts — SPY proxy, cached ~1h) at
+   *  scoring time and applies the matching `regimeWeightPresets` entry instead
+   *  of the fixed default weights, so the strategy re-weights what it rewards to
+   *  the environment (e.g. lean on trend in risk-on, on mean-reversion/RSI in
+   *  risk-off). Off = today's fixed weights exactly. `relativeStrength` /
+   *  `sentiment` always stay driven by their own weight fields below,
+   *  regardless — the presets only govern the six core weights. */
+  regimeAdaptiveWeightsEnabled: boolean;
+  /** Per-regime screener weight sets, selected by the gauge's risk-on / neutral
+   *  / risk-off label when regimeAdaptiveWeightsEnabled is on. Each defaults to
+   *  the standard screener weights, so enabling with untouched presets changes
+   *  nothing until a preset is actually edited. */
+  regimeWeightPresets: RegimeWeightPresets;
+
   // --- Phase 8: live-trading gate (docs/AUTOTRADING_SPEC.md) -----------------
 
   /** Master on/off for the loop placing REAL orders through Webull. False by
@@ -716,6 +742,12 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
     correlationAwareSelectionEnabled: false,
+    regimeAdaptiveWeightsEnabled: false,
+    regimeWeightPresets: {
+      riskOn: { ...defaultScreenerConfig().weights },
+      neutral: { ...defaultScreenerConfig().weights },
+      riskOff: { ...defaultScreenerConfig().weights },
+    },
     liveTradingEnabled: false,
     liveEnabledAt: null,
     liveAccountId: null,
@@ -808,6 +840,18 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     const n = Number(v);
     return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : fallback;
   };
+  // A screener weight set — coerce every known IndicatorKey to a non-negative
+  // number, filling any missing/invalid key from the fallback (so a partial
+  // preset from an older client, or one missing a newly-added weight key, still
+  // yields a complete, valid set). Unknown extra keys are dropped.
+  const weightsPreset = (v: unknown, fallback: IndicatorWeights): IndicatorWeights => {
+    const src = (v && typeof v === 'object' ? v : {}) as Partial<Record<IndicatorKey, unknown>>;
+    const out = {} as IndicatorWeights;
+    (Object.keys(fallback) as IndicatorKey[]).forEach((k) => {
+      out[k] = nonNeg(src[k], fallback[k]);
+    });
+    return out;
+  };
   const accountId =
     input.liveAccountId === null
       ? null
@@ -889,6 +933,15 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       typeof input.correlationAwareSelectionEnabled === 'boolean'
         ? input.correlationAwareSelectionEnabled
         : d.correlationAwareSelectionEnabled,
+    regimeAdaptiveWeightsEnabled:
+      typeof input.regimeAdaptiveWeightsEnabled === 'boolean'
+        ? input.regimeAdaptiveWeightsEnabled
+        : d.regimeAdaptiveWeightsEnabled,
+    regimeWeightPresets: {
+      riskOn: weightsPreset(input.regimeWeightPresets?.riskOn, d.regimeWeightPresets.riskOn),
+      neutral: weightsPreset(input.regimeWeightPresets?.neutral, d.regimeWeightPresets.neutral),
+      riskOff: weightsPreset(input.regimeWeightPresets?.riskOff, d.regimeWeightPresets.riskOff),
+    },
     liveTradingEnabled: typeof input.liveTradingEnabled === 'boolean' ? input.liveTradingEnabled : d.liveTradingEnabled,
     liveEnabledAt: enabledAt,
     liveAccountId: accountId,

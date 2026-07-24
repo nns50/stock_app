@@ -37,6 +37,7 @@ import type {
   CombinedBacktestRunResponse,
   CombinedWalkForwardResponse,
   CombinedWalkForwardWindowResult,
+  IndicatorKey,
   LiveOptionsPosition,
   LoopTickSummary,
   OptionsBacktestRunResponse,
@@ -57,6 +58,23 @@ import type {
   WalkForwardResponse,
   WalkForwardWindowResult,
 } from '../api/types';
+
+// Regime-conditional scoring weights (2026-07-24): the three regime presets and
+// the six core screener weights each preset governs. relativeStrength/sentiment
+// are intentionally absent — they stay driven by their own weight fields above.
+const REGIME_PRESETS: { key: 'riskOn' | 'neutral' | 'riskOff'; label: string }[] = [
+  { key: 'riskOn', label: 'Risk-on' },
+  { key: 'neutral', label: 'Neutral' },
+  { key: 'riskOff', label: 'Risk-off' },
+];
+const CORE_WEIGHT_KEYS: { key: IndicatorKey; label: string }[] = [
+  { key: 'momentum', label: 'Mom.' },
+  { key: 'relativeVolume', label: 'RelVol' },
+  { key: 'rsi', label: 'RSI' },
+  { key: 'volatility', label: 'Vol.' },
+  { key: 'gap', label: 'Gap' },
+  { key: 'trend', label: 'Trend' },
+];
 
 // Phases 1-8 of docs/AUTOTRADING_SPEC.md: config, real-estate exclusions,
 // Screen/Decision/Risk-Check preview, backtesting, the paper execution loop,
@@ -2231,6 +2249,8 @@ export default function AutoTradePage() {
   const [correlationLookbackDaysDraft, setCorrelationLookbackDaysDraft] = useState<number | undefined>();
   const [correlationThresholdDraft, setCorrelationThresholdDraft] = useState<number | undefined>();
   const [correlationAwareSelectionEnabled, setCorrelationAwareSelectionEnabled] = useState(false);
+  const [regimeAdaptiveWeightsEnabled, setRegimeAdaptiveWeightsEnabled] = useState(false);
+  const [regimeWeightPresetsDraft, setRegimeWeightPresetsDraft] = useState<AutotradeConfig['regimeWeightPresets']>();
   const [liveAccountIdDraft, setLiveAccountIdDraft] = useState('');
   const [liveMaxOrderUsdDraft, setLiveMaxOrderUsdDraft] = useState<number | undefined>();
   const [liveMaxDailyLossUsdDraft, setLiveMaxDailyLossUsdDraft] = useState<number | undefined>();
@@ -2329,6 +2349,8 @@ export default function AutoTradePage() {
     setCorrelationLookbackDaysDraft(config.data.correlationLookbackDays);
     setCorrelationThresholdDraft(config.data.correlationThreshold);
     setCorrelationAwareSelectionEnabled(config.data.correlationAwareSelectionEnabled);
+    setRegimeAdaptiveWeightsEnabled(config.data.regimeAdaptiveWeightsEnabled);
+    setRegimeWeightPresetsDraft(config.data.regimeWeightPresets);
     setLiveAccountIdDraft(config.data.liveAccountId ?? '');
     setLiveMaxOrderUsdDraft(config.data.liveMaxOrderUsd);
     setLiveMaxDailyLossUsdDraft(config.data.liveMaxDailyLossUsd);
@@ -2416,6 +2438,12 @@ export default function AutoTradePage() {
     correlationLookbackDays?: number;
     correlationThreshold?: number;
     correlationAwareSelectionEnabled?: boolean;
+    regimeAdaptiveWeightsEnabled?: boolean;
+    regimeWeightPresets?: {
+      riskOn?: Record<string, number>;
+      neutral?: Record<string, number>;
+      riskOff?: Record<string, number>;
+    };
     optionsStrategyType?: AutotradeOptionsStrategyType;
     optionsDeltaMin?: number;
     optionsDeltaMax?: number;
@@ -2515,6 +2543,8 @@ export default function AutoTradePage() {
       setCorrelationLookbackDaysDraft(saved.correlationLookbackDays);
       setCorrelationThresholdDraft(saved.correlationThreshold);
       setCorrelationAwareSelectionEnabled(saved.correlationAwareSelectionEnabled);
+      setRegimeAdaptiveWeightsEnabled(saved.regimeAdaptiveWeightsEnabled);
+      setRegimeWeightPresetsDraft(saved.regimeWeightPresets);
       setAutoPromoteMoversEnabled(saved.autoPromoteMoversEnabled);
       setAutoPromoteThresholdDraft(saved.autoPromoteThreshold);
       setAutoPromoteWindowDaysDraft(saved.autoPromoteWindowDays);
@@ -4355,6 +4385,69 @@ export default function AutoTradePage() {
                       </button>
                     </div>
                   </Field>
+                  <div className="sm:col-span-2 space-y-2">
+                    <label className="flex items-start gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={regimeAdaptiveWeightsEnabled}
+                        onChange={(e) => saveConfig({ regimeAdaptiveWeightsEnabled: e.target.checked })}
+                      />
+                      <span>
+                        Regime-adaptive scoring weights
+                        <span className="block text-[11px] text-slate-500">
+                          Off by default. When on, the loop reads the market regime (SPY proxy, cached ~1h) at scoring
+                          time and weights candidates by the matching preset below instead of the fixed defaults — so
+                          the strategy rewards different signals in risk-on vs risk-off (e.g. lean on trend when risk is
+                          on, on RSI/mean-reversion when it's off). Relative-strength and sentiment stay driven by their
+                          own weight fields above. Presets default to the standard weights, so enabling changes nothing
+                          until you edit one. Live + paper.
+                        </span>
+                      </span>
+                    </label>
+                    {regimeWeightPresetsDraft && (
+                      <div className="space-y-2">
+                        {REGIME_PRESETS.map(({ key: regime, label }) => (
+                          <div key={regime} className="rounded border border-ink-700/50 p-2">
+                            <div className="mb-1 flex items-center justify-between">
+                              <span className="text-xs font-medium text-slate-300">{label}</span>
+                              <button
+                                className="btn-ghost shrink-0 text-xs"
+                                aria-label={`Save ${label} weights`}
+                                onClick={() =>
+                                  saveConfig({ regimeWeightPresets: { [regime]: regimeWeightPresetsDraft[regime] } })
+                                }
+                                disabled={
+                                  JSON.stringify(regimeWeightPresetsDraft[regime]) ===
+                                  JSON.stringify(config.data?.regimeWeightPresets[regime])
+                                }
+                              >
+                                Save
+                              </button>
+                            </div>
+                            <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+                              {CORE_WEIGHT_KEYS.map(({ key: wk, label: wl }) => (
+                                <label key={wk} className="block text-[11px] text-slate-400">
+                                  {wl}
+                                  <NumberInput
+                                    value={regimeWeightPresetsDraft[regime][wk]}
+                                    min={0}
+                                    max={100}
+                                    step={1}
+                                    onChange={(v) =>
+                                      setRegimeWeightPresetsDraft((prev) =>
+                                        prev ? { ...prev, [regime]: { ...prev[regime], [wk]: v ?? 0 } } : prev,
+                                      )
+                                    }
+                                  />
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </CollapsibleCard>
 

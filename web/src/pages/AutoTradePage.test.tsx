@@ -105,6 +105,12 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
     correlationAwareSelectionEnabled: false,
+    regimeAdaptiveWeightsEnabled: false,
+    regimeWeightPresets: {
+      riskOn: { momentum: 30, relativeVolume: 20, rsi: 15, volatility: 10, gap: 10, trend: 15 },
+      neutral: { momentum: 30, relativeVolume: 20, rsi: 15, volatility: 10, gap: 10, trend: 15 },
+      riskOff: { momentum: 30, relativeVolume: 20, rsi: 15, volatility: 10, gap: 10, trend: 15 },
+    },
     liveTradingEnabled: false,
     liveEnabledAt: null,
     liveAccountId: null,
@@ -450,6 +456,43 @@ describe('AutoTradePage', () => {
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ correlationAwareSelectionEnabled: true, confirmAggressive: undefined }),
     );
+  });
+
+  it('toggling regime-adaptive weights saves immediately', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Regime-adaptive scoring weights/ }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ regimeAdaptiveWeightsEnabled: true, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves an edited risk-off regime weight preset', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    // The Risk-off preset row: bump its Trend weight, then Save that preset.
+    // findByText (not getByText) waits for the config to load — the preset rows
+    // only render once regimeWeightPresetsDraft is seeded from config.data.
+    const riskOffRow = (await screen.findByText('Risk-off')).closest('div')!.parentElement!;
+    const trendInput = within(riskOffRow).getAllByRole('textbox').at(-1)!; // 'Trend' is the last of the six inputs
+    fireEvent.change(trendInput, { target: { value: '40' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save Risk-off weights' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() => expect(setConfig).toHaveBeenCalled());
+    const call = setConfig.mock.calls.find((c) => c[0]?.regimeWeightPresets);
+    expect(call?.[0].regimeWeightPresets?.riskOff).toMatchObject({ trend: 40 });
   });
 
   it('reflects a fetched requireWeeklyTrendAlignment: true as a checked checkbox', async () => {

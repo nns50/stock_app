@@ -16,7 +16,9 @@ import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/de
 import { OptionsDecisionConfig, runOptionsDecision } from '../services/autotrading/optionsDecide';
 import { runAutotradeRiskCheck } from '../services/autotrading/riskCheck';
 import { runOptionsRiskCheck } from '../services/autotrading/optionsRiskCheck';
-import { defaultScreenerConfig, ScreenerConfig } from '../indicators/screener';
+import { ScreenerConfig } from '../indicators/screener';
+import { computeMarketRegime, RegimeLabel } from '../services/marketRegime';
+import { resolveScoringWeights } from '../services/autotrading/regimeWeights';
 import { computeBacktestStats, runBacktest, runWalkForwardBacktest } from '../services/autotrading/backtest';
 import { runOptionsBacktest, runOptionsWalkForwardBacktest } from '../services/autotrading/optionsBacktest';
 import { runCombinedBacktest, runCombinedWalkForwardBacktest } from '../services/autotrading/combinedBacktest';
@@ -174,6 +176,15 @@ const configBody = z.object({
   correlationLookbackDays: z.number().int().min(1).optional(),
   correlationThreshold: z.number().min(0).max(1).optional(),
   correlationAwareSelectionEnabled: z.boolean().optional(),
+  // --- Regime-conditional scoring weights ------------------------------------
+  regimeAdaptiveWeightsEnabled: z.boolean().optional(),
+  regimeWeightPresets: z
+    .object({
+      riskOn: z.record(z.string(), z.number().min(0)).optional(),
+      neutral: z.record(z.string(), z.number().min(0)).optional(),
+      riskOff: z.record(z.string(), z.number().min(0)).optional(),
+    })
+    .optional(),
   // --- Phase 8: live trading -------------------------------------------------
   liveTradingEnabled: z.boolean().optional(),
   /** Required (and must exactly match LIVE_TRADING_CONFIRMATION_PHRASE) only
@@ -313,6 +324,20 @@ autotradeRouter.put(
     if (body.correlationThreshold !== undefined) patch.correlationThreshold = body.correlationThreshold;
     if (body.correlationAwareSelectionEnabled !== undefined)
       patch.correlationAwareSelectionEnabled = body.correlationAwareSelectionEnabled;
+    if (body.regimeAdaptiveWeightsEnabled !== undefined)
+      patch.regimeAdaptiveWeightsEnabled = body.regimeAdaptiveWeightsEnabled;
+    if (body.regimeWeightPresets !== undefined) {
+      // Deep-merge each preset onto the CURRENT presets so a partial send (one
+      // regime, or one weight) only touches what it names and never resets the
+      // other presets/weights — then sanitize() re-fills/validates every key.
+      // The cast bridges the loose request shape to the strict stored type.
+      const p = body.regimeWeightPresets;
+      patch.regimeWeightPresets = {
+        riskOn: { ...before.regimeWeightPresets.riskOn, ...p.riskOn },
+        neutral: { ...before.regimeWeightPresets.neutral, ...p.neutral },
+        riskOff: { ...before.regimeWeightPresets.riskOff, ...p.riskOff },
+      } as AutotradeConfig['regimeWeightPresets'];
+    }
     if (body.liveMaxOrderUsd !== undefined) patch.liveMaxOrderUsd = body.liveMaxOrderUsd;
     if (body.liveMaxDailyLossUsd !== undefined) patch.liveMaxDailyLossUsd = body.liveMaxDailyLossUsd;
     if (body.liveMaxOrdersPerDay !== undefined) patch.liveMaxOrdersPerDay = body.liveMaxOrdersPerDay;
@@ -576,7 +601,11 @@ autotradeRouter.delete(
  *  matches what the automated loop actually does — while still letting an ad
  *  hoc request override it (a caller-supplied filters.minRelVol wins, since
  *  it's spread last). */
-function screenerConfigOverride(config: AutotradeConfig, requested?: Partial<ScreenerConfig>): Partial<ScreenerConfig> {
+function screenerConfigOverride(
+  config: AutotradeConfig,
+  requested?: Partial<ScreenerConfig>,
+  regimeLabel: RegimeLabel | null = null,
+): Partial<ScreenerConfig> {
   return {
     ...requested,
     filters: {
@@ -585,14 +614,23 @@ function screenerConfigOverride(config: AutotradeConfig, requested?: Partial<Scr
       ...requested?.filters,
     },
     weights: {
-      ...defaultScreenerConfig().weights,
-      relativeStrength: config.relativeStrengthWeight,
-      sentiment: config.sentimentWeight,
+      // Base is the regime-adaptive weight set the loop would use right now
+      // (today's fixed defaults when the feature is off), so the manual preview
+      // matches the automated loop; an ad hoc requested.weights still wins.
+      ...resolveScoringWeights(config, regimeLabel),
       ...requested?.weights,
     },
     benchmarkSymbol: requested?.benchmarkSymbol ?? config.benchmarkSymbol,
     relativeStrengthLookbackDays: requested?.relativeStrengthLookbackDays ?? config.relativeStrengthLookbackDays,
   };
+}
+
+/** The current market-regime label when regime-adaptive weighting is on (else
+ *  null), best-effort — a failed regime read falls back to the fixed weights
+ *  rather than failing the request. Mirrors the loop's own gate. */
+async function currentRegimeLabel(config: AutotradeConfig): Promise<RegimeLabel | null> {
+  if (!config.regimeAdaptiveWeightsEnabled) return null;
+  return (await computeMarketRegime().catch(() => null))?.label ?? null;
 }
 
 /** Same reasoning as screenerConfigOverride, for stopAtrMultiple/targetRMultiple. */
@@ -615,8 +653,9 @@ autotradeRouter.post(
   asyncHandler(async (req, res) => {
     const body = parseBody(screenBody, req);
     const config = getAutotradeConfig();
+    const regimeLabel = await currentRegimeLabel(config);
     const result = await runAutotradeScreen({
-      config: screenerConfigOverride(config, body.config as Partial<ScreenerConfig> | undefined),
+      config: screenerConfigOverride(config, body.config as Partial<ScreenerConfig> | undefined, regimeLabel),
       symbols: body.symbols,
       earningsBlackoutDays: config.earningsBlackoutDays,
       directionMode: body.directionMode ?? config.tradeDirection,
@@ -643,8 +682,9 @@ autotradeRouter.post(
   asyncHandler(async (req, res) => {
     const body = parseBody(decideBody, req);
     const config = getAutotradeConfig();
+    const regimeLabel = await currentRegimeLabel(config);
     const screen = await runAutotradeScreen({
-      config: screenerConfigOverride(config, body.config as Partial<ScreenerConfig> | undefined),
+      config: screenerConfigOverride(config, body.config as Partial<ScreenerConfig> | undefined, regimeLabel),
       symbols: body.symbols,
       earningsBlackoutDays: config.earningsBlackoutDays,
       directionMode: body.directionMode ?? config.tradeDirection,
