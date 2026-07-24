@@ -138,7 +138,15 @@ async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
     ...opts,
   });
   const text = await res.text();
-  const body = text ? JSON.parse(text) : {};
+  // A proxy/gateway can return non-JSON (an HTML 502/504, a plain-text 413).
+  // Parse defensively so an error response surfaces as a clean ApiError instead
+  // of an opaque "Unexpected token '<'" SyntaxError that no error UI can read.
+  let body: { error?: string; code?: string } & Record<string, unknown>;
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = { error: text.trim().slice(0, 300) || `Request failed (${res.status})` };
+  }
   if (!res.ok) {
     // A gate rejection (not a wrong-password reply) flips the app to the login screen.
     if (res.status === 401 && body.code === 'unauthenticated') {
