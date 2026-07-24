@@ -60,6 +60,9 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     maxTradesPerDay: 6,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    equityCurveDeriskEnabled: false,
+    equityCurveLookbackDays: 10,
+    equityCurveDeriskCutPct: 50,
     tradeDirection: 'long',
     minRelVol: 1.5,
     requireWeeklyTrendAlignment: false,
@@ -301,6 +304,39 @@ describe('AutoTradePage', () => {
     fireEvent.click(saveButton);
 
     await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ regimeSizeCutPct: 25, confirmAggressive: undefined }));
+  });
+
+  it('toggling equity-curve de-risking saves immediately', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Equity-curve de-risking/ }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ equityCurveDeriskEnabled: true, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new equity-curve lookback value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Equity-curve lookback (days)').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '20' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save equity-curve lookback' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ equityCurveLookbackDays: 20, confirmAggressive: undefined }),
+    );
   });
 
   it('reflects a fetched requireWeeklyTrendAlignment: true as a checked checkbox', async () => {

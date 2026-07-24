@@ -24,6 +24,7 @@ import {
   PaperPosition,
 } from '../../db/autotradePaperPositions';
 import { computeScaleIn } from './scaleIn';
+import { computeEquityCurveDerisk } from './equityCurveDerisk';
 import { getProvider } from '../../providers';
 import { mapPool } from '../../util/async';
 
@@ -183,6 +184,9 @@ export interface PaperPortfolioSnapshot {
   consecutiveLosses: number;
   /** Paper positions opened today (ET) — open or closed. */
   tradesToday: number;
+  /** Equity-curve de-risk decision from the paper book's own realized curve
+   *  (2026-07-24) — false when disabled or above the average. */
+  equityCurveDeriskActive: boolean;
 }
 
 /**
@@ -208,6 +212,21 @@ export function getPaperPortfolioSnapshot(): PaperPortfolioSnapshot {
   const tradesToday = recent.filter((p) => etDateStr(p.entryAt) === today).length;
   const openRisk = openPositions.reduce((s, p) => s + p.riskAmount, 0);
 
+  // Equity-curve de-risk from the paper book's OWN full realized history (not
+  // just today) — the multi-day curve the moving-average filter needs.
+  const config = getAutotradeConfig();
+  const closedHistory = recent
+    .filter((p) => p.status === 'closed' && p.exitAt !== null && p.exitPrice !== null)
+    .map((p) => ({
+      date: etDateStr(p.exitAt as number),
+      pnl: (p.exitPrice! - p.entryPrice) * p.quantity * (p.side === 'buy' ? 1 : -1),
+    }));
+  const equityCurveDeriskActive = computeEquityCurveDerisk(closedHistory, {
+    enabled: config.equityCurveDeriskEnabled,
+    lookbackDays: config.equityCurveLookbackDays,
+    cutPct: config.equityCurveDeriskCutPct,
+  }).active;
+
   return {
     today,
     openPositions,
@@ -216,6 +235,7 @@ export function getPaperPortfolioSnapshot(): PaperPortfolioSnapshot {
     dailyPnl,
     consecutiveLosses,
     tradesToday,
+    equityCurveDeriskActive,
   };
 }
 
@@ -338,6 +358,8 @@ export async function runPaperExecution(
       marketAtrPct,
       regimeAtrThresholdPct: config.regimeAtrThresholdPct,
       regimeSizeCutPct: config.regimeSizeCutPct,
+      equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
+      equityCurveDeriskCutPct: config.equityCurveDeriskCutPct,
     };
     const result = evaluateRiskCheck(signal, ctx);
     logAutotradeEvent({

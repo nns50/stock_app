@@ -2189,6 +2189,9 @@ export default function AutoTradePage() {
   const [maxTradesPerDayDraft, setMaxTradesPerDayDraft] = useState<number | undefined>();
   const [regimeAtrThresholdPctDraft, setRegimeAtrThresholdPctDraft] = useState<number | undefined>();
   const [regimeSizeCutPctDraft, setRegimeSizeCutPctDraft] = useState<number | undefined>();
+  const [equityCurveDeriskEnabled, setEquityCurveDeriskEnabled] = useState(false);
+  const [equityCurveLookbackDaysDraft, setEquityCurveLookbackDaysDraft] = useState<number | undefined>();
+  const [equityCurveDeriskCutPctDraft, setEquityCurveDeriskCutPctDraft] = useState<number | undefined>();
   const [minRelVolDraft, setMinRelVolDraft] = useState<number | undefined>();
   const [requireWeeklyTrendAlignment, setRequireWeeklyTrendAlignment] = useState(false);
   const [relativeStrengthWeightDraft, setRelativeStrengthWeightDraft] = useState<number | undefined>();
@@ -2276,6 +2279,9 @@ export default function AutoTradePage() {
     setMaxTradesPerDayDraft(config.data.maxTradesPerDay);
     setRegimeAtrThresholdPctDraft(config.data.regimeAtrThresholdPct);
     setRegimeSizeCutPctDraft(config.data.regimeSizeCutPct);
+    setEquityCurveDeriskEnabled(config.data.equityCurveDeriskEnabled);
+    setEquityCurveLookbackDaysDraft(config.data.equityCurveLookbackDays);
+    setEquityCurveDeriskCutPctDraft(config.data.equityCurveDeriskCutPct);
     setMinRelVolDraft(config.data.minRelVol);
     setRequireWeeklyTrendAlignment(config.data.requireWeeklyTrendAlignment);
     setRelativeStrengthWeightDraft(config.data.relativeStrengthWeight);
@@ -2351,6 +2357,9 @@ export default function AutoTradePage() {
     maxTradesPerDay?: number;
     regimeAtrThresholdPct?: number;
     regimeSizeCutPct?: number;
+    equityCurveDeriskEnabled?: boolean;
+    equityCurveLookbackDays?: number;
+    equityCurveDeriskCutPct?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     requireWeeklyTrendAlignment?: boolean;
@@ -2440,6 +2449,9 @@ export default function AutoTradePage() {
       setMaxTradesPerDayDraft(saved.maxTradesPerDay);
       setRegimeAtrThresholdPctDraft(saved.regimeAtrThresholdPct);
       setRegimeSizeCutPctDraft(saved.regimeSizeCutPct);
+      setEquityCurveDeriskEnabled(saved.equityCurveDeriskEnabled);
+      setEquityCurveLookbackDaysDraft(saved.equityCurveLookbackDays);
+      setEquityCurveDeriskCutPctDraft(saved.equityCurveDeriskCutPct);
       setMinRelVolDraft(saved.minRelVol);
       setRequireWeeklyTrendAlignment(saved.requireWeeklyTrendAlignment);
       setRelativeStrengthWeightDraft(saved.relativeStrengthWeight);
@@ -3794,6 +3806,81 @@ export default function AutoTradePage() {
                           regimeSizeCutPctDraft < 0 ||
                           regimeSizeCutPctDraft > 100 ||
                           regimeSizeCutPctDraft === config.data?.regimeSizeCutPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={equityCurveDeriskEnabled}
+                      onChange={(e) => saveConfig({ equityCurveDeriskEnabled: e.target.checked })}
+                    />
+                    <span>
+                      Equity-curve de-risking
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default. A softer alternative to the hard daily-drawdown halt: when the strategy&apos;s
+                        own realized equity curve (cumulative closed P&amp;L, tracked separately for paper vs live) is
+                        below its moving average, cut size by the % below; restore full size once it recovers. Stacks
+                        with step-down and regime sizing. Live + paper only (a backtest has no per-book live curve).
+                      </span>
+                    </span>
+                  </label>
+                  <Field
+                    label="Equity-curve lookback (days)"
+                    hint="Trading days in the moving average the latest equity point is compared against. Needs at least this many days of closed trades before it acts at all."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={equityCurveLookbackDaysDraft}
+                        onChange={setEquityCurveLookbackDaysDraft}
+                        min={1}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save equity-curve lookback"
+                        onClick={() =>
+                          equityCurveLookbackDaysDraft != null &&
+                          saveConfig({ equityCurveLookbackDays: equityCurveLookbackDaysDraft })
+                        }
+                        disabled={
+                          equityCurveLookbackDaysDraft == null ||
+                          equityCurveLookbackDaysDraft < 1 ||
+                          equityCurveLookbackDaysDraft === config.data?.equityCurveLookbackDays
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Equity-curve size cut (%)"
+                    hint="% cut to risk-per-trade while the equity curve is below its average. Only matters when equity-curve de-risking is on."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={equityCurveDeriskCutPctDraft}
+                        onChange={setEquityCurveDeriskCutPctDraft}
+                        min={0}
+                        max={100}
+                        step={5}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save equity-curve size cut"
+                        onClick={() =>
+                          equityCurveDeriskCutPctDraft != null &&
+                          saveConfig({ equityCurveDeriskCutPct: equityCurveDeriskCutPctDraft })
+                        }
+                        disabled={
+                          equityCurveDeriskCutPctDraft == null ||
+                          equityCurveDeriskCutPctDraft < 0 ||
+                          equityCurveDeriskCutPctDraft > 100 ||
+                          equityCurveDeriskCutPctDraft === config.data?.equityCurveDeriskCutPct
                         }
                       >
                         Save

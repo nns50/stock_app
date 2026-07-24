@@ -141,6 +141,19 @@ export interface AutotradeConfig {
    *  behavior this config merely made tunable), this is a brand-new feature,
    *  so an untouched config changes nothing. */
   regimeSizeCutPct: number;
+  /** Equity-curve de-risking (2026-07-24, services/autotrading/equityCurveDerisk.ts):
+   *  a SOFTER, graduated companion to the binary `maxDailyDrawdownPct` halt.
+   *  When on, and the strategy's OWN realized equity curve (cumulative closed
+   *  P&L, per book — paper vs live) is below its `equityCurveLookbackDays`-day
+   *  moving average, `riskPerTradePct` is cut by `equityCurveDeriskCutPct` — the
+   *  same multiplicative insertion point step-down and regime sizing use, and it
+   *  stacks with them. Off by default (`equityCurveDeriskEnabled` false), so an
+   *  untouched config changes nothing. LIVE + PAPER only — a backtest has no live
+   *  per-book curve wired into its risk-check context (same scope boundary as
+   *  regime sizing). */
+  equityCurveDeriskEnabled: boolean;
+  equityCurveLookbackDays: number;
+  equityCurveDeriskCutPct: number;
 
   // --- Screening/decision thresholds (docs/AUTOTRADING_SPEC.md — RESEARCH &
   // SCREEN / DECISION). Same treatment, extraction, and reasoning as the
@@ -633,6 +646,9 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     maxTradesPerDay: 6,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    equityCurveDeriskEnabled: false,
+    equityCurveLookbackDays: 10,
+    equityCurveDeriskCutPct: 50,
     tradeDirection: 'long',
     minRelVol: 1.5,
     requireWeeklyTrendAlignment: false,
@@ -779,6 +795,10 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     maxTradesPerDay: posInt(input.maxTradesPerDay, d.maxTradesPerDay),
     regimeAtrThresholdPct: pct(input.regimeAtrThresholdPct, d.regimeAtrThresholdPct),
     regimeSizeCutPct: pct(input.regimeSizeCutPct, d.regimeSizeCutPct),
+    equityCurveDeriskEnabled:
+      typeof input.equityCurveDeriskEnabled === 'boolean' ? input.equityCurveDeriskEnabled : d.equityCurveDeriskEnabled,
+    equityCurveLookbackDays: posIntMin1(input.equityCurveLookbackDays, d.equityCurveLookbackDays),
+    equityCurveDeriskCutPct: pct(input.equityCurveDeriskCutPct, d.equityCurveDeriskCutPct),
     tradeDirection:
       input.tradeDirection === 'long' || input.tradeDirection === 'short' || input.tradeDirection === 'both'
         ? input.tradeDirection

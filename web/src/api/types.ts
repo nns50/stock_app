@@ -1280,6 +1280,9 @@ export interface AutotradeConfig {
   // --- Regime-aware sizing (live + paper only; 0 disables) ---
   regimeAtrThresholdPct: number;
   regimeSizeCutPct: number;
+  equityCurveDeriskEnabled: boolean;
+  equityCurveLookbackDays: number;
+  equityCurveDeriskCutPct: number;
 
   // --- Screening/decision thresholds ---
   tradeDirection: AutotradeTradeDirectionMode;

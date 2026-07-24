@@ -42,6 +42,7 @@ import {
   LiveOrderMeta,
 } from '../../db/autotradeLiveOrders';
 import { computeScaleIn } from './scaleIn';
+import { computeEquityCurveDerisk } from './equityCurveDerisk';
 // DB-layer reads only (NOT the options execution service) -- so the combined
 // live budget can fold in the options book without a liveExecute <-> options
 // service import cycle.
@@ -187,6 +188,9 @@ export interface LivePortfolioSnapshot {
   dailyPnl: number;
   consecutiveLosses: number;
   tradesToday: number;
+  /** Equity-curve de-risk decision from the live book's own realized curve
+   *  (2026-07-24) — false when disabled or above the average. */
+  equityCurveDeriskActive: boolean;
 }
 
 /** The real-money counterpart to execute.ts's getPaperPortfolioSnapshot() —
@@ -212,6 +216,24 @@ export function getLivePortfolioSnapshot(): LivePortfolioSnapshot {
     closedAutotrade.filter((p) => p.entryDate === today).length;
   const openRisk = openPositions.reduce((s, p) => s + (initialRiskOf(p) ?? 0), 0);
 
+  // Equity-curve de-risk from the live book's OWN full realized history — the
+  // cumulative curve, dated by each trade's last exit, the MA filter needs.
+  const config = getAutotradeConfig();
+  const closedHistory = closedAutotrade.map((p) => ({
+    date: p.exits.length
+      ? p.exits
+          .map((e) => e.exitDate)
+          .sort()
+          .slice(-1)[0]
+      : p.entryDate,
+    pnl: realizedPnlOf(p),
+  }));
+  const equityCurveDeriskActive = computeEquityCurveDerisk(closedHistory, {
+    enabled: config.equityCurveDeriskEnabled,
+    lookbackDays: config.equityCurveLookbackDays,
+    cutPct: config.equityCurveDeriskCutPct,
+  }).active;
+
   return {
     today,
     openPositions,
@@ -220,6 +242,7 @@ export function getLivePortfolioSnapshot(): LivePortfolioSnapshot {
     dailyPnl,
     consecutiveLosses,
     tradesToday,
+    equityCurveDeriskActive,
   };
 }
 
@@ -697,6 +720,8 @@ export async function runLiveExecution(
       marketAtrPct,
       regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
       regimeSizeCutPct: cfg.regimeSizeCutPct,
+      equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
+      equityCurveDeriskCutPct: cfg.equityCurveDeriskCutPct,
     };
     const result = evaluateRiskCheck(signal, ctx);
     if (!result.ok) {

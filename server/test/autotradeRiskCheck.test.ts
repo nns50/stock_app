@@ -175,6 +175,51 @@ describe('evaluateRiskCheck — pure evaluator', () => {
     });
   });
 
+  describe('equity-curve de-risk sizing', () => {
+    it('is inactive when the flag is unset (undefined reads as off)', () => {
+      const result = evaluateRiskCheck(signal(), baseCtx());
+      expect(result.equityCurveDeriskActive).toBe(false);
+      expect(result.sizing.suggestedQuantity).toBe(200); // full 1% sizing
+      expect(findCheck(result, 'equity_curve_derisk').detail).toMatch(/inactive/);
+    });
+
+    it('cuts size by equityCurveDeriskCutPct while the curve is below its average', () => {
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({ equityCurveDeriskActive: true, equityCurveDeriskCutPct: 50 }),
+      );
+      expect(result.equityCurveDeriskActive).toBe(true);
+      // 1% * (1 − 50%) = 0.5% of 100,000 = 500 risk / $5 stop = 100 shares
+      expect(result.sizing.suggestedQuantity).toBe(100);
+      expect(findCheck(result, 'equity_curve_derisk').detail).toMatch(/active/);
+    });
+
+    it('stacks multiplicatively with step-down and regime sizing', () => {
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({
+          consecutiveLosses: 2,
+          marketAtrPct: 6,
+          regimeAtrThresholdPct: 3,
+          regimeSizeCutPct: 30,
+          equityCurveDeriskActive: true,
+          equityCurveDeriskCutPct: 50,
+        }),
+      );
+      // 1% * (1−50%) * (1−30%) * (1−50%) = 0.175% of 100,000 = 175 / $5 = 35 shares
+      expect(result.sizing.suggestedQuantity).toBe(35);
+    });
+
+    it('reports active with cutPct 0 but applies no size change', () => {
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({ equityCurveDeriskActive: true, equityCurveDeriskCutPct: 0 }),
+      );
+      expect(result.equityCurveDeriskActive).toBe(true);
+      expect(result.sizing.suggestedQuantity).toBe(200);
+    });
+  });
+
   describe('daily drawdown halt', () => {
     it('passes when today is flat or positive', () => {
       const result = evaluateRiskCheck(signal(), baseCtx({ dailyPnl: 0 }));
