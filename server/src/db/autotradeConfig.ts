@@ -672,6 +672,14 @@ export interface AutotradeConfig {
    *  exit-tune (in multiple units, not a %), so one noisy sample can't swing
    *  the loop's exits — the exit-geometry analogue of autoTuneMaxStepPct. */
   autoTuneExitMaxStep: number;
+  /** Walk-forward guard on the Kelly risk-% auto-tune (2026-07-24, ON by
+   *  default). When on, a risk-% INCREASE is only applied if the edge still
+   *  holds out-of-sample — the most recent half of closed trades must be a
+   *  reliable sample whose expectancy CI sits entirely above zero (see
+   *  services/autotrading/significance.ts checkOosEdgeConfirmation). A decrease
+   *  is always applied (the safe direction). Only matters when autoTuneEnabled;
+   *  stops the tune from chasing an in-sample edge that hasn't held up. */
+  autoTuneRequireOosConfirmation: boolean;
 }
 
 interface ConfigRow {
@@ -794,6 +802,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     autoTuneSlippageExcludePct: 2,
     autoTuneExitsEnabled: false,
     autoTuneExitMaxStep: 0.25,
+    autoTuneRequireOosConfirmation: true,
   };
 }
 
@@ -1002,6 +1011,10 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     autoTuneExitsEnabled:
       typeof input.autoTuneExitsEnabled === 'boolean' ? input.autoTuneExitsEnabled : d.autoTuneExitsEnabled,
     autoTuneExitMaxStep: posDecimal(input.autoTuneExitMaxStep, d.autoTuneExitMaxStep),
+    autoTuneRequireOosConfirmation:
+      typeof input.autoTuneRequireOosConfirmation === 'boolean'
+        ? input.autoTuneRequireOosConfirmation
+        : d.autoTuneRequireOosConfirmation,
   };
 }
 

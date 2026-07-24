@@ -1431,6 +1431,9 @@ export interface AutotradeConfig {
   autoTuneSlippageExcludePct: number;
   autoTuneExitsEnabled: boolean;
   autoTuneExitMaxStep: number;
+  /** Walk-forward guard (default on): only raise risk-% if the edge still holds
+   *  out-of-sample. Decreases always apply. */
+  autoTuneRequireOosConfirmation: boolean;
 }
 
 /** A starting-point suggestion for the live-only guardrail caps, derived from

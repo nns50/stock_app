@@ -2275,6 +2275,7 @@ export default function AutoTradePage() {
   const [autoPromoteWindowDaysDraft, setAutoPromoteWindowDaysDraft] = useState<number | undefined>();
   const [autoPromoteMaxSymbolsDraft, setAutoPromoteMaxSymbolsDraft] = useState<number | undefined>();
   const [autoTuneEnabled, setAutoTuneEnabled] = useState(false);
+  const [autoTuneRequireOosConfirmation, setAutoTuneRequireOosConfirmation] = useState(true);
   const [autoTuneMinTradesDraft, setAutoTuneMinTradesDraft] = useState<number | undefined>();
   const [autoTuneMaxStepPctDraft, setAutoTuneMaxStepPctDraft] = useState<number | undefined>();
   const [autoTuneSlippageExcludePctDraft, setAutoTuneSlippageExcludePctDraft] = useState<number | undefined>();
@@ -2373,6 +2374,7 @@ export default function AutoTradePage() {
     setAutoPromoteWindowDaysDraft(config.data.autoPromoteWindowDays);
     setAutoPromoteMaxSymbolsDraft(config.data.autoPromoteMaxSymbols);
     setAutoTuneEnabled(config.data.autoTuneEnabled);
+    setAutoTuneRequireOosConfirmation(config.data.autoTuneRequireOosConfirmation);
     setAutoTuneMinTradesDraft(config.data.autoTuneMinTrades);
     setAutoTuneMaxStepPctDraft(config.data.autoTuneMaxStepPct);
     setAutoTuneSlippageExcludePctDraft(config.data.autoTuneSlippageExcludePct);
@@ -2458,6 +2460,7 @@ export default function AutoTradePage() {
     autoPromoteWindowDays?: number;
     autoPromoteMaxSymbols?: number;
     autoTuneEnabled?: boolean;
+    autoTuneRequireOosConfirmation?: boolean;
     autoTuneMinTrades?: number;
     autoTuneMaxStepPct?: number;
     autoTuneSlippageExcludePct?: number;
@@ -2550,6 +2553,7 @@ export default function AutoTradePage() {
       setAutoPromoteWindowDaysDraft(saved.autoPromoteWindowDays);
       setAutoPromoteMaxSymbolsDraft(saved.autoPromoteMaxSymbols);
       setAutoTuneEnabled(saved.autoTuneEnabled);
+      setAutoTuneRequireOosConfirmation(saved.autoTuneRequireOosConfirmation);
       setAutoTuneMinTradesDraft(saved.autoTuneMinTrades);
       setAutoTuneMaxStepPctDraft(saved.autoTuneMaxStepPct);
       setAutoTuneSlippageExcludePctDraft(saved.autoTuneSlippageExcludePct);
@@ -5240,6 +5244,24 @@ export default function AutoTradePage() {
                         target (R) toward what your <em>winning</em> autotrade trades actually did — their worst
                         drawdown (MAE) sizes the stop, their favorable peak (MFE) sizes the target — bounded by the step
                         below and journaled every time it fires.
+                      </span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={autoTuneRequireOosConfirmation}
+                      onChange={(e) => saveConfig({ autoTuneRequireOosConfirmation: e.target.checked })}
+                    />
+                    <span>
+                      Require out-of-sample confirmation before raising risk
+                      <span className="block text-[11px] text-slate-500">
+                        On by default. A walk-forward guard on the risk-% tune above: it only <em>raises</em> risk-per-
+                        trade if the edge still holds out-of-sample — the most recent half of your closed trades must be
+                        a reliable sample whose expectancy confidence interval sits entirely above zero. A <em>cut</em>{' '}
+                        is always applied (the safe direction). Stops the tune from chasing an in-sample edge that
+                        hasn't held up; a blocked increase is journaled with its reason.
                       </span>
                     </span>
                   </label>

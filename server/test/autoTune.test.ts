@@ -135,7 +135,13 @@ describe('maybeAutoTune', () => {
     });
 
     it('nudges risk-per-trade UP toward the Kelly suggestion, clamped to the max daily step', async () => {
-      setAutotradeConfig({ autoTuneEnabled: true, autoTuneMinTrades: 2, autoTuneMaxStepPct: 0.3, riskPerTradePct: 1 });
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneMinTrades: 2,
+        autoTuneMaxStepPct: 0.3,
+        riskPerTradePct: 1,
+        autoTuneRequireOosConfirmation: false, // guard tested separately; isolate the increase mechanics
+      });
       closedTrade(100, '2026-08-01');
       closedTrade(-50, '2026-08-02');
       const target = kellySuggestion(50, 100, -50, 2)!.suggestedRiskPct;
@@ -160,7 +166,13 @@ describe('maybeAutoTune', () => {
     });
 
     it('applies the suggestion directly when it is within the max step (no clamping needed)', async () => {
-      setAutotradeConfig({ autoTuneEnabled: true, autoTuneMinTrades: 2, autoTuneMaxStepPct: 5, riskPerTradePct: 1 });
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneMinTrades: 2,
+        autoTuneMaxStepPct: 5,
+        riskPerTradePct: 1,
+        autoTuneRequireOosConfirmation: false, // guard tested separately; isolate the increase mechanics
+      });
       closedTrade(100, '2026-08-01');
       closedTrade(-50, '2026-08-02');
       const target = kellySuggestion(50, 100, -50, 2)!.suggestedRiskPct;
@@ -169,7 +181,13 @@ describe('maybeAutoTune', () => {
     });
 
     it('logs auto_tune_risk_adjusted with the before/after/suggested values', async () => {
-      setAutotradeConfig({ autoTuneEnabled: true, autoTuneMinTrades: 2, autoTuneMaxStepPct: 0.3, riskPerTradePct: 1 });
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneMinTrades: 2,
+        autoTuneMaxStepPct: 0.3,
+        riskPerTradePct: 1,
+        autoTuneRequireOosConfirmation: false, // guard tested separately; isolate the increase mechanics
+      });
       closedTrade(100, '2026-08-01');
       closedTrade(-50, '2026-08-02');
       await maybeAutoTune(ET_DAY_1);
@@ -189,6 +207,61 @@ describe('maybeAutoTune', () => {
       expect(getAutotradeConfig().riskPerTradePct).toBe(3);
       expect(listAutotradeEvents({ actions: ['auto_tune_risk_adjusted'] })).toHaveLength(0);
       expect(mockDispatch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('walk-forward OOS guard on risk-% increases (default on)', () => {
+    it('BLOCKS a risk-% increase when the out-of-sample edge is not confirmed, and journals it', async () => {
+      // Default config leaves the guard ON. Two decisive trades suggest raising
+      // risk, but the OOS window is far too thin to confirm — so the increase
+      // is held, not applied.
+      setAutotradeConfig({ autoTuneEnabled: true, autoTuneMinTrades: 2, autoTuneMaxStepPct: 0.3, riskPerTradePct: 1 });
+      closedTrade(100, '2026-08-01');
+      closedTrade(-50, '2026-08-02');
+      const result = await maybeAutoTune(ET_DAY_1);
+      expect(result.riskAdjusted).toBe(false);
+      expect(getAutotradeConfig().riskPerTradePct).toBe(1); // unchanged
+      const blocked = listAutotradeEvents({ actions: ['auto_tune_risk_increase_blocked'] });
+      expect(blocked).toHaveLength(1);
+      expect(JSON.parse(blocked[0].detail!)).toMatchObject({ from: 1, wouldRaiseTo: 1.3 });
+      expect(listAutotradeEvents({ actions: ['auto_tune_risk_adjusted'] })).toHaveLength(0);
+      expect(mockDispatch).not.toHaveBeenCalled();
+    });
+
+    it('ALWAYS applies a risk-% DECREASE, even with the guard on', async () => {
+      setAutotradeConfig({ autoTuneEnabled: true, autoTuneMinTrades: 2, autoTuneMaxStepPct: 0.3, riskPerTradePct: 2 });
+      closedTrade(50, '2026-08-01');
+      closedTrade(-100, '2026-08-02'); // poor payoff -> Kelly suggests cutting risk
+      await maybeAutoTune(ET_DAY_1);
+      expect(getAutotradeConfig().riskPerTradePct).toBeCloseTo(2 - 0.3, 5);
+      expect(listAutotradeEvents({ actions: ['auto_tune_risk_increase_blocked'] })).toHaveLength(0);
+    });
+
+    it('APPLIES a risk-% increase when the out-of-sample edge IS confirmed', async () => {
+      setAutotradeConfig({ autoTuneEnabled: true, autoTuneMinTrades: 2, autoTuneMaxStepPct: 0.3, riskPerTradePct: 1 });
+      // In-sample (older) half: mixed, so overall Kelly still suggests raising.
+      // Out-of-sample (recent) half: 22 identical winners — a constant, reliable,
+      // entirely-positive sample, so it confirms regardless of the bootstrap rng.
+      for (let i = 0; i < 22; i++) closedTrade(i % 2 === 0 ? 100 : -40, `2026-07-${String(i + 1).padStart(2, '0')}`);
+      for (let i = 0; i < 22; i++) closedTrade(100, `2026-08-${String(i + 1).padStart(2, '0')}`);
+      const result = await maybeAutoTune(ET_DAY_1);
+      expect(result.riskAdjusted).toBe(true);
+      expect(getAutotradeConfig().riskPerTradePct).toBeGreaterThan(1);
+      expect(listAutotradeEvents({ actions: ['auto_tune_risk_increase_blocked'] })).toHaveLength(0);
+    });
+
+    it('does NOT guard an increase when the confirmation flag is off (opt-out honored)', async () => {
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneMinTrades: 2,
+        autoTuneMaxStepPct: 0.3,
+        riskPerTradePct: 1,
+        autoTuneRequireOosConfirmation: false,
+      });
+      closedTrade(100, '2026-08-01');
+      closedTrade(-50, '2026-08-02');
+      await maybeAutoTune(ET_DAY_1);
+      expect(getAutotradeConfig().riskPerTradePct).toBeCloseTo(1.3, 5); // applied — no guard
     });
   });
 
