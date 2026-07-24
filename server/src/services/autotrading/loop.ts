@@ -4,7 +4,8 @@ import { saveLastTick } from '../../db/autotradeLastTick';
 import { getTradingConfig } from '../../db/trading';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { runAutotradeScreen, ScreenCandidate } from './screen';
-import { defaultScreenerConfig } from '../../indicators/screener';
+import { computeMarketRegime } from '../marketRegime';
+import { resolveScoringWeights } from './regimeWeights';
 import { selectCorrelationAware } from './correlationSelection';
 import { runAutotradeDecision } from './decide';
 import { runOptionsDecision } from './optionsDecide';
@@ -427,14 +428,27 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       return summary;
     }
 
+    // Regime-conditional weights (2026-07-24, default off): when enabled, read
+    // the market regime (SPY proxy, cached ~1h — cheap) and score this tick with
+    // that regime's weight preset instead of the fixed defaults. Own gate + a
+    // best-effort read (a failed regime fetch falls back to the fixed weights,
+    // never blocks the tick), so the default path does no extra work and behaves
+    // exactly as before.
+    let regimeLabel: 'risk-on' | 'neutral' | 'risk-off' | null = null;
+    if (config.regimeAdaptiveWeightsEnabled) {
+      regimeLabel = (await computeMarketRegime().catch(() => null))?.label ?? null;
+      if (regimeLabel) {
+        logAutotradeEvent({
+          stage: 'screen',
+          action: 'regime_weights_applied',
+          detail: { regime: regimeLabel },
+        });
+      }
+    }
     const screenResult = await runAutotradeScreen({
       config: {
         filters: { minRelVol: config.minRelVol, requireWeeklyTrendAlignment: config.requireWeeklyTrendAlignment },
-        weights: {
-          ...defaultScreenerConfig().weights,
-          relativeStrength: config.relativeStrengthWeight,
-          sentiment: config.sentimentWeight,
-        },
+        weights: resolveScoringWeights(config, regimeLabel),
         benchmarkSymbol: config.benchmarkSymbol,
         relativeStrengthLookbackDays: config.relativeStrengthLookbackDays,
       },

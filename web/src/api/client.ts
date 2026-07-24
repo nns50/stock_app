@@ -503,6 +503,12 @@ export const client = {
     correlationLookbackDays?: number;
     correlationThreshold?: number;
     correlationAwareSelectionEnabled?: boolean;
+    regimeAdaptiveWeightsEnabled?: boolean;
+    regimeWeightPresets?: {
+      riskOn?: Record<string, number>;
+      neutral?: Record<string, number>;
+      riskOff?: Record<string, number>;
+    };
     liveTradingEnabled?: boolean;
     confirmLiveTrading?: string;
     liveAccountId?: string | null;

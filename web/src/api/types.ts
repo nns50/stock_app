@@ -1353,6 +1353,18 @@ export interface AutotradeConfig {
    *  high-scorers win the caps over a correlated huddle. Reorders only. */
   correlationAwareSelectionEnabled: boolean;
 
+  // --- Regime-conditional scoring weights (default off) ---
+  /** When on, the loop scores with the market regime's weight preset instead of
+   *  the fixed defaults. Off = today's fixed weights. */
+  regimeAdaptiveWeightsEnabled: boolean;
+  /** Per-regime core screener weights (the six IndicatorKey weights).
+   *  relativeStrength/sentiment stay driven by their own weight fields. */
+  regimeWeightPresets: {
+    riskOn: Record<IndicatorKey, number>;
+    neutral: Record<IndicatorKey, number>;
+    riskOff: Record<IndicatorKey, number>;
+  };
+
   // --- Phase 8: live trading ---
   liveTradingEnabled: boolean;
   liveEnabledAt: number | null;

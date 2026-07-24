@@ -925,7 +925,15 @@ shouldn't be a tab-switch away.
   uses), **sentiment weight** (2026-07-18 — how much a simple, transparent keyword
   count over each candidate's recent headlines counts toward its total screener score,
   on the same 0-100 scale as every other component and off by default — see
-  **About**'s scoring table for the word list and full breakdown), **max ticker ATR**
+  **About**'s scoring table for the word list and full breakdown), **regime-adaptive
+  scoring weights** (2026-07-24, off by default — a toggle plus three editable weight
+  presets, one per **market regime**: risk-on / neutral / risk-off. When on, the loop
+  reads the regime gauge at scoring time and weights candidates by the matching preset
+  instead of the fixed defaults, so the strategy can reward trend more when risk is on
+  and RSI/mean-reversion more when it's off. Each preset governs only the six core
+  weights — relative strength and sentiment keep their own weights above — and all three
+  default to the standard weights, so enabling changes nothing until you edit a preset.
+  Live and paper; backtest support is separate), **max ticker ATR**
   and **max market
   ATR** (skip a candidate whose own volatility is too high, or skip every new entry
   this cycle if SPY's own volatility is too high — stricter than the manual Screen/

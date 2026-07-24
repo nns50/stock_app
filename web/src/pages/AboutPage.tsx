@@ -130,6 +130,17 @@ export default function AboutPage() {
           Filters (price, average volume, RSI band, trend alignment — daily and weekly) are applied separately — a
           symbol can score well yet be flagged as not passing your filters, with the reasons shown.
         </p>
+        <p className="mt-2">
+          <strong className="text-slate-200">Regime-adaptive weights</strong> (auto-trade config, off by default) let
+          the six core weights above change with the market. When on, the loop reads the{' '}
+          <strong className="text-slate-200">market-regime</strong> label (see below) at scoring time and swaps in that
+          regime’s weight preset — <span className="tabular-nums">risk-on</span>,{' '}
+          <span className="tabular-nums">neutral</span>, or <span className="tabular-nums">risk-off</span> — so the
+          screener can, say, reward trend more when risk is on and RSI/mean-reversion more when it’s off. The presets
+          default to the standard weights (so enabling changes nothing until you edit one), and{' '}
+          <em>relative strength</em> and <em>sentiment</em> always keep their own separate weights regardless. Off, the
+          weights are the fixed defaults shown above.
+        </p>
       </Section>
 
       <Section id="alerts" title="Alerts & the suggested exit">
