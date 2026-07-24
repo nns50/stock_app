@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { config } from '../../config';
 import {
   AccountState,
@@ -35,6 +36,7 @@ export type PlaceReason =
   | 'account_error'
   | 'blocked'
   | 'broker_rejected'
+  | 'duplicate'
   | 'placed';
 
 export interface PlaceResult {
@@ -76,7 +78,12 @@ async function withServerReference(intent: OrderIntent): Promise<OrderIntent> {
   return ref !== undefined ? { ...intent, referencePrice: ref } : intent;
 }
 
-export async function placeOrder(intent: OrderIntent, accountId: string, confirmation: string): Promise<PlaceResult> {
+export async function placeOrder(
+  intent: OrderIntent,
+  accountId: string,
+  confirmation: string,
+  idempotencyKey?: string,
+): Promise<PlaceResult> {
   // 1) Deploy-level master gate — dead unless TRADING_ENABLED is set on the box.
   if (!config.trading.placeEnabled) {
     return {
@@ -134,8 +141,21 @@ export async function placeOrder(intent: OrderIntent, accountId: string, confirm
   // plain SELL so the broker's real-time locate/borrow check runs at order time.
   const isShort = wouldOpenShort(priced, accountState);
 
-  const clientOrderId = newClientOrderId();
+  // Idempotency: a client-supplied key makes retries/double-clicks/proxy-replays
+  // safe. Deriving the broker client_order_id deterministically from it means a
+  // repeated request produces the SAME order id (so the broker dedups too) and
+  // the SAME intent row (createIntent is keyed on it). If that intent already
+  // advanced past 'draft', a prior request already placed (or is placing) it —
+  // decline to submit a second time. Without a key, each call is unique (prior
+  // behavior). The transitions below up to submit are synchronous, so a
+  // concurrent duplicate sees 'submitted', never a second 'draft'.
+  const clientOrderId = idempotencyKey
+    ? createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32)
+    : newClientOrderId();
   const intentRec = createIntent(priced, clientOrderId); // draft (audited)
+  if (intentRec.state !== 'draft') {
+    return { ok: true, placed: false, reason: 'duplicate', guardrails, accountState, intent: intentRec };
+  }
 
   if (!guardrails.ok) {
     const reasons = blockingFailures(guardrails)

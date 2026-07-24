@@ -166,6 +166,29 @@ describe('place order (live)', () => {
     ]);
   });
 
+  it('is idempotent: a repeat /place with the same key never submits a second order', async () => {
+    const key = 'idem-key-abc123';
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      // first call: balance, positions, place
+      .mockResolvedValueOnce(okResp(BALANCE))
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp({ order_id: 'WB-ORDER-1' }))
+      // second call (same key): balance, positions — but NO place
+      .mockResolvedValueOnce(okResp(BALANCE))
+      .mockResolvedValueOnce(okResp([]));
+
+    const first = await placeOrder(intent(), 'ACC1', ok(), key);
+    expect(first).toMatchObject({ placed: true, reason: 'placed' });
+
+    const second = await placeOrder(intent(), 'ACC1', ok(), key);
+    expect(second).toMatchObject({ placed: false, reason: 'duplicate' });
+    expect(second.intent?.id).toBe(first.intent?.id); // same intent row, not a new order
+
+    const placeCalls = fetchSpy.mock.calls.filter(([u]) => String(u).includes('/order/place'));
+    expect(placeCalls).toHaveLength(1); // exactly one real order across both requests
+  });
+
   it('submits a permitted short (allowNakedShort) with side SHORT, not SELL', async () => {
     setTradingConfig({ enabled: true, allowNakedShort: true });
     const fetchSpy = vi
