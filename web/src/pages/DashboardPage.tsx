@@ -74,11 +74,14 @@ export default function DashboardPage() {
   );
 
   // Refresh open positions when a trade is logged from the global modal.
+  // reloadPositions is useAsync's stable run() — depend on it directly so the
+  // listener isn't re-bound every render.
+  const reloadPositions = positions.reload;
   useEffect(() => {
-    const onLogged = () => positions.reload();
+    const onLogged = () => reloadPositions();
     window.addEventListener(TRADE_LOGGED_EVENT, onLogged);
     return () => window.removeEventListener(TRADE_LOGGED_EVENT, onLogged);
-  }, [positions.reload]);
+  }, [reloadPositions]);
 
   const agg = positions.data?.aggregate;
   const exposure = positions.data?.exposure;

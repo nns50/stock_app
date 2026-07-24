@@ -100,18 +100,21 @@ export default function PositionsPage() {
   const confirm = useConfirm();
 
   // Refresh when a trade is logged from the global modal (header / `n` / palette).
+  // reloadData is useAsync's stable run() — depend on it directly so the
+  // listener isn't re-bound every render.
+  const reloadData = data.reload;
   useEffect(() => {
     const onLogged = () => {
       setLastUpdated(Date.now());
-      data.reload();
+      reloadData();
     };
     window.addEventListener(TRADE_LOGGED_EVENT, onLogged);
     return () => window.removeEventListener(TRADE_LOGGED_EVENT, onLogged);
-  }, [data.reload]);
+  }, [reloadData]);
 
   const reload = () => {
     setLastUpdated(Date.now());
-    data.reload();
+    reloadData();
   };
 
   const remove = async (id: number) => {

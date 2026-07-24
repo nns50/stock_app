@@ -57,7 +57,6 @@ export function TodaysSetups() {
     if (sessionStorage.getItem(AUTO_SCAN_KEY)) return;
     sessionStorage.setItem(AUTO_SCAN_KEY, '1');
     void scan('long');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const top = result ? rank(result.results, sort) : [];
