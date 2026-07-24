@@ -1419,6 +1419,27 @@ describe('checkLiveScaleIns', () => {
     expect(await checkLiveScaleIns()).toEqual([]);
   });
 
+  it('fails closed (no add) when the add would exceed the aggregate open-risk cap', async () => {
+    // The open position already carries ~$1000 risk (≈200sh × $5 stop). Drop the
+    // aggregate cap below that so any add exceeds it — the risk LAYER (not just
+    // the per-order guardrails) must block the pyramiding, exactly as it would a
+    // fresh entry.
+    const { pos } = await openLivePosition(SCALE_ON);
+    setAutotradeConfig({ maxAggregateOpenRiskPct: 0.5 }); // cap = $500 on $100k equity
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
+    mockPlaceOrder.mockClear();
+
+    const outcomes = await checkLiveScaleIns();
+    expect(outcomes[0].requested).toBe(false);
+    expect(outcomes[0].reason).toMatch(/Aggregate open-risk cap/);
+    expect(countLiveAddOns(pos.id)).toBe(0);
+    expect(mockPlaceOrder).not.toHaveBeenCalled(); // never reached the broker
+    const blocked = listAutotradeEvents({ symbol: 'AAPL', stage: 'execution' }).find(
+      (e) => e.action === 'live_scale_in_blocked',
+    );
+    expect(JSON.parse(blocked!.detail!)).toMatchObject({ reason: 'max_aggregate_open_risk' });
+  });
+
   it('no-ops when the server placement master (TRADING_ENABLED) is off', async () => {
     await openLivePosition(SCALE_ON);
     config.trading.placeEnabled = false;
