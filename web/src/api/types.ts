@@ -1283,6 +1283,7 @@ export interface AutotradeConfig {
   equityCurveDeriskEnabled: boolean;
   equityCurveLookbackDays: number;
   equityCurveDeriskCutPct: number;
+  maxAdvParticipationPct: number;
 
   // --- Screening/decision thresholds ---
   tradeDirection: AutotradeTradeDirectionMode;

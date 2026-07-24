@@ -42,6 +42,10 @@ export interface TradeSignal {
   rationale: string;
   /** The screener's 0..100 total score, carried over for sorting/display. */
   score: number;
+  /** ~20-day average daily volume (shares) from the candidate's indicators,
+   *  carried so the risk check can apply an ADV participation size cap without
+   *  re-fetching. Null/absent when the screener couldn't resolve it. */
+  avgVolume?: number | null;
 }
 
 function fmtPct(v: number | null): string {
@@ -103,6 +107,7 @@ export function generateSignal(
     rMultiple: cfg.targetRMultiple,
     rationale,
     score: candidate.total,
+    avgVolume: candidate.indicators.avgVolume,
   };
 }
 

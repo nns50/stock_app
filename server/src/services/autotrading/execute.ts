@@ -360,6 +360,7 @@ export async function runPaperExecution(
       regimeSizeCutPct: config.regimeSizeCutPct,
       equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
       equityCurveDeriskCutPct: config.equityCurveDeriskCutPct,
+      maxAdvParticipationPct: config.maxAdvParticipationPct,
     };
     const result = evaluateRiskCheck(signal, ctx);
     logAutotradeEvent({

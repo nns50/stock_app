@@ -220,6 +220,33 @@ describe('evaluateRiskCheck — pure evaluator', () => {
     });
   });
 
+  describe('ADV participation cap', () => {
+    it('is inactive when the cap is 0 (default) — full risk-based size', () => {
+      const result = evaluateRiskCheck(signal({ avgVolume: 10_000 }), baseCtx({ maxAdvParticipationPct: 0 }));
+      expect(result.sizing.suggestedQuantity).toBe(200); // unchanged
+      expect(findCheck(result, 'adv_participation_cap').detail).toMatch(/no ADV participation cap/);
+    });
+
+    it('caps the sized quantity at maxAdvParticipationPct% of the name’s avg daily volume', () => {
+      // 1% of 10,000 ADV = 100 shares, below the 200 the risk budget would buy.
+      const result = evaluateRiskCheck(signal({ avgVolume: 10_000 }), baseCtx({ maxAdvParticipationPct: 1 }));
+      expect(result.sizing.suggestedQuantity).toBe(100);
+      expect(result.sizing.riskOfPosition).toBe(500); // $5 stop * 100, below the $1,000 budget
+      expect(findCheck(result, 'adv_participation_cap').detail).toMatch(/100 share cap/);
+    });
+
+    it('does not cap when the ADV allowance exceeds the risk-based size', () => {
+      const result = evaluateRiskCheck(signal({ avgVolume: 1_000_000 }), baseCtx({ maxAdvParticipationPct: 1 }));
+      expect(result.sizing.suggestedQuantity).toBe(200); // 1% of 1M = 10k cap, doesn't bind
+    });
+
+    it('skips the cap (does not block) when the signal has no avgVolume', () => {
+      const result = evaluateRiskCheck(signal({ avgVolume: null }), baseCtx({ maxAdvParticipationPct: 1 }));
+      expect(result.sizing.suggestedQuantity).toBe(200); // no cap applied
+      expect(findCheck(result, 'adv_participation_cap').detail).toMatch(/avg daily volume is unavailable/);
+    });
+  });
+
   describe('daily drawdown halt', () => {
     it('passes when today is flat or positive', () => {
       const result = evaluateRiskCheck(signal(), baseCtx({ dailyPnl: 0 }));
