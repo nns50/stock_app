@@ -6,7 +6,7 @@ import {
   extractOrders,
   pnlLikeFields,
   redact,
-  summarizeComboEnvelopes,
+  collectComboEvidence,
   summarizeOrders,
 } from '../src/services/brokerCapture';
 
@@ -225,73 +225,129 @@ describe('classifyDayPnlSemantics', () => {
 // WebullOrderLeg can be relied on at all, so the classifier has to be as
 // unwilling to guess as the other two.
 // ---------------------------------------------------------------------------
-describe('summarizeComboEnvelopes', () => {
-  it('finds multi-leg envelopes and records each leg tag, including missing ones', () => {
+describe('collectComboEvidence', () => {
+  it('finds a NESTED combo and records each leg tag, including missing ones', () => {
     const payload = [
       {
         client_order_id: 'CID-1',
         combo_order_id: 'WB-1',
         orders: [
-          { combo_type: 'MASTER', status: 'FILLED' },
-          { combo_type: 'STOP_LOSS', status: 'WORKING' },
-          { status: 'WORKING' }, // untagged
+          { combo_type: 'MASTER', status: 'FILLED', quantity: '10' },
+          { combo_type: 'STOP_LOSS', status: 'WORKING', quantity: '10' },
+          { status: 'WORKING', quantity: '10' }, // untagged
         ],
       },
     ];
-    expect(summarizeComboEnvelopes(payload)).toEqual([
+    const e = collectComboEvidence(payload);
+    expect(e.groups).toEqual([
       {
         clientOrderId: 'CID-1',
         comboOrderId: 'WB-1',
+        shape: 'nested',
         legCount: 3,
         legComboTypes: ['MASTER', 'STOP_LOSS', null],
         legStatuses: ['FILLED', 'WORKING', 'WORKING'],
       },
     ]);
+    expect(e.totalOrderRows).toBe(3);
   });
 
-  it('ignores a single-leg order — one leg is not a combo', () => {
-    expect(summarizeComboEnvelopes([{ client_order_id: 'X', orders: [{ status: 'FILLED' }] }])).toEqual([]);
+  it('finds a FLAT combo — separate rows sharing one combo id', () => {
+    // The shape a nested-only detector would report as "no bracket", which is
+    // the same output as a genuinely empty account.
+    const payload = [
+      {
+        client_order_id: 'A',
+        combo_order_id: 'WB-9',
+        orders: [{ combo_type: 'MASTER', status: 'FILLED', quantity: '5' }],
+      },
+      {
+        client_order_id: 'B',
+        combo_order_id: 'WB-9',
+        orders: [{ combo_type: 'STOP_LOSS', status: 'WORKING', quantity: '5' }],
+      },
+    ];
+    const e = collectComboEvidence(payload);
+    expect(e.groups).toEqual([
+      {
+        comboOrderId: 'WB-9',
+        shape: 'flat',
+        legCount: 2,
+        legComboTypes: ['MASTER', 'STOP_LOSS'],
+        legStatuses: ['FILLED', 'WORKING'],
+      },
+    ]);
+  });
+
+  it('does not mistake ordinary single orders for a combo', () => {
+    // Every order carries a combo id; only a REPEATED one means anything.
+    const payload = [
+      { client_order_id: 'A', combo_order_id: 'WB-1', orders: [{ status: 'FILLED', quantity: '1' }] },
+      { client_order_id: 'B', combo_order_id: 'WB-2', orders: [{ status: 'FILLED', quantity: '1' }] },
+    ];
+    const e = collectComboEvidence(payload);
+    expect(e.groups).toEqual([]);
+    expect(e.totalOrderRows).toBe(2);
   });
 });
 
 describe('classifyComboLegSemantics', () => {
-  const envelope = (legComboTypes: Array<string | null>) => ({
+  const nested = (legComboTypes: Array<string | null>) => ({
     clientOrderId: 'CID',
     comboOrderId: 'WB',
+    shape: 'nested' as const,
     legCount: legComboTypes.length,
     legComboTypes,
     legStatuses: legComboTypes.map(() => 'WORKING'),
   });
+  const evidence = (groups: ReturnType<typeof nested>[], totalOrderRows = 9) => ({ groups, totalOrderRows });
 
   it('confirms echoed when a real bracket comes back fully tagged', () => {
-    const v = classifyComboLegSemantics([envelope(['MASTER', 'STOP_LOSS', 'STOP_PROFIT'])]);
+    const v = classifyComboLegSemantics(evidence([nested(['MASTER', 'STOP_LOSS', 'STOP_PROFIT'])]));
     expect(v.semantics).toBe('echoed');
     expect(v.detail).toMatch(/MASTER/);
   });
 
   it('reports absent when combos come back with no leg tagged at all', () => {
     // The consequential answer: every comboType filter in the app is dead code.
-    const v = classifyComboLegSemantics([envelope([null, null, null])]);
+    const v = classifyComboLegSemantics(evidence([nested([null, null, null])]));
     expect(v.semantics).toBe('absent');
     expect(v.detail).toMatch(/dead code/);
   });
 
-  it('says nothing when no combo order was seen', () => {
-    const v = classifyComboLegSemantics([]);
-    expect(v.semantics).toBe('inconclusive');
-    expect(v.detail).toMatch(/place a bracketed stock entry/i);
+  it('distinguishes an EMPTY account from one that simply has no brackets', () => {
+    // Same verdict, different next step — which is the whole point of tracking
+    // the order-row count alongside the group count.
+    expect(classifyComboLegSemantics(evidence([], 0)).detail).toMatch(/no order rows at all/i);
+    expect(classifyComboLegSemantics(evidence([], 12)).detail).toMatch(/12 order row\(s\) seen/);
+  });
+
+  it('flags a FLAT combo shape as its own finding, not as a missing bracket', () => {
+    const v = classifyComboLegSemantics({
+      groups: [
+        {
+          comboOrderId: 'WB-9',
+          shape: 'flat',
+          legCount: 3,
+          legComboTypes: ['MASTER', 'STOP_LOSS', 'STOP_PROFIT'],
+          legStatuses: [],
+        },
+      ],
+      totalOrderRows: 3,
+    });
+    expect(v.semantics).toBe('not-nested');
+    expect(v.detail).toMatch(/single-leg order/i);
   });
 
   it('refuses to let a SPREAD stand in for a bracket', () => {
     // A vertical's legs are tagged NORMAL/NORMAL — no MASTER, no exit roles —
     // so it proves the field exists but not that bracket roles come back.
-    const v = classifyComboLegSemantics([envelope(['NORMAL', 'NORMAL'])]);
+    const v = classifyComboLegSemantics(evidence([nested(['NORMAL', 'NORMAL'])]));
     expect(v.semantics).toBe('inconclusive');
     expect(v.detail).toMatch(/spread/i);
   });
 
   it('refuses a partially-tagged bracket rather than calling it confirmed', () => {
-    const v = classifyComboLegSemantics([envelope(['MASTER', null])]);
-    expect(v.semantics).toBe('inconclusive');
+    expect(classifyComboLegSemantics(evidence([nested(['MASTER', null])])).semantics).toBe('inconclusive');
   });
 });

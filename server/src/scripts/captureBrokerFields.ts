@@ -10,8 +10,8 @@ import {
   classifyFillSemantics,
   pnlLikeFields,
   classifyComboLegSemantics,
+  collectComboEvidence,
   redact,
-  summarizeComboEnvelopes,
   summarizeOrders,
 } from '../services/brokerCapture';
 
@@ -232,14 +232,25 @@ async function main(): Promise<void> {
   // ---- Q3 ----
   // Answerable straight from the snapshot, unlike Q1/Q2: either a bracket is
   // in the account's order history tagged per leg, or it isn't.
-  const envelopes = [...summarizeComboEnvelopes(openOrders.data), ...summarizeComboEnvelopes(history.data)];
-  const comboVerdict = classifyComboLegSemantics(envelopes);
-  console.log(`\nQ3 — ${envelopes.length} multi-leg (combo) envelope(s) seen:`);
-  for (const e of envelopes.slice(0, 10)) {
+  const open3 = collectComboEvidence(openOrders.data);
+  const hist3 = collectComboEvidence(history.data);
+  const evidence = {
+    groups: [...open3.groups, ...hist3.groups],
+    totalOrderRows: open3.totalOrderRows + hist3.totalOrderRows,
+  };
+  const comboVerdict = classifyComboLegSemantics(evidence);
+  console.log(`\nQ3 — ${evidence.groups.length} multi-leg combo(s) across ${evidence.totalOrderRows} order row(s):`);
+  for (const e of evidence.groups.slice(0, 10)) {
     const tags = e.legComboTypes.map((t) => t ?? '«untagged»').join(', ');
-    console.log(`  ${e.clientOrderId ?? e.comboOrderId ?? '—'}  ${e.legCount} legs  combo_type: [${tags}]`);
+    console.log(`  ${e.clientOrderId ?? e.comboOrderId ?? '—'}  ${e.shape}  ${e.legCount} legs  combo_type: [${tags}]`);
   }
-  if (!envelopes.length) console.log('  none — place a bracketed stock entry and re-run.');
+  if (!evidence.groups.length) {
+    console.log(
+      evidence.totalOrderRows === 0
+        ? '  none — and no order rows at all, so there is nothing here to read yet.'
+        : '  none — orders exist, but none is multi-leg under either shape.',
+    );
+  }
 
   const watched = watch ? await watchOrder(accountId, watch, Number(arg('watch-seconds') ?? 120)) : undefined;
   const dayPnlWatch = process.argv.includes('--watch-day-pnl')
@@ -265,7 +276,7 @@ async function main(): Promise<void> {
           'combo_type MAY be echoed per leg — WebullOrderLeg (providers/webull/orders.ts) marks this UNCONFIRMED, and every bracket-exit branch that filters on it is written to fail closed if it is not.',
         whyItMatters:
           'It gates the both-legs-FILLED ambiguity detection, and it is why checkLiveBracketProtection has to ask "is any exit-side order resting on this symbol" rather than "is THIS position\'s stop still there".',
-        envelopesSeen: envelopes,
+        evidence,
         verdict: comboVerdict,
       },
       q2_filledQuantitySemantics: {
