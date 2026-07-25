@@ -86,8 +86,19 @@ interface BandShape {
 }
 
 const BANDS: Record<TuneBand, BandShape> = {
-  // The 'moderate' band reproduces defaultAutotradeConfig()'s shape exactly, so
-  // "reset to moderate" is a true baseline, not a nearby approximation.
+  // The band table IS the definition of conservative/moderate/aggressive here —
+  // it's the one published in docs/TUNE_FROM_TARGET.md §5, and "reset to
+  // moderate" means the moderate row of it.
+  //
+  // It is NOT the same thing as defaultAutotradeConfig(), which this comment
+  // used to claim. Three fields legitimately differ, and all three are the band
+  // table and the derivations doing their job:
+  //   - maxDailyDrawdownPct  — derived (6 trades x 1% x 0.75 = 4.5), not the
+  //     hand-picked default of 3; see shapeToPatch.
+  //   - optionsStopLossPct / optionsTakeProfitPct — 50 / 80 per the published
+  //     moderate row; both ship defaulted to 0 (disabled).
+  // Every one of them shows up in the preview's current -> tuned table before
+  // anything is applied, so none of it lands silently.
   conservative: {
     maxConcurrentPositions: 2,
     maxTradesPerDay: 4,
@@ -344,10 +355,14 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
   return { band, basis, targetDailyGainPct, edgeR: round2(edgeR), rawRiskPerTradePct, patch, warnings };
 }
 
-/** The moderate baseline, equity-scaled — "reset to moderate for THIS account".
- *  Same shape defaultAutotradeConfig() ships (the moderate band reproduces it),
- *  with the dollar caps recomputed from current equity and risk-per-trade back
- *  at the 1% default. */
+/** The moderate baseline, equity-scaled — "reset to moderate for THIS account":
+ *  the moderate row of the published band table (docs/TUNE_FROM_TARGET.md §5),
+ *  with risk-per-trade back at the 1% default and the dollar caps recomputed
+ *  from current equity.
+ *
+ *  Deliberately NOT identical to defaultAutotradeConfig() — see the note on
+ *  BANDS above for the three fields that differ and why. "Moderate" here means
+ *  the band, not the shipped defaults. */
 export function resetToModerate(equityUsd: number): TunablePatch {
   return shapeToPatch(BANDS.moderate, equityUsd, 1);
 }

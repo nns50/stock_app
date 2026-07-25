@@ -7,6 +7,7 @@ import {
   MAX_SUGGESTED_RISK_PER_TRADE_PCT,
   TuneBasis,
 } from '../src/services/autotrading/targetTune';
+import { defaultAutotradeConfig } from '../src/db/autotradeConfig';
 
 const base = (over: {
   targetDailyGainPct: number;
@@ -139,6 +140,21 @@ describe('computeTargetTune — clamps and warnings', () => {
 });
 
 describe('resetToModerate', () => {
+  it('matches the published moderate band row, which is NOT defaultAutotradeConfig()', () => {
+    // "Reset to moderate" means the moderate row of the band table in
+    // docs/TUNE_FROM_TARGET.md §5 — not the shipped defaults. These three fields
+    // are where the two legitimately differ, so pin them: the daily-loss halt is
+    // DERIVED from the sizing (6 trades x 1% x 0.75), and the options exits come
+    // from the band (both ship at 0 = disabled).
+    const p = resetToModerate(10000);
+    expect(p.maxDailyDrawdownPct).toBe(4.5);
+    expect(p.optionsStopLossPct).toBe(50);
+    expect(p.optionsTakeProfitPct).toBe(80);
+    expect(defaultAutotradeConfig().maxDailyDrawdownPct).toBe(3);
+    expect(defaultAutotradeConfig().optionsStopLossPct).toBe(0);
+    expect(defaultAutotradeConfig().optionsTakeProfitPct).toBe(0);
+  });
+
   it('reproduces the default MODERATE shape at 1% risk, equity-scaled', () => {
     const p = resetToModerate(10000);
     expect(p.riskProfile).toBe('MODERATE');
