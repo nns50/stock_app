@@ -612,10 +612,18 @@ toward assuming the convenient answer. A fill the app can't fully account for is
 and pollable** rather than declared rejected — so don't re-place it until it settles. A
 force-close that can't confirm the position's resting stop is actually gone **doesn't
 place**, because a close sitting next to a live stop can fill twice and leave a long
-short. The practical consequence for you: an app that occasionally says "I couldn't
+short. An option that expired **in the money** is left open and flagged rather than booked
+at a guessed price, because it was exercised into stock the app doesn't track. And a live
+position the broker shows **no resting stop** for is reported, never silently re-armed —
+a replacement placed on a check that merely failed to *see* the original would leave two
+stops on one position and sell it twice.
+
+The practical consequence for you: an app that occasionally says "I couldn't
 confirm this, so I did nothing" is working as intended, and those messages are worth
 reading rather than clicking past — each one means your records and your broker might
-disagree, and the fix is to look at the broker, not to retry.
+disagree, and the fix is to look at the broker, not to retry. The one that should never
+wait is **"no resting stop"**: that is a live position with no downside protection, and
+it needs you at the broker now, not at the next review.
 
 ---
 

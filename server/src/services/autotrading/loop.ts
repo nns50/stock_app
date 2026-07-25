@@ -23,6 +23,7 @@ import {
   checkLiveEquityTimeExits,
   checkLiveScaleIns,
   adoptOrphanedLivePositions,
+  checkLiveBracketProtection,
 } from './liveExecute';
 import {
   runLiveOptionsExecution,
@@ -32,6 +33,7 @@ import {
   liveOptionsSeedForEquity,
 } from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures, maybeAlertLiveAmbiguity } from './liveFailureAlert';
+import { hasExpiredLiveOptions, sweepExpiredLiveOptions } from './liveOptionsExpiry';
 import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
 import { maybeAutoTune } from './autoTune';
 import {
@@ -329,6 +331,18 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // try/catch, matching checkLiveOptionsExits' own call site below — an
     // unexpected throw here surfaces the same way an unexpected throw there
     // would (caught by this function's own outer try, below).
+    // Does each bracketed live position still have a stop AT THE BROKER? The
+    // bracket's exit legs are submitted with the entry and never verified, so
+    // an entry Webull accepted while dropping its exits leaves a real position
+    // naked while every screen here shows it protected. Read-only, one
+    // open-orders pull, reports and never acts (see the function's own comment
+    // for why auto-re-arming would be worse than the gap). Caught so a broker
+    // hiccup here can't take down the rest of the tick.
+    try {
+      await checkLiveBracketProtection();
+    } catch (e) {
+      console.error('[autotrade-loop] bracket protection check failed:', (e as Error).message);
+    }
     const liveEquityTimeExitOutcomes = await checkLiveEquityTimeExits();
     // Scale into winners on LIVE positions — gated like an ENTRY (it ADDS risk
     // to real money), so behind isLiveEntryActive (kill switch + master gates)
@@ -365,6 +379,20 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       if (liveOptionsCfg.liveAccountId) await syncLiveOptionsPositionsFromBroker(liveOptionsCfg.liveAccountId);
     } catch (e) {
       console.error('[autotrade-loop] live options position-truth sync failed:', (e as Error).message);
+    }
+    // An option held THROUGH expiry never produces a closing order, and neither
+    // of the two mechanisms above can retire it: the reconcile has no order to
+    // poll, and the sync confirms the contract is gone but then needs a price
+    // to book the exit at — which for a past-expiration chain never comes back,
+    // so its "retry next sync" never terminates. The row then counts against
+    // combinedLiveOpenRisk() for BOTH books forever. Gated on there being
+    // something expired so the common tick costs one indexed read and no
+    // candle fetch. Caught like its neighbours: a market-data hiccup here must
+    // not take down the rest of the tick.
+    try {
+      if (hasExpiredLiveOptions()) await sweepExpiredLiveOptions();
+    } catch (e) {
+      console.error('[autotrade-loop] expired live options sweep failed:', (e as Error).message);
     }
     const liveOptionsExitOutcomes = await checkLiveOptionsExits();
     // Keep accountEquityUsd fresh every tick instead of requiring the

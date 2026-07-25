@@ -118,6 +118,20 @@ export const AMBIGUITY_ACTIONS = [
   // puts the sell limit above where the contract can actually be sold, so the
   // close can rest unfilled while looking, from outside, like nothing happened.
   'live_options_exit_stale_quote',
+  // An options position expired while still open and could NOT be booked at $0:
+  // it finished in the money (so it was exercised or assigned, creating a stock
+  // position this app doesn't model) or its outcome couldn't be determined.
+  // Left open deliberately rather than closed at a guessed price — which means
+  // the ledger is knowingly carrying a position that no longer exists in the
+  // form it records, so it needs a human. Journaled once per position per ET
+  // day, so this re-raises daily while it stays unresolved.
+  'live_options_expired_needs_review',
+  // A live position opened WITH a bracket has no resting exit-side order at the
+  // broker. Its stop may never have been accepted (the place response can't
+  // tell us) or was cancelled since. The ledger still shows a stop price, so
+  // nothing else in the app would ever reveal this. Journaled once per position
+  // per ET day, so it re-raises daily while the position is still naked.
+  'live_position_unprotected',
 ];
 /** Our own "we alerted about ambiguity" marker — same restart-safe throttle. */
 const AMBIGUITY_ALERT_ACTION = 'live_ambiguity_alerted';
@@ -222,6 +236,9 @@ const AMBIGUITY_SUMMARY: Record<string, string> = {
   live_broker_status_unrecognized: 'the broker reported an order status this app does not recognize',
   live_options_broker_status_unrecognized: 'the broker reported an options order status this app does not recognize',
   live_options_exit_stale_quote: 'a closing order was priced off a stale last trade and may rest unfilled',
+  live_options_expired_needs_review:
+    'an options position expired in the money or undeterminable — it needs your broker statement',
+  live_position_unprotected: 'a live position has NO resting stop at the broker despite being opened with one',
 };
 
 /**

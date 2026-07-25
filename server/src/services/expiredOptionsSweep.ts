@@ -1,4 +1,4 @@
-import { addExit, listPositions, Position } from '../db/positions';
+import { addExit, listPositions } from '../db/positions';
 import { getProvider } from '../providers';
 import { ExpiredOptionFinding, classifyExpiredOptions, findExpiredOpenOptions, optionLabel } from './expiredOptions';
 
@@ -34,6 +34,12 @@ export interface ExpiredOptionsSweepResult {
   needsReview: ExpiredOptionFinding[];
 }
 
+/** The minimum needed to look up an underlying close at expiry. */
+export interface ExpiryLookupItem {
+  symbol: string;
+  expiration: string | null;
+}
+
 /**
  * Fetch each symbol's daily closes around the expiry dates in play, and build a
  * lookup of (symbol, date) → close. One candle request per symbol, covering the
@@ -42,7 +48,7 @@ export interface ExpiredOptionsSweepResult {
  * A symbol whose history can't be fetched simply produces no entries, which the
  * classifier reads as "unknown" and flags — never as worthless.
  */
-async function buildCloseLookup(positions: Position[]): Promise<Map<string, number>> {
+async function buildCloseLookup(positions: ExpiryLookupItem[]): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   const bySymbol = new Map<string, string[]>();
   for (const p of positions) {
@@ -83,7 +89,7 @@ function shiftDays(date: string, days: number): string {
  * market holiday). Returns null when nothing usable is within reach, which the
  * classifier treats as unknown.
  */
-function closeAtExpiry(closes: Map<string, number>, p: Position): number | null {
+function closeAtExpiry(closes: Map<string, number>, p: ExpiryLookupItem): number | null {
   if (!p.expiration) return null;
   for (let back = 0; back <= 5; back++) {
     const day = shiftDays(p.expiration, -back);
@@ -91,6 +97,21 @@ function closeAtExpiry(closes: Map<string, number>, p: Position): number | null 
     if (hit !== undefined && Number.isFinite(hit) && hit > 0) return hit;
   }
   return null;
+}
+
+/**
+ * One batched fetch of every underlying close needed, returned as a resolver
+ * the pure classifier can call per position.
+ *
+ * Exported so autotrade's own live options book gets the identical price
+ * resolution — same batching, same weekend/holiday walk-back, same "absent
+ * means unknown, never worthless" posture — rather than a second
+ * implementation that could quietly disagree about what a position was worth
+ * at expiry.
+ */
+export async function resolveExpiryCloses<T extends ExpiryLookupItem>(items: T[]): Promise<(p: T) => number | null> {
+  const closes = await buildCloseLookup(items);
+  return (p) => closeAtExpiry(closes, p);
 }
 
 /**
@@ -111,8 +132,7 @@ export async function sweepExpiredOptions(
   const expired = findExpiredOpenOptions(listPositions({ status: 'open', assetType: 'option' }), today);
   if (expired.length === 0) return { examined: 0, closed: [], needsReview: [] };
 
-  const closes = await buildCloseLookup(expired);
-  const findings = classifyExpiredOptions(expired, (p) => closeAtExpiry(closes, p));
+  const findings = classifyExpiredOptions(expired, await resolveExpiryCloses(expired));
 
   const closed: ExpiredOptionFinding[] = [];
   const needsReview: ExpiredOptionFinding[] = [];
