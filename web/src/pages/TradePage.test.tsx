@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import TradePage from './TradePage';
 import { client } from '../api/client';
@@ -63,12 +63,86 @@ describe('TradePage', () => {
     vi.spyOn(client, 'expirations').mockResolvedValue({ expirations: [] } as never);
     vi.spyOn(client, 'chain').mockResolvedValue(null as never);
     renderPage();
-    await screen.findByRole('heading', { name: 'Trade' });
+    await screen.findByPlaceholderText('account_id'); // inside Workspace, unlike the page's own heading
     fireEvent.click(screen.getByRole('tab', { name: 'Option' }));
     fireEvent.click(screen.getByRole('tab', { name: 'Condor' }));
     expect(screen.getByText('Spreads')).toBeInTheDocument();
     expect(screen.getByText('Net limit (debit/credit)')).toBeInTheDocument();
     expect(screen.queryByText('Reference price')).not.toBeInTheDocument();
+  });
+});
+
+describe('TradePage account-state auto-refresh', () => {
+  const accountState = (over: Record<string, unknown> = {}) => ({
+    ok: true,
+    accountId: 'ACC1',
+    state: {
+      buyingPowerUsd: 10000,
+      exposureUsd: 0,
+      realizedPnlTodayUsd: 0,
+      ordersToday: 0,
+      currentPositionQty: 0,
+      ...over,
+    },
+  });
+
+  // Only setInterval/clearInterval are faked — not setTimeout, which React's
+  // own scheduler relies on (in this jsdom environment) to flush the page's
+  // initial async config load; faking it too hangs the very first findByRole.
+  // usePolling only ever calls setInterval, so this is enough to control it.
+  //
+  // Each test below waits for the Cash account_id input (inside Workspace,
+  // gated behind the async tradeConfig() load) rather than the page's own
+  // "Trade" heading, which renders on the very first synchronous render —
+  // before Workspace necessarily has — so it isn't a reliable signal that
+  // usePolling's setInterval has actually been registered by the time the
+  // test starts advancing the fake clock. A real gap, not just CI being
+  // slower: it passed locally every time but failed intermittently in CI.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    localStorage.setItem('trade.accountId', JSON.stringify('ACC1'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    localStorage.removeItem('trade.accountId');
+  });
+
+  it('auto-refreshes the account state from Webull every 1 minute, without pressing Pull', async () => {
+    const pull = vi.spyOn(client, 'tradeAccountState').mockResolvedValue(accountState() as never);
+    renderPage();
+    await screen.findByPlaceholderText('account_id'); // see beforeEach's comment above
+    expect(pull).not.toHaveBeenCalled();
+
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(pull).toHaveBeenCalledTimes(1);
+
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(pull).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not clobber a hand-edited "Dry-run (manual state)" field with the 1-minute auto-refresh', async () => {
+    const pull = vi.spyOn(client, 'tradeAccountState').mockResolvedValue(accountState() as never);
+    renderPage();
+    await screen.findByPlaceholderText('account_id'); // see beforeEach's comment above
+
+    await act(() => vi.advanceTimersByTimeAsync(60_000)); // first auto-pull seeds the fields
+    expect(pull).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(screen.getByLabelText('Exposure $'), { target: { value: '5000' } });
+
+    await act(() => vi.advanceTimersByTimeAsync(60_000)); // the field no longer matches the last pull — skipped
+    expect(pull).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText('Exposure $')).toHaveValue('5000');
+  });
+
+  it('does not auto-refresh while no account id is set', async () => {
+    localStorage.removeItem('trade.accountId');
+    const pull = vi.spyOn(client, 'tradeAccountState').mockResolvedValue(accountState() as never);
+    renderPage();
+    await screen.findByPlaceholderText('account_id'); // see beforeEach's comment above
+
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(pull).not.toHaveBeenCalled();
   });
 });
 
@@ -82,7 +156,7 @@ describe('TradePage strategy builder', () => {
 
   const openOption = async () => {
     renderPage();
-    await screen.findByRole('heading', { name: 'Trade' });
+    await screen.findByPlaceholderText('account_id'); // inside Workspace, unlike the page's own heading
     fireEvent.click(screen.getByRole('tab', { name: 'Option' }));
   };
 

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { client } from '../api/client';
 import { contractToOrder } from '../lib/tradePrefill';
@@ -9,6 +9,7 @@ import { daysUntil } from '../components/EarningsBadge';
 import {
   Badge,
   Card,
+  CollapsibleCard,
   EmptyState,
   ErrorState,
   Field,
@@ -17,7 +18,13 @@ import {
   ScoreBar,
   Spinner,
 } from '../components/ui';
-import { StrategyBuilder } from '../components/StrategyBuilder';
+// Lazy-loaded: it (and the recharts payload it drags in, ~92kB gzip) is only
+// needed on the non-default "strategy" tab, not the chain view most visits
+// use — see the .then() adapter below since it's a named, not default, export.
+const StrategyBuilder = lazy(() =>
+  import('../components/StrategyBuilder').then((m) => ({ default: m.StrategyBuilder })),
+);
+const RollAnalyzer = lazy(() => import('../components/RollAnalyzer').then((m) => ({ default: m.RollAnalyzer })));
 import type {
   AlertPreset,
   EntryCandidate,
@@ -137,7 +144,20 @@ export default function OptionsPage() {
       {tab === 'chain' && <ChainView symbol={activeSymbol} expiration={expiration} />}
       {tab === 'entry' && <EntryScanView symbol={activeSymbol} expiration={expiration} />}
       {tab === 'exit' && <ExitRulesView />}
-      {tab === 'strategy' && <StrategyBuilder />}
+      {tab === 'strategy' && (
+        <Suspense fallback={<Spinner label="Loading strategy tools…" />}>
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-300 mb-2">Strategy builder</h2>
+              <StrategyBuilder />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-slate-300 mb-2">Roll analyzer</h2>
+              <RollAnalyzer />
+            </div>
+          </div>
+        </Suspense>
+      )}
     </div>
   );
 }
@@ -485,66 +505,71 @@ function EntryScanView({ symbol, expiration }: { symbol: string; expiration: str
 
   return (
     <div className="flex flex-col lg:flex-row gap-4">
-      <Card className="p-4 lg:w-72 shrink-0 space-y-3">
-        <h3 className="font-medium">Entry strategy</h3>
-        <Field label="Side">
-          <select className="input" value={config.side} onChange={(e) => set('side', e.target.value as 'call' | 'put')}>
-            <option value="call">Long call</option>
-            <option value="put">Long put</option>
-          </select>
-        </Field>
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="Delta min">
-            <NumberInput value={config.deltaMin} onChange={(v) => set('deltaMin', v ?? 0)} step={0.05} />
+      <CollapsibleCard id="options.entryStrategy" title="Entry strategy">
+        <div className="space-y-3">
+          <Field label="Side">
+            <select
+              className="input"
+              value={config.side}
+              onChange={(e) => set('side', e.target.value as 'call' | 'put')}
+            >
+              <option value="call">Long call</option>
+              <option value="put">Long put</option>
+            </select>
           </Field>
-          <Field label="Delta max">
-            <NumberInput value={config.deltaMax} onChange={(v) => set('deltaMax', v ?? 1)} step={0.05} />
-          </Field>
-          <Field label="Max spread %">
-            <NumberInput value={config.maxSpreadPct} onChange={(v) => set('maxSpreadPct', v ?? 10)} />
-          </Field>
-          <Field label="Min OI">
-            <NumberInput value={config.minOpenInterest} onChange={(v) => set('minOpenInterest', v ?? 0)} />
-          </Field>
-          <Field label="Min volume">
-            <NumberInput value={config.minVolume} onChange={(v) => set('minVolume', v ?? 0)} />
-          </Field>
-          <Field label="Min DTE">
-            <NumberInput value={config.minDaysToExpiration} onChange={(v) => set('minDaysToExpiration', v)} />
-          </Field>
-          <Field label="Max DTE">
-            <NumberInput value={config.maxDaysToExpiration} onChange={(v) => set('maxDaysToExpiration', v)} />
-          </Field>
-          <Field label="IV min %">
-            <NumberInput
-              value={config.ivMin === undefined ? undefined : config.ivMin * 100}
-              onChange={(v) => set('ivMin', v === undefined ? undefined : v / 100)}
-            />
-          </Field>
-          <Field label="IV max %">
-            <NumberInput
-              value={config.ivMax === undefined ? undefined : config.ivMax * 100}
-              onChange={(v) => set('ivMax', v === undefined ? undefined : v / 100)}
-            />
-          </Field>
-          <Field label="IV rank min">
-            <NumberInput value={config.ivRankMin} onChange={(v) => set('ivRankMin', v)} min={0} max={100} />
-          </Field>
-          <Field label="IV rank max">
-            <NumberInput value={config.ivRankMax} onChange={(v) => set('ivRankMax', v)} min={0} max={100} />
-          </Field>
+          <div className="grid sm:grid-cols-2 gap-2">
+            <Field label="Delta min">
+              <NumberInput value={config.deltaMin} onChange={(v) => set('deltaMin', v ?? 0)} step={0.05} />
+            </Field>
+            <Field label="Delta max">
+              <NumberInput value={config.deltaMax} onChange={(v) => set('deltaMax', v ?? 1)} step={0.05} />
+            </Field>
+            <Field label="Max spread %">
+              <NumberInput value={config.maxSpreadPct} onChange={(v) => set('maxSpreadPct', v ?? 10)} />
+            </Field>
+            <Field label="Min OI">
+              <NumberInput value={config.minOpenInterest} onChange={(v) => set('minOpenInterest', v ?? 0)} />
+            </Field>
+            <Field label="Min volume">
+              <NumberInput value={config.minVolume} onChange={(v) => set('minVolume', v ?? 0)} />
+            </Field>
+            <Field label="Min DTE">
+              <NumberInput value={config.minDaysToExpiration} onChange={(v) => set('minDaysToExpiration', v)} />
+            </Field>
+            <Field label="Max DTE">
+              <NumberInput value={config.maxDaysToExpiration} onChange={(v) => set('maxDaysToExpiration', v)} />
+            </Field>
+            <Field label="IV min %">
+              <NumberInput
+                value={config.ivMin === undefined ? undefined : config.ivMin * 100}
+                onChange={(v) => set('ivMin', v === undefined ? undefined : v / 100)}
+              />
+            </Field>
+            <Field label="IV max %">
+              <NumberInput
+                value={config.ivMax === undefined ? undefined : config.ivMax * 100}
+                onChange={(v) => set('ivMax', v === undefined ? undefined : v / 100)}
+              />
+            </Field>
+            <Field label="IV rank min">
+              <NumberInput value={config.ivRankMin} onChange={(v) => set('ivRankMin', v)} min={0} max={100} />
+            </Field>
+            <Field label="IV rank max">
+              <NumberInput value={config.ivRankMax} onChange={(v) => set('ivRankMax', v)} min={0} max={100} />
+            </Field>
+          </div>
+          <button className="btn-primary w-full" onClick={run} disabled={running || !expiration}>
+            {running ? 'Scanning…' : 'Scan contracts'}
+          </button>
+          <PresetBar
+            kind="option_entry"
+            presets={presets.data?.presets ?? []}
+            onLoad={(c) => setCfg(c as EntryStrategyConfig)}
+            getConfig={() => config}
+            onChanged={presets.reload}
+          />
         </div>
-        <button className="btn-primary w-full" onClick={run} disabled={running || !expiration}>
-          {running ? 'Scanning…' : 'Scan contracts'}
-        </button>
-        <PresetBar
-          kind="option_entry"
-          presets={presets.data?.presets ?? []}
-          onLoad={(c) => setCfg(c as EntryStrategyConfig)}
-          getConfig={() => config}
-          onChanged={presets.reload}
-        />
-      </Card>
+      </CollapsibleCard>
 
       <div className="flex-1 min-w-0">
         {error && (
@@ -697,36 +722,37 @@ function ExitRulesView() {
 
   return (
     <div className="flex flex-col lg:flex-row gap-4">
-      <Card className="p-4 lg:w-72 shrink-0 space-y-3">
-        <h3 className="font-medium">Exit rules</h3>
-        <Field label="Take-profit %">
-          <NumberInput value={config.takeProfitPct} onChange={(v) => set('takeProfitPct', v)} />
-        </Field>
-        <Field label="Stop-loss %">
-          <NumberInput value={config.stopLossPct} onChange={(v) => set('stopLossPct', v)} />
-        </Field>
-        <Field label="Exit N days before expiry">
-          <NumberInput value={config.timeExitDaysBeforeExpiry} onChange={(v) => set('timeExitDaysBeforeExpiry', v)} />
-        </Field>
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="|Δ| min">
-            <NumberInput value={config.deltaMin} onChange={(v) => set('deltaMin', v)} step={0.05} />
+      <CollapsibleCard id="options.exitRules" title="Exit rules">
+        <div className="space-y-3">
+          <Field label="Take-profit %">
+            <NumberInput value={config.takeProfitPct} onChange={(v) => set('takeProfitPct', v)} />
           </Field>
-          <Field label="|Δ| max">
-            <NumberInput value={config.deltaMax} onChange={(v) => set('deltaMax', v)} step={0.05} />
+          <Field label="Stop-loss %">
+            <NumberInput value={config.stopLossPct} onChange={(v) => set('stopLossPct', v)} />
           </Field>
+          <Field label="Exit N days before expiry">
+            <NumberInput value={config.timeExitDaysBeforeExpiry} onChange={(v) => set('timeExitDaysBeforeExpiry', v)} />
+          </Field>
+          <div className="grid sm:grid-cols-2 gap-2">
+            <Field label="|Δ| min">
+              <NumberInput value={config.deltaMin} onChange={(v) => set('deltaMin', v)} step={0.05} />
+            </Field>
+            <Field label="|Δ| max">
+              <NumberInput value={config.deltaMax} onChange={(v) => set('deltaMax', v)} step={0.05} />
+            </Field>
+          </div>
+          <button className="btn-primary w-full" onClick={run} disabled={running}>
+            {running ? 'Checking…' : 'Check open positions'}
+          </button>
+          <PresetBar
+            kind="option_exit"
+            presets={presets.data?.presets ?? []}
+            onLoad={(c) => setCfg(c as ExitRulesConfig)}
+            getConfig={() => config}
+            onChanged={presets.reload}
+          />
         </div>
-        <button className="btn-primary w-full" onClick={run} disabled={running}>
-          {running ? 'Checking…' : 'Check open positions'}
-        </button>
-        <PresetBar
-          kind="option_exit"
-          presets={presets.data?.presets ?? []}
-          onLoad={(c) => setCfg(c as ExitRulesConfig)}
-          getConfig={() => config}
-          onChanged={presets.reload}
-        />
-      </Card>
+      </CollapsibleCard>
 
       <div className="flex-1 min-w-0">
         {error && (

@@ -3,6 +3,7 @@ import {
   evaluateGuardrails,
   defaultTradingConfig,
   blockingFailures,
+  wouldOpenShort,
   type OrderIntent,
   type AccountState,
   type TradingConfig,
@@ -338,6 +339,19 @@ describe('trading guardrails', () => {
     expect(check(r, 'fat_finger').passed).toBe(true);
   });
 
+  it('blocks a fat-finger STOP-LIMIT whose limit is far from its own stop', () => {
+    // Regression (hardening audit): stop_loss_limit had NO fat-finger check. The
+    // limit is checked against the STOP (9 -> 13 = 44% > 20%), not the market —
+    // the stop is deliberately away from the current price.
+    const r = evaluateGuardrails(order({ orderType: 'stop_loss_limit', stopPrice: 9, limitPrice: 13 }), acct(), cfg());
+    expect(failed(r)).toContain('fat_finger');
+  });
+
+  it('allows a stop-limit whose limit sits just past its stop', () => {
+    const r = evaluateGuardrails(order({ orderType: 'stop_loss_limit', stopPrice: 9, limitPrice: 8.9 }), acct(), cfg()); // 1.1% <= 20%
+    expect(check(r, 'fat_finger').passed).toBe(true);
+  });
+
   it('blocks an order that would open a net-short position', () => {
     const r = evaluateGuardrails(order({ side: 'sell', openClose: 'open' }), acct({ currentPositionQty: 0 }), cfg());
     expect(r.ok).toBe(false);
@@ -357,6 +371,28 @@ describe('trading guardrails', () => {
   it('does not flag a sell that merely reduces a long', () => {
     const r = evaluateGuardrails(order({ side: 'sell', openClose: 'close' }), acct({ currentPositionQty: 20 }), cfg());
     expect(check(r, 'naked_short').passed).toBe(true); // 20 - 10 = 10, still long
+  });
+
+  describe('wouldOpenShort (order-side mapping for the Webull SHORT vs SELL distinction)', () => {
+    it('is true for a sell that would open a net-short position', () => {
+      expect(wouldOpenShort(order({ side: 'sell', quantity: 10 }), acct({ currentPositionQty: 0 }))).toBe(true);
+    });
+
+    it('is true for a sell that extends an already-short position', () => {
+      expect(wouldOpenShort(order({ side: 'sell', quantity: 10 }), acct({ currentPositionQty: -5 }))).toBe(true);
+    });
+
+    it('is false for a sell that only reduces a long (same as the naked_short check above)', () => {
+      expect(wouldOpenShort(order({ side: 'sell', quantity: 10 }), acct({ currentPositionQty: 20 }))).toBe(false);
+    });
+
+    it('is false for a sell that exactly flattens a long to zero', () => {
+      expect(wouldOpenShort(order({ side: 'sell', quantity: 10 }), acct({ currentPositionQty: 10 }))).toBe(false);
+    });
+
+    it('is false for any buy, regardless of current position', () => {
+      expect(wouldOpenShort(order({ side: 'buy', quantity: 10 }), acct({ currentPositionQty: -5 }))).toBe(false);
+    });
   });
 
   it('blocks a non-positive or fractional quantity', () => {
@@ -393,6 +429,39 @@ describe('trading guardrails', () => {
     const r = evaluateGuardrails(order(), acct(), cfg(), { marketOpen: false });
     expect(r.ok).toBe(true);
     expect(check(r, 'market_hours')).toMatchObject({ severity: 'warn', passed: false });
+  });
+
+  it('warns (without blocking) when a buy exceeds settled cash (Good Faith Violation risk)', () => {
+    const r = evaluateGuardrails(
+      order({ orderType: 'limit', limitPrice: 10, quantity: 10 }), // $100 notional
+      acct({ buyingPowerUsd: 100_000, settledCashUsd: 50 }),
+      cfg(),
+    );
+    expect(r.ok).toBe(true);
+    expect(check(r, 'settled_cash')).toMatchObject({ severity: 'warn', passed: false });
+  });
+
+  it('passes settled_cash silently when the buy is within settled cash', () => {
+    const r = evaluateGuardrails(
+      order({ orderType: 'limit', limitPrice: 10, quantity: 10 }), // $100 notional
+      acct({ settledCashUsd: 1000 }),
+      cfg(),
+    );
+    expect(check(r, 'settled_cash')).toMatchObject({ severity: 'warn', passed: true });
+  });
+
+  it('skips settled_cash entirely when the broker did not report it (not a fabricated warning)', () => {
+    const r = evaluateGuardrails(order(), acct(), cfg()); // acct() leaves settledCashUsd undefined
+    expect(check(r, 'settled_cash')).toBeUndefined();
+  });
+
+  it('never checks settled_cash on a sell (selling frees cash, no GFV risk)', () => {
+    const r = evaluateGuardrails(
+      order({ side: 'sell', openClose: 'close' }),
+      acct({ settledCashUsd: 0, currentPositionQty: 10 }),
+      cfg(),
+    );
+    expect(check(r, 'settled_cash')).toBeUndefined();
   });
 
   it('default config is OFF and blocks short selling', () => {

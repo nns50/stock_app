@@ -96,6 +96,55 @@ export function computePositionPnl(p: Position, currentPrice: number | null): Po
   };
 }
 
+/**
+ * Unrealized P&L for an OPEN autotrade paper position, from a live quote.
+ * Mirrors computePositionPnl's core formula, without the human journal's
+ * multiplier/fees/partial-exit complexity — paper positions are always a
+ * single entry -> single exit on one stock leg (see
+ * db/autotradePaperPositions.ts). Null for an already-closed position (its
+ * own exitPrice-based realized P&L covers that) or when no current price
+ * could be resolved.
+ */
+export function computePaperUnrealizedPnl(
+  p: { status: 'open' | 'closed'; side: 'buy' | 'sell'; entryPrice: number; quantity: number },
+  currentPrice: number | null,
+): number | null {
+  if (p.status !== 'open' || currentPrice === null) return null;
+  const sign = p.side === 'buy' ? 1 : -1;
+  return round2((currentPrice - p.entryPrice) * p.quantity * sign);
+}
+
+/**
+ * Unrealized P&L for an OPEN options autotrade paper position (Phase 12).
+ * Single-leg: no sign flip — every single-leg position is long the contract
+ * itself (call or put), matching optionsRiskCheck.ts's sizing convention —
+ * and the 100x contract multiplier applies. Debit spread (Task #69): the
+ * spread's "price" is long mark minus short mark, so unrealized P&L is
+ * (currentNetValue - netDebitAtEntry) x spreads x 100; null (unknown, not
+ * zero) if the short leg's mark couldn't be resolved even though the long
+ * leg's could.
+ */
+export function computeOptionsPaperUnrealizedPnl(
+  p: {
+    status: 'open' | 'closed';
+    kind?: 'single_leg' | 'debit_spread';
+    entryPrice: number;
+    shortEntryPrice?: number | null;
+    quantity: number;
+  },
+  currentPrice: number | null,
+  shortCurrentPrice: number | null = null,
+): number | null {
+  if (p.status !== 'open' || currentPrice === null) return null;
+  if (p.kind === 'debit_spread') {
+    if (shortCurrentPrice === null) return null;
+    const netDebitAtEntry = p.entryPrice - (p.shortEntryPrice ?? 0);
+    const netValueNow = currentPrice - shortCurrentPrice;
+    return round2((netValueNow - netDebitAtEntry) * p.quantity * 100);
+  }
+  return round2((currentPrice - p.entryPrice) * p.quantity * 100);
+}
+
 export interface AggregatePnl {
   realized: number;
   unrealized: number;
@@ -137,6 +186,16 @@ export interface GroupStat {
   winRate: number; // %
   totalPnl: number;
   avgPnl: number; // expectancy within the group
+  /** Gross profit ÷ gross loss within the group — the "does this setup have a
+   *  real edge" number win rate/avgPnl alone can't show (a 40%-win-rate setup
+   *  with a 3:1 payoff can out-earn a 60%-win-rate one with a 1:1 payoff).
+   *  null means "infinite" (wins with zero losses in the group), same
+   *  convention as the top-level profitFactor above. */
+  profitFactor: number | null;
+  /** Mean R-multiple within the group, over just the group's own trades that
+   *  logged a stop (a subset of `trades` — mirrors the top-level avgR's own
+   *  "only trades with a stop" scope). null when none did. */
+  avgR: number | null;
 }
 
 export interface JournalStats {
@@ -285,13 +344,29 @@ interface Acc {
   trades: number;
   wins: number;
   total: number;
+  grossProfit: number;
+  grossLoss: number; // stored positive, mirrors the top-level grossLoss convention
+  rSum: number;
+  rCount: number;
 }
 
-function accumulate(map: Map<string, Acc>, key: string, pnl: number): void {
-  const a = map.get(key) ?? { trades: 0, wins: 0, total: 0 };
+/** `r` is this trade's R-multiple (null if it never logged a stop) — same
+ *  per-trade value the top-level avgR/rBuckets are computed from, just also
+ *  folded into whichever group(s) this trade belongs to. */
+function accumulate(map: Map<string, Acc>, key: string, pnl: number, r: number | null): void {
+  const a = map.get(key) ?? { trades: 0, wins: 0, total: 0, grossProfit: 0, grossLoss: 0, rSum: 0, rCount: 0 };
   a.trades += 1;
-  if (pnl > 0) a.wins += 1;
+  if (pnl > 0) {
+    a.wins += 1;
+    a.grossProfit += pnl;
+  } else if (pnl < 0) {
+    a.grossLoss += -pnl;
+  }
   a.total += pnl;
+  if (r !== null) {
+    a.rSum += r;
+    a.rCount += 1;
+  }
   map.set(key, a);
 }
 
@@ -303,6 +378,8 @@ function toGroupStats(map: Map<string, Acc>): GroupStat[] {
     winRate: a.trades ? round2((a.wins / a.trades) * 100) : 0,
     totalPnl: round2(a.total),
     avgPnl: a.trades ? round2(a.total / a.trades) : 0,
+    profitFactor: a.grossLoss > 0 ? round2(a.grossProfit / a.grossLoss) : a.grossProfit > 0 ? null : 0,
+    avgR: a.rCount ? round2(a.rSum / a.rCount) : null,
   }));
 }
 
@@ -392,15 +469,16 @@ export function computeJournalStats(closed: Position[]): JournalStats {
   const sessionMap = new Map<string, Acc>();
   for (const p of closed) {
     const pnl = round2(realizedPnlOf(p));
-    for (const tag of new Set(p.tags)) accumulate(tagMap, tag, pnl);
-    accumulate(gradeMap, p.grade || 'Ungraded', pnl);
-    accumulate(discMap, disciplineBucket(p), pnl);
+    const r = rMultipleOf(p, pnl);
+    for (const tag of new Set(p.tags)) accumulate(tagMap, tag, pnl, r);
+    accumulate(gradeMap, p.grade || 'Ungraded', pnl, r);
+    accumulate(discMap, disciplineBucket(p), pnl, r);
     const exitDate = lastExitDate(p) ?? p.entryDate;
-    accumulate(weekdayMap, WEEKDAYS[new Date(`${exitDate}T00:00:00Z`).getUTCDay()], pnl);
-    accumulate(holdMap, holdBucket(holdDaysOf(p, exitDate)), pnl);
+    accumulate(weekdayMap, WEEKDAYS[new Date(`${exitDate}T00:00:00Z`).getUTCDay()], pnl, r);
+    accumulate(holdMap, holdBucket(holdDaysOf(p, exitDate)), pnl, r);
     if (p.entryTime) {
       const s = sessionOf(p.entryTime);
-      if (s) accumulate(sessionMap, s, pnl);
+      if (s) accumulate(sessionMap, s, pnl, r);
     }
   }
   const byTotalDesc = (a: GroupStat, b: GroupStat) => b.totalPnl - a.totalPnl;

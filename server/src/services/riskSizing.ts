@@ -17,6 +17,10 @@ export interface RiskSizingInput {
   multiplier?: number;
   /** Optional reward target as a multiple of risk (R), e.g. 2 = 2R. */
   targetRMultiple?: number;
+  /** Optional hard cap on the sized quantity (whole units), applied AFTER the
+   *  risk-based floor — e.g. an ADV participation limit. Null/undefined = no cap.
+   *  All derived fields (cost, risk, %) reflect the capped quantity. */
+  maxQuantity?: number;
 }
 
 export interface RiskSizingResult {
@@ -148,6 +152,13 @@ export function computeRiskSizing(input: RiskSizingInput): RiskSizingResult {
   if (riskPerUnit === 0) warnings.push('Entry and stop are equal — risk per unit is zero.');
   if (suggestedQuantity === 0 && riskPerUnit > 0) {
     warnings.push('Risk budget is too small for even one unit at this stop distance.');
+  }
+
+  // Optional hard cap (e.g. an ADV participation limit) applied after the
+  // risk-based floor, so the derived cost/risk/% below reflect the capped size.
+  if (input.maxQuantity != null && input.maxQuantity < suggestedQuantity) {
+    suggestedQuantity = Math.max(0, Math.floor(input.maxQuantity));
+    warnings.push(`Quantity capped at ${suggestedQuantity} by a size limit (e.g. ADV participation).`);
   }
 
   const positionCost = input.entryPrice * suggestedQuantity * multiplier;

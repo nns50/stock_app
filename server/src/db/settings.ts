@@ -1,17 +1,18 @@
 import { db } from './index';
+import { safeJsonParse } from '../util/json';
 
 // Small key/value settings store (JSON values) used to remember UI state across
 // restarts — e.g. the last screener config and the last options symbol.
 
 export function getSetting<T = unknown>(key: string): T | undefined {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
-  return row ? (JSON.parse(row.value) as T) : undefined;
+  return safeJsonParse<T | undefined>(row?.value, undefined);
 }
 
 export function getAllSettings(): Record<string, unknown> {
   const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
   const out: Record<string, unknown> = {};
-  for (const r of rows) out[r.key] = JSON.parse(r.value);
+  for (const r of rows) out[r.key] = safeJsonParse<unknown>(r.value, undefined);
   return out;
 }
 

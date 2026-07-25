@@ -40,7 +40,13 @@ export function fmtTime(ms: number | null | undefined): string {
 
 export function fmtDate(value: number | string | null | undefined): string {
   if (!value) return '—';
-  const d = typeof value === 'number' ? new Date(value) : new Date(value);
+  // A date-only string (YYYY-MM-DD) parses as UTC midnight, which
+  // toLocaleDateString then renders as the PREVIOUS calendar day in any
+  // negative-UTC (US) timezone. Parse it as a LOCAL date so an option expiry /
+  // entry / exit date shows the day it actually is. Epoch numbers and full
+  // datetime strings keep their exact instant.
+  const d =
+    typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00`) : new Date(value);
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 

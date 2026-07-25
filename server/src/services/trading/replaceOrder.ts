@@ -100,7 +100,15 @@ export async function replaceIntent(id: number, accountId: string, patch: Replac
     return { ok: true, replaced: false, reason: 'no_change', intent: rec, error: 'no changes requested' };
   }
 
-  const acct = await webullAccountState(accountId, rec.symbol);
+  // Pass the order's instrument so the naked_short / position_size checks count
+  // THAT instrument (this exact option contract, or stock), not a cross-asset
+  // per-underlying sum. A replace only changes qty/price, never the instrument.
+  const acct = await webullAccountState(accountId, rec.symbol, {
+    assetKind: rec.assetKind,
+    strike: rec.strike ?? undefined,
+    expiration: rec.expiration ?? undefined,
+    optionType: rec.optionType ?? undefined,
+  });
   if (!acct.ok || !acct.state) {
     return {
       ok: true,
@@ -108,6 +116,18 @@ export async function replaceIntent(id: number, accountId: string, patch: Replac
       reason: 'account_error',
       intent: rec,
       error: acct.error ?? 'Could not load account state.',
+    };
+  }
+  // Fail CLOSED if positions couldn't be read (see placeOrder.ts) — a
+  // fabricated 0 would under-count a real holding for position_size.
+  if (acct.positionsUnavailable) {
+    return {
+      ok: true,
+      replaced: false,
+      reason: 'account_error',
+      intent: rec,
+      error:
+        'Could not verify current positions with the broker — modify blocked rather than sized against an unknown position.',
     };
   }
   const modified = modifiedIntent(rec, patch);

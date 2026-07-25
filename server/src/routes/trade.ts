@@ -119,12 +119,15 @@ const placeBody = z.object({
   intent: intentSchema,
   accountId: z.string().min(1).max(64),
   confirmation: z.string().min(1).max(64),
+  // Optional idempotency key: a repeated /place with the same key never submits
+  // a second live order (double-click / retry / proxy replay safety).
+  idempotencyKey: z.string().min(1).max(64).optional(),
 });
 tradeRouter.post(
   '/place',
   asyncHandler(async (req, res) => {
-    const { intent, accountId, confirmation } = parseBody(placeBody, req);
-    res.json(await placeOrder(intent as OrderIntent, accountId, confirmation));
+    const { intent, accountId, confirmation, idempotencyKey } = parseBody(placeBody, req);
+    res.json(await placeOrder(intent as OrderIntent, accountId, confirmation, idempotencyKey));
   }),
 );
 

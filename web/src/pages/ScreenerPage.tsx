@@ -5,6 +5,7 @@ import { useAsync } from '../lib/hooks';
 import { cx, fmtCompact, fmtNum, fmtPct, fmtUsd } from '../lib/format';
 import {
   Card,
+  CollapsibleCard,
   EmptyState,
   ErrorState,
   Field,
@@ -21,6 +22,7 @@ import {
 import { RefreshBar } from '../components/RefreshBar';
 import { UniverseModal } from '../components/UniverseModal';
 import { SnapshotsModal } from '../components/SnapshotsModal';
+import { SectorRotationPanel } from '../components/SectorRotationPanel';
 import type { IndicatorKey, ScreenerConfig, ScreenerResult, SymbolScore } from '../api/types';
 
 const WEIGHT_KEYS: { key: IndicatorKey; label: string }[] = [
@@ -104,18 +106,25 @@ export default function ScreenerPage() {
       return { ...base, filters: { ...base.filters, [k]: v } };
     });
 
-  const run = async () => {
+  const run = async (override?: { symbols?: string[]; maxSymbols?: number }) => {
     if (!cfg) return;
     setRunning(true);
     setError(undefined);
     try {
-      const symbols = useCustom
-        ? customText
-            .split(/[\s,]+/)
-            .map((s) => s.trim().toUpperCase())
-            .filter(Boolean)
-        : undefined;
-      const res = await client.runScreener({ config: cfg, symbols, maxSymbols, includeFailed });
+      const symbols =
+        override?.symbols ??
+        (useCustom
+          ? customText
+              .split(/[\s,]+/)
+              .map((s) => s.trim().toUpperCase())
+              .filter(Boolean)
+          : undefined);
+      const res = await client.runScreener({
+        config: cfg,
+        symbols,
+        maxSymbols: override?.maxSymbols ?? maxSymbols,
+        includeFailed,
+      });
       setResult(res);
       client.saveSetting('screener.config', cfg).catch(() => {}); // remember last config
     } catch (e) {
@@ -123,6 +132,15 @@ export default function ScreenerPage() {
     } finally {
       setRunning(false);
     }
+  };
+
+  // Sector-rotation panel: clicking a sector loads its members into the custom-
+  // symbols box and scans just those, so the leaderboard doubles as navigation.
+  const pickSector = (_sector: string, members: string[]) => {
+    if (members.length === 0) return;
+    setUseCustom(true);
+    setCustomText(members.join(' '));
+    void run({ symbols: members, maxSymbols: Math.max(members.length, maxSymbols) });
   };
 
   const onSort = (k: string) => {
@@ -172,198 +190,217 @@ export default function ScreenerPage() {
     <div className="flex flex-col lg:flex-row gap-5">
       {/* ---- Config sidebar ---- */}
       <aside className="lg:w-80 shrink-0 space-y-4">
-        <Card className="p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold">Screener config</h2>
-            <Badge color="blue">{cfg.direction}</Badge>
-          </div>
-
-          <Field label="Direction">
-            <select
-              className="input"
-              value={cfg.direction}
-              onChange={(e) => set('direction', e.target.value as 'long' | 'short')}
-            >
-              <option value="long">Long (bullish)</option>
-              <option value="short">Short (bearish)</option>
-            </select>
-          </Field>
-
-          <div>
-            <div className="label">Scan source</div>
-            <div className="flex rounded-md overflow-hidden border border-ink-600 text-sm">
-              <button
-                className={cx('flex-1 px-2 py-1', !useCustom ? 'bg-ink-600 text-slate-100' : 'text-slate-400')}
-                onClick={() => setUseCustom(false)}
+        <CollapsibleCard
+          id="screener.config"
+          title="Screener config"
+          headingLevel="h2"
+          action={<Badge color="blue">{cfg.direction}</Badge>}
+        >
+          <div className="space-y-3">
+            <Field label="Direction">
+              <select
+                className="input"
+                value={cfg.direction}
+                onChange={(e) => set('direction', e.target.value as 'long' | 'short')}
               >
-                Universe ({universe.data?.symbols.length ?? '…'})
-              </button>
-              <button
-                className={cx('flex-1 px-2 py-1', useCustom ? 'bg-ink-600 text-slate-100' : 'text-slate-400')}
-                onClick={() => setUseCustom(true)}
-              >
-                Custom list
-              </button>
-            </div>
-            {useCustom ? (
-              <textarea
-                className="input mt-2 h-20"
-                placeholder="AAPL MSFT NVDA…"
-                value={customText}
-                onChange={(e) => setCustomText(e.target.value)}
-              />
-            ) : (
-              <div className="flex items-center gap-2 mt-2">
-                <button className="btn-ghost text-xs flex-1" onClick={() => setUniverseOpen(true)}>
-                  Manage universe
+                <option value="long">Long (bullish)</option>
+                <option value="short">Short (bearish)</option>
+              </select>
+            </Field>
+
+            <div>
+              <div className="label">Scan source</div>
+              <div className="flex rounded-md overflow-hidden border border-ink-600 text-sm">
+                <button
+                  className={cx('flex-1 px-2 py-1', !useCustom ? 'bg-ink-600 text-slate-100' : 'text-slate-400')}
+                  onClick={() => setUseCustom(false)}
+                >
+                  Universe ({universe.data?.symbols.length ?? '…'})
                 </button>
-                <div className="w-24">
-                  <NumberInput value={maxSymbols} onChange={(v) => setMaxSymbols(v ?? 1)} min={1} max={500} />
+                <button
+                  className={cx('flex-1 px-2 py-1', useCustom ? 'bg-ink-600 text-slate-100' : 'text-slate-400')}
+                  onClick={() => setUseCustom(true)}
+                >
+                  Custom list
+                </button>
+              </div>
+              {useCustom ? (
+                <textarea
+                  className="input mt-2 h-20"
+                  placeholder="AAPL MSFT NVDA…"
+                  value={customText}
+                  onChange={(e) => setCustomText(e.target.value)}
+                />
+              ) : (
+                <div className="flex items-center gap-2 mt-2">
+                  <button className="btn-ghost text-xs flex-1" onClick={() => setUniverseOpen(true)}>
+                    Manage universe
+                  </button>
+                  <div className="w-24">
+                    <NumberInput value={maxSymbols} onChange={(v) => setMaxSymbols(v ?? 1)} min={1} max={500} />
+                  </div>
                 </div>
+              )}
+              {!useCustom && (
+                <div className="text-[11px] text-slate-500 mt-1">Max symbols/scan (rate-limit guard).</div>
+              )}
+            </div>
+
+            <div>
+              <div className="label">Indicator weights</div>
+              <div className="grid sm:grid-cols-2 gap-2">
+                {WEIGHT_KEYS.map((w) => (
+                  <label key={w.key} className="text-xs text-slate-400">
+                    {w.label}
+                    <NumberInput value={cfg.weights[w.key]} onChange={(v) => setWeight(w.key, v)} min={0} max={100} />
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid sm:grid-cols-4 gap-2">
+              <Field label="MA-s">
+                <NumberInput value={cfg.maShort} onChange={(v) => set('maShort', v ?? 20)} min={2} />
+              </Field>
+              <Field label="MA-l">
+                <NumberInput value={cfg.maLong} onChange={(v) => set('maLong', v ?? 50)} min={2} />
+              </Field>
+              <Field label="RSI">
+                <NumberInput value={cfg.rsiPeriod} onChange={(v) => set('rsiPeriod', v ?? 14)} min={2} />
+              </Field>
+              <Field label="ATR">
+                <NumberInput value={cfg.atrPeriod} onChange={(v) => set('atrPeriod', v ?? 14)} min={2} />
+              </Field>
+            </div>
+
+            <div>
+              <div className="label">Filters (hard gates)</div>
+              <div className="grid sm:grid-cols-2 gap-2">
+                <label className="text-xs text-slate-400">
+                  Min price
+                  <NumberInput value={cfg.filters.minPrice} onChange={(v) => setFilter('minPrice', v)} />
+                </label>
+                <label className="text-xs text-slate-400">
+                  Max price
+                  <NumberInput value={cfg.filters.maxPrice} onChange={(v) => setFilter('maxPrice', v)} />
+                </label>
+                <label className="text-xs text-slate-400">
+                  Min avg vol
+                  <NumberInput value={cfg.filters.minAvgVolume} onChange={(v) => setFilter('minAvgVolume', v)} />
+                </label>
+                <label className="text-xs text-slate-400">
+                  Min rel vol
+                  <NumberInput value={cfg.filters.minRelVol} onChange={(v) => setFilter('minRelVol', v)} step={0.1} />
+                </label>
+                <label className="text-xs text-slate-400">
+                  RSI min
+                  <NumberInput value={cfg.filters.rsiMin} onChange={(v) => setFilter('rsiMin', v)} />
+                </label>
+                <label className="text-xs text-slate-400">
+                  RSI max
+                  <NumberInput value={cfg.filters.rsiMax} onChange={(v) => setFilter('rsiMax', v)} />
+                </label>
+              </div>
+              <label className="flex items-center gap-2 text-xs text-slate-400 mt-2">
+                <input
+                  type="checkbox"
+                  checked={!!cfg.filters.requireTrendAlignment}
+                  onChange={(e) => setFilter('requireTrendAlignment', e.target.checked)}
+                />
+                Require trend alignment
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-400 mt-1">
+                <input
+                  type="checkbox"
+                  checked={!!cfg.filters.requireWeeklyTrendAlignment}
+                  onChange={(e) => setFilter('requireWeeklyTrendAlignment', e.target.checked)}
+                />
+                Require weekly trend alignment
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-400 mt-1">
+                <input type="checkbox" checked={includeFailed} onChange={(e) => setIncludeFailed(e.target.checked)} />
+                Include filtered-out (full breakdown)
+              </label>
+            </div>
+
+            <button className="text-xs text-accent" onClick={() => setAdvanced((a) => !a)}>
+              {advanced ? '▾ Hide' : '▸ Show'} score tuning
+            </button>
+            {advanced && (
+              <div className="grid sm:grid-cols-2 gap-2">
+                <label className="text-xs text-slate-400">
+                  Momentum scale %
+                  <NumberInput value={cfg.momentumScale} onChange={(v) => set('momentumScale', v ?? 5)} step={0.5} />
+                </label>
+                <label className="text-xs text-slate-400">
+                  Rel-vol target ×
+                  <NumberInput value={cfg.relVolTarget} onChange={(v) => set('relVolTarget', v ?? 2)} step={0.1} />
+                </label>
+                <label className="text-xs text-slate-400">
+                  RSI sweet spot
+                  <NumberInput value={cfg.rsiSweetSpot} onChange={(v) => set('rsiSweetSpot', v ?? 60)} />
+                </label>
+                <label className="text-xs text-slate-400">
+                  RSI width
+                  <NumberInput value={cfg.rsiWidth} onChange={(v) => set('rsiWidth', v ?? 25)} />
+                </label>
+                <label className="text-xs text-slate-400">
+                  ATR% scale
+                  <NumberInput value={cfg.atrPctScale} onChange={(v) => set('atrPctScale', v ?? 5)} step={0.5} />
+                </label>
+                <label className="text-xs text-slate-400">
+                  Gap scale %<NumberInput value={cfg.gapScale} onChange={(v) => set('gapScale', v ?? 3)} step={0.5} />
+                </label>
               </div>
             )}
-            {!useCustom && <div className="text-[11px] text-slate-500 mt-1">Max symbols/scan (rate-limit guard).</div>}
+
+            <button className="btn-primary w-full" onClick={() => run()} disabled={running}>
+              {running ? 'Scanning…' : 'Run screener'}
+            </button>
           </div>
-
-          <div>
-            <div className="label">Indicator weights</div>
-            <div className="grid grid-cols-2 gap-2">
-              {WEIGHT_KEYS.map((w) => (
-                <label key={w.key} className="text-xs text-slate-400">
-                  {w.label}
-                  <NumberInput value={cfg.weights[w.key]} onChange={(v) => setWeight(w.key, v)} min={0} max={100} />
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-4 gap-2">
-            <Field label="MA-s">
-              <NumberInput value={cfg.maShort} onChange={(v) => set('maShort', v ?? 20)} min={2} />
-            </Field>
-            <Field label="MA-l">
-              <NumberInput value={cfg.maLong} onChange={(v) => set('maLong', v ?? 50)} min={2} />
-            </Field>
-            <Field label="RSI">
-              <NumberInput value={cfg.rsiPeriod} onChange={(v) => set('rsiPeriod', v ?? 14)} min={2} />
-            </Field>
-            <Field label="ATR">
-              <NumberInput value={cfg.atrPeriod} onChange={(v) => set('atrPeriod', v ?? 14)} min={2} />
-            </Field>
-          </div>
-
-          <div>
-            <div className="label">Filters (hard gates)</div>
-            <div className="grid grid-cols-2 gap-2">
-              <label className="text-xs text-slate-400">
-                Min price
-                <NumberInput value={cfg.filters.minPrice} onChange={(v) => setFilter('minPrice', v)} />
-              </label>
-              <label className="text-xs text-slate-400">
-                Max price
-                <NumberInput value={cfg.filters.maxPrice} onChange={(v) => setFilter('maxPrice', v)} />
-              </label>
-              <label className="text-xs text-slate-400">
-                Min avg vol
-                <NumberInput value={cfg.filters.minAvgVolume} onChange={(v) => setFilter('minAvgVolume', v)} />
-              </label>
-              <label className="text-xs text-slate-400">
-                Min rel vol
-                <NumberInput value={cfg.filters.minRelVol} onChange={(v) => setFilter('minRelVol', v)} step={0.1} />
-              </label>
-              <label className="text-xs text-slate-400">
-                RSI min
-                <NumberInput value={cfg.filters.rsiMin} onChange={(v) => setFilter('rsiMin', v)} />
-              </label>
-              <label className="text-xs text-slate-400">
-                RSI max
-                <NumberInput value={cfg.filters.rsiMax} onChange={(v) => setFilter('rsiMax', v)} />
-              </label>
-            </div>
-            <label className="flex items-center gap-2 text-xs text-slate-400 mt-2">
-              <input
-                type="checkbox"
-                checked={!!cfg.filters.requireTrendAlignment}
-                onChange={(e) => setFilter('requireTrendAlignment', e.target.checked)}
-              />
-              Require trend alignment
-            </label>
-            <label className="flex items-center gap-2 text-xs text-slate-400 mt-1">
-              <input type="checkbox" checked={includeFailed} onChange={(e) => setIncludeFailed(e.target.checked)} />
-              Include filtered-out (full breakdown)
-            </label>
-          </div>
-
-          <button className="text-xs text-accent" onClick={() => setAdvanced((a) => !a)}>
-            {advanced ? '▾ Hide' : '▸ Show'} score tuning
-          </button>
-          {advanced && (
-            <div className="grid grid-cols-2 gap-2">
-              <label className="text-xs text-slate-400">
-                Momentum scale %
-                <NumberInput value={cfg.momentumScale} onChange={(v) => set('momentumScale', v ?? 5)} step={0.5} />
-              </label>
-              <label className="text-xs text-slate-400">
-                Rel-vol target ×
-                <NumberInput value={cfg.relVolTarget} onChange={(v) => set('relVolTarget', v ?? 2)} step={0.1} />
-              </label>
-              <label className="text-xs text-slate-400">
-                RSI sweet spot
-                <NumberInput value={cfg.rsiSweetSpot} onChange={(v) => set('rsiSweetSpot', v ?? 60)} />
-              </label>
-              <label className="text-xs text-slate-400">
-                RSI width
-                <NumberInput value={cfg.rsiWidth} onChange={(v) => set('rsiWidth', v ?? 25)} />
-              </label>
-              <label className="text-xs text-slate-400">
-                ATR% scale
-                <NumberInput value={cfg.atrPctScale} onChange={(v) => set('atrPctScale', v ?? 5)} step={0.5} />
-              </label>
-              <label className="text-xs text-slate-400">
-                Gap scale %<NumberInput value={cfg.gapScale} onChange={(v) => set('gapScale', v ?? 3)} step={0.5} />
-              </label>
-            </div>
-          )}
-
-          <button className="btn-primary w-full" onClick={run} disabled={running}>
-            {running ? 'Scanning…' : 'Run screener'}
-          </button>
-        </Card>
+        </CollapsibleCard>
 
         {/* Presets */}
-        <Card className="p-4 space-y-2">
-          <div className="flex items-center justify-between">
-            <h3 className="font-medium text-sm">Presets</h3>
+        <CollapsibleCard
+          id="screener.presets"
+          title="Presets"
+          action={
             <button className="text-xs text-accent" onClick={savePreset}>
               + Save current
             </button>
+          }
+        >
+          <div className="space-y-2">
+            {presets.data?.presets.length ? (
+              <div className="space-y-1">
+                {presets.data.presets.map((p) => (
+                  <div key={p.id} className="flex items-center justify-between text-sm">
+                    <button
+                      className="text-slate-300 hover:text-accent text-left"
+                      onClick={() => setConfig(p.config as ScreenerConfig)}
+                    >
+                      {p.name}
+                    </button>
+                    <button
+                      className="text-xs text-slate-500 hover:text-bear"
+                      onClick={async () => {
+                        await client.deletePreset(p.id);
+                        presets.reload();
+                      }}
+                    >
+                      delete
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-xs text-slate-500">No saved presets yet.</div>
+            )}
           </div>
-          {presets.data?.presets.length ? (
-            <div className="space-y-1">
-              {presets.data.presets.map((p) => (
-                <div key={p.id} className="flex items-center justify-between text-sm">
-                  <button
-                    className="text-slate-300 hover:text-accent text-left"
-                    onClick={() => setConfig(p.config as ScreenerConfig)}
-                  >
-                    {p.name}
-                  </button>
-                  <button
-                    className="text-xs text-slate-500 hover:text-bear"
-                    onClick={async () => {
-                      await client.deletePreset(p.id);
-                      presets.reload();
-                    }}
-                  >
-                    delete
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-xs text-slate-500">No saved presets yet.</div>
-          )}
-        </Card>
+        </CollapsibleCard>
+
+        {/* Sector rotation — click a sector to scan just its members. */}
+        <SectorRotationPanel onPickSector={pickSector} />
       </aside>
 
       {/* ---- Results ---- */}
@@ -407,7 +444,14 @@ export default function ScreenerPage() {
                   Save snapshot
                 </button>
               )}
-              {result && <RefreshBar onRefresh={run} lastUpdated={result.generatedAt} loading={running} />}
+              {result && (
+                <RefreshBar
+                  onRefresh={run}
+                  lastUpdated={result.generatedAt}
+                  loading={running}
+                  defaultIntervalMs={null}
+                />
+              )}
             </>
           }
         />
@@ -447,7 +491,7 @@ export default function ScreenerPage() {
               title="Run the screener to rank your universe"
               hint="Each symbol is scored from transparent, weighted indicators. Expand any row to see exactly why it ranked where it did."
               action={
-                <button className="btn-primary" onClick={run} disabled={running}>
+                <button className="btn-primary" onClick={() => run()} disabled={running}>
                   {running ? 'Scanning…' : 'Run screener'}
                 </button>
               }

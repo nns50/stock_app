@@ -1,4 +1,5 @@
 import { db } from './index';
+import { safeJsonParse } from '../util/json';
 
 export type PresetKind = 'screener' | 'option_entry' | 'option_exit';
 
@@ -25,7 +26,7 @@ function map(row: PresetRow): Preset {
     id: row.id,
     name: row.name,
     kind: row.kind,
-    config: JSON.parse(row.config),
+    config: safeJsonParse<unknown>(row.config, null),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

@@ -118,3 +118,92 @@ export async function resolveOptionMarks(
   }
   return out;
 }
+
+export interface GreeksLookupItem {
+  /** Caller-chosen identifier for this leg — not necessarily a position id, so
+   *  a debit spread's SHORT leg can be looked up as its own synthetic entry
+   *  alongside the long leg (see services/portfolioGreeks.ts). */
+  key: string;
+  symbol: string;
+  optionType: 'call' | 'put';
+  strike: number;
+  expiration: string;
+}
+
+export interface ContractGreeks {
+  delta: number | null;
+  theta: number | null;
+  vega: number | null;
+}
+
+/**
+ * Resolve current delta/theta/vega for a set of option legs by fetching the
+ * relevant chains once per (symbol, expiration) and matching strike + type —
+ * same batching strategy as resolveOptionMarks() above. Kept as an
+ * independent function rather than a shared refactor: resolveOptionMarks()'s
+ * only existing caller (positionExits.ts) drives real exit decisions, and
+ * this one has no reason to touch that path to add an unrelated read.
+ */
+export async function resolveOptionGreeks(items: GreeksLookupItem[]): Promise<Map<string, ContractGreeks>> {
+  const out = new Map<string, ContractGreeks>();
+  if (items.length === 0) return out; // never touch the provider for an empty batch
+  const provider = getProvider();
+  if (!provider.capabilities.options) {
+    for (const it of items) out.set(it.key, { delta: null, theta: null, vega: null });
+    return out;
+  }
+
+  const groups = new Map<string, GreeksLookupItem[]>();
+  for (const it of items) {
+    const groupKey = `${it.symbol.toUpperCase()}|${it.expiration}`;
+    (groups.get(groupKey) ?? groups.set(groupKey, []).get(groupKey)!).push(it);
+  }
+
+  for (const [groupKey, members] of groups) {
+    const [symbol, expiration] = groupKey.split('|');
+    try {
+      const chain = await provider.getOptionsChain(symbol, expiration);
+      for (const it of members) {
+        const pool = it.optionType === 'put' ? chain.puts : chain.calls;
+        const match = pool.find((c) => Math.abs(c.strike - it.strike) < 1e-6);
+        out.set(it.key, {
+          delta: match?.greeks?.delta ?? null,
+          theta: match?.greeks?.theta ?? null,
+          vega: match?.greeks?.vega ?? null,
+        });
+      }
+    } catch {
+      for (const it of members) out.set(it.key, { delta: null, theta: null, vega: null });
+    }
+  }
+  return out;
+}
+
+/** Resolve a current price per position (stocks via quote, options via mark) —
+ *  shared by routes/positions.ts (the human's own book) and the autotrade
+ *  live-positions route (server/src/routes/autotrade.ts), so both read the
+ *  exact same stock/option price-resolution logic rather than two
+ *  implementations that could quietly drift apart. */
+export async function priceMap(
+  positions: Position[],
+): Promise<Map<number, { price: number | null; stale: boolean; asOf: number | null }>> {
+  const out = new Map<number, { price: number | null; stale: boolean; asOf: number | null }>();
+  const stocks = positions.filter((p) => p.assetType === 'stock');
+  const options = positions.filter((p) => p.assetType === 'option');
+
+  if (stocks.length) {
+    const prices = await resolveStockPrices(stocks.map((p) => p.symbol));
+    for (const p of stocks) {
+      const r = prices.get(p.symbol.toUpperCase());
+      out.set(p.id, { price: r?.price ?? null, stale: r?.stale ?? false, asOf: r?.asOf ?? null });
+    }
+  }
+  if (options.length) {
+    const marks = await resolveOptionMarks(options);
+    for (const p of options) {
+      const m = marks.get(p.id);
+      out.set(p.id, { price: m?.mark ?? null, stale: false, asOf: m?.mark != null ? Date.now() : null });
+    }
+  }
+  return out;
+}

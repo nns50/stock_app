@@ -1,10 +1,17 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import { app } from '../src/index';
 import { db } from '../src/db';
 import { config } from '../src/config';
 import { totp } from '../src/services/totp';
 import { setSetting } from '../src/db/settings';
+import { createIntent } from '../src/db/orders';
+import { addExit, createPosition } from '../src/db/positions';
+import { setAutotradeConfig } from '../src/db/autotradeConfig';
+import { openPaperPosition } from '../src/db/autotradePaperPositions';
+import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
+import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
+import { getProvider } from '../src/providers';
 
 // End-to-end tests through the real Express app → routers → services → SQLite
 // (a throwaway DB; see vitest.config.ts). Catches route wiring, validation, and
@@ -21,6 +28,12 @@ beforeEach(() => {
 const post = (path: string, body: unknown) =>
   fetch(`${base}${path}`, {
     method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+const patch = (path: string, body: unknown) =>
+  fetch(`${base}${path}`, {
+    method: 'PATCH',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
@@ -57,6 +70,101 @@ describe('positions + journal routes (integration)', () => {
   it('rejects an invalid create with 400', async () => {
     const res = await post('/api/positions', { assetType: 'stock' }); // missing required fields
     expect(res.status).toBe(400);
+  });
+
+  it('rejects a zero entry price (would book full market value as fake gain)', async () => {
+    const res = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 0,
+      entryDate: '2026-05-01',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a stock exit at price 0 but allows an option to expire worthless at 0', async () => {
+    // Stock: a $0 exit silently books a full-loss realized P&L — reject it.
+    const stock = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-05-01',
+    });
+    const stockPos = (await stock.json()) as { id: number };
+    const badExit = await post(`/api/positions/${stockPos.id}/exits`, {
+      quantity: 10,
+      exitPrice: 0,
+      exitDate: '2026-05-10',
+    });
+    expect(badExit.status).toBe(400);
+
+    // Option: $0 is legitimate (expired worthless) — allow it.
+    const opt = await post('/api/positions', {
+      assetType: 'option',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 1,
+      entryPrice: 2.5,
+      entryDate: '2026-05-01',
+      optionType: 'call',
+      strike: 200,
+      expiration: '2026-05-16',
+    });
+    const optPos = (await opt.json()) as { id: number };
+    const worthless = await post(`/api/positions/${optPos.id}/exits`, {
+      quantity: 1,
+      exitPrice: 0,
+      exitDate: '2026-05-16',
+    });
+    expect(worthless.status).toBe(201);
+  });
+
+  it('rejects an exit dated before the entry', async () => {
+    const created = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-05-10',
+    });
+    const pos = (await created.json()) as { id: number };
+    const res = await post(`/api/positions/${pos.id}/exits`, {
+      quantity: 5,
+      exitPrice: 110,
+      exitDate: '2026-05-01', // before entry
+    });
+    expect(res.status).toBe(400);
+  });
+
+  // Regression (2026-07-17): the Zod body schemas for both routes were
+  // written before accountId existed and didn't list it, so Zod silently
+  // stripped it from the parsed body before it ever reached the DB layer —
+  // a real, would-have-shipped gap the DB-layer unit tests (which call
+  // createPosition/updatePosition directly, bypassing the route entirely)
+  // couldn't catch, only found by driving the real route end-to-end.
+  it('round-trips accountId through both create and patch, not silently dropping it', async () => {
+    const created = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'VRAX',
+      side: 'long',
+      quantity: 50,
+      entryPrice: 20,
+      entryDate: '2026-07-01',
+      accountId: 'CASH_ACC',
+    });
+    const pos = (await created.json()) as { id: number; accountId: string | null };
+    expect(pos.accountId).toBe('CASH_ACC');
+
+    const patched = await patch(`/api/positions/${pos.id}`, { accountId: 'MARGIN_ACC' });
+    expect(((await patched.json()) as { accountId: string | null }).accountId).toBe('MARGIN_ACC');
+
+    const cleared = await patch(`/api/positions/${pos.id}`, { accountId: null });
+    expect(((await cleared.json()) as { accountId: string | null }).accountId).toBeNull();
   });
 
   it('day stats reflect entries and P&L booked on a date', async () => {
@@ -101,6 +209,195 @@ describe('positions + journal routes (integration)', () => {
     const stats = (await getJson('/api/journal/stats')) as { totalClosed: number; totalRealized: number };
     expect(stats.totalClosed).toBe(1);
     expect(stats.totalRealized).toBe(520); // (131 − 118) × 40
+  });
+
+  it('flags a closed loss as a possible wash sale when the same symbol was reopened within 30 days', async () => {
+    const loss = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'WASH',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-04-01',
+    });
+    const lossPos = (await loss.json()) as { id: number };
+    await post(`/api/positions/${lossPos.id}/exits`, { quantity: 10, exitPrice: 90, exitDate: '2026-04-10' }); // -100 loss
+
+    const reopen = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'WASH',
+      side: 'long',
+      quantity: 5,
+      entryPrice: 88,
+      entryDate: '2026-04-20', // 10 days after the loss closed
+    });
+    const reopenPos = (await reopen.json()) as { id: number };
+
+    const body = (await getJson('/api/positions?status=closed&withPnl=true')) as {
+      positions: { position: { id: number; symbol: string }; washSale: { triggerPositionId: number } | null }[];
+    };
+    const row = body.positions.find((r) => r.position.id === lossPos.id)!;
+    expect(row.washSale).toMatchObject({ triggerPositionId: reopenPos.id, triggerEntryDate: '2026-04-20' });
+  });
+
+  it('does not flag a closed WINNING trade even if the symbol was reopened nearby', async () => {
+    const win = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'GAINR',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-04-01',
+    });
+    const winPos = (await win.json()) as { id: number };
+    await post(`/api/positions/${winPos.id}/exits`, { quantity: 10, exitPrice: 110, exitDate: '2026-04-10' }); // +100 gain
+    await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'GAINR',
+      side: 'long',
+      quantity: 5,
+      entryPrice: 111,
+      entryDate: '2026-04-15',
+    });
+
+    const body = (await getJson('/api/positions?status=closed&withPnl=true')) as {
+      positions: { position: { id: number }; washSale: unknown }[];
+    };
+    const row = body.positions.find((r) => r.position.id === winPos.id)!;
+    expect(row.washSale).toBeNull();
+  });
+
+  it('slippage compares live fills to their order limit price (entry + exit)', async () => {
+    const entryIntent = createIntent(
+      {
+        symbol: 'AMC',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 5,
+        orderType: 'limit',
+        limitPrice: 2,
+      },
+      'slippage-entry',
+    );
+    const pos = createPosition({
+      assetType: 'stock',
+      symbol: 'AMC',
+      side: 'long',
+      quantity: 5,
+      entryPrice: 2.1, // filled 0.10 worse than the 2.00 limit
+      entryDate: '2026-06-01',
+      sourceIntentId: entryIntent.id,
+    });
+    const exitIntent = createIntent(
+      {
+        symbol: 'AMC',
+        assetKind: 'stock',
+        side: 'sell',
+        openClose: 'close',
+        quantity: 5,
+        orderType: 'limit',
+        limitPrice: 3,
+      },
+      'slippage-exit',
+    );
+    addExit(pos.id, { quantity: 5, exitPrice: 2.9, exitDate: '2026-06-05', sourceIntentId: exitIntent.id }); // 0.10 worse than the 3.00 limit
+
+    const report = (await getJson('/api/journal/slippage')) as {
+      trades: number;
+      totalUsd: number;
+      rows: { kind: string; perUnit: number; totalUsd: number }[];
+    };
+    expect(report.trades).toBe(2);
+    expect(report.totalUsd).toBeCloseTo(1, 5); // 0.5 (entry) + 0.5 (exit), both adverse
+    expect(report.rows.find((r) => r.kind === 'entry')).toMatchObject({ perUnit: 0.1, totalUsd: 0.5 });
+    expect(report.rows.find((r) => r.kind === 'exit')).toMatchObject({ perUnit: 0.1, totalUsd: 0.5 });
+  });
+
+  it('excludes a manually logged position from slippage (no source order)', async () => {
+    await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'MSFT',
+      side: 'long',
+      quantity: 1,
+      entryPrice: 400,
+      entryDate: '2026-06-01',
+    });
+    const report = (await getJson('/api/journal/slippage')) as { trades: number };
+    expect(report.trades).toBe(0);
+  });
+});
+
+// closeLivePosition() itself (guardrails, bracket-cancel, autotrade
+// bookkeeping) is covered directly in closePosition.test.ts with mocked
+// Webull calls — these are route-layer-only: request validation and which
+// positions the route even lets through to it. TRADING_ENABLED isn't set in
+// this test process, so a broker-tracked position's close attempt fails fast
+// at placeOrder()'s own deploy-level master gate rather than making any real
+// network call — sufficient to prove the route reaches closeLivePosition
+// without crashing.
+describe('POST /positions/:id/close (integration)', () => {
+  it('404s for a position that does not exist', async () => {
+    const res = await post('/api/positions/999999/close', { accountId: 'ACC1', confirmation: 'SELL 1 X' });
+    expect(res.status).toBe(404);
+  });
+
+  it('409s for a position that is already closed', async () => {
+    const created = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-05-01',
+      tags: ['live'],
+    });
+    const pos = (await created.json()) as { id: number };
+    await post(`/api/positions/${pos.id}/exits`, { quantity: 10, exitPrice: 110, exitDate: '2026-05-10' });
+
+    const res = await post(`/api/positions/${pos.id}/close`, { accountId: 'ACC1', confirmation: 'SELL 10 AAPL' });
+    expect(res.status).toBe(409);
+  });
+
+  it('400s for a position that is not broker-tracked — points at the journal-only exit route instead', async () => {
+    const created = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-05-01',
+      // no tags, no sourceIntentId — a plain manually-logged trade
+    });
+    const pos = (await created.json()) as { id: number };
+
+    const res = await post(`/api/positions/${pos.id}/close`, { accountId: 'ACC1', confirmation: 'SELL 10 AAPL' });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toMatch(/exits/i);
+  });
+
+  it('reaches closeLivePosition for a broker-tracked position — a structured result, not a route-level rejection', async () => {
+    const created = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-05-01',
+      tags: ['live'],
+    });
+    const pos = (await created.json()) as { id: number };
+
+    const res = await post(`/api/positions/${pos.id}/close`, { accountId: 'ACC1', confirmation: 'SELL 10 AAPL' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; placed: boolean; reason: string };
+    // TRADING_ENABLED isn't set in this test process, so placeOrder()'s own
+    // deploy-level master gate fires first — proves the route reached
+    // closeLivePosition (a structured PlaceResult-shaped body, not a 4xx
+    // route-level rejection) without needing Webull configured at all.
+    expect(body.placed).toBe(false);
+    expect(body.reason).toBe('trading_disabled');
   });
 });
 
@@ -160,6 +457,20 @@ describe('alerts routes (integration)', () => {
     expect(Array.isArray(out.alerts)).toBe(true);
     expect(Array.isArray(out.newlyTriggered)).toBe(true);
     expect(Array.isArray(out.positionAlerts)).toBe(true);
+  });
+
+  it('state returns a read-only alert + position-exit snapshot (no newlyTriggered side-effect envelope)', async () => {
+    await post('/api/alerts', { symbol: 'aapl', kind: 'price', operator: 'above', threshold: 100 });
+    const out = (await getJson('/api/alerts/state')) as {
+      alerts: { symbol: string; triggered: boolean }[];
+      positionAlerts: unknown[];
+      newlyTriggered?: unknown;
+    };
+    expect(Array.isArray(out.alerts)).toBe(true);
+    expect(out.alerts.some((a) => a.symbol === 'AAPL')).toBe(true);
+    expect(Array.isArray(out.positionAlerts)).toBe(true);
+    // Read-only: it does not run the mutating evaluation envelope.
+    expect(out.newlyTriggered).toBeUndefined();
   });
 
   it('reports notification status (channels + scheduler) and toggles the poller', async () => {
@@ -224,6 +535,14 @@ describe('webull connectivity (integration)', () => {
     expect(out).toMatchObject({ ok: false, quotes: [] });
     expect(out.error).toMatch(/not configured/i);
   });
+
+  it('reports a guarded positions/compare result without credentials, through the real route', async () => {
+    const res = await post('/api/webull/positions/compare', { accountId: 'ACC1' });
+    expect(res.status).toBe(200);
+    const out = (await res.json()) as { ok: boolean; accountId: string; rows: unknown[]; error?: string };
+    expect(out).toMatchObject({ ok: false, accountId: 'ACC1', rows: [] });
+    expect(out.error).toMatch(/not configured/i);
+  });
 });
 
 describe('trade (dry-run) routes (integration)', () => {
@@ -234,7 +553,12 @@ describe('trade (dry-run) routes (integration)', () => {
       body: JSON.stringify(body),
     });
 
-  beforeEach(() => db.exec('DELETE FROM order_events; DELETE FROM order_intents; DELETE FROM trading_config;'));
+  beforeEach(() =>
+    db.exec(
+      'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; ' +
+        'DELETE FROM order_events; DELETE FROM order_intents; DELETE FROM trading_config;',
+    ),
+  );
 
   const account = {
     buyingPowerUsd: 100_000,
@@ -394,4 +718,1601 @@ describe('two-factor (integration)', () => {
       config.auth.mfaDisabled = false;
     }
   });
+});
+
+describe('autotrade config routes (integration)', () => {
+  const put = (path: string, body: unknown) =>
+    fetch(`${base}${path}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_config; DELETE FROM autotrade_events;');
+  });
+
+  it('a save that omits a field does not reset that field to its default — enabled survives an equity-only save', async () => {
+    const enabledRes = await put('/api/autotrade/config', { enabled: true });
+    expect((await enabledRes.json()) as { enabled: boolean }).toMatchObject({ enabled: true });
+
+    // A SEPARATE request that only sets equity, mirroring the UI's two
+    // independent Save actions (the checkbox saves immediately on click; the
+    // equity field has its own Save button) — must not touch `enabled`.
+    const equityRes = await put('/api/autotrade/config', { accountEquityUsd: 100_000 });
+    expect((await equityRes.json()) as { enabled: boolean; accountEquityUsd: number }).toMatchObject({
+      enabled: true,
+      accountEquityUsd: 100_000,
+    });
+
+    const final = (await getJson('/api/autotrade/config')) as { enabled: boolean; accountEquityUsd: number };
+    expect(final.enabled).toBe(true);
+    expect(final.accountEquityUsd).toBe(100_000);
+  });
+
+  it('a whitespace-only liveAccountId cannot stand in for a real one', async () => {
+    // sanitize() trims and stores whitespace as null, so a truthy "   " that
+    // passed the guard would land in the live-enabled-with-no-account state the
+    // guard exists to prevent.
+    const res = await put('/api/autotrade/config', {
+      liveAccountId: '   ',
+      liveTradingEnabled: true,
+      confirmLiveTrading: 'ENABLE LIVE TRADING',
+    });
+    expect(res.status).toBe(400);
+
+    const final = (await getJson('/api/autotrade/config')) as {
+      liveTradingEnabled: boolean;
+      liveAccountId: string | null;
+    };
+    expect(final.liveTradingEnabled).toBe(false);
+    expect(final.liveAccountId).toBeNull();
+  });
+
+  it('cannot clear liveAccountId to whitespace while live trading stays enabled', async () => {
+    await put('/api/autotrade/config', {
+      liveAccountId: 'ACCT-1',
+      liveTradingEnabled: true,
+      confirmLiveTrading: 'ENABLE LIVE TRADING',
+    });
+    const res = await put('/api/autotrade/config', { liveAccountId: '  ' });
+    expect(res.status).toBe(400);
+
+    const final = (await getJson('/api/autotrade/config')) as { liveAccountId: string | null };
+    expect(final.liveAccountId).toBe('ACCT-1');
+  });
+
+  it('one request cannot disable live trading and arm the nested live flags at the same time', async () => {
+    await put('/api/autotrade/config', {
+      liveAccountId: 'ACCT-1',
+      liveTradingEnabled: true,
+      confirmLiveTrading: 'ENABLE LIVE TRADING',
+    });
+
+    // Turning the master OFF must not let the same request arm anything nested
+    // under it — otherwise both are already live the moment it's switched on.
+    const res = await put('/api/autotrade/config', {
+      liveTradingEnabled: false,
+      liveOptionsEnabled: true,
+      liveScaleInEnabled: true,
+    });
+    expect(res.status).toBe(400);
+
+    const final = (await getJson('/api/autotrade/config')) as {
+      liveOptionsEnabled: boolean;
+      liveScaleInEnabled: boolean;
+    };
+    expect(final.liveOptionsEnabled).toBe(false);
+    expect(final.liveScaleInEnabled).toBe(false);
+  });
+
+  it('re-sending the current AGGRESSIVE profile is not a switch and needs no confirmation', async () => {
+    await put('/api/autotrade/config', { riskProfile: 'AGGRESSIVE', confirmAggressive: true });
+
+    // A client echoing the unchanged profile back (any "save everything" patch,
+    // including the /tune patches) must not be permanently unable to save.
+    const res = await put('/api/autotrade/config', { riskProfile: 'AGGRESSIVE', maxTradesPerDay: 8 });
+    expect(res.status).toBe(200);
+    expect((await getJson('/api/autotrade/config')) as { maxTradesPerDay: number }).toMatchObject({
+      maxTradesPerDay: 8,
+    });
+  });
+
+  it('still requires confirmation for a real MODERATE -> AGGRESSIVE switch', async () => {
+    const res = await put('/api/autotrade/config', { riskProfile: 'AGGRESSIVE' });
+    expect(res.status).toBe(400);
+    expect((await getJson('/api/autotrade/config')) as { riskProfile: string }).toMatchObject({
+      riskProfile: 'MODERATE',
+    });
+  });
+
+  it('rejects an inverted expectancy multiplier pair, which would size every grade at the min', async () => {
+    const res = await put('/api/autotrade/config', { expectancyMinMultiplier: 1.5, expectancyMaxMultiplier: 0.5 });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a pair inverted against the STORED value, not just within one request', async () => {
+    await put('/api/autotrade/config', { optionsDeltaMin: 0.3, optionsDeltaMax: 0.6 });
+    // Only the max moves, but the merged result is still an empty delta band.
+    const res = await put('/api/autotrade/config', { optionsDeltaMax: 0.1 });
+    expect(res.status).toBe(400);
+    expect((await getJson('/api/autotrade/config')) as { optionsDeltaMax: number }).toMatchObject({
+      optionsDeltaMax: 0.6,
+    });
+  });
+
+  it('rejects an empty DTE window and an unreachable grade B', async () => {
+    expect((await put('/api/autotrade/config', { optionsMinDte: 90, optionsMaxDte: 60 })).status).toBe(400);
+    expect(
+      (await put('/api/autotrade/config', { convictionGradeAMinScore: 10, convictionGradeBMinScore: 90 })).status,
+    ).toBe(400);
+  });
+
+  it('caps the expectancy multipliers — the only setting that can size a trade UP', async () => {
+    expect((await put('/api/autotrade/config', { expectancyMaxMultiplier: 100 })).status).toBe(400);
+    expect((await put('/api/autotrade/config', { expectancyMaxMultiplier: 2 })).status).toBe(200);
+  });
+
+  it('applies the ADV participation cap on /risk-check — avgVolume survives the request schema', async () => {
+    // The UI echoes /decide's signals straight into /risk-check. avgVolume was
+    // missing from signalBody, so zod stripped it and the cap (which needs it)
+    // was skipped — the manual preview then showed a BIGGER size than the loop,
+    // which risk-checks in-process with the signal intact, would actually take.
+    await put('/api/autotrade/config', { accountEquityUsd: 1_000_000, maxAdvParticipationPct: 1 });
+
+    const signal = {
+      symbol: 'AAPL',
+      side: 'buy' as const,
+      entry: 100,
+      stop: 99,
+      target: 102,
+      rMultiple: 2,
+      rationale: 'test',
+      score: 80,
+      avgVolume: 50_000,
+    };
+    const res = await post('/api/autotrade/risk-check', { signals: [signal] });
+    expect(res.status).toBe(200);
+    const { results } = (await res.json()) as { results: { sizing: { suggestedQuantity: number } }[] };
+
+    // 1% of 50,000 ADV = 500 shares. Unsized by risk alone this would be far
+    // larger ($1M equity, 1% risk, $1 stop distance => 10,000 shares).
+    expect(results[0].sizing.suggestedQuantity).toBe(500);
+  });
+
+  it('a save that omits equity does not reset it to null — equity survives an enabled-only save', async () => {
+    await put('/api/autotrade/config', { accountEquityUsd: 50_000 });
+    await put('/api/autotrade/config', { enabled: true });
+
+    const final = (await getJson('/api/autotrade/config')) as { enabled: boolean; accountEquityUsd: number | null };
+    expect(final.accountEquityUsd).toBe(50_000);
+    expect(final.enabled).toBe(true);
+  });
+
+  it('a save that omits riskProfile does not reset it to MODERATE — riskProfile survives an equity-only save', async () => {
+    await put('/api/autotrade/config', { riskProfile: 'AGGRESSIVE', confirmAggressive: true });
+    await put('/api/autotrade/config', { accountEquityUsd: 75_000 });
+
+    const final = (await getJson('/api/autotrade/config')) as { riskProfile: string; accountEquityUsd: number };
+    expect(final.riskProfile).toBe('AGGRESSIVE');
+    expect(final.accountEquityUsd).toBe(75_000);
+  });
+
+  it('persists optionsStrategyType and survives an unrelated save, mirroring riskProfile', async () => {
+    await put('/api/autotrade/config', { optionsStrategyType: 'debit_spread' });
+    await put('/api/autotrade/config', { accountEquityUsd: 20_000 });
+
+    const final = (await getJson('/api/autotrade/config')) as {
+      optionsStrategyType: string;
+      accountEquityUsd: number;
+    };
+    expect(final.optionsStrategyType).toBe('debit_spread');
+    expect(final.accountEquityUsd).toBe(20_000);
+  });
+
+  it("accepts optionsStrategyType: 'auto' through the route's Zod schema (IV-rank-adaptive, 2026-07-18)", async () => {
+    await put('/api/autotrade/config', { optionsStrategyType: 'auto' });
+
+    const final = (await getJson('/api/autotrade/config')) as { optionsStrategyType: string };
+    expect(final.optionsStrategyType).toBe('auto');
+  });
+
+  it('persists tradeDirection and survives an unrelated save, mirroring optionsStrategyType', async () => {
+    await put('/api/autotrade/config', { tradeDirection: 'both' });
+    await put('/api/autotrade/config', { accountEquityUsd: 20_000 });
+
+    const final = (await getJson('/api/autotrade/config')) as {
+      tradeDirection: string;
+      accountEquityUsd: number;
+    };
+    expect(final.tradeDirection).toBe('both');
+    expect(final.accountEquityUsd).toBe(20_000);
+  });
+
+  it('persists the risk-check parameters (formerly the riskProfile preset table) and survives an unrelated save', async () => {
+    await put('/api/autotrade/config', {
+      riskPerTradePct: 1.5,
+      maxDailyDrawdownPct: 5,
+      stepDownAfterLosses: 3,
+      stepDownSizeCutPct: 25,
+      maxAggregateOpenRiskPct: 4.5,
+      maxCorrelatedExposurePct: 10,
+      maxTradesPerDay: 10,
+    });
+    await put('/api/autotrade/config', { accountEquityUsd: 30_000 });
+
+    const final = (await getJson('/api/autotrade/config')) as {
+      riskPerTradePct: number;
+      maxDailyDrawdownPct: number;
+      stepDownAfterLosses: number;
+      stepDownSizeCutPct: number;
+      maxAggregateOpenRiskPct: number;
+      maxCorrelatedExposurePct: number;
+      maxTradesPerDay: number;
+      accountEquityUsd: number;
+    };
+    expect(final).toMatchObject({
+      riskPerTradePct: 1.5,
+      maxDailyDrawdownPct: 5,
+      stepDownAfterLosses: 3,
+      stepDownSizeCutPct: 25,
+      maxAggregateOpenRiskPct: 4.5,
+      maxCorrelatedExposurePct: 10,
+      maxTradesPerDay: 10,
+      accountEquityUsd: 30_000,
+    });
+  });
+
+  it('persists the screening/decision thresholds (formerly hardcoded constants) and survives an unrelated save', async () => {
+    await put('/api/autotrade/config', {
+      minRelVol: 3,
+      maxTickerAtrPct: 25,
+      maxMarketAtrPct: 8,
+      stopAtrMultiple: 2,
+      targetRMultiple: 3,
+      maxHoldDays: 10,
+      breakevenTriggerRMultiple: 1,
+      trailStartRMultiple: 1.5,
+      trailStopRMultiple: 0.5,
+      partialExitRMultiple: 2,
+      partialExitPct: 75,
+      earningsBlackoutDays: 3,
+      macroEventBlackoutHours: 6,
+      sessionBufferMinutes: 30,
+      correlationLookbackDays: 45,
+      correlationThreshold: 0.6,
+    });
+    await put('/api/autotrade/config', { accountEquityUsd: 30_000 });
+
+    const final = (await getJson('/api/autotrade/config')) as {
+      minRelVol: number;
+      maxTickerAtrPct: number;
+      maxMarketAtrPct: number;
+      stopAtrMultiple: number;
+      targetRMultiple: number;
+      maxHoldDays: number;
+      breakevenTriggerRMultiple: number;
+      trailStartRMultiple: number;
+      trailStopRMultiple: number;
+      partialExitRMultiple: number;
+      partialExitPct: number;
+      earningsBlackoutDays: number;
+      macroEventBlackoutHours: number;
+      sessionBufferMinutes: number;
+      correlationLookbackDays: number;
+      correlationThreshold: number;
+      accountEquityUsd: number;
+    };
+    expect(final).toMatchObject({
+      minRelVol: 3,
+      maxTickerAtrPct: 25,
+      maxMarketAtrPct: 8,
+      stopAtrMultiple: 2,
+      targetRMultiple: 3,
+      maxHoldDays: 10,
+      breakevenTriggerRMultiple: 1,
+      trailStartRMultiple: 1.5,
+      trailStopRMultiple: 0.5,
+      partialExitRMultiple: 2,
+      partialExitPct: 75,
+      earningsBlackoutDays: 3,
+      macroEventBlackoutHours: 6,
+      sessionBufferMinutes: 30,
+      correlationLookbackDays: 45,
+      correlationThreshold: 0.6,
+      accountEquityUsd: 30_000,
+    });
+  });
+
+  it('persists the auto-tune-from-realized-edge settings and survives an unrelated save', async () => {
+    await put('/api/autotrade/config', {
+      autoTuneEnabled: true,
+      autoTuneMinTrades: 15,
+      autoTuneMaxStepPct: 1,
+      autoTuneSlippageExcludePct: 3,
+    });
+    await put('/api/autotrade/config', { accountEquityUsd: 30_000 });
+
+    const final = (await getJson('/api/autotrade/config')) as {
+      autoTuneEnabled: boolean;
+      autoTuneMinTrades: number;
+      autoTuneMaxStepPct: number;
+      autoTuneSlippageExcludePct: number;
+      accountEquityUsd: number;
+    };
+    expect(final).toMatchObject({
+      autoTuneEnabled: true,
+      autoTuneMinTrades: 15,
+      autoTuneMaxStepPct: 1,
+      autoTuneSlippageExcludePct: 3,
+      accountEquityUsd: 30_000,
+    });
+  });
+
+  it('accountEquityUsd: null still explicitly clears it, distinct from omitting the field entirely', async () => {
+    await put('/api/autotrade/config', { enabled: true, accountEquityUsd: 50_000 });
+    const cleared = await put('/api/autotrade/config', { accountEquityUsd: null });
+    expect((await cleared.json()) as { accountEquityUsd: number | null; enabled: boolean }).toMatchObject({
+      accountEquityUsd: null,
+      enabled: true, // still untouched — only equity was explicitly cleared
+    });
+  });
+
+  it('POST /sync-equity fails cleanly with no liveAccountId configured', async () => {
+    const out = (await (await post('/api/autotrade/sync-equity', {})).json()) as { ok: boolean; error?: string };
+    expect(out.ok).toBe(false);
+    expect(out.error).toMatch(/liveAccountId/i);
+  });
+
+  it('POST /sync-equity is read-only and guarded when Webull is unconfigured, even with liveAccountId set', async () => {
+    await put('/api/autotrade/config', { liveAccountId: 'ACC1' });
+    const out = (await (await post('/api/autotrade/sync-equity', {})).json()) as {
+      ok: boolean;
+      accountId?: string;
+      error?: string;
+    };
+    expect(out.ok).toBe(false);
+    expect(out.accountId).toBe('ACC1');
+    expect(out.error).toMatch(/not configured/i);
+    // Unchanged — a failed sync never touches the persisted config.
+    expect((await getJson('/api/autotrade/config')) as { accountEquityUsd: number | null }).toMatchObject({
+      accountEquityUsd: null,
+    });
+  });
+
+  describe('tune-from-target routes', () => {
+    it('POST /tune/preview fails closed (400) when equity is unset', async () => {
+      const res = await post('/api/autotrade/tune/preview', { targetDailyGainPct: 5, basis: 'expected' });
+      expect(res.status).toBe(400);
+    });
+
+    it('POST /tune/preview returns a full patch + warnings once equity is set', async () => {
+      await put('/api/autotrade/config', { accountEquityUsd: 1000 });
+      const out = (await (
+        await post('/api/autotrade/tune/preview', { targetDailyGainPct: 5, basis: 'expected' })
+      ).json()) as {
+        band: string;
+        patch: { riskPerTradePct: number; liveMaxOrderUsd: number; riskProfile: string };
+        warnings: string[];
+      };
+      expect(out.band).toBe('moderate');
+      expect(out.patch.riskPerTradePct).toBeCloseTo(2.38, 1);
+      expect(out.patch.liveMaxOrderUsd).toBe(250); // 1000 * 0.25
+      // Preview alone must NOT persist anything — the config is untouched until
+      // the returned patch is applied through the ordinary PUT.
+      expect((await getJson('/api/autotrade/config')) as { riskPerTradePct: number }).toMatchObject({
+        riskPerTradePct: 1,
+      });
+    });
+
+    it('applying a preview patch through PUT /config actually persists it', async () => {
+      await put('/api/autotrade/config', { accountEquityUsd: 1000 });
+      const { patch } = (await (
+        await post('/api/autotrade/tune/preview', { targetDailyGainPct: 20, basis: 'expected' })
+      ).json()) as { patch: Record<string, unknown> };
+      // Aggressive band -> the patch carries riskProfile AGGRESSIVE, so the
+      // apply must include the confirmation the config route already enforces.
+      await put('/api/autotrade/config', { ...patch, confirmAggressive: true });
+      const final = (await getJson('/api/autotrade/config')) as { riskProfile: string; maxTradesPerDay: number };
+      expect(final.riskProfile).toBe('AGGRESSIVE');
+      expect(final.maxTradesPerDay).toBe(10);
+    });
+
+    it('every band shape the tuner emits is within the config route bounds (round-trips cleanly)', async () => {
+      await put('/api/autotrade/config', { accountEquityUsd: 1000 });
+      // conservative (2%), moderate (5%), aggressive (20%) — apply each preview
+      // and assert the route accepts it (200), catching any band value that
+      // falls outside the PUT's own Zod bounds.
+      for (const targetDailyGainPct of [2, 5, 20]) {
+        const { patch } = (await (
+          await post('/api/autotrade/tune/preview', { targetDailyGainPct, basis: 'expected' })
+        ).json()) as { patch: Record<string, unknown> };
+        const res = await put('/api/autotrade/config', { ...patch, confirmAggressive: true });
+        expect(res.status, `target ${targetDailyGainPct}% patch should be accepted`).toBe(200);
+      }
+    });
+
+    it('GET /tune/moderate returns the equity-scaled moderate baseline', async () => {
+      await put('/api/autotrade/config', { accountEquityUsd: 10000 });
+      const out = (await getJson('/api/autotrade/tune/moderate')) as {
+        patch: { riskPerTradePct: number; liveMaxOrderUsd: number; riskProfile: string };
+      };
+      expect(out.patch.riskPerTradePct).toBe(1);
+      expect(out.patch.liveMaxOrderUsd).toBe(2500); // 10000 * 0.25
+      expect(out.patch.riskProfile).toBe('MODERATE');
+    });
+  });
+
+  describe('Phase 8: live-trading enable gate', () => {
+    it('rejects enabling live trading with no confirmation phrase at all', async () => {
+      const res = await put('/api/autotrade/config', { liveAccountId: 'ACC1', liveTradingEnabled: true });
+      expect(res.status).toBe(400);
+      expect(await getJson('/api/autotrade/config')).toMatchObject({ liveTradingEnabled: false });
+    });
+
+    it('rejects enabling live trading with the wrong phrase', async () => {
+      const res = await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        confirmLiveTrading: 'yes please',
+      });
+      expect(res.status).toBe(400);
+      expect(await getJson('/api/autotrade/config')).toMatchObject({ liveTradingEnabled: false });
+    });
+
+    it('rejects enabling live trading with no liveAccountId on file, even with the right phrase', async () => {
+      const res = await put('/api/autotrade/config', {
+        liveTradingEnabled: true,
+        confirmLiveTrading: 'ENABLE LIVE TRADING',
+      });
+      expect(res.status).toBe(400);
+      expect(await getJson('/api/autotrade/config')).toMatchObject({ liveTradingEnabled: false });
+    });
+
+    it('accepts the correct phrase (case/whitespace-insensitive) plus an account, and stamps liveEnabledAt', async () => {
+      const before = Date.now();
+      const res = await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        confirmLiveTrading: '  enable live trading  ',
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { liveTradingEnabled: boolean; liveEnabledAt: number | null };
+      expect(body.liveTradingEnabled).toBe(true);
+      expect(body.liveEnabledAt).not.toBeNull();
+      expect(body.liveEnabledAt as number).toBeGreaterThanOrEqual(before);
+    });
+
+    it('does not require the phrase to turn live trading back off', async () => {
+      await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        confirmLiveTrading: 'ENABLE LIVE TRADING',
+      });
+      const res = await put('/api/autotrade/config', { liveTradingEnabled: false });
+      expect(res.status).toBe(200);
+      expect((await res.json()) as { liveTradingEnabled: boolean }).toMatchObject({ liveTradingEnabled: false });
+    });
+
+    it('does not re-require the phrase for an unrelated save while already enabled', async () => {
+      await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        confirmLiveTrading: 'ENABLE LIVE TRADING',
+      });
+      const res = await put('/api/autotrade/config', { liveMaxOrderUsd: 750 });
+      expect(res.status).toBe(200);
+      expect((await res.json()) as { liveTradingEnabled: boolean; liveMaxOrderUsd: number }).toMatchObject({
+        liveTradingEnabled: true,
+        liveMaxOrderUsd: 750,
+      });
+    });
+
+    it('an unrelated save does not reset liveAccountId or the live caps to their defaults', async () => {
+      await put('/api/autotrade/config', { liveAccountId: 'ACC1', liveMaxOrderUsd: 900 });
+      await put('/api/autotrade/config', { enabled: true });
+      const final = (await getJson('/api/autotrade/config')) as { liveAccountId: string; liveMaxOrderUsd: number };
+      expect(final.liveAccountId).toBe('ACC1');
+      expect(final.liveMaxOrderUsd).toBe(900);
+    });
+
+    describe('re-confirmation required to change the live account while already enabled', () => {
+      // An adversarial review caught that this route originally let
+      // liveAccountId be changed to a DIFFERENT value with no re-confirmation
+      // at all once already enabled — silently redirecting real orders to a
+      // different broker account.
+      beforeEach(async () => {
+        await put('/api/autotrade/config', {
+          liveAccountId: 'ACC1',
+          liveTradingEnabled: true,
+          confirmLiveTrading: 'ENABLE LIVE TRADING',
+        });
+      });
+
+      it('rejects switching to a different account with no confirmation phrase', async () => {
+        const res = await put('/api/autotrade/config', { liveAccountId: 'ACC2' });
+        expect(res.status).toBe(400);
+        expect(await getJson('/api/autotrade/config')).toMatchObject({ liveAccountId: 'ACC1' }); // unchanged
+      });
+
+      it('accepts switching to a different account WITH the confirmation phrase', async () => {
+        const res = await put('/api/autotrade/config', {
+          liveAccountId: 'ACC2',
+          confirmLiveTrading: 'ENABLE LIVE TRADING',
+        });
+        expect(res.status).toBe(200);
+        expect(await getJson('/api/autotrade/config')).toMatchObject({
+          liveAccountId: 'ACC2',
+          liveTradingEnabled: true,
+        });
+      });
+
+      it('does not require confirmation to re-send the SAME account id (a no-op resend)', async () => {
+        const res = await put('/api/autotrade/config', { liveAccountId: 'ACC1' });
+        expect(res.status).toBe(200);
+        expect(await getJson('/api/autotrade/config')).toMatchObject({ liveAccountId: 'ACC1' });
+      });
+
+      it('rejects clearing the account (null) while remaining enabled, even with the confirmation phrase', async () => {
+        const res = await put('/api/autotrade/config', {
+          liveAccountId: null,
+          confirmLiveTrading: 'ENABLE LIVE TRADING',
+        });
+        expect(res.status).toBe(400);
+        expect(await getJson('/api/autotrade/config')).toMatchObject({ liveAccountId: 'ACC1' }); // unchanged
+      });
+
+      it('allows changing the account with no confirmation when the SAME request also disables live trading', async () => {
+        const res = await put('/api/autotrade/config', { liveAccountId: 'ACC2', liveTradingEnabled: false });
+        expect(res.status).toBe(200);
+        expect(await getJson('/api/autotrade/config')).toMatchObject({
+          liveAccountId: 'ACC2',
+          liveTradingEnabled: false,
+        });
+      });
+    });
+  });
+
+  describe('Task #70: live options trading enable gate', () => {
+    it('rejects enabling live options trading while live trading itself is off', async () => {
+      const res = await put('/api/autotrade/config', { liveOptionsEnabled: true });
+      expect(res.status).toBe(400);
+      expect(await getJson('/api/autotrade/config')).toMatchObject({ liveOptionsEnabled: false });
+    });
+
+    it('accepts enabling live options trading once live trading is already on, with no separate confirmation phrase', async () => {
+      await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        confirmLiveTrading: 'ENABLE LIVE TRADING',
+      });
+      const res = await put('/api/autotrade/config', { liveOptionsEnabled: true });
+      expect(res.status).toBe(200);
+      expect((await res.json()) as { liveOptionsEnabled: boolean }).toMatchObject({ liveOptionsEnabled: true });
+    });
+
+    it('accepts enabling both live trading and live options trading in the SAME request', async () => {
+      const before = Date.now();
+      const res = await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        liveOptionsEnabled: true,
+        confirmLiveTrading: 'ENABLE LIVE TRADING',
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        liveTradingEnabled: boolean;
+        liveOptionsEnabled: boolean;
+        liveOptionsEnabledAt: number | null;
+      };
+      expect(body).toMatchObject({ liveTradingEnabled: true, liveOptionsEnabled: true });
+      expect(body.liveOptionsEnabledAt).not.toBeNull();
+      expect(body.liveOptionsEnabledAt as number).toBeGreaterThanOrEqual(before);
+    });
+
+    it('stamps liveOptionsEnabledAt independently of liveEnabledAt', async () => {
+      await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        confirmLiveTrading: 'ENABLE LIVE TRADING',
+      });
+      const afterMaster = (await getJson('/api/autotrade/config')) as { liveEnabledAt: number };
+      const res = await put('/api/autotrade/config', { liveOptionsEnabled: true });
+      const body = (await res.json()) as { liveEnabledAt: number; liveOptionsEnabledAt: number };
+      expect(body.liveEnabledAt).toBe(afterMaster.liveEnabledAt); // untouched by the options-only save
+      expect(body.liveOptionsEnabledAt).toBeGreaterThanOrEqual(afterMaster.liveEnabledAt);
+    });
+
+    it('does not require confirmation to turn live options trading back off', async () => {
+      await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        liveOptionsEnabled: true,
+        confirmLiveTrading: 'ENABLE LIVE TRADING',
+      });
+      const res = await put('/api/autotrade/config', { liveOptionsEnabled: false });
+      expect(res.status).toBe(200);
+      expect((await res.json()) as { liveOptionsEnabled: boolean }).toMatchObject({ liveOptionsEnabled: false });
+    });
+
+    it('an unrelated save does not reset liveOptionsEnabled or its dedicated caps to their defaults', async () => {
+      await put('/api/autotrade/config', {
+        liveAccountId: 'ACC1',
+        liveTradingEnabled: true,
+        liveOptionsEnabled: true,
+        confirmLiveTrading: 'ENABLE LIVE TRADING',
+      });
+      await put('/api/autotrade/config', { liveOptionsMaxOrderUsd: 650 });
+      const final = (await getJson('/api/autotrade/config')) as {
+        liveOptionsEnabled: boolean;
+        liveOptionsMaxOrderUsd: number;
+      };
+      expect(final.liveOptionsEnabled).toBe(true);
+      expect(final.liveOptionsMaxOrderUsd).toBe(650);
+    });
+
+    it('leaving live trading off while sending liveOptionsEnabled: false is a harmless no-op, not an error', async () => {
+      const res = await put('/api/autotrade/config', { liveOptionsEnabled: false });
+      expect(res.status).toBe(200);
+    });
+  });
+
+  it('GET /live-caps/suggest fails closed (400) when account equity is not set', async () => {
+    const res = await fetch(`${base}/api/autotrade/live-caps/suggest`);
+    expect(res.status).toBe(400);
+  });
+
+  it('GET /live-caps/suggest derives caps from equity and the configured drawdown/trade-count fields', async () => {
+    await put('/api/autotrade/config', {
+      accountEquityUsd: 100_000,
+      maxDailyDrawdownPct: 5,
+      maxTradesPerDay: 10,
+    });
+    const res = await fetch(`${base}/api/autotrade/live-caps/suggest`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      liveMaxOrderUsd: number;
+      liveMaxDailyLossUsd: number;
+      liveMaxOrdersPerDay: number;
+    };
+    expect(body).toEqual({ liveMaxOrderUsd: 25_000, liveMaxDailyLossUsd: 5_000, liveMaxOrdersPerDay: 10 });
+  });
+});
+
+describe('autotrade macro-events routes (integration)', () => {
+  beforeEach(() => db.exec('DELETE FROM macro_events'));
+
+  it('GET starts empty', async () => {
+    const body = (await getJson('/api/autotrade/macro-events')) as { events: unknown[] };
+    expect(body.events).toEqual([]);
+  });
+
+  it('POSTs a new event and lists it', async () => {
+    const eventAt = Date.parse('2026-09-16T18:00:00Z');
+    const created = await post('/api/autotrade/macro-events', { label: 'FOMC decision', eventAt });
+    expect(created.status).toBe(201);
+    const record = (await created.json()) as { id: number; label: string; eventAt: number };
+    expect(record).toMatchObject({ label: 'FOMC decision', eventAt });
+
+    const list = (await getJson('/api/autotrade/macro-events')) as { events: { label: string }[] };
+    expect(list.events.map((e) => e.label)).toEqual(['FOMC decision']);
+  });
+
+  it('rejects a missing label or non-numeric eventAt with 400', async () => {
+    expect((await post('/api/autotrade/macro-events', { eventAt: Date.now() })).status).toBe(400);
+    expect((await post('/api/autotrade/macro-events', { label: 'FOMC' })).status).toBe(400);
+  });
+
+  it('DELETEs an event by id, and 404s for an unknown id', async () => {
+    const created = await post('/api/autotrade/macro-events', { label: 'CPI release', eventAt: Date.now() });
+    const { id } = (await created.json()) as { id: number };
+
+    const del = await fetch(`${base}/api/autotrade/macro-events/${id}`, { method: 'DELETE' });
+    expect(del.status).toBe(200);
+    expect((await getJson('/api/autotrade/macro-events')) as { events: unknown[] }).toEqual({ events: [] });
+
+    const missing = await fetch(`${base}/api/autotrade/macro-events/${id}`, { method: 'DELETE' });
+    expect(missing.status).toBe(404);
+  });
+});
+
+describe('autotrade options risk-check route (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_config; DELETE FROM autotrade_events;');
+    setAutotradeConfig({ accountEquityUsd: 100_000, riskProfile: 'MODERATE' });
+  });
+
+  it('accepts a single_leg signal body (kind discriminant) and sizes by premium', async () => {
+    const res = await post('/api/autotrade/risk-check-options', {
+      signals: [
+        {
+          kind: 'single_leg',
+          symbol: 'AAPL',
+          side: 'call',
+          contractSymbol: 'AAPL-fixture',
+          strike: 100,
+          expiration: '2024-06-21',
+          dte: 21,
+          premium: 3,
+          delta: 0.45,
+          ivRank: 50,
+          maxLossPerContract: 300,
+          rationale: 'fixture',
+          score: 70,
+        },
+      ],
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { results: { ok: boolean; sizing: { suggestedQuantity: number } }[] };
+    expect(body.results[0].ok).toBe(true);
+    expect(body.results[0].sizing.suggestedQuantity).toBe(3); // 1% of $100k / $300 per contract
+  });
+
+  it('accepts a debit_spread signal body (kind discriminant) and sizes by max loss per spread', async () => {
+    const res = await post('/api/autotrade/risk-check-options', {
+      signals: [
+        {
+          kind: 'debit_spread',
+          symbol: 'AAPL',
+          side: 'call',
+          expiration: '2024-06-21',
+          dte: 21,
+          ivRank: 50,
+          longContractSymbol: 'AAPL-long',
+          longStrike: 100,
+          longPremium: 3,
+          longDelta: 0.45,
+          shortContractSymbol: 'AAPL-short',
+          shortStrike: 110,
+          shortPremium: 1,
+          shortDelta: 0.2,
+          width: 10,
+          netDebit: 2,
+          maxLossPerContract: 200,
+          maxProfitPerContract: 800,
+          rationale: 'fixture',
+          score: 70,
+        },
+      ],
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { results: { ok: boolean; sizing: { suggestedContracts: number } }[] };
+    expect(body.results[0].ok).toBe(true);
+    expect(body.results[0].sizing.suggestedContracts).toBe(5); // 1% of $100k / $200 max loss per spread
+  });
+
+  it('rejects a signal body with no kind discriminant at all', async () => {
+    const res = await post('/api/autotrade/risk-check-options', {
+      signals: [{ symbol: 'AAPL', side: 'call', score: 70 }],
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a debit_spread body missing spread-only fields (e.g. shortStrike)', async () => {
+    const res = await post('/api/autotrade/risk-check-options', {
+      signals: [
+        {
+          kind: 'debit_spread',
+          symbol: 'AAPL',
+          side: 'call',
+          expiration: '2024-06-21',
+          dte: 21,
+          ivRank: 50,
+          longContractSymbol: 'AAPL-long',
+          longStrike: 100,
+          longPremium: 3,
+          longDelta: 0.45,
+          // shortContractSymbol/shortStrike/etc. deliberately omitted
+          width: 10,
+          netDebit: 2,
+          maxLossPerContract: 200,
+          maxProfitPerContract: 800,
+          rationale: 'fixture',
+          score: 70,
+        },
+      ],
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('autotrade backtest routes (integration)', () => {
+  // VNQ is on the default real-estate exclusion list (server/data/reExclusions.json),
+  // so it's excluded before runBacktest ever fetches history or hits the network —
+  // safe to exercise the real route end to end without mocking Polygon/Yahoo.
+  const baseBody = {
+    symbols: ['VNQ'],
+    from: '2024-01-01',
+    to: '2024-03-01',
+    riskProfile: 'MODERATE',
+    startingEquity: 100_000,
+    maxConcurrentPositions: 2,
+  };
+
+  it('runs a plain backtest and reports the real-estate exclusion, with no trades', async () => {
+    const res = await post('/api/autotrade/backtest', baseBody);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      report: { trades: unknown[]; excludedSymbols: { symbol: string }[] };
+      stats: { totalTrades: number };
+    };
+    expect(body.report.excludedSymbols).toEqual([{ symbol: 'VNQ', reason: 'On the real-estate exclusion list' }]);
+    expect(body.report.trades).toEqual([]);
+    expect(body.stats.totalTrades).toBe(0);
+  });
+
+  it('rejects a backtest request where to is before from', async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, from: '2024-03-01', to: '2024-01-01' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a backtest request spanning more than 3 years', async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, from: '2020-01-01', to: '2024-01-01' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/cannot exceed/i);
+  });
+
+  it('accepts a backtest request spanning exactly 3 years', async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, from: '2021-01-01', to: '2024-01-01' });
+    expect(res.status).toBe(200);
+  });
+
+  it("accepts a valid directionMode ('both')", async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, directionMode: 'both' });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects an invalid directionMode', async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, directionMode: 'sideways' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a backtest request with an empty symbols list', async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, symbols: [] });
+    expect(res.status).toBe(400);
+  });
+
+  it('runs a walk-forward split and reports both windows with the exclusion applied to each', async () => {
+    const res = await post('/api/autotrade/backtest/walk-forward', { ...baseBody, splitDate: '2024-02-01' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      inSample: {
+        report: { excludedSymbols: { symbol: string }[] };
+        stats: { totalTrades: number };
+        significance: { sampleSize: number; pValue: number | null; reliable: boolean };
+      };
+      outOfSample: {
+        report: { excludedSymbols: { symbol: string }[] };
+        stats: { totalTrades: number };
+        significance: { sampleSize: number; pValue: number | null; reliable: boolean };
+      };
+      excludedSymbols: { symbol: string }[];
+    };
+    expect(body.excludedSymbols).toEqual([{ symbol: 'VNQ', reason: 'On the real-estate exclusion list' }]);
+    expect(body.inSample.stats.totalTrades).toBe(0);
+    expect(body.outOfSample.stats.totalTrades).toBe(0);
+    // No trades (VNQ is excluded pre-fetch) -> significance comes back
+    // all-null/not-reliable rather than a fabricated number.
+    expect(body.inSample.significance).toEqual({
+      sampleSize: 0,
+      expectancy: null,
+      ciLow: null,
+      ciHigh: null,
+      pValue: null,
+      resamples: 0,
+      reliable: false,
+    });
+    expect(body.outOfSample.significance).toEqual(body.inSample.significance);
+  });
+
+  it('rejects a walk-forward request when splitDate is not between from and to', async () => {
+    const beforeFrom = await post('/api/autotrade/backtest/walk-forward', { ...baseBody, splitDate: '2023-12-01' });
+    expect(beforeFrom.status).toBe(400);
+    const atOrAfterTo = await post('/api/autotrade/backtest/walk-forward', { ...baseBody, splitDate: '2024-03-01' });
+    expect(atOrAfterTo.status).toBe(400);
+  });
+
+  it('rejects a walk-forward request missing splitDate', async () => {
+    const res = await post('/api/autotrade/backtest/walk-forward', baseBody);
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a structurally-invalid calendar date with 400, not a 500 crash', async () => {
+    // Regex-shaped but not a real date (month 00) — used to reach addDays()/
+    // toISO()'s `new Date(NaN).toISOString()`, an uncaught RangeError -> 500.
+    const res = await post('/api/autotrade/backtest', { ...baseBody, from: '2024-00-00' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/valid calendar date/i);
+  });
+
+  it('rejects a calendar-overflow date (Feb 30) with 400 instead of silently rolling to March 1', async () => {
+    const res = await post('/api/autotrade/backtest', { ...baseBody, to: '2024-02-30' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects more than 50 symbols', async () => {
+    const symbols = Array.from({ length: 51 }, (_, i) => `SYM${i}`);
+    const res = await post('/api/autotrade/backtest', { ...baseBody, symbols });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('autotrade options backtest routes (integration)', () => {
+  // Same VNQ real-estate-exclusion trick as the equity backtest routes above
+  // — excluded before runOptionsBacktest ever fetches equity bars OR option
+  // contract reference data, so this exercises the real route end to end
+  // without mocking Polygon/Yahoo.
+  const baseBody = {
+    symbols: ['VNQ'],
+    from: '2024-01-01',
+    to: '2024-03-01',
+    riskProfile: 'MODERATE',
+    startingEquity: 100_000,
+    maxConcurrentPositions: 2,
+  };
+
+  it('runs a plain options backtest and reports the real-estate exclusion, with no trades', async () => {
+    const res = await post('/api/autotrade/backtest-options', baseBody);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      report: { trades: unknown[]; excludedSymbols: { symbol: string }[] };
+      stats: { totalTrades: number };
+    };
+    expect(body.report.excludedSymbols).toEqual([{ symbol: 'VNQ', reason: 'On the real-estate exclusion list' }]);
+    expect(body.report.trades).toEqual([]);
+    expect(body.stats.totalTrades).toBe(0);
+  });
+
+  it('rejects an options backtest request where to is before from', async () => {
+    const res = await post('/api/autotrade/backtest-options', { ...baseBody, from: '2024-03-01', to: '2024-01-01' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an options backtest request spanning more than 3 years', async () => {
+    const res = await post('/api/autotrade/backtest-options', { ...baseBody, from: '2020-01-01', to: '2024-01-01' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/cannot exceed/i);
+  });
+
+  it('rejects an options backtest request with an empty symbols list', async () => {
+    const res = await post('/api/autotrade/backtest-options', { ...baseBody, symbols: [] });
+    expect(res.status).toBe(400);
+  });
+
+  it('runs an options walk-forward split and reports both windows with the exclusion applied to each', async () => {
+    const res = await post('/api/autotrade/backtest-options/walk-forward', { ...baseBody, splitDate: '2024-02-01' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      inSample: {
+        report: { excludedSymbols: { symbol: string }[] };
+        stats: { totalTrades: number };
+        significance: { sampleSize: number; reliable: boolean };
+      };
+      outOfSample: {
+        report: { excludedSymbols: { symbol: string }[] };
+        stats: { totalTrades: number };
+        significance: { sampleSize: number; reliable: boolean };
+      };
+      excludedSymbols: { symbol: string }[];
+    };
+    expect(body.excludedSymbols).toEqual([{ symbol: 'VNQ', reason: 'On the real-estate exclusion list' }]);
+    expect(body.inSample.stats.totalTrades).toBe(0);
+    expect(body.outOfSample.stats.totalTrades).toBe(0);
+    expect(body.inSample.significance).toEqual(expect.objectContaining({ sampleSize: 0, reliable: false }));
+    expect(body.outOfSample.significance).toEqual(expect.objectContaining({ sampleSize: 0, reliable: false }));
+  });
+
+  it('rejects an options walk-forward request when splitDate is not between from and to', async () => {
+    const beforeFrom = await post('/api/autotrade/backtest-options/walk-forward', {
+      ...baseBody,
+      splitDate: '2023-12-01',
+    });
+    expect(beforeFrom.status).toBe(400);
+    const atOrAfterTo = await post('/api/autotrade/backtest-options/walk-forward', {
+      ...baseBody,
+      splitDate: '2024-03-01',
+    });
+    expect(atOrAfterTo.status).toBe(400);
+  });
+
+  it('rejects a structurally-invalid calendar date with 400, not a 500 crash', async () => {
+    const res = await post('/api/autotrade/backtest-options', { ...baseBody, from: '2024-00-00' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/valid calendar date/i);
+  });
+
+  it('rejects more than 50 symbols', async () => {
+    const symbols = Array.from({ length: 51 }, (_, i) => `SYM${i}`);
+    const res = await post('/api/autotrade/backtest-options', { ...baseBody, symbols });
+    expect(res.status).toBe(400);
+  });
+
+  it("accepts a valid directionMode ('both')", async () => {
+    const res = await post('/api/autotrade/backtest-options', { ...baseBody, directionMode: 'both' });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects an invalid directionMode', async () => {
+    const res = await post('/api/autotrade/backtest-options', { ...baseBody, directionMode: 'sideways' });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('autotrade combined backtest routes (integration)', () => {
+  // Same VNQ real-estate-exclusion trick as the other two backtest route
+  // groups — excluded before runCombinedBacktest ever fetches equity bars OR
+  // option contract reference data, so this exercises the real route end to
+  // end without mocking Polygon/Yahoo.
+  const baseBody = {
+    symbols: ['VNQ'],
+    from: '2024-01-01',
+    to: '2024-03-01',
+    riskProfile: 'MODERATE',
+    startingEquity: 100_000,
+    maxConcurrentPositions: 2,
+  };
+
+  it('runs a plain combined backtest and reports the real-estate exclusion, with no trades in either book', async () => {
+    const res = await post('/api/autotrade/backtest-combined', baseBody);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      report: { equityTrades: unknown[]; optionsTrades: unknown[]; excludedSymbols: { symbol: string }[] };
+      stats: { totalTrades: number };
+    };
+    expect(body.report.excludedSymbols).toEqual([{ symbol: 'VNQ', reason: 'On the real-estate exclusion list' }]);
+    expect(body.report.equityTrades).toEqual([]);
+    expect(body.report.optionsTrades).toEqual([]);
+    expect(body.stats.totalTrades).toBe(0);
+  });
+
+  it('rejects a combined backtest request where to is before from', async () => {
+    const res = await post('/api/autotrade/backtest-combined', { ...baseBody, from: '2024-03-01', to: '2024-01-01' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a combined backtest request spanning more than 3 years', async () => {
+    const res = await post('/api/autotrade/backtest-combined', { ...baseBody, from: '2020-01-01', to: '2024-01-01' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/cannot exceed/i);
+  });
+
+  it('rejects a combined backtest request with an empty symbols list', async () => {
+    const res = await post('/api/autotrade/backtest-combined', { ...baseBody, symbols: [] });
+    expect(res.status).toBe(400);
+  });
+
+  it('runs a combined walk-forward split and reports both windows with the exclusion applied to each', async () => {
+    const res = await post('/api/autotrade/backtest-combined/walk-forward', { ...baseBody, splitDate: '2024-02-01' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      inSample: {
+        report: { excludedSymbols: { symbol: string }[] };
+        stats: { totalTrades: number };
+        significance: { sampleSize: number; reliable: boolean };
+      };
+      outOfSample: {
+        report: { excludedSymbols: { symbol: string }[] };
+        stats: { totalTrades: number };
+        significance: { sampleSize: number; reliable: boolean };
+      };
+      excludedSymbols: { symbol: string }[];
+    };
+    expect(body.excludedSymbols).toEqual([{ symbol: 'VNQ', reason: 'On the real-estate exclusion list' }]);
+    expect(body.inSample.stats.totalTrades).toBe(0);
+    expect(body.outOfSample.stats.totalTrades).toBe(0);
+    expect(body.inSample.significance).toEqual(expect.objectContaining({ sampleSize: 0, reliable: false }));
+    expect(body.outOfSample.significance).toEqual(expect.objectContaining({ sampleSize: 0, reliable: false }));
+  });
+
+  it('rejects a combined walk-forward request when splitDate is not between from and to', async () => {
+    const beforeFrom = await post('/api/autotrade/backtest-combined/walk-forward', {
+      ...baseBody,
+      splitDate: '2023-12-01',
+    });
+    expect(beforeFrom.status).toBe(400);
+    const atOrAfterTo = await post('/api/autotrade/backtest-combined/walk-forward', {
+      ...baseBody,
+      splitDate: '2024-03-01',
+    });
+    expect(atOrAfterTo.status).toBe(400);
+  });
+
+  it('rejects a structurally-invalid calendar date with 400, not a 500 crash', async () => {
+    const res = await post('/api/autotrade/backtest-combined', { ...baseBody, from: '2024-00-00' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/valid calendar date/i);
+  });
+
+  it('rejects more than 50 symbols', async () => {
+    const symbols = Array.from({ length: 51 }, (_, i) => `SYM${i}`);
+    const res = await post('/api/autotrade/backtest-combined', { ...baseBody, symbols });
+    expect(res.status).toBe(400);
+  });
+
+  it("accepts a valid directionMode ('both')", async () => {
+    const res = await post('/api/autotrade/backtest-combined', { ...baseBody, directionMode: 'both' });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects an invalid directionMode', async () => {
+    const res = await post('/api/autotrade/backtest-combined', { ...baseBody, directionMode: 'sideways' });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('autotrade paper execution routes (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events;');
+    // runAutotradeLoopTick (Phase 7) gates new entries on autotrade_config.enabled
+    // (and the kill switch) — arm it here so this test still exercises the real
+    // Screen -> Decision -> Execution wiring end-to-end, not just the
+    // always-runs exits path.
+    setAutotradeConfig({ enabled: true });
+  });
+
+  it('runs one loop cycle through the real Screen -> Decision -> Execution wiring and returns a summary', async () => {
+    // Nothing is open yet, so exits are deterministically zero regardless of
+    // whatever the real wall-clock session-window state happens to be right
+    // now (already covered, with full control, by autotradeLoop.test.ts).
+    const res = await post('/api/autotrade/loop/run-once', {});
+    expect(res.status).toBe(200);
+    const summary = (await res.json()) as {
+      exitsChecked: number;
+      exitsClosed: number;
+      ranEntries: boolean;
+      candidatesScreened: number;
+    };
+    expect(summary.exitsChecked).toBe(0);
+    expect(summary.exitsClosed).toBe(0);
+    expect(typeof summary.ranEntries).toBe('boolean');
+  });
+
+  it('lists paper positions (empty when none exist)', async () => {
+    const body = (await getJson('/api/autotrade/paper-positions')) as { positions: unknown[] };
+    expect(body.positions).toEqual([]);
+  });
+
+  it('enriches an OPEN position with a live quote and unrealized P&L, leaving a closed one alone', async () => {
+    const open = openPaperPosition({
+      symbol: 'AAPL',
+      side: 'buy',
+      quantity: 10,
+      entryPrice: 1, // far below any real/mock quote, so unrealizedPnl is unambiguously positive
+      stopPrice: 0.5,
+      targetPrice: 100_000, // effectively unreachable — stays open for this test
+      riskAmount: 5,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    const closed = openPaperPosition({
+      symbol: 'MSFT',
+      side: 'buy',
+      quantity: 5,
+      entryPrice: 50,
+      stopPrice: 45,
+      targetPrice: 60,
+      riskAmount: 25,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    db.prepare(
+      "UPDATE autotrade_paper_positions SET status='closed', exit_price=55, exit_at=?, exit_reason='target' WHERE id=?",
+    ).run(Date.now(), closed.id);
+
+    const liveQuote = await getProvider().getQuote('AAPL');
+    const body = (await getJson('/api/autotrade/paper-positions')) as {
+      positions: { id: number; symbol: string; currentPrice: number | null; unrealizedPnl: number | null }[];
+    };
+
+    const openRow = body.positions.find((p) => p.id === open.id)!;
+    expect(openRow.currentPrice).toBe(liveQuote.last);
+    expect(openRow.unrealizedPnl).toBeCloseTo((liveQuote.last - 1) * 10, 2);
+
+    const closedRow = body.positions.find((p) => p.id === closed.id)!;
+    expect(closedRow.currentPrice).toBeNull();
+    expect(closedRow.unrealizedPnl).toBeNull();
+  });
+
+  it('rejects an invalid status filter', async () => {
+    const res = await fetch(`${base}/api/autotrade/paper-positions?status=bogus`);
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('autotrade options paper execution routes (integration)', () => {
+  beforeEach(() => {
+    db.exec(
+      'DELETE FROM autotrade_options_paper_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events;',
+    );
+  });
+
+  it('lists options paper positions (empty when none exist)', async () => {
+    const body = (await getJson('/api/autotrade/options-paper-positions')) as { positions: unknown[] };
+    expect(body.positions).toEqual([]);
+  });
+
+  it('enriches an OPEN position with a live contract mark and unrealized P&L, leaving a closed one alone', async () => {
+    const [expiration] = await getProvider().getOptionsExpirations('AAPL');
+    const chain = await getProvider().getOptionsChain('AAPL', expiration);
+    const contract = chain.calls[0];
+
+    const open = openOptionsPaperPosition({
+      symbol: 'AAPL',
+      side: 'call',
+      contractSymbol: contract.symbol,
+      strike: contract.strike,
+      expiration,
+      quantity: 2,
+      entryPrice: 0.01, // far below any real/mock mark, so unrealizedPnl is unambiguously positive
+      riskAmount: 2,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    const closed = openOptionsPaperPosition({
+      symbol: 'AAPL',
+      side: 'put',
+      contractSymbol: `${contract.symbol}-closed`,
+      strike: contract.strike,
+      expiration,
+      quantity: 1,
+      entryPrice: 1,
+      riskAmount: 100,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    db.prepare(
+      "UPDATE autotrade_options_paper_positions SET status='closed', exit_price=0.5, exit_at=?, exit_reason='time_exit' WHERE id=?",
+    ).run(Date.now(), closed.id);
+
+    const mark = contract.mark ?? contract.last!;
+    const body = (await getJson('/api/autotrade/options-paper-positions')) as {
+      positions: {
+        id: number;
+        symbol: string;
+        currentPrice: number | null;
+        underlyingPrice: number | null;
+        unrealizedPnl: number | null;
+      }[];
+    };
+
+    const openRow = body.positions.find((p) => p.id === open.id)!;
+    expect(openRow.currentPrice).toBe(mark);
+    expect(openRow.underlyingPrice).toBe(chain.underlyingPrice);
+    expect(openRow.unrealizedPnl).toBeCloseTo((mark - 0.01) * 2 * 100, 2);
+
+    const closedRow = body.positions.find((p) => p.id === closed.id)!;
+    expect(closedRow.currentPrice).toBeNull();
+    expect(closedRow.underlyingPrice).toBeNull();
+    expect(closedRow.unrealizedPnl).toBeNull();
+  });
+
+  it('rejects an invalid status filter', async () => {
+    const res = await fetch(`${base}/api/autotrade/options-paper-positions?status=bogus`);
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('autotrade live positions route (integration)', () => {
+  beforeEach(() => db.exec('DELETE FROM position_exits; DELETE FROM positions;'));
+
+  it('lists live positions (empty when none exist)', async () => {
+    const body = (await getJson('/api/autotrade/live-positions')) as { positions: unknown[] };
+    expect(body.positions).toEqual([]);
+  });
+
+  it('only returns positions tagged autotrade, ignoring a human-placed live position', async () => {
+    createPosition({
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-07-01',
+      tags: ['live', 'autotrade'],
+    });
+    createPosition({
+      assetType: 'stock',
+      symbol: 'MSFT',
+      side: 'long',
+      quantity: 5,
+      entryPrice: 200,
+      entryDate: '2026-07-01',
+      tags: ['live'], // human-placed — must not appear
+    });
+
+    const body = (await getJson('/api/autotrade/live-positions')) as { positions: { symbol: string }[] };
+    expect(body.positions.map((p) => p.symbol)).toEqual(['AAPL']);
+  });
+
+  it('enriches an OPEN position with a live quote and full P&L, leaving a closed one alone', async () => {
+    const open = createPosition({
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 1, // far below any real/mock quote, so unrealized P&L is unambiguously positive
+      entryDate: '2026-07-01',
+      tags: ['live', 'autotrade'],
+    });
+    const closed = createPosition({
+      assetType: 'stock',
+      symbol: 'MSFT',
+      side: 'long',
+      quantity: 5,
+      entryPrice: 50,
+      entryDate: '2026-06-01',
+      tags: ['live', 'autotrade'],
+    });
+    addExit(closed.id, { quantity: 5, exitPrice: 60, exitDate: '2026-06-05' });
+
+    const liveQuote = await getProvider().getQuote('AAPL');
+    const body = (await getJson('/api/autotrade/live-positions')) as {
+      positions: {
+        id: number;
+        symbol: string;
+        currentPrice: number | null;
+        pnl: { unrealizedPnl: number | null; realizedPnl: number };
+      }[];
+    };
+
+    const openRow = body.positions.find((p) => p.id === open.id)!;
+    expect(openRow.currentPrice).toBe(liveQuote.last);
+    expect(openRow.pnl.unrealizedPnl).toBeCloseTo((liveQuote.last - 1) * 10, 2);
+
+    // Unlike paper trading's routes, priceMap() (shared with the human
+    // Positions page) resolves a price for closed positions too — a closed
+    // position's own realized P&L (not currentPrice) is what matters here.
+    const closedRow = body.positions.find((p) => p.id === closed.id)!;
+    expect(closedRow.pnl.unrealizedPnl).toBe(0);
+    expect(closedRow.pnl.realizedPnl).toBe((60 - 50) * 5); // 50
+  });
+
+  it('rejects an invalid status filter', async () => {
+    const res = await fetch(`${base}/api/autotrade/live-positions?status=bogus`);
+    expect(res.status).toBe(400);
+  });
+});
+
+// closeLiveOptionsAutotradePosition() itself (intent building for single_leg
+// vs debit_spread, unconditional exitReason:'manual' registration) is covered
+// directly in closePosition.test.ts with mocked Webull calls — these are
+// route-layer-only: request validation and which positions the route even
+// lets through to it. Same "TRADING_ENABLED isn't set in this test process"
+// reasoning as the equity POST /positions/:id/close suite above — a real
+// options chain fetch (getOptionsExpirations/getOptionsChain) still needs to
+// succeed to reach that gate, so the fixture uses a REAL contract, same as
+// the options-paper-execution route suite above.
+describe('autotrade live options positions route (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_live_options_orders; DELETE FROM autotrade_live_options_positions;');
+  });
+
+  it('lists live options positions (empty when none exist)', async () => {
+    const body = (await getJson('/api/autotrade/live-options-positions')) as { positions: unknown[] };
+    expect(body.positions).toEqual([]);
+  });
+
+  it('enriches an OPEN position with a live contract mark, underlyingPrice, and unrealized P&L, leaving a closed one alone', async () => {
+    const [expiration] = await getProvider().getOptionsExpirations('AAPL');
+    const chain = await getProvider().getOptionsChain('AAPL', expiration);
+    const contract = chain.calls[0];
+
+    const open = createLiveOptionsPosition({
+      symbol: 'AAPL',
+      side: 'call',
+      contractSymbol: contract.symbol,
+      strike: contract.strike,
+      expiration,
+      quantity: 1,
+      entryPrice: 0.01, // far below any real/mock mark, so unrealizedPnl is unambiguously positive
+      riskAmount: 1,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    const closed = createLiveOptionsPosition({
+      symbol: 'AAPL',
+      side: 'put',
+      contractSymbol: `${contract.symbol}-closed`,
+      strike: contract.strike,
+      expiration,
+      quantity: 1,
+      entryPrice: 1,
+      riskAmount: 100,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    db.prepare(
+      "UPDATE autotrade_live_options_positions SET status='closed', exit_price=0.5, exit_at=?, exit_reason='manual' WHERE id=?",
+    ).run(Date.now(), closed.id);
+
+    const mark = contract.mark ?? contract.last!;
+    const body = (await getJson('/api/autotrade/live-options-positions')) as {
+      positions: {
+        id: number;
+        symbol: string;
+        currentPrice: number | null;
+        underlyingPrice: number | null;
+        unrealizedPnl: number | null;
+      }[];
+    };
+
+    const openRow = body.positions.find((p) => p.id === open.id)!;
+    expect(openRow.currentPrice).toBe(mark);
+    expect(openRow.underlyingPrice).toBe(chain.underlyingPrice);
+    expect(openRow.unrealizedPnl).toBeCloseTo((mark - 0.01) * 1 * 100, 2);
+
+    const closedRow = body.positions.find((p) => p.id === closed.id)!;
+    expect(closedRow.currentPrice).toBeNull();
+    expect(closedRow.underlyingPrice).toBeNull();
+    expect(closedRow.unrealizedPnl).toBeNull();
+  });
+
+  it('rejects an invalid status filter', async () => {
+    const res = await fetch(`${base}/api/autotrade/live-options-positions?status=bogus`);
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('autotrade live options positions close route (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_live_options_orders; DELETE FROM autotrade_live_options_positions;');
+  });
+
+  async function openLiveOptionsPos(overrides: Partial<Parameters<typeof createLiveOptionsPosition>[0]> = {}) {
+    const [expiration] = await getProvider().getOptionsExpirations('AAPL');
+    const chain = await getProvider().getOptionsChain('AAPL', expiration);
+    const contract = chain.calls[0];
+    return createLiveOptionsPosition({
+      symbol: 'AAPL',
+      side: 'call',
+      contractSymbol: contract.symbol,
+      strike: contract.strike,
+      expiration,
+      quantity: 1,
+      entryPrice: 0.01,
+      riskAmount: 1,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+      ...overrides,
+    });
+  }
+
+  it('404s for a live options position that does not exist', async () => {
+    const res = await post('/api/autotrade/live-options-positions/999999/close', {
+      accountId: 'ACC1',
+      confirmation: 'SELL 1 X',
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('409s for a live options position that is already closed', async () => {
+    const pos = await openLiveOptionsPos();
+    db.prepare("UPDATE autotrade_live_options_positions SET status = 'closed' WHERE id = ?").run(pos.id);
+
+    const res = await post(`/api/autotrade/live-options-positions/${pos.id}/close`, {
+      accountId: 'ACC1',
+      confirmation: `SELL ${pos.quantity} AAPL`,
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it('reaches closeLiveOptionsAutotradePosition for an open position — a structured result, not a route-level rejection', async () => {
+    const pos = await openLiveOptionsPos();
+
+    const res = await post(`/api/autotrade/live-options-positions/${pos.id}/close`, {
+      accountId: 'ACC1',
+      confirmation: `SELL ${pos.quantity} AAPL`,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; placed: boolean; reason: string };
+    // TRADING_ENABLED isn't set in this test process, so placeOrder()'s own
+    // deploy-level master gate fires first — proves the route reached
+    // closeLiveOptionsAutotradePosition (a structured PlaceResult-shaped
+    // body, not a 4xx route-level rejection) without needing Webull
+    // configured at all.
+    expect(body.placed).toBe(false);
+    expect(body.reason).toBe('trading_disabled');
+  });
+});
+
+describe('autotrade monitoring dashboard + kill switch routes (integration)', () => {
+  beforeEach(() => {
+    db.exec(
+      'DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_options_paper_positions; ' +
+        'DELETE FROM autotrade_live_options_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events;',
+    );
+  });
+
+  it('GET /dashboard returns a full snapshot with safe defaults', async () => {
+    const dash = (await getJson('/api/autotrade/dashboard')) as {
+      enabled: boolean;
+      killSwitch: boolean;
+      riskProfile: string;
+      equity: number | null;
+      openPositionsCount: number;
+      maxConcurrentPositions: number;
+      maxTradesPerDay: number;
+    };
+    expect(dash.enabled).toBe(false);
+    expect(dash.killSwitch).toBe(false);
+    expect(dash.riskProfile).toBe('MODERATE');
+    expect(dash.equity).toBeNull();
+    expect(dash.openPositionsCount).toBe(0);
+    expect(dash.maxConcurrentPositions).toBe(2);
+    expect(dash.maxTradesPerDay).toBe(6);
+  });
+
+  it('GET /portfolio-greeks returns zeroed Greeks with an empty options book', async () => {
+    const greeks = await getJson('/api/autotrade/portfolio-greeks');
+    expect(greeks).toEqual({ netDelta: 0, netTheta: 0, netVega: 0 });
+  });
+
+  it('POST /kill-switch engages and releases, journaling each transition', async () => {
+    const engaged = await post('/api/autotrade/kill-switch', { on: true });
+    expect(engaged.status).toBe(200);
+    expect((await engaged.json()) as { killSwitch: boolean }).toMatchObject({ killSwitch: true });
+    expect(((await getJson('/api/autotrade/dashboard')) as { killSwitch: boolean }).killSwitch).toBe(true);
+
+    const released = await post('/api/autotrade/kill-switch', { on: false });
+    expect((await released.json()) as { killSwitch: boolean }).toMatchObject({ killSwitch: false });
+
+    const events = (await getJson('/api/autotrade/events')) as {
+      events: { action: string; stage: string }[];
+    };
+    const actions = events.events.map((e) => e.action);
+    expect(actions).toContain('kill_switch_engaged');
+    expect(actions).toContain('kill_switch_released');
+  });
+
+  it('POST /kill-switch rejects a non-boolean body', async () => {
+    const res = await post('/api/autotrade/kill-switch', { on: 'yes' });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /kill-switch dispatches a notification when engaging, but not when releasing', async () => {
+    const origNotifications = { ...config.notifications };
+    config.notifications.slackWebhookUrl = 'http://slack.test';
+    const realFetch = globalThis.fetch;
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+        if (typeof url === 'string' && url.startsWith('http://slack.test')) {
+          return { ok: true, status: 200 } as Response;
+        }
+        return realFetch(url as never, init);
+      });
+    try {
+      await post('/api/autotrade/kill-switch', { on: true });
+      expect(fetchSpy).toHaveBeenCalledTimes(2); // the route's own POST + the dispatched webhook
+      const webhookCall = fetchSpy.mock.calls.find(
+        (call) => typeof call[0] === 'string' && call[0].startsWith('http://slack.test'),
+      )!;
+      const body = JSON.parse(webhookCall[1]!.body as string) as { text: string };
+      expect(body.text).toMatch(/kill switch ENGAGED/i);
+
+      await post('/api/autotrade/kill-switch', { on: false });
+      expect(fetchSpy).toHaveBeenCalledTimes(3); // only the route's own POST — release doesn't notify
+    } finally {
+      Object.assign(config.notifications, origNotifications);
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('engaging the kill switch does not touch the enabled flag', async () => {
+    await setAutotradeConfigViaRoute({ enabled: true });
+    await post('/api/autotrade/kill-switch', { on: true });
+    const cfg = (await getJson('/api/autotrade/config')) as { enabled: boolean; killSwitch: boolean };
+    expect(cfg.enabled).toBe(true);
+    expect(cfg.killSwitch).toBe(true);
+  });
+
+  async function setAutotradeConfigViaRoute(body: unknown) {
+    const res = await fetch(`${base}/api/autotrade/config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(200);
+    return res;
+  }
 });

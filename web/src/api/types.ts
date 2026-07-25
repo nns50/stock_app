@@ -116,6 +116,9 @@ export interface ScreenerFilters {
   rsiMin?: number;
   rsiMax?: number;
   requireTrendAlignment?: boolean;
+  /** Multi-timeframe confirmation (2026-07-16) — require price to ALSO align
+   *  with the chosen direction relative to its WEEKLY moving average. */
+  requireWeeklyTrendAlignment?: boolean;
 }
 
 export interface ScreenerConfig {
@@ -310,6 +313,12 @@ export interface Position {
   checklist: ChecklistItem[];
   stopPrice: number | null;
   targetPrice: number | null;
+  /** The order_intents.id whose live fill produced this position — null for
+   *  a manually logged/imported trade. */
+  sourceIntentId: number | null;
+  /** The Webull account this lot lives in — null for a manually-logged
+   *  position, or a legacy row from before this field existed. */
+  accountId: string | null;
   createdAt: number;
   updatedAt: number;
   exits: PositionExit[];
@@ -335,12 +344,22 @@ export interface PositionPnl {
   closedQuantity: number;
 }
 
+/** services/washSale.ts — informational only, never a trading gate. Non-null
+ *  only for a closed position with a realized LOSS whose same underlying
+ *  symbol was also entered within 30 days either side of when it closed. */
+export interface WashSaleWarning {
+  triggerPositionId: number;
+  triggerEntryDate: string;
+  daysApart: number;
+}
+
 export interface PositionWithPnl {
   position: Position;
   price: number | null;
   stale: boolean;
   asOf: number | null;
   pnl: PositionPnl;
+  washSale: WashSaleWarning | null;
 }
 
 export interface AggregatePnl {
@@ -366,6 +385,96 @@ export interface Exposure {
   short: number;
   bySector: ExposureSlice[];
   largest: { symbol: string; pct: number } | null;
+}
+
+export interface StressScenario {
+  pct: number;
+  estimatedPnl: number;
+}
+
+export interface StressUnresolvedPosition {
+  positionId: number;
+  symbol: string;
+  reason: 'no-beta' | 'no-price' | 'no-delta';
+}
+
+export interface StressResult {
+  scenarios: StressScenario[];
+  netDollarDeltaPerPct: number;
+  unresolved: StressUnresolvedPosition[];
+  resolvedCount: number;
+  totalCount: number;
+}
+
+export interface CorrelationPair {
+  a: string;
+  b: string;
+  r: number;
+}
+
+export interface PortfolioCorrelation {
+  /** Uppercased underlyings, in the row/column order of `matrix`. */
+  symbols: string[];
+  /** symbols.length × symbols.length. matrix[i][j] = corr(symbols[i],
+   *  symbols[j]); diagonal is 1; a cell is null when either symbol is
+   *  unresolved or the pair has too little overlapping history. */
+  matrix: (number | null)[][];
+  /** Most-correlated distinct pair (highest |r|), or null when fewer than two
+   *  symbols resolved. */
+  topPair: CorrelationPair | null;
+  /** Symbols whose daily history couldn't be fetched — never assumed
+   *  uncorrelated. */
+  unresolved: string[];
+  lookbackDays: number;
+}
+
+export type RegimeSignal = 'risk-on' | 'neutral' | 'risk-off' | 'unknown';
+export type RegimeLabel = 'risk-on' | 'neutral' | 'risk-off';
+
+export interface RegimeComponent {
+  key: 'trend200' | 'trend50' | 'breadth' | 'volatility';
+  label: string;
+  signal: RegimeSignal;
+  detail: string;
+  value: number | null;
+}
+
+export interface MarketRegime {
+  proxySymbol: string;
+  label: RegimeLabel;
+  /** Sum of component signals (+1 risk-on, −1 risk-off, 0 otherwise). */
+  score: number;
+  /** How many components resolved (were not `unknown`). */
+  resolvedComponents: number;
+  components: RegimeComponent[];
+  breadthPct: number | null;
+  breadthSampleSize: number;
+  marketAtrPct: number | null;
+  asOf: number;
+}
+
+export type RotationBasis = 'relative-to-benchmark' | 'absolute-return';
+
+export interface SectorRotationEntry {
+  sector: string;
+  medianRelStrengthPct: number;
+  memberCount: number;
+  sampledCount: number;
+  /** Resolved member symbols — used to scope a Screener scan. */
+  members: string[];
+  topSymbol: { symbol: string; relStrengthPct: number } | null;
+}
+
+export interface SectorRotation {
+  benchmarkSymbol: string;
+  benchmarkReturnPct: number | null;
+  basis: RotationBasis;
+  lookbackDays: number;
+  /** Sectors ranked strongest → weakest by medianRelStrengthPct. */
+  sectors: SectorRotationEntry[];
+  /** Sectors that had members but none resolved — never ranked 0. */
+  unresolvedSectors: string[];
+  asOf: number;
 }
 
 export interface JournalStats {
@@ -412,6 +521,21 @@ export interface KellySuggestion {
   reliable: boolean;
 }
 
+/** GET /journal/auto-tune-efficacy — did a past "Auto-tune from realized
+ *  edge" risk-% adjustment actually help? before/after are full JournalStats
+ *  (same shape as the Journal page's own overall stats), scoped to autotrade's
+ *  own trades and split by entry date relative to `adjustedAt`. */
+export interface AutoTuneRiskAdjustmentEfficacy {
+  eventId: number;
+  adjustedAt: number;
+  from: number;
+  to: number;
+  kellySuggestedAtTheTime: number;
+  sampleSizeAtTheTime: number;
+  before: JournalStats;
+  after: JournalStats;
+}
+
 export interface BenchmarkResult {
   symbol: string;
   startDate: string | null;
@@ -454,6 +578,31 @@ export interface ExcursionReport {
   rows: TradeExcursion[];
 }
 
+/** One live-traded fill's execution quality vs. the order's limit price. */
+export interface SlippageRow {
+  positionId: number;
+  symbol: string;
+  kind: 'entry' | 'exit';
+  side: 'buy' | 'sell';
+  date: string;
+  limitPrice: number;
+  fillPrice: number;
+  quantity: number;
+  multiplier: number;
+  /** Signed $ per share/contract; positive = cost you money. */
+  perUnit: number;
+  totalUsd: number;
+  pct: number;
+}
+
+export interface SlippageReport {
+  trades: number;
+  totalUsd: number;
+  avgPct: number | null;
+  /** Most costly fills first (by totalUsd, descending). */
+  rows: SlippageRow[];
+}
+
 export interface RuinParams {
   winRate: number;
   payoffRatio: number;
@@ -478,6 +627,12 @@ export interface GroupStat {
   winRate: number;
   totalPnl: number;
   avgPnl: number;
+  /** Gross profit ÷ gross loss within the group; null means "infinite" (wins,
+   *  zero losses) — same convention as the headline profitFactor stat. */
+  profitFactor: number | null;
+  /** Mean R-multiple over the group's own trades that logged a stop; null
+   *  when none did. */
+  avgR: number | null;
 }
 
 export interface SymbolDetail {
@@ -646,6 +801,12 @@ export interface WebullPositionsPreview {
   positions: WebullImportablePosition[];
   raw?: unknown;
   unmapped: number;
+  /** Of the unmapped rows, how many looked like an option but couldn't be
+   *  fully parsed — the "why aren't my options importing" signal. */
+  unmappedOptions?: number;
+  /** Top-level keys of the first few unmapped rows (option-looking first), to
+   *  diagnose an unrecognized payload shape without dumping the whole payload. */
+  unmappedSample?: { keys: string[]; looksLikeOption: boolean }[];
   error?: string;
 }
 
@@ -657,6 +818,59 @@ export interface WebullImportSummary {
   unmapped: number;
   error?: string;
 }
+
+/** Result of the full sync: reconcile working orders THIS app placed
+ *  (including a bracket's stop-loss/take-profit exit leg), close positions
+ *  Webull no longer shows as held, then import anything new. */
+export interface WebullSyncResult {
+  ok: boolean;
+  accountId: string;
+  ordersReconciled: number;
+  ordersChanged: number;
+  closed: number;
+  closedSymbols: string[];
+  imported: number;
+  skipped: number;
+  unmapped: number;
+  error?: string;
+}
+
+/** One contract's side-by-side broker vs. journal quantity (positions/compare). */
+export interface PositionComparisonRow {
+  symbol: string;
+  assetType: 'stock' | 'option';
+  optionType: 'call' | 'put' | null;
+  strike: number | null;
+  expiration: string | null;
+  brokerQty: number;
+  journalQty: number;
+  matches: boolean;
+}
+
+/** On-demand, read-only snapshot of every contract the broker currently
+ *  shows held vs. what the journal shows open for this account — matches
+ *  included, not just gaps, so a mismatch is visible immediately. */
+export interface PositionComparison {
+  ok: boolean;
+  accountId: string;
+  rows: PositionComparisonRow[];
+  error?: string;
+}
+
+export interface WebullSyncConfig {
+  enabled: boolean;
+  intervalSeconds: number;
+  /** Every Webull account the background sync reconciles each tick — list all
+   *  of your real accounts (e.g. cash AND margin) so none get left un-synced. */
+  accountIds: string[];
+}
+
+/** Patch shape for the scheduler config — `accountIds` is canonical; the
+ *  legacy single `accountId` is still accepted server-side for back-compat. */
+export type WebullSyncConfigPatch = Partial<Omit<WebullSyncConfig, 'accountIds'>> & {
+  accountIds?: string[];
+  accountId?: string | null;
+};
 
 export type MoverList = 'gainers' | 'losers' | 'active' | 'unusual';
 export type MoverSession = 'regular' | 'premarket' | 'afterhours';
@@ -792,6 +1006,33 @@ export interface StrategyAnalysis {
   greeks: { delta: number; gamma: number; theta: number; vega: number };
   payoff: { price: number; pnl: number }[];
   probabilityOfProfit: number | null;
+  expectedValue: number | null;
+}
+
+export interface RollLegInput {
+  optionType: 'call' | 'put';
+  strike: number;
+  dte: number;
+  premium: number;
+  iv?: number;
+}
+
+export interface RollLegOutlook {
+  breakevens: number[];
+  maxProfit: number | null;
+  maxLoss: number | null;
+  probabilityOfProfit: number | null;
+  expectedValue: number | null;
+  delta: number;
+}
+
+export interface RollAnalysis {
+  netCost: number;
+  current: RollLegOutlook;
+  target: RollLegOutlook;
+  breakevenShift: number | null;
+  probabilityOfProfitShift: number | null;
+  expectedValueShift: number | null;
 }
 
 // --- live trading (dry-run safety surface) ---
@@ -898,6 +1139,12 @@ export interface ReconcileResult {
   intent?: OrderIntentRecord;
   broker?: WebullOrderStatus;
   error?: string;
+  /** Quantity newly mirrored into Positions by this reconcile (partial fills
+   *  are booked as they happen, not only once the order fully fills). */
+  materialized?: number;
+  /** Set when the broker's fill data couldn't be fully mirrored — e.g. it
+   *  reported more filled than was ordered. Always shown to the user. */
+  fillWarning?: string;
 }
 
 export interface ReconcileAllResult {
@@ -906,7 +1153,17 @@ export interface ReconcileAllResult {
   reconciled: number;
   /** How many of those advanced to a new state. */
   changed: number;
-  results: Array<{ id: number; changed: boolean; state?: string; status?: string; error?: string }>;
+  results: Array<{
+    id: number;
+    changed: boolean;
+    state?: string;
+    status?: string;
+    error?: string;
+    materialized?: number;
+    fillWarning?: string;
+  }>;
+  /** How many orders reported a fill the ledger couldn't fully mirror. */
+  warnings: number;
 }
 
 export interface CancelResult {
@@ -996,4 +1253,1018 @@ export interface PlaceResult {
   intent?: OrderIntentRecord;
   broker?: { ok: boolean; orderId?: string; error?: string };
   error?: string;
+}
+
+/** POST /positions/:id/close (2026-07-16) — manually close a REAL
+ *  (broker-tracked) position from the Positions page. Same shape as
+ *  PlaceResult (it's a thin wrapper around placeOrder() server-side) plus
+ *  whether a resting bracket had to be cancelled first. */
+export interface ClosePositionResult extends PlaceResult {
+  bracketCancelled?: boolean;
+}
+
+// --- auto-trading (docs/AUTOTRADING_SPEC.md) ---
+
+export type AutotradeRiskProfile = 'MODERATE' | 'AGGRESSIVE';
+
+export type AutotradeOptionsStrategyType = 'single_leg' | 'debit_spread' | 'auto';
+
+/** 'long' (default): only long positions, unchanged original behavior.
+ *  'short': only short positions. 'both': screens every candidate as both a
+ *  long and a short and takes whichever direction actually qualifies, per
+ *  symbol — can hold a long on one symbol and a short on another at once. */
+export type AutotradeTradeDirectionMode = 'long' | 'short' | 'both';
+
+export interface AutotradeConfig {
+  enabled: boolean;
+  killSwitch: boolean;
+  riskProfile: AutotradeRiskProfile;
+  accountEquityUsd: number | null;
+  /** ONE combined open-position budget shared by equity + options. */
+  maxConcurrentPositions: number;
+
+  // --- Risk-check parameters — independently user-configured, no longer
+  // tied to riskProfile (which is now purely a label). ---
+  riskPerTradePct: number;
+  maxDailyDrawdownPct: number;
+  stepDownAfterLosses: number;
+  stepDownSizeCutPct: number;
+  maxAggregateOpenRiskPct: number;
+  maxCorrelatedExposurePct: number;
+  maxSectorExposurePct: number;
+  maxTradesPerDay: number;
+  // --- Regime-aware sizing (live + paper only; 0 disables) ---
+  regimeAtrThresholdPct: number;
+  regimeSizeCutPct: number;
+  equityCurveDeriskEnabled: boolean;
+  equityCurveLookbackDays: number;
+  equityCurveDeriskCutPct: number;
+  maxAdvParticipationPct: number;
+  convictionGradeAMinScore: number;
+  convictionGradeBMinScore: number;
+  expectancyWeightingEnabled: boolean;
+  expectancyMinTrades: number;
+  expectancyMinMultiplier: number;
+  expectancyMaxMultiplier: number;
+
+  // --- Screening/decision thresholds ---
+  tradeDirection: AutotradeTradeDirectionMode;
+  minRelVol: number;
+  requireWeeklyTrendAlignment: boolean;
+  /** Relative-strength-vs-benchmark (2026-07-17): weight (0-100, same scale
+   *  as every other screener component) given to how much a candidate has
+   *  out/under-performed benchmarkSymbol over relativeStrengthLookbackDays
+   *  trading days — direction-aware (a long favors outperformance, a short
+   *  favors underperformance). 0 (the default) disables the component. */
+  relativeStrengthWeight: number;
+  /** Symbol the relativeStrength component measures out/under-performance
+   *  against — e.g. 'SPY'. Only matters when relativeStrengthWeight is nonzero. */
+  benchmarkSymbol: string;
+  /** Trading days back for both the candidate's own and the benchmark's
+   *  lookback return that relativeStrengthWeight scores. */
+  relativeStrengthLookbackDays: number;
+  /** News-headline sentiment (2026-07-18): weight (0-100, same scale as every
+   *  other screener component) given to a simple, transparent keyword count
+   *  over each candidate's recent headlines — direction-aware (a long favors
+   *  net-positive headlines, a short favors net-negative ones). 0 (the
+   *  default) disables the component. */
+  sentimentWeight: number;
+  maxTickerAtrPct: number;
+  maxMarketAtrPct: number;
+  stopAtrMultiple: number;
+  targetRMultiple: number;
+  /** Force-close a position open this many CALENDAR days without a stop/
+   *  target hit. 0 disables it (hold until stop/target/manual close). */
+  maxHoldDays: number;
+  sessionBufferMinutes: number;
+  /** Skip an equity candidate whose next known earnings date falls within
+   *  this many calendar days. 0 disables it. Options entries are unaffected
+   *  (IV rank already proxies for an approaching print there). */
+  earningsBlackoutDays: number;
+  /** Hard-block ALL new entries, paper and live, within this many hours
+   *  (either side) of any date-time on the macro-events list below —
+   *  market-wide, checked once per loop tick, unlike earningsBlackoutDays
+   *  above. 0 (the default) disables it. No backtest equivalent. */
+  macroEventBlackoutHours: number;
+
+  // --- Trailing stop / breakeven / partial profit-taking (PAPER and
+  // BACKTEST equity positions only — LIVE is untouched). All default to
+  // 0/disabled. R-multiples are measured against the position's own
+  // original stop distance, fixed at entry. ---------------------------------
+  breakevenTriggerRMultiple: number;
+  trailStartRMultiple: number;
+  trailStopRMultiple: number;
+  partialExitRMultiple: number;
+  partialExitPct: number;
+  // --- Scale into winners / pyramiding (0 disables). PAPER + BACKTEST only. ---
+  addOnTriggerRMultiple: number;
+  addOnSizePct: number;
+  maxAddOns: number;
+
+  // --- Correlation methodology (feeds maxCorrelatedExposurePct above) ---
+  correlationLookbackDays: number;
+  /** |Pearson r| at or above this counts as "correlated". 0-1, not a percentage. */
+  correlationThreshold: number;
+  /** Correlation-aware candidate selection (default off): re-rank so diverse
+   *  high-scorers win the caps over a correlated huddle. Reorders only. */
+  correlationAwareSelectionEnabled: boolean;
+
+  // --- Regime-conditional scoring weights (default off) ---
+  /** When on, the loop scores with the market regime's weight preset instead of
+   *  the fixed defaults. Off = today's fixed weights. */
+  regimeAdaptiveWeightsEnabled: boolean;
+  /** Per-regime core screener weights (the six IndicatorKey weights).
+   *  relativeStrength/sentiment stay driven by their own weight fields. */
+  regimeWeightPresets: {
+    riskOn: Record<IndicatorKey, number>;
+    neutral: Record<IndicatorKey, number>;
+    riskOff: Record<IndicatorKey, number>;
+  };
+
+  // --- Phase 8: live trading ---
+  liveTradingEnabled: boolean;
+  liveEnabledAt: number | null;
+  liveAccountId: string | null;
+  liveMaxOrderUsd: number;
+  liveMaxDailyLossUsd: number;
+  liveMaxOrdersPerDay: number;
+  liveFatFingerPct: number;
+  liveAllowNakedShort: boolean;
+  liveProbationTrades: number;
+  liveProbationSizeMultiplier: number;
+  // --- Live scale-into-winners (nested under liveTradingEnabled) ---
+  liveScaleInEnabled: boolean;
+  liveMaxAddOns: number;
+
+  // --- Task #70: live options trading (nested under liveTradingEnabled) ---
+  liveOptionsEnabled: boolean;
+  liveOptionsEnabledAt: number | null;
+  liveOptionsMaxOrderUsd: number;
+  liveOptionsMaxDailyLossUsd: number;
+  liveOptionsMaxOrdersPerDay: number;
+  liveOptionsFatFingerPct: number;
+  liveOptionsProbationTrades: number;
+  liveOptionsProbationSizeMultiplier: number;
+
+  // --- Options strategy shape ---
+  optionsStrategyType: AutotradeOptionsStrategyType;
+
+  // --- Options entry-rule thresholds (the contract-quality screen run before
+  // risk-check — delta band, spread, liquidity, DTE window, IV rank ceiling) -
+  optionsDeltaMin: number;
+  optionsDeltaMax: number;
+  optionsMaxSpreadPct: number;
+  optionsMinOpenInterest: number;
+  optionsMinVolume: number;
+  optionsMinDte: number;
+  optionsMaxDte: number;
+  optionsIvRankMax: number;
+
+  // --- Options stop-loss / take-profit (PAPER + BACKTEST only; 0 disables) --
+  optionsStopLossPct: number;
+  optionsTakeProfitPct: number;
+
+  // --- Options trailing stop / breakeven / partial profit-taking (PAPER and
+  // BACKTEST only; 0 disables). Percentage-of-premium based (net debit for a
+  // spread), not an R-multiple like the equity block above — an option has
+  // no ATR-based stop price to measure R against. ---------------------------
+  optionsBreakevenTriggerPct: number;
+  optionsTrailStartPct: number;
+  optionsTrailStopPct: number;
+  optionsPartialExitTriggerPct: number;
+  optionsPartialExitPct: number;
+
+  // --- Movers auto-promotion ---
+  autoPromoteMoversEnabled: boolean;
+  autoPromoteThreshold: number;
+  autoPromoteWindowDays: number;
+  autoPromoteMaxSymbols: number;
+
+  // --- Auto-tune from realized edge ---
+  autoTuneEnabled: boolean;
+  autoTuneMinTrades: number;
+  autoTuneMaxStepPct: number;
+  autoTuneSlippageExcludePct: number;
+  autoTuneExitsEnabled: boolean;
+  autoTuneExitMaxStep: number;
+  /** Server-owned: when the exit tuner last moved the exit multiples. */
+  autoTuneExitTunedAt: number | null;
+  /** Walk-forward guard (default on): only raise risk-% if the edge still holds
+   *  out-of-sample. Decreases always apply. */
+  autoTuneRequireOosConfirmation: boolean;
+}
+
+/** A starting-point suggestion for the live-only guardrail caps, derived from
+ *  the current account equity and the already-configured maxDailyDrawdownPct/
+ *  maxTradesPerDay — not an enforced value, just what the "Suggest" button
+ *  offers to fill the fields below with. */
+export interface SuggestedLiveCaps {
+  liveMaxOrderUsd: number;
+  liveMaxDailyLossUsd: number;
+  liveMaxOrdersPerDay: number;
+}
+
+/** Which sizing assumption maps a target daily gain % to per-trade risk —
+ *  mirrors server/src/services/autotrading/targetTune.ts. */
+export type TuneBasis = 'expected' | 'perfectDay';
+export type TuneBand = 'conservative' | 'moderate' | 'aggressive';
+
+/** The subset of AutotradeConfig fields the "tune from target" generator
+ *  writes — the risk/aggressiveness axis, contract selection, and
+ *  equity-scaled dollar caps. Everything else in AutotradeConfig is left
+ *  untouched by the tuner (safety gates, methodology, exit-refinement,
+ *  autotune, etc.). Shape mirrors targetTune.ts's TunablePatch. */
+export type TunablePatch = Pick<
+  AutotradeConfig,
+  | 'riskProfile'
+  | 'maxConcurrentPositions'
+  | 'riskPerTradePct'
+  | 'maxDailyDrawdownPct'
+  | 'stepDownAfterLosses'
+  | 'stepDownSizeCutPct'
+  | 'maxAggregateOpenRiskPct'
+  | 'maxCorrelatedExposurePct'
+  | 'maxSectorExposurePct'
+  | 'maxTradesPerDay'
+  | 'minRelVol'
+  | 'maxTickerAtrPct'
+  | 'maxMarketAtrPct'
+  | 'targetRMultiple'
+  | 'liveMaxOrderUsd'
+  | 'liveMaxDailyLossUsd'
+  | 'liveMaxOrdersPerDay'
+  | 'liveOptionsMaxOrderUsd'
+  | 'liveOptionsMaxDailyLossUsd'
+  | 'liveOptionsMaxOrdersPerDay'
+  | 'optionsDeltaMin'
+  | 'optionsDeltaMax'
+  | 'optionsMaxSpreadPct'
+  | 'optionsMinDte'
+  | 'optionsMaxDte'
+  | 'optionsIvRankMax'
+  | 'optionsStopLossPct'
+  | 'optionsTakeProfitPct'
+>;
+
+export interface TargetTuneResult {
+  band: TuneBand;
+  basis: TuneBasis;
+  targetDailyGainPct: number;
+  edgeR: number;
+  rawRiskPerTradePct: number;
+  patch: TunablePatch;
+  warnings: string[];
+}
+
+export interface EquitySyncResult {
+  ok: boolean;
+  accountId?: string;
+  previousEquityUsd?: number | null;
+  netLiquidationUsd?: number;
+  buyingPowerUsd?: number;
+  config?: AutotradeConfig;
+  error?: string;
+}
+
+export type AutotradeExclusionSource = 'default' | 'user';
+
+export interface AutotradeExclusion {
+  symbol: string;
+  reason: string | null;
+  source: AutotradeExclusionSource;
+  createdAt: number;
+}
+
+/** A scheduled macro event (FOMC, CPI, jobs report, ...) on the user-
+ *  maintained blackout list — see AutotradeConfig.macroEventBlackoutHours. */
+export interface MacroEvent {
+  id: number;
+  label: string;
+  /** Epoch ms of the scheduled event. */
+  eventAt: number;
+  createdAt: number;
+}
+
+export interface AutotradeCandidate extends SymbolScore {
+  discoverySource: 'universe' | 'movers';
+  /** Which side this candidate qualified as — always matches the request's
+   *  directionMode for 'long'/'short'; per-symbol (the direction that
+   *  actually passed) for 'both'. */
+  direction: 'long' | 'short';
+}
+
+export interface AutotradeScreenResult {
+  generatedAt: number;
+  candidates: AutotradeCandidate[];
+  excluded: { symbol: string; reason: string }[];
+  skipped: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+  discovery: { universeCount: number; moversCount: number; scannedCount: number };
+}
+
+export type AutotradeStage = 'screen' | 'decision' | 'risk_check' | 'execution' | 'config';
+
+export interface AutotradeEvent {
+  id: number;
+  symbol: string | null;
+  stage: AutotradeStage;
+  action: string;
+  detail: string | null;
+  riskProfile: string | null;
+  createdAt: number;
+}
+
+export type AutotradeSignalSide = 'buy' | 'sell';
+
+export interface AutotradeSignal {
+  symbol: string;
+  side: AutotradeSignalSide;
+  entry: number;
+  stop: number;
+  target: number;
+  rMultiple: number;
+  rationale: string;
+  score: number;
+  /** Carried through to POST /risk-check so the ADV participation cap applies to
+   *  the previewed size the same way it does inside the loop. */
+  avgVolume?: number | null;
+}
+
+export interface AutotradeDecisionResult {
+  signals: AutotradeSignal[];
+  skipped: { symbol: string; reason: string }[];
+}
+
+export type AutotradeOptionsSignalSide = 'call' | 'put';
+
+export interface AutotradeSingleLegOptionsSignal {
+  kind: 'single_leg';
+  symbol: string;
+  side: AutotradeOptionsSignalSide;
+  contractSymbol: string;
+  strike: number;
+  expiration: string;
+  dte: number;
+  premium: number;
+  delta: number | null;
+  ivRank: number;
+  maxLossPerContract: number;
+  rationale: string;
+  score: number;
+}
+
+/** A long leg + a further out-of-the-money short leg — caps both max loss
+ *  AND max gain (docs/AUTOTRADING_SPEC.md's phase 9/10 debit-spread
+ *  follow-up). Opt-in via AutotradeConfig.optionsStrategyType. */
+export interface AutotradeDebitSpreadOptionsSignal {
+  kind: 'debit_spread';
+  symbol: string;
+  side: AutotradeOptionsSignalSide;
+  expiration: string;
+  dte: number;
+  ivRank: number;
+  longContractSymbol: string;
+  longStrike: number;
+  longPremium: number;
+  longDelta: number | null;
+  shortContractSymbol: string;
+  shortStrike: number;
+  shortPremium: number;
+  shortDelta: number | null;
+  width: number;
+  netDebit: number;
+  maxLossPerContract: number;
+  maxProfitPerContract: number;
+  rationale: string;
+  score: number;
+}
+
+export type AutotradeOptionsSignal = AutotradeSingleLegOptionsSignal | AutotradeDebitSpreadOptionsSignal;
+
+export interface AutotradeOptionsDecisionResult {
+  signals: AutotradeOptionsSignal[];
+  skipped: { symbol: string; reason: string }[];
+}
+
+export interface AutotradeDecideResponse {
+  screen: AutotradeScreenResult;
+  decision: AutotradeDecisionResult;
+  optionsDecision: AutotradeOptionsDecisionResult;
+}
+
+export interface AutotradeRiskCheckRule {
+  rule: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface AutotradeRiskCheckResult {
+  symbol: string;
+  ok: boolean;
+  checks: AutotradeRiskCheckRule[];
+  sizing: RiskSizingResult;
+  stepDownActive: boolean;
+  approvedRiskAmount: number;
+  approvedNotional: number;
+}
+
+/** Same shape as AutotradeRiskCheckResult, except sizing can ALSO be a
+ *  SpreadSizingResult when the checked signal was a debit spread — kept
+ *  separate so the equity-only AutotradeRiskCheckResult above never needs
+ *  narrowing. */
+export interface AutotradeOptionsRiskCheckResult {
+  symbol: string;
+  ok: boolean;
+  checks: AutotradeRiskCheckRule[];
+  sizing: RiskSizingResult | SpreadSizingResult;
+  stepDownActive: boolean;
+  approvedRiskAmount: number;
+  approvedNotional: number;
+}
+
+// --- backtesting & walk-forward (Phase 5 — the validation gate) ---
+
+export interface SimulatedTrade {
+  symbol: string;
+  side: AutotradeSignalSide;
+  signalDate: string;
+  entryDate: string;
+  entryPrice: number;
+  exitDate: string;
+  exitPrice: number;
+  exitReason: 'stop' | 'target' | 'end_of_period';
+  quantity: number;
+  pnl: number;
+  rMultiple: number;
+}
+
+export interface BacktestEquityPoint {
+  date: string;
+  equity: number;
+}
+
+export interface BacktestReport {
+  trades: SimulatedTrade[];
+  equityCurve: BacktestEquityPoint[];
+  startingEquity: number;
+  finalEquity: number;
+  excludedSymbols: { symbol: string; reason: string }[];
+  /** Symbols whose historical-bar fetch failed — every other symbol's result
+   *  is still simulated normally. */
+  errors: { symbol: string; message: string }[];
+}
+
+export interface BacktestStats {
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  avgWin: number;
+  avgLoss: number;
+  expectancy: number;
+  profitFactor: number | null;
+  totalPnl: number;
+  returnPct: number;
+  avgR: number | null;
+  bestR: number | null;
+  worstR: number | null;
+  maxDrawdown: number;
+  longestWinStreak: number;
+  longestLossStreak: number;
+}
+
+export interface BacktestRunResponse {
+  report: BacktestReport;
+  stats: BacktestStats;
+}
+
+/** Bootstrap CI + sign-flip permutation p-value on a trade list's expectancy
+ *  (services/autotrading/significance.ts) — only computed for a walk-forward
+ *  window (see WalkForwardWindowResult below), not a plain single-window
+ *  backtest run. All-null/not-reliable, never a fabricated number, when
+ *  sampleSize is 0. */
+export interface SignificanceStats {
+  sampleSize: number;
+  expectancy: number | null;
+  ciLow: number | null;
+  ciHigh: number | null;
+  pValue: number | null;
+  resamples: number;
+  reliable: boolean;
+}
+
+export interface WalkForwardWindowResult extends BacktestRunResponse {
+  significance: SignificanceStats;
+}
+
+export interface WalkForwardResponse {
+  inSample: WalkForwardWindowResult;
+  outOfSample: WalkForwardWindowResult;
+  excludedSymbols: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+}
+
+/** Optional overrides for the seven risk-check parameters — when omitted, a
+ *  backtest falls back field-by-field to riskProfile's OLD MODERATE/AGGRESSIVE
+ *  preset bundle (a backtest's riskProfile is a self-contained hypothesis, not
+ *  an ongoing account setting, so it's kept implying this bundle unless
+ *  explicitly overridden — see server's resolveBacktestRiskParams()). */
+export interface BacktestRiskParams {
+  riskPerTradePct?: number;
+  maxDailyDrawdownPct?: number;
+  stepDownAfterLosses?: number;
+  stepDownSizeCutPct?: number;
+  maxAggregateOpenRiskPct?: number;
+  maxCorrelatedExposurePct?: number;
+  maxSectorExposurePct?: number;
+  maxTradesPerDay?: number;
+  correlationLookbackDays?: number;
+  correlationThreshold?: number;
+  correlationAwareSelectionEnabled?: boolean;
+}
+
+export interface BacktestRequest extends BacktestRiskParams {
+  symbols: string[];
+  from: string;
+  to: string;
+  riskProfile: AutotradeRiskProfile;
+  startingEquity: number;
+  maxConcurrentPositions: number;
+  /** Force-close a position open this many CALENDAR days without a stop/
+   *  target hit. Omitted or 0 disables it. */
+  maxHoldDays?: number;
+  /** Trailing stop / breakeven / partial profit-taking — mirrors
+   *  AutotradeConfig's own fields. Omitted or 0 disables each. */
+  breakevenTriggerRMultiple?: number;
+  trailStartRMultiple?: number;
+  trailStopRMultiple?: number;
+  partialExitRMultiple?: number;
+  partialExitPct?: number;
+  addOnTriggerRMultiple?: number;
+  addOnSizePct?: number;
+  maxAddOns?: number;
+  /** Own value here, NOT inherited from the live Configuration's
+   *  tradeDirection if omitted — a backtest is a self-contained
+   *  hypothesis. Defaults to 'long' (server-side) when omitted entirely. */
+  directionMode?: AutotradeTradeDirectionMode;
+}
+
+export interface WalkForwardRequest extends BacktestRequest {
+  splitDate: string;
+}
+
+// --- Phase 11: options backtest ---
+
+export interface SimulatedOptionsTrade {
+  symbol: string; // underlying
+  side: AutotradeOptionsSignalSide;
+  /** 'single_leg' (default shape) or 'debit_spread' — a spread reuses
+   *  contractTicker/strike/entryPremium/exitPremium for the LONG leg and
+   *  adds the short* fields below for the short leg. */
+  kind: AutotradeOptionsStrategyType;
+  contractTicker: string;
+  strike: number;
+  shortContractTicker?: string;
+  shortStrike?: number;
+  expiration: string;
+  signalDate: string;
+  entryDate: string;
+  entryPremium: number;
+  shortEntryPremium?: number;
+  exitDate: string;
+  exitPremium: number;
+  shortExitPremium?: number;
+  exitReason: 'time_exit' | 'stop_loss' | 'take_profit' | 'expiration' | 'end_of_period';
+  contracts: number;
+  pnl: number;
+  rMultiple: number;
+}
+
+export interface OptionsBacktestReport {
+  trades: SimulatedOptionsTrade[];
+  equityCurve: BacktestEquityPoint[];
+  startingEquity: number;
+  finalEquity: number;
+  excludedSymbols: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+  /** Candidates that cleared the equity screen but never got an options signal. */
+  skipped: { symbol: string; date: string; reason: string }[];
+}
+
+// BacktestStats is reused as-is (not a new OptionsBacktestStats type) — every
+// field it has (win rate, expectancy, profit factor, R-multiple stats,
+// drawdown/streaks) is already 100% asset-type-blind, matching the server's
+// own computeBacktestStats() reuse (services/autotrading/backtest.ts).
+export interface OptionsBacktestRunResponse {
+  report: OptionsBacktestReport;
+  stats: BacktestStats;
+}
+
+export interface OptionsWalkForwardWindowResult extends OptionsBacktestRunResponse {
+  significance: SignificanceStats;
+}
+
+export interface OptionsWalkForwardResponse {
+  inSample: OptionsWalkForwardWindowResult;
+  outOfSample: OptionsWalkForwardWindowResult;
+  excludedSymbols: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+}
+
+export interface OptionsBacktestRequest extends BacktestRiskParams {
+  symbols: string[];
+  from: string;
+  to: string;
+  riskProfile: AutotradeRiskProfile;
+  startingEquity: number;
+  maxConcurrentPositions: number;
+  optionsDecisionConfig?: { strategyType?: AutotradeOptionsStrategyType };
+  /** Own value here, NOT inherited from the live Configuration's
+   *  tradeDirection if omitted — a backtest is a self-contained
+   *  hypothesis. Governs call vs put too. Defaults to 'long' (server-side)
+   *  when omitted entirely. */
+  directionMode?: AutotradeTradeDirectionMode;
+}
+
+export interface OptionsWalkForwardRequest extends OptionsBacktestRequest {
+  splitDate: string;
+}
+
+// --- Genuinely combined equity+options backtest (follow-up to phase 11's own
+// deferral: "an independent backtest, not combined with a concurrent equity
+// backtest's risk") ---
+
+export interface CombinedBacktestReport {
+  equityTrades: SimulatedTrade[];
+  optionsTrades: SimulatedOptionsTrade[];
+  /** ONE curve — the combined account value, not two separate ones. */
+  equityCurve: BacktestEquityPoint[];
+  startingEquity: number;
+  finalEquity: number;
+  excludedSymbols: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+  optionsSkipped: { symbol: string; date: string; reason: string }[];
+}
+
+// BacktestStats is reused as-is here too — the server computes it over BOTH
+// trade lists concatenated (equityTrades + optionsTrades), one risk-adjusted
+// read spanning the whole account, not two separate ones to add up by hand.
+export interface CombinedBacktestRunResponse {
+  report: CombinedBacktestReport;
+  stats: BacktestStats;
+}
+
+export interface CombinedWalkForwardWindowResult extends CombinedBacktestRunResponse {
+  significance: SignificanceStats;
+}
+
+export interface CombinedWalkForwardResponse {
+  inSample: CombinedWalkForwardWindowResult;
+  outOfSample: CombinedWalkForwardWindowResult;
+  excludedSymbols: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+}
+
+export interface CombinedBacktestRequest extends BacktestRiskParams {
+  symbols: string[];
+  from: string;
+  to: string;
+  riskProfile: AutotradeRiskProfile;
+  startingEquity: number;
+  maxConcurrentPositions: number;
+  /** Force-close an EQUITY leg position open this many CALENDAR days without
+   *  a stop/target hit. Omitted or 0 disables it; no effect on the options leg. */
+  maxHoldDays?: number;
+  /** Trailing stop / breakeven / partial profit-taking for the EQUITY leg
+   *  only — mirrors AutotradeConfig's own fields. Omitted or 0 disables each. */
+  breakevenTriggerRMultiple?: number;
+  trailStartRMultiple?: number;
+  trailStopRMultiple?: number;
+  partialExitRMultiple?: number;
+  partialExitPct?: number;
+  addOnTriggerRMultiple?: number;
+  addOnSizePct?: number;
+  maxAddOns?: number;
+  optionsDecisionConfig?: { strategyType?: AutotradeOptionsStrategyType };
+  /** Own value here, NOT inherited from the live Configuration's
+   *  tradeDirection if omitted — a backtest is a self-contained
+   *  hypothesis. Governs BOTH legs. Defaults to 'long' (server-side) when
+   *  omitted entirely. */
+  directionMode?: AutotradeTradeDirectionMode;
+}
+
+export interface CombinedWalkForwardRequest extends CombinedBacktestRequest {
+  splitDate: string;
+}
+
+// --- Phase 6: paper execution loop ---
+
+// Mirrors server/src/db/autotradePaperPositions.ts — 'time_exit' is what the
+// max-hold-days rule writes; omitting it here made the union silently wrong and
+// would let a `switch` over it look exhaustive when it isn't.
+export type PaperExitReason = 'stop' | 'target' | 'time_exit' | 'manual';
+
+export interface PaperPosition {
+  id: number;
+  symbol: string;
+  side: AutotradeSignalSide;
+  quantity: number;
+  entryPrice: number;
+  entryAt: number;
+  stopPrice: number;
+  targetPrice: number;
+  riskAmount: number;
+  riskProfile: string;
+  rationale: string;
+  status: 'open' | 'closed';
+  exitPrice: number | null;
+  exitAt: number | null;
+  exitReason: PaperExitReason | null;
+  createdAt: number;
+  updatedAt: number;
+  /** A live quote as of the request — null for a closed position (its own
+   *  exitPrice is the number that matters there) or if the quote fetch
+   *  failed with nothing cached either. */
+  currentPrice: number | null;
+  /** True when currentPrice came from the last-known cache, not a live
+   *  quote (provider rate-limited or down). */
+  stale: boolean;
+  /** (currentPrice - entryPrice) * quantity, sign-adjusted for side — null
+   *  for a closed position (its realized P&L is computed from exitPrice
+   *  instead) or when currentPrice itself is unavailable. */
+  unrealizedPnl: number | null;
+}
+
+export interface LoopTickSummary {
+  ranEntries: boolean;
+  skippedReason?: string;
+  exitsChecked: number;
+  exitsClosed: number;
+  optionsExitsChecked: number;
+  optionsExitsClosed: number;
+  liveOrdersReconciled: number;
+  livePositionsClosed: number;
+  liveOptionsOrdersReconciled: number;
+  liveOptionsPositionsClosed: number;
+  liveOptionsExitsRequested: number;
+  candidatesScreened: number;
+  candidatesPassedVolatility: number;
+  signalsGenerated: number;
+  optionsSignalsGenerated: number;
+  /** Candidates actually passed to the options decision — a subset of
+   *  candidatesPassedVolatility restricted to universe-sourced candidates
+   *  (Webull movers can't accumulate the real IV-rank history the options
+   *  decision needs, so they never reach it). */
+  optionsCandidatesConsidered: number;
+  entriesOpened: number;
+  optionsEntriesOpened: number;
+  liveEntriesOpened: number;
+  liveOptionsEntriesOpened: number;
+  /** Movers-sourced symbols newly added to the persistent universe this cycle
+   *  (0 on most cycles — a symbol needs several distinct days of recurrence
+   *  first; see the About page / docs/AUTOTRADING_SPEC.md). */
+  moversAutoPromoted: number;
+}
+
+/** The automated loop's most recently completed tick, persisted rather than
+ *  recomputed — see server/src/db/autotradeLastTick.ts's header comment. */
+export interface LastTickRecord {
+  summary: LoopTickSummary;
+  /** Epoch ms the tick that produced this summary finished. */
+  ranAt: number;
+}
+
+// --- Phase 12: options paper execution ---
+
+export type OptionsPaperExitReason = 'time_exit' | 'stop_loss' | 'take_profit' | 'manual';
+
+export type OptionsPaperKind = 'single_leg' | 'debit_spread';
+
+export interface OptionsPaperPosition {
+  id: number;
+  symbol: string;
+  side: AutotradeOptionsSignalSide;
+  kind: OptionsPaperKind;
+  /** The long leg's contract for a debit spread. */
+  contractSymbol: string;
+  /** The long leg's strike for a debit spread. */
+  strike: number;
+  shortContractSymbol: string | null;
+  shortStrike: number | null;
+  expiration: string;
+  /** Contracts (single_leg) or spreads (debit_spread). */
+  quantity: number;
+  /** The long leg's fill premium for a debit spread. */
+  entryPrice: number;
+  shortEntryPrice: number | null;
+  entryAt: number;
+  riskAmount: number;
+  riskProfile: string;
+  rationale: string;
+  status: 'open' | 'closed';
+  /** The long leg's exit premium for a debit spread. */
+  exitPrice: number | null;
+  shortExitPrice: number | null;
+  exitAt: number | null;
+  exitReason: OptionsPaperExitReason | null;
+  createdAt: number;
+  updatedAt: number;
+  /** A live contract mark as of the request (long leg, for a spread) — null
+   *  for a closed position or if the chain fetch failed. */
+  currentPrice: number | null;
+  /** The short leg's live mark — null for single_leg, a closed position, or
+   *  a chain-fetch failure. */
+  shortCurrentPrice: number | null;
+  /** The chain fetch's own underlying stock price as of this request — null
+   *  for a closed position, a chain-fetch failure, or a provider that
+   *  doesn't report it. Used to derive a short leg's intrinsic/extrinsic
+   *  value (see components/AssignmentRiskBadge.tsx). */
+  underlyingPrice: number | null;
+  /** Single-leg: (currentPrice - entryPrice) * quantity * 100. Debit spread:
+   *  net-value-now minus net-debit-at-entry, x quantity x 100. Null for a
+   *  closed position or when a needed mark is unavailable. */
+  unrealizedPnl: number | null;
+}
+
+export interface AutotradeProbationStatus {
+  active: boolean;
+  multiplier: number;
+  tradesPlaced: number;
+  tradesRemaining: number;
+}
+
+export type LiveOptionsExitReason = 'time_exit' | 'manual';
+
+/** A REAL, live-money options position the autotrade loop itself placed
+ *  (Task #70) — the options counterpart to AutotradeLivePosition, over its
+ *  own autotrade_live_options_positions row (not the shared `positions`
+ *  table, which has no column for a debit spread's second leg). For GET
+ *  /api/autotrade/live-options-positions. */
+export interface LiveOptionsPosition {
+  id: number;
+  symbol: string;
+  side: AutotradeOptionsSignalSide;
+  kind: OptionsPaperKind;
+  /** The long leg's contract for a debit spread. */
+  contractSymbol: string;
+  /** The long leg's strike for a debit spread. */
+  strike: number;
+  shortContractSymbol: string | null;
+  shortStrike: number | null;
+  expiration: string;
+  quantity: number;
+  /** The long leg's filled premium for a debit spread — for a live combo
+   *  fill this carries the WHOLE net debit (no per-leg breakdown is
+   *  available from a single combo order), unlike paper's true per-leg
+   *  fidelity. */
+  entryPrice: number;
+  shortEntryPrice: number | null;
+  entryAt: number;
+  riskAmount: number;
+  riskProfile: string;
+  rationale: string;
+  status: 'open' | 'closed';
+  exitPrice: number | null;
+  shortExitPrice: number | null;
+  exitAt: number | null;
+  exitReason: LiveOptionsExitReason | null;
+  /** The Webull account this fill executed in — null for a legacy row from
+   *  before this field existed. */
+  accountId: string | null;
+  createdAt: number;
+  updatedAt: number;
+  /** A live contract mark as of the request (long leg, for a spread) — null
+   *  for a closed position or if the chain fetch failed. */
+  currentPrice: number | null;
+  shortCurrentPrice: number | null;
+  /** See OptionsPaperPosition's own doc comment — same free byproduct of the
+   *  chain fetch, same null-when-unavailable semantics. */
+  underlyingPrice: number | null;
+  unrealizedPnl: number | null;
+}
+
+/** GET /autotrade/portfolio-greeks — a separate, on-demand endpoint from
+ *  AutotradeDashboard below (see the route's own doc comment for why: it
+ *  needs a live options-chain fetch, unlike every dashboard figure). */
+export interface PortfolioGreeks {
+  netDelta: number;
+  netTheta: number;
+  netVega: number;
+}
+
+export interface AutotradeDashboard {
+  enabled: boolean;
+  killSwitch: boolean;
+  riskProfile: AutotradeRiskProfile;
+  equity: number | null;
+  /** The automated loop's most recently completed cycle, or null before the
+   *  loop has ever run. */
+  lastTick: LastTickRecord | null;
+  /** Equity paper positions only — see openOptionsPositions below for the
+   *  options side of this SAME combined pool. */
+  openPositions: PaperPosition[];
+  /** Combined equity + options paper count (phase 13) — ONE pool, not a
+   *  second one the way live's own figures are. */
+  openPositionsCount: number;
+  maxConcurrentPositions: number;
+  /** Combined equity + options paper risk $ (phase 13). */
+  openRisk: number;
+  maxAggregateOpenRisk: number;
+  /** $ cap only — unlike every other cap here, there's no matching live
+   *  "used" figure (correlation is relative to a specific candidate, not a
+   *  portfolio-wide instantaneous number). See lastCorrelatedExposureCheck. */
+  maxCorrelatedExposure: number;
+  /** The most recent risk-check reading for this rule (null before the loop
+   *  has risk-checked anything) — a point-in-time snapshot "as of the last
+   *  candidate checked", not a live gauge like the tiles above it. */
+  lastCorrelatedExposureCheck: {
+    symbol: string;
+    checkedAt: number;
+    passed: boolean;
+    correlatedNotional: number | null;
+  } | null;
+  /** UNLIKE maxCorrelatedExposure above, this genuinely IS a live,
+   *  portfolio-wide instantaneous reading (sector is a static classification,
+   *  not relative to a hypothetical candidate) — sorted worst-first, across
+   *  the combined paper + live, equity + options autotrade book. */
+  sectorExposure: { key: string; gross: number; pct: number; count: number }[];
+  maxSectorExposure: number;
+  /** Combined equity + options today's realized paper P&L. */
+  dailyPnl: number;
+  dailyDrawdownHaltLevel: number;
+  /** Combined equity + options paper entries opened today. */
+  tradesToday: number;
+  maxTradesPerDay: number;
+  /** max(equity streak, options streak) — not additive across the two books. */
+  consecutiveLosses: number;
+  stepDownAfterLosses: number;
+
+  // --- Phase 13: options paper positions — folded into the SAME pool above,
+  // not a second one (see openPositionsCount/openRisk doc comments). This
+  // array is for per-position display (contract/strike/expiration/DTE).
+  openOptionsPositions: (OptionsPaperPosition & { dte: number })[];
+
+  // --- Phase 8: live trading — own pool, caps shared with paper above ---
+  liveTradingEnabled: boolean;
+  liveAccountId: string | null;
+  liveOpenPositions: Position[];
+  liveOpenPositionsCount: number;
+  liveOpenRisk: number;
+  liveDailyPnl: number;
+  liveTradesToday: number;
+  liveConsecutiveLosses: number;
+  liveMaxOrderUsd: number;
+  liveMaxDailyLossUsd: number;
+  liveMaxOrdersPerDay: number;
+  probation: AutotradeProbationStatus;
+
+  // --- Task #70: live options — own pool nested under the live gate above,
+  // own $ caps and probation window (see server dashboard.ts's header). ---
+  liveOptionsEnabled: boolean;
+  liveOptionsOpenPositions: LiveOptionsPosition[];
+  liveOptionsOpenPositionsCount: number;
+  liveOptionsOpenRisk: number;
+  liveOptionsDailyPnl: number;
+  liveOptionsTradesToday: number;
+  liveOptionsConsecutiveLosses: number;
+  liveOptionsMaxOrderUsd: number;
+  liveOptionsMaxDailyLossUsd: number;
+  liveOptionsMaxOrdersPerDay: number;
+  liveOptionsProbation: AutotradeProbationStatus;
+}
+
+/** A real, live-money position the autotrade loop itself placed — the SAME
+ *  `positions` row a human's own manual trade would use, tagged
+ *  `live`+`autotrade` server-side. For GET /api/autotrade/live-positions,
+ *  the Auto-Trade page's own dedicated live-positions view (distinct from
+ *  the Monitoring dashboard's aggregate liveOpenPositions* figures above). */
+export interface AutotradeLivePosition extends Position {
+  currentPrice: number | null;
+  stale: boolean;
+  pnl: PositionPnl;
+  /** Scale-in add-ons committed on this live position (0 unless it pyramided). */
+  addOnsTaken: number;
+}
+
+/** One expired-but-still-open option position, and what the sweep concluded
+ *  about it. `worthless` is the only disposition safe to close automatically. */
+export interface ExpiredOptionFinding {
+  positionId: number;
+  symbol: string;
+  label: string;
+  expiration: string;
+  side: 'long' | 'short';
+  remainingQuantity: number;
+  disposition: 'worthless' | 'in_the_money' | 'unknown';
+  underlyingAtExpiry: number | null;
+  intrinsic: number | null;
+  reason: string;
+}
+
+export interface ExpiredOptionsSweepResult {
+  examined: number;
+  /** Closed at $0 (or, from the dry-run endpoint, WOULD be closed). */
+  closed: ExpiredOptionFinding[];
+  /** Left open on purpose — exercised/assigned, or undeterminable. */
+  needsReview: ExpiredOptionFinding[];
 }

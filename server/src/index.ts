@@ -25,8 +25,11 @@ import { eventsRouter } from './routes/events';
 import { newsRouter } from './routes/news';
 import { analystRouter } from './routes/analyst';
 import { tradeRouter } from './routes/trade';
+import { autotradeRouter } from './routes/autotrade';
 import { authRouter, requireAuth } from './routes/auth';
 import { startAlertScheduler } from './services/alertScheduler';
+import { startWebullPositionsSync } from './services/webullPositionsScheduler';
+import { startAutotradeLoop } from './services/autotrading/loop';
 
 initDb();
 
@@ -61,6 +64,7 @@ app.use('/api/events', eventsRouter);
 app.use('/api/news', newsRouter);
 app.use('/api/analyst', analystRouter);
 app.use('/api/trade', tradeRouter);
+app.use('/api/autotrade', autotradeRouter);
 
 // Unknown API route
 app.use('/api', (_req, res) => {
@@ -127,5 +131,11 @@ if (require.main === module) {
     if (warm) warm.catch(() => {});
     // Start the background alert poller (no-op until enabled in Settings).
     startAlertScheduler();
+    // Start the background Webull positions sync (no-op until an account id
+    // is set on Settings — enabled by default otherwise).
+    startWebullPositionsSync();
+    // Start the autonomous paper execution loop (no-op until enabled on the
+    // Auto-Trade page — see docs/AUTOTRADING_SPEC.md, Phase 6).
+    startAutotradeLoop();
   });
 }

@@ -1,6 +1,7 @@
 import { isValidElement, ReactNode, useEffect, useId, useState } from 'react';
-import { X } from 'lucide-react';
+import { ChevronDown, ChevronRight, X } from 'lucide-react';
 import { cx, fmtSignedUsd, pnlClass } from '../lib/format';
+import { useLocalStorage } from '../lib/hooks';
 
 /**
  * Gain/loss readout that doesn't rely on color alone: a ▲/▼ caret encodes
@@ -34,6 +35,66 @@ export function PnL({
 
 export function Card({ className, children }: { className?: string; children: ReactNode }) {
   return <div className={cx('card', className)}>{children}</div>;
+}
+
+/**
+ * A Card with a collapsible body: click the header to hide/show `children`.
+ * Collapsed state persists to localStorage under `id`, so it survives a
+ * reload — `id` must be stable and unique among the collapsible cards
+ * rendered at once (e.g. "dashboard.watchlist"). The title is wrapped in a
+ * real heading element (`headingLevel`, default h3) containing the toggle
+ * button — the WAI-ARIA accordion pattern — so collapsing a tile everywhere
+ * in the app doesn't flatten the page's heading outline for screen readers;
+ * `contents` keeps that wrapper invisible to layout.
+ */
+export function CollapsibleCard({
+  id,
+  title,
+  icon,
+  action,
+  defaultCollapsed = false,
+  headingLevel = 'h3',
+  children,
+}: {
+  id: string;
+  title: ReactNode;
+  icon?: ReactNode;
+  action?: ReactNode;
+  defaultCollapsed?: boolean;
+  headingLevel?: 'h2' | 'h3' | 'h4';
+  children: ReactNode;
+}) {
+  const [collapsed, setCollapsed] = useLocalStorage(`tile.collapsed.${id}`, defaultCollapsed);
+  const Heading = headingLevel;
+  return (
+    <Card className="p-4">
+      <div
+        className={cx(
+          'flex flex-wrap items-center justify-between gap-2',
+          !collapsed && 'mb-3 pb-2 border-b border-ink-700/50',
+        )}
+      >
+        <Heading className="contents">
+          <button
+            type="button"
+            className="flex min-w-0 items-center gap-2 text-sm font-medium text-slate-200 hover:text-accent"
+            onClick={() => setCollapsed(!collapsed)}
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? (
+              <ChevronRight className="h-4 w-4 shrink-0 text-slate-500" />
+            ) : (
+              <ChevronDown className="h-4 w-4 shrink-0 text-slate-500" />
+            )}
+            {icon}
+            <span className="truncate">{title}</span>
+          </button>
+        </Heading>
+        {!collapsed && action}
+      </div>
+      {!collapsed && children}
+    </Card>
+  );
 }
 
 /**
@@ -256,11 +317,14 @@ export function Field({ label, children, hint }: { label: string; children: Reac
 export function NumberInput({
   value,
   onChange,
+  min,
+  max,
   placeholder,
 }: {
   value: number | undefined;
   onChange: (v: number | undefined) => void;
-  // step/min/max kept for call-site compatibility; validation is done in `onChange`.
+  // step is a display hint only (this is a text field, no spinner); min/max are
+  // enforced in `onChange` below so an out-of-range value can't reach the caller.
   step?: number;
   min?: number;
   max?: number;
@@ -286,11 +350,21 @@ export function NumberInput({
       onChange={(e) => {
         let t = e.target.value;
         if (t !== '' && !/^-?\d*\.?\d*$/.test(t)) return; // ignore non-numeric keystrokes
+        // No minus sign at all when the field has a non-negative floor (min >= 0),
+        // so a negative strike/quantity/threshold can't be entered. (A lower
+        // bound > 0 is NOT enforced per-keystroke — every prefix of a valid
+        // number, e.g. "0" while typing "0.5", would be below it — so that stays
+        // an app-level validation concern.)
+        if (t.startsWith('-') && min !== undefined && min >= 0) return;
         // Drop a leading zero once a real digit follows it (so a default "0" + "4"
         // becomes "4", not "04") — but keep "0", "0.x" and "-0.x" intact.
         t = t.replace(/^(-?)0+(\d)/, '$1$2');
-        setText(t);
         const n = t === '' || t === '-' || t === '.' || t === '-.' ? undefined : Number(t);
+        // Reject a keystroke that would push the value ABOVE max (e.g. an exit
+        // qty over the remaining size) rather than silently sending it to the
+        // API. Safe per-keystroke: any left-prefix of a positive number is <= it.
+        if (n !== undefined && !Number.isNaN(n) && max !== undefined && n > max) return;
+        setText(t);
         onChange(n !== undefined && Number.isNaN(n) ? undefined : n);
       }}
     />

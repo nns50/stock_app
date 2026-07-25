@@ -4,7 +4,7 @@ import { ArrowLeft, CalendarClock, Star } from 'lucide-react';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { cx, fmtCompact, fmtNum, fmtPct, fmtUsd } from '../lib/format';
-import { Card, ErrorState, PnL, Segmented, Spinner, StatTile } from '../components/ui';
+import { Card, CollapsibleCard, ErrorState, PnL, Segmented, Spinner, StatTile } from '../components/ui';
 import { RefreshBar } from '../components/RefreshBar';
 import { PriceChart } from '../components/PriceChart';
 import { daysUntil } from '../components/EarningsBadge';
@@ -186,8 +186,7 @@ export default function SymbolDetailPage() {
       )}
 
       {Object.keys(fundamentals).length > 0 && (
-        <Card className="p-4">
-          <h3 className="font-medium text-sm mb-2">Fundamentals</h3>
+        <CollapsibleCard id="symbol.fundamentals" title="Fundamentals">
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-1 text-sm">
             {fundamentalRows(fundamentals).map(([k, v]) => (
               <div key={k} className="flex justify-between border-b border-ink-700/50 py-1">
@@ -196,7 +195,7 @@ export default function SymbolDetailPage() {
               </div>
             ))}
           </div>
-        </Card>
+        </CollapsibleCard>
       )}
 
       <AnalystPanel symbol={symbol.toUpperCase()} price={quote?.last} />

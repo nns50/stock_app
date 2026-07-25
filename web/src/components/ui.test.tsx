@@ -1,6 +1,21 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { Badge, EmptyState, InfoTip, PnL, ScoreBar, Segmented, SkeletonStats, SkeletonTable, StatTile } from './ui';
+import {
+  Badge,
+  CollapsibleCard,
+  EmptyState,
+  InfoTip,
+  PnL,
+  ScoreBar,
+  Segmented,
+  SkeletonStats,
+  SkeletonTable,
+  StatTile,
+} from './ui';
+
+beforeEach(() => {
+  localStorage.clear();
+});
 
 describe('ScoreBar', () => {
   it('renders the numeric score label', () => {
@@ -89,6 +104,70 @@ describe('Segmented', () => {
     expect(screen.getByRole('tab', { name: 'Beta' })).toHaveAttribute('aria-selected', 'false');
     fireEvent.click(screen.getByRole('tab', { name: 'Beta' }));
     expect(onChange).toHaveBeenCalledWith('b');
+  });
+});
+
+describe('CollapsibleCard', () => {
+  it('shows children and the action slot by default', () => {
+    render(
+      <CollapsibleCard id="test.tile" title="Watchlist" action={<button>Manage</button>}>
+        <div>tile body</div>
+      </CollapsibleCard>,
+    );
+    expect(screen.getByText('tile body')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Manage' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Watchlist' })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('hides children and the action slot when the header is clicked, and toggles back', () => {
+    render(
+      <CollapsibleCard id="test.tile" title="Watchlist" action={<button>Manage</button>}>
+        <div>tile body</div>
+      </CollapsibleCard>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Watchlist' }));
+    expect(screen.queryByText('tile body')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Manage' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Watchlist' })).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Watchlist' }));
+    expect(screen.getByText('tile body')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Watchlist' })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('persists collapsed state across remounts under its id', () => {
+    const { unmount } = render(
+      <CollapsibleCard id="test.persisted" title="Movers">
+        <div>tile body</div>
+      </CollapsibleCard>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Movers' }));
+    expect(screen.queryByText('tile body')).toBeNull();
+    unmount();
+
+    render(
+      <CollapsibleCard id="test.persisted" title="Movers">
+        <div>tile body</div>
+      </CollapsibleCard>,
+    );
+    expect(screen.queryByText('tile body')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Movers' })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('keeps separate tiles independent by id', () => {
+    render(
+      <>
+        <CollapsibleCard id="test.a" title="Tile A">
+          <div>body A</div>
+        </CollapsibleCard>
+        <CollapsibleCard id="test.b" title="Tile B">
+          <div>body B</div>
+        </CollapsibleCard>
+      </>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Tile A' }));
+    expect(screen.queryByText('body A')).toBeNull();
+    expect(screen.getByText('body B')).toBeInTheDocument();
   });
 });
 

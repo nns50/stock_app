@@ -7,6 +7,7 @@ import { ago, cx, fmtNum, fmtPct, fmtUsd } from '../lib/format';
 import {
   Badge,
   Card,
+  CollapsibleCard,
   EmptyState,
   ErrorState,
   Field,
@@ -194,9 +195,10 @@ export default function AlertsPage() {
         </Card>
       )}
 
-      <Card className="p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-medium text-sm">New alert</h3>
+      <CollapsibleCard
+        id="alerts.new"
+        title="New alert"
+        action={
           <Segmented
             options={[
               { value: 'stock', label: 'Stock' },
@@ -205,8 +207,8 @@ export default function AlertsPage() {
             value={assetType}
             onChange={onAssetType}
           />
-        </div>
-
+        }
+      >
         {assetType === 'option' && (
           <div className="grid sm:grid-cols-5 gap-2 items-end mb-2">
             <Field label="Type">
@@ -318,16 +320,14 @@ export default function AlertsPage() {
             works with any provider. Not a buy signal — a rule you set.
           </p>
         )}
-      </Card>
+      </CollapsibleCard>
 
-      {data.loading ? (
-        <Spinner />
-      ) : data.error ? (
-        <Card>
+      <CollapsibleCard id="alerts.list" title="Alerts">
+        {data.loading ? (
+          <Spinner />
+        ) : data.error ? (
           <ErrorState error={data.error} onRetry={data.reload} />
-        </Card>
-      ) : alerts.length === 0 ? (
-        <Card>
+        ) : alerts.length === 0 ? (
           <EmptyState
             title="No alerts yet"
             hint="Create an alert above, then hit Refresh to evaluate it against current data."
@@ -337,136 +337,136 @@ export default function AlertsPage() {
               </button>
             }
           />
-        </Card>
-      ) : (
-        <Card className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="border-b border-ink-600/60">
-              <tr>
-                <th className="th">Target</th>
-                <th className="th">Condition</th>
-                <th className="th text-right">Last value</th>
-                <th className="th">Status</th>
-                <th className="th">Note</th>
-                <th className="th text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {alerts.map((a) => {
-                const contract = contractLabel(a);
-                const hasPlan = !!(a.plan && (a.plan.entry || a.plan.exit || a.plan.suggestedExit));
-                const isOpen = expanded.has(a.id);
-                return (
-                  <Fragment key={a.id}>
-                    <tr
-                      className={cx(
-                        'border-b border-ink-700/50',
-                        a.triggered && 'bg-amber-500/5',
-                        !a.enabled && 'opacity-50',
-                      )}
-                    >
-                      <td className="td">
-                        <div className="flex items-start gap-1.5">
-                          {a.assetType === 'option' && hasPlan && (
-                            <button
-                              className="mt-0.5 text-slate-500 hover:text-accent"
-                              onClick={() => toggleExpand(a.id)}
-                              aria-label={isOpen ? 'Hide plan' : 'Show plan'}
-                            >
-                              {isOpen ? (
-                                <ChevronDown className="h-3.5 w-3.5" />
-                              ) : (
-                                <ChevronRight className="h-3.5 w-3.5" />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="border-b border-ink-600/60">
+                <tr>
+                  <th className="th">Target</th>
+                  <th className="th">Condition</th>
+                  <th className="th text-right">Last value</th>
+                  <th className="th">Status</th>
+                  <th className="th">Note</th>
+                  <th className="th text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {alerts.map((a) => {
+                  const contract = contractLabel(a);
+                  const hasPlan = !!(a.plan && (a.plan.entry || a.plan.exit || a.plan.suggestedExit));
+                  const isOpen = expanded.has(a.id);
+                  return (
+                    <Fragment key={a.id}>
+                      <tr
+                        className={cx(
+                          'border-b border-ink-700/50',
+                          a.triggered && 'bg-amber-500/5',
+                          !a.enabled && 'opacity-50',
+                        )}
+                      >
+                        <td className="td">
+                          <div className="flex items-start gap-1.5">
+                            {a.assetType === 'option' && hasPlan && (
+                              <button
+                                className="mt-0.5 text-slate-500 hover:text-accent"
+                                onClick={() => toggleExpand(a.id)}
+                                aria-label={isOpen ? 'Hide plan' : 'Show plan'}
+                              >
+                                {isOpen ? (
+                                  <ChevronDown className="h-3.5 w-3.5" />
+                                ) : (
+                                  <ChevronRight className="h-3.5 w-3.5" />
+                                )}
+                              </button>
+                            )}
+                            <div>
+                              <Link to={`/symbol/${a.symbol}`} className="font-semibold hover:text-accent">
+                                {a.symbol}
+                              </Link>
+                              {contract && (
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                  <span className="text-[11px] text-slate-400 tabular-nums">{contract}</span>
+                                  {a.role && <Badge color={a.role === 'entry' ? 'green' : 'amber'}>{a.role}</Badge>}
+                                </div>
                               )}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="td">
+                          {kindLabel(a.kind, a.assetType)} {a.operator}{' '}
+                          <span className="tabular-nums">{fmtThreshold(a.kind, a.threshold)}</span>
+                        </td>
+                        <td className="td text-right tabular-nums">
+                          {a.lastValue === null ? '—' : fmtThreshold(a.kind, a.lastValue)}
+                        </td>
+                        <td className="td">
+                          {a.triggered ? (
+                            <span title={a.triggerMessage || ''}>
+                              <Badge color="amber">triggered</Badge>{' '}
+                              <span className="text-[11px] text-slate-500">{ago(a.lastTriggeredAt)}</span>
+                            </span>
+                          ) : a.enabled ? (
+                            <Badge color="green">armed</Badge>
+                          ) : (
+                            <Badge>off</Badge>
+                          )}
+                        </td>
+                        <td className="td text-slate-400 text-xs max-w-[180px] truncate" title={a.note || ''}>
+                          {a.note || '—'}
+                        </td>
+                        <td className="td text-right whitespace-nowrap">
+                          {a.triggered && (
+                            <button
+                              className="text-xs text-accent mr-2"
+                              onClick={async () => {
+                                await client.updateAlert(a.id, { triggered: false });
+                                data.reload();
+                                refreshCount();
+                              }}
+                            >
+                              ack
                             </button>
                           )}
-                          <div>
-                            <Link to={`/symbol/${a.symbol}`} className="font-semibold hover:text-accent">
-                              {a.symbol}
-                            </Link>
-                            {contract && (
-                              <div className="flex items-center gap-1.5 mt-0.5">
-                                <span className="text-[11px] text-slate-400 tabular-nums">{contract}</span>
-                                {a.role && <Badge color={a.role === 'entry' ? 'green' : 'amber'}>{a.role}</Badge>}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </td>
-                      <td className="td">
-                        {kindLabel(a.kind, a.assetType)} {a.operator}{' '}
-                        <span className="tabular-nums">{fmtThreshold(a.kind, a.threshold)}</span>
-                      </td>
-                      <td className="td text-right tabular-nums">
-                        {a.lastValue === null ? '—' : fmtThreshold(a.kind, a.lastValue)}
-                      </td>
-                      <td className="td">
-                        {a.triggered ? (
-                          <span title={a.triggerMessage || ''}>
-                            <Badge color="amber">triggered</Badge>{' '}
-                            <span className="text-[11px] text-slate-500">{ago(a.lastTriggeredAt)}</span>
-                          </span>
-                        ) : a.enabled ? (
-                          <Badge color="green">armed</Badge>
-                        ) : (
-                          <Badge>off</Badge>
-                        )}
-                      </td>
-                      <td className="td text-slate-400 text-xs max-w-[180px] truncate" title={a.note || ''}>
-                        {a.note || '—'}
-                      </td>
-                      <td className="td text-right whitespace-nowrap">
-                        {a.triggered && (
                           <button
-                            className="text-xs text-accent mr-2"
+                            className="text-xs text-slate-400 mr-2"
                             onClick={async () => {
-                              await client.updateAlert(a.id, { triggered: false });
+                              await client.updateAlert(a.id, { enabled: !a.enabled });
+                              data.reload();
+                            }}
+                          >
+                            {a.enabled ? 'disable' : 'enable'}
+                          </button>
+                          <button
+                            className="text-xs text-slate-500 hover:text-bear"
+                            onClick={async () => {
+                              await client.deleteAlert(a.id);
                               data.reload();
                               refreshCount();
                             }}
                           >
-                            ack
+                            del
                           </button>
-                        )}
-                        <button
-                          className="text-xs text-slate-400 mr-2"
-                          onClick={async () => {
-                            await client.updateAlert(a.id, { enabled: !a.enabled });
-                            data.reload();
-                          }}
-                        >
-                          {a.enabled ? 'disable' : 'enable'}
-                        </button>
-                        <button
-                          className="text-xs text-slate-500 hover:text-bear"
-                          onClick={async () => {
-                            await client.deleteAlert(a.id);
-                            data.reload();
-                            refreshCount();
-                          }}
-                        >
-                          del
-                        </button>
-                      </td>
-                    </tr>
-                    {isOpen && hasPlan && (
-                      <tr className="bg-ink-850/40">
-                        <td className="td text-xs text-slate-300" colSpan={6}>
-                          <div className="grid sm:grid-cols-3 gap-3 py-1">
-                            <PlanCell label="Entry plan" text={a.plan?.entry} />
-                            <PlanCell label="Exit plan" text={a.plan?.exit} />
-                            <PlanCell label="Suggested exit" text={a.plan?.suggestedExit} />
-                          </div>
                         </td>
                       </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        </Card>
-      )}
+                      {isOpen && hasPlan && (
+                        <tr className="bg-ink-850/40">
+                          <td className="td text-xs text-slate-300" colSpan={6}>
+                            <div className="grid sm:grid-cols-3 gap-3 py-1">
+                              <PlanCell label="Entry plan" text={a.plan?.entry} />
+                              <PlanCell label="Exit plan" text={a.plan?.exit} />
+                              <PlanCell label="Suggested exit" text={a.plan?.suggestedExit} />
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CollapsibleCard>
 
       <p className="text-[11px] text-slate-500">
         Alerts are one-shot: once triggered they stay flagged until you “ack” (re-arm). An option <em>entry</em> alert

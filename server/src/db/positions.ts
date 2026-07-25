@@ -1,4 +1,5 @@
 import { db } from './index';
+import { safeJsonParse } from '../util/json';
 
 export type AssetType = 'stock' | 'option';
 export type Side = 'long' | 'short';
@@ -30,6 +31,12 @@ export interface PositionInput {
   checklist?: ChecklistItem[] | null;
   stopPrice?: number | null;
   targetPrice?: number | null;
+  /** The order_intents.id whose live fill produced this position (entry-side
+   *  execution-quality provenance). Omit for a manually logged/imported trade. */
+  sourceIntentId?: number | null;
+  /** The Webull account this lot lives in (imported/live-traded only). Omit
+   *  for a manually-logged position — there's no brokerage account to record. */
+  accountId?: string | null;
 }
 
 export interface PositionExit {
@@ -40,6 +47,8 @@ export interface PositionExit {
   exitDate: string;
   fees: number;
   notes: string | null;
+  /** The order_intents.id whose live fill produced this exit. */
+  sourceIntentId: number | null;
   createdAt: number;
 }
 
@@ -64,6 +73,8 @@ export interface Position {
   checklist: ChecklistItem[];
   stopPrice: number | null;
   targetPrice: number | null;
+  sourceIntentId: number | null;
+  accountId: string | null;
   createdAt: number;
   updatedAt: number;
   exits: PositionExit[];
@@ -92,6 +103,8 @@ interface PositionRow {
   checklist: string | null;
   stop_price: number | null;
   target_price: number | null;
+  source_intent_id: number | null;
+  account_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -104,6 +117,7 @@ interface ExitRow {
   exit_date: string;
   fees: number;
   notes: string | null;
+  source_intent_id: number | null;
   created_at: number;
 }
 
@@ -116,6 +130,7 @@ function mapExit(r: ExitRow): PositionExit {
     exitDate: r.exit_date,
     fees: r.fees,
     notes: r.notes,
+    sourceIntentId: r.source_intent_id,
     createdAt: r.created_at,
   };
 }
@@ -126,9 +141,32 @@ function exitsFor(positionId: number): PositionExit[] {
   ).map(mapExit);
 }
 
-function mapPosition(row: PositionRow): Position {
-  const exits = exitsFor(row.id);
-  const closedQty = exits.reduce((s, e) => s + e.quantity, 0);
+/** One query for every id instead of one per id — for listPositions() below,
+ *  which otherwise fetches each returned position's own exits separately. */
+function exitsForMany(positionIds: number[]): Map<number, PositionExit[]> {
+  const byPosition = new Map<number, PositionExit[]>();
+  if (positionIds.length === 0) return byPosition;
+  const rows = db
+    .prepare(
+      `SELECT * FROM position_exits WHERE position_id IN (${positionIds.map(() => '?').join(',')}) ORDER BY exit_date, id`,
+    )
+    .all(...positionIds) as ExitRow[];
+  for (const r of rows) {
+    const exit = mapExit(r);
+    const arr = byPosition.get(exit.positionId);
+    if (arr) arr.push(exit);
+    else byPosition.set(exit.positionId, [exit]);
+  }
+  return byPosition;
+}
+
+/** `exits`, when passed, must already be this row's own — a caller batching
+ *  many rows (listPositions()) supplies its own pre-fetched slice instead of
+ *  letting this function fetch it itself, one query per row. Omitted (the
+ *  single-position callers below), it falls back to that one-off fetch. */
+function mapPosition(row: PositionRow, exits?: PositionExit[]): Position {
+  const resolvedExits = exits ?? exitsFor(row.id);
+  const closedQty = resolvedExits.reduce((s, e) => s + e.quantity, 0);
   return {
     id: row.id,
     assetType: row.asset_type,
@@ -144,15 +182,17 @@ function mapPosition(row: PositionRow): Position {
     expiration: row.expiration,
     multiplier: row.multiplier,
     status: row.status,
-    tags: row.tags ? (JSON.parse(row.tags) as string[]) : [],
+    tags: safeJsonParse<string[]>(row.tags, []),
     grade: row.grade,
     notes: row.notes,
-    checklist: row.checklist ? (JSON.parse(row.checklist) as ChecklistItem[]) : [],
+    checklist: safeJsonParse<ChecklistItem[]>(row.checklist, []),
     stopPrice: row.stop_price,
     targetPrice: row.target_price,
+    sourceIntentId: row.source_intent_id,
+    accountId: row.account_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    exits,
+    exits: resolvedExits,
     remainingQuantity: Math.max(0, row.quantity - closedQty),
   };
 }
@@ -161,6 +201,18 @@ export interface PositionFilter {
   status?: 'open' | 'closed';
   symbol?: string;
   assetType?: AssetType;
+  /** Exact-match a Webull account. A position with no recorded account
+   *  (manually logged, or a legacy row from before this column existed)
+   *  never matches unless includeUnassignedAccount is also set. */
+  accountId?: string;
+  /** Only meaningful together with accountId. Also matches positions with NO
+   *  recorded account — safe for "is this symbol already tracked under this
+   *  account" dedup checks (an unassigned row effectively gets claimed by
+   *  whichever account's sync confirms it first). NEVER safe for
+   *  close-detection: closing something we're not certain belongs to this
+   *  account would risk the exact false-close bug this column exists to
+   *  prevent, so the close-detector deliberately omits this flag. */
+  includeUnassignedAccount?: boolean;
 }
 
 export function listPositions(filter: PositionFilter = {}): Position[] {
@@ -178,13 +230,32 @@ export function listPositions(filter: PositionFilter = {}): Position[] {
     where.push('asset_type = ?');
     params.push(filter.assetType);
   }
+  if (filter.accountId) {
+    where.push(filter.includeUnassignedAccount ? '(account_id = ? OR account_id IS NULL)' : 'account_id = ?');
+    params.push(filter.accountId);
+  }
   const sql = `SELECT * FROM positions ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY entry_date DESC, id DESC`;
-  return (db.prepare(sql).all(...params) as PositionRow[]).map(mapPosition);
+  const rows = db.prepare(sql).all(...params) as PositionRow[];
+  const exitsByPosition = exitsForMany(rows.map((r) => r.id));
+  return rows.map((row) => mapPosition(row, exitsByPosition.get(row.id) ?? []));
 }
 
 export function getPosition(id: number): Position | undefined {
   const row = db.prepare('SELECT * FROM positions WHERE id = ?').get(id) as PositionRow | undefined;
   return row ? mapPosition(row) : undefined;
+}
+
+/** Every distinct non-null account_id the journal has ever recorded (any
+ *  status). Used by the Webull close-sync to tell a single-account setup —
+ *  where an unassigned legacy row can only belong to the one account being
+ *  synced — apart from a genuine multi-account one, where auto-closing an
+ *  unassigned row could be a cross-account false close. A closed position
+ *  still counts: it's proof that account existed. */
+export function listKnownAccountIds(): string[] {
+  const rows = db
+    .prepare("SELECT DISTINCT account_id FROM positions WHERE account_id IS NOT NULL AND account_id != ''")
+    .all() as { account_id: string }[];
+  return rows.map((r) => r.account_id);
 }
 
 export function createPosition(input: PositionInput): Position {
@@ -195,8 +266,8 @@ export function createPosition(input: PositionInput): Position {
       `INSERT INTO positions
         (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
          option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
-         stop_price, target_price, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?)`,
+         stop_price, target_price, source_intent_id, account_id, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       input.assetType,
@@ -217,6 +288,8 @@ export function createPosition(input: PositionInput): Position {
       input.checklist && input.checklist.length ? JSON.stringify(input.checklist) : null,
       input.stopPrice ?? null,
       input.targetPrice ?? null,
+      input.sourceIntentId ?? null,
+      input.accountId ?? null,
       now,
       now,
     );
@@ -234,6 +307,9 @@ export interface PositionPatch {
   entryTime?: string | null;
   stopPrice?: number | null;
   targetPrice?: number | null;
+  /** Manual correction — e.g. tagging a legacy pre-migration row, or fixing
+   *  a row the account-blind sync bug (2026-07-17 and earlier) mis-tracked. */
+  accountId?: string | null;
 }
 
 export function updatePosition(id: number, patch: PositionPatch): Position | undefined {
@@ -255,6 +331,7 @@ export function updatePosition(id: number, patch: PositionPatch): Position | und
   if (patch.entryTime !== undefined) set('entry_time', patch.entryTime);
   if (patch.stopPrice !== undefined) set('stop_price', patch.stopPrice);
   if (patch.targetPrice !== undefined) set('target_price', patch.targetPrice);
+  if (patch.accountId !== undefined) set('account_id', patch.accountId);
   if (fields.length === 0) return existing;
   set('updated_at', Date.now());
   params.push(id);
@@ -273,6 +350,8 @@ export interface ExitInput {
   exitDate: string;
   fees?: number;
   notes?: string | null;
+  /** The order_intents.id whose live fill produced this exit. */
+  sourceIntentId?: number | null;
 }
 
 export function addExit(positionId: number, input: ExitInput): Position | undefined {
@@ -280,9 +359,18 @@ export function addExit(positionId: number, input: ExitInput): Position | undefi
   if (!pos) return undefined;
   const now = Date.now();
   db.prepare(
-    `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, created_at)
-     VALUES (?,?,?,?,?,?,?)`,
-  ).run(positionId, input.quantity, input.exitPrice, input.exitDate, input.fees ?? 0, input.notes ?? null, now);
+    `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, source_intent_id, created_at)
+     VALUES (?,?,?,?,?,?,?,?)`,
+  ).run(
+    positionId,
+    input.quantity,
+    input.exitPrice,
+    input.exitDate,
+    input.fees ?? 0,
+    input.notes ?? null,
+    input.sourceIntentId ?? null,
+    now,
+  );
   recomputeStatus(positionId);
   return getPosition(positionId);
 }
@@ -302,6 +390,7 @@ export interface ImportableExit {
   exitDate: string;
   fees?: number;
   notes?: string | null;
+  sourceIntentId?: number | null;
   createdAt?: number;
 }
 
@@ -325,6 +414,8 @@ export interface ImportablePosition {
   checklist?: ChecklistItem[] | null;
   stopPrice?: number | null;
   targetPrice?: number | null;
+  sourceIntentId?: number | null;
+  accountId?: string | null;
   createdAt?: number;
   updatedAt?: number;
   exits?: ImportableExit[];
@@ -345,12 +436,12 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
     `INSERT INTO positions
        (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
         option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
-        stop_price, target_price, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        stop_price, target_price, source_intent_id, account_id, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   );
   const insertExit = db.prepare(
-    `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, created_at)
-     VALUES (?,?,?,?,?,?,?)`,
+    `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, source_intent_id, created_at)
+     VALUES (?,?,?,?,?,?,?,?)`,
   );
   const tx = db.transaction((items: ImportablePosition[]) => {
     if (mode === 'replace') db.prepare('DELETE FROM positions').run();
@@ -378,12 +469,23 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
         p.checklist && p.checklist.length ? JSON.stringify(p.checklist) : null,
         p.stopPrice ?? null,
         p.targetPrice ?? null,
+        p.sourceIntentId ?? null,
+        p.accountId ?? null,
         p.createdAt ?? now,
         p.updatedAt ?? now,
       );
       const pid = Number(res.lastInsertRowid);
       for (const e of p.exits ?? []) {
-        insertExit.run(pid, e.quantity, e.exitPrice, e.exitDate, e.fees ?? 0, e.notes ?? null, e.createdAt ?? now);
+        insertExit.run(
+          pid,
+          e.quantity,
+          e.exitPrice,
+          e.exitDate,
+          e.fees ?? 0,
+          e.notes ?? null,
+          e.sourceIntentId ?? null,
+          e.createdAt ?? now,
+        );
       }
       recomputeStatus(pid);
       imported++;

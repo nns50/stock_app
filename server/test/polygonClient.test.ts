@@ -1,0 +1,81 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { config } from '../src/config';
+import { fetchPolygonBars, PolygonError } from '../src/services/autotrading/polygonClient';
+
+const orig = { ...config.polygon };
+afterEach(() => {
+  Object.assign(config.polygon, orig);
+  vi.restoreAllMocks();
+});
+
+function jsonResponse(body: unknown, ok = true, status = 200): Response {
+  return { ok, status, json: async () => body } as Response;
+}
+
+describe('fetchPolygonBars', () => {
+  it('throws PolygonError without an API key (no network call)', async () => {
+    Object.assign(config.polygon, { apiKey: '' });
+    const spy = vi.spyOn(globalThis, 'fetch');
+    await expect(fetchPolygonBars('AAPL', 'daily', '2024-01-01', '2024-01-31')).rejects.toThrow(PolygonError);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('maps o/h/l/c/v/t to the app Candle shape and sends Bearer auth', async () => {
+    Object.assign(config.polygon, { apiKey: 'test-key' });
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse({
+        results: [{ o: 100, h: 105, l: 99, c: 103, v: 1_000_000, t: 1704067200000 }],
+      }),
+    );
+    const bars = await fetchPolygonBars('aapl', 'daily', '2024-01-01', '2024-01-31');
+    expect(bars).toEqual([{ time: 1704067200000, open: 100, high: 105, low: 99, close: 103, volume: 1_000_000 }]);
+
+    const [url, opts] = spy.mock.calls[0];
+    expect(String(url)).toContain('/v2/aggs/ticker/AAPL/range/1/day/2024-01-01/2024-01-31');
+    expect(String(url)).toContain('adjusted=true');
+    expect((opts as RequestInit).headers).toMatchObject({ Authorization: 'Bearer test-key' });
+  });
+
+  it('maps each Timeframe to the correct Polygon multiplier/timespan', async () => {
+    Object.assign(config.polygon, { apiKey: 'k' });
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ results: [] }));
+    const cases: [string, string][] = [
+      ['1min', '/range/1/minute/'],
+      ['5min', '/range/5/minute/'],
+      ['15min', '/range/15/minute/'],
+      ['daily', '/range/1/day/'],
+      ['weekly', '/range/1/week/'],
+    ];
+    for (const [tf, expected] of cases) {
+      spy.mockClear();
+      await fetchPolygonBars('AAPL', tf as never, '2024-01-01', '2024-01-02');
+      expect(String(spy.mock.calls[0][0])).toContain(expected);
+    }
+  });
+
+  it('follows next_url pagination until exhausted', async () => {
+    Object.assign(config.polygon, { apiKey: 'k' });
+    const page1 = jsonResponse({
+      results: [{ o: 1, h: 1, l: 1, c: 1, v: 1, t: 1 }],
+      next_url: 'https://api.polygon.io/v2/aggs/ticker/AAPL/range/1/day/2024-01-01/2024-01-31?cursor=abc',
+    });
+    const page2 = jsonResponse({ results: [{ o: 2, h: 2, l: 2, c: 2, v: 2, t: 2 }] });
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(page1).mockResolvedValueOnce(page2);
+    const bars = await fetchPolygonBars('AAPL', 'daily', '2024-01-01', '2024-01-31');
+    expect(bars).toHaveLength(2);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(String(spy.mock.calls[1][0])).toContain('cursor=abc');
+  });
+
+  it('throws PolygonError with the response error message on a non-ok response', async () => {
+    Object.assign(config.polygon, { apiKey: 'k' });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ error: 'Unknown API Key' }, false, 401));
+    await expect(fetchPolygonBars('AAPL', 'daily', '2024-01-01', '2024-01-31')).rejects.toThrow(/Unknown API Key/);
+  });
+
+  it('treats a missing results array as zero bars, not an error', async () => {
+    Object.assign(config.polygon, { apiKey: 'k' });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ status: 'OK' }));
+    expect(await fetchPolygonBars('AAPL', 'daily', '2024-01-01', '2024-01-31')).toEqual([]);
+  });
+});

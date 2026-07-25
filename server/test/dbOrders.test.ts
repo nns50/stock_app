@@ -4,6 +4,7 @@ import {
   createIntent,
   transitionIntent,
   getIntent,
+  getIntents,
   getEvents,
   listIntents,
   countTodaysOrders,
@@ -13,7 +14,12 @@ import { IllegalTransitionError, OrderState } from '../src/services/trading/orde
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
 beforeAll(() => initDb());
-beforeEach(() => db.exec('DELETE FROM order_events; DELETE FROM order_intents;'));
+beforeEach(() =>
+  db.exec(
+    'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; ' +
+      'DELETE FROM order_events; DELETE FROM order_intents;',
+  ),
+);
 
 const stockBuy: OrderIntent = {
   symbol: 'aapl',
@@ -65,6 +71,13 @@ describe('order intents persistence', () => {
     expect(isComboOrder(rec)).toBe(false);
   });
 
+  it('persists every order type, including stop / stop-limit (no stale order_type CHECK)', () => {
+    // A stale CHECK(order_type IN ('market','limit')) used to throw here for stops.
+    expect(createIntent({ ...stockBuy, orderType: 'stop_loss' }, 'k-stop').orderType).toBe('stop_loss');
+    expect(createIntent({ ...stockBuy, orderType: 'stop_loss_limit' }, 'k-stoplim').orderType).toBe('stop_loss_limit');
+    expect(createIntent({ ...stockBuy, orderType: 'market' }, 'k-mkt').orderType).toBe('market');
+  });
+
   it('is idempotent on the client key', () => {
     const a = createIntent(stockBuy, 'key-1');
     const b = createIntent({ ...stockBuy, quantity: 999 }, 'key-1'); // same key, different body
@@ -92,6 +105,20 @@ describe('order intents persistence', () => {
       'acknowledged',
       'filled',
     ]);
+  });
+
+  it('getIntents batches a lookup for many ids into one query, keyed by id', () => {
+    const a = createIntent(stockBuy, 'key-batch-a');
+    const b = createIntent(stockBuy, 'key-batch-b');
+    const map = getIntents([a.id, b.id, 999_999]); // a nonexistent id is just absent, not an error
+    expect(map.size).toBe(2);
+    expect(map.get(a.id)!.idempotencyKey).toBe('key-batch-a');
+    expect(map.get(b.id)!.idempotencyKey).toBe('key-batch-b');
+    expect(map.has(999_999)).toBe(false);
+  });
+
+  it('getIntents returns an empty map for an empty id list (no query)', () => {
+    expect(getIntents([]).size).toBe(0);
   });
 
   it('rejects an illegal transition and leaves state + audit untouched', () => {
@@ -154,5 +181,21 @@ describe('countTodaysOrders (the max-orders/day basis)', () => {
     walk('fill', 'validated', 'confirmed', 'submitted', 'acknowledged', 'filled');
     for (let n = 0; n < 12; n++) walk(`r${n}`, 'validated', 'confirmed', 'submitted', 'rejected');
     expect(countTodaysOrders()).toBe(1);
+  });
+
+  // Buckets by the ET trading day, not the server-local (UTC in prod) day. Uses
+  // absolute UTC instants so the expectation is independent of the test host's
+  // timezone. now = 2026-07-14 22:00 ET (EDT), so the ET day started at
+  // 2026-07-14T04:00:00Z.
+  it('counts against the ET trading day, not server-local midnight', () => {
+    const now = Date.UTC(2026, 6, 15, 2, 0, 0); // 2026-07-15T02:00Z == 2026-07-14 22:00 ET
+    const submittedAt = (key: string, at: number) => {
+      const id = walk(key, 'validated', 'confirmed', 'submitted');
+      db.prepare("UPDATE order_events SET created_at = ? WHERE intent_id = ? AND state = 'submitted'").run(at, id);
+      return id;
+    };
+    submittedAt('sameEtDay', Date.UTC(2026, 6, 14, 5, 0, 0)); // 01:00 ET Jul 14 — same ET day, counts
+    submittedAt('prevEtDay', Date.UTC(2026, 6, 14, 3, 0, 0)); // 23:00 ET Jul 13 — previous ET day, excluded
+    expect(countTodaysOrders(now)).toBe(1);
   });
 });

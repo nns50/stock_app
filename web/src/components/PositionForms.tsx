@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { client } from '../api/client';
-import { fmtNum, fmtUsd, todayISO } from '../lib/format';
+import { fmtDate, fmtNum, fmtUsd, todayISO } from '../lib/format';
 import { useLocalStorage } from '../lib/hooks';
 import { CHECKLIST_SETTING_KEY, DEFAULT_CHECKLIST_RULES, rulesFromSetting } from '../lib/checklist';
 import { Field, Modal, NumberInput, Segmented } from './ui';
 import { useToast } from './ToastContext';
-import type { Position, RiskSizingResult } from '../api/types';
+import { useConfirm } from './ConfirmContext';
+import type { ClosePositionResult, Position, RiskSizingResult } from '../api/types';
 
 const GRADES = ['', 'A', 'B', 'C', 'D', 'F'];
 
@@ -213,7 +214,7 @@ export function LogTradeModal({
           value={assetType}
           onChange={setAssetType}
         />
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid sm:grid-cols-2 gap-3">
           <Field label="Symbol">
             <input
               className="input"
@@ -245,7 +246,7 @@ export function LogTradeModal({
           </Field>
         </div>
         {assetType === 'option' && (
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid sm:grid-cols-3 gap-3">
             <Field label="Type">
               <select
                 className="input"
@@ -265,7 +266,7 @@ export function LogTradeModal({
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid sm:grid-cols-2 gap-3">
           <Field label="Stop (optional)" hint="Watched by exit alerts">
             <NumberInput value={stopPrice} onChange={setStopPrice} step={0.01} />
           </Field>
@@ -285,7 +286,7 @@ export function LogTradeModal({
           </button>
           {showSizer && (
             <div className="mt-2 space-y-2 rounded-md bg-ink-700/40 p-2.5">
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid sm:grid-cols-2 gap-2">
                 <Field label="Account $">
                   <NumberInput value={accountSize} onChange={(v) => setAccountSize(v ?? 0)} />
                 </Field>
@@ -343,7 +344,7 @@ export function LogTradeModal({
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid sm:grid-cols-2 gap-3">
           <Field label="Tags (comma-sep)">
             <input
               className="input"
@@ -473,6 +474,23 @@ export function ExitModal({
   const [busy, setBusy] = useState(false);
   const { toast } = useToast();
 
+  // Re-sync when a different position is opened. The modal stays mounted
+  // (hidden via Modal `open`), so its state is created once (when position was
+  // null); without this the previous position's exit price/date/fees/notes
+  // bleed into the next one and the Quantity default never populates. Mirrors
+  // CloseModal/JournalEditModal's re-sync-on-key-change pattern.
+  const key = position?.id;
+  const [lastKey, setLastKey] = useState(key);
+  if (key !== lastKey) {
+    setLastKey(key);
+    setQuantity(position?.remainingQuantity);
+    setExitPrice(undefined);
+    setExitDate(todayISO());
+    setFees(0);
+    setNotes('');
+    setError(undefined);
+  }
+
   const submit = async () => {
     if (!position) return;
     if (!quantity || exitPrice === undefined) return setError('Quantity and exit price are required.');
@@ -513,7 +531,7 @@ export function ExitModal({
             Remaining open: <span className="text-slate-200">{position.remainingQuantity}</span>{' '}
             {position.assetType === 'option' ? 'contracts' : 'shares'}
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid sm:grid-cols-2 gap-3">
             <Field label="Quantity">
               <NumberInput value={quantity} onChange={setQuantity} min={0} max={position.remainingQuantity} />
             </Field>
@@ -537,6 +555,133 @@ export function ExitModal({
   );
 }
 
+/** Manually close a REAL (broker-tracked) position — places an actual
+ *  closing order at the broker, gated by the same type-to-confirm phrase the
+ *  Trade page uses for any other live order (2026-07-16). Distinct from
+ *  ExitModal above: that one only ever writes a journal entry (the right
+ *  action for a manually-logged/paper-tracked position — there's no broker
+ *  order to place against it); this one is for a position PositionsPage.tsx
+ *  has determined is live (see its own isWebullTracked-mirroring check). */
+export function CloseModal({
+  position,
+  onClose,
+  onSaved,
+}: {
+  position: Position | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [accountId, setAccountId] = useLocalStorage('trade.accountId', '');
+  const [confirmText, setConfirmText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<ClosePositionResult>();
+  const { toast } = useToast();
+
+  // Re-sync when a different position is opened — confirmText/result must
+  // never leak from a previously-closed position into the next one (mirrors
+  // JournalEditModal's own re-sync-on-key-change pattern above).
+  const key = position?.id;
+  const [lastKey, setLastKey] = useState(key);
+  if (key !== lastKey) {
+    setLastKey(key);
+    setConfirmText('');
+    setResult(undefined);
+  }
+
+  const closeSide = position?.side === 'long' ? 'SELL' : 'BUY';
+  const phrase = position ? `${closeSide} ${position.remainingQuantity} ${position.symbol.toUpperCase()}` : '';
+  const armed = confirmText.trim().toUpperCase() === phrase;
+
+  const submit = async () => {
+    if (!position || !armed || !accountId.trim()) return;
+    setBusy(true);
+    try {
+      const r = await client.closePosition(position.id, accountId.trim(), confirmText.trim());
+      setResult(r);
+      if (r.placed) {
+        toast(`Close order placed for ${position.symbol}`, { type: 'success' });
+        onSaved();
+      }
+    } catch (e) {
+      setResult({ ok: false, placed: false, reason: 'account_error', error: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={!!position}
+      onClose={onClose}
+      title={position ? `Close ${position.symbol} — real order` : 'Close position'}
+      footer={
+        <>
+          <button className="btn-ghost" onClick={onClose}>
+            {result?.placed ? 'Done' : 'Cancel'}
+          </button>
+          {!result?.placed && (
+            <button
+              className="btn-primary !bg-bear !border-bear disabled:opacity-40"
+              disabled={busy || !armed || !accountId.trim()}
+              onClick={submit}
+            >
+              {busy ? 'Placing…' : 'Close position'}
+            </button>
+          )}
+        </>
+      }
+    >
+      {position && (
+        <div className="space-y-3">
+          <div className="text-sm text-slate-400">
+            {position.remainingQuantity} {position.assetType === 'option' ? 'contracts' : 'shares'} of{' '}
+            <span className="text-slate-200">{position.symbol}</span> ({position.side})
+            {position.sourceIntentId !== null && (
+              <span className="block text-xs text-slate-500 mt-1">
+                A resting stop/target order on this position, if any, is cancelled first automatically.
+              </span>
+            )}
+          </div>
+          <Field label="Webull cash account_id">
+            <input
+              className="input"
+              value={accountId}
+              onChange={(e) => setAccountId(e.target.value)}
+              placeholder="e.g. 12345678"
+            />
+          </Field>
+          <div className="rounded-md bg-bear/10 border border-bear/40 p-3 space-y-2">
+            <p className="text-xs text-slate-400">
+              This places a <b>real</b> closing order at your broker — a marketable limit near the current market price
+              when submitted, for your full remaining position. Type <code className="text-slate-200">{phrase}</code> to
+              arm. The server re-checks every guardrail, the kill switch, and <code>TRADING_ENABLED</code> before it
+              fires.
+            </p>
+            <input
+              className="input font-mono"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value.toUpperCase())}
+              placeholder={phrase}
+              aria-label="type to confirm closing this position"
+            />
+          </div>
+          {result &&
+            (result.placed ? (
+              <div className="rounded-md bg-bull/15 text-bull text-sm p-2">
+                ✓ Close order placed{result.broker?.orderId ? ` · broker order ${result.broker.orderId}` : ''}. It can
+                take a few minutes to fill and show here as closed.
+              </div>
+            ) : (
+              <div className="rounded-md bg-bear/15 text-bear text-sm p-2">
+                ✕ Not placed — {result.error || result.broker?.error || `reason: ${result.reason}`}
+              </div>
+            ))}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 export function JournalEditModal({
   position,
   onClose,
@@ -549,8 +694,11 @@ export function JournalEditModal({
   const [tags, setTags] = useState((position?.tags ?? []).join(', '));
   const [grade, setGrade] = useState(position?.grade ?? '');
   const [notes, setNotes] = useState(position?.notes ?? '');
+  const [accountId, setAccountId] = useState(position?.accountId ?? '');
   const [busy, setBusy] = useState(false);
+  const [exitBusyId, setExitBusyId] = useState<number | null>(null);
   const { toast } = useToast();
+  const confirm = useConfirm();
 
   // Re-sync when a different position is opened.
   const key = position?.id;
@@ -560,6 +708,7 @@ export function JournalEditModal({
     setTags((position?.tags ?? []).join(', '));
     setGrade(position?.grade ?? '');
     setNotes(position?.notes ?? '');
+    setAccountId(position?.accountId ?? '');
   }
 
   const submit = async () => {
@@ -573,12 +722,36 @@ export function JournalEditModal({
           .filter(Boolean),
         grade: grade || null,
         notes: notes || null,
+        accountId: accountId.trim() || null,
       });
       onSaved();
       onClose();
       toast('Journal updated', { type: 'success' });
     } finally {
       setBusy(false);
+    }
+  };
+
+  const removeExit = async (exitId: number) => {
+    if (!position) return;
+    const ok = await confirm({
+      title: 'Remove this exit?',
+      body: 'Deletes this exit record and reopens the position for the quantity it closed. Use this to undo a mistaken or incorrect exit entry — e.g. one the Webull broker-truth sync auto-recorded against the wrong account.',
+      confirmLabel: 'Remove exit',
+      danger: true,
+    });
+    if (!ok) return;
+    setExitBusyId(exitId);
+    try {
+      await client.deleteExit(position.id, exitId);
+      onSaved();
+      // Closes rather than leaving a now-stale exits list on screen — this
+      // modal's `position` prop is a snapshot from when it opened, not a
+      // live subscription, so it won't reflect the removal on its own.
+      onClose();
+      toast('Exit removed — position reopened for that quantity', { type: 'success' });
+    } finally {
+      setExitBusyId(null);
     }
   };
 
@@ -614,6 +787,43 @@ export function JournalEditModal({
         <Field label="Notes">
           <textarea className="input h-24" value={notes} onChange={(e) => setNotes(e.target.value)} />
         </Field>
+        <Field
+          label="Webull account"
+          hint="Which brokerage account this lot lives in — used to keep the Webull position sync from comparing it against the wrong account. Leave blank for a manually-logged position."
+        >
+          <input
+            className="input font-mono"
+            value={accountId}
+            onChange={(e) => setAccountId(e.target.value)}
+            placeholder="e.g. 1234567_INDIVIDUAL_CASH"
+          />
+        </Field>
+        {position && position.exits.length > 0 && (
+          <div>
+            <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-1">Exits</h4>
+            <div className="space-y-1">
+              {position.exits.map((e) => (
+                <div
+                  key={e.id}
+                  className="flex items-center justify-between gap-2 rounded border border-ink-700/50 px-2 py-1 text-xs"
+                >
+                  <span className="text-slate-300">
+                    {fmtDate(e.exitDate)} — {e.quantity} @ {fmtUsd(e.exitPrice)}
+                    {e.notes && <span className="text-slate-500"> · {e.notes}</span>}
+                  </span>
+                  <button
+                    className="text-slate-500 hover:text-bear shrink-0"
+                    onClick={() => removeExit(e.id)}
+                    disabled={exitBusyId === e.id}
+                    title="Delete this exit and reopen the position for that quantity"
+                  >
+                    {exitBusyId === e.id ? 'removing…' : 'remove'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </Modal>
   );

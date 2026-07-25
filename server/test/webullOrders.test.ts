@@ -9,6 +9,7 @@ import {
   webullOrderStatus,
   webullCancelOrder,
   webullReplaceOrder,
+  listWebullOpenOrders,
   newClientOrderId,
 } from '../src/providers/webull/orders';
 import type { OrderIntent } from '../src/services/trading/guardrails';
@@ -47,6 +48,22 @@ describe('webull stock order + preview', () => {
       support_trading_session: 'CORE',
       limit_price: '5',
     });
+  });
+
+  it('defaults a sell to SELL (isShort omitted)', () => {
+    expect(buildWebullStockOrder(intent({ side: 'sell' }), 'C').side).toBe('SELL');
+  });
+
+  it('a plain sell-to-close still maps to SELL even when isShort is explicitly false', () => {
+    expect(buildWebullStockOrder(intent({ side: 'sell' }), 'C', false).side).toBe('SELL');
+  });
+
+  it('maps a sell that would open/extend a net-short position to SHORT, not SELL', () => {
+    expect(buildWebullStockOrder(intent({ side: 'sell' }), 'C', true).side).toBe('SHORT');
+  });
+
+  it('a buy stays BUY regardless of isShort (isShort only ever applies to a sell)', () => {
+    expect(buildWebullStockOrder(intent({ side: 'buy' }), 'C', true).side).toBe('BUY');
   });
 
   it('omits limit_price for a market order', () => {
@@ -104,9 +121,42 @@ describe('webull stock order + preview', () => {
       client_order_id: 'CID-MASTER',
       side: 'BUY',
       limit_price: '10',
+      // Entry stays DAY — an unfilled entry shouldn't keep trying at a stale
+      // price for days. Unlike the exit legs below, this is a fresh order
+      // with no position to protect yet.
+      time_in_force: 'DAY',
     });
-    expect(tp).toMatchObject({ combo_type: 'STOP_PROFIT', side: 'SELL', order_type: 'LIMIT', limit_price: '12' });
-    expect(sl).toMatchObject({ combo_type: 'STOP_LOSS', side: 'SELL', order_type: 'STOP_LOSS', stop_price: '9' });
+    expect(tp).toMatchObject({
+      combo_type: 'STOP_PROFIT',
+      side: 'SELL',
+      order_type: 'LIMIT',
+      limit_price: '12',
+      // GTC, not DAY — see bracketExit()'s own doc comment: these legs
+      // protect an already-open position, so they must outlive one session.
+      time_in_force: 'GTC',
+    });
+    expect(sl).toMatchObject({
+      combo_type: 'STOP_LOSS',
+      side: 'SELL',
+      order_type: 'STOP_LOSS',
+      stop_price: '9',
+      time_in_force: 'GTC',
+    });
+  });
+
+  it('buildOrderRequest: threads isShort through to a bracketed MASTER entry (a short entry still needs its bracket)', () => {
+    const req = buildOrderRequest(
+      intent({ orderType: 'limit', limitPrice: 10, side: 'sell', bracket: { takeProfitPrice: 8, stopLossPrice: 11 } }),
+      'CID-MASTER',
+      true,
+    );
+    const [master] = req.new_orders as Array<Record<string, string>>;
+    expect(master.side).toBe('SHORT');
+  });
+
+  it('buildOrderRequest: threads isShort through to a plain (non-bracketed) sell order', () => {
+    const req = buildOrderRequest(intent({ side: 'sell' }), 'CID', true);
+    expect((req.new_orders[0] as Record<string, string>).side).toBe('SHORT');
   });
 
   it('buildOrderRequest: a single-leg option bracket is MASTER (option) + STOP_PROFIT + STOP_LOSS option exits', () => {
@@ -135,6 +185,11 @@ describe('webull stock order + preview', () => {
       side: 'SELL',
       limit_price: '0.9',
       instrument_type: 'OPTION',
+      // Stays DAY, deliberately NOT GTC like the stock version — Webull
+      // restricts OPTION sell-side orders to DAY-only (see
+      // optionBracketExit()'s own doc comment); this is a real,
+      // currently-unaddressed gap for live options specifically.
+      time_in_force: 'DAY',
     });
     expect(sl).toMatchObject({
       combo_type: 'STOP_LOSS',
@@ -142,6 +197,7 @@ describe('webull stock order + preview', () => {
       side: 'SELL',
       stop_price: '0.3',
       instrument_type: 'OPTION',
+      time_in_force: 'DAY',
     });
     // Exit legs are OPTION legs on the same contract, opposite (SELL) side.
     expect((tp.legs as Array<Record<string, string>>)[0]).toMatchObject({
@@ -388,6 +444,36 @@ describe('webull stock order + preview', () => {
     expect(body.new_orders[0].client_order_id).toBe('CID-ABC');
   });
 
+  it('places a permitted short with side SHORT (isShort=true), not SELL', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ order_id: 'WB-9' }),
+    } as Response);
+
+    await webullPlaceOrder('ACC1', intent({ side: 'sell' }), 'CID-SHORT', true);
+
+    const [, opts] = fetchSpy.mock.calls[0];
+    const body = JSON.parse((opts as RequestInit).body as string);
+    expect(body.new_orders[0].side).toBe('SHORT');
+  });
+
+  it('preview reflects the same SHORT side a place would submit', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ estimated_cost: '5.00' }),
+    } as Response);
+
+    await webullPreviewOrder('ACC1', intent({ side: 'sell' }), true);
+
+    const [, opts] = fetchSpy.mock.calls[0];
+    const body = JSON.parse((opts as RequestInit).body as string);
+    expect(body.new_orders[0].side).toBe('SHORT');
+  });
+
   it('surfaces a place error cleanly (claims no order id)', async () => {
     Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue({
@@ -418,6 +504,58 @@ describe('webull stock order + preview', () => {
     expect(r).toMatchObject({ ok: true, found: true, status: 'PENDING', brokerOrderId: 'WB-OPEN-1', totalQty: 2 });
     expect(fetchSpy).toHaveBeenCalledTimes(1); // short-circuits before history
     expect(String(fetchSpy.mock.calls[0][0])).toContain('/openapi/trade/order/open');
+  });
+
+  it('prefers an explicitly-tagged MASTER leg over array position for a bracket combo — even when it is NOT first', async () => {
+    // An adversarial review flagged that this response shape is unconfirmed
+    // against a real account, and that trusting orders[0] positionally could
+    // misread a cancelled OCO exit sibling as the entry's own status if the
+    // broker ever orders a bracket's legs with an exit first. This response
+    // deliberately puts a CANCELLED exit leg at index 0 and the real,
+    // FILLED master at index 1.
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const env = {
+      client_order_id: 'CID-BRACKET',
+      combo_order_id: 'WB-BRACKET-1',
+      orders: [
+        { combo_type: 'STOP_LOSS', status: 'CANCELLED', order_id: 'WB-BRACKET-SL' },
+        {
+          combo_type: 'MASTER',
+          status: 'FILLED',
+          order_id: 'WB-BRACKET-MASTER',
+          filled_quantity: '10',
+          filled_price: '100',
+        },
+        { combo_type: 'STOP_PROFIT', status: 'WORKING', order_id: 'WB-BRACKET-TP' },
+      ],
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify([env]),
+    } as Response);
+
+    const r = await webullOrderStatus('ACC1', 'CID-BRACKET');
+    expect(r.status).toBe('FILLED'); // the MASTER leg's status, not orders[0]'s (CANCELLED)
+    expect(r.filledQty).toBe(10);
+    expect(r.legs).toHaveLength(3); // all three legs still surfaced for exit-leg detection
+  });
+
+  it('falls back to orders[0] when no leg is tagged MASTER — unaffected for verticals/covered/iron-condors/plain orders', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const env = {
+      client_order_id: 'CID-VERTICAL',
+      combo_order_id: 'WB-VERTICAL-1',
+      orders: [{ combo_type: 'NORMAL', status: 'FILLED', order_id: 'WB-VERTICAL-1', filled_quantity: '1' }],
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify([env]),
+    } as Response);
+
+    const r = await webullOrderStatus('ACC1', 'CID-VERTICAL');
+    expect(r.status).toBe('FILLED');
   });
 
   it('reports not-found when neither open nor history has the order', async () => {
@@ -470,5 +608,166 @@ describe('webull stock order + preview', () => {
     const body = JSON.parse((opts as RequestInit).body as string);
     expect(body.account_id).toBe('ACC1');
     expect(body.modify_orders[0]).toEqual({ client_order_id: 'CID-REP', quantity: '2', limit_price: '179' });
+  });
+});
+
+describe('listWebullOpenOrders', () => {
+  it('flattens combo envelopes into one entry per sub-order, normalizing side/status', () => {
+    // A bracket envelope (MASTER buy + two exit sells, each with its OWN
+    // client_order_id) plus a standalone order — mirrors what the open-orders
+    // endpoint returns, and is the ONLY way to recover the exit legs' ids.
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const bracket = {
+      client_order_id: 'CID-MASTER',
+      combo_order_id: 'WB-COMBO',
+      orders: [
+        {
+          combo_type: 'MASTER',
+          client_order_id: 'CID-MASTER',
+          symbol: 'AAPL',
+          side: 'BUY',
+          status: 'FILLED',
+          order_id: 'WB-M',
+        },
+        {
+          combo_type: 'STOP_LOSS',
+          client_order_id: 'CID-SL',
+          symbol: 'AAPL',
+          side: 'SELL',
+          status: 'WORKING',
+          order_id: 'WB-SL',
+        },
+        {
+          combo_type: 'STOP_PROFIT',
+          client_order_id: 'CID-TP',
+          symbol: 'AAPL',
+          action: 'SELL',
+          status: 'WORKING',
+          order_id: 'WB-TP',
+        },
+      ],
+    };
+    const standalone = {
+      client_order_id: 'CID-SOLO',
+      orders: [{ client_order_id: 'CID-SOLO', symbol: 'MSFT', side: 'sell', status: 'PENDING', order_id: 'WB-SOLO' }],
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify([bracket, standalone]),
+    } as Response);
+
+    return listWebullOpenOrders('ACC1').then((r) => {
+      expect(r.ok).toBe(true);
+      expect(r.orders).toHaveLength(4);
+      // The two exit legs are recoverable by their OWN client_order_ids, side-normalized.
+      const sl = r.orders.find((o) => o.clientOrderId === 'CID-SL');
+      expect(sl).toMatchObject({ symbol: 'AAPL', side: 'sell', status: 'WORKING', comboType: 'STOP_LOSS' });
+      // `action` is accepted as a side alias.
+      expect(r.orders.find((o) => o.clientOrderId === 'CID-TP')).toMatchObject({ side: 'sell' });
+      expect(r.orders.find((o) => o.clientOrderId === 'CID-MASTER')).toMatchObject({ side: 'buy', status: 'FILLED' });
+    });
+  });
+
+  it('fails closed (ok:false, no orders) when the broker call errors', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      text: async () => JSON.stringify({ msg: 'server error' }),
+    } as Response);
+
+    const r = await listWebullOpenOrders('ACC1');
+    expect(r).toMatchObject({ ok: false, orders: [] });
+    expect(r.error).toMatch(/server error/i);
+  });
+
+  it('returns not-configured (never throws) when Webull keys are unset', async () => {
+    Object.assign(config.webull, { appKey: '', appSecret: '', region: '' });
+    const r = await listWebullOpenOrders('ACC1');
+    expect(r).toMatchObject({ ok: false, orders: [] });
+    expect(r.error).toMatch(/not configured/i);
+  });
+});
+
+describe('price rounding (defensive backstop for sub-penny broker prices)', () => {
+  // Regression: confirmed in production. Webull rejects the ENTIRE order
+  // (bracket legs included) if any price isn't an exact $0.01 increment
+  // ("Price increment should be 0.01 when price is equal to or greater than
+  // 0.9999"). An upstream caller's own arithmetic (an ATR-based stop/target, a
+  // computed net debit/credit) can produce a sub-penny float; priceStr() is
+  // the last checkpoint before a price is serialized for the broker, so every
+  // price field must come out rounded to the cent no matter what raw value
+  // came in. 98.14816 / 103.70368 mirror the exact sub-penny values decide.ts
+  // used to send (a 1.23456 ATR at a 1.5x/2R stop/target).
+
+  it('rounds a sub-penny limit_price/stop_price on a stock order', () => {
+    const o = buildWebullStockOrder(
+      intent({ orderType: 'stop_loss_limit', limitPrice: 98.14816, stopPrice: 103.70368 }),
+      'C',
+    );
+    expect(o.limit_price).toBe('98.15');
+    expect(o.stop_price).toBe('103.7');
+  });
+
+  it('rounds sub-penny stock bracket exit-leg prices (stop/target straight from an unrounded caller)', () => {
+    const req = buildOrderRequest(
+      intent({
+        orderType: 'limit',
+        limitPrice: 100,
+        bracket: { takeProfitPrice: 103.70368, stopLossPrice: 98.14816 },
+      }),
+      'CID-MASTER',
+    );
+    const [, tp, sl] = req.new_orders as Array<Record<string, string>>;
+    expect(tp.limit_price).toBe('103.7');
+    expect(sl.stop_price).toBe('98.15');
+  });
+
+  it('rounds sub-penny option bracket exit-leg prices', () => {
+    const req = buildOrderRequest(
+      intent({
+        assetKind: 'option',
+        optionStrategy: 'SINGLE',
+        orderType: 'limit',
+        limitPrice: 0.5,
+        optionType: 'call',
+        strike: 100,
+        expiration: '2026-07-17',
+        bracket: { takeProfitPrice: 103.70368, stopLossPrice: 98.14816 },
+      }),
+      'CID-OB',
+    );
+    const [, tp, sl] = req.new_orders as Array<Record<string, unknown>>;
+    expect(tp.limit_price).toBe('103.7');
+    expect(sl.stop_price).toBe('98.15');
+  });
+
+  it('rounds a sub-penny net limit_price on a VERTICAL spread', () => {
+    const body = buildWebullOptionOrder(
+      intent({
+        assetKind: 'option',
+        optionStrategy: 'VERTICAL',
+        limitPrice: 98.14816,
+        optionLegs: [
+          { side: 'buy', optionType: 'call', strike: 500, expiration: '2026-07-17' },
+          { side: 'sell', optionType: 'call', strike: 505, expiration: '2026-07-17' },
+        ],
+      }),
+      'CID-V',
+    );
+    expect(body.limit_price).toBe('98.15');
+  });
+
+  it('rounds sub-penny prices in a replace patch', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) } as Response);
+
+    await webullReplaceOrder('ACC1', 'CID-REP', { limitPrice: 98.14816, stopPrice: 103.70368 });
+    const [, opts] = fetchSpy.mock.calls[0];
+    const body = JSON.parse((opts as RequestInit).body as string);
+    expect(body.modify_orders[0]).toMatchObject({ limit_price: '98.15', stop_price: '103.7' });
   });
 });

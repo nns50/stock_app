@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Plus, TrendingUp } from 'lucide-react';
 import { client } from '../api/client';
 import { ago, fmtNum, fmtPct } from '../lib/format';
-import { Card, ScoreBar, Segmented, Spinner } from './ui';
+import { CollapsibleCard, ScoreBar, Segmented, Spinner } from './ui';
 import { OPEN_LOG_TRADE_EVENT } from './GlobalLogTrade';
 import type { ScreenerResult, SymbolScore } from '../api/types';
 
@@ -57,17 +57,16 @@ export function TodaysSetups() {
     if (sessionStorage.getItem(AUTO_SCAN_KEY)) return;
     sessionStorage.setItem(AUTO_SCAN_KEY, '1');
     void scan('long');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const top = result ? rank(result.results, sort) : [];
 
   return (
-    <Card className="p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-        <h3 className="font-medium text-sm flex items-center gap-2 text-slate-200">
-          <TrendingUp className="h-4 w-4 text-accent" /> Today&apos;s setups
-        </h3>
+    <CollapsibleCard
+      id="dashboard.todaysSetups"
+      title="Today's setups"
+      icon={<TrendingUp className="h-4 w-4 text-accent" />}
+      action={
         <div className="flex items-center gap-2">
           <Segmented
             options={[
@@ -83,8 +82,8 @@ export function TodaysSetups() {
             </button>
           )}
         </div>
-      </div>
-
+      }
+    >
       {error ? (
         <div className="text-bear text-sm py-2">{error}</div>
       ) : loading && !result ? (
@@ -190,6 +189,6 @@ export function TodaysSetups() {
           </p>
         </>
       )}
-    </Card>
+    </CollapsibleCard>
   );
 }

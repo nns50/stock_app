@@ -96,7 +96,8 @@ rule breakdown). An order with **any** failed hard rule cannot be confirmed.
   explicit, separately-flagged allowance is on; multiplier sanity.
 
 **Soft warnings (surfaced, not blocking):** earnings before expiry, wide live spread (uses
-the new OPRA overlay), low OI/volume, IV-rank context.
+the new OPRA overlay), low OI/volume, IV-rank context, a buy exceeding settled cash (cash-account
+Good Faith Violation risk — §15).
 
 ## 6. Order lifecycle
 
@@ -156,6 +157,72 @@ A phase doesn't start until the previous one is merged and you've used it.
 
 - Every guardrail gets a unit test (cap boundaries, kill switch, daily-loss halt,
   idempotency double-submit, fat-finger, naked-short block).
+  - **Fixed (2026-07-09), naked-short fail-open on the human place/replace path.** A
+    hardening audit found the `naked_short` (and `position_size`) check read
+    `webullAccountState`'s per-**underlying** aggregate, which sums stock AND every
+    option contract on a symbol. So being long 100 shares of a name let a single-leg
+    option SELL-to-open on that name pass even with `allowNakedShort=false` — long
+    stock does not cover a short option, and a different strike/expiry is a different
+    instrument. `webullAccountState` now takes an optional `instrument` and counts only
+    the matching instrument (this exact option contract, or stock); `placeOrder` /
+    `replaceOrder` pass the order's own contract. The autotrade loop was already clear
+    (long-only equity entries; the single-leg options close feeds its own ledger
+    quantity via `currentPositionQtyOverride`; equity has no live sell path).
+  - **Fixed (2026-07-09), account-state positions fail-open.** `webullAccountState`
+    returned `ok:true` with `currentPositionQty:0` when the balance call succeeded but
+    the positions call failed — a fabricated 0 that under-counts a real holding for the
+    `position_size` cap. It now sets `positionsUnavailable`, and `placeOrder` /
+    `replaceOrder` fail CLOSED on it (block rather than size against an unknown
+    position). Autotrade is unaffected (it doesn't consult the flag: long-only entries,
+    or a close that supplies its own ledger quantity).
+  - **Fixed (2026-07-09), fat-finger client-weakenable + missing for stop-limits.**
+    `referencePrice` was a client field, so a hand-crafted request could omit it
+    (downgrading `fat_finger` to a warning) or set it equal to an absurd limit
+    (deviation 0). `placeOrder` now re-derives the reference SERVER-side from a fresh
+    stock quote (cache-resilient; a market-data miss falls back to the client value) and
+    overrides it before the guardrails — options keep the client mark for now (a
+    per-contract chain fetch on the place path is heavier; the confirmed case was stock).
+    Separately, `stop_loss_limit` had NO fat-finger check; the guardrail now checks a
+    stop-limit's limit against its OWN stop (not the market, which the stop is
+    deliberately away from). Autotrade already sets `referencePrice` server-side, so it's
+    unaffected.
+  - **Fixed (2026-07-09), a human-placed bracket's exit leg was never reconciled —
+    reported against two real symbols that stayed "open" long after their stop/target
+    actually filled.** Root cause: `order_intents.state` reflects only the bracket's
+    MASTER (entry) leg — it reads `filled` the instant the entry fills and, since
+    `filled` is terminal, never moves again, even while a linked STOP_LOSS/STOP_PROFIT
+    exit leg is still working at the broker. `services/trading/reconcile.ts`'s
+    `reconcileIntent`/`reconcileAllWorking` (the human "Refresh status"/"Refresh all"
+    path) short-circuited on that terminal state and never looked at `broker.legs` at
+    all — so a bracket's exit was undetectable there no matter how many times "Refresh
+    all" was clicked. (`autotrading/liveExecute.ts`'s own `reconcileOneLiveOrder` already
+    had this exit-leg check for the autotrade path — the gap was specific to the human
+    path.) Fixed by keeping a filled bracket "pending" in `reconcileIntent` as long as its
+    position is still open (mirrors `autotradeLiveOrders.ts`'s `listPendingLiveOrders`
+    logic), then checking `broker.legs` for a leg unambiguously identified as non-MASTER
+    and FILLED (same fails-closed posture — ambiguous or still-working leaves the position
+    open rather than guessing) and recording the exit priced from THAT leg specifically
+    (not the entry's own fill price). A subtlety: `recordCloseAsExit` infers which
+    position side to reduce from the closing order's own `side` — but a bracket's exit
+    leg is still the SAME entry intent (`side`/`openClose` never changed from
+    `buy`/`open`), so a synthetic side-flipped copy is passed in rather than the
+    intent's own fields, or the inference lands backwards.
+  - **Fixed (2026-07-09), no automatic reconciliation for human-placed live orders at
+    all.** `reconcileAllWorking` only ever ran on a manual "Refresh all" click — unlike
+    autotrade's own always-on 60s loop, nothing polled a human-confirmed live order's
+    status in the background. New `services/webullPositionsScheduler.ts` (mirrors
+    `alertScheduler.ts`'s self-scheduling pattern) runs `syncWebullAccount()` — order
+    reconcile (including the bracket-exit fix above), then a position-**truth** check
+    (`providers/webull/positions.ts`'s `syncClosedWebullPositions`/
+    `runWebullPositionsSync`) that diffs the journal's open quantity per contract against
+    Webull's actual live holdings and closes the gap (FIFO, priced from the latest
+    quote/mark since there's no fill to read a price from — skipped, not guessed at $0, if
+    pricing fails) to catch anything still unattributable to a known order (e.g. sold
+    directly in the Webull app, bypassing this app's order flow entirely), then imports
+    anything new. Scoped to positions tagged `webull`/`live` or linked to a live
+    `order_intent` — never a plain manually-logged position, which could be tracked at a
+    different broker entirely. Enabled by default once an account id is set on Settings;
+    also available on-demand via a "Sync now" button.
 - The submit path is **never** exercised against the live broker in tests — `fetch` is
   mocked, exactly as the existing Webull tests do.
 - A "panic" test: kill switch on ⇒ every submit refuses.
@@ -233,12 +300,20 @@ before any mapper or submit path is built — same discipline as positions/quote
 order_type:"LIMIT"|"MARKET"|"STOP_LOSS"|"STOP_LOSS_LIMIT", side:"BUY"|"SELL"|"SHORT",
 quantity, limit_price?, stop_price?, time_in_force:"DAY"|"GTC", entrust_type:"QTY"|"AMOUNT",
 support_trading_session:"CORE"|"ALL"|"NIGHT" }`. Fractional via `entrust_type:"AMOUNT"` +
-`total_cash_amount`.
+`total_cash_amount`. **Unlike options below, stock GTC is NOT buy-side-only** — confirmed
+against Webull's own API docs, both sides support GTC for equities. `bracketExit()`
+(`providers/webull/orders.ts`) uses this: a stock bracket's SELL-side exit legs (stop-loss +
+take-profit, closing a long) are GTC, not DAY — fixed 2026-07-13 after DAY exit legs were
+found silently expiring unfilled at the close, leaving the position open with no resting
+stop and nothing detecting or re-arming it. GTC itself auto-expires after 90 calendar days
+(not unlimited), so `maxHoldDays` is still worth setting as a backstop.
 
 **Single-leg option order:** same unified endpoint with `instrument_type:"OPTION"`,
 `option_strategy:"SINGLE"`, and a **`legs`** array (strike / expiration / option type /
 side / quantity). Options support **LIMIT / STOP_LOSS / STOP_LOSS_LIMIT only** (no MARKET,
-no TRAILING, no SHORT); **sell-side is DAY-only** (GTC is buy-side only).
+no TRAILING, no SHORT); **sell-side is DAY-only** (GTC is buy-side only) — this DOES apply
+here, unlike stock above, so an options bracket's exit legs (`optionBracketExit()`) can't
+use the same GTC fix; they still expire DAY-TIF, a known, currently-unaddressed gap.
 
 **Mapping to our engine:** our `OrderIntent` (side/openClose/qty/orderType/limitPrice +
 option fields) covers the stock and single-leg-option bodies; `LIMIT`/`MARKET` map directly,
@@ -308,5 +383,118 @@ key becomes `client_order_id`.
   are skipped (defined-risk). NB: the docs scrape only serialized the SINGLE + COVERED_STOCK
   examples, so the VERTICAL order-level shape is **inferred from COVERED_STOCK and confirmed via a
   live preview** before placing.
+- **Cancelling a resting bracket post-fill (2026-07-11, autotrade's maxHoldDays
+  force-close — UNCONFIRMED, needs a real live trade):** every prior use of Cancel
+  (above) targets an order still working/unfilled. This is new, different territory:
+  `autotrading/liveExecute.ts`'s `checkLiveEquityTimeExits()` calls
+  `webullCancelOrder(accountId, entryIntent.idempotencyKey)` — the MASTER leg's own
+  client_order_id — AFTER that leg is already `filled`, on the working theory that
+  cancelling by any one id belonging to the `client_combo_order_id` group reaches the
+  whole combo, including the still-resting STOP_LOSS/STOP_PROFIT legs. Never trusted
+  blindly: always re-polls Order Detail/Open Orders immediately after and requires
+  every non-MASTER leg to unambiguously show as no longer resting before proceeding —
+  anything short of that (including a leg that raced the cancel and already filled)
+  fails closed, leaving the position open for the next cycle to retry. If a real
+  account confirms this doesn't work as theorized, the fallback would be resolving
+  each leg's own broker-assigned `order_id` from Order Detail and cancelling by that
+  instead (untried — no confirmed evidence Webull's cancel endpoint accepts an
+  `order_id` in place of `client_order_id`).
+  **The theory above was WRONG — confirmed against a real account (2026-07-16).**
+  Cancelling by the MASTER's `client_order_id` does NOT reach the resting exit legs:
+  a bracket's STOP_LOSS/STOP_PROFIT legs each get their OWN `client_order_id` at
+  placement (`buildOrderRequest`), which was never persisted, and the master-id cancel
+  only ever touches the already-filled master. A human hit this exactly: a manual
+  **Close** got past the (now-benign) cancel step but the broker then rejected the
+  close order itself — _"this order cannot be entered because it will reverse an
+  existing position … cancel an open order"_ — because the stop/target were still
+  live. Cancelling them by hand in the Webull app unblocked the close.
+  **Rewritten to scan-and-cancel (`cancelLiveBracketExitLegs`, 2026-07-16):** it no
+  longer trusts the master-id cancel or the combo-status re-poll to find the exit legs.
+  Instead it reads the broker's live open orders (`listWebullOpenOrders` — a new
+  read-only, lenient-parsing list of every resting order) and finds the ones on THIS
+  symbol on the EXIT side (a long's stop/target are sells, the same side as the close),
+  cancels each by its OWN `client_order_id`, then RE-SCANS and confirms none remain
+  before letting the close through — exactly what the manual fix did. This is the
+  "resolve each leg's own id and cancel by that" fallback the note above anticipated,
+  driven off the open-orders list rather than persisted ids (so it also clears
+  already-open positions whose leg ids we never saved). Fail-closed throughout: it
+  places a close only after confirming no same-side order is still resting; if the
+  open-orders read fails, or an order still rests after cancel, or (best-effort, via the
+  combo status) an exit leg is seen FILLED, it blocks rather than risk a double-fill.
+  Side must be POSITIVELY parsed to be cancelled, so a wrong-side or unparseable order
+  is never touched. A one-line `console.warn` breadcrumb logs what the scan matched (and
+  a truncated raw sample when it matched nothing on a non-empty list) so the first live
+  run reveals any remaining field-name mismatch. Applies to both callers unchanged: the
+  maxHoldDays force-close and the human Positions-page close.
+- **Manually closing a REAL position from the Positions page (shipped, 2026-07-16):**
+  `POST /api/positions/:id/close` (`services/trading/closePosition.ts`) — the human-confirmed
+  counterpart to autotrade's own force-closes above. Fixes a real gap: the pre-existing
+  **exit** action (`POST /:id/exits`) only ever wrote a journal entry, silently doing nothing
+  toward the broker for a live position (tagged `webull`/`live`, or with a `sourceIntentId`) —
+  the app would show it as closed while the broker still held it. The Positions page now shows
+  **close**, not **exit**, for any such position, opening a modal with the SAME
+  type-to-confirm-phrase friction (`SELL <qty> <symbol>` / `BUY <qty> <symbol>`, flipped from the
+  position's side) as any other live order. Server-side: checked BEFORE anything else (a mismatch
+  has zero side effects, not even a bracket cancel); if the entry intent was a bracket, its
+  resting exit legs are cancelled first via the SAME `cancelLiveBracketExitLegs` this file's own
+  post-fill-cancel entry above uses; then a fresh marketable-limit closing order (0.5% buffer,
+  full remaining quantity) is submitted through `placeOrder()` — the identical
+  `TRADING_ENABLED` + guardrails + audit-trail pipeline the Trade page itself uses, not a
+  parallel implementation. The resulting order is a plain, non-autotrade-tagged intent, so the
+  EXISTING generic reconcile (`reconcileIntent`/`reconcileAllWorking`, including the background
+  Webull sync scheduler) picks up its fill and records the exit — no new reconciliation code
+  needed. One exception: for an autotrade-tagged EQUITY position specifically, the resulting
+  intent IS registered with autotrade's own bookkeeping (`recordLiveExitOrder`), so
+  `checkLiveEquityTimeExits`'s own maxHoldDays dedup guard sees the close already in flight and
+  doesn't independently race it with a second cancel+close attempt — never needed for options,
+  since autotrade's live options positions live in an entirely separate table never shown on the
+  Positions page.
+- **Expanding manual close to autotrade's own live positions (shipped, 2026-07-16):** the
+  Positions-page close above only reaches positions returned by `GET /api/positions` — autotrade's own
+  live EQUITY positions (tagged `autotrade`, same generic `positions` table) already worked there
+  unchanged, so the Auto-Trade page's own live positions table just got a **close** button reusing the
+  exact same `CloseModal` / `closeLivePosition` / `POST /positions/:id/close` path, no new server code.
+  Autotrade's live OPTIONS positions, though, live in a separate table
+  (`autotrade_live_options_positions` — a debit spread's second leg has no column for it on `positions`),
+  so this needed its own service (`closeLiveOptionsAutotradePosition`), route
+  (`POST /api/autotrade/live-options-positions/:id/close`), and modal
+  (`CloseLiveOptionsPositionModal`, Auto-Trade page). Same confirmation-first, human-confirmed
+  `placeOrder()` pipeline as the equity case — never autotrade's own no-confirmation
+  `placeLiveOptionsExit` internals. Every autotrade options position is opened LONG, so the close is
+  always a sell: single_leg is a plain sell-to-close; debit_spread is a VERTICAL combo selling the long
+  leg and buying back the short leg, net-priced from BOTH legs' fresh marks. No bracket-cancel step —
+  autotrade's options signals never carry one. `placeOrder()` needed no changes: its own
+  `webullAccountState()` call already filters to the exact contract via `matchesInstrument()` for a
+  single-leg close, and a VERTICAL close skips the naked-short/position-size checks entirely as a
+  multi-leg order (`guardrails.ts`'s `isMultiLeg`) — so neither case needs the
+  `currentPositionQtyOverride` workaround `liveOptionsExecute.ts`'s own unfiltered 2-arg
+  `webullAccountState()` call requires for its autonomous exit path.
+- **`exit_reason` threaded from a manual close through to the closed position (shipped, 2026-07-16):**
+  unlike equity (whose `PositionExit` has no stored exit-reason field), a live options position's
+  `exitReason` IS a stored, UI-rendered field (the Auto-Trade page's Live options positions table
+  badge) — so a manually-closed position showing "time exit" would be a real, visible, incorrect label,
+  not just a cosmetic log imprecision. Fixed with a new nullable `exit_reason` column on
+  `autotrade_live_options_orders` (idempotent `ALTER TABLE`; pre-existing rows read `NULL`).
+  `recordLiveOptionsExitOrder`'s `exitReason` param is now REQUIRED, not defaulted, so both callers —
+  `checkLiveOptionsExits`' own time-exit trigger (`'time_exit'`) and the manual close above (`'manual'`)
+  — stay explicit about which one placed the order. `materializeOptionsExitFill` reads it back
+  (`meta.exitReason ?? 'time_exit'`, the fallback covering only a pre-migration pending row) once it
+  finally closes the position, instead of always hardcoding `'time_exit'`.
+- **`settled_cash` guardrail — cash-account Good Faith Violation warning (shipped, 2026-07-19):**
+  Webull's `/openapi/assets/balance` response includes `account_currency_assets[0].settled_cash`
+  (confirmed alongside `buying_power`/`option_buying_power` — same object, see §14), previously
+  fetched and discarded. `webullAccountState()` now parses it into `AccountState.settledCashUsd`
+  (`undefined`, not a fabricated 0, when the broker omits it — a missing field must skip the
+  check, not warn blind). A new `settled_cash` guardrail (soft warning, like `market_hours`) fires
+  when a BUY's notional exceeds settled cash: this account is a cash account (§13), which risks a
+  **Good Faith Violation** if a position bought with proceeds that haven't cleared T+1 yet is sold
+  again before that funding trade settles. Deliberately NOT a hard block — exact GFV detection
+  needs per-lot settlement-date tracking this app doesn't keep, and a wrong block would suppress
+  ordinary, legal cash-account activity; a warning surfaces the risk instead of guessing at it.
+  (PDT was considered and explicitly rejected: FINRA eliminated the classic Pattern Day Trader
+  rule effective June 4, 2026, and it only ever applied to margin accounts — never this app's cash
+  account — so a PDT guardrail would have been a check against a rule that no longer exists, for
+  an account type it never covered.)
 - **Next:** confirm a real option fill + a real vertical preview; COVERED_STOCK (stock+option) and
-  IRON_CONDOR (4-leg) strategies; options brackets / OTOCO.
+  IRON_CONDOR (4-leg) strategies; options brackets / OTOCO; the post-fill bracket-cancel
+  behavior above against a real account.

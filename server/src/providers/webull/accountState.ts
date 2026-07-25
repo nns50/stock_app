@@ -1,6 +1,46 @@
 import { webullClient, webullConfigured } from './account';
 import { extractPositions, mapWebullPosition } from './positions';
+import type { ImportablePosition } from '../../db/positions';
 import type { AccountState } from '../../services/trading/guardrails';
+
+/** The specific instrument an order is for, so the position lookup can count the
+ *  quantity of THAT instrument rather than a cross-asset per-underlying sum. */
+export interface OrderInstrument {
+  assetKind: 'stock' | 'option';
+  strike?: number;
+  expiration?: string;
+  optionType?: 'call' | 'put';
+}
+
+/**
+ * Whether a live broker position is the SAME instrument the order is for.
+ * Webull's positions endpoint returns stock AND every option contract under one
+ * `symbol`; the old code summed them all, which let a long STOCK position (or an
+ * unrelated option contract) silently defeat `allowNakedShort=false` for a
+ * single-leg option SELL-to-open — long stock does NOT cover a short option, and
+ * a different strike/expiry is a different instrument. With no instrument
+ * (legacy callers, e.g. the long-only autotrade equity path), keep the old
+ * per-underlying aggregate.
+ */
+function matchesInstrument(pos: ImportablePosition, instrument?: OrderInstrument): boolean {
+  if (!instrument) return true; // legacy: per-underlying aggregate
+  if (instrument.assetKind === 'stock') return pos.assetType === 'stock';
+  // Option order: a stock position never covers it.
+  if (pos.assetType !== 'option') return false;
+  // A single-leg option carries full contract identity — match it EXACTLY.
+  if (instrument.strike !== undefined && instrument.expiration && instrument.optionType) {
+    return (
+      pos.strike != null &&
+      Math.abs(pos.strike - instrument.strike) < 1e-6 &&
+      pos.expiration === instrument.expiration &&
+      pos.optionType === instrument.optionType
+    );
+  }
+  // Multi-leg / incomplete contract details: match any option on the underlying.
+  // Multi-leg orders skip naked_short/position_size in the guardrails anyway, so
+  // this value isn't consulted for them — but excluding stock is still correct.
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Source the guardrails' AccountState from a live Webull account — READ-ONLY.
@@ -20,6 +60,15 @@ function num(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Like num(), but undefined (not 0) when the field is missing/unparseable —
+ *  a fabricated 0 would read as "no cash has settled," warning on every buy
+ *  for an account this field simply wasn't reported for. */
+function numOrUndefined(v: unknown): number | undefined {
+  if (v === undefined || v === null) return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 export interface WebullAccountStateResult {
   ok: boolean;
   accountId: string;
@@ -29,6 +78,14 @@ export interface WebullAccountStateResult {
   optionBuyingPowerUsd?: number;
   /** Net liquidation value, for display. */
   netLiquidationUsd?: number;
+  /** True when a symbol/instrument was requested but the positions call FAILED
+   *  — so `currentPositionQty` is 0 by DEFAULT, not because the account holds
+   *  nothing. A safety-critical caller (the human place/replace path) must fail
+   *  CLOSED on this rather than trust a fabricated 0 (which would under-count a
+   *  real holding for the position_size check). Autotrade callers that don't
+   *  need it — long-only entries, or a close that supplies its own ledger
+   *  quantity via an override — can ignore it. */
+  positionsUnavailable?: boolean;
   raw?: unknown;
   error?: string;
 }
@@ -38,7 +95,11 @@ export interface WebullAccountStateResult {
  * it's counted from our own audit trail once orders actually flow, not from the
  * broker. Returns a clean error rather than throwing.
  */
-export async function webullAccountState(accountId: string, symbol?: string): Promise<WebullAccountStateResult> {
+export async function webullAccountState(
+  accountId: string,
+  symbol?: string,
+  instrument?: OrderInstrument,
+): Promise<WebullAccountStateResult> {
   if (!webullConfigured()) return { ok: false, accountId, error: 'Webull is not configured.' };
   const c = webullClient();
 
@@ -65,9 +126,11 @@ export async function webullAccountState(accountId: string, symbol?: string): Pr
   const exposureUsd = num(bal.total_market_value);
   const realizedPnlTodayUsd = num(bal.total_day_profit_loss);
   const netLiquidationUsd = num(bal.total_net_liquidation_value);
+  const settledCashUsd = numOrUndefined(asset.settled_cash);
 
   // Signed position in the order's symbol (long +, short −), if requested.
   let currentPositionQty = 0;
+  let positionsUnavailable = false;
   if (symbol) {
     const want = symbol.toUpperCase();
     const p = await c.call('GET', '/openapi/assets/positions', {
@@ -76,20 +139,26 @@ export async function webullAccountState(accountId: string, symbol?: string): Pr
     });
     if (p.ok) {
       for (const row of extractPositions(p.data)) {
-        const mapped = mapWebullPosition(row);
-        if (mapped && mapped.symbol === want) {
+        const mapped = mapWebullPosition(row, accountId);
+        if (mapped && mapped.symbol === want && matchesInstrument(mapped, instrument)) {
           currentPositionQty += (mapped.side === 'short' ? -1 : 1) * mapped.quantity;
         }
       }
+    } else {
+      // Balance succeeded but positions didn't. Do NOT report a fabricated 0 as
+      // if the account is flat — flag it so a safety-critical caller can fail
+      // closed (a 0 here would under-count a real holding for position_size).
+      positionsUnavailable = true;
     }
   }
 
   return {
     ok: true,
     accountId,
-    state: { buyingPowerUsd, exposureUsd, realizedPnlTodayUsd, ordersToday: 0, currentPositionQty },
+    state: { buyingPowerUsd, exposureUsd, realizedPnlTodayUsd, ordersToday: 0, currentPositionQty, settledCashUsd },
     optionBuyingPowerUsd,
     netLiquidationUsd,
+    positionsUnavailable,
     raw: bal,
   };
 }

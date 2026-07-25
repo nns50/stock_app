@@ -1,0 +1,119 @@
+import { db } from './index';
+
+// ---------------------------------------------------------------------------
+// The auto-trading journal (docs/AUTOTRADING_SPEC.md — JOURNALING / stage 5 of
+// the execution loop). Every later phase (screener, decision, risk engine,
+// execution) writes through logAutotradeEvent — a single append-only path, so
+// the journal can never fall out of sync with what the loop actually did.
+// Modeled on db/orders.ts's order_events audit trail.
+// ---------------------------------------------------------------------------
+
+/** The execution loop's stages, plus 'config' for settings-change audit
+ *  events (risk profile switches, enable/disable). 'Journaling' (the spec's
+ *  5th stage) isn't its own value — this table IS the journal. */
+export type AutotradeStage = 'screen' | 'decision' | 'risk_check' | 'execution' | 'config';
+
+export interface AutotradeEventRecord {
+  id: number;
+  symbol: string | null;
+  stage: AutotradeStage;
+  action: string;
+  detail: string | null;
+  riskProfile: string | null;
+  createdAt: number;
+}
+
+export interface LogEventInput {
+  symbol?: string | null;
+  stage: AutotradeStage;
+  /** Open vocabulary (e.g. 'excluded_re', 'signal_generated', 'blocked_aggregate_risk',
+   *  'order_placed') — validated by the route's Zod enum, not a DB CHECK; see
+   *  the schema comment in db/index.ts for why. */
+  action: string;
+  /** Arbitrary context for this event. Objects are JSON-stringified; strings
+   *  are stored as-is. */
+  detail?: unknown;
+  riskProfile?: string | null;
+}
+
+export interface ListEventsFilter {
+  stage?: AutotradeStage;
+  symbol?: string;
+  /** Restrict to these action strings (e.g. the live-order outcome vocabulary).
+   *  An empty array matches nothing. */
+  actions?: string[];
+  /** Max rows to return (default 200, capped at 1000). */
+  limit?: number;
+}
+
+interface Row {
+  id: number;
+  symbol: string | null;
+  stage: AutotradeStage;
+  action: string;
+  detail: string | null;
+  risk_profile: string | null;
+  created_at: number;
+}
+
+function map(r: Row): AutotradeEventRecord {
+  return {
+    id: r.id,
+    symbol: r.symbol,
+    stage: r.stage,
+    action: r.action,
+    detail: r.detail,
+    riskProfile: r.risk_profile,
+    createdAt: r.created_at,
+  };
+}
+
+/** Append one event to the auto-trading journal. */
+export function logAutotradeEvent(input: LogEventInput): AutotradeEventRecord {
+  const detail =
+    input.detail === undefined || input.detail === null
+      ? null
+      : typeof input.detail === 'string'
+        ? input.detail
+        : JSON.stringify(input.detail);
+  const now = Date.now();
+  const info = db
+    .prepare(
+      `INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      input.symbol ? input.symbol.toUpperCase() : null,
+      input.stage,
+      input.action,
+      detail,
+      input.riskProfile ?? null,
+      now,
+    );
+  return map(db.prepare('SELECT * FROM autotrade_events WHERE id = ?').get(Number(info.lastInsertRowid)) as Row);
+}
+
+/** Journal entries, newest first. */
+export function listAutotradeEvents(filter: ListEventsFilter = {}): AutotradeEventRecord[] {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (filter.stage) {
+    clauses.push('stage = ?');
+    params.push(filter.stage);
+  }
+  if (filter.symbol) {
+    clauses.push('symbol = ?');
+    params.push(filter.symbol.toUpperCase());
+  }
+  if (filter.actions) {
+    if (filter.actions.length === 0) return [];
+    clauses.push(`action IN (${filter.actions.map(() => '?').join(',')})`);
+    params.push(...filter.actions);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const limit = Math.min(Math.max(filter.limit ?? 200, 1), 1000);
+  const rows = db
+    .prepare(`SELECT * FROM autotrade_events ${where} ORDER BY id DESC LIMIT ?`)
+    .all(...params, limit) as Row[];
+  return rows.map(map);
+}

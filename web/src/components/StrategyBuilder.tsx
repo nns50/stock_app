@@ -11,7 +11,7 @@ import {
 } from 'recharts';
 import { client } from '../api/client';
 import { fmtNum, fmtSignedUsd, fmtUsd, pnlClass } from '../lib/format';
-import { Card, ErrorState, Field, NumberInput, StatTile } from './ui';
+import { Card, CollapsibleCard, ErrorState, Field, NumberInput, StatTile } from './ui';
 import { useNavigate } from 'react-router-dom';
 import { isPlaceableStructure, strategyToOrder } from '../lib/tradePrefill';
 import type { StrategyAnalysis, StrategyLeg } from '../api/types';
@@ -111,7 +111,7 @@ export function StrategyBuilder() {
   return (
     <div className="flex flex-col lg:flex-row gap-4">
       <Card className="p-4 lg:w-[420px] shrink-0 space-y-3">
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid sm:grid-cols-3 gap-2">
           <Field label="Underlying $">
             <NumberInput value={underlyingPrice} onChange={(v) => setUnderlyingPrice(v ?? 0)} step={0.5} />
           </Field>
@@ -227,7 +227,7 @@ export function StrategyBuilder() {
         )}
         {result && (
           <div className="space-y-3">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
               <StatTile
                 label={result.netPremium < 0 ? 'Net debit' : 'Net credit'}
                 value={fmtUsd(Math.abs(result.netPremium))}
@@ -248,16 +248,24 @@ export function StrategyBuilder() {
                 value={result.probabilityOfProfit === null ? '—' : `${(result.probabilityOfProfit * 100).toFixed(0)}%`}
                 sub="lognormal est."
               />
+              <StatTile
+                label="Expected value"
+                value={result.expectedValue === null ? '—' : fmtSignedUsd(result.expectedValue)}
+                valueClass={pnlClass(result.expectedValue ?? 0)}
+                sub="lognormal est."
+              />
             </div>
 
-            <Card className="p-3">
-              <div className="flex items-center justify-between mb-1 text-xs text-slate-400">
-                <span>Payoff at expiration</span>
-                <span>
+            <CollapsibleCard
+              id="strategyBuilder.payoff"
+              title="Payoff at expiration"
+              action={
+                <span className="text-xs text-slate-400">
                   Breakevens:{' '}
                   {result.breakevens.length ? result.breakevens.map((b) => `$${fmtNum(b)}`).join(', ') : '—'}
                 </span>
-              </div>
+              }
+            >
               <ResponsiveContainer width="100%" height={300}>
                 <ComposedChart data={result.payoff} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
                   <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="2 4" vertical={false} />
@@ -302,11 +310,10 @@ export function StrategyBuilder() {
                   ))}
                 </ComposedChart>
               </ResponsiveContainer>
-            </Card>
+            </CollapsibleCard>
 
-            <Card className="p-3">
-              <div className="text-xs text-slate-400 mb-1">Combined Greeks (per the position)</div>
-              <div className="grid grid-cols-4 gap-2 text-sm tabular-nums">
+            <CollapsibleCard id="strategyBuilder.greeks" title="Combined Greeks (per the position)">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm tabular-nums">
                 <div>
                   <span className="text-slate-500">Δ </span>
                   <span className={pnlClass(result.greeks.delta)}>{fmtNum(result.greeks.delta, 3)}</span>
@@ -324,7 +331,7 @@ export function StrategyBuilder() {
                   {fmtNum(result.greeks.vega, 3)}
                 </div>
               </div>
-            </Card>
+            </CollapsibleCard>
           </div>
         )}
       </div>

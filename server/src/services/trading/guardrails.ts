@@ -83,6 +83,12 @@ export interface AccountState {
   /** Broker account type (e.g. INDIVIDUAL_CASH / INDIVIDUAL_MARGIN) when known —
    *  debit/credit spreads require a margin account. Only fetched for spreads. */
   accountType?: string;
+  /** Cash that has actually settled (T+1 for US equities), distinct from
+   *  buyingPowerUsd — a cash account risks a Good Faith Violation buying with
+   *  proceeds that haven't cleared yet. Undefined (not 0) when the broker
+   *  response didn't include it, so the settled_cash check below can skip
+   *  rather than warn on a fabricated shortfall. */
+  settledCashUsd?: number;
 }
 
 export interface TradingConfig {
@@ -142,7 +148,13 @@ export function defaultTradingConfig(): TradingConfig {
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
-const usd = (n: number): string => `$${round2(n).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+// Cached formatter instead of calling toLocaleString(locale, options) fresh
+// every time — that re-parses the options and builds a new ICU formatter on
+// EVERY call. Same output (same options object shape, including the implicit
+// max-3-decimals default from omitting maximumFractionDigits), reusing one
+// Intl.NumberFormat via .format().
+const usdFormatter = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2 });
+const usd = (n: number): string => `$${usdFormatter.format(round2(n))}`;
 
 /** Effective per-unit price for valuation: limit, else stop, else reference. */
 function unitPrice(intent: OrderIntent): number | undefined {
@@ -170,6 +182,18 @@ export function orderNotionalUsd(intent: OrderIntent): number | undefined {
 /** Signed position change this order would apply (+buy / −sell). */
 function signedDelta(intent: OrderIntent): number {
   return intent.side === 'buy' ? intent.quantity : -intent.quantity;
+}
+
+/**
+ * Whether this order would open or extend a net-short position — the same
+ * resulting-quantity math the naked_short check below uses. Exported so the
+ * order builder (providers/webull/orders.ts) can submit Webull's own explicit
+ * SHORT side (distinct from a plain SELL, which only closes/reduces a long)
+ * when this is true, letting the broker's real-time locate/borrow check run
+ * at order time instead of silently mismarking the order.
+ */
+export function wouldOpenShort(intent: OrderIntent, account: AccountState): boolean {
+  return account.currentPositionQty + signedDelta(intent) < 0;
 }
 
 /**
@@ -379,6 +403,25 @@ export function evaluateGuardrails(
       exposureAfter <= config.maxExposureUsd,
       `${usd(exposureAfter)} vs cap ${usd(config.maxExposureUsd)}`,
     );
+
+    // Cash-account settlement (advisory). A cash account risks a Good Faith
+    // Violation if a position bought with UNSETTLED funds (e.g. proceeds from
+    // a sale that hasn't cleared T+1 yet) is sold again before that funding
+    // trade settles. This can't be checked exactly — precise GFV detection
+    // needs per-lot settlement-date tracking this app doesn't have — but a
+    // buy whose notional exceeds SETTLED cash is the leading indicator: part
+    // of what's paying for it hasn't cleared yet. Undefined settledCashUsd
+    // (broker didn't report it) skips the check rather than warning blind.
+    if (intent.side === 'buy' && account.settledCashUsd !== undefined) {
+      const withinSettledCash = notional <= account.settledCashUsd;
+      warn(
+        'settled_cash',
+        withinSettledCash,
+        withinSettledCash
+          ? `${usd(notional)} within settled cash ${usd(account.settledCashUsd)}`
+          : `${usd(notional)} exceeds settled cash ${usd(account.settledCashUsd)} — selling this before its funding trade settles may risk a cash-account Good Faith Violation`,
+      );
+    }
   }
 
   // --- position size -----------------------------------------------------
@@ -408,7 +451,9 @@ export function evaluateGuardrails(
     `${account.ordersToday} placed vs ${config.maxOrdersPerDay}/day`,
   );
 
-  // --- fat-finger (limit orders only) ------------------------------------
+  // --- fat-finger --------------------------------------------------------
+  // A plain LIMIT is sanity-checked against the market reference (re-derived
+  // server-side in placeOrder, so it can't be omitted/spoofed by the client).
   if (intent.orderType === 'limit' && intent.limitPrice !== undefined && intent.limitPrice > 0) {
     if (intent.referencePrice !== undefined && intent.referencePrice > 0) {
       const devPct = (Math.abs(intent.limitPrice - intent.referencePrice) / intent.referencePrice) * 100;
@@ -420,6 +465,24 @@ export function evaluateGuardrails(
     } else {
       warn('fat_finger', true, 'no reference price to sanity-check the limit');
     }
+  }
+  // A STOP-LIMIT's limit is checked against its OWN stop, not the market: the
+  // stop is deliberately away from the current price, but the limit should sit
+  // just past the trigger (an absurd limit is the fat-finger risk here). This
+  // order type had NO fat-finger check at all before.
+  if (
+    intent.orderType === 'stop_loss_limit' &&
+    intent.limitPrice !== undefined &&
+    intent.limitPrice > 0 &&
+    intent.stopPrice !== undefined &&
+    intent.stopPrice > 0
+  ) {
+    const devPct = (Math.abs(intent.limitPrice - intent.stopPrice) / intent.stopPrice) * 100;
+    block(
+      'fat_finger',
+      devPct <= config.fatFingerPct,
+      `stop-limit price is ${devPct.toFixed(1)}% from its stop (max ${config.fatFingerPct}%)`,
+    );
   }
 
   // --- naked short -------------------------------------------------------

@@ -115,6 +115,13 @@ npm run seed       # 5 closed + 2 open trades, 7 watchlist symbols (idempotent)
   (risk sizing, the screener Edge Report, R-multiple analytics, MAE/MFE, risk-of-ruin,
   the SPY benchmark) to trade with a real process edge — plus concrete long-stock,
   short-fade, and options playbooks.
+- **[Auto-Trade Risk Settings](docs/AUTOTRADE_RISK_SETTINGS.md)** — a plain-English
+  guide to every risk setting on the Auto-Trade page's Configuration card (risk per
+  trade, daily drawdown, aggregate open risk, correlated exposure, and more), with
+  worked examples for each.
+- **[Tune from target daily gain](docs/TUNE_FROM_TARGET.md)** — how to set up the whole
+  Auto-Trade risk config at once from a target daily gain % + your equity, with the
+  Expected/Perfect-day basis explained and worked examples.
 - In-app **About** page — the live, authoritative description of the scoring formulas
   and glossary.
 
@@ -181,6 +188,7 @@ Copy `.env.example` to `server/.env`. All keys are read **server-side only**.
 | `TRADIER_BASE_URL`      | `https://sandbox.tradier.com/v1`   | Use `https://api.tradier.com/v1` for production data.           |
 | `WEBULL_APP_KEY`        | _(empty)_                          | Webull OpenAPI app key (server-side only). Required for `webull`. |
 | `WEBULL_APP_SECRET`     | _(empty)_                          | Webull OpenAPI app secret (server-side only).                   |
+| `POLYGON_API_KEY`       | _(empty)_                          | Polygon.io/Massive key for the auto-trading **backtest** harness only (docs/AUTOTRADING_SPEC.md). Separate from `MARKET_DATA_PROVIDER` — never used for live screening/quotes. |
 | `TRADING_ENABLED`       | `false`                            | **Master gate for placing REAL orders.** Off ⇒ the Trade page can dry-run/live-preview but **never** places. Even on, placing also needs the guardrails to pass + kill switch off + type-to-confirm. |
 | `PORT`                  | `3001`                             | API port.                                                       |
 | `DATABASE_PATH`         | `./data/stock_app.db`              | SQLite file (relative to `server/`).                            |
@@ -226,9 +234,55 @@ npm run typecheck      # typecheck both packages
 npm run lint           # ESLint (flat config) over the monorepo
 npm run format         # Prettier --write
 npm run check:provider # verify the configured market-data provider
+npm run capture:broker # dump raw Webull field shapes (read-only; see below)
 ```
 
 CI runs lint, format-check, typecheck, tests, and build on every PR.
+
+### `capture:broker` — confirming broker field semantics
+
+A **strictly read-only** diagnostic for live trading. It calls the same
+whitelisted GET endpoints as the Settings → Webull probe (balance, positions,
+open orders, order history) and writes the raw payloads to
+`broker-capture.json` (gitignored) with account identifiers masked, so the
+mappers that read those fields can be built against confirmed responses rather
+than a plausible reading of a field name. It places nothing, cancels nothing,
+and writes nothing to the database.
+
+It highlights two fields the app currently has to assume the meaning of:
+
+- `total_day_profit_loss` — mapped to `realizedPnlTodayUsd` and used by the
+  daily-loss halt, which treats it as **realized only**. If the broker includes
+  unrealized mark-to-market, the halt can trip on paper drawdown or be masked by
+  an open gain.
+- `filled_quantity` — whether it is **cumulative** across executions or reports
+  each execution separately. Only cumulative values can be safely differenced
+  when recording partial fills.
+
+```bash
+npm run capture:broker                              # snapshot + field report
+npm run capture:broker -- --shapes-only             # field names/types, no balances
+npm run capture:broker -- --watch-day-pnl           # settles total_day_profit_loss
+npm run capture:broker -- --watch <client_order_id> # poll one order while it fills
+```
+
+Both questions are settled by **watching a value over time**, since a single
+snapshot can't distinguish the readings.
+
+`--watch-day-pnl` samples the balance repeatedly (default 6 × 20s) while you hold
+an open position and place **no** orders. Realized P&L is pinned for that window,
+so anything that moves must be mark-to-market — it reports
+`includes-unrealized`, `realized-only`, or `inconclusive`.
+
+`--watch <client_order_id>` samples one order's reported fill while it works, and
+reports `cumulative`, `per-execution`, or `inconclusive`.
+
+Both deliberately return `inconclusive` rather than guessing when the value never
+moved — identical samples would otherwise look like a clean answer while
+containing no information.
+
+The default output contains real balances and positions — review it before
+sharing, or use `--shapes-only`.
 
 ## How the screener score works (no black boxes)
 
@@ -246,8 +300,8 @@ the total. The full breakdown travels with every result:
 | Trend           | price vs MAs + MA alignment                  | aligned with the chosen direction         |
 
 Weights, MA periods, RSI period, scaling knobs, direction (long/short), and hard
-filters (min price, min volume, RSI bounds, trend alignment) are all
-configurable, and savable as presets.
+filters (min price, min volume, RSI bounds, trend alignment — daily and weekly) are
+all configurable, and savable as presets.
 
 ## Greeks & units (Black–Scholes helper)
 

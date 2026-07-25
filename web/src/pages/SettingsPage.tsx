@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError, client } from '../api/client';
+import type { PositionComparison } from '../api/types';
 import { useAsync, useLocalStorage } from '../lib/hooks';
 import { cx } from '../lib/format';
 import { CHECKLIST_SETTING_KEY, DEFAULT_CHECKLIST_RULES, rulesFromSetting } from '../lib/checklist';
-import { Card, Field, NumberInput, PageHeader, Spinner } from '../components/ui';
+import { CollapsibleCard, Field, NumberInput, PageHeader, Spinner } from '../components/ui';
 import { DataTools } from '../components/DataTools';
 import { ProviderStatusModal } from '../components/ProviderStatusModal';
 import { useProvider } from '../components/ProviderContext';
@@ -18,14 +19,22 @@ import { NOTIFY_KEY, requestNotificationPermission } from '../lib/notify';
 // alert polling, and data export/restore. Browser-scoped prefs persist to
 // localStorage (instant); the checklist persists server-side.
 
-function Section({ title, desc, children }: { title: string; desc?: string; children: React.ReactNode }) {
+function Section({
+  id,
+  title,
+  desc,
+  children,
+}: {
+  id: string;
+  title: string;
+  desc?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <Card className="p-4">
-      <h2 className="font-medium text-sm">{title}</h2>
+    <CollapsibleCard id={`settings.${id}`} title={title} headingLevel="h2">
       {desc && <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-2xl">{desc}</p>}
-      {!desc && <div className="mb-3" />}
       {children}
-    </Card>
+    </CollapsibleCard>
   );
 }
 
@@ -98,6 +107,7 @@ export default function SettingsPage() {
       <PageHeader title="Settings" subtitle="Provider, risk defaults, benchmark, checklist, alerts, and your data." />
 
       <Section
+        id="provider"
         title="Market data provider"
         desc="The provider is configured server-side in server/.env (MARKET_DATA_PROVIDER and any API token). This is its current status."
       >
@@ -128,6 +138,7 @@ export default function SettingsPage() {
       </Section>
 
       <Section
+        id="risk"
         title="Risk &amp; sizing defaults"
         desc="Used by the position sizer and the “you vs benchmark” comparison. Saved in this browser."
       >
@@ -142,6 +153,7 @@ export default function SettingsPage() {
       </Section>
 
       <Section
+        id="guardrails"
         title="Discipline guardrails"
         desc="Opt-in daily circuit breaker. When today's booked loss or new-trade count reaches a limit, the dashboard warns you to step away. 0 = off. It never blocks or places trades."
       >
@@ -156,6 +168,7 @@ export default function SettingsPage() {
       </Section>
 
       <Section
+        id="benchmark"
         title="Benchmark"
         desc="The buy-and-hold index your realized trading is measured against in the journal."
       >
@@ -170,6 +183,7 @@ export default function SettingsPage() {
       </Section>
 
       <Section
+        id="checklist"
         title="Pre-trade checklist"
         desc="The discipline rules you tick before logging an entry. One rule per line; shared everywhere you log a trade."
       >
@@ -192,7 +206,7 @@ export default function SettingsPage() {
         )}
       </Section>
 
-      <Section title="Alerts" desc="How often the app re-evaluates your alerts in the background.">
+      <Section id="alerts" title="Alerts" desc="How often the app re-evaluates your alerts in the background.">
         <Field label="Auto-check interval">
           <select
             className="input max-w-[200px]"
@@ -225,12 +239,16 @@ export default function SettingsPage() {
 
       <WebullSection />
 
-      <Section title="Data" desc="Export your trades, take a full database backup, or restore from a previous export.">
+      <Section
+        id="data"
+        title="Data"
+        desc="Export your trades, take a full database backup, or restore from a previous export."
+      >
         <DataTools onImported={() => toast('Import complete', { type: 'success' })} />
       </Section>
 
       {authRequired && (
-        <Section title="Account" desc="This app is password-protected.">
+        <Section id="account" title="Account" desc="This app is password-protected.">
           <div className="space-y-5">
             <div>
               <div className="label mb-1.5">Two-factor authentication</div>
@@ -309,6 +327,7 @@ function ServerWatchSection() {
 
   return (
     <Section
+      id="serverWatch"
       title="Server-side watching"
       desc="Let the server evaluate your alerts on a schedule and push them to a webhook — so alerts fire even when the app/browser is closed. The server process must stay running."
     >
@@ -393,6 +412,7 @@ function WebullSection() {
     | 'open-orders'
     | 'order-history'
     | 'subscriptions'
+    | 'instrument'
   >('account-list');
   const [symbol, setSymbol] = useState('AAPL');
   const [accountId, setAccountId] = useState('');
@@ -419,6 +439,7 @@ function WebullSection() {
 
   return (
     <Section
+      id="webull"
       title="Webull (beta)"
       desc="Connect Webull's OpenAPI (v2) for stock & option market data and your account. Credentials are server-side (WEBULL_APP_KEY / WEBULL_APP_SECRET). Market data needs an active OpenAPI subscription on your Webull account."
     >
@@ -458,9 +479,14 @@ function WebullSection() {
                 <option value="open-orders">Open orders (read-only)</option>
                 <option value="order-history">Order history (read-only)</option>
                 <option value="subscriptions">Quote subscriptions</option>
+                <option value="instrument">Stock instrument (unconfirmed)</option>
               </select>
             </Field>
-            {(kind === 'snapshot' || kind === 'bars' || kind === 'depth' || kind === 'option-snapshot') && (
+            {(kind === 'snapshot' ||
+              kind === 'bars' ||
+              kind === 'depth' ||
+              kind === 'option-snapshot' ||
+              kind === 'instrument') && (
               <Field
                 label={kind === 'option-snapshot' ? 'OCC option symbol' : 'Symbol'}
                 hint={kind === 'option-snapshot' ? 'e.g. AAPL260522C00300000' : undefined}
@@ -506,6 +532,13 @@ function WebullSection() {
               API Reference — we'll adjust.
             </p>
           )}
+          {kind === 'instrument' && (
+            <p className="text-[11px] text-slate-500">
+              <strong className="text-slate-400">Read-only, unconfirmed</strong> — this path is documented but has never
+              been called against a real account. Run it to see the actual response shape (e.g. whether it carries a
+              shortable / hard-to-borrow flag) before anything is built to read it.
+            </p>
+          )}
 
           {result && (
             <div className="text-sm">
@@ -537,13 +570,80 @@ function WebullSection() {
   );
 }
 
-/** Preview-and-confirm sync of open Webull positions into the journal. */
+const SYNC_INTERVALS = [
+  { value: 60, label: 'Every 1m' },
+  { value: 300, label: 'Every 5m' },
+  { value: 900, label: 'Every 15m' },
+  { value: 1800, label: 'Every 30m' },
+];
+
+/** Preview-and-confirm sync of open Webull positions into the journal, plus a
+ *  one-click "Sync now" and an automatic background schedule — both of which
+ *  also close journal positions Webull no longer shows as held (the preview/
+ *  import pair above only ever adds; it never did, and still doesn't). */
 function WebullPositionsSync({ configured }: { configured: boolean }) {
   const { toast } = useToast();
   const [accountId, setAccountId] = useState('');
-  const [busy, setBusy] = useState<'preview' | 'import' | null>(null);
+  const [busy, setBusy] = useState<'preview' | 'import' | 'sync' | 'compare' | null>(null);
   const [preview, setPreview] = useState<Awaited<ReturnType<typeof client.webullPositionsPreview>> | null>(null);
   const [showRaw, setShowRaw] = useState(false);
+  const [comparison, setComparison] = useState<PositionComparison | null>(null);
+
+  const scheduler = useAsync(() => client.webullSyncSchedulerStatus(), []);
+  const [autoEnabled, setAutoEnabled] = useState(true);
+  const [autoInterval, setAutoInterval] = useState(300);
+  // Comma-separated editable mirror of the scheduler's accountIds list — a user
+  // with more than one real account (cash + margin) lists all of them here so
+  // the background sync reconciles every account, not just one.
+  const [autoAccounts, setAutoAccounts] = useState('');
+
+  useEffect(() => {
+    if (!scheduler.data) return;
+    setAutoEnabled(scheduler.data.enabled);
+    setAutoInterval(scheduler.data.intervalSeconds);
+    setAutoAccounts(scheduler.data.accountIds.join(', '));
+    // Seed the manual field with the first configured account for convenience.
+    setAccountId((cur) => cur || scheduler.data!.accountIds[0] || '');
+  }, [scheduler.data]);
+
+  const parseAccounts = (s: string) => [
+    ...new Set(
+      s
+        .split(',')
+        .map((a) => a.trim())
+        .filter(Boolean),
+    ),
+  ];
+
+  const saveScheduler = async (patch: { enabled?: boolean; intervalSeconds?: number; accountIds?: string[] }) => {
+    const saved = await client.setWebullSyncScheduler(patch);
+    setAutoEnabled(saved.enabled);
+    setAutoInterval(saved.intervalSeconds);
+    setAutoAccounts(saved.accountIds.join(', '));
+  };
+
+  const runSyncNow = async () => {
+    if (!accountId) return;
+    setBusy('sync');
+    try {
+      const r = await client.webullPositionsSync(accountId);
+      if (r.ok) {
+        const parts: string[] = [];
+        if (r.ordersChanged) parts.push(`${r.ordersChanged} order${r.ordersChanged === 1 ? '' : 's'} updated`);
+        if (r.closed)
+          parts.push(`closed ${r.closed}${r.closedSymbols.length ? ` (${r.closedSymbols.join(', ')})` : ''}`);
+        if (r.imported) parts.push(`imported ${r.imported}`);
+        toast(parts.length ? `Synced — ${parts.join(' · ')}` : 'Synced — already up to date', { type: 'success' });
+        setPreview(null);
+      } else {
+        toast(r.error || 'Sync failed', { type: 'error' });
+      }
+    } catch (e) {
+      toast((e as Error).message || 'Sync failed', { type: 'error' });
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const runPreview = async () => {
     if (!accountId) return;
@@ -578,16 +678,33 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
     }
   };
 
+  const runCompare = async () => {
+    if (!accountId) return;
+    setBusy('compare');
+    setComparison(null);
+    try {
+      setComparison(await client.webullPositionsCompare(accountId));
+    } catch (e) {
+      setComparison({ ok: false, accountId, rows: [], error: (e as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <div className="border-t border-ink-700 pt-3 space-y-2">
       <div className="text-sm font-medium">Sync positions → journal</div>
       <p className="text-[11px] text-slate-500">
-        Preview your open Webull positions, then import the ones not already in the journal. Import only <em>adds</em>{' '}
-        open positions — it never edits or deletes existing entries. Imported positions are tagged{' '}
-        <code className="text-slate-400">webull</code>.
+        Preview your open Webull positions, then import the ones not already in the journal — import only <em>adds</em>{' '}
+        open positions, it never edits or deletes existing entries. Imported positions are tagged{' '}
+        <code className="text-slate-400">webull</code>. <strong>Sync now</strong> and the automatic background sync
+        below go further: they reconcile orders this app already placed (including a bracket's stop-loss/take-profit
+        exit leg, which used to be missed once the entry itself was filled), and <em>close</em> journal positions Webull
+        no longer shows as held at all (e.g. sold directly in the Webull app) — something preview/import alone never
+        does.
       </p>
       <div className="flex flex-wrap items-end gap-2">
-        <Field label="Account ID" hint="Copy an account_id from Account list">
+        <Field label="Account ID" hint="For Preview / Sync now / Compare — one account at a time.">
           <input
             className="input max-w-[260px] font-mono text-xs"
             value={accountId}
@@ -603,6 +720,12 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
             {busy === 'import' ? 'Importing…' : `Import ${preview.positions.length}`}
           </button>
         )}
+        <button className="btn-ghost" onClick={runSyncNow} disabled={!configured || !accountId || busy !== null}>
+          {busy === 'sync' ? 'Syncing…' : 'Sync now'}
+        </button>
+        <button className="btn-ghost" onClick={runCompare} disabled={!configured || !accountId || busy !== null}>
+          {busy === 'compare' ? 'Comparing…' : 'Compare against broker'}
+        </button>
       </div>
 
       {preview && !preview.ok && <div className="text-sm text-bear">✕ {preview.error ?? 'failed'}</div>}
@@ -611,7 +734,12 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
           {preview.positions.length === 0 ? (
             <span className="text-slate-400">
               No open positions to import
-              {preview.unmapped ? ` (${preview.unmapped} row(s) couldn't be parsed)` : ''}.
+              {preview.unmapped
+                ? ` (${preview.unmapped} row(s) couldn't be parsed${
+                    preview.unmappedOptions ? `, ${preview.unmappedOptions} of them option-like` : ''
+                  })`
+                : ''}
+              .
             </span>
           ) : (
             <>
@@ -642,8 +770,23 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
                 </tbody>
               </table>
               {preview.unmapped > 0 && (
-                <div className="text-[11px] text-amber-400">
-                  {preview.unmapped} row(s) couldn't be parsed — check the raw payload.
+                <div className="text-[11px] text-amber-400 space-y-1">
+                  <div>
+                    {preview.unmapped} row(s) couldn&apos;t be parsed
+                    {preview.unmappedOptions
+                      ? ` — ${preview.unmappedOptions} looked like an option (Webull returns options in a field shape the importer doesn't recognize yet). `
+                      : ' — '}
+                    check the raw payload below.
+                  </div>
+                  {preview.unmappedSample && preview.unmappedSample.some((s) => s.looksLikeOption) && (
+                    <div className="text-slate-500">
+                      Unparsed option row fields:{' '}
+                      {preview.unmappedSample
+                        .filter((s) => s.looksLikeOption)
+                        .map((s) => s.keys.join(', '))
+                        .join(' | ')}
+                    </div>
+                  )}
                 </div>
               )}
             </>
@@ -658,6 +801,102 @@ function WebullPositionsSync({ configured }: { configured: boolean }) {
           )}
         </div>
       )}
+
+      {comparison && !comparison.ok && <div className="text-sm text-bear">✕ {comparison.error ?? 'failed'}</div>}
+      {comparison?.ok && (
+        <div className="text-sm space-y-2">
+          <p className="text-[11px] text-slate-500">
+            Every contract the broker currently shows held vs. what the journal shows open for this account — a
+            read-only snapshot, nothing is written. A mismatch here is exactly what a sync would eventually act on;
+            checking it directly catches drift immediately instead of noticing later from a wrong P&L number.
+          </p>
+          {comparison.rows.length === 0 ? (
+            <span className="text-slate-400">Nothing held at the broker or open in the journal for this account.</span>
+          ) : (
+            <table className="w-full text-[11px]">
+              <thead className="text-slate-500">
+                <tr className="text-left">
+                  <th className="pr-2">Symbol</th>
+                  <th className="pr-2">Contract</th>
+                  <th className="pr-2">Broker qty</th>
+                  <th className="pr-2">Journal qty</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {comparison.rows.map((r, i) => (
+                  <tr key={i} className="border-t border-ink-800">
+                    <td className="pr-2 font-medium">{r.symbol}</td>
+                    <td className="pr-2 text-slate-400">
+                      {r.assetType === 'option' ? `${r.optionType} ${r.strike} ${r.expiration}` : '—'}
+                    </td>
+                    <td className="pr-2">{r.brokerQty}</td>
+                    <td className="pr-2">{r.journalQty}</td>
+                    <td className={r.matches ? 'text-bull' : 'text-bear'}>{r.matches ? 'match' : 'mismatch'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      <div className="border-t border-ink-800 pt-2 space-y-2">
+        <label className="flex items-start gap-2 text-sm text-slate-300 cursor-pointer">
+          <input
+            type="checkbox"
+            className="mt-0.5 accent-accent"
+            checked={autoEnabled}
+            disabled={!configured}
+            onChange={(e) => saveScheduler({ enabled: e.target.checked })}
+          />
+          <span>
+            Sync automatically in the background
+            <span className="block text-[11px] text-slate-500">
+              Runs on the server on a schedule — no button needed. Reconciles every account listed below.
+              {parseAccounts(autoAccounts).length ? '' : ' Add at least one account below first.'}
+            </span>
+          </span>
+        </label>
+        <Field
+          label="Auto-sync accounts"
+          hint="Comma-separate ALL your real accounts (e.g. cash AND margin) so none are left un-synced."
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              className="input max-w-[420px] font-mono text-xs"
+              value={autoAccounts}
+              disabled={!configured}
+              onChange={(e) => setAutoAccounts(e.target.value)}
+              onBlur={() => saveScheduler({ accountIds: parseAccounts(autoAccounts) })}
+              placeholder="account_id_1, account_id_2"
+            />
+            {accountId && !parseAccounts(autoAccounts).includes(accountId) && (
+              <button
+                type="button"
+                className="btn-ghost text-xs"
+                onClick={() => saveScheduler({ accountIds: [...parseAccounts(autoAccounts), accountId] })}
+              >
+                + Add {accountId.length > 10 ? `…${accountId.slice(-6)}` : accountId}
+              </button>
+            )}
+          </div>
+        </Field>
+        <Field label="Sync interval">
+          <select
+            className="input max-w-[200px]"
+            value={autoInterval}
+            disabled={!autoEnabled}
+            onChange={(e) => saveScheduler({ intervalSeconds: Number(e.target.value) })}
+          >
+            {SYNC_INTERVALS.map((i) => (
+              <option key={i.value} value={i.value}>
+                {i.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
     </div>
   );
 }

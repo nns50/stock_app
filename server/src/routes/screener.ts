@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { asyncHandler, parseBody } from './_helpers';
+import { asyncHandler, parseBody, parseQuery } from './_helpers';
 import { getProvider, getProviderStatus } from '../providers';
 import { listUniverseSymbols } from '../db/universe';
 import { saveQuote } from '../services/quotes';
@@ -12,6 +12,7 @@ import {
   ScreenerConfig,
   SymbolScore,
 } from '../indicators/screener';
+import { computeSectorRotation } from '../services/sectorRotation';
 
 export const screenerRouter = Router();
 
@@ -19,6 +20,21 @@ export const screenerRouter = Router();
 screenerRouter.get('/config/default', (_req, res) => {
   res.json(defaultScreenerConfig());
 });
+
+// Read-only sector-rotation leaderboard — ranks the universe's sectors by the
+// median relative strength of their members (services/sectorRotation.ts).
+// Cached ~1h in the service; `force` bypasses it for a manual refresh.
+const rotationQuery = z.object({
+  lookbackDays: z.coerce.number().int().min(5).max(250).optional(),
+  force: z.coerce.boolean().optional(),
+});
+screenerRouter.get(
+  '/sector-rotation',
+  asyncHandler(async (req, res) => {
+    const q = parseQuery(rotationQuery, req);
+    res.json(await computeSectorRotation({ lookbackDays: q.lookbackDays, force: q.force }));
+  }),
+);
 
 const runBody = z.object({
   symbols: z.array(z.string().min(1)).optional(),

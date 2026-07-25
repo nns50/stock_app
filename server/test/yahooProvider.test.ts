@@ -33,6 +33,33 @@ vi.mock('yahoo-finance2', () => {
       }
       async chart(symbol?: string) {
         reject(symbol);
+        if (symbol === 'SPLIT') {
+          // A 2:1 split on the second (later) day: adjclose is HALF of the
+          // raw close, same ratio a real Yahoo response carries for every
+          // bar before the split once one has happened.
+          return {
+            quotes: [
+              {
+                date: new Date('2026-06-09T00:00:00Z'),
+                open: 100,
+                high: 102,
+                low: 99,
+                close: 101,
+                adjclose: 50.5,
+                volume: 1000,
+              },
+              {
+                date: new Date('2026-06-10T00:00:00Z'),
+                open: 51,
+                high: 51.5,
+                low: 50,
+                close: 51,
+                adjclose: 51,
+                volume: 2200,
+              },
+            ],
+          };
+        }
         return {
           quotes: [
             { date: new Date('2026-06-10T00:00:00Z'), open: 101, high: 103, low: 100, close: 102, volume: 1100 },
@@ -121,6 +148,18 @@ describe('YahooProvider mapping', () => {
     expect(c).toHaveLength(2);
     expect(c[0].time).toBeLessThan(c[1].time);
     expect(c[1].close).toBe(102);
+  });
+
+  it('split/dividend-adjusts the WHOLE bar (open/high/low too, not just close) using adjclose', async () => {
+    const c = await p.getCandles('SPLIT', 'daily', { limit: 10 });
+    expect(c).toHaveLength(2);
+    // Pre-split day: adjclose (50.5) is half of the raw close (101) -> factor 0.5.
+    expect(c[0].close).toBe(50.5);
+    expect(c[0].open).toBe(50); // 100 * 0.5
+    expect(c[0].high).toBe(51); // 102 * 0.5
+    expect(c[0].low).toBe(49.5); // 99 * 0.5
+    // Post-split day: adjclose equals the raw close already -> factor 1 (unchanged).
+    expect(c[1]).toMatchObject({ open: 51, high: 51.5, low: 50, close: 51 });
   });
 
   it('lists expirations as YYYY-MM-DD', async () => {

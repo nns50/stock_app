@@ -48,9 +48,20 @@ describe('webull account state', () => {
       realizedPnlTodayUsd: 0,
       ordersToday: 0,
       currentPositionQty: 0,
+      settledCashUsd: 10.81,
     });
     expect(r.optionBuyingPowerUsd).toBe(10.81);
     expect(r.netLiquidationUsd).toBe(15.31);
+  });
+
+  it('leaves settledCashUsd undefined (not a fabricated 0) when the broker omits it', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const { settled_cash, ...assetWithoutSettledCash } = BALANCE.account_currency_assets[0];
+    void settled_cash;
+    const balanceWithoutSettledCash = { ...BALANCE, account_currency_assets: [assetWithoutSettledCash] };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp(balanceWithoutSettledCash));
+    const r = await webullAccountState('ACC1');
+    expect(r.state?.settledCashUsd).toBeUndefined();
   });
 
   it('sums the signed position for the requested symbol', async () => {
@@ -67,6 +78,97 @@ describe('webull account state', () => {
     expect(r.state?.currentPositionQty).toBe(7); // AAPL long 7; TSLA ignored
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(String(fetchSpy.mock.calls[1][0])).toContain('/openapi/assets/positions');
+  });
+
+  it('counts ONLY the matching option contract for an option instrument (long stock does NOT count)', async () => {
+    // Regression (hardening audit, HIGH): the old per-underlying sum let a long
+    // STOCK position (or a different option contract) inflate currentPositionQty
+    // for a single-leg option order — silently defeating allowNakedShort=false
+    // for a SELL-to-open, since long stock does not cover a short option.
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const positions = [
+      { symbol: 'AAPL', quantity: '100', position_side: 'LONG', asset_type: 'STOCK', cost_price: '150' },
+      {
+        symbol: 'AAPL',
+        quantity: '2',
+        position_side: 'LONG',
+        asset_type: 'OPTION',
+        option_type: 'CALL',
+        strike_price: '150',
+        option_expire_date: '2030-01-17',
+        cost_price: '5',
+      },
+      {
+        symbol: 'AAPL',
+        quantity: '3',
+        position_side: 'LONG',
+        asset_type: 'OPTION',
+        option_type: 'PUT',
+        strike_price: '140',
+        option_expire_date: '2030-01-17',
+        cost_price: '2',
+      },
+    ];
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(okResp(BALANCE)).mockResolvedValueOnce(okResp(positions));
+    const r = await webullAccountState('ACC1', 'AAPL', {
+      assetKind: 'option',
+      strike: 150,
+      expiration: '2030-01-17',
+      optionType: 'call',
+    });
+    // ONLY the matching 150 call (2) — not the 100 shares, not the 140 put.
+    expect(r.state?.currentPositionQty).toBe(2);
+  });
+
+  it('counts ONLY stock for a stock instrument (option contracts do NOT count)', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const positions = [
+      { symbol: 'AAPL', quantity: '100', position_side: 'LONG', asset_type: 'STOCK', cost_price: '150' },
+      {
+        symbol: 'AAPL',
+        quantity: '2',
+        position_side: 'SHORT',
+        asset_type: 'OPTION',
+        option_type: 'CALL',
+        strike_price: '150',
+        option_expire_date: '2030-01-17',
+        cost_price: '5',
+      },
+    ];
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(okResp(BALANCE)).mockResolvedValueOnce(okResp(positions));
+    const r = await webullAccountState('ACC1', 'AAPL', { assetKind: 'stock' });
+    expect(r.state?.currentPositionQty).toBe(100); // ONLY the shares — not the short call
+  });
+
+  it('flags positionsUnavailable (not a fabricated 0) when the positions call fails but balance succeeds', async () => {
+    // Regression (hardening audit): balance OK + positions FAILED must not look
+    // like a flat account. currentPositionQty stays 0 by default, but the flag
+    // lets the human place/replace path fail closed instead of under-counting a
+    // real holding for the position_size cap.
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE)) // balance OK
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: async () => JSON.stringify({ msg: 'positions down' }),
+      } as Response);
+    const r = await webullAccountState('ACC1', 'AAPL');
+    expect(r.ok).toBe(true); // balance is usable
+    expect(r.positionsUnavailable).toBe(true);
+    expect(r.state?.currentPositionQty).toBe(0); // default, NOT a confirmed-flat 0
+  });
+
+  it('leaves positionsUnavailable falsy on the happy path', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE))
+      .mockResolvedValueOnce(
+        okResp([{ symbol: 'AAPL', quantity: '5', position_side: 'LONG', asset_type: 'STOCK', cost_price: '10' }]),
+      );
+    const r = await webullAccountState('ACC1', 'AAPL');
+    expect(r.positionsUnavailable).toBeFalsy();
+    expect(r.state?.currentPositionQty).toBe(5);
   });
 
   it('surfaces a balance error cleanly', async () => {

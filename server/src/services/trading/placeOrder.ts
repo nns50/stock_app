@@ -1,10 +1,20 @@
+import { createHash } from 'crypto';
 import { config } from '../../config';
-import { AccountState, GuardrailReport, OrderIntent, blockingFailures, evaluateGuardrails } from './guardrails';
+import {
+  AccountState,
+  GuardrailReport,
+  OrderIntent,
+  blockingFailures,
+  evaluateGuardrails,
+  wouldOpenShort,
+} from './guardrails';
 import { getTradingConfig } from '../../db/trading';
 import { OrderIntentRecord, countTodaysOrders, createIntent, transitionIntent } from '../../db/orders';
 import { webullAccountState, webullAccountType } from '../../providers/webull/accountState';
 import { marketOpenContext } from './marketHours';
 import { WebullPlaceResult, newClientOrderId, webullPlaceOrder } from '../../providers/webull/orders';
+import { resolveStockPrices } from '../quotes';
+import { getProvider } from '../../providers';
 
 // ---------------------------------------------------------------------------
 // Place a single live order (stock or single-leg option) — the ONLY path that
@@ -27,6 +37,7 @@ export type PlaceReason =
   | 'account_error'
   | 'blocked'
   | 'broker_rejected'
+  | 'duplicate'
   | 'placed';
 
 export interface PlaceResult {
@@ -47,7 +58,47 @@ export function placeConfirmation(intent: OrderIntent): string {
   return `${intent.side.toUpperCase()} ${intent.quantity} ${intent.symbol.toUpperCase()}`;
 }
 
-export async function placeOrder(intent: OrderIntent, accountId: string, confirmation: string): Promise<PlaceResult> {
+/** Re-derive the fat-finger reference SERVER-side for a LIMIT order, overriding
+ *  whatever the client sent — a client can otherwise omit `referencePrice`
+ *  (downgrading fat_finger to a warning) or set it equal to an absurd limit
+ *  (making the deviation 0, defeating the check entirely). `referencePrice` is
+ *  guardrail-only — never sent to the broker — so overriding it is safe. A
+ *  market-data miss falls back to the client value (no worse than before).
+ *  Stocks use a fresh quote; single-leg options use the current contract mark
+ *  from the chain. Multi-leg spreads (net-premium reference) keep the client
+ *  value — they don't come through this single-order /place path. */
+async function withServerReference(intent: OrderIntent): Promise<OrderIntent> {
+  if (intent.orderType !== 'limit') return intent;
+  let ref: number | undefined;
+  try {
+    if (intent.assetKind === 'stock') {
+      const px = (await resolveStockPrices([intent.symbol])).get(intent.symbol.toUpperCase())?.price;
+      if (typeof px === 'number' && Number.isFinite(px) && px > 0) ref = px;
+    } else if (
+      intent.assetKind === 'option' &&
+      intent.optionType &&
+      intent.strike !== undefined &&
+      intent.expiration &&
+      (intent.optionStrategy ?? 'SINGLE') === 'SINGLE'
+    ) {
+      const chain = await getProvider().getOptionsChain(intent.symbol, intent.expiration);
+      const pool = intent.optionType === 'call' ? chain.calls : chain.puts;
+      const match = pool.find((c) => Math.abs(c.strike - intent.strike!) < 1e-6);
+      const mark = match?.mark ?? match?.last;
+      if (typeof mark === 'number' && Number.isFinite(mark) && mark > 0) ref = mark;
+    }
+  } catch {
+    // market-data miss — fall back to the client value below
+  }
+  return ref !== undefined ? { ...intent, referencePrice: ref } : intent;
+}
+
+export async function placeOrder(
+  intent: OrderIntent,
+  accountId: string,
+  confirmation: string,
+  idempotencyKey?: string,
+): Promise<PlaceResult> {
   // 1) Deploy-level master gate — dead unless TRADING_ENABLED is set on the box.
   if (!config.trading.placeEnabled) {
     return {
@@ -63,10 +114,29 @@ export async function placeOrder(intent: OrderIntent, accountId: string, confirm
   }
 
   // Fresh, authoritative account state (never client-supplied), with today's real
-  // order count folded in for the max-orders/day rule.
-  const acct = await webullAccountState(accountId, intent.symbol);
+  // order count folded in for the max-orders/day rule. Pass the order's own
+  // instrument so the naked_short / position_size checks see the quantity of
+  // THAT instrument (this exact option contract, or stock), not a cross-asset
+  // per-underlying sum — long stock must not silently cover a short option.
+  const acct = await webullAccountState(accountId, intent.symbol, {
+    assetKind: intent.assetKind,
+    strike: intent.strike,
+    expiration: intent.expiration,
+    optionType: intent.optionType,
+  });
   if (!acct.ok || !acct.state) {
     return { ok: true, placed: false, reason: 'account_error', error: acct.error ?? 'Could not load account state.' };
+  }
+  // Fail CLOSED if the broker's positions couldn't be read: a fabricated 0
+  // would under-count a real holding and let the position_size cap be breached.
+  if (acct.positionsUnavailable) {
+    return {
+      ok: true,
+      placed: false,
+      reason: 'account_error',
+      error:
+        'Could not verify current positions with the broker — order blocked rather than sized against an unknown position.',
+    };
   }
   const accountType =
     intent.optionStrategy === 'VERTICAL' || intent.optionStrategy === 'IRON_CONDOR'
@@ -74,12 +144,33 @@ export async function placeOrder(intent: OrderIntent, accountId: string, confirm
       : undefined;
   const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders(), accountType };
 
+  // Re-derive the fat-finger reference from fresh market data (never the
+  // client's) so the guardrail can't be omitted or spoofed away.
+  const priced = await withServerReference(intent);
+
   // 3) Re-run the guardrails server-side.
   const cfg = getTradingConfig();
-  const guardrails = evaluateGuardrails(intent, accountState, cfg, { marketOpen: marketOpenContext(intent) });
+  const guardrails = evaluateGuardrails(priced, accountState, cfg, { marketOpen: marketOpenContext(priced) });
+  // Only matters for a permitted short (allowNakedShort — naked_short above
+  // already blocks it otherwise): submit Webull's own SHORT side instead of a
+  // plain SELL so the broker's real-time locate/borrow check runs at order time.
+  const isShort = wouldOpenShort(priced, accountState);
 
-  const clientOrderId = newClientOrderId();
-  const intentRec = createIntent(intent, clientOrderId); // draft (audited)
+  // Idempotency: a client-supplied key makes retries/double-clicks/proxy-replays
+  // safe. Deriving the broker client_order_id deterministically from it means a
+  // repeated request produces the SAME order id (so the broker dedups too) and
+  // the SAME intent row (createIntent is keyed on it). If that intent already
+  // advanced past 'draft', a prior request already placed (or is placing) it —
+  // decline to submit a second time. Without a key, each call is unique (prior
+  // behavior). The transitions below up to submit are synchronous, so a
+  // concurrent duplicate sees 'submitted', never a second 'draft'.
+  const clientOrderId = idempotencyKey
+    ? createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32)
+    : newClientOrderId();
+  const intentRec = createIntent(priced, clientOrderId); // draft (audited)
+  if (intentRec.state !== 'draft') {
+    return { ok: true, placed: false, reason: 'duplicate', guardrails, accountState, intent: intentRec };
+  }
 
   if (!guardrails.ok) {
     const reasons = blockingFailures(guardrails)
@@ -94,7 +185,7 @@ export async function placeOrder(intent: OrderIntent, accountId: string, confirm
   transitionIntent(intentRec.id, 'confirmed', { detail: `confirmed: ${confirmation.trim()}` });
   transitionIntent(intentRec.id, 'submitted', { detail: `submitting (cid ${clientOrderId})` });
 
-  const broker = await webullPlaceOrder(accountId, intent, clientOrderId);
+  const broker = await webullPlaceOrder(accountId, intent, clientOrderId, isShort);
 
   if (broker.ok) {
     const acked = transitionIntent(intentRec.id, 'acknowledged', {
