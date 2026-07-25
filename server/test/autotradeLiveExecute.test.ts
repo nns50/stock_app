@@ -7,6 +7,14 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
   return { ...actual, webullPlaceOrder: vi.fn(), webullOrderStatus: vi.fn() };
 });
 vi.mock('../src/services/quotes', () => ({ priceMap: vi.fn() }));
+// checkLiveScaleIns now enforces the session window itself (a scale-in places a
+// real order that ADDS risk, and loop.ts runs it before its own session gate).
+// These tests run at whatever wall-clock CI happens to be at, so pin the guard
+// open by default; the closed case gets its own test below.
+vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/autotrading/executionGuards')>()),
+  checkSessionWindow: vi.fn(() => ({ ok: true })),
+}));
 
 import { config } from '../src/config';
 import { getProvider } from '../src/providers';
@@ -1292,6 +1300,23 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
 });
 
 describe('checkLiveScaleIns', () => {
+  it('places no add-on outside the session window', async () => {
+    // A scale-in adds real risk to an open real position. loop.ts calls this
+    // BEFORE its own checkSessionWindow, behind isLiveEntryActive — which has no
+    // market-hours term — and evaluateGuardrails only WARNS on a closed market.
+    // So the gate has to live here or a real add-on can be submitted overnight.
+    const { checkSessionWindow } = await import('../src/services/autotrading/executionGuards');
+    // mockReturnValue (not Once): checkLiveScaleIns returns early on several
+    // cheaper checks, so a queued one-shot could survive into the next test.
+    vi.mocked(checkSessionWindow).mockReturnValue({ ok: false, reason: 'Market is closed' });
+    try {
+      expect(await checkLiveScaleIns()).toEqual([]);
+      expect(vi.mocked(webullPlaceOrder)).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(checkSessionWindow).mockReturnValue({ ok: true });
+    }
+  });
+
   const riskCtx = {
     equity: 100_000,
     dailyPnl: 0,

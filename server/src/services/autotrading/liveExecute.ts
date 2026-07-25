@@ -44,6 +44,7 @@ import {
   LiveOrderMeta,
 } from '../../db/autotradeLiveOrders';
 import { computeScaleIn } from './scaleIn';
+import { checkSessionWindow } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
 import { computeGradeExpectancyMultipliers } from './expectancySizing';
 // DB-layer reads only (NOT the options execution service) -- so the combined
@@ -1661,6 +1662,16 @@ export async function checkLiveScaleIns(): Promise<LiveScaleInOutcome[]> {
   if (!cfg.liveAccountId) return [];
   if (!cfg.liveScaleInEnabled) return [];
   if (cfg.liveMaxAddOns <= 0 || cfg.addOnTriggerRMultiple <= 0 || cfg.addOnSizePct <= 0) return [];
+  // Session window, checked HERE rather than relying on the caller. A scale-in
+  // places a real, marketable order that ADDS risk to an already-open position,
+  // and loop.ts runs it well before its own checkSessionWindow — behind
+  // isLiveEntryActive, which despite its call-site comment carries no
+  // market-hours term (kill switches and master gates only). The guardrail
+  // layer is not a backstop either: evaluateGuardrails only WARNS on a closed
+  // market, never blocks. Without this, an add-on could be submitted overnight,
+  // at a weekend, or inside the open/close buffer every other entry respects.
+  const session = checkSessionWindow(cfg.sessionBufferMinutes);
+  if (!session.ok) return [];
 
   const open = listAutotradeLivePositions({ status: 'open' }).filter((p) => p.assetType === 'stock');
   if (open.length === 0) return [];
