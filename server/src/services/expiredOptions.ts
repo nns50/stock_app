@@ -45,6 +45,30 @@ export const PIN_RISK_BAND = 0.0025; // 0.25% of strike
 
 export type ExpiredOptionDisposition = 'worthless' | 'in_the_money' | 'unknown';
 
+/**
+ * The minimum an option position must expose to be classified.
+ *
+ * Structural rather than `Position` so this same reasoning covers autotrade's
+ * live options book, which lives in its own table
+ * (`autotrade_live_options_positions`) with a different row shape — a debit
+ * spread needs a second leg's columns the Positions ledger has no room for.
+ * `Position` satisfies this as-is; autotrade adapts its rows onto it (and
+ * classifies a spread one leg at a time — see the live options sweep).
+ *
+ * Note `side` is long/short, NOT the contract type: autotrade's own rows use
+ * `side` for call/put and are always long, so the adapter must not pass its
+ * `side` straight through.
+ */
+export interface ExpiringOption {
+  id: number;
+  symbol: string;
+  expiration: string | null;
+  side: 'long' | 'short';
+  remainingQuantity: number;
+  strike: number | null;
+  optionType: 'call' | 'put' | null;
+}
+
 export interface ExpiredOptionFinding {
   positionId: number;
   symbol: string;
@@ -62,7 +86,7 @@ export interface ExpiredOptionFinding {
   reason: string;
 }
 
-export function optionLabel(p: Position): string {
+export function optionLabel(p: Pick<ExpiringOption, 'symbol' | 'strike' | 'optionType' | 'expiration'>): string {
   const type = p.optionType === 'call' ? 'C' : p.optionType === 'put' ? 'P' : '';
   return `${p.symbol} ${p.strike ?? '?'}${type} ${p.expiration ?? ''}`.trim();
 }
@@ -96,9 +120,9 @@ export function intrinsicAt(optionType: 'call' | 'put', strike: number, underlyi
  * underlying's close on that position's expiration date, or null when it can't
  * be resolved — a null is treated as unknown, never as "probably worthless".
  */
-export function classifyExpiredOptions(
-  expired: Position[],
-  underlyingAtExpiry: (p: Position) => number | null,
+export function classifyExpiredOptions<T extends ExpiringOption>(
+  expired: T[],
+  underlyingAtExpiry: (p: T) => number | null,
 ): ExpiredOptionFinding[] {
   return expired.map((p) => {
     const base = {

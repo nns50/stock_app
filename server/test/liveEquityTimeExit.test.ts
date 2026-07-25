@@ -37,6 +37,7 @@ import {
   reconcileLiveOrders,
   checkLiveEquityTimeExits,
   cancelLiveBracketExitLegs,
+  checkLiveBracketProtection,
 } from '../src/services/autotrading/liveExecute';
 
 const mockGetProvider = vi.mocked(getProvider);
@@ -577,5 +578,96 @@ describe('cancelLiveBracketExitLegs — absence of evidence', () => {
     expect(
       listAutotradeEvents({ stage: 'execution', actions: ['live_time_exit_cancel_failed'] }).length,
     ).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A bracket is submitted as one request and its acceptance is never verified
+// per-leg — the only per-leg signal is combo_type, which WebullOrderLeg marks
+// unconfirmed. So if Webull takes the entry and drops the exits, the position
+// is naked while the ledger still shows a stop price. This asks the question
+// the open-orders endpoint CAN answer, and only reports.
+// ---------------------------------------------------------------------------
+describe('checkLiveBracketProtection', () => {
+  /** The protection check ignores positions younger than its grace period. */
+  const aged = async () => {
+    const { position, quantity } = await openAgedLivePosition(30);
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(quantity) as Awaited<ReturnType<typeof webullAccountState>>);
+    return position;
+  };
+  const unprotectedFlags = () => listAutotradeEvents({ stage: 'execution', actions: ['live_position_unprotected'] });
+
+  it('reports a position whose stop is resting at the broker as protected', async () => {
+    const position = await aged();
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [openOrder({ clientOrderId: 'STOP-1' })] });
+
+    const outcomes = await checkLiveBracketProtection();
+
+    expect(outcomes).toEqual([expect.objectContaining({ positionId: position.id, protectedAtBroker: true })]);
+    expect(unprotectedFlags()).toHaveLength(0);
+  });
+
+  it('flags a position with NO resting exit order — the naked case', async () => {
+    const position = await aged();
+    mockOpenOrders.mockResolvedValue(noOpenOrders);
+
+    const outcomes = await checkLiveBracketProtection();
+
+    expect(outcomes[0]).toMatchObject({ positionId: position.id, protectedAtBroker: false });
+    expect(outcomes[0].unknown).toBeUndefined();
+    const flag = unprotectedFlags();
+    expect(flag).toHaveLength(1);
+    expect(flag[0].detail ?? '').toMatch(/no resting sell order/i);
+    // Reports only — it must never place anything to "fix" this.
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+  });
+
+  it('says UNKNOWN rather than unprotected when the list cannot be parsed', async () => {
+    // Same guard the cancel path uses. Calling a parse miss "unprotected" would
+    // cry wolf, and this alert is only useful if it is believed.
+    const position = await aged();
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [{ clientOrderId: 'X', side: 'sell', status: 'WORKING' }], // no symbol
+    });
+
+    const outcomes = await checkLiveBracketProtection();
+
+    expect(outcomes[0]).toMatchObject({ positionId: position.id, protectedAtBroker: false });
+    expect(outcomes[0].unknown).toMatch(/no readable symbol/i);
+    expect(unprotectedFlags()).toHaveLength(0); // not claimed as naked
+  });
+
+  it('says nothing when the broker cannot be reached', async () => {
+    await aged();
+    mockOpenOrders.mockResolvedValue({ ok: false, orders: [], error: 'Webull down' });
+    expect(await checkLiveBracketProtection()).toEqual([]);
+    expect(unprotectedFlags()).toHaveLength(0);
+  });
+
+  it('skips a freshly-opened position until the grace period elapses', async () => {
+    const position = await aged();
+    db.prepare('UPDATE positions SET created_at = ? WHERE id = ?').run(Date.now(), position.id);
+    mockOpenOrders.mockResolvedValue(noOpenOrders);
+    expect(await checkLiveBracketProtection()).toEqual([]);
+  });
+
+  it('journals once per day, not once per tick', async () => {
+    await aged();
+    mockOpenOrders.mockResolvedValue(noOpenOrders);
+    await checkLiveBracketProtection();
+    await checkLiveBracketProtection();
+    await checkLiveBracketProtection();
+    expect(unprotectedFlags()).toHaveLength(1);
+  });
+
+  it('ignores a position that was never opened with a bracket', async () => {
+    const position = await aged();
+    // Strip the bracket from its entry intent.
+    db.prepare('UPDATE order_intents SET is_bracket = 0 WHERE id = ?').run(position.sourceIntentId);
+    mockOpenOrders.mockResolvedValue(noOpenOrders);
+    expect(await checkLiveBracketProtection()).toEqual([]);
   });
 });

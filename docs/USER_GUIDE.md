@@ -1238,7 +1238,18 @@ shouldn't be a tab-switch away.
   spread legs together as one combo) instead of just recording a paper close. An exit
   makes the *opposite* call on a stale price: it still places (declining would just leave
   the position drifting to expiration, which is what the time exit exists to prevent) but
-  journals that the close may rest unfilled, which feeds the unresolved-order alert below. A **Live options positions** table (Dashboard
+  journals that the close may rest unfilled, which feeds the unresolved-order alert below.
+  If a position does reach **expiry** still open — an option held through expiration never
+  produces a closing order, and the broker-truth backstop can't price a chain that no
+  longer exists — it's swept the same way the [Positions](#positions--pl) page's expired-option
+  sweep works: one that finished clearly **out of the money** is closed at **$0** (that's a
+  statement of fact, not a guess), while one that finished **in the money**, or too close to
+  the strike to call, is **left open and flagged** — it was exercised or assigned into a stock
+  position this app doesn't track, so it needs your broker statement. For a debit spread both
+  legs must finish out of the money before it's booked at $0; either leg finishing in the money
+  means assignment, and that's a human's call. This matters beyond tidiness: an expired row left
+  open counts against the shared open-risk budget both the equity and options books draw from,
+  and blocks any new options entry on that underlying. A **Live options positions** table (Dashboard
   tab, below the equity Live positions table) shows every real options position the loop has
   placed, with the same side/strike badges (and both strikes for a spread) as the
   options paper table. Kept accurate every cycle by the same kind of broker-truth
@@ -1269,6 +1280,18 @@ shouldn't be a tab-switch away.
   badges that position with a **+N add** count so a pyramid is visible at a glance. Like the
   rest of the live-order surface, treat the first few real adds as confirmation before trusting
   it with size — **validate in paper + backtest first.**
+- **Stop-still-there check** — a bracket is submitted as one request (entry plus its
+  stop/target), and the broker's reply doesn't say whether the *exit legs* were accepted, only
+  that the request as a whole was. So if Webull ever takes the entry and drops the exits, the
+  position is unprotected while this app still shows a stop price against it. Every cycle the
+  loop asks the one question the broker can answer — is there a resting exit-side order on that
+  symbol? — for each live **stock** position opened with a bracket, and alerts on any that has
+  none. It only ever **reports**: placing a replacement stop automatically would risk a second
+  stop on the same position if the check simply failed to see the first, and two stops on one
+  position sell it twice. Re-arm by hand at the broker. (Options are excluded on purpose:
+  Webull only allows DAY orders on the option sell side, so an option bracket's exits
+  legitimately disappear at each close, and checking them would alarm every day for a known,
+  separate limitation. Autotrade's options path never places brackets at all.)
 - **Alerts** — a few loop events push a notification through whichever webhooks you've
   configured in [Settings → Server-side watching](#server-side-watching-alerts-with-the-app-closed)
   (Slack/Discord/generic) — the same destinations the price-alert poller uses, so
@@ -1282,7 +1305,9 @@ shouldn't be a tab-switch away.
   a placement the broker never answered, a fill the app couldn't fully book into its
   ledger, an order retired because the broker denied knowing it, a bracket whose
   stop and target *both* reported filled, an order status the app doesn't recognize,
-  or a closing order priced off a stale last trade that may rest unfilled. These
+  a closing order priced off a stale last trade that may rest unfilled, an options
+  position that expired in the money, or a live position the broker shows **no resting
+  stop** for. These
   aren't rejections and a later successful order doesn't undo them: each one means
   the app's records and your broker may already disagree, so the alert says which
   and points you at the Auto-Trade journal. Throttled to at most one an hour, and it

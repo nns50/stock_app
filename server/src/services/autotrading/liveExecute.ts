@@ -65,7 +65,7 @@ import {
   buildSectorOf,
   evaluateRiskCheck,
 } from './riskCheck';
-import { logAutotradeEvent } from '../../db/autotradeEvents';
+import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
 import { getProvider } from '../../providers';
 import { dispatchNotifications } from '../notifier';
 
@@ -1600,6 +1600,148 @@ export async function cancelLiveBracketExitLegs(
     };
   }
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Is each open live position's protective stop ACTUALLY at the broker?
+//
+// A bracket is submitted as one request — MASTER plus STOP_PROFIT/STOP_LOSS
+// under a client_combo_order_id — and webullPlaceOrder treats a 2xx as
+// acceptance of the whole thing. Nothing has ever verified that the EXIT LEGS
+// were accepted. materializeEntryFill then writes stopPrice/targetPrice onto
+// the position, so the ledger asserts a stop exists on no evidence at all: if
+// the broker took the entry and dropped the exits, the position is naked and
+// every screen in this app still shows it protected.
+//
+// The direct check — reading per-leg acceptance out of the place/history
+// response — is not available: the only per-leg signal is combo_type, which
+// WebullOrderLeg documents as unconfirmed against a real account. Building a
+// protection check on it would risk a false "unprotected" on every bracket, or
+// worse a false "protected".
+//
+// So this asks the question the open-orders endpoint CAN answer: is there a
+// resting order on the exit side for this symbol? Note the polarity — this is
+// a POSITIVE existence check, looking FOR the stop, where finding it is the
+// safe answer. That is the opposite of cancelLiveBracketExitLegs, which had to
+// prove a stop was ABSENT before placing a close. Same scan, and the same
+// unreadableOpenOrders guard, pointed the other way.
+//
+// It reports and never acts. Auto-placing a replacement stop would be the
+// tempting next step and is exactly wrong: unreadableOpenOrders exists because
+// this scan can fail to see orders that ARE there, and a replacement placed on
+// a false negative leaves TWO stops on one position — a gap down sells twice
+// and flips a long short. That is the failure mode the cancel path was hardened
+// against, reintroduced from the other side. Telling a human is the whole job.
+//
+// STOCK brackets only. bracketExit() is GTC so a stock's exit legs persist,
+// but optionBracketExit() is DAY — Webull restricts option sell-side orders to
+// DAY-only — so a human-placed single-leg option bracket's exits legitimately
+// vanish at every close, and checking them would manufacture a daily false
+// alarm for a gap the code already documents separately. Autotrade's options
+// path never places brackets at all, so nothing is lost by scoping this out.
+// ---------------------------------------------------------------------------
+
+/** How long after a position is created to start checking it. The exit legs go
+ *  in with the entry, so they should already be resting by the time a fill is
+ *  observed — but the fill and the broker's own open-orders view need not be
+ *  consistent in the same instant, and a false "unprotected" on the very first
+ *  tick would train the alert to be ignored. */
+const BRACKET_PROTECTION_GRACE_MS = 3 * 60_000;
+
+export interface BracketProtectionOutcome {
+  positionId: number;
+  symbol: string;
+  /** True when a resting exit-side order was positively found. */
+  protectedAtBroker: boolean;
+  /** Set when the scan couldn't answer — neither protected nor unprotected. */
+  unknown?: string;
+}
+
+/**
+ * Check every open autotrade EQUITY position that was opened with a bracket for
+ * a resting exit-side order at the broker, and journal the ones that have none.
+ *
+ * Read-only: one open-orders pull per tick regardless of position count, and it
+ * places, cancels and modifies nothing. Runs regardless of the kill switch for
+ * the same reason the reconcilers do — a halted account still needs to know a
+ * real position is sitting there unprotected.
+ *
+ * Attribution caveat, stated rather than papered over: the scan matches by
+ * symbol and side, so it cannot tell one position's stop from another order on
+ * the same symbol and side. With autotrade's one-position-per-symbol dedup that
+ * is nearly always unambiguous, but a human order on the same symbol could
+ * satisfy the check for an autotrade position. That direction is a missed
+ * alert, never a false one — and the same unverified response shape that rules
+ * out per-leg parsing rules out doing better here.
+ */
+export async function checkLiveBracketProtection(now: number = Date.now()): Promise<BracketProtectionOutcome[]> {
+  const cfg = getAutotradeConfig();
+  const accountId = cfg.liveAccountId;
+  if (!accountId) return [];
+
+  const candidates = listAutotradeLivePositions({ status: 'open' }).filter(
+    (p) =>
+      p.assetType === 'stock' &&
+      p.sourceIntentId !== null &&
+      now - p.createdAt >= BRACKET_PROTECTION_GRACE_MS &&
+      (getIntent(p.sourceIntentId)?.isBracket ?? false),
+  );
+  if (candidates.length === 0) return [];
+
+  const open = await listWebullOpenOrders(accountId);
+  if (!open.ok) return []; // couldn't ask — say nothing, retry next tick
+  const outcomes: BracketProtectionOutcome[] = [];
+
+  for (const pos of candidates) {
+    const symbol = pos.symbol.toUpperCase();
+    const exitSide: 'buy' | 'sell' = pos.side === 'long' ? 'sell' : 'buy';
+    // The same guard the cancel path uses: an unparseable list produces an
+    // empty filter result that is indistinguishable from a genuinely absent
+    // stop, and calling that "unprotected" would cry wolf on a parse miss.
+    const unreadable = unreadableOpenOrders(open.orders, symbol, exitSide);
+    if (unreadable) {
+      outcomes.push({ positionId: pos.id, symbol, protectedAtBroker: false, unknown: unreadable });
+      continue;
+    }
+    if (restingExitOrders(open.orders, symbol, exitSide).length > 0) {
+      outcomes.push({ positionId: pos.id, symbol, protectedAtBroker: true });
+      continue;
+    }
+    outcomes.push({ positionId: pos.id, symbol, protectedAtBroker: false });
+    // Once per position per ET day: this condition persists until a human acts,
+    // so journaling every tick would bury it, and journaling once ever would let
+    // it go quiet while the position is still naked.
+    if (!alreadyReportedUnprotectedToday(pos.id)) {
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: 'live_position_unprotected',
+        detail: {
+          positionId: pos.id,
+          quantity: pos.remainingQuantity,
+          recordedStop: pos.stopPrice,
+          reason:
+            'This position was opened with a bracket, but the broker shows no resting ' +
+            `${exitSide} order on ${symbol} — its stop may never have been accepted, or was cancelled. ` +
+            'Check the broker and re-arm protection by hand.',
+        },
+        riskProfile: getLiveOrder(pos.sourceIntentId!)?.riskProfile ?? cfg.riskProfile,
+      });
+    }
+  }
+  return outcomes;
+}
+
+function alreadyReportedUnprotectedToday(positionId: number): boolean {
+  const today = etDateStr();
+  return listAutotradeEvents({ stage: 'execution', actions: ['live_position_unprotected'], limit: 200 }).some((e) => {
+    if (etDateStr(e.createdAt) !== today) return false;
+    try {
+      return (JSON.parse(e.detail ?? '{}') as { positionId?: unknown }).positionId === positionId;
+    } catch {
+      return false;
+    }
+  });
 }
 
 /** One-line server-log breadcrumb so the FIRST real close reveals whether the
