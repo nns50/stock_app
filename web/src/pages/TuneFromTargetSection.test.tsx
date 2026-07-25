@@ -143,6 +143,30 @@ describe('TuneFromTargetSection', () => {
     await waitFor(() => expect(onApply).toHaveBeenCalledWith(previewFixture().patch, 'moderate'));
   });
 
+  it('remembers the entered target and basis across a remount (persisted, not reset to 5)', async () => {
+    const spy = vi.spyOn(client, 'tuneFromTargetPreview').mockResolvedValue(previewFixture());
+    const first = renderSection({});
+    expand();
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ targetDailyGainPct: 5, basis: 'expected' }));
+
+    const input = (await screen.findByPlaceholderText('e.g. 5')) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '12' } });
+    expect(input.value).toBe('12');
+    fireEvent.click(screen.getByRole('tab', { name: 'Perfect day' }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ targetDailyGainPct: 12, basis: 'perfectDay' }));
+
+    // Unmount + fresh mount — exactly what toggling the config/dashboard view or
+    // reloading the page does. The section's own collapse state is persisted too,
+    // so it comes back expanded with the field visible.
+    first.unmount();
+    renderSection({});
+    const input2 = (await screen.findByPlaceholderText('e.g. 5')) as HTMLInputElement;
+    expect(input2.value).toBe('12');
+    expect(screen.getByRole('tab', { name: 'Perfect day' })).toHaveAttribute('aria-selected', 'true');
+    // and it re-previews from the remembered target/basis, not the 5/expected default
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ targetDailyGainPct: 12, basis: 'perfectDay' }));
+  });
+
   it('reset-to-moderate fetches the moderate baseline and applies it', async () => {
     vi.spyOn(client, 'tuneFromTargetPreview').mockResolvedValue(previewFixture());
     const moderatePatch = { ...previewFixture().patch, riskPerTradePct: 1 };

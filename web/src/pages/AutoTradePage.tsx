@@ -1940,8 +1940,13 @@ export function TuneFromTargetSection({
   onApply: (patch: TunablePatch, band: TuneBand) => Promise<void>;
   applying: boolean;
 }) {
-  const [target, setTarget] = useState<number | undefined>(5);
-  const [basis, setBasis] = useState<TuneBasis>('expected');
+  // Persisted (not plain useState) so the chosen target + basis survive a
+  // remount — this section unmounts whenever the config/dashboard view is
+  // toggled or the page is reloaded, and a hardcoded useState default made the
+  // field snap back to 5 every time, reading as "my change didn't take" even
+  // though Apply had already written the derived risk config server-side.
+  const [target, setTarget] = useLocalStorage<number | undefined>('autotrade.tune.target', 5);
+  const [basis, setBasis] = useLocalStorage<TuneBasis>('autotrade.tune.basis', 'expected');
   const [preview, setPreview] = useState<TargetTuneResult | undefined>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
