@@ -138,4 +138,37 @@ describe('correctExitPrice', () => {
   it('returns undefined for an unknown exit id', () => {
     expect(correctExitPrice(9999, 1, 'x')).toBeUndefined();
   });
+
+  it('takes the corrected exit OUT of the backfill candidate set', () => {
+    // The candidate query keys on the sync's note prefix, and correctionNote()
+    // replaces the note wholesale — so a corrected row is not re-examined and
+    // reported as "already matches", it disappears. That IS the idempotency,
+    // and it is what the operator sees after --apply (the count drops), so pin
+    // it here: a future note change that kept the prefix would silently make
+    // the tool re-examine rows it has already fixed.
+    const candidates = () =>
+      db
+        .prepare(
+          `SELECT e.id FROM position_exits e
+             JOIN positions p ON p.id = e.position_id
+            WHERE e.notes LIKE 'Auto-closed via Webull sync%'`,
+        )
+        .all() as Array<{ id: number }>;
+
+    const pos = createPosition({
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-03-01',
+    });
+    addExit(pos.id, { quantity: 10, exitPrice: 95, exitDate: '2026-03-20', notes: 'Auto-closed via Webull sync — …' });
+    const exitId = getPosition(pos.id)!.exits[0].id;
+    expect(candidates()).toHaveLength(1);
+
+    correctExitPrice(exitId, 94.5, correctionNote(95));
+
+    expect(candidates()).toHaveLength(0);
+  });
 });
