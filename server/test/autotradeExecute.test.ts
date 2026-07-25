@@ -138,6 +138,19 @@ describe('runPaperExecution', () => {
     expect(hasOpenPaperPosition('AAPL')).toBe(true);
   });
 
+  it('stamps a conviction grade on the opened paper position from the signal score', async () => {
+    setAutotradeConfig({ maxConcurrentPositions: 5, maxAggregateOpenRiskPct: 50 }); // room for all three
+    mockGetProvider.mockReturnValue(quoteReturning({ AAA: 101, BBB: 101, CCC: 101 }) as never);
+    // Default thresholds: A ≥ 75, B ≥ 60. Three signals across the bands.
+    await runPaperExecution([
+      { signal: signal({ symbol: 'AAA', score: 82 }) },
+      { signal: signal({ symbol: 'BBB', score: 65 }) },
+      { signal: signal({ symbol: 'CCC', score: 50 }) },
+    ]);
+    const bySymbol = Object.fromEntries(listPaperPositions({ status: 'open' }).map((p) => [p.symbol, p.grade]));
+    expect(bySymbol).toMatchObject({ AAA: 'A', BBB: 'B', CCC: 'C' });
+  });
+
   it('skips a candidate whose symbol already has an open paper position', async () => {
     openPaperPosition({
       symbol: 'AAPL',
@@ -501,6 +514,58 @@ describe('checkPaperExits', () => {
       expect(outcomes[0].closed).toBe(true);
       expect(outcomes[0].position!.exitReason).toBe('target');
       expect(outcomes[0].position!.quantity).toBe(10); // the full original size, not partially reduced first
+    });
+  });
+
+  describe('scale into winners', () => {
+    it('adds to the position at the trigger — blends the entry, raises the stop, logs it', async () => {
+      setAutotradeConfig({ addOnTriggerRMultiple: 1, addOnSizePct: 50, maxAddOns: 1 });
+      const pos = openPos(); // entry 100, initialStop 95 (5 wide), qty 10, target 110
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as never); // exactly +1R, below target
+      const outcomes = await checkPaperExits();
+
+      expect(outcomes[0].closed).toBe(false);
+      const after = listPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
+      expect(after.quantity).toBe(15); // 10 + floor(10*50%)
+      expect(after.addOnsTaken).toBe(1);
+      expect(after.entryPrice).toBeCloseTo(101.6667, 3); // (100*10 + 105*5)/15
+      expect(after.stopPrice).toBeCloseTo(96.6667, 3); // 1R below the blended entry, raised from 95
+
+      const scaled = listAutotradeEvents({ symbol: 'AAPL', stage: 'execution' }).find(
+        (e) => e.action === 'paper_scaled_in',
+      )!;
+      expect(JSON.parse(scaled.detail!)).toMatchObject({ addQty: 5, addPrice: 105, addOnsTaken: 1 });
+    });
+
+    it('stops adding once maxAddOns is reached', async () => {
+      setAutotradeConfig({ addOnTriggerRMultiple: 1, addOnSizePct: 50, maxAddOns: 1 });
+      const pos = openPos();
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as never);
+      await checkPaperExits();
+      expect(listPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!.quantity).toBe(15);
+
+      // Higher still, past 1R from the new blended entry — but the cap is hit.
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 109 }) as never);
+      await checkPaperExits();
+      const after = listPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
+      expect(after.quantity).toBe(15); // unchanged
+      expect(after.addOnsTaken).toBe(1);
+    });
+
+    it('does not scale in the same cycle a partial exit fires', async () => {
+      setAutotradeConfig({
+        partialExitRMultiple: 1,
+        partialExitPct: 50,
+        addOnTriggerRMultiple: 1,
+        addOnSizePct: 50,
+        maxAddOns: 1,
+      });
+      const pos = openPos();
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as never); // 1R — both would trigger
+      await checkPaperExits();
+      const after = listPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
+      expect(after.quantity).toBe(5); // halved by the partial exit, NOT grown by a scale-in
+      expect(after.addOnsTaken).toBe(0);
     });
   });
 });

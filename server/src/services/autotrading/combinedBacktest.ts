@@ -10,11 +10,20 @@ import {
   scoreSymbol,
   scoreSymbolBothDirections,
 } from '../../indicators/screener';
+import { dailyReturns } from '../../indicators/indicators';
 import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } from './decide';
+import { reorderByCorrelation } from './correlationSelection';
+import { regimeLabelFromProxy, backtestRegimeWeights } from './regimeWeights';
+import { computeScaleIn } from './scaleIn';
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
 import { evaluateOptionsRiskCheck } from './optionsRiskCheck';
-import { defaultAutotradeEntryConfig, OptionsDecisionConfig, OptionsSignalSide } from './optionsDecide';
-import { RiskProfileName, OptionsStrategyType } from '../../db/autotradeConfig';
+import {
+  AUTO_STRATEGY_IV_RANK_THRESHOLD,
+  defaultAutotradeEntryConfig,
+  OptionsDecisionConfig,
+  OptionsSignalSide,
+} from './optionsDecide';
+import { RiskProfileName, OptionsStrategyType, RegimeWeightPresets } from '../../db/autotradeConfig';
 import { defaultAutotradeScreenerConfig, pickDirection } from './screen';
 import { getHistoricalBars } from './historicalData';
 import { getHistoricalOptionContracts } from './optionsHistoricalData';
@@ -129,6 +138,9 @@ export interface CombinedBacktestConfig extends Partial<BacktestRiskParams> {
   trailStopRMultiple?: number;
   partialExitRMultiple?: number;
   partialExitPct?: number;
+  addOnTriggerRMultiple?: number;
+  addOnSizePct?: number;
+  maxAddOns?: number;
   screenerConfig?: Partial<ScreenerConfig>;
   decisionConfig?: Partial<DecisionConfig>;
   optionsDecisionConfig?: Partial<OptionsDecisionConfig>;
@@ -159,6 +171,12 @@ export interface CombinedBacktestConfig extends Partial<BacktestRiskParams> {
   optionsTrailStopPct?: number;
   optionsPartialExitTriggerPct?: number;
   optionsPartialExitPct?: number;
+  /** Regime-conditional scoring weights (2026-07-24, off by default) — scores
+   *  each simulated day with the preset matching the proxy-derived regime as of
+   *  that day. Governs the EQUITY-leg scoring pass (which the options leg reads
+   *  its direction from). Mirrors BacktestConfig; both default to fixed weights. */
+  regimeAdaptiveWeightsEnabled?: boolean;
+  regimeWeightPresets?: RegimeWeightPresets;
 }
 
 export interface CombinedBacktestReport {
@@ -190,6 +208,8 @@ interface OpenEquityPosition {
    *  backtest.ts's own OpenPosition.bestPrice. */
   bestPrice: number;
   partialExitTaken: boolean;
+  /** How many times this position has been scaled into (pyramided). */
+  addOnsTaken: number;
   quantity: number;
   riskAmount: number;
   notional: number;
@@ -288,7 +308,7 @@ export async function simulateCombinedBacktest(
   // side-independent, for the already-open-position time-exit check below
   // (which runs before that day's candidates, and so before any side, are known).
   const exitMinDaysToExpiration = cfg.optionsDecisionConfig?.entryConfig?.minDaysToExpiration ?? 7;
-  const optStrategyType: OptionsStrategyType = cfg.optionsDecisionConfig?.strategyType ?? 'single_leg';
+  const configuredOptStrategyType: OptionsStrategyType = cfg.optionsDecisionConfig?.strategyType ?? 'single_leg';
 
   const fromMs = Date.parse(`${cfg.from}T00:00:00Z`);
   const toMs = Date.parse(`${cfg.to}T00:00:00Z`);
@@ -398,6 +418,7 @@ export async function simulateCombinedBacktest(
           initialStop: p.signal.stop,
           bestPrice: candles![idx].open,
           partialExitTaken: false,
+          addOnsTaken: 0,
           quantity: p.quantity,
           riskAmount: p.riskAmount,
           notional: p.notional,
@@ -457,6 +478,7 @@ export async function simulateCombinedBacktest(
             ? (bar.close - pos.entryPrice) / initialStopDistance
             : (pos.entryPrice - bar.close) / initialStopDistance;
 
+          let partialFiredThisBar = false;
           const partialExitRMultiple = cfg.partialExitRMultiple ?? 0;
           if (partialExitRMultiple > 0 && !pos.partialExitTaken && rMultiple >= partialExitRMultiple) {
             const closeQty = Math.floor(pos.quantity * ((cfg.partialExitPct ?? 0) / 100));
@@ -481,6 +503,7 @@ export async function simulateCombinedBacktest(
               equity += partialPnl;
               pos.quantity -= closeQty;
               pos.partialExitTaken = true;
+              partialFiredThisBar = true;
             }
           }
 
@@ -501,6 +524,35 @@ export async function simulateCombinedBacktest(
               : Math.min(candidateStop, trailingCandidate);
           }
           pos.stop = candidateStop;
+
+          // Scale into a winner (pyramiding) — mirrors backtest.ts's equity
+          // leg: add against the bar CLOSE, never in the same bar as a partial
+          // scale-out. See services/autotrading/scaleIn.ts.
+          if (!partialFiredThisBar) {
+            const add = computeScaleIn(
+              {
+                side: pos.side,
+                entryPrice: pos.entryPrice,
+                initialStopPrice: pos.initialStop,
+                stopPrice: pos.stop,
+                quantity: pos.quantity,
+                addOnsTaken: pos.addOnsTaken,
+              },
+              bar.close,
+              {
+                addOnTriggerRMultiple: cfg.addOnTriggerRMultiple ?? 0,
+                addOnSizePct: cfg.addOnSizePct ?? 0,
+                maxAddOns: cfg.maxAddOns ?? 0,
+              },
+            );
+            if (add) {
+              pos.quantity = add.newQuantity;
+              pos.entryPrice = add.blendedEntry;
+              pos.initialStop = add.newInitialStopPrice;
+              pos.stop = add.newStopPrice;
+              pos.addOnsTaken += 1;
+            }
+          }
         }
         stillOpenEquity.push(pos);
       }
@@ -734,6 +786,19 @@ export async function simulateCombinedBacktest(
         ? lookbackReturnPct(benchmarkCandles, screenerCfg.relativeStrengthLookbackDays, benchmarkIdx)
         : null;
 
+    // Regime-conditional weights (2026-07-24, off by default) — score THIS day
+    // with the preset matching the proxy-derived regime as of today. Same
+    // no-lookahead, weight-independent-cache reasoning as simulateBacktest; a
+    // no-op when disabled or with no proxy series.
+    const dayWeights = cfg.regimeAdaptiveWeightsEnabled
+      ? backtestRegimeWeights(
+          screenerCfg.weights,
+          cfg.regimeWeightPresets ?? null,
+          benchmarkCandles ? regimeLabelFromProxy(benchmarkCandles, benchmarkIdx) : null,
+        )
+      : screenerCfg.weights;
+    const dayScreenerCfg = dayWeights === screenerCfg.weights ? screenerCfg : { ...screenerCfg, weights: dayWeights };
+
     // 6) Score every symbol ONCE per day (asset-agnostic) — filtered
     // separately below per instrument type's own "already open" exclusion.
     // 'both': score each symbol as a long AND a short from the same
@@ -774,7 +839,7 @@ export async function simulateCombinedBacktest(
                 symbol,
                 candles,
                 undefined,
-                screenerCfg,
+                dayScreenerCfg,
                 cached,
                 idx,
                 weeklyCached,
@@ -786,7 +851,7 @@ export async function simulateCombinedBacktest(
                 symbol,
                 candles,
                 undefined,
-                { ...screenerCfg, direction: directionMode },
+                { ...dayScreenerCfg, direction: directionMode },
                 cached,
                 idx,
                 weeklyCached,
@@ -831,7 +896,25 @@ export async function simulateCombinedBacktest(
       .map(([, v]) => v)
       .sort((a, b) => b.score.total - a.score.total || a.score.symbol.localeCompare(b.score.symbol));
 
-    for (const candidate of equityCandidates) {
+    // Correlation-aware selection (2026-07-24, default off): same reorder as
+    // simulateBacktest / the live loop, fed from each candidate's own
+    // no-lookahead `history` slice (closes through today). No-op when disabled.
+    let orderedEquityCandidates = equityCandidates;
+    if (riskParams.correlationAwareSelectionEnabled && equityCandidates.length > 1) {
+      const returnsBySymbol = new Map<string, number[]>();
+      for (const c of equityCandidates) {
+        const closes = c.history.slice(-(riskParams.correlationLookbackDays + 1)).map((k) => k.close);
+        const returns = dailyReturns(closes);
+        if (returns.length >= 2) returnsBySymbol.set(c.score.symbol.toUpperCase(), returns);
+      }
+      orderedEquityCandidates = reorderByCorrelation(equityCandidates, (c) => c.score.symbol, returnsBySymbol, {
+        enabled: true,
+        threshold: riskParams.correlationThreshold,
+        lookbackDays: riskParams.correlationLookbackDays,
+      }).ordered;
+    }
+
+    for (const candidate of orderedEquityCandidates) {
       const signal = generateSignal(
         { ...candidate.score, discoverySource: 'universe', direction: candidate.direction },
         decisionCfg,
@@ -856,6 +939,11 @@ export async function simulateCombinedBacktest(
         maxConcurrentPositions: cfg.maxConcurrentPositions,
         correlatedNotional: correlated,
         ...riskParams,
+        // Sector exposure cap has no backtest equivalent either (2026-07-18) —
+        // see backtest.ts's own identical note. null unconditionally skips it.
+        sectorNotional: 0,
+        maxSectorExposurePct: 0,
+        candidateSector: null,
         // Regime-aware sizing has no backtest equivalent (2026-07-16) — see
         // backtest.ts's own identical note. null unconditionally disables it.
         marketAtrPct: null,
@@ -989,6 +1077,16 @@ export async function simulateCombinedBacktest(
         continue;
       }
 
+      // 'auto' resolves per-candidate-per-day here, from that day's own IV
+      // rank — same threshold/rationale as the live path (optionsDecide.ts's
+      // AUTO_STRATEGY_IV_RANK_THRESHOLD), so backtest and live can't drift.
+      const optStrategyType: 'single_leg' | 'debit_spread' =
+        configuredOptStrategyType === 'auto'
+          ? ivContext.ivRank >= AUTO_STRATEGY_IV_RANK_THRESHOLD
+            ? 'debit_spread'
+            : 'single_leg'
+          : configuredOptStrategyType;
+
       let shortRef: ShortLegReference | null = null;
       if (optStrategyType === 'debit_spread') {
         shortRef = await pickShortLegReferenceContract(
@@ -1037,6 +1135,11 @@ export async function simulateCombinedBacktest(
         maxConcurrentPositions: cfg.maxConcurrentPositions,
         correlatedNotional: correlated,
         ...riskParams,
+        // Sector exposure cap has no backtest equivalent either (2026-07-18) —
+        // see backtest.ts's own identical note. null unconditionally skips it.
+        sectorNotional: 0,
+        maxSectorExposurePct: 0,
+        candidateSector: null,
         // Regime-aware sizing has no backtest equivalent (2026-07-16) — see
         // backtest.ts's own identical note. null unconditionally disables it.
         marketAtrPct: null,
@@ -1218,7 +1321,7 @@ export async function runCombinedBacktest(cfg: CombinedBacktestConfig): Promise<
     : undefined;
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
   const benchmarkCandles =
-    (cfg.screenerConfig?.weights?.relativeStrength ?? 0)
+    (cfg.screenerConfig?.weights?.relativeStrength ?? 0) || cfg.regimeAdaptiveWeightsEnabled
       ? await loadBenchmarkBacktestHistory(screenerCfg.benchmarkSymbol, cfg.from, cfg.to)
       : undefined;
   const maxDte = defaultAutotradeEntryConfig('call').maxDaysToExpiration ?? 60;
@@ -1262,7 +1365,7 @@ export async function runCombinedWalkForwardBacktest(
     : undefined;
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
   const benchmarkCandles =
-    (cfg.screenerConfig?.weights?.relativeStrength ?? 0)
+    (cfg.screenerConfig?.weights?.relativeStrength ?? 0) || cfg.regimeAdaptiveWeightsEnabled
       ? await loadBenchmarkBacktestHistory(screenerCfg.benchmarkSymbol, cfg.from, cfg.to)
       : undefined;
   const maxDte = defaultAutotradeEntryConfig('call').maxDaysToExpiration ?? 60;

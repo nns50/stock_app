@@ -187,7 +187,7 @@ beforeEach(() => {
     'DELETE FROM autotrade_config; DELETE FROM trading_config; DELETE FROM autotrade_events; ' +
       'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; ' +
       'DELETE FROM autotrade_live_options_positions; DELETE FROM order_events; DELETE FROM order_intents; ' +
-      'DELETE FROM position_exits; DELETE FROM positions;',
+      'DELETE FROM position_exits; DELETE FROM positions; DELETE FROM webull_miss_streak;',
   );
   setTradingConfig({ enabled: true, killSwitch: false });
   config.trading.placeEnabled = true;
@@ -646,19 +646,27 @@ describe('runLiveOptionsExecution', () => {
 });
 
 function openLivePosition(overrides: Partial<Parameters<typeof createLiveOptionsPosition>[0]> = {}) {
-  return createLiveOptionsPosition({
+  const input = {
     symbol: 'AAPL',
-    side: 'call',
+    side: 'call' as const,
     contractSymbol: 'AAPL-fixture',
     strike: 100,
     expiration: '2030-01-18', // comfortably outside the exit window unless overridden
     quantity: 2,
     entryPrice: 3,
     riskAmount: 600,
-    riskProfile: 'MODERATE',
+    riskProfile: 'MODERATE' as const,
     rationale: 'fixture',
     ...overrides,
-  });
+  };
+  const pos = createLiveOptionsPosition(input);
+  // By default the broker reports the opened contract as held (999), so the exit
+  // path's held-qty naked-short cap is a no-op — a test that wants a partial or
+  // absent holding overrides mockPreviewPositions after opening.
+  mockPreviewPositions.mockResolvedValue(
+    previewOf([{ symbol: input.symbol, optionType: input.side, strike: input.strike, expiration: input.expiration }]),
+  );
+  return pos;
 }
 
 describe('checkLiveOptionsExits', () => {
@@ -723,6 +731,53 @@ describe('checkLiveOptionsExits', () => {
 
     const events = listAutotradeEvents({});
     expect(events.some((e) => e.action === 'live_options_exit_placed')).toBe(true);
+  });
+
+  it('caps the exit quantity to the broker-held size (no naked short after an unbooked partial fill)', async () => {
+    setAutotradeConfig(liveConfig());
+    openLivePosition({ expiration: '2024-06-05', quantity: 10 });
+    // The ledger still shows 10 — a prior close partially filled 4 then
+    // cancelled and was never booked — but the broker really holds only 6.
+    // Selling the stale 10 would short 4 (uncovered short call = unbounded risk).
+    mockPreviewPositions.mockResolvedValue(
+      previewOf([{ symbol: 'AAPL', optionType: 'call', strike: 100, expiration: '2024-06-05', quantity: 6 }]),
+    );
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 5 } }) as never);
+    mockAccountState.mockResolvedValue(holdingAccountState(6) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-EXIT-CAP' });
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', requested: true });
+    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    expect(placedIntent.quantity).toBe(6); // capped to broker-held, NOT the stale ledger 10
+  });
+
+  it('skips the exit (no order) when the broker shows 0 contracts held', async () => {
+    setAutotradeConfig(liveConfig());
+    openLivePosition({ expiration: '2024-06-05', quantity: 10 });
+    mockPreviewPositions.mockResolvedValue(previewOf([])); // broker holds nothing matching
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 5 } }) as never);
+    mockPlaceOrder.mockClear();
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes[0].requested).toBe(false);
+    expect(outcomes[0].reason).toMatch(/0 contracts held/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('fails closed (no order) when the broker positions can not be read', async () => {
+    setAutotradeConfig(liveConfig());
+    openLivePosition({ expiration: '2024-06-05' });
+    mockPreviewPositions.mockResolvedValue({ ok: false, error: 'timeout' } as Awaited<
+      ReturnType<typeof previewWebullPositions>
+    >);
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 5 } }) as never);
+    mockPlaceOrder.mockClear();
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes[0].requested).toBe(false);
+    expect(outcomes[0].reason).toMatch(/Broker positions unavailable/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 
   it('closes a single-leg position even when the broker-reported currentPositionQty is contaminated by an unrelated holding', async () => {
@@ -876,6 +931,14 @@ describe('checkLiveOptionsExits', () => {
     setAutotradeConfig(liveConfig());
     openLivePosition({ symbol: 'AAPL', expiration: '2024-06-05' });
     openLivePosition({ symbol: 'MSFT', contractSymbol: 'MSFT-fixture', expiration: '2024-06-05' });
+    // Both contracts are held at the broker (each openLivePosition only sets the
+    // preview to its OWN contract, so set both here for this two-position case).
+    mockPreviewPositions.mockResolvedValue(
+      previewOf([
+        { symbol: 'AAPL', optionType: 'call', strike: 100, expiration: '2024-06-05' },
+        { symbol: 'MSFT', optionType: 'call', strike: 100, expiration: '2024-06-05' },
+      ]),
+    );
     mockGetProvider.mockReturnValue(
       chainsFor({
         AAPL: { side: 'call', strike: 100, mark: 5 },
@@ -918,12 +981,16 @@ describe('reconcileLiveOptionsOrders', () => {
     const sig = optionSignal();
     await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
     const intentId = listIntents()[0].id;
+    // Mock the contract count actually ORDERED — a broker cannot fill more than
+    // was ordered, and reconcile now (correctly) refuses to book a fill that
+    // claims otherwise rather than inflating the position.
+    const orderedQty = listIntents()[0].quantity;
 
     mockOrderStatus.mockResolvedValue({
       ok: true,
       found: true,
       status: 'FILLED',
-      filledQty: 2,
+      filledQty: orderedQty,
       filledPrice: 4.1,
     } as WebullOrderStatus);
 
@@ -938,7 +1005,7 @@ describe('reconcileLiveOptionsOrders', () => {
       contractSymbol: 'AAPL-fixture',
       strike: 100,
       entryPrice: 4.1,
-      quantity: 2,
+      quantity: orderedQty,
     });
     expect(getLiveOptionsOrder(intentId)?.positionId).toBe(positions[0].id);
   });
@@ -1076,7 +1143,13 @@ describe('reconcileLiveOptionsOrders', () => {
 });
 
 function previewOf(
-  positions: Array<{ symbol: string; optionType: 'call' | 'put'; strike: number; expiration: string }>,
+  positions: Array<{
+    symbol: string;
+    optionType: 'call' | 'put';
+    strike: number;
+    expiration: string;
+    quantity?: number;
+  }>,
 ) {
   return {
     ok: true as const,
@@ -1085,7 +1158,7 @@ function previewOf(
       assetType: 'option' as const,
       symbol: p.symbol,
       side: 'long' as const,
-      quantity: 1,
+      quantity: p.quantity ?? 999, // held qty; high by default so the exit-qty cap is a no-op unless a test sets it
       entryPrice: 0,
       entryDate: '2024-01-01',
       optionType: p.optionType,
@@ -1097,10 +1170,10 @@ function previewOf(
 }
 
 function openSpreadPosition(overrides: Partial<Parameters<typeof createLiveOptionsPosition>[0]> = {}) {
-  return createLiveOptionsPosition({
+  const input = {
     symbol: 'AAPL',
-    side: 'call',
-    kind: 'debit_spread',
+    side: 'call' as const,
+    kind: 'debit_spread' as const,
     contractSymbol: 'AAPL-long',
     strike: 100,
     shortContractSymbol: 'AAPL-short',
@@ -1110,17 +1183,29 @@ function openSpreadPosition(overrides: Partial<Parameters<typeof createLiveOptio
     quantity: 2,
     entryPrice: 3,
     riskAmount: 400,
-    riskProfile: 'MODERATE',
+    riskProfile: 'MODERATE' as const,
     rationale: 'fixture',
     ...overrides,
-  });
+  };
+  const pos = createLiveOptionsPosition(input);
+  // Broker reports the LONG leg held by default (the leg the sell-to-close would
+  // short) so the exit-qty cap is a no-op unless a test overrides it.
+  mockPreviewPositions.mockResolvedValue(
+    previewOf([{ symbol: input.symbol, optionType: input.side, strike: input.strike, expiration: input.expiration }]),
+  );
+  return pos;
 }
 
 describe('syncLiveOptionsPositionsFromBroker', () => {
-  it('closes a single-leg position once Webull no longer holds the contract, pricing the exit from the current quote', async () => {
-    const pos = openLivePosition({ strike: 100, expiration: '2030-01-18' });
+  it('closes a single-leg position once Webull no longer holds the contract on 2 CONSECUTIVE syncs, pricing the exit from the current quote', async () => {
+    const pos = openLivePosition({ strike: 100, expiration: '2030-01-18', accountId: 'ACC1' });
     mockPreviewPositions.mockResolvedValue(previewOf([])); // broker holds nothing matching
     mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.5 } }) as never);
+
+    // First miss isn't enough by itself — see the miss-streak debounce
+    // describe block below for the flapping bug this guards against.
+    const first = await syncLiveOptionsPositionsFromBroker('ACC1');
+    expect(first).toMatchObject({ ok: true, checked: 1, closed: 0 });
 
     const result = await syncLiveOptionsPositionsFromBroker('ACC1');
 
@@ -1134,7 +1219,7 @@ describe('syncLiveOptionsPositionsFromBroker', () => {
   });
 
   it('leaves a single-leg position open while Webull still holds the contract', async () => {
-    const pos = openLivePosition({ strike: 100, expiration: '2030-01-18' });
+    const pos = openLivePosition({ strike: 100, expiration: '2030-01-18', accountId: 'ACC1' });
     mockPreviewPositions.mockResolvedValue(
       previewOf([{ symbol: 'AAPL', optionType: 'call', strike: 100, expiration: '2030-01-18' }]),
     );
@@ -1147,17 +1232,18 @@ describe('syncLiveOptionsPositionsFromBroker', () => {
   });
 
   it('leaves a position open (retrying later) when the broker no longer holds it but no current quote can price the exit', async () => {
-    openLivePosition({ strike: 100, expiration: '2030-01-18' });
+    openLivePosition({ strike: 100, expiration: '2030-01-18', accountId: 'ACC1' });
     mockPreviewPositions.mockResolvedValue(previewOf([]));
     mockGetProvider.mockReturnValue(chainsFor({}) as never); // no chain for AAPL -> fetchContractMark throws
 
+    await syncLiveOptionsPositionsFromBroker('ACC1'); // first miss — not confirmed yet, price never even consulted
     const result = await syncLiveOptionsPositionsFromBroker('ACC1');
 
     expect(result).toMatchObject({ ok: true, checked: 1, closed: 0 });
   });
 
-  it('closes a debit spread only once BOTH legs are confirmed gone from the broker, netting both legs into the exit P&L', async () => {
-    const pos = openSpreadPosition();
+  it('closes a debit spread only once BOTH legs are confirmed gone from the broker on 2 consecutive syncs, netting both legs into the exit P&L', async () => {
+    const pos = openSpreadPosition({ accountId: 'ACC1' });
     mockPreviewPositions.mockResolvedValue(previewOf([])); // neither leg held
     mockGetProvider.mockReturnValue(
       chainsFor({
@@ -1168,6 +1254,7 @@ describe('syncLiveOptionsPositionsFromBroker', () => {
       }) as never,
     );
 
+    await syncLiveOptionsPositionsFromBroker('ACC1'); // first miss — not confirmed yet
     const result = await syncLiveOptionsPositionsFromBroker('ACC1');
 
     expect(result).toMatchObject({ ok: true, checked: 1, closed: 1 });
@@ -1181,7 +1268,7 @@ describe('syncLiveOptionsPositionsFromBroker', () => {
   });
 
   it('leaves a debit spread open when only ONE leg is missing from the broker — ambiguous, not guessed', async () => {
-    const pos = openSpreadPosition();
+    const pos = openSpreadPosition({ accountId: 'ACC1' });
     // Only the long leg (100 strike) still shows at the broker; the short
     // (110) doesn't -- a partial mismatch, deliberately left alone rather
     // than treated as evidence the whole spread closed.
@@ -1192,6 +1279,20 @@ describe('syncLiveOptionsPositionsFromBroker', () => {
     const result = await syncLiveOptionsPositionsFromBroker('ACC1');
 
     expect(result).toMatchObject({ ok: true, checked: 1, closed: 0 });
+    expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
+  });
+
+  // Regression for the reported cash/margin account bug (2026-07-17): a
+  // position opened under one Webull account must never be closed by a
+  // broker-truth sync against a DIFFERENT account, even if that other
+  // account genuinely doesn't hold the contract.
+  it('does NOT close a live options position that belongs to a DIFFERENT account', async () => {
+    const pos = openLivePosition({ strike: 100, expiration: '2030-01-18', accountId: 'CASH' });
+    mockPreviewPositions.mockResolvedValue(previewOf([])); // MARGIN holds nothing — irrelevant, pos lives in CASH
+
+    const result = await syncLiveOptionsPositionsFromBroker('MARGIN');
+
+    expect(result).toMatchObject({ ok: true, checked: 0, closed: 0, closedSymbols: [] });
     expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
   });
 
@@ -1209,5 +1310,126 @@ describe('syncLiveOptionsPositionsFromBroker', () => {
 
     expect(result).toMatchObject({ ok: false, checked: 0, closed: 0, error: 'Webull is not configured.' });
     expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
+  });
+
+  // Same flapping-close bug as equity's closePositionsFromPreview (see
+  // webull_miss_streak's table comment, db/index.ts): a single incomplete/
+  // flaky broker preview used to be enough to fabricate a close here too.
+  describe('miss-streak debounce (flapping-close bug fix)', () => {
+    it('does NOT close on a single missing observation', async () => {
+      const pos = openLivePosition({ strike: 100, expiration: '2030-01-18', accountId: 'ACC1' });
+      mockPreviewPositions.mockResolvedValue(previewOf([]));
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.5 } }) as never);
+
+      const result = await syncLiveOptionsPositionsFromBroker('ACC1');
+
+      expect(result).toMatchObject({ ok: true, closed: 0 });
+      expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
+    });
+
+    it('a confirmed "still held" sync in between resets the streak — a later single miss does not close it', async () => {
+      const pos = openLivePosition({ strike: 100, expiration: '2030-01-18', accountId: 'ACC1' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.5 } }) as never);
+
+      mockPreviewPositions.mockResolvedValue(previewOf([])); // miss #1
+      await syncLiveOptionsPositionsFromBroker('ACC1');
+      expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
+
+      mockPreviewPositions.mockResolvedValue(
+        previewOf([{ symbol: 'AAPL', optionType: 'call', strike: 100, expiration: '2030-01-18' }]),
+      ); // confirmed held
+      await syncLiveOptionsPositionsFromBroker('ACC1');
+      expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
+
+      mockPreviewPositions.mockResolvedValue(previewOf([])); // miss #1 again (streak was reset)
+      const result = await syncLiveOptionsPositionsFromBroker('ACC1');
+      expect(result).toMatchObject({ closed: 0 });
+      expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Partial fills on the live OPTIONS path. Same shape as equity's, with the same
+// sharp edge — a cancelled intent leaves listPendingLiveOptionsOrders() for
+// good — but a different write shape: autotrade_live_options_positions holds
+// ONE row per entry order, so later instalments blend into it.
+// ---------------------------------------------------------------------------
+describe('reconcileLiveOptionsOrders — partial fills', () => {
+  async function placeEntry() {
+    // Probation off, so the order carries enough contracts for a fill to be
+    // split — with the default halving it sizes to a single contract, and a
+    // one-contract order can't demonstrate a partial at all.
+    const cfg = liveConfig({ liveOptionsProbationTrades: 0 });
+    setAutotradeConfig(cfg);
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OP1' });
+    const sig = optionSignal();
+    await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', cfg);
+    const intentId = listIntents()[0].id;
+    return { intentId, orderedQty: listIntents()[0].quantity };
+  }
+
+  const brokerSays = (status: string, filledQty: number, filledPrice: number) =>
+    mockOrderStatus.mockResolvedValue({ ok: true, found: true, status, filledQty, filledPrice } as WebullOrderStatus);
+
+  it('opens a position on a partially-filled contract count', async () => {
+    const { orderedQty } = await placeEntry();
+    expect(orderedQty).toBeGreaterThan(1); // the split below is only meaningful with room
+    brokerSays('PARTIAL_FILLED', 1, 4.1);
+
+    await reconcileLiveOptionsOrders();
+
+    const open = listOpenLiveOptionsPositions();
+    expect(open).toHaveLength(1);
+    expect(open[0].quantity).toBe(1);
+
+    // A later instalment BLENDS into that same row — this table holds one
+    // position per entry order, so a second row would have nothing to link it.
+    brokerSays('FILLED', orderedQty, (1 * 4.1 + (orderedQty - 1) * 4.5) / orderedQty);
+    await reconcileLiveOptionsOrders();
+
+    const after = listOpenLiveOptionsPositions();
+    expect(after).toHaveLength(1);
+    expect(after[0].quantity).toBe(orderedQty);
+    expect(after[0].entryPrice).toBeCloseTo((1 * 4.1 + (orderedQty - 1) * 4.5) / orderedQty, 4);
+  });
+
+  it('books a partial the broker reports as CANCELLED in one shot', async () => {
+    // Booking on STATUS rather than reported quantity would lose these
+    // contracts permanently — the intent is terminal, so it never returns to
+    // the pending set.
+    const { intentId } = await placeEntry();
+    brokerSays('CANCELLED', 1, 4.25);
+
+    await reconcileLiveOptionsOrders();
+
+    const open = listOpenLiveOptionsPositions();
+    expect(open).toHaveLength(1);
+    expect(open[0].quantity).toBe(1);
+    expect(open[0].entryPrice).toBeCloseTo(4.25);
+    expect(listPendingLiveOptionsOrders().some((o) => o.intentId === intentId)).toBe(false);
+  });
+
+  it('does not open a second position when the same fill is seen twice', async () => {
+    await placeEntry();
+    brokerSays('PARTIAL_FILLED', 1, 4.1);
+    await reconcileLiveOptionsOrders();
+    await reconcileLiveOptionsOrders();
+
+    expect(listOpenLiveOptionsPositions()).toHaveLength(1);
+    expect(listOpenLiveOptionsPositions()[0].quantity).toBe(1);
+  });
+
+  it('never opens a position larger than the contract count ordered', async () => {
+    const { orderedQty } = await placeEntry();
+    brokerSays('FILLED', orderedQty + 5, 4.1);
+
+    await reconcileLiveOptionsOrders();
+
+    const open = listOpenLiveOptionsPositions();
+    expect(open[0].quantity).toBe(orderedQty);
+    expect(open[0].entryPrice).toBeCloseTo(4.1); // average, not an inflated slice price
   });
 });

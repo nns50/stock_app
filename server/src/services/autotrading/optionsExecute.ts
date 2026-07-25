@@ -1,7 +1,7 @@
 import { getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
 import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskCheck';
-import { correlatedNotional, RiskCheckContext } from './riskCheck';
+import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
 import { getPaperPortfolioSnapshot, PaperPortfolioSeed } from './execute';
 import { computeStreaksAndDrawdown } from '../pnl';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
@@ -386,6 +386,7 @@ export async function runOptionsPaperExecution(
     })),
   ];
   const skipSymbols = new Set(optSnapshot.openPositions.map((p) => p.symbol));
+  const sectorOf = buildSectorOf();
 
   const outcomes: OptionsExecutionOutcome[] = [];
   for (const { signal } of candidates) {
@@ -400,6 +401,12 @@ export async function runOptionsPaperExecution(
       runningPositions,
       config.correlationLookbackDays,
       config.correlationThreshold,
+    );
+    const { amount: sectorAmount, sector: candidateSector } = sectorNotional(
+      signal.symbol,
+      'long',
+      runningPositions,
+      sectorOf,
     );
     const ctx: RiskCheckContext = {
       equity,
@@ -418,6 +425,9 @@ export async function runOptionsPaperExecution(
       maxCorrelatedExposurePct: config.maxCorrelatedExposurePct,
       maxTradesPerDay: config.maxTradesPerDay,
       correlationThreshold: config.correlationThreshold,
+      sectorNotional: sectorAmount,
+      maxSectorExposurePct: config.maxSectorExposurePct,
+      candidateSector,
       marketAtrPct,
       regimeAtrThresholdPct: config.regimeAtrThresholdPct,
       regimeSizeCutPct: config.regimeSizeCutPct,

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { initDb, db } from '../src/db';
 import { config } from '../src/config';
-import { createIntent, getIntent, transitionIntent } from '../src/db/orders';
+import { createIntent, getEvents, getIntent, transitionIntent } from '../src/db/orders';
 import { addExit, createPosition, listPositions } from '../src/db/positions';
 import { recordLiveOrder } from '../src/db/autotradeLiveOrders';
 import { recordLiveOptionsEntryOrder } from '../src/db/autotradeLiveOptionsOrders';
@@ -502,5 +502,229 @@ describe('reconcileAllWorking', () => {
     expect(getIntent(humanId)?.state).toBe('filled');
     expect(listPositions()).toHaveLength(1); // only the human fill got recorded
     expect(listPositions()[0].sourceIntentId).toBe(humanId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Partial-fill materialization. Booking a Position only at the terminal
+// `filled` state meant a partial that was later CANCELLED — a legal terminal
+// path — left real shares held with no position row at all: invisible to
+// Positions, exposure, the open-risk caps, and every exit rule.
+//
+// The fix books the unbooked DELTA of the broker's running filled_quantity on
+// every observation. That the field IS a running total is an unconfirmed
+// assumption about the broker (see `npm run capture:broker`), so these tests
+// pin both the happy path and every way the assumption could be wrong —
+// each of which must fail toward UNDER-booking, never toward inventing shares.
+// ---------------------------------------------------------------------------
+
+/** A history envelope for a partly-filled order, in Webull's real shape. */
+const partialEnvelope = (filled: number, price: number, total = 100, status = 'PARTIAL_FILLED') => ({
+  client_order_id: CID,
+  combo_type: 'NORMAL',
+  combo_order_id: '8AIG1C8LCCE58QHNDSU5NHBP09',
+  orders: [
+    {
+      symbol: 'AMC',
+      side: 'BUY',
+      status,
+      client_order_id: CID,
+      order_id: '8AIG1C8LCCE58QHNDSU5NHBP09',
+      total_quantity: String(total),
+      filled_quantity: String(filled),
+      filled_price: String(price),
+    },
+  ],
+});
+
+/** A placed, broker-acknowledged order for `qty` shares. */
+function placedFor(qty: number, over: Partial<OrderIntent> = {}): number {
+  const rec = createIntent(intent({ quantity: qty, ...over }), CID);
+  transitionIntent(rec.id, 'validated');
+  transitionIntent(rec.id, 'confirmed');
+  transitionIntent(rec.id, 'submitted');
+  transitionIntent(rec.id, 'acknowledged', { brokerOrderId: '8AIG1C8LCCE58QHNDSU5NHBP09' });
+  return rec.id;
+}
+
+/** Mock one reconcile's broker pull (open orders empty, then history). */
+function mockPull(envelope: unknown) {
+  return vi
+    .spyOn(globalThis, 'fetch')
+    .mockResolvedValueOnce(okResp([]))
+    .mockResolvedValueOnce(okResp([envelope]));
+}
+
+describe('reconcileIntent — partial fills', () => {
+  it('books a Position for a partial fill instead of waiting for terminal filled', async () => {
+    const id = placedFor(100);
+    mockPull(partialEnvelope(30, 5));
+
+    const r = await reconcileIntent(id, 'ACC1');
+    expect(r).toMatchObject({ ok: true, changed: true, materialized: 30 });
+    expect(r.fillWarning).toBeUndefined();
+    expect(getIntent(id)?.state).toBe('partially_filled');
+
+    const pos = listPositions();
+    expect(pos).toHaveLength(1);
+    expect(pos[0]).toMatchObject({ symbol: 'AMC', quantity: 30, entryPrice: 5, sourceIntentId: id });
+    expect(getIntent(id)?.materializedQty).toBe(30);
+  });
+
+  it('books only the unbooked delta when the same fill is observed twice', async () => {
+    // The real hazard: three independent callers (human Refresh, the Webull
+    // scheduler, autotrade's loop) can each observe the same fill.
+    const id = placedFor(100);
+    mockPull(partialEnvelope(30, 5));
+    await reconcileIntent(id, 'ACC1');
+    vi.restoreAllMocks();
+
+    mockPull(partialEnvelope(30, 5));
+    const again = await reconcileIntent(id, 'ACC1');
+
+    expect(again.materialized).toBe(0);
+    expect(again.changed).toBe(false);
+    expect(listPositions()).toHaveLength(1); // NOT double-booked
+    expect(getIntent(id)?.materializedQty).toBe(30);
+  });
+
+  it('books the increment when a resting partial fills further', async () => {
+    // 30/100 → 90/100 is NOT a state change (partially_filled either way), so
+    // the old `target === intent.state` early return dropped the extra 60.
+    const id = placedFor(100);
+    mockPull(partialEnvelope(30, 5));
+    await reconcileIntent(id, 'ACC1');
+    vi.restoreAllMocks();
+
+    // Running average across 90 shares: 30@5 then 60@6 → 5.6667.
+    mockPull(partialEnvelope(90, (30 * 5 + 60 * 6) / 90));
+    const r = await reconcileIntent(id, 'ACC1');
+
+    expect(r.materialized).toBeCloseTo(60);
+    expect(r.changed).toBe(true);
+    const pos = listPositions().sort((a, b) => a.id - b.id);
+    expect(pos).toHaveLength(2);
+    // The second lot is priced at ITS OWN fill price, backed out of the running
+    // average — not at the blended 5.667, which would misstate cost basis.
+    expect(pos[1].quantity).toBeCloseTo(60);
+    expect(pos[1].entryPrice).toBeCloseTo(6);
+    expect(getIntent(id)?.materializedQty).toBeCloseTo(90);
+  });
+
+  it('keeps the shares booked when a partial is then CANCELLED — the silent-loss case', async () => {
+    const id = placedFor(100);
+    mockPull(partialEnvelope(30, 5));
+    await reconcileIntent(id, 'ACC1');
+    vi.restoreAllMocks();
+
+    mockPull(partialEnvelope(30, 5, 100, 'CANCELLED'));
+    await reconcileIntent(id, 'ACC1');
+
+    expect(getIntent(id)?.state).toBe('cancelled');
+    // Before the fix this was 0 positions — 30 real shares held, invisible.
+    expect(listPositions()).toHaveLength(1);
+    expect(listPositions()[0].quantity).toBe(30);
+  });
+
+  it('completes the book when a partial goes on to fill fully', async () => {
+    const id = placedFor(100);
+    mockPull(partialEnvelope(30, 5));
+    await reconcileIntent(id, 'ACC1');
+    vi.restoreAllMocks();
+
+    mockPull(partialEnvelope(100, (30 * 5 + 70 * 7) / 100, 100, 'FILLED'));
+    const r = await reconcileIntent(id, 'ACC1');
+
+    expect(r.materialized).toBeCloseTo(70);
+    expect(r.fillWarning).toBeUndefined(); // fully reconciled — no discrepancy
+    expect(getIntent(id)?.state).toBe('filled');
+    expect(getIntent(id)?.materializedQty).toBeCloseTo(100);
+    const total = listPositions().reduce((s, p) => s + p.quantity, 0);
+    expect(total).toBeCloseTo(100);
+  });
+
+  it('refuses to book when filled_quantity DECREASES — the assumption is violated', async () => {
+    // A decrease means the broker reports each execution separately rather than
+    // a running total, so differencing is invalid. Must refuse, not guess.
+    const id = placedFor(100);
+    mockPull(partialEnvelope(70, 5));
+    await reconcileIntent(id, 'ACC1');
+    vi.restoreAllMocks();
+
+    mockPull(partialEnvelope(20, 5));
+    const r = await reconcileIntent(id, 'ACC1');
+
+    expect(r.materialized).toBe(0);
+    expect(r.fillWarning).toMatch(/decreased/i);
+    expect(listPositions()).toHaveLength(1); // still just the first 70
+    expect(getIntent(id)?.materializedQty).toBe(70);
+    // The refusal is in the audit trail, not swallowed.
+    expect(getEvents(id).some((e) => e.detail?.includes('materialization:'))).toBe(true);
+  });
+
+  it('never books more than the order actually asked for', async () => {
+    const id = placedFor(100);
+    mockPull(partialEnvelope(140, 5, 100));
+    const r = await reconcileIntent(id, 'ACC1');
+
+    expect(r.materialized).toBe(100);
+    expect(r.fillWarning).toMatch(/booking only/i);
+    expect(listPositions()[0].quantity).toBe(100);
+  });
+
+  it('flags a filled order whose booked quantity falls short of what was ordered', async () => {
+    const id = placedFor(100);
+    // Broker jumps straight to FILLED but reports fewer shares than ordered.
+    mockPull(partialEnvelope(60, 5, 100, 'FILLED'));
+    const r = await reconcileIntent(id, 'ACC1');
+
+    expect(r.materialized).toBe(60);
+    expect(r.fillWarning).toMatch(/only 60 of 100/);
+  });
+
+  it('falls back to the average price when the implied incremental price is unusable', async () => {
+    const id = placedFor(100);
+    mockPull(partialEnvelope(30, 8));
+    await reconcileIntent(id, 'ACC1');
+    vi.restoreAllMocks();
+
+    // A running average LOWER than the first lot's price implies a negative
+    // incremental notional — inconsistent broker data, not a real free lot.
+    mockPull(partialEnvelope(60, 2));
+    const r = await reconcileIntent(id, 'ACC1');
+
+    expect(r.materialized).toBeCloseTo(30);
+    expect(r.fillWarning).toMatch(/falling back/i);
+    const pos = listPositions().sort((a, b) => a.id - b.id);
+    expect(pos[1].entryPrice).toBeCloseTo(2); // the reported average, not a negative
+  });
+
+  it('records a partial CLOSE as an exit against the open position', async () => {
+    createPosition({
+      assetType: 'stock',
+      symbol: 'AMC',
+      side: 'long',
+      quantity: 100,
+      entryPrice: 4,
+      entryDate: '2026-07-01',
+      tags: ['live'],
+    });
+    const id = placedFor(100, { side: 'sell', openClose: 'close' });
+    mockPull(partialEnvelope(40, 6));
+
+    const r = await reconcileIntent(id, 'ACC1');
+    expect(r.materialized).toBe(40);
+
+    const pos = listPositions({ status: 'open' })[0];
+    expect(pos.remainingQuantity).toBe(60); // 40 of 100 closed
+  });
+
+  it('does not materialize a multi-leg combo, whose single-leg fields are null', async () => {
+    const id = placedFor(2, { assetKind: 'option', optionStrategy: 'VERTICAL', optionType: undefined });
+    mockPull(partialEnvelope(1, 1.2, 2));
+
+    const r = await reconcileIntent(id, 'ACC1');
+    expect(r.materialized).toBe(0);
+    expect(listPositions()).toHaveLength(0);
   });
 });

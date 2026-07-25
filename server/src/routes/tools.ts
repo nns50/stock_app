@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { asyncHandler, parseBody } from './_helpers';
 import { computeRiskSizing, computeSpreadSizing } from '../services/riskSizing';
 import { analyzeStrategy } from '../options/optionStrategy';
+import { analyzeRoll } from '../options/optionRoll';
 import { normalizeRuinParams, simulateRiskOfRuin } from '../services/riskOfRuin';
 
 export const toolsRouter = Router();
@@ -84,5 +85,29 @@ toolsRouter.post(
   '/strategy',
   asyncHandler(async (req, res) => {
     res.json(analyzeStrategy(parseBody(strategyBody, req)));
+  }),
+);
+
+const rollLegBody = z.object({
+  optionType: z.enum(['call', 'put']),
+  strike: z.number().positive(),
+  dte: z.number().nonnegative(),
+  premium: z.number().nonnegative(),
+  iv: z.number().positive().optional(),
+});
+
+const rollBody = z.object({
+  side: z.enum(['long', 'short']),
+  quantity: z.number().positive(),
+  underlyingPrice: z.number().positive(),
+  riskFreeRate: z.number().optional(),
+  current: rollLegBody,
+  target: rollLegBody,
+});
+
+toolsRouter.post(
+  '/roll',
+  asyncHandler(async (req, res) => {
+    res.json(analyzeRoll(parseBody(rollBody, req)));
   }),
 );

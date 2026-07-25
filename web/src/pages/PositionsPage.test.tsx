@@ -77,13 +77,16 @@ beforeEach(() => {
 });
 
 describe('PositionsPage — close vs exit action gating', () => {
-  it('shows "close" (not "exit") for a broker-tracked (live) open position', async () => {
+  it('shows BOTH "exit" (record a manual exit) and "close" (real order) for a broker-tracked (live) open position', async () => {
+    // A live position you already sold OUTSIDE the app needs a way to just
+    // record the exit, not only place a redundant real order — so it offers
+    // both, unlike before when it only offered "close".
     const pos = positionFixture({ id: 1, tags: ['live'] });
     renderWithRows([rowFixture(pos)]);
 
     expect(await screen.findByText('AAPL')).toBeInTheDocument();
+    expect(screen.getByText('exit')).toBeInTheDocument();
     expect(screen.getByText('close')).toBeInTheDocument();
-    expect(screen.queryByText('exit')).toBeNull();
   });
 
   it('shows "close" for a position with a sourceIntentId even without a "live" tag', async () => {
@@ -92,6 +95,7 @@ describe('PositionsPage — close vs exit action gating', () => {
 
     expect(await screen.findByText('AAPL')).toBeInTheDocument();
     expect(screen.getByText('close')).toBeInTheDocument();
+    expect(screen.getByText('exit')).toBeInTheDocument(); // manual-exit path is available too
   });
 
   it('shows "exit" (not "close") for a plain manually-logged position', async () => {
@@ -105,7 +109,12 @@ describe('PositionsPage — close vs exit action gating', () => {
 
   it('never shows close/exit for an already-closed position', async () => {
     const pos = positionFixture({ id: 4, status: 'closed', tags: ['live'], remainingQuantity: 0 });
+    const { default: userEvent } = await import('@testing-library/user-event');
     renderWithRows([rowFixture(pos)]);
+
+    // The page defaults to the "Open" tab and now filters rows client-side, so
+    // a closed position only appears under "All"/"Closed" — select "All".
+    await userEvent.click(await screen.findByText('All'));
 
     expect(await screen.findByText('AAPL')).toBeInTheDocument();
     expect(screen.queryByText('close')).toBeNull();
@@ -121,5 +130,56 @@ describe('PositionsPage — close vs exit action gating', () => {
     await userEvent.click(screen.getByText('close'));
 
     expect(await screen.findByText(/Close AAPL — real order/)).toBeInTheDocument();
+  });
+
+  it('opens the (journal-only) Exit modal — not the real-order Close modal — when "exit" is clicked on a live position', async () => {
+    const pos = positionFixture({ id: 6, tags: ['live'] });
+    const { default: userEvent } = await import('@testing-library/user-event');
+    renderWithRows([rowFixture(pos)]);
+
+    await screen.findByText('AAPL');
+    await userEvent.click(screen.getByText('exit'));
+
+    // The Exit modal opened (records a journal exit); the real-order Close copy did NOT.
+    expect(await screen.findByRole('button', { name: /Record exit/i })).toBeInTheDocument();
+    expect(screen.queryByText(/Close AAPL — real order/)).toBeNull();
+  });
+});
+
+describe('PositionsPage — portfolio-wide tiles vs filtered list', () => {
+  it('requests the whole book unscoped (so headline tiles include closed/realized) and filters rows client-side', async () => {
+    const open = rowFixture(positionFixture({ id: 1, symbol: 'AAPL', status: 'open' }));
+    const closed = rowFixture(positionFixture({ id: 2, symbol: 'MSFT', status: 'closed', remainingQuantity: 0 }));
+    renderWithRows([open, closed]);
+
+    // The default 'Open' tab must still fetch the FULL book, unscoped — the
+    // aggregate tiles describe the whole portfolio, not just the active tab.
+    await screen.findByText('AAPL');
+    expect(client.positionsWithPnl).toHaveBeenCalledWith({});
+    expect(
+      (client.positionsWithPnl as unknown as { mock: { calls: unknown[][] } }).mock.calls.every(
+        (c) => JSON.stringify(c[0]) === '{}',
+      ),
+    ).toBe(true);
+
+    // ...but the closed position is filtered OUT of the list on the Open tab.
+    expect(screen.queryByText('MSFT')).toBeNull();
+  });
+
+  it('reveals closed positions on the All tab without a refetch (client-side filter)', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const open = rowFixture(positionFixture({ id: 1, symbol: 'AAPL', status: 'open' }));
+    const closed = rowFixture(positionFixture({ id: 2, symbol: 'MSFT', status: 'closed', remainingQuantity: 0 }));
+    renderWithRows([open, closed]);
+
+    await screen.findByText('AAPL');
+    expect(screen.queryByText('MSFT')).toBeNull();
+    const callsBefore = (client.positionsWithPnl as unknown as { mock: { calls: unknown[] } }).mock.calls.length;
+
+    await userEvent.click(screen.getByText('All'));
+
+    expect(await screen.findByText('MSFT')).toBeInTheDocument();
+    // Switching tabs filters in memory — it does not trigger another fetch.
+    expect((client.positionsWithPnl as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(callsBefore);
   });
 });

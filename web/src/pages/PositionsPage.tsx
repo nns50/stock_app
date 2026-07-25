@@ -21,6 +21,9 @@ import { CloseModal, ExitModal, JournalEditModal } from '../components/PositionF
 import { OPEN_LOG_TRADE_EVENT, TRADE_LOGGED_EVENT } from '../components/GlobalLogTrade';
 import { RiskSizingModal } from '../components/RiskSizingModal';
 import { ExposurePanel } from '../components/ExposurePanel';
+import { ExpiredOptionsBanner } from '../components/ExpiredOptionsBanner';
+import { PortfolioStressPanel } from '../components/PortfolioStressPanel';
+import { CorrelationHeatmapPanel } from '../components/CorrelationHeatmapPanel';
 import { EarningsBadge } from '../components/EarningsBadge';
 import type { SymbolEvents } from '../api/types';
 import { useToast } from '../components/ToastContext';
@@ -72,14 +75,17 @@ function positionSortVal(row: PositionWithPnl, key: string): number | string | n
 
 export default function PositionsPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('open');
-  const data = useAsync(
-    () => client.positionsWithPnl(statusFilter === 'all' ? {} : { status: statusFilter }),
-    [statusFilter],
-  );
-  const { sorted: sortedPositions, sortKey, sortDir, onSort } = useSort(data.data?.positions ?? [], positionSortVal);
+  // Fetch the WHOLE book once — the headline tiles and exposure describe the
+  // portfolio ("open and closed", per the subtitle), so they must not be
+  // scoped to the tab. The status tab only filters which rows the table shows,
+  // done client-side below; switching tabs no longer triggers a refetch.
+  const data = useAsync(() => client.positionsWithPnl({}), []);
+  const allRows = data.data?.positions ?? [];
+  const visibleRows = statusFilter === 'all' ? allRows : allRows.filter((r) => r.position.status === statusFilter);
+  const { sorted: sortedPositions, sortKey, sortDir, onSort } = useSort(visibleRows, positionSortVal);
 
   // Earnings/ex-div for the listed symbols, to flag positions with events approaching.
-  const symbolsKey = [...new Set((data.data?.positions ?? []).map((r) => r.position.symbol.toUpperCase()))].join(',');
+  const symbolsKey = [...new Set(visibleRows.map((r) => r.position.symbol.toUpperCase()))].join(',');
   const events = useAsync(
     () => (symbolsKey ? client.events(symbolsKey.split(',')) : Promise.resolve({ events: [] })),
     [symbolsKey],
@@ -95,18 +101,21 @@ export default function PositionsPage() {
   const confirm = useConfirm();
 
   // Refresh when a trade is logged from the global modal (header / `n` / palette).
+  // reloadData is useAsync's stable run() — depend on it directly so the
+  // listener isn't re-bound every render.
+  const reloadData = data.reload;
   useEffect(() => {
     const onLogged = () => {
       setLastUpdated(Date.now());
-      data.reload();
+      reloadData();
     };
     window.addEventListener(TRADE_LOGGED_EVENT, onLogged);
     return () => window.removeEventListener(TRADE_LOGGED_EVENT, onLogged);
-  }, [data.reload]);
+  }, [reloadData]);
 
   const reload = () => {
     setLastUpdated(Date.now());
-    data.reload();
+    reloadData();
   };
 
   const remove = async (id: number) => {
@@ -164,7 +173,11 @@ export default function PositionsPage() {
         <SkeletonStats count={6} />
       ) : null}
 
+      <ExpiredOptionsBanner onChanged={reload} />
+
       {data.data?.exposure && data.data.exposure.gross > 0 && <ExposurePanel exposure={data.data.exposure} />}
+      <PortfolioStressPanel />
+      <CorrelationHeatmapPanel />
 
       <Segmented
         options={[
@@ -181,7 +194,7 @@ export default function PositionsPage() {
           <SkeletonTable rows={6} cols={11} />
         ) : data.error ? (
           <ErrorState error={data.error} onRetry={reload} />
-        ) : data.data && data.data.positions.length === 0 ? (
+        ) : data.data && sortedPositions.length === 0 ? (
           <EmptyState
             title="No positions yet"
             hint="Log your stock and option trades to track live P&L, realized vs unrealized, and build your journal."
@@ -282,6 +295,14 @@ const PositionRow = memo(
               <Badge>closed</Badge>
             </span>
           )}
+          {p.accountId && (
+            <span
+              className="ml-2 chip bg-ink-700 text-slate-400 font-mono text-[10px]"
+              title={`Webull account ${p.accountId}`}
+            >
+              {p.accountId.length > 14 ? `…${p.accountId.slice(-11)}` : p.accountId}
+            </span>
+          )}
           {p.status === 'open' && (p.stopPrice != null || p.targetPrice != null || pnl.rMultiple != null) && (
             <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums flex flex-wrap gap-x-2">
               {p.stopPrice != null && (
@@ -336,20 +357,33 @@ const PositionRow = memo(
           <PnL value={pnl.returnPct} format={fmtPct} />
         </td>
         <td className="td text-right whitespace-nowrap">
-          {p.status === 'open' &&
-            (isLivePosition(p) ? (
+          {p.status === 'open' && (
+            <>
+              {/* Every open position can record a manual exit — including a
+                  live/Webull one you already sold OUTSIDE the app (directly at
+                  the broker). This just writes the exit to your journal; it does
+                  NOT place an order. Previously a live position only offered
+                  "close" (a real broker order), leaving no clean way to record
+                  an already-sold position without placing a redundant order or
+                  deleting it. */}
               <button
-                className="text-xs text-bear hover:underline mr-2"
-                onClick={() => onClose(p)}
-                title="Place a real closing order at your broker"
+                className="text-xs text-accent hover:underline mr-2"
+                onClick={() => onExit(p)}
+                title="Record an exit in your journal — no broker order (use this if you already sold it at the broker)"
               >
-                close
-              </button>
-            ) : (
-              <button className="text-xs text-accent hover:underline mr-2" onClick={() => onExit(p)}>
                 exit
               </button>
-            ))}
+              {isLivePosition(p) && (
+                <button
+                  className="text-xs text-bear hover:underline mr-2"
+                  onClick={() => onClose(p)}
+                  title="Place a real closing order at your broker"
+                >
+                  close
+                </button>
+              )}
+            </>
+          )}
           <button className="text-xs text-slate-400 hover:text-slate-200 mr-2" onClick={() => onEdit(p)}>
             journal
           </button>

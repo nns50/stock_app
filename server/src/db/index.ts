@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS autotrade_paper_positions (
   initial_stop_price      REAL,          -- snapshot of stop_price at open; never mutated again
   best_price_since_entry  REAL,          -- running high/low-water mark since entry
   partial_exit_taken      INTEGER NOT NULL DEFAULT 0,
+  add_ons_taken           INTEGER NOT NULL DEFAULT 0,  -- scale-into-winners count
+  grade         TEXT,                  -- conviction grade (A/B/C) from the screener score at entry
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );`;
@@ -102,6 +104,16 @@ CREATE TABLE IF NOT EXISTS ${name} (
   is_bracket      INTEGER NOT NULL DEFAULT 0,  -- 1 = placed as a bracket (MASTER + exit legs)
   state           TEXT NOT NULL,         -- OrderState (validated by the lifecycle machine)
   broker_order_id TEXT,
+  -- How much of this order has already been mirrored into the Positions ledger,
+  -- and at what total cost. Partial fills are materialized INCREMENTALLY (see
+  -- services/trading/reconcile.ts), so these two are the high-water mark that
+  -- makes repeated reconciles idempotent: three independent callers can observe
+  -- the same fill and only the unbooked delta is ever written. Notional is
+  -- tracked alongside quantity because the broker reports an AVERAGE fill price
+  -- over all executions — the incremental price of a new partial is only
+  -- recoverable by differencing notionals.
+  materialized_qty      REAL NOT NULL DEFAULT 0,
+  materialized_notional REAL NOT NULL DEFAULT 0,
   created_at      INTEGER NOT NULL,
   updated_at      INTEGER NOT NULL
 );`;
@@ -110,7 +122,8 @@ CREATE TABLE IF NOT EXISTS ${name} (
  *  the rebuild (so it's robust to ALTER-appended columns in an older table). */
 const ORDER_INTENTS_COLS =
   'id, idempotency_key, symbol, asset_kind, side, open_close, quantity, order_type, limit_price, ' +
-  'option_type, strike, expiration, option_strategy, is_bracket, state, broker_order_id, created_at, updated_at';
+  'option_type, strike, expiration, option_strategy, is_bracket, state, broker_order_id, ' +
+  'materialized_qty, materialized_notional, created_at, updated_at';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS universe (
@@ -152,6 +165,7 @@ CREATE TABLE IF NOT EXISTS positions (
   stop_price  REAL,                    -- planned stop (price level)
   target_price REAL,                   -- planned target (price level)
   source_intent_id INTEGER,            -- order_intents.id that produced this fill (live-traded only; no FK — a manually logged/imported position has none, and order_intents isn't guaranteed to persist forever)
+  account_id  TEXT,                    -- the Webull account this lot lives in (imported/live-traded only; null for a manually-logged position, or a legacy row from before this column existed)
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
@@ -262,6 +276,19 @@ CREATE TABLE IF NOT EXISTS autotrade_exclusions (
   symbol      TEXT PRIMARY KEY,
   reason      TEXT,
   source      TEXT NOT NULL DEFAULT 'user' CHECK(source IN ('default','user')),
+  created_at  INTEGER NOT NULL
+);
+
+-- Scheduled macro-event blackout (2026-07-18): a user-maintained list of
+-- market-wide catalyst date-times (FOMC, CPI, jobs reports, ...) — there's no
+-- economic-calendar data feed anywhere in this app, so unlike the earnings
+-- blackout (which reads a real per-symbol date already fetched from Yahoo),
+-- this is entirely hand-maintained, same "add/remove your own list" pattern
+-- as autotrade_exclusions above. Starts empty; nothing is pre-seeded.
+CREATE TABLE IF NOT EXISTS macro_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  label       TEXT NOT NULL,
+  event_at    INTEGER NOT NULL,
   created_at  INTEGER NOT NULL
 );
 
@@ -457,6 +484,9 @@ CREATE TABLE IF NOT EXISTS autotrade_live_orders (
   risk_profile  TEXT NOT NULL,
   position_id   INTEGER,              -- entry: set once the fill materializes into positions.
                                        -- exit: known upfront (the position this order will close).
+  account_id    TEXT,                 -- entry: the Webull account this order executed in, carried to positions.account_id at materialization. null for exit rows and legacy rows.
+  addon_of_position_id INTEGER,       -- scale-in add-on: the already-open position this order pyramids into. null for normal entries/exits. Its fill MERGES into that position (blended entry) rather than creating a new one.
+  grade         TEXT,                 -- entry: conviction grade (A/B/C) from the signal's screener score, carried to positions.grade at materialization. null for exit rows and legacy rows.
   created_at    INTEGER NOT NULL
 );
 
@@ -492,6 +522,7 @@ CREATE TABLE IF NOT EXISTS autotrade_live_options_positions (
   short_exit_price       REAL,                 -- short leg's filled premium at exit (debit spreads only)
   exit_at                INTEGER,
   exit_reason            TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL),
+  account_id             TEXT,                 -- the Webull account this fill executed in; null for a legacy row from before this column existed
   created_at             INTEGER NOT NULL,
   updated_at             INTEGER NOT NULL
 );
@@ -521,7 +552,30 @@ CREATE TABLE IF NOT EXISTS autotrade_live_options_orders (
   -- position's own stored exit_reason isn't hardcoded to 'time_exit' for a
   -- manually-triggered close. Null for entry rows.
   exit_reason   TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL),
+  account_id    TEXT,                 -- entry: the Webull account this order executed in, carried to autotrade_live_options_positions.account_id at materialization. null for exit rows and legacy rows.
   created_at    INTEGER NOT NULL
+);
+
+-- Debounces the broker-preview close-detection in closePositionsFromPreview
+-- (providers/webull/positions.ts) and syncLiveOptionsPositionsFromBroker
+-- (services/autotrading/liveOptionsExecute.ts). Both used to auto-close the
+-- instant a SINGLE preview fetch didn't include a contract still genuinely
+-- held at the broker -- an intermittent/incomplete Webull response was
+-- enough to trigger a false close, and the very next successful sync would
+-- re-import it as a brand-new position, repeating indefinitely (observed in
+-- production: a low-priced symbol cycling open/closed every ~60-150s for
+-- hours, each cycle booking a fabricated realized loss). Requiring the same
+-- contract to be missing on MISS_CONFIRM_THRESHOLD consecutive syncs, with no
+-- successful "still held" observation in between, before actually writing
+-- the close absorbs that class of single-tick flakiness at the cost of a
+-- short delay before a REAL sell is detected -- an acceptable tradeoff for a
+-- tracking-only journal that never itself places a trade based on this.
+CREATE TABLE IF NOT EXISTS webull_miss_streak (
+  account_id    TEXT NOT NULL,
+  contract_key  TEXT NOT NULL,
+  streak        INTEGER NOT NULL DEFAULT 0,
+  updated_at    INTEGER NOT NULL,
+  PRIMARY KEY (account_id, contract_key)
 );
 
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
@@ -683,6 +737,23 @@ function migrate(): void {
   if (!has('entry_time')) db.exec('ALTER TABLE positions ADD COLUMN entry_time TEXT');
   if (!has('source_intent_id')) db.exec('ALTER TABLE positions ADD COLUMN source_intent_id INTEGER');
 
+  const aloEqCols = db.prepare('PRAGMA table_info(autotrade_live_orders)').all() as { name: string }[];
+  if (!aloEqCols.some((c) => c.name === 'account_id')) {
+    db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN account_id TEXT');
+  }
+  const aloOptCols = db.prepare('PRAGMA table_info(autotrade_live_options_orders)').all() as { name: string }[];
+  if (!aloOptCols.some((c) => c.name === 'account_id')) {
+    db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN account_id TEXT');
+  }
+  // 2026-07-17: without this, the Webull sync's broker-truth reconciliation
+  // had no way to tell "opened under account A" from "opened under account
+  // B" — every locally-tracked open position was compared against whichever
+  // ONE account happened to be configured at sync time, so switching the
+  // configured account wrongly auto-closed the other account's real open
+  // positions and merged a same-symbol buy in the new account onto the old
+  // account's row. See providers/webull/positions.ts for the scoped fix.
+  if (!has('account_id')) db.exec('ALTER TABLE positions ADD COLUMN account_id TEXT');
+
   // position_exits gained the same provenance link, for exit-side slippage.
   const exitCols = db.prepare('PRAGMA table_info(position_exits)').all() as { name: string }[];
   if (!exitCols.some((c) => c.name === 'source_intent_id')) {
@@ -695,6 +766,29 @@ function migrate(): void {
   const hasOi = (c: string) => oiCols.some((col) => col.name === c);
   if (!hasOi('option_strategy')) db.exec('ALTER TABLE order_intents ADD COLUMN option_strategy TEXT');
   if (!hasOi('is_bracket')) db.exec('ALTER TABLE order_intents ADD COLUMN is_bracket INTEGER NOT NULL DEFAULT 0');
+  // order_intents gained incremental-materialization tracking so partial fills
+  // can be mirrored into Positions as they happen (reconcile.ts) instead of only
+  // at the terminal `filled` state.
+  //
+  // The backfill is the load-bearing part: an intent already sitting at `filled`
+  // had its position booked in full by the OLD code, so it must start at its
+  // full quantity or the first reconcile after this upgrade would book it a
+  // SECOND time. (`filled` is terminal and returns early, so this is belt-and-
+  // braces — but a default of 0 would be a live double-booking hazard the moment
+  // any future path re-examines a filled intent, which is exactly the class of
+  // bug the migration audit found.) Notional is backfilled at the intent's own
+  // limit price purely so the column is self-consistent; it is never read again
+  // for these rows, since a fully-materialized order has no remaining delta.
+  if (!hasOi('materialized_qty')) {
+    db.exec('ALTER TABLE order_intents ADD COLUMN materialized_qty REAL NOT NULL DEFAULT 0');
+    db.exec("UPDATE order_intents SET materialized_qty = quantity WHERE state = 'filled'");
+  }
+  if (!hasOi('materialized_notional')) {
+    db.exec('ALTER TABLE order_intents ADD COLUMN materialized_notional REAL NOT NULL DEFAULT 0');
+    db.exec(
+      "UPDATE order_intents SET materialized_notional = quantity * COALESCE(limit_price, 0) WHERE state = 'filled'",
+    );
+  }
   // Must run AFTER the ADD COLUMNs above so the explicit-column copy finds them.
   rebuildOrderIntentsTable(db);
 
@@ -717,6 +811,12 @@ function migrate(): void {
   }
   if (!hasApp('partial_exit_taken')) {
     db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN partial_exit_taken INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!hasApp('add_ons_taken')) {
+    db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN add_ons_taken INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!hasApp('grade')) {
+    db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN grade TEXT');
   }
 
   // autotrade_options_paper_positions gained a debit-spread shape (Task #69):
@@ -753,6 +853,14 @@ function migrate(): void {
     db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN partial_exit_taken INTEGER NOT NULL DEFAULT 0');
   }
 
+  // 2026-07-17: same account-blindness fix as positions.account_id above,
+  // for the separate live options ledger — see providers/webull/positions.ts
+  // and services/autotrading/liveOptionsExecute.ts's syncLiveOptionsPositionsFromBroker.
+  const alopCols = db.prepare('PRAGMA table_info(autotrade_live_options_positions)').all() as { name: string }[];
+  if (!alopCols.some((c) => c.name === 'account_id')) {
+    db.exec('ALTER TABLE autotrade_live_options_positions ADD COLUMN account_id TEXT');
+  }
+
   // autotrade_live_options_orders gained contract detail (Task #70 Step C):
   // an entry row needs enough to materialize a position from a LATER reconcile
   // pass, which order_intents can't supply (no second-leg column, no
@@ -782,6 +890,16 @@ function migrate(): void {
   const aloEquityCols = db.prepare('PRAGMA table_info(autotrade_live_orders)').all() as { name: string }[];
   if (!aloEquityCols.some((c) => c.name === 'role')) {
     db.exec("ALTER TABLE autotrade_live_orders ADD COLUMN role TEXT NOT NULL DEFAULT 'entry'");
+  }
+  // Scale-into-winners on LIVE positions: an add-on order marks the position it
+  // pyramids into here (null for every pre-existing row — none were add-ons).
+  if (!aloEquityCols.some((c) => c.name === 'addon_of_position_id')) {
+    db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN addon_of_position_id INTEGER');
+  }
+  // Conviction grade carried from the signal to positions.grade at materialization
+  // (null for every pre-existing/legacy row — they predate grading).
+  if (!aloEquityCols.some((c) => c.name === 'grade')) {
+    db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN grade TEXT');
   }
 
   // Must run AFTER the ADD COLUMNs above so the explicit-column copy finds them.
@@ -850,14 +968,26 @@ export function rebuildOrderIntentsTable(database: Database.Database): void {
   // Fresh DBs create it without the CHECK; a rebuilt DB has none either → bail.
   if (!row?.sql || !/CHECK\s*\(\s*order_type/i.test(row.sql)) return;
 
+  // Copy only the columns the OLD table actually has. ORDER_INTENTS_COLS is the
+  // full modern list, including ALTER-added ones — intersecting it with the live
+  // table keeps the "never silently drop an ALTER-added column" property while
+  // staying safe on a table that predates the newest ones (they take the new
+  // table's DEFAULT instead of failing the copy with "no such column"). Without
+  // this the rebuild is correct only if every ADD COLUMN happened to run first —
+  // the exact ordering fragility behind the earlier rebuild data loss.
+  const present = new Set(
+    (database.prepare('PRAGMA table_info(order_intents)').all() as { name: string }[]).map((c) => c.name),
+  );
+  const cols = ORDER_INTENTS_COLS.split(', ')
+    .filter((c) => present.has(c))
+    .join(', ');
+
   const hadForeignKeys = database.pragma('foreign_keys', { simple: true }) === 1;
   database.pragma('foreign_keys = OFF'); // so dropping the old table doesn't cascade order_events
   try {
     database.transaction(() => {
       database.exec(orderIntentsTableSql('order_intents_new'));
-      database.exec(
-        `INSERT INTO order_intents_new (${ORDER_INTENTS_COLS}) SELECT ${ORDER_INTENTS_COLS} FROM order_intents;`,
-      );
+      database.exec(`INSERT INTO order_intents_new (${cols}) SELECT ${cols} FROM order_intents;`);
       database.exec('DROP TABLE order_intents;');
       database.exec('ALTER TABLE order_intents_new RENAME TO order_intents;');
     })();
@@ -875,10 +1005,21 @@ export function rebuildOrderIntentsTable(database: Database.Database): void {
  * column being absent, so it runs once. Exported (and db-injectable) so the
  * old→new copy can be tested directly.
  */
+/** Run a table-rebuild's multi-statement DDL (RENAME → CREATE → INSERT…SELECT →
+ *  DROP) atomically. Without this, a throw mid-way (a constraint violation, a
+ *  full disk) leaves the original table already renamed to *_old and the new
+ *  table empty or missing — a half-migrated DB that crashes startup with no
+ *  recovery. A transaction rolls the whole thing back so the original survives. */
+function execAtomic(database: Database.Database, sql: string): void {
+  database.transaction(() => database.exec(sql))();
+}
+
 export function rebuildAlertsTable(database: Database.Database): void {
   const cols = database.prepare('PRAGMA table_info(alerts)').all() as { name: string }[];
   if (cols.some((c) => c.name === 'asset_type')) return; // already on the new schema
-  database.exec(`
+  execAtomic(
+    database,
+    `
     ALTER TABLE alerts RENAME TO alerts_old;
     ${ALERTS_TABLE_SQL}
     INSERT INTO alerts (id, symbol, kind, operator, threshold, note, enabled, triggered,
@@ -887,7 +1028,8 @@ export function rebuildAlertsTable(database: Database.Database): void {
              last_value, trigger_message, last_triggered_at, created_at, updated_at
       FROM alerts_old;
     DROP TABLE alerts_old;
-  `);
+  `,
+  );
 }
 
 /**
@@ -905,7 +1047,9 @@ export function rebuildAutotradePaperPositionsTable(database: Database.Database)
     .get() as { sql: string | null } | undefined;
   if (!row?.sql || /time_exit/i.test(row.sql)) return;
 
-  database.exec(`
+  execAtomic(
+    database,
+    `
     ALTER TABLE autotrade_paper_positions RENAME TO autotrade_paper_positions_old;
     ${AUTOTRADE_PAPER_POSITIONS_TABLE_SQL}
     INSERT INTO autotrade_paper_positions (id, symbol, side, quantity, entry_price, entry_at, stop_price,
@@ -917,7 +1061,8 @@ export function rebuildAutotradePaperPositionsTable(database: Database.Database)
       FROM autotrade_paper_positions_old;
     DROP TABLE autotrade_paper_positions_old;
     CREATE INDEX IF NOT EXISTS idx_autotrade_paper_positions_status ON autotrade_paper_positions(status, symbol);
-  `);
+  `,
+  );
 }
 
 /**
@@ -934,7 +1079,9 @@ export function rebuildAutotradeOptionsPaperPositionsTable(database: Database.Da
     .get() as { sql: string | null } | undefined;
   if (!row?.sql || /stop_loss/i.test(row.sql)) return;
 
-  database.exec(`
+  execAtomic(
+    database,
+    `
     ALTER TABLE autotrade_options_paper_positions RENAME TO autotrade_options_paper_positions_old;
     CREATE TABLE autotrade_options_paper_positions (
       id                     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -972,7 +1119,8 @@ export function rebuildAutotradeOptionsPaperPositionsTable(database: Database.Da
       FROM autotrade_options_paper_positions_old;
     DROP TABLE autotrade_options_paper_positions_old;
     CREATE INDEX IF NOT EXISTS idx_autotrade_options_paper_positions_status ON autotrade_options_paper_positions(status, symbol);
-  `);
+  `,
+  );
 }
 
 /**
@@ -990,7 +1138,14 @@ export function rebuildAutotradeLiveOrdersTable(database: Database.Database): vo
     .get() as { sql: string | null } | undefined;
   if (!row?.sql || /ON DELETE CASCADE/i.test(row.sql)) return;
 
-  database.exec(`
+  // The column list MUST stay in sync with the canonical CREATE TABLE in SCHEMA
+  // above (account_id/addon_of_position_id/grade were added by ALTERs that run
+  // BEFORE this rebuild in migrate()); omitting them here would drop those
+  // columns and their data on any pre-CASCADE DB, then break recordLiveOrder /
+  // recordLiveAddOnOrder at runtime ("no column named account_id").
+  execAtomic(
+    database,
+    `
     ALTER TABLE autotrade_live_orders RENAME TO autotrade_live_orders_old;
     CREATE TABLE autotrade_live_orders (
       intent_id     INTEGER PRIMARY KEY REFERENCES order_intents(id) ON DELETE CASCADE,
@@ -1001,16 +1156,20 @@ export function rebuildAutotradeLiveOrdersTable(database: Database.Database): vo
       risk_amount   REAL NOT NULL,
       risk_profile  TEXT NOT NULL,
       position_id   INTEGER,
+      account_id    TEXT,
+      addon_of_position_id INTEGER,
+      grade         TEXT,
       created_at    INTEGER NOT NULL
     );
     INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount,
-                        risk_profile, position_id, created_at)
+                        risk_profile, position_id, account_id, addon_of_position_id, grade, created_at)
       SELECT intent_id, symbol, role, stop_price, target_price, risk_amount,
-             risk_profile, position_id, created_at
+             risk_profile, position_id, account_id, addon_of_position_id, grade, created_at
       FROM autotrade_live_orders_old;
     DROP TABLE autotrade_live_orders_old;
     CREATE INDEX IF NOT EXISTS idx_autotrade_live_orders_symbol ON autotrade_live_orders(symbol);
-  `);
+  `,
+  );
 }
 
 /**
@@ -1023,7 +1182,14 @@ export function rebuildAutotradeLiveOptionsOrdersTable(database: Database.Databa
     .get() as { sql: string | null } | undefined;
   if (!row?.sql || /ON DELETE CASCADE/i.test(row.sql)) return;
 
-  database.exec(`
+  // The column list MUST stay in sync with the canonical CREATE TABLE in SCHEMA
+  // above (exit_reason/account_id were added by ALTERs that run BEFORE this
+  // rebuild in migrate()); omitting them here would drop those columns and
+  // their data on any pre-CASCADE DB, then break recordLiveOptionsEntryOrder /
+  // recordLiveOptionsExitOrder at runtime.
+  execAtomic(
+    database,
+    `
     ALTER TABLE autotrade_live_options_orders RENAME TO autotrade_live_options_orders_old;
     CREATE TABLE autotrade_live_options_orders (
       intent_id             INTEGER PRIMARY KEY REFERENCES order_intents(id) ON DELETE CASCADE,
@@ -1039,17 +1205,21 @@ export function rebuildAutotradeLiveOptionsOrdersTable(database: Database.Databa
       risk_amount   REAL,
       risk_profile  TEXT NOT NULL,
       position_id   INTEGER,
+      exit_reason   TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL),
+      account_id    TEXT,
       created_at    INTEGER NOT NULL
     );
     INSERT INTO autotrade_live_options_orders (intent_id, symbol, role, kind, side, contract_symbol, strike,
                         short_contract_symbol, short_strike, expiration, risk_amount, risk_profile, position_id,
-                        created_at)
+                        exit_reason, account_id, created_at)
       SELECT intent_id, symbol, role, kind, side, contract_symbol, strike,
-             short_contract_symbol, short_strike, expiration, risk_amount, risk_profile, position_id, created_at
+             short_contract_symbol, short_strike, expiration, risk_amount, risk_profile, position_id,
+             exit_reason, account_id, created_at
       FROM autotrade_live_options_orders_old;
     DROP TABLE autotrade_live_options_orders_old;
     CREATE INDEX IF NOT EXISTS idx_autotrade_live_options_orders_symbol ON autotrade_live_options_orders(symbol);
-  `);
+  `,
+  );
 }
 
 /** Run migrations and seed the default universe. Call once at startup. */

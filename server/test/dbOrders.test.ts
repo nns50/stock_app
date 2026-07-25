@@ -182,4 +182,20 @@ describe('countTodaysOrders (the max-orders/day basis)', () => {
     for (let n = 0; n < 12; n++) walk(`r${n}`, 'validated', 'confirmed', 'submitted', 'rejected');
     expect(countTodaysOrders()).toBe(1);
   });
+
+  // Buckets by the ET trading day, not the server-local (UTC in prod) day. Uses
+  // absolute UTC instants so the expectation is independent of the test host's
+  // timezone. now = 2026-07-14 22:00 ET (EDT), so the ET day started at
+  // 2026-07-14T04:00:00Z.
+  it('counts against the ET trading day, not server-local midnight', () => {
+    const now = Date.UTC(2026, 6, 15, 2, 0, 0); // 2026-07-15T02:00Z == 2026-07-14 22:00 ET
+    const submittedAt = (key: string, at: number) => {
+      const id = walk(key, 'validated', 'confirmed', 'submitted');
+      db.prepare("UPDATE order_events SET created_at = ? WHERE intent_id = ? AND state = 'submitted'").run(at, id);
+      return id;
+    };
+    submittedAt('sameEtDay', Date.UTC(2026, 6, 14, 5, 0, 0)); // 01:00 ET Jul 14 — same ET day, counts
+    submittedAt('prevEtDay', Date.UTC(2026, 6, 14, 3, 0, 0)); // 23:00 ET Jul 13 — previous ET day, excluded
+    expect(countTodaysOrders(now)).toBe(1);
+  });
 });

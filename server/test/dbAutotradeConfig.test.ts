@@ -278,6 +278,12 @@ describe('autotrade config persistence', () => {
       expect(getAutotradeConfig().optionsStrategyType).toBe('debit_spread');
     });
 
+    it("persists 'auto' and round-trips (IV-rank-adaptive, 2026-07-18)", () => {
+      const cfg = setAutotradeConfig({ optionsStrategyType: 'auto' });
+      expect(cfg.optionsStrategyType).toBe('auto');
+      expect(getAutotradeConfig().optionsStrategyType).toBe('auto');
+    });
+
     it('rejects an invalid value, failing closed to single_leg', () => {
       setAutotradeConfig({ optionsStrategyType: 'debit_spread' });
       // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback

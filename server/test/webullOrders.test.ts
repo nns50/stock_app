@@ -50,6 +50,22 @@ describe('webull stock order + preview', () => {
     });
   });
 
+  it('defaults a sell to SELL (isShort omitted)', () => {
+    expect(buildWebullStockOrder(intent({ side: 'sell' }), 'C').side).toBe('SELL');
+  });
+
+  it('a plain sell-to-close still maps to SELL even when isShort is explicitly false', () => {
+    expect(buildWebullStockOrder(intent({ side: 'sell' }), 'C', false).side).toBe('SELL');
+  });
+
+  it('maps a sell that would open/extend a net-short position to SHORT, not SELL', () => {
+    expect(buildWebullStockOrder(intent({ side: 'sell' }), 'C', true).side).toBe('SHORT');
+  });
+
+  it('a buy stays BUY regardless of isShort (isShort only ever applies to a sell)', () => {
+    expect(buildWebullStockOrder(intent({ side: 'buy' }), 'C', true).side).toBe('BUY');
+  });
+
   it('omits limit_price for a market order', () => {
     const o = buildWebullStockOrder(intent({ orderType: 'market', limitPrice: undefined }), 'C');
     expect(o.order_type).toBe('MARKET');
@@ -126,6 +142,21 @@ describe('webull stock order + preview', () => {
       stop_price: '9',
       time_in_force: 'GTC',
     });
+  });
+
+  it('buildOrderRequest: threads isShort through to a bracketed MASTER entry (a short entry still needs its bracket)', () => {
+    const req = buildOrderRequest(
+      intent({ orderType: 'limit', limitPrice: 10, side: 'sell', bracket: { takeProfitPrice: 8, stopLossPrice: 11 } }),
+      'CID-MASTER',
+      true,
+    );
+    const [master] = req.new_orders as Array<Record<string, string>>;
+    expect(master.side).toBe('SHORT');
+  });
+
+  it('buildOrderRequest: threads isShort through to a plain (non-bracketed) sell order', () => {
+    const req = buildOrderRequest(intent({ side: 'sell' }), 'CID', true);
+    expect((req.new_orders[0] as Record<string, string>).side).toBe('SHORT');
   });
 
   it('buildOrderRequest: a single-leg option bracket is MASTER (option) + STOP_PROFIT + STOP_LOSS option exits', () => {
@@ -411,6 +442,36 @@ describe('webull stock order + preview', () => {
     expect((opts as RequestInit).method).toBe('POST');
     const body = JSON.parse((opts as RequestInit).body as string);
     expect(body.new_orders[0].client_order_id).toBe('CID-ABC');
+  });
+
+  it('places a permitted short with side SHORT (isShort=true), not SELL', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ order_id: 'WB-9' }),
+    } as Response);
+
+    await webullPlaceOrder('ACC1', intent({ side: 'sell' }), 'CID-SHORT', true);
+
+    const [, opts] = fetchSpy.mock.calls[0];
+    const body = JSON.parse((opts as RequestInit).body as string);
+    expect(body.new_orders[0].side).toBe('SHORT');
+  });
+
+  it('preview reflects the same SHORT side a place would submit', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ estimated_cost: '5.00' }),
+    } as Response);
+
+    await webullPreviewOrder('ACC1', intent({ side: 'sell' }), true);
+
+    const [, opts] = fetchSpy.mock.calls[0];
+    const body = JSON.parse((opts as RequestInit).body as string);
+    expect(body.new_orders[0].side).toBe('SHORT');
   });
 
   it('surfaces a place error cleanly (claims no order id)', async () => {

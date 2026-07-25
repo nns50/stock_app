@@ -10,9 +10,12 @@ import {
   scoreSymbolBothDirections,
 } from '../../indicators/screener';
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
+import { reorderByCorrelation } from './correlationSelection';
+import { regimeLabelFromProxy, backtestRegimeWeights } from './regimeWeights';
 import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } from './decide';
+import { computeScaleIn } from './scaleIn';
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
-import { RiskProfileName } from '../../db/autotradeConfig';
+import { RiskProfileName, RegimeWeightPresets } from '../../db/autotradeConfig';
 import { defaultAutotradeScreenerConfig, pickDirection } from './screen';
 import { isExcluded } from '../../db/autotradeExclusions';
 import { classifySector, buildUniverseSectorMap } from './realEstateClassifier';
@@ -79,6 +82,7 @@ const LEGACY_BACKTEST_RISK_DEFAULTS: Record<RiskProfileName, BacktestRiskParams>
     // all nine fields, not eight from this table plus two special-cased.
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
+    correlationAwareSelectionEnabled: false,
   },
   AGGRESSIVE: {
     riskPerTradePct: 1.5,
@@ -90,6 +94,7 @@ const LEGACY_BACKTEST_RISK_DEFAULTS: Record<RiskProfileName, BacktestRiskParams>
     maxTradesPerDay: 10,
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
+    correlationAwareSelectionEnabled: false,
   },
 };
 
@@ -103,6 +108,11 @@ export interface BacktestRiskParams {
   maxTradesPerDay: number;
   correlationLookbackDays: number;
   correlationThreshold: number;
+  /** Correlation-aware candidate selection (2026-07-24, default off) — re-ranks
+   *  the score-sorted candidates so a correlated cluster's lower-scored members
+   *  are demoted behind diverse picks before the caps bind. Mirrors the live
+   *  loop; default false so an unspecified backtest matches today's behavior. */
+  correlationAwareSelectionEnabled: boolean;
 }
 
 /** Resolves each risk param from an explicit override on `cfg`, falling back
@@ -123,6 +133,7 @@ export function resolveBacktestRiskParams(
     maxTradesPerDay: cfg.maxTradesPerDay ?? d.maxTradesPerDay,
     correlationLookbackDays: cfg.correlationLookbackDays ?? d.correlationLookbackDays,
     correlationThreshold: cfg.correlationThreshold ?? d.correlationThreshold,
+    correlationAwareSelectionEnabled: cfg.correlationAwareSelectionEnabled ?? d.correlationAwareSelectionEnabled,
   };
 }
 
@@ -155,6 +166,9 @@ export interface BacktestConfig extends Partial<BacktestRiskParams> {
   trailStopRMultiple?: number;
   partialExitRMultiple?: number;
   partialExitPct?: number;
+  addOnTriggerRMultiple?: number;
+  addOnSizePct?: number;
+  maxAddOns?: number;
   screenerConfig?: Partial<ScreenerConfig>;
   decisionConfig?: Partial<DecisionConfig>;
   /** 'long' (default, matches every backtest before this existed) | 'short' |
@@ -167,6 +181,13 @@ export interface BacktestConfig extends Partial<BacktestRiskParams> {
    *  "separate option, doesn't force picking a meaningless single
    *  screenerConfig.direction" reasoning as the live/paper version. */
   directionMode?: 'long' | 'short' | 'both';
+  /** Regime-conditional scoring weights (2026-07-24, off by default). When on,
+   *  each simulated day is scored with the weight preset matching the proxy-
+   *  derived market regime as of that day (breadth omitted — see
+   *  regimeWeights.ts). Needs `regimeWeightPresets`; both default to today's
+   *  fixed-weight behavior. */
+  regimeAdaptiveWeightsEnabled?: boolean;
+  regimeWeightPresets?: RegimeWeightPresets;
 }
 
 export interface SimulatedTrade {
@@ -232,6 +253,8 @@ interface OpenPosition {
   /** Whether the one-time partial-exit trigger has already fired for this
    *  position. */
   partialExitTaken: boolean;
+  /** How many times this position has been scaled into (pyramided). */
+  addOnsTaken: number;
   quantity: number;
   riskAmount: number;
   notional: number;
@@ -478,6 +501,7 @@ export function simulateBacktest(
           initialStop: p.signal.stop,
           bestPrice: candles![idx].open,
           partialExitTaken: false,
+          addOnsTaken: 0,
           quantity: p.quantity,
           riskAmount: p.riskAmount,
           notional: p.notional,
@@ -546,6 +570,7 @@ export function simulateBacktest(
             ? (bar.close - pos.entryPrice) / initialStopDistance
             : (pos.entryPrice - bar.close) / initialStopDistance;
 
+          let partialFiredThisBar = false;
           const partialExitRMultiple = cfg.partialExitRMultiple ?? 0;
           if (partialExitRMultiple > 0 && !pos.partialExitTaken && rMultiple >= partialExitRMultiple) {
             const closeQty = Math.floor(pos.quantity * ((cfg.partialExitPct ?? 0) / 100));
@@ -569,6 +594,7 @@ export function simulateBacktest(
               equity += partialPnl;
               pos.quantity -= closeQty;
               pos.partialExitTaken = true;
+              partialFiredThisBar = true;
             }
           }
 
@@ -589,6 +615,37 @@ export function simulateBacktest(
               : Math.min(candidateStop, trailingCandidate);
           }
           pos.stop = candidateStop;
+
+          // Scale into a winner (pyramiding) — mirrors execute.ts's paper loop:
+          // add against the bar CLOSE, never in the same bar as a partial
+          // scale-out, blending the entry and raising the stop. The added
+          // shares realize their P&L at exit via the blended entryPrice. See
+          // services/autotrading/scaleIn.ts.
+          if (!partialFiredThisBar) {
+            const add = computeScaleIn(
+              {
+                side: pos.side,
+                entryPrice: pos.entryPrice,
+                initialStopPrice: pos.initialStop,
+                stopPrice: pos.stop,
+                quantity: pos.quantity,
+                addOnsTaken: pos.addOnsTaken,
+              },
+              bar.close,
+              {
+                addOnTriggerRMultiple: cfg.addOnTriggerRMultiple ?? 0,
+                addOnSizePct: cfg.addOnSizePct ?? 0,
+                maxAddOns: cfg.maxAddOns ?? 0,
+              },
+            );
+            if (add) {
+              pos.quantity = add.newQuantity;
+              pos.entryPrice = add.blendedEntry;
+              pos.initialStop = add.newInitialStopPrice;
+              pos.stop = add.newStopPrice;
+              pos.addOnsTaken += 1;
+            }
+          }
         }
         stillOpen.push(pos);
       }
@@ -611,6 +668,21 @@ export function simulateBacktest(
       benchmarkCandles && benchmarkIdx >= 0 && benchmarkCandles[benchmarkIdx].time === dayMs
         ? lookbackReturnPct(benchmarkCandles, screenerCfg.relativeStrengthLookbackDays, benchmarkIdx)
         : null;
+
+    // Regime-conditional weights (2026-07-24, off by default): score THIS day
+    // with the preset matching the proxy-derived regime as of today — benchmarkIdx
+    // is the proxy bar as-of today, so no lookahead. The cached indicator series
+    // above is weight-independent (weights only affect scoreSymbol's final
+    // aggregation), so swapping weights per day is safe. No-op when disabled or
+    // when no proxy series was loaded, so an unspecified run is byte-identical.
+    const dayWeights = cfg.regimeAdaptiveWeightsEnabled
+      ? backtestRegimeWeights(
+          screenerCfg.weights,
+          cfg.regimeWeightPresets ?? null,
+          benchmarkCandles ? regimeLabelFromProxy(benchmarkCandles, benchmarkIdx) : null,
+        )
+      : screenerCfg.weights;
+    const dayScreenerCfg = dayWeights === screenerCfg.weights ? screenerCfg : { ...screenerCfg, weights: dayWeights };
 
     const candidates: { score: SymbolScore; signal: TradeSignal }[] = [];
     for (const [symbol, candles] of historyBySymbol) {
@@ -643,7 +715,7 @@ export function simulateBacktest(
                 symbol,
                 candles,
                 undefined,
-                screenerCfg,
+                dayScreenerCfg,
                 cached,
                 idx,
                 weeklyCached,
@@ -655,7 +727,7 @@ export function simulateBacktest(
                 symbol,
                 candles,
                 undefined,
-                { ...screenerCfg, direction: directionMode },
+                { ...dayScreenerCfg, direction: directionMode },
                 cached,
                 idx,
                 weeklyCached,
@@ -676,6 +748,31 @@ export function simulateBacktest(
     // against identical cached data must produce identical results).
     candidates.sort((a, b) => b.score.total - a.score.total || a.score.symbol.localeCompare(b.score.symbol));
 
+    // Correlation-aware selection (2026-07-24, default off): re-rank so a
+    // correlated cluster's lower-scored members are demoted behind diverse
+    // picks before the caps below bind — the same reorder the live loop
+    // applies, fed from this engine's own no-lookahead daily closes (sliced up
+    // to today exactly like backtestCorrelatedNotional's closesUpTo). A no-op
+    // when disabled, so an unspecified backtest is byte-identical to before.
+    let orderedCandidates = candidates;
+    if (riskParams.correlationAwareSelectionEnabled && candidates.length > 1) {
+      const returnsBySymbol = new Map<string, number[]>();
+      for (const { score } of candidates) {
+        const candles = historyBySymbol.get(score.symbol);
+        if (!candles) continue;
+        const idx = indexAsOf(candles, dayMs, indexCursor.get(score.symbol) ?? 0);
+        if (idx < 1) continue;
+        const start = Math.max(0, idx - riskParams.correlationLookbackDays);
+        const returns = dailyReturns(candles.slice(start, idx + 1).map((c) => c.close));
+        if (returns.length >= 2) returnsBySymbol.set(score.symbol.toUpperCase(), returns);
+      }
+      orderedCandidates = reorderByCorrelation(candidates, (c) => c.score.symbol, returnsBySymbol, {
+        enabled: true,
+        threshold: riskParams.correlationThreshold,
+        lookbackDays: riskParams.correlationLookbackDays,
+      }).ordered;
+    }
+
     let runningRisk = openPositions.reduce((s, p) => s + p.riskAmount, 0);
     let runningCount = openPositions.length;
     const runningPositions: { symbol: string; notional: number; side: 'long' | 'short' }[] = openPositions.map((p) => ({
@@ -684,7 +781,7 @@ export function simulateBacktest(
       side: p.side === 'buy' ? 'long' : 'short',
     }));
 
-    for (const { signal } of candidates) {
+    for (const { signal } of orderedCandidates) {
       // Threaded through runningPositions (open + already-approved-this-batch),
       // not the pre-batch openPositions snapshot — matches riskCheck.ts's
       // runAutotradeRiskCheck, which correctly counts a signal approved
@@ -717,6 +814,15 @@ export function simulateBacktest(
         maxConcurrentPositions: cfg.maxConcurrentPositions,
         correlatedNotional: correlated,
         ...riskParams,
+        // Sector exposure cap has no backtest equivalent either (2026-07-18,
+        // same scope boundary as regime sizing below) — BacktestRiskParams is
+        // a deliberately separate, self-contained bundle from AutotradeConfig
+        // (see this file's own header comment) and isn't growing a sector
+        // dimension. candidateSector: null unconditionally skips the check
+        // (see evaluateRiskCheck's own max_sector_exposure gating).
+        sectorNotional: 0,
+        maxSectorExposurePct: 0,
+        candidateSector: null,
         // Regime-aware sizing has no backtest equivalent (2026-07-16) — same
         // documented scope boundary as maxMarketAtrPct/maxTickerAtrPct/
         // sessionBufferMinutes above: no live SPY-proxy ATR series is wired
@@ -995,8 +1101,11 @@ export async function runBacktest(cfg: BacktestConfig): Promise<BacktestReport> 
     ? await loadWeeklyBacktestHistory(Array.from(historyBySymbol.keys()), cfg.from, cfg.to)
     : undefined;
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
+  // The proxy (benchmark) series is needed for relative-strength scoring AND for
+  // regime-adaptive weights (which derive the per-day regime from it), so load it
+  // when EITHER is active.
   const benchmarkCandles =
-    (cfg.screenerConfig?.weights?.relativeStrength ?? 0)
+    (cfg.screenerConfig?.weights?.relativeStrength ?? 0) || cfg.regimeAdaptiveWeightsEnabled
       ? await loadBenchmarkBacktestHistory(screenerCfg.benchmarkSymbol, cfg.from, cfg.to)
       : undefined;
   const report = simulateBacktest(historyBySymbol, cfg, weeklyHistoryBySymbol, benchmarkCandles);
@@ -1034,7 +1143,7 @@ export async function runWalkForwardBacktest(cfg: WalkForwardConfig): Promise<Wa
     : undefined;
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
   const benchmarkCandles =
-    (cfg.screenerConfig?.weights?.relativeStrength ?? 0)
+    (cfg.screenerConfig?.weights?.relativeStrength ?? 0) || cfg.regimeAdaptiveWeightsEnabled
       ? await loadBenchmarkBacktestHistory(screenerCfg.benchmarkSymbol, cfg.from, cfg.to)
       : undefined;
   const outOfSampleFrom = addDays(cfg.splitDate, 1);

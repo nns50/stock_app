@@ -4,7 +4,9 @@ import { saveLastTick } from '../../db/autotradeLastTick';
 import { getTradingConfig } from '../../db/trading';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { runAutotradeScreen, ScreenCandidate } from './screen';
-import { defaultScreenerConfig } from '../../indicators/screener';
+import { computeMarketRegime } from '../marketRegime';
+import { resolveScoringWeights } from './regimeWeights';
+import { selectCorrelationAware } from './correlationSelection';
 import { runAutotradeDecision } from './decide';
 import { runOptionsDecision } from './optionsDecide';
 import { runPaperExecution, checkPaperExits } from './execute';
@@ -19,6 +21,7 @@ import {
   reconcileLiveOrders,
   syncAccountEquityFromBroker,
   checkLiveEquityTimeExits,
+  checkLiveScaleIns,
   adoptOrphanedLivePositions,
 } from './liveExecute';
 import {
@@ -29,7 +32,15 @@ import {
 } from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures } from './liveFailureAlert';
 import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
-import { checkSessionWindow, checkVolatility, getMarketAtrPct, VolatilityFilterConfig } from './executionGuards';
+import { maybeAutoTune } from './autoTune';
+import {
+  checkSessionWindow,
+  checkMacroEventBlackout,
+  checkVolatility,
+  getMarketAtrPct,
+  VolatilityFilterConfig,
+} from './executionGuards';
+import { listMacroEvents } from '../../db/macroEvents';
 import { runWebullPositionsSync } from '../../providers/webull/positions';
 import { processMoversForPromotion } from './moversPromotion';
 import { checkForRecentSplits } from './splitCheck';
@@ -100,6 +111,9 @@ export interface LoopTickSummary {
    *  reports a position it actually attempted to close), not "closed" —
    *  that's a later liveOrdersReconciled/livePositionsClosed. */
   liveTimeExitsRequested: number;
+  /** Live scale-in add-ons actually placed at the broker this tick (0 unless
+   *  liveScaleInEnabled and a position hit its add-on trigger). */
+  liveScaleInsRequested: number;
   candidatesScreened: number;
   candidatesPassedVolatility: number;
   signalsGenerated: number;
@@ -176,6 +190,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     liveOptionsPositionsClosed: 0,
     liveOptionsExitsRequested: 0,
     liveTimeExitsRequested: 0,
+    liveScaleInsRequested: 0,
     candidatesScreened: 0,
     candidatesPassedVolatility: 0,
     signalsGenerated: 0,
@@ -314,6 +329,13 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // unexpected throw here surfaces the same way an unexpected throw there
     // would (caught by this function's own outer try, below).
     const liveEquityTimeExitOutcomes = await checkLiveEquityTimeExits();
+    // Scale into winners on LIVE positions — gated like an ENTRY (it ADDS risk
+    // to real money), so behind isLiveEntryActive (kill switch, master gate,
+    // market hours) ON TOP OF checkLiveScaleIns' own liveScaleInEnabled/cap
+    // checks. Unlike the time-exit above (which must fire even when entries are
+    // halted, to close), a scale-in must NOT fire while entries are halted.
+    // Fail-closed inside — one position's broker hiccup never crashes the loop.
+    const liveScaleInOutcomes = isLiveEntryActive(getAutotradeConfig()) ? await checkLiveScaleIns() : [];
     // Reconcile before checking for NEW triggers: catches up on anything an
     // earlier cycle already placed (an entry that filled, an exit that
     // filled) so a position closed by reconcile this same tick is already
@@ -379,6 +401,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       liveOptionsPositionsClosed: liveOptionsReconcileOutcomes.filter((o) => o.action === 'exit_filled').length,
       liveOptionsExitsRequested: liveOptionsExitOutcomes.filter((o) => o.requested).length,
       liveTimeExitsRequested: liveEquityTimeExitOutcomes.filter((o) => o.requested).length,
+      liveScaleInsRequested: liveScaleInOutcomes.filter((o) => o.requested).length,
     };
 
     const config = getAutotradeConfig();
@@ -397,10 +420,35 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       return summary;
     }
 
+    // Market-wide, same as checkSessionWindow just above — checked once per
+    // cycle, never per-candidate (see executionGuards.ts's own doc comment).
+    const macroBlackout = checkMacroEventBlackout(listMacroEvents(), config.macroEventBlackoutHours);
+    if (!macroBlackout.ok) {
+      summary.skippedReason = macroBlackout.reason;
+      return summary;
+    }
+
+    // Regime-conditional weights (2026-07-24, default off): when enabled, read
+    // the market regime (SPY proxy, cached ~1h — cheap) and score this tick with
+    // that regime's weight preset instead of the fixed defaults. Own gate + a
+    // best-effort read (a failed regime fetch falls back to the fixed weights,
+    // never blocks the tick), so the default path does no extra work and behaves
+    // exactly as before.
+    let regimeLabel: 'risk-on' | 'neutral' | 'risk-off' | null = null;
+    if (config.regimeAdaptiveWeightsEnabled) {
+      regimeLabel = (await computeMarketRegime().catch(() => null))?.label ?? null;
+      if (regimeLabel) {
+        logAutotradeEvent({
+          stage: 'screen',
+          action: 'regime_weights_applied',
+          detail: { regime: regimeLabel },
+        });
+      }
+    }
     const screenResult = await runAutotradeScreen({
       config: {
         filters: { minRelVol: config.minRelVol, requireWeeklyTrendAlignment: config.requireWeeklyTrendAlignment },
-        weights: { ...defaultScreenerConfig().weights, relativeStrength: config.relativeStrengthWeight },
+        weights: resolveScoringWeights(config, regimeLabel),
         benchmarkSymbol: config.benchmarkSymbol,
         relativeStrengthLookbackDays: config.relativeStrengthLookbackDays,
       },
@@ -431,7 +479,30 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     const passedVolatility = filterByVolatility(screenResult.candidates, marketAtrPct, volCfg);
     summary.candidatesPassedVolatility = passedVolatility.length;
 
-    const decision = runAutotradeDecision(passedVolatility, {
+    // Correlation-aware selection (2026-07-24, default off): re-rank the
+    // score-sorted survivors so that among mutually-correlated names the
+    // higher-scored one keeps its rank and the redundant lower one is demoted
+    // to the back — diverse picks win the downstream caps instead of a
+    // correlated huddle. Reorders only (never drops; the correlated-exposure
+    // veto in risk-check stays the real backstop), and feeds BOTH the equity
+    // decision and the options universeOnly filter below so the two stay in
+    // sync. Own gate + no-op when disabled, so the default path does no extra
+    // candle fetching.
+    const selection = await selectCorrelationAware(passedVolatility, (c) => c.symbol, {
+      enabled: config.correlationAwareSelectionEnabled,
+      threshold: config.correlationThreshold,
+      lookbackDays: config.correlationLookbackDays,
+    });
+    if (selection.demoted.length > 0) {
+      logAutotradeEvent({
+        stage: 'screen',
+        action: 'correlation_demoted',
+        detail: { count: selection.demoted.length, demoted: selection.demoted },
+      });
+    }
+    const selectedCandidates = selection.ordered;
+
+    const decision = runAutotradeDecision(selectedCandidates, {
       stopAtrMultiple: config.stopAtrMultiple,
       targetRMultiple: config.targetRMultiple,
     });
@@ -451,9 +522,21 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // every cycle, so it's exactly where that history can actually compound
     // over time — equity autotrading keeps using movers for momentum/
     // breakout, unaffected.
-    const universeOnly = passedVolatility.filter((c) => c.discoverySource === 'universe');
+    const universeOnly = selectedCandidates.filter((c) => c.discoverySource === 'universe');
     summary.optionsCandidatesConsidered = universeOnly.length;
-    const optionsDecision = await runOptionsDecision(universeOnly, { strategyType: config.optionsStrategyType });
+    const optionsDecision = await runOptionsDecision(universeOnly, {
+      strategyType: config.optionsStrategyType,
+      entryConfig: {
+        deltaMin: config.optionsDeltaMin,
+        deltaMax: config.optionsDeltaMax,
+        maxSpreadPct: config.optionsMaxSpreadPct,
+        minOpenInterest: config.optionsMinOpenInterest,
+        minVolume: config.optionsMinVolume,
+        minDaysToExpiration: config.optionsMinDte,
+        maxDaysToExpiration: config.optionsMaxDte,
+        ivRankMax: config.optionsIvRankMax,
+      },
+    });
     summary.optionsSignalsGenerated = optionsDecision.signals.length;
 
     // Re-check right before executing: screening + deciding above is
@@ -543,6 +626,10 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // already current by this point regardless of which return path the tick
     // took above. Best-effort, throttled to once per pool per day, never throws.
     await maybeAlertDailyDrawdownHalt();
+    // Same reasoning, same placement: a no-op unless explicitly enabled, and
+    // throttled to once per (ET) trading day internally regardless of how
+    // often this tick runs. Best-effort, never throws.
+    await maybeAutoTune();
   }
 }
 

@@ -22,6 +22,7 @@ import {
 import { RefreshBar } from '../components/RefreshBar';
 import { UniverseModal } from '../components/UniverseModal';
 import { SnapshotsModal } from '../components/SnapshotsModal';
+import { SectorRotationPanel } from '../components/SectorRotationPanel';
 import type { IndicatorKey, ScreenerConfig, ScreenerResult, SymbolScore } from '../api/types';
 
 const WEIGHT_KEYS: { key: IndicatorKey; label: string }[] = [
@@ -105,18 +106,25 @@ export default function ScreenerPage() {
       return { ...base, filters: { ...base.filters, [k]: v } };
     });
 
-  const run = async () => {
+  const run = async (override?: { symbols?: string[]; maxSymbols?: number }) => {
     if (!cfg) return;
     setRunning(true);
     setError(undefined);
     try {
-      const symbols = useCustom
-        ? customText
-            .split(/[\s,]+/)
-            .map((s) => s.trim().toUpperCase())
-            .filter(Boolean)
-        : undefined;
-      const res = await client.runScreener({ config: cfg, symbols, maxSymbols, includeFailed });
+      const symbols =
+        override?.symbols ??
+        (useCustom
+          ? customText
+              .split(/[\s,]+/)
+              .map((s) => s.trim().toUpperCase())
+              .filter(Boolean)
+          : undefined);
+      const res = await client.runScreener({
+        config: cfg,
+        symbols,
+        maxSymbols: override?.maxSymbols ?? maxSymbols,
+        includeFailed,
+      });
       setResult(res);
       client.saveSetting('screener.config', cfg).catch(() => {}); // remember last config
     } catch (e) {
@@ -124,6 +132,15 @@ export default function ScreenerPage() {
     } finally {
       setRunning(false);
     }
+  };
+
+  // Sector-rotation panel: clicking a sector loads its members into the custom-
+  // symbols box and scans just those, so the leaderboard doubles as navigation.
+  const pickSector = (_sector: string, members: string[]) => {
+    if (members.length === 0) return;
+    setUseCustom(true);
+    setCustomText(members.join(' '));
+    void run({ symbols: members, maxSymbols: Math.max(members.length, maxSymbols) });
   };
 
   const onSort = (k: string) => {
@@ -337,7 +354,7 @@ export default function ScreenerPage() {
               </div>
             )}
 
-            <button className="btn-primary w-full" onClick={run} disabled={running}>
+            <button className="btn-primary w-full" onClick={() => run()} disabled={running}>
               {running ? 'Scanning…' : 'Run screener'}
             </button>
           </div>
@@ -381,6 +398,9 @@ export default function ScreenerPage() {
             )}
           </div>
         </CollapsibleCard>
+
+        {/* Sector rotation — click a sector to scan just its members. */}
+        <SectorRotationPanel onPickSector={pickSector} />
       </aside>
 
       {/* ---- Results ---- */}
@@ -471,7 +491,7 @@ export default function ScreenerPage() {
               title="Run the screener to rank your universe"
               hint="Each symbol is scored from transparent, weighted indicators. Expand any row to see exactly why it ranked where it did."
               action={
-                <button className="btn-primary" onClick={run} disabled={running}>
+                <button className="btn-primary" onClick={() => run()} disabled={running}>
                   {running ? 'Scanning…' : 'Run screener'}
                 </button>
               }

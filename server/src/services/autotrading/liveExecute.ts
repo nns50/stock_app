@@ -1,7 +1,14 @@
 import { config } from '../../config';
 import { AutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../../db/autotradeConfig';
 import { getTradingConfig } from '../../db/trading';
-import { AccountState, evaluateGuardrails, OrderIntent, blockingFailures, TradingConfig } from '../trading/guardrails';
+import {
+  AccountState,
+  evaluateGuardrails,
+  OrderIntent,
+  blockingFailures,
+  TradingConfig,
+  wouldOpenShort,
+} from '../trading/guardrails';
 import { marketOpenContext } from '../trading/marketHours';
 import { webullAccountState } from '../../providers/webull/accountState';
 import {
@@ -13,7 +20,9 @@ import {
   WebullOpenOrder,
 } from '../../providers/webull/orders';
 import { mapWebullStatus } from '../trading/reconcile';
+import { computeFillDelta } from '../trading/fillDelta';
 import {
+  advanceMaterialized,
   createIntent,
   transitionIntent,
   countTodaysOrders,
@@ -25,6 +34,8 @@ import { canTransition, isTerminal } from '../trading/orderLifecycle';
 import {
   recordLiveOrder,
   recordLiveExitOrder,
+  recordLiveAddOnOrder,
+  countLiveAddOns,
   setLiveOrderPositionId,
   listPendingLiveOrders,
   countLiveOrdersSince,
@@ -32,15 +43,25 @@ import {
   getLiveOrder,
   LiveOrderMeta,
 } from '../../db/autotradeLiveOrders';
+import { computeScaleIn } from './scaleIn';
+import { computeEquityCurveDerisk } from './equityCurveDerisk';
+import { computeGradeExpectancyMultipliers } from './expectancySizing';
 // DB-layer reads only (NOT the options execution service) -- so the combined
 // live budget can fold in the options book without a liveExecute <-> options
 // service import cycle.
 import { pendingLiveOptionsOrdersRisk } from '../../db/autotradeLiveOptionsOrders';
 import { listOpenLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
-import { createPosition, listPositions, updatePosition, addExit, Position } from '../../db/positions';
+import { createPosition, getPosition, listPositions, updatePosition, addExit, Position } from '../../db/positions';
 import { realizedPnlOf, initialRiskOf, computeStreaksAndDrawdown } from '../pnl';
-import { TradeSignal } from './decide';
-import { RiskCheckContext, RiskCheckResult, correlatedNotional, evaluateRiskCheck } from './riskCheck';
+import { TradeSignal, convictionGrade } from './decide';
+import {
+  RiskCheckContext,
+  RiskCheckResult,
+  correlatedNotional,
+  sectorNotional,
+  buildSectorOf,
+  evaluateRiskCheck,
+} from './riskCheck';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { getProvider } from '../../providers';
 import { dispatchNotifications } from '../notifier';
@@ -170,6 +191,12 @@ export interface LivePortfolioSnapshot {
   dailyPnl: number;
   consecutiveLosses: number;
   tradesToday: number;
+  /** Equity-curve de-risk decision from the live book's own realized curve
+   *  (2026-07-24) — false when disabled or above the average. */
+  equityCurveDeriskActive: boolean;
+  /** grade → sizing multiplier from the live book's realized per-grade edge
+   *  (2026-07-24); empty when expectancy weighting is off. */
+  gradeExpectancyMultipliers: Record<string, number>;
 }
 
 /** The real-money counterpart to execute.ts's getPaperPortfolioSnapshot() —
@@ -195,6 +222,38 @@ export function getLivePortfolioSnapshot(): LivePortfolioSnapshot {
     closedAutotrade.filter((p) => p.entryDate === today).length;
   const openRisk = openPositions.reduce((s, p) => s + (initialRiskOf(p) ?? 0), 0);
 
+  // Equity-curve de-risk from the live book's OWN full realized history — the
+  // cumulative curve, dated by each trade's last exit, the MA filter needs.
+  const config = getAutotradeConfig();
+  const closedHistory = closedAutotrade.map((p) => ({
+    date: p.exits.length
+      ? p.exits
+          .map((e) => e.exitDate)
+          .sort()
+          .slice(-1)[0]
+      : p.entryDate,
+    pnl: realizedPnlOf(p),
+  }));
+  const equityCurveDeriskActive = computeEquityCurveDerisk(closedHistory, {
+    enabled: config.equityCurveDeriskEnabled,
+    lookbackDays: config.equityCurveLookbackDays,
+    cutPct: config.equityCurveDeriskCutPct,
+  }).active;
+
+  // Per-grade expectancy multipliers from the live book's OWN closed trades.
+  const gradeExpectancyMultipliers = computeGradeExpectancyMultipliers(
+    closedAutotrade.flatMap((p) => {
+      const risk = initialRiskOf(p);
+      return risk && risk > 0 ? [{ grade: p.grade, realizedR: realizedPnlOf(p) / risk }] : [];
+    }),
+    {
+      enabled: config.expectancyWeightingEnabled,
+      minTrades: config.expectancyMinTrades,
+      minMultiplier: config.expectancyMinMultiplier,
+      maxMultiplier: config.expectancyMaxMultiplier,
+    },
+  );
+
   return {
     today,
     openPositions,
@@ -203,6 +262,8 @@ export function getLivePortfolioSnapshot(): LivePortfolioSnapshot {
     dailyPnl,
     consecutiveLosses,
     tradesToday,
+    equityCurveDeriskActive,
+    gradeExpectancyMultipliers,
   };
 }
 
@@ -288,8 +349,17 @@ export function adoptOrphanedLivePositions(): { adopted: number } {
   for (const p of orphans) {
     const match =
       p.sourceIntentId !== null
-        ? pendingEntries.find((o) => o.intentId === p.sourceIntentId)
-        : pendingEntries.find((o) => o.symbol === p.symbol);
+        ? // Exact order-to-order link — no cross-account ambiguity possible.
+          pendingEntries.find((o) => o.intentId === p.sourceIntentId)
+        : // Symbol-only match — could otherwise link a pending order for account A
+          // to an orphan actually held in account B if both trade the same symbol
+          // around an account switch. Require agreement when both sides know
+          // their account; a null on either side (legacy data) still matches, same
+          // permissive-for-linking-not-closing stance as positions.ts's own
+          // includeUnassignedAccount.
+          pendingEntries.find(
+            (o) => o.symbol === p.symbol && (o.accountId == null || p.accountId == null || o.accountId === p.accountId),
+          );
     if (!match) continue;
     updatePosition(p.id, {
       tags: Array.from(new Set([...p.tags, ...AUTOTRADE_TAGS])),
@@ -489,6 +559,11 @@ export async function attemptLiveEntry(
   }
   const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
   const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
+  // Only matters for a permitted short entry (allowNakedShort — naked_short
+  // above already blocks it otherwise): submit Webull's own SHORT side instead
+  // of a plain SELL so the broker's real-time locate/borrow check runs at
+  // order time (see providers/webull/orders.ts).
+  const isShort = wouldOpenShort(intent, accountState);
 
   const clientOrderId = newClientOrderId();
   const intentRec = createIntent(intent, clientOrderId);
@@ -508,7 +583,7 @@ export async function attemptLiveEntry(
   });
   transitionIntent(intentRec.id, 'submitted', { detail: `submitting (cid ${clientOrderId})` });
 
-  const broker = await webullPlaceOrder(accountId, intent, clientOrderId);
+  const broker = await webullPlaceOrder(accountId, intent, clientOrderId, isShort);
   if (!broker.ok) {
     transitionIntent(intentRec.id, 'rejected', { detail: `broker rejected: ${broker.error}` });
     logAutotradeEvent({
@@ -532,6 +607,11 @@ export async function attemptLiveEntry(
     targetPrice: signal.target,
     riskAmount: riskResult.approvedRiskAmount,
     riskProfile,
+    accountId,
+    grade: convictionGrade(signal.score, {
+      aMinScore: autotradeCfg.convictionGradeAMinScore,
+      bMinScore: autotradeCfg.convictionGradeBMinScore,
+    }),
   });
   logAutotradeEvent({
     symbol,
@@ -620,6 +700,7 @@ export async function runLiveExecution(
     ...listPositions({ status: 'open' }).map((p) => p.symbol),
     ...listPendingLiveOrders().map((o) => o.symbol),
   ]);
+  const sectorOf = buildSectorOf();
 
   const outcomes: LiveExecutionOutcome[] = [];
   for (const { signal } of candidates) {
@@ -634,6 +715,12 @@ export async function runLiveExecution(
       runningPositions,
       cfg.correlationLookbackDays,
       cfg.correlationThreshold,
+    );
+    const { amount: sectorAmount, sector: candidateSector } = sectorNotional(
+      signal.symbol,
+      signal.side === 'buy' ? 'long' : 'short',
+      runningPositions,
+      sectorOf,
     );
     const ctx: RiskCheckContext = {
       equity,
@@ -652,9 +739,22 @@ export async function runLiveExecution(
       maxCorrelatedExposurePct: cfg.maxCorrelatedExposurePct,
       maxTradesPerDay: cfg.maxTradesPerDay,
       correlationThreshold: cfg.correlationThreshold,
+      sectorNotional: sectorAmount,
+      maxSectorExposurePct: cfg.maxSectorExposurePct,
+      candidateSector,
       marketAtrPct,
       regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
       regimeSizeCutPct: cfg.regimeSizeCutPct,
+      equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
+      equityCurveDeriskCutPct: cfg.equityCurveDeriskCutPct,
+      maxAdvParticipationPct: cfg.maxAdvParticipationPct,
+      expectancyMultiplier:
+        snapshot.gradeExpectancyMultipliers[
+          convictionGrade(signal.score, {
+            aMinScore: cfg.convictionGradeAMinScore,
+            bMinScore: cfg.convictionGradeBMinScore,
+          })
+        ] ?? 1,
     };
     const result = evaluateRiskCheck(signal, ctx);
     if (!result.ok) {
@@ -755,23 +855,45 @@ function reconcileOneLiveOrder(
   meta: LiveOrderMeta,
   broker: Awaited<ReturnType<typeof webullOrderStatus>>,
 ): { changed: boolean; action?: 'entry_filled' | 'exit_filled'; error?: string } {
-  const { stopPrice, targetPrice, riskAmount, riskProfile } = meta;
+  const { stopPrice, targetPrice, riskAmount, riskProfile, accountId } = meta;
   // The MASTER (entry) leg's own status, same field reconcileIntent() already
   // uses for a non-bracket order. Also this table's ROLE='exit' order's own
   // (and only) status -- a time-exit closing order is never a bracket, so
   // its fill is exactly this simple, same as a plain non-bracket order.
   const masterTarget = broker.status ? mapWebullStatus(broker.status) : undefined;
-  if (
-    masterTarget &&
+  const canMove =
+    !!masterTarget &&
     !isTerminal(intent.state) &&
     masterTarget !== intent.state &&
-    canTransition(intent.state, masterTarget)
-  ) {
-    transitionIntent(intent.id, masterTarget, {
-      detail: `broker ${broker.status?.toLowerCase()}`,
-      brokerOrderId: broker.brokerOrderId,
-    });
-    if (masterTarget === 'filled') {
+    canTransition(intent.state, masterTarget);
+  // An order resting at `partially_filled` across two ticks hasn't changed
+  // state but may have filled further, and a partial that is later CANCELLED
+  // leaves this table's polling set entirely (listPendingLiveOrders excludes
+  // cancelled intents). Both are handled by materializing on every observed
+  // fill rather than only on the terminal one — see materializeLiveFill.
+  const restingPartial = masterTarget === 'partially_filled' && intent.state === 'partially_filled';
+  if (canMove || restingPartial) {
+    if (canMove) {
+      transitionIntent(intent.id, masterTarget!, {
+        detail: `broker ${broker.status?.toLowerCase()}`,
+        brokerOrderId: broker.brokerOrderId,
+      });
+    }
+    // How much the broker says is filled. A terminal FILLED implies the whole
+    // order even when the response omits the quantity outright (some do), which
+    // is why this falls back to the intent's own size there but to ZERO on any
+    // other status — a CANCELLED with no quantity field filled nothing, and
+    // assuming otherwise would fabricate a position.
+    const observedQty = broker.filledQty ?? (masterTarget === 'filled' ? intent.quantity : 0);
+
+    // Keyed on the broker REPORTING a fill, not on which state it reported: a
+    // partial that gets cancelled between two 60s ticks arrives as a single
+    // CANCELLED response still carrying its filled quantity, and that intent
+    // then leaves listPendingLiveOrders() for good (its WHERE clause excludes
+    // cancelled/rejected/expired). If this tick doesn't book it, nothing ever
+    // will — real autotrade-opened shares, permanently invisible to the Auto
+    // page's risk and P&L accounting.
+    if (observedQty > 0) {
       // The intent transition above has ALREADY committed by this point — if
       // materializing the position throws, the intent is left at terminal
       // 'filled' with no positions row and, since listPendingLiveOrders()
@@ -786,27 +908,87 @@ function reconcileOneLiveOrder(
       // reconcile.ts's recordFillAsPosition, deliberately does) would leave
       // a real fill permanently invisible with no trace anywhere.
       try {
+        // Book only the part of the broker's running fill total we haven't
+        // recorded yet, under the shared guards the human path uses too (see
+        // trading/fillDelta.ts). Every ambiguous case there resolves toward
+        // recording LESS, so a broker whose semantics differ from our reading
+        // can leave a fill under-recorded — recoverable, and loudly logged —
+        // but can never inflate an autotrade position's size or cost basis,
+        // which would corrupt every risk figure derived from it.
+        const observedPrice = broker.filledPrice ?? intent.limitPrice ?? 0;
+        const { qty, price, warning } = computeFillDelta(intent, observedQty, observedPrice);
+
+        if (warning) {
+          logAutotradeEvent({
+            symbol: intent.symbol,
+            stage: 'execution',
+            action: 'live_fill_not_fully_materialized',
+            detail: { intentId: intent.id, observedQty, alreadyBooked: intent.materializedQty, warning },
+            riskProfile,
+          });
+        }
+        // Nothing new to record — either this fill was already booked on an
+        // earlier tick, or the guards refused it.
+        if (qty <= 0) return { changed: canMove, error: warning };
+
         if (meta.role === 'exit') {
           // A time-exit closing order — meta.positionId is known upfront
           // (recordLiveExitOrder), unlike an entry's positionId which is
           // null until THIS materialization sets it.
-          const recorded = materializeTimeExitFill(
-            meta.positionId!,
-            intent,
-            broker.filledPrice ?? intent.limitPrice ?? 0,
-            riskProfile,
-          );
-          return recorded ? { changed: true, action: 'exit_filled' } : { changed: false };
+          const recorded = materializeTimeExitFill(meta.positionId!, intent, price, riskProfile, qty);
+          if (recorded) advanceMaterialized(intent.id, qty, qty * price);
+          return recorded ? { changed: true, action: 'exit_filled' } : { changed: canMove };
         }
-        materializeEntryFill(
+        if (meta.addonOfPositionId !== null) {
+          // A scale-in ADD-ON fill — MERGE into the already-open position
+          // (blended entry, bigger quantity) rather than creating a second
+          // position row. Its own protective bracket (raised stop + the
+          // position's target) rests separately, watched via the bracket-leg
+          // block below on later ticks once position_id is linked here.
+          materializeAddOnFill(meta.addonOfPositionId, intent, qty, price, riskProfile);
+          advanceMaterialized(intent.id, qty, qty * price);
+          return { changed: true, action: 'entry_filled' };
+        }
+
+        // A plain entry. autotrade_live_orders.position_id is a SINGLE column,
+        // so one intent maps to exactly ONE position — unlike the human ledger,
+        // a later instalment must BLEND into the position the first instalment
+        // created rather than opening a second row that nothing could link to.
+        //
+        // The discriminator is OUR OWN materialization mark, not whether
+        // position_id is set: adoptOrphanedLivePositions() also sets that column
+        // (for a position imported whole from the broker), so treating a linked
+        // id as "we booked an earlier instalment" would blend a full fill into
+        // an already-complete adopted position and double its quantity — the
+        // very duplication adoption exists to prevent. materializedQty is only
+        // ever advanced by this function, so it means exactly what's needed here.
+        const linkedId = getLiveOrder(intent.id)?.positionId ?? null;
+        if (intent.materializedQty > 0 && linkedId !== null) {
+          materializeAddOnFill(linkedId, intent, qty, price, riskProfile);
+          advanceMaterialized(intent.id, qty, qty * price);
+          return { changed: true, action: 'entry_filled' };
+        }
+
+        const outcome = materializeEntryFill(
           intent,
           stopPrice,
           targetPrice,
           riskAmount,
           riskProfile,
-          broker.filledQty ?? intent.quantity,
-          broker.filledPrice ?? intent.limitPrice ?? 0,
+          accountId,
+          qty,
+          price,
         );
+        // An ADOPTED position was imported from the broker whole, so it already
+        // reflects every instalment of this order — including ones we never
+        // observed. Mark the intent fully booked so a later partial can't blend
+        // quantity into it a second time.
+        if (outcome === 'linked_adopted') {
+          const remaining = intent.quantity - intent.materializedQty;
+          if (remaining > 0) advanceMaterialized(intent.id, remaining, remaining * price);
+        } else {
+          advanceMaterialized(intent.id, qty, qty * price);
+        }
         return { changed: true, action: 'entry_filled' };
       } catch (err) {
         const message = (err as Error).message;
@@ -886,9 +1068,10 @@ function materializeEntryFill(
   targetPrice: number,
   riskAmount: number,
   riskProfile: string,
+  accountId: string | null,
   filledQty: number,
   filledPrice: number,
-): void {
+): 'created' | 'linked_adopted' {
   // This fill may belong to a position adoptOrphanedLivePositions() already
   // adopted under this SAME intent, earlier: reconcile missed the fill on an
   // earlier tick, the generic Webull position-sync backstop imported the real
@@ -917,7 +1100,7 @@ function materializeEntryFill(
       detail: { positionId: adopted.id, quantity: filledQty, entryPrice: filledPrice },
       riskProfile,
     });
-    return;
+    return 'linked_adopted';
   }
 
   const position = createPosition({
@@ -931,7 +1114,9 @@ function materializeEntryFill(
     targetPrice,
     notes: `Auto-placed by autotrade — order #${intent.id}${intent.brokerOrderId ? ` (broker ${intent.brokerOrderId})` : ''}`,
     tags: AUTOTRADE_TAGS,
+    grade: getLiveOrder(intent.id)?.grade ?? null,
     sourceIntentId: intent.id,
+    accountId,
   });
   setLiveOrderPositionId(intent.id, position.id);
   logAutotradeEvent({
@@ -939,6 +1124,49 @@ function materializeEntryFill(
     stage: 'execution',
     action: 'live_position_opened',
     detail: { quantity: filledQty, entryPrice: filledPrice, stopPrice, targetPrice, riskAmount },
+    riskProfile,
+  });
+  return 'created';
+}
+
+/** Merge a scale-in ADD-ON fill into an already-open live position: blend the
+ *  entry toward the fill and grow the quantity, so cost basis and P&L stay
+ *  honest. The position's own stop/target (its ORIGINAL bracket, still resting
+ *  and protecting the original shares) are deliberately left untouched — the
+ *  ADDED shares are protected by the add-on's OWN bracket, whose stop/target
+ *  legs reconcile independently via the bracket-leg block. Links the add-on
+ *  order's intent to the position (so it stops re-materializing and its bracket
+ *  legs get watched). Fails closed if the position is gone/closed — never
+ *  fabricates a position. */
+function materializeAddOnFill(
+  positionId: number,
+  intent: OrderIntentRecord,
+  filledQty: number,
+  filledPrice: number,
+  riskProfile: string,
+): void {
+  setLiveOrderPositionId(intent.id, positionId);
+  const position = getPosition(positionId);
+  if (!position || position.status !== 'open') {
+    logAutotradeEvent({
+      symbol: intent.symbol,
+      stage: 'execution',
+      action: 'live_scale_in_orphaned',
+      detail: { positionId, filledQty, filledPrice, reason: 'position not open at add-on fill time' },
+      riskProfile,
+    });
+    return;
+  }
+  const oldQty = position.quantity;
+  const newQty = oldQty + filledQty;
+  const blendedEntry =
+    newQty > 0 ? (position.entryPrice * oldQty + filledPrice * filledQty) / newQty : position.entryPrice;
+  updatePosition(positionId, { quantity: newQty, entryPrice: blendedEntry });
+  logAutotradeEvent({
+    symbol: intent.symbol,
+    stage: 'execution',
+    action: 'live_scaled_in_filled',
+    detail: { positionId, addQty: filledQty, addPrice: filledPrice, blendedEntry, newQuantity: newQty },
     riskProfile,
   });
 }
@@ -990,13 +1218,19 @@ function materializeTimeExitFill(
   intent: OrderIntentRecord,
   exitPrice: number,
   riskProfile: string,
+  quantity?: number,
 ): boolean {
   const position = listPositions({ status: 'open', symbol: intent.symbol }).find(
     (p) => p.id === positionId && isAutotradePosition(p),
   );
   if (!position) return false;
+  // A partly-filled close reduces the position by what actually filled; the
+  // rest stays open (and keeps being polled) rather than being booked as a
+  // full exit at a price only part of the order achieved.
+  const closeQty = Math.min(quantity ?? position.remainingQuantity, position.remainingQuantity);
+  if (closeQty <= 0) return false;
   const closed = addExit(position.id, {
-    quantity: position.remainingQuantity,
+    quantity: closeQty,
     exitPrice,
     exitDate: etDateStr(),
     sourceIntentId: intent.id,
@@ -1394,4 +1628,269 @@ export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutc
     outcomes.push(await placeLiveEquityTimeExitClose(pos, freshAccountId, riskProfile));
   }
   return outcomes;
+}
+
+// ---------------------------------------------------------------------------
+// Scale into winners on LIVE equity positions (opt-in via liveScaleInEnabled).
+// The RISKIEST autotrade action — it ADDS to a real, already-open position —
+// so it's built to NEVER leave the position under-protected: the add is placed
+// as its OWN bracket order (raised stop + the position's target), so the added
+// shares are born protected and the ORIGINAL bracket is never touched (no
+// cancel-and-replace, no naked window, and it never leans on the
+// still-unconfirmed bracket-cancel path). Its fill later MERGES into the
+// position (blended entry, bigger quantity) via materializeAddOnFill.
+//
+// Fails closed at every step: a bad quote, blocked guardrail, or broker
+// rejection for ONE position is logged and skipped, never crashing the loop or
+// touching another position. Same "unconfirmed against a real account" caveat
+// the rest of this file's live-order surface carries — validate in paper +
+// backtest first.
+// ---------------------------------------------------------------------------
+
+export interface LiveScaleInOutcome {
+  symbol: string;
+  positionId: number;
+  /** True when a real add-on order was actually placed at the broker. */
+  requested: boolean;
+  reason?: string;
+}
+
+export async function checkLiveScaleIns(): Promise<LiveScaleInOutcome[]> {
+  if (!config.trading.placeEnabled) return []; // server master (TRADING_ENABLED)
+  const cfg = getAutotradeConfig();
+  if (!cfg.liveAccountId) return [];
+  if (!cfg.liveScaleInEnabled) return [];
+  if (cfg.liveMaxAddOns <= 0 || cfg.addOnTriggerRMultiple <= 0 || cfg.addOnSizePct <= 0) return [];
+
+  const open = listAutotradeLivePositions({ status: 'open' }).filter((p) => p.assetType === 'stock');
+  if (open.length === 0) return [];
+
+  // Dedup: skip a position if any UNMATERIALIZED order for its symbol is in
+  // flight (position_id IS NULL) — a fresh entry still working, or an add-on
+  // placed a prior tick that hasn't filled/merged yet. A fresh add would race
+  // it. Deliberately NOT keyed on the position's own filled entry bracket (its
+  // position_id is set — it's what we're adding TO) nor on an ALREADY-merged
+  // add-on (position_id set too — the liveMaxAddOns cap governs how many of
+  // those, checked below, not this dedup).
+  const inFlightSymbols = new Set(
+    listPendingLiveOrders()
+      .filter((o) => o.positionId === null)
+      .map((o) => o.symbol),
+  );
+
+  const outcomes: LiveScaleInOutcome[] = [];
+  for (const pos of open) {
+    try {
+      if (inFlightSymbols.has(pos.symbol)) continue;
+      if (pos.sourceIntentId === null) continue; // can't locate the original risk
+      const entryOrder = getLiveOrder(pos.sourceIntentId);
+      if (!entryOrder || !(entryOrder.stopPrice > 0)) continue;
+      if (countLiveAddOns(pos.id) >= cfg.liveMaxAddOns) continue;
+
+      const targetPrice = pos.targetPrice ?? entryOrder.targetPrice;
+      if (!(targetPrice > 0)) continue; // the add-on's own bracket needs a target
+
+      let last: number;
+      try {
+        last = (await getProvider().getQuote(pos.symbol)).last;
+      } catch (err) {
+        outcomes.push({
+          symbol: pos.symbol,
+          positionId: pos.id,
+          requested: false,
+          reason: `Quote fetch failed: ${(err as Error).message}`,
+        });
+        continue;
+      }
+      if (!Number.isFinite(last) || last <= 0) continue;
+
+      const add = computeScaleIn(
+        {
+          side: pos.side === 'long' ? 'buy' : 'sell',
+          entryPrice: pos.entryPrice,
+          initialStopPrice: entryOrder.stopPrice, // frozen original stop = the R denominator
+          stopPrice: pos.stopPrice ?? entryOrder.stopPrice,
+          quantity: pos.remainingQuantity,
+          addOnsTaken: countLiveAddOns(pos.id),
+        },
+        last,
+        {
+          addOnTriggerRMultiple: cfg.addOnTriggerRMultiple,
+          addOnSizePct: cfg.addOnSizePct,
+          maxAddOns: cfg.liveMaxAddOns,
+        },
+      );
+      if (!add) continue;
+
+      outcomes.push(await placeLiveScaleInAddOn(pos, add, last, targetPrice, cfg));
+    } catch (err) {
+      // Fail closed per position — a broker hiccup never crashes the loop.
+      outcomes.push({
+        symbol: pos.symbol,
+        positionId: pos.id,
+        requested: false,
+        reason: `Scale-in error: ${(err as Error).message}`,
+      });
+    }
+  }
+  return outcomes;
+}
+
+/** Place a single scale-in add-on as its own bracket order — mirrors
+ *  attemptLiveEntry's guardrails→place→record→notify sequence exactly, so the
+ *  add gets the SAME fresh-account-state guardrail gate (buying power, per-order
+ *  $, daily loss, orders/day, naked-short) a fresh entry does. */
+async function placeLiveScaleInAddOn(
+  pos: Position,
+  add: ReturnType<typeof computeScaleIn> & object,
+  last: number,
+  targetPrice: number,
+  cfg: AutotradeConfig,
+): Promise<LiveScaleInOutcome> {
+  const symbol = pos.symbol.toUpperCase();
+  // Fresh account id per position — a kill switch flipped mid-loop must stop
+  // the next add immediately (same reasoning as the time-exit loop).
+  const accountId = getAutotradeConfig().liveAccountId;
+  if (!accountId) return { symbol, positionId: pos.id, requested: false, reason: 'No liveAccountId configured' };
+  const side: 'buy' | 'sell' = pos.side === 'long' ? 'buy' : 'sell';
+  const riskProfile = getLiveOrder(pos.sourceIntentId!)?.riskProfile ?? cfg.riskProfile;
+
+  const buffer = 1 + (side === 'buy' ? 1 : -1) * (MARKETABLE_LIMIT_BUFFER_PCT / 100);
+  const limitPrice = Math.round(last * buffer * 100) / 100;
+
+  // Risk-LAYER gates (distinct from the per-order guardrails below). A fresh
+  // entry goes through evaluateRiskCheck, which blocks on the realized
+  // daily-drawdown halt and the aggregate open-risk cap; an add-on adds REAL
+  // risk to the book, so it must respect those too — otherwise pyramiding into
+  // winners can push total open risk past maxAggregateOpenRiskPct, and add-ons
+  // keep firing on a day already halted for realized drawdown. equity ?? 0
+  // mirrors evaluateRiskCheck (snapshot.equity ?? 0): with equity unconfigured
+  // the cap is 0, so any add is blocked — same as a fresh entry.
+  const equity = cfg.accountEquityUsd ?? 0;
+  const addRisk = Math.abs(limitPrice - add.newStopPrice) * add.addQty;
+  const dailyPnl = getLivePortfolioSnapshot().dailyPnl;
+  const dailyHaltLevel = -(cfg.maxDailyDrawdownPct / 100) * equity;
+  if (!(dailyPnl > dailyHaltLevel)) {
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_scale_in_blocked',
+      detail: { reason: 'daily_drawdown_halt', dailyPnl, dailyHaltLevel, positionId: pos.id },
+      riskProfile,
+    });
+    return { symbol, positionId: pos.id, requested: false, reason: `Daily drawdown halt (today ${dailyPnl})` };
+  }
+  const aggregateCap = (cfg.maxAggregateOpenRiskPct / 100) * equity;
+  const aggregateAfter = combinedLiveOpenRisk().risk + addRisk;
+  if (aggregateAfter > aggregateCap) {
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_scale_in_blocked',
+      detail: { reason: 'max_aggregate_open_risk', aggregateAfter, aggregateCap, positionId: pos.id },
+      riskProfile,
+    });
+    return {
+      symbol,
+      positionId: pos.id,
+      requested: false,
+      reason: `Aggregate open-risk cap (${aggregateAfter.toFixed(0)} vs ${aggregateCap.toFixed(0)})`,
+    };
+  }
+
+  const intent: OrderIntent = {
+    symbol,
+    assetKind: 'stock',
+    side,
+    openClose: 'open',
+    quantity: add.addQty,
+    orderType: 'limit',
+    limitPrice,
+    referencePrice: last,
+    // The added shares' OWN protective bracket: 1R below/above the new blended
+    // entry, and the position's original target. The original bracket keeps
+    // protecting the original shares untouched.
+    bracket: { takeProfitPrice: targetPrice, stopLossPrice: add.newStopPrice },
+  };
+
+  const liveCfg = buildLiveTradingConfig(cfg);
+  const acct = await webullAccountState(accountId, symbol);
+  if (!acct.ok || !acct.state) {
+    return { symbol, positionId: pos.id, requested: false, reason: acct.error ?? 'Could not load account state' };
+  }
+  const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
+  const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
+  const isShort = wouldOpenShort(intent, accountState);
+
+  const clientOrderId = newClientOrderId();
+  const intentRec = createIntent(intent, clientOrderId);
+  if (!guardrails.ok) {
+    const reasons = blockingFailures(guardrails)
+      .map((c) => `${c.rule}: ${c.detail}`)
+      .join('; ');
+    transitionIntent(intentRec.id, 'rejected', { detail: `blocked: ${reasons}` });
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_scale_in_blocked',
+      detail: { reasons, positionId: pos.id },
+      riskProfile,
+    });
+    return { symbol, positionId: pos.id, requested: false, reason: `Guardrails blocked: ${reasons}` };
+  }
+
+  transitionIntent(intentRec.id, 'validated', { detail: 'guardrails passed (live scale-in)' });
+  transitionIntent(intentRec.id, 'confirmed', { detail: 'autotrade scale-in — no per-order confirmation' });
+  transitionIntent(intentRec.id, 'submitted', { detail: `submitting add-on (cid ${clientOrderId})` });
+
+  const broker = await webullPlaceOrder(accountId, intent, clientOrderId, isShort);
+  if (!broker.ok) {
+    transitionIntent(intentRec.id, 'rejected', { detail: `broker rejected: ${broker.error}` });
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_scale_in_failed',
+      detail: { reason: broker.error, positionId: pos.id },
+      riskProfile,
+    });
+    return { symbol, positionId: pos.id, requested: false, reason: `Broker rejected: ${broker.error}` };
+  }
+
+  transitionIntent(intentRec.id, 'acknowledged', {
+    brokerOrderId: broker.orderId,
+    detail: `broker accepted${broker.orderId ? ` (order ${broker.orderId})` : ''}`,
+  });
+  const riskAmount = Math.abs(limitPrice - add.newStopPrice) * add.addQty;
+  recordLiveAddOnOrder({
+    intentId: intentRec.id,
+    symbol,
+    stopPrice: add.newStopPrice,
+    targetPrice,
+    riskAmount,
+    riskProfile,
+    addonOfPositionId: pos.id,
+    accountId,
+  });
+  logAutotradeEvent({
+    symbol,
+    stage: 'execution',
+    action: 'live_scaled_in',
+    detail: {
+      positionId: pos.id,
+      addQty: add.addQty,
+      limitPrice,
+      stop: add.newStopPrice,
+      target: targetPrice,
+      orderId: broker.orderId,
+      rMultiple: add.rMultiple,
+    },
+    riskProfile,
+  });
+  await dispatchNotifications([
+    {
+      title: symbol,
+      message: `Autotrade LIVE SCALE-IN: +${add.addQty} ${symbol} @ ~$${limitPrice.toFixed(2)} (stop ${add.newStopPrice.toFixed(2)}, target ${targetPrice.toFixed(2)})`,
+    },
+  ]);
+  return { symbol, positionId: pos.id, requested: true };
 }

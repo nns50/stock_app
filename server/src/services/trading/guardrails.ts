@@ -83,6 +83,12 @@ export interface AccountState {
   /** Broker account type (e.g. INDIVIDUAL_CASH / INDIVIDUAL_MARGIN) when known —
    *  debit/credit spreads require a margin account. Only fetched for spreads. */
   accountType?: string;
+  /** Cash that has actually settled (T+1 for US equities), distinct from
+   *  buyingPowerUsd — a cash account risks a Good Faith Violation buying with
+   *  proceeds that haven't cleared yet. Undefined (not 0) when the broker
+   *  response didn't include it, so the settled_cash check below can skip
+   *  rather than warn on a fabricated shortfall. */
+  settledCashUsd?: number;
 }
 
 export interface TradingConfig {
@@ -176,6 +182,18 @@ export function orderNotionalUsd(intent: OrderIntent): number | undefined {
 /** Signed position change this order would apply (+buy / −sell). */
 function signedDelta(intent: OrderIntent): number {
   return intent.side === 'buy' ? intent.quantity : -intent.quantity;
+}
+
+/**
+ * Whether this order would open or extend a net-short position — the same
+ * resulting-quantity math the naked_short check below uses. Exported so the
+ * order builder (providers/webull/orders.ts) can submit Webull's own explicit
+ * SHORT side (distinct from a plain SELL, which only closes/reduces a long)
+ * when this is true, letting the broker's real-time locate/borrow check run
+ * at order time instead of silently mismarking the order.
+ */
+export function wouldOpenShort(intent: OrderIntent, account: AccountState): boolean {
+  return account.currentPositionQty + signedDelta(intent) < 0;
 }
 
 /**
@@ -385,6 +403,25 @@ export function evaluateGuardrails(
       exposureAfter <= config.maxExposureUsd,
       `${usd(exposureAfter)} vs cap ${usd(config.maxExposureUsd)}`,
     );
+
+    // Cash-account settlement (advisory). A cash account risks a Good Faith
+    // Violation if a position bought with UNSETTLED funds (e.g. proceeds from
+    // a sale that hasn't cleared T+1 yet) is sold again before that funding
+    // trade settles. This can't be checked exactly — precise GFV detection
+    // needs per-lot settlement-date tracking this app doesn't have — but a
+    // buy whose notional exceeds SETTLED cash is the leading indicator: part
+    // of what's paying for it hasn't cleared yet. Undefined settledCashUsd
+    // (broker didn't report it) skips the check rather than warning blind.
+    if (intent.side === 'buy' && account.settledCashUsd !== undefined) {
+      const withinSettledCash = notional <= account.settledCashUsd;
+      warn(
+        'settled_cash',
+        withinSettledCash,
+        withinSettledCash
+          ? `${usd(notional)} within settled cash ${usd(account.settledCashUsd)}`
+          : `${usd(notional)} exceeds settled cash ${usd(account.settledCashUsd)} — selling this before its funding trade settles may risk a cash-account Good Faith Violation`,
+      );
+    }
   }
 
   // --- position size -----------------------------------------------------

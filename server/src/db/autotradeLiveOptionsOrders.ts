@@ -44,6 +44,11 @@ export interface LiveOptionsOrderMeta {
    *  closeLiveOptionsPosition() once the fill materializes. Null for entry
    *  rows, and for a pre-2026-07-16 exit row from before this column existed. */
   exitReason: LiveOptionsExitReason | null;
+  /** Entry rows only — the Webull account this order executed in, carried
+   *  forward to autotrade_live_options_positions.accountId once the fill
+   *  materializes. Null for exit rows and legacy rows — see
+   *  autotradeLiveOrders.ts's twin field for the full reasoning. */
+  accountId: string | null;
   createdAt: number;
 }
 
@@ -62,6 +67,7 @@ interface Row {
   risk_profile: string;
   position_id: number | null;
   exit_reason: LiveOptionsExitReason | null;
+  account_id: string | null;
   created_at: number;
 }
 
@@ -81,6 +87,7 @@ function mapRow(r: Row): LiveOptionsOrderMeta {
     riskProfile: r.risk_profile,
     positionId: r.position_id,
     exitReason: r.exit_reason,
+    accountId: r.account_id,
     createdAt: r.created_at,
   };
 }
@@ -101,13 +108,14 @@ export function recordLiveOptionsEntryOrder(input: {
   expiration: string;
   riskAmount: number;
   riskProfile: string;
+  accountId?: string | null;
 }): LiveOptionsOrderMeta {
   const now = Date.now();
   db.prepare(
     `INSERT INTO autotrade_live_options_orders
        (intent_id, symbol, role, kind, side, contract_symbol, strike, short_contract_symbol, short_strike,
-        expiration, risk_amount, risk_profile, position_id, created_at)
-     VALUES (?, ?, 'entry', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        expiration, risk_amount, risk_profile, position_id, account_id, created_at)
+     VALUES (?, ?, 'entry', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
   ).run(
     input.intentId,
     input.symbol.toUpperCase(),
@@ -120,6 +128,7 @@ export function recordLiveOptionsEntryOrder(input: {
     input.expiration,
     input.riskAmount,
     input.riskProfile,
+    input.accountId ?? null,
     now,
   );
   return getLiveOptionsOrder(input.intentId)!;

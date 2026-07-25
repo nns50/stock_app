@@ -4,11 +4,11 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { NumberInput } from './ui';
 
 // A controlled harness mirroring real usage (parent holds the number, feeds it back).
-function Harness() {
+function Harness({ min, max }: { min?: number; max?: number } = {}) {
   const [v, setV] = useState<number | undefined>(undefined);
   return (
     <div>
-      <NumberInput value={v} onChange={setV} />
+      <NumberInput value={v} onChange={setV} min={min} max={max} />
       <span data-testid="val">{v === undefined ? 'undef' : String(v)}</span>
     </div>
   );
@@ -61,5 +61,31 @@ describe('NumberInput', () => {
 
     fireEvent.change(input, { target: { value: 'abc' } });
     expect(input.value).toBe(''); // rejected, stays empty
+  });
+
+  it('rejects a value above max (e.g. an exit qty above the remaining size)', () => {
+    render(<Harness max={8} />);
+    const input = screen.getByRole('textbox') as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: '5' } }); // within range
+    expect(screen.getByTestId('val').textContent).toBe('5');
+
+    fireEvent.change(input, { target: { value: '50' } }); // over max — rejected
+    expect(input.value).toBe('5'); // unchanged
+    expect(screen.getByTestId('val').textContent).toBe('5');
+  });
+
+  it('rejects negative input when min is 0 (no negative strike/threshold)', () => {
+    render(<Harness min={0} />);
+    const input = screen.getByRole('textbox') as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: '-' } }); // minus blocked outright
+    expect(input.value).toBe('');
+    fireEvent.change(input, { target: { value: '-5' } });
+    expect(input.value).toBe('');
+    expect(screen.getByTestId('val').textContent).toBe('undef');
+
+    fireEvent.change(input, { target: { value: '5' } }); // positive still fine
+    expect(screen.getByTestId('val').textContent).toBe('5');
   });
 });

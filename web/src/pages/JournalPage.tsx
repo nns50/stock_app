@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { TriangleAlert } from 'lucide-react';
 import {
   Area,
   AreaChart,
@@ -53,6 +54,25 @@ function journalSortVal(r: PositionWithPnl, key: string): number | string | null
   }
 }
 
+/** services/washSale.ts — informational only, never a trading gate (see the
+ *  tooltip copy below). Renders nothing when the row has no warning. */
+function WashSaleBadge({ washSale }: { washSale: PositionWithPnl['washSale'] }) {
+  if (!washSale) return null;
+  const when =
+    washSale.daysApart >= 0
+      ? `reopened ${washSale.daysApart} day${washSale.daysApart === 1 ? '' : 's'} after this closed`
+      : `already open ${Math.abs(washSale.daysApart)} day${Math.abs(washSale.daysApart) === 1 ? '' : 's'} before this closed`;
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-500/15 text-amber-400"
+      title={`Same symbol was ${when} (on ${washSale.triggerEntryDate}) — this loss may be wash-sale disallowed. Not tax advice; confirm against your 1099-B or a tax professional.`}
+    >
+      <TriangleAlert className="h-3 w-3" />
+      wash sale?
+    </span>
+  );
+}
+
 /** Van Tharp's qualitative band for a System Quality Number. */
 function sqnLabel(sqn: number): string {
   if (sqn >= 7) return 'holy grail';
@@ -64,7 +84,10 @@ function sqnLabel(sqn: number): string {
   return 'hard to trade';
 }
 
-/** Compact "realized P&L grouped by X" table used in the Performance breakdown. */
+/** Compact "realized P&L grouped by X" table used in the Performance breakdown.
+ *  Profit factor and avg R (2026-07-23) are what separate a genuine edge from a
+ *  merely-frequent one — a low-win-rate group with a big payoff can out-earn a
+ *  high-win-rate group with a small one, which win%/P&L alone can't show. */
 function Breakdown({ id, title, colLabel, rows }: { id: string; title: string; colLabel: string; rows: GroupStat[] }) {
   if (!rows.length) return null;
   return (
@@ -75,6 +98,12 @@ function Breakdown({ id, title, colLabel, rows }: { id: string; title: string; c
             <th className="py-1 pr-2 font-medium">{colLabel}</th>
             <th className="py-1 px-2 font-medium text-right">Trades</th>
             <th className="py-1 px-2 font-medium text-right">Win%</th>
+            <th className="py-1 px-2 font-medium text-right" title="Gross profit ÷ gross loss">
+              PF
+            </th>
+            <th className="py-1 px-2 font-medium text-right" title="Mean R-multiple, over trades that logged a stop">
+              Avg R
+            </th>
             <th className="py-1 pl-2 font-medium text-right">Realized P&L</th>
           </tr>
         </thead>
@@ -86,6 +115,12 @@ function Breakdown({ id, title, colLabel, rows }: { id: string; title: string; c
               </td>
               <td className="py-1 px-2 text-right tabular-nums text-slate-400">{r.trades}</td>
               <td className="py-1 px-2 text-right tabular-nums text-slate-400">{fmtNum(r.winRate, 0)}%</td>
+              <td className="py-1 px-2 text-right tabular-nums text-slate-400">
+                {r.profitFactor === null ? '∞' : fmtNum(r.profitFactor, 1)}
+              </td>
+              <td className="py-1 px-2 text-right tabular-nums text-slate-400">
+                {r.avgR === null ? '—' : `${fmtNum(r.avgR, 1)}R`}
+              </td>
               <td className="py-1 pl-2 text-right">
                 <PnL value={r.totalPnl} />
               </td>
@@ -100,6 +135,7 @@ function Breakdown({ id, title, colLabel, rows }: { id: string; title: string; c
 export default function JournalPage() {
   const stats = useAsync(() => client.journalStats(), []);
   const closed = useAsync(() => client.positionsWithPnl({ status: 'closed' }), []);
+  const efficacy = useAsync(() => client.journalAutoTuneEfficacy(), []);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [editPos, setEditPos] = useState<Position | null>(null);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
@@ -107,6 +143,7 @@ export default function JournalPage() {
   const reload = () => {
     stats.reload();
     closed.reload();
+    efficacy.reload();
   };
 
   const allTags = useMemo(() => {
@@ -235,6 +272,65 @@ export default function JournalPage() {
               Only {s.kelly.sampleSize} decisive trades — too few to lean on; size conservatively.
             </div>
           )}
+        </CollapsibleCard>
+      )}
+
+      {efficacy.data && efficacy.data.adjustments.length > 0 && (
+        <CollapsibleCard
+          id="journal.autoTuneEfficacy"
+          title="Auto-tune efficacy"
+          action={
+            <InfoTip text="Did a past Auto-tune from realized edge risk-% change (Auto-Trade → Config) actually help? Before/after stats split by each adjustment's own date, scoped to autotrade's own trades only. Informational only — nothing here reverts a change automatically; you review and decide." />
+          }
+        >
+          <div className="mt-2 space-y-3">
+            {efficacy.data.adjustments.map((a) => (
+              <div key={a.eventId} className="rounded border border-ink-600/60 p-3 text-sm">
+                <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                  <span>
+                    {fmtDate(a.adjustedAt)} — riskPerTradePct{' '}
+                    <span className="font-semibold tabular-nums">{fmtNum(a.from, 2)}%</span> →{' '}
+                    <span className="font-semibold text-accent tabular-nums">{fmtNum(a.to, 2)}%</span>
+                  </span>
+                  <span className="text-xs text-slate-500 tabular-nums">
+                    Kelly suggested {fmtNum(a.kellySuggestedAtTheTime, 2)}% from {a.sampleSizeAtTheTime} trades
+                  </span>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-3">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-slate-500">
+                      Before ({a.before.totalClosed} trade{a.before.totalClosed === 1 ? '' : 's'})
+                    </div>
+                    <div className="text-xs tabular-nums">
+                      {a.before.totalClosed > 0 ? (
+                        <>
+                          {fmtNum(a.before.winRate, 0)}% win · {fmtSignedUsd(a.before.expectancy)} / trade
+                          {a.before.kelly && <> · Kelly {fmtNum(a.before.kelly.suggestedRiskPct, 2)}%</>}
+                        </>
+                      ) : (
+                        <span className="text-slate-500">no closed trades</span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-slate-500">
+                      After ({a.after.totalClosed} trade{a.after.totalClosed === 1 ? '' : 's'})
+                    </div>
+                    <div className="text-xs tabular-nums">
+                      {a.after.totalClosed > 0 ? (
+                        <>
+                          {fmtNum(a.after.winRate, 0)}% win · {fmtSignedUsd(a.after.expectancy)} / trade
+                          {a.after.kelly && <> · Kelly {fmtNum(a.after.kelly.suggestedRiskPct, 2)}%</>}
+                        </>
+                      ) : (
+                        <span className="text-slate-500">too soon to tell</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         </CollapsibleCard>
       )}
 
@@ -512,6 +608,11 @@ export default function JournalPage() {
                     </td>
                     <td className="td text-right">
                       <PnL value={r.pnl.totalPnl} className="font-semibold" />
+                      {r.washSale && (
+                        <div className="mt-0.5">
+                          <WashSaleBadge washSale={r.washSale} />
+                        </div>
+                      )}
                     </td>
                     <td className="td text-right">
                       <PnL value={r.pnl.returnPct} format={fmtPct} />

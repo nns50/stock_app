@@ -227,7 +227,7 @@ export function StrategyBuilder() {
         )}
         {result && (
           <div className="space-y-3">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
               <StatTile
                 label={result.netPremium < 0 ? 'Net debit' : 'Net credit'}
                 value={fmtUsd(Math.abs(result.netPremium))}
@@ -246,6 +246,12 @@ export function StrategyBuilder() {
               <StatTile
                 label="Prob. of profit"
                 value={result.probabilityOfProfit === null ? '—' : `${(result.probabilityOfProfit * 100).toFixed(0)}%`}
+                sub="lognormal est."
+              />
+              <StatTile
+                label="Expected value"
+                value={result.expectedValue === null ? '—' : fmtSignedUsd(result.expectedValue)}
+                valueClass={pnlClass(result.expectedValue ?? 0)}
                 sub="lognormal est."
               />
             </div>

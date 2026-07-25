@@ -36,6 +36,8 @@ export interface OpenPaperPositionInput {
   riskAmount: number;
   riskProfile: string;
   rationale: string;
+  /** Conviction grade (A/B/C) from the screener score at entry, or null. */
+  grade?: string | null;
 }
 
 export interface ClosePaperPositionInput {
@@ -68,6 +70,11 @@ export interface PaperPosition {
   bestPriceSinceEntry: number | null;
   /** Whether the one-time partial-exit trigger has already fired. */
   partialExitTaken: boolean;
+  /** How many times this position has been scaled into (pyramided). */
+  addOnsTaken: number;
+  /** Conviction grade (A/B/C) from the screener score at entry, or null for a
+   *  row that predates grading. */
+  grade: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -98,6 +105,8 @@ interface Row {
   initial_stop_price: number | null;
   best_price_since_entry: number | null;
   partial_exit_taken: number;
+  add_ons_taken: number;
+  grade: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -122,6 +131,8 @@ function map(r: Row): PaperPosition {
     initialStopPrice: r.initial_stop_price,
     bestPriceSinceEntry: r.best_price_since_entry,
     partialExitTaken: r.partial_exit_taken === 1,
+    addOnsTaken: r.add_ons_taken ?? 0,
+    grade: r.grade ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -138,8 +149,8 @@ export function openPaperPosition(input: OpenPaperPositionInput): PaperPosition 
       `INSERT INTO autotrade_paper_positions
          (symbol, side, quantity, entry_price, entry_at, stop_price, target_price,
           risk_amount, risk_profile, rationale, status, initial_stop_price,
-          best_price_since_entry, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`,
+          best_price_since_entry, grade, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`,
     )
     .run(
       input.symbol.toUpperCase(),
@@ -154,6 +165,7 @@ export function openPaperPosition(input: OpenPaperPositionInput): PaperPosition 
       input.rationale,
       input.stopPrice,
       input.entryPrice,
+      input.grade ?? null,
       now,
       now,
     );
@@ -241,6 +253,37 @@ export function partialClosePaperPosition(id: number, input: PartialClosePaperPo
        WHERE id = ? AND status = 'open' AND ? < quantity`,
     )
     .run(input.quantity, now, id, input.quantity);
+  if (info.changes === 0) return null;
+  return map(db.prepare('SELECT * FROM autotrade_paper_positions WHERE id = ?').get(id) as Row);
+}
+
+export interface AddToPaperPositionInput {
+  /** Shares/units added at the current price. */
+  addQty: number;
+  /** New weighted-average entry after the add. */
+  blendedEntry: number;
+  /** Initial-stop level shifted to preserve the original per-share risk. */
+  newInitialStopPrice: number;
+  /** New protective stop (raised, never loosened — the caller confirms that). */
+  newStopPrice: number;
+}
+
+/** Scale into an open winner: adds `addQty` at the blended entry, shifts the
+ *  frozen initial-stop level so the R denominator stays the original per-share
+ *  risk, raises the protective stop, and bumps add_ons_taken. riskAmount is
+ *  deliberately left untouched — like partialClosePaperPosition, it stays the
+ *  ORIGINAL full-size dollar risk (the R-multiple denominator convention for
+ *  the life of the trade). No-op (returns null) if `id` isn't open. */
+export function addToPaperPosition(id: number, input: AddToPaperPositionInput): PaperPosition | null {
+  const now = Date.now();
+  const info = db
+    .prepare(
+      `UPDATE autotrade_paper_positions
+       SET quantity = quantity + ?, entry_price = ?, initial_stop_price = ?, stop_price = ?,
+           add_ons_taken = add_ons_taken + 1, updated_at = ?
+       WHERE id = ? AND status = 'open'`,
+    )
+    .run(input.addQty, input.blendedEntry, input.newInitialStopPrice, input.newStopPrice, now, id);
   if (info.changes === 0) return null;
   return map(db.prepare('SELECT * FROM autotrade_paper_positions WHERE id = ?').get(id) as Row);
 }

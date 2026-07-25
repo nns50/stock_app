@@ -18,6 +18,20 @@ import { ScreenCandidate } from './screen';
 
 export type SignalSide = 'buy' | 'sell';
 
+/** A conviction grade stamped on an autotrade position at entry, derived from
+ *  the screener's 0..100 total score. Lets realized outcomes be grouped by the
+ *  system's own conviction (the Journal's byGrade report, and — behind a flag —
+ *  expectancy-weighted sizing). 'A' = highest conviction. */
+export type ConvictionGrade = 'A' | 'B' | 'C';
+
+/** Bucket a screener score into a conviction grade: A at/above aMinScore, B
+ *  at/above bMinScore, else C. Pure — the thresholds are AutotradeConfig fields. */
+export function convictionGrade(score: number, cfg: { aMinScore: number; bMinScore: number }): ConvictionGrade {
+  if (score >= cfg.aMinScore) return 'A';
+  if (score >= cfg.bMinScore) return 'B';
+  return 'C';
+}
+
 export interface DecisionConfig {
   /** Stop distance = this many ATRs from entry. */
   stopAtrMultiple: number;
@@ -42,6 +56,10 @@ export interface TradeSignal {
   rationale: string;
   /** The screener's 0..100 total score, carried over for sorting/display. */
   score: number;
+  /** ~20-day average daily volume (shares) from the candidate's indicators,
+   *  carried so the risk check can apply an ADV participation size cap without
+   *  re-fetching. Null/absent when the screener couldn't resolve it. */
+  avgVolume?: number | null;
 }
 
 function fmtPct(v: number | null): string {
@@ -103,6 +121,7 @@ export function generateSignal(
     rMultiple: cfg.targetRMultiple,
     rationale,
     score: candidate.total,
+    avgVolume: candidate.indicators.avgVolume,
   };
 }
 

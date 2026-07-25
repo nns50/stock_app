@@ -15,9 +15,13 @@ import {
 import { priceMap } from '../services/quotes';
 import { aggregatePnl, computePositionPnl } from '../services/pnl';
 import { computeExposure, ExposureInput } from '../services/exposure';
+import { computePortfolioStress } from '../services/portfolioStress';
+import { computePortfolioCorrelation } from '../services/portfolioCorrelation';
 import { listUniverse } from '../db/universe';
 import { isWebullTracked } from '../providers/webull/positions';
 import { closeLivePosition } from '../services/trading/closePosition';
+import { detectWashSale } from '../services/washSale';
+import { sweepExpiredOptions } from '../services/expiredOptionsSweep';
 
 export const positionsRouter = Router();
 
@@ -27,7 +31,9 @@ const createBody = z
     symbol: z.string().min(1),
     side: z.enum(['long', 'short']),
     quantity: z.number().positive(),
-    entryPrice: z.number().nonnegative(),
+    // Must be > 0: a 0 entry makes costBasis 0, so computePositionPnl books the
+    // entire market value as unrealized "gain" and returnPct/rMultiple go null.
+    entryPrice: z.number().positive(),
     entryDate: z.string().min(8),
     entryTime: z
       .string()
@@ -44,6 +50,7 @@ const createBody = z
     checklist: z.array(z.object({ rule: z.string(), checked: z.boolean() })).optional(),
     stopPrice: z.number().positive().nullish(),
     targetPrice: z.number().positive().nullish(),
+    accountId: z.string().nullish(),
   })
   .refine((d) => d.assetType !== 'option' || (d.optionType && d.strike && d.expiration), {
     message: 'option positions require optionType, strike and expiration',
@@ -53,7 +60,7 @@ const patchBody = z.object({
   tags: z.array(z.string()).optional(),
   grade: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
-  entryPrice: z.number().nonnegative().optional(),
+  entryPrice: z.number().positive().optional(),
   quantity: z.number().positive().optional(),
   fees: z.number().nonnegative().optional(),
   entryDate: z.string().min(8).optional(),
@@ -64,6 +71,7 @@ const patchBody = z.object({
     .optional(),
   stopPrice: z.number().positive().nullable().optional(),
   targetPrice: z.number().positive().nullable().optional(),
+  accountId: z.string().nullable().optional(),
 });
 
 const exitBody = z.object({
@@ -83,6 +91,17 @@ const listQuery = z.object({
 
 async function withPnlPayload(positions: Position[]) {
   const prices = await priceMap(positions);
+  // Wash-sale detection needs visibility into EVERY position sharing a
+  // symbol, not just the ones this call was filtered to (e.g. status:
+  // 'closed' for the Journal) — a reopened lot might still be open. Fetched
+  // once, unfiltered, and grouped in memory rather than one query per
+  // closed position.
+  const bySymbol = new Map<string, Position[]>();
+  for (const p of listPositions()) {
+    const arr = bySymbol.get(p.symbol);
+    if (arr) arr.push(p);
+    else bySymbol.set(p.symbol, [p]);
+  }
   const items = positions.map((p) => {
     const info = prices.get(p.id) ?? { price: null, stale: false, asOf: null };
     return {
@@ -91,6 +110,7 @@ async function withPnlPayload(positions: Position[]) {
       stale: info.stale,
       asOf: info.asOf,
       pnl: computePositionPnl(p, info.price),
+      washSale: detectWashSale(p, bySymbol.get(p.symbol) ?? []),
     };
   });
   const aggregate = aggregatePnl(
@@ -123,6 +143,48 @@ positionsRouter.get(
     } else {
       res.json({ positions });
     }
+  }),
+);
+
+// Registered ahead of '/:id' — otherwise Express would match this literal path
+// as an :id param instead.
+positionsRouter.get(
+  '/stress-test',
+  asyncHandler(async (_req, res) => {
+    const open = listPositions({ status: 'open' });
+    res.json(await computePortfolioStress(open));
+  }),
+);
+
+// Expired-but-still-open option positions. GET classifies without writing (what
+// the Positions banner shows); POST books the $0 exits for the ones that
+// unambiguously expired worthless and leaves the rest flagged. Both registered
+// ahead of '/:id' so Express doesn't read the literal path as an id.
+positionsRouter.get(
+  '/expired-options',
+  asyncHandler(async (_req, res) => {
+    res.json(await sweepExpiredOptions({ dryRun: true }));
+  }),
+);
+
+positionsRouter.post(
+  '/expired-options/sweep',
+  asyncHandler(async (_req, res) => {
+    res.json(await sweepExpiredOptions());
+  }),
+);
+
+const DEFAULT_CORRELATION_LOOKBACK_DAYS = 30;
+const correlationQuery = z.object({ lookbackDays: z.coerce.number().int().min(5).max(250).optional() });
+
+// Pairwise correlation of daily returns across the open book's underlyings —
+// see services/portfolioCorrelation.ts. Registered ahead of '/:id' too.
+positionsRouter.get(
+  '/correlation',
+  asyncHandler(async (req, res) => {
+    const q = parseQuery(correlationQuery, req);
+    const open = listPositions({ status: 'open' });
+    res.json(await computePortfolioCorrelation(open, q.lookbackDays ?? DEFAULT_CORRELATION_LOOKBACK_DAYS));
   }),
 );
 
@@ -185,6 +247,17 @@ positionsRouter.post(
     if (!pos) throw new HttpError(404, 'position not found');
     if (body.quantity > pos.remainingQuantity + 1e-9) {
       throw new HttpError(400, `exit quantity ${body.quantity} exceeds remaining ${pos.remainingQuantity}`);
+    }
+    // A $0 exit is legitimate for an option that expired worthless, but for a
+    // stock it silently books a full-loss realized P&L (the schema allows 0 so
+    // the option case works — guard the stock case here instead).
+    if (pos.assetType === 'stock' && body.exitPrice <= 0) {
+      throw new HttpError(400, 'exit price must be greater than 0 for a stock position');
+    }
+    // An exit before the entry yields negative hold-days and a negative
+    // wash-sale window; reject rather than corrupt the journal's time stats.
+    if (body.exitDate < pos.entryDate) {
+      throw new HttpError(400, `exit date ${body.exitDate} is before entry date ${pos.entryDate}`);
     }
     const updated = addExit(pos.id, body);
     res.status(201).json(updated);

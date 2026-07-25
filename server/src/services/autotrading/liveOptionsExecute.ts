@@ -12,9 +12,17 @@ import {
 import { marketOpenContext } from '../trading/marketHours';
 import { webullAccountState, webullAccountType } from '../../providers/webull/accountState';
 import { newClientOrderId, webullPlaceOrder, webullOrderStatus } from '../../providers/webull/orders';
-import { createIntent, transitionIntent, countTodaysOrders, getIntents, OrderIntentRecord } from '../../db/orders';
+import {
+  advanceMaterialized,
+  createIntent,
+  transitionIntent,
+  countTodaysOrders,
+  getIntents,
+  OrderIntentRecord,
+} from '../../db/orders';
 import { canTransition, isTerminal } from '../trading/orderLifecycle';
 import { mapWebullStatus } from '../trading/reconcile';
+import { computeFillDelta } from '../trading/fillDelta';
 import {
   recordLiveOptionsEntryOrder,
   recordLiveOptionsExitOrder,
@@ -29,6 +37,7 @@ import {
   listOpenLiveOptionsPositions,
   listLiveOptionsPositions,
   createLiveOptionsPosition,
+  blendLiveOptionsPositionEntry,
   closeLiveOptionsPosition,
   LiveOptionsPosition,
 } from '../../db/autotradeLiveOptionsPositions';
@@ -36,12 +45,13 @@ import { computeStreaksAndDrawdown } from '../pnl';
 import { defaultExitConfig, evaluateExit } from '../../options/exitRules';
 import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskCheck';
-import { correlatedNotional, RiskCheckContext } from './riskCheck';
+import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { dispatchNotifications } from '../notifier';
 import { fetchContractMark, validPremium } from './optionsExecute';
 import { getLivePortfolioSnapshot, combinedLiveOpenRisk, ProbationStatus } from './liveExecute';
 import { previewWebullPositions, contractKey } from '../../providers/webull/positions';
+import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../db/webullMissStreak';
 
 // ---------------------------------------------------------------------------
 // Task #70: the LIVE counterpart to optionsExecute.ts's paper options
@@ -436,6 +446,7 @@ export async function attemptLiveOptionsEntry(
       expiration: signal.expiration,
       riskAmount: riskResult.approvedRiskAmount,
       riskProfile,
+      accountId,
     });
     return finishEntryPlacement(symbol, intent, 'debit_spread', placed, riskProfile);
   }
@@ -489,6 +500,7 @@ export async function attemptLiveOptionsEntry(
     expiration: signal.expiration,
     riskAmount: riskResult.approvedRiskAmount,
     riskProfile,
+    accountId,
   });
   return finishEntryPlacement(symbol, intent, 'single_leg', placed, riskProfile);
 }
@@ -585,6 +597,7 @@ export async function runLiveOptionsExecution(
       .filter((o) => o.role === 'entry')
       .map((o) => o.symbol),
   ]);
+  const sectorOf = buildSectorOf();
 
   const outcomes: LiveOptionsExecutionOutcome[] = [];
   for (const { signal } of candidates) {
@@ -599,6 +612,12 @@ export async function runLiveOptionsExecution(
       runningPositions,
       cfg.correlationLookbackDays,
       cfg.correlationThreshold,
+    );
+    const { amount: sectorAmount, sector: candidateSector } = sectorNotional(
+      signal.symbol,
+      'long',
+      runningPositions,
+      sectorOf,
     );
     const ctx: RiskCheckContext = {
       equity,
@@ -617,6 +636,9 @@ export async function runLiveOptionsExecution(
       maxCorrelatedExposurePct: cfg.maxCorrelatedExposurePct,
       maxTradesPerDay: cfg.maxTradesPerDay,
       correlationThreshold: cfg.correlationThreshold,
+      sectorNotional: sectorAmount,
+      maxSectorExposurePct: cfg.maxSectorExposurePct,
+      candidateSector,
       marketAtrPct,
       regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
       regimeSizeCutPct: cfg.regimeSizeCutPct,
@@ -684,6 +706,47 @@ async function placeLiveOptionsExit(
   const buffer = 1 - OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT / 100;
   const liveCfg = buildLiveOptionsTradingConfig(cfg);
 
+  // Naked-short guard: the exit quantity MUST NOT exceed what's actually held at
+  // the broker. pos.quantity can be STALE — a prior closing order that partially
+  // filled then cancelled/expired is never booked, so the ledger still shows the
+  // original size while fewer contracts are really held. Selling pos.quantity
+  // there would short the difference (an uncovered short option = unbounded
+  // risk), and the naked_short guardrail can't catch it because it's fed this
+  // same stale ledger qty as the override. Re-query the broker's real held
+  // quantity (long leg for a spread — the leg the sell-to-close would short) and
+  // cap to it; fail closed (skip, retry next cycle) if it can't be read or is 0.
+  let heldQty: number;
+  try {
+    const preview = await previewWebullPositions(accountId);
+    if (!preview.ok) return { symbol, requested: false, reason: `Broker positions unavailable: ${preview.error}` };
+    const wantKey = contractKey({
+      symbol,
+      assetType: 'option',
+      optionType: pos.side,
+      strike: pos.strike,
+      expiration: pos.expiration,
+    });
+    heldQty = preview.positions
+      .filter((p) => p.assetType === 'option')
+      .filter(
+        (p) =>
+          contractKey({
+            symbol: p.symbol,
+            assetType: 'option',
+            optionType: p.optionType,
+            strike: p.strike,
+            expiration: p.expiration,
+          }) === wantKey,
+      )
+      .reduce((s, p) => s + (p.quantity ?? 0), 0);
+  } catch (err) {
+    return { symbol, requested: false, reason: `Broker positions fetch failed: ${(err as Error).message}` };
+  }
+  if (heldQty <= 0) {
+    return { symbol, requested: false, reason: 'Broker shows 0 contracts held — nothing to close (sync reconciles)' };
+  }
+  const exitQty = Math.min(pos.quantity, heldQty);
+
   let intent: OrderIntent;
   if (pos.kind === 'debit_spread') {
     let longMark: number;
@@ -717,7 +780,7 @@ async function placeLiveOptionsExit(
       assetKind: 'option',
       side: 'sell', // selling the spread to close — net credit
       openClose: 'close',
-      quantity: pos.quantity,
+      quantity: exitQty,
       orderType: 'limit',
       limitPrice,
       referencePrice: netValue,
@@ -750,7 +813,7 @@ async function placeLiveOptionsExit(
       assetKind: 'option',
       side: 'sell',
       openClose: 'close',
-      quantity: pos.quantity,
+      quantity: exitQty,
       orderType: 'limit',
       limitPrice,
       referencePrice: mark,
@@ -768,8 +831,9 @@ async function placeLiveOptionsExit(
     pos.kind === 'debit_spread',
     // Multi-leg spreads skip the naked_short check entirely (isMultiLeg in
     // guardrails.ts), so the override only matters -- and is only passed --
-    // for a single-leg close.
-    pos.kind === 'debit_spread' ? undefined : pos.quantity,
+    // for a single-leg close. Use the capped exit qty (== broker-held), so the
+    // naked_short check sees resultingQty 0 only when we truly hold what we sell.
+    pos.kind === 'debit_spread' ? undefined : exitQty,
   );
   if (!loaded.ok) return { symbol, requested: false, reason: loaded.reason };
 
@@ -906,16 +970,31 @@ export async function reconcileLiveOptionsOrders(): Promise<LiveOptionsReconcile
 
     // Forward-transition the intent if the broker moved it, and materialize a
     // fresh fill in the same pass.
-    if (target && !isTerminal(intent.state) && target !== intent.state && canTransition(intent.state, target)) {
-      transitionIntent(intent.id, target, {
-        detail: `broker ${broker.status?.toLowerCase()}`,
-        brokerOrderId: broker.brokerOrderId,
-      });
-      if (target !== 'filled') {
+    const canMove =
+      !!target && !isTerminal(intent.state) && target !== intent.state && canTransition(intent.state, target);
+    // A contract count resting at `partially_filled` across ticks hasn't changed
+    // state but may have filled further.
+    const restingPartial = target === 'partially_filled' && intent.state === 'partially_filled';
+    if (canMove || restingPartial) {
+      if (canMove) {
+        transitionIntent(intent.id, target!, {
+          detail: `broker ${broker.status?.toLowerCase()}`,
+          brokerOrderId: broker.brokerOrderId,
+        });
+      }
+      // Materialize whenever the broker REPORTS contracts filled, not only on a
+      // terminal `filled`: a partial that gets cancelled between ticks arrives
+      // as one CANCELLED response still carrying its filled quantity, and that
+      // intent then leaves listPendingLiveOptionsOrders() permanently (its WHERE
+      // excludes cancelled/rejected/expired). A terminal FILLED implies the
+      // whole order even when the quantity field is absent; any other status
+      // with no quantity filled nothing.
+      const observedQty = broker.filledQty ?? (target === 'filled' ? intent.quantity : 0);
+      if (observedQty <= 0) {
         outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: true });
         continue;
       }
-      outcomes.push(materializeLiveOptionsFill(intent, meta, broker));
+      outcomes.push(materializeLiveOptionsFill(intent, meta, broker, observedQty));
       continue;
     }
 
@@ -952,14 +1031,31 @@ function materializeLiveOptionsFill(
   intent: OrderIntentRecord,
   meta: LiveOptionsOrderMeta,
   broker: Awaited<ReturnType<typeof webullOrderStatus>>,
+  observedQty = broker.filledQty ?? intent.quantity,
 ): LiveOptionsReconcileOutcome {
-  const filledQty = broker.filledQty ?? intent.quantity;
-  const filledPrice = broker.filledPrice ?? intent.limitPrice ?? 0;
+  const observedPrice = broker.filledPrice ?? intent.limitPrice ?? 0;
+  // Book only the contracts not already recorded, under the same shared guards
+  // the equity and human paths use (trading/fillDelta.ts) — every ambiguous
+  // case there resolves toward recording LESS, never toward inflating a
+  // position's size or cost basis.
+  const { qty, price, warning } = computeFillDelta(intent, observedQty, observedPrice);
+  if (warning) {
+    logAutotradeEvent({
+      symbol: intent.symbol,
+      stage: 'execution',
+      action: 'live_options_fill_not_fully_materialized',
+      detail: { intentId: intent.id, role: meta.role, observedQty, alreadyBooked: intent.materializedQty, warning },
+      riskProfile: meta.riskProfile,
+    });
+  }
+  if (qty <= 0) return { intentId: intent.id, symbol: meta.symbol, changed: true, error: warning };
+
   try {
     const action =
       meta.role === 'entry'
-        ? materializeOptionsEntryFill(intent, meta, filledQty, filledPrice)
-        : materializeOptionsExitFill(intent, meta, filledPrice);
+        ? materializeOptionsEntryFill(intent, meta, qty, price)
+        : materializeOptionsExitFill(intent, meta, price);
+    advanceMaterialized(intent.id, qty, qty * price);
     return { intentId: intent.id, symbol: meta.symbol, changed: true, action };
   } catch (err) {
     const message = (err as Error).message;
@@ -985,6 +1081,24 @@ function materializeOptionsEntryFill(
   filledQty: number,
   filledPrice: number,
 ): 'entry_filled' {
+  // A later instalment of an order that already opened a position BLENDS into
+  // it — this table holds one row per entry order (its position id is a single
+  // column), so a second row would have nothing to link it. Keyed on our own
+  // materialization mark, which is only ever advanced after a successful book.
+  if (intent.materializedQty > 0 && meta.positionId !== null) {
+    const blended = blendLiveOptionsPositionEntry(meta.positionId, filledQty, filledPrice);
+    logAutotradeEvent({
+      symbol: intent.symbol,
+      stage: 'execution',
+      action: blended ? 'live_options_position_scaled' : 'live_options_partial_orphaned',
+      detail: blended
+        ? { positionId: meta.positionId, addQty: filledQty, addPrice: filledPrice, newQuantity: blended.quantity }
+        : { positionId: meta.positionId, filledQty, reason: 'position not open at later-instalment fill time' },
+      riskProfile: meta.riskProfile,
+    });
+    return 'entry_filled';
+  }
+
   const position = createLiveOptionsPosition({
     symbol: intent.symbol,
     side: meta.side!,
@@ -1004,6 +1118,7 @@ function materializeOptionsEntryFill(
     // liveExecute.ts's own materializeEntryFill() generated note exactly,
     // rather than inventing a synthetic per-leg split.
     rationale: `Auto-placed by autotrade — order #${intent.id}${intent.brokerOrderId ? ` (broker ${intent.brokerOrderId})` : ''}`,
+    accountId: meta.accountId,
   });
   setLiveOptionsOrderPositionId(intent.id, position.id);
   logAutotradeEvent({
@@ -1089,6 +1204,12 @@ export interface LiveOptionsPositionsSyncResult {
  * allows ('time_exit' would misleadingly imply checkLiveOptionsExits()
  * placed a real closing order); the journaled event's own detail.via is
  * what actually distinguishes it.
+ *
+ * Same consecutive-confirmation debounce as equity's closePositionsFromPreview
+ * (webull_miss_streak, db/index.ts): a leg missing from a single preview
+ * doesn't close anything by itself — an intermittent/incomplete broker
+ * response is enough to trigger that — it only acts once the same position
+ * has come up short on MISS_CONFIRM_THRESHOLD consecutive syncs.
  */
 export async function syncLiveOptionsPositionsFromBroker(accountId: string): Promise<LiveOptionsPositionsSyncResult> {
   const preview = await previewWebullPositions(accountId);
@@ -1108,10 +1229,19 @@ export async function syncLiveOptionsPositionsFromBroker(accountId: string): Pro
       ),
   );
 
-  const open = listOpenLiveOptionsPositions();
+  // Strictly this account's own rows — same conservative stance as equity's
+  // closePositionsFromPreview (providers/webull/positions.ts): closing
+  // something we're not certain belongs to THIS account is exactly the
+  // false-close bug account_id exists to prevent. Deliberately no
+  // includeUnassignedAccount here for the same reason.
+  const open = listOpenLiveOptionsPositions({ accountId });
   const closedSymbols = new Set<string>();
   let closed = 0;
   for (const pos of open) {
+    // Keyed per-position (not per-contract): each open row closes as a whole,
+    // never FIFO-split like equity's lots, so there's no reason to share a
+    // streak across two different positions that happen to reuse a contract.
+    const streakKey = `opt:${pos.id}`;
     const longHeld = heldKeys.has(
       contractKey({
         symbol: pos.symbol,
@@ -1123,12 +1253,23 @@ export async function syncLiveOptionsPositionsFromBroker(accountId: string): Pro
     );
 
     if (pos.kind === 'single_leg') {
-      if (longHeld) continue; // still held at the broker
+      if (longHeld) {
+        clearMissStreak(accountId, streakKey);
+        continue; // still held at the broker
+      }
+      // Missing from THIS preview — don't act on a single miss; a single
+      // incomplete/flaky preview response is enough to trigger one. Require
+      // MISS_CONFIRM_THRESHOLD consecutive misses first — see
+      // webull_miss_streak's table comment (db/index.ts) for the flapping
+      // bug this guards against (equity's closePositionsFromPreview hit the
+      // same shape).
+      if (bumpMissStreak(accountId, streakKey) < MISS_CONFIRM_THRESHOLD) continue;
       const exitPrice = await safeContractMark(pos.symbol, pos.expiration, pos.strike, pos.side);
       if (exitPrice == null) continue; // can't price it — leave open, retry next sync
       if (closeLiveOptionsPositionFromBroker(pos, exitPrice, null)) {
         closed++;
         closedSymbols.add(pos.symbol);
+        clearMissStreak(accountId, streakKey);
       }
       continue;
     }
@@ -1144,7 +1285,11 @@ export async function syncLiveOptionsPositionsFromBroker(accountId: string): Pro
         expiration: pos.expiration,
       }),
     );
-    if (longHeld || shortHeld) continue;
+    if (longHeld || shortHeld) {
+      clearMissStreak(accountId, streakKey);
+      continue;
+    }
+    if (bumpMissStreak(accountId, streakKey) < MISS_CONFIRM_THRESHOLD) continue;
 
     const [longExit, shortExit] = await Promise.all([
       safeContractMark(pos.symbol, pos.expiration, pos.strike, pos.side),
@@ -1154,6 +1299,7 @@ export async function syncLiveOptionsPositionsFromBroker(accountId: string): Pro
     if (closeLiveOptionsPositionFromBroker(pos, longExit, shortExit)) {
       closed++;
       closedSymbols.add(pos.symbol);
+      clearMissStreak(accountId, streakKey);
     }
   }
   return { ok: true, checked: open.length, closed, closedSymbols: Array.from(closedSymbols) };

@@ -48,9 +48,43 @@ describe('analyzeStrategy — vertical call (debit) spread', () => {
     expect(a.probabilityOfProfit as number).toBeLessThan(1);
   });
 
+  it('produces an expected value between max loss and max profit', () => {
+    expect(a.expectedValue).not.toBeNull();
+    expect(a.expectedValue as number).toBeGreaterThan(a.maxLoss as number);
+    expect(a.expectedValue as number).toBeLessThan(a.maxProfit as number);
+  });
+
   it('returns a payoff curve for charting', () => {
     expect(a.payoff.length).toBeGreaterThan(50);
     expect(a.payoff[0]).toHaveProperty('price');
     expect(a.payoff[0]).toHaveProperty('pnl');
+  });
+});
+
+describe('analyzeStrategy — expected value edge cases', () => {
+  it('is null under the same no-usable-IV condition probabilityOfProfit is null', () => {
+    // No iv on the leg, no ivForPop, and a premium far enough from intrinsic
+    // that impliedVol can still fail to converge is unnecessary here — simply
+    // omitting every IV source is the direct way to hit the shared early return.
+    const a = analyzeStrategy({
+      underlyingPrice: 100,
+      dte: 30,
+      legs: [{ type: 'call', action: 'buy', strike: 100, quantity: 1, premium: 0 }],
+    });
+    expect(a.probabilityOfProfit).toBeNull();
+    expect(a.expectedValue).toBeNull();
+  });
+
+  it('is a pure debit (negative, close to -premium) for a far OTM long option near-certain to expire worthless', () => {
+    const a = analyzeStrategy({
+      underlyingPrice: 100,
+      dte: 5,
+      ivForPop: 0.2,
+      legs: [{ type: 'call', action: 'buy', strike: 200, quantity: 1, premium: 0.5 }],
+    });
+    expect(a.expectedValue as number).toBeLessThan(0);
+    // EV can never be worse than the certain-loss floor — here it's so close to
+    // certain worthless expiration that EV rounds to exactly maxLoss.
+    expect(a.expectedValue as number).toBeGreaterThanOrEqual(a.maxLoss as number);
   });
 });

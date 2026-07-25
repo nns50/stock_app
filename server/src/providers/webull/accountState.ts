@@ -60,6 +60,15 @@ function num(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Like num(), but undefined (not 0) when the field is missing/unparseable —
+ *  a fabricated 0 would read as "no cash has settled," warning on every buy
+ *  for an account this field simply wasn't reported for. */
+function numOrUndefined(v: unknown): number | undefined {
+  if (v === undefined || v === null) return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 export interface WebullAccountStateResult {
   ok: boolean;
   accountId: string;
@@ -117,6 +126,7 @@ export async function webullAccountState(
   const exposureUsd = num(bal.total_market_value);
   const realizedPnlTodayUsd = num(bal.total_day_profit_loss);
   const netLiquidationUsd = num(bal.total_net_liquidation_value);
+  const settledCashUsd = numOrUndefined(asset.settled_cash);
 
   // Signed position in the order's symbol (long +, short −), if requested.
   let currentPositionQty = 0;
@@ -129,7 +139,7 @@ export async function webullAccountState(
     });
     if (p.ok) {
       for (const row of extractPositions(p.data)) {
-        const mapped = mapWebullPosition(row);
+        const mapped = mapWebullPosition(row, accountId);
         if (mapped && mapped.symbol === want && matchesInstrument(mapped, instrument)) {
           currentPositionQty += (mapped.side === 'short' ? -1 : 1) * mapped.quantity;
         }
@@ -145,7 +155,7 @@ export async function webullAccountState(
   return {
     ok: true,
     accountId,
-    state: { buyingPowerUsd, exposureUsd, realizedPnlTodayUsd, ordersToday: 0, currentPositionQty },
+    state: { buyingPowerUsd, exposureUsd, realizedPnlTodayUsd, ordersToday: 0, currentPositionQty, settledCashUsd },
     optionBuyingPowerUsd,
     netLiquidationUsd,
     positionsUnavailable,

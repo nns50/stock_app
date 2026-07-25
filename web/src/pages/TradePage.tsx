@@ -720,7 +720,12 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
         const b = r.broker;
         const fill = b.filledQty !== undefined ? ` · ${b.filledQty}/${b.totalQty ?? '?'}` : '';
         const at = b.filledPrice !== undefined ? ` @ ${fmtUsd(b.filledPrice)}` : '';
-        line = `${(b.status ?? 'unknown').toLowerCase()}${fill}${at}${r.changed ? '' : ' · no change'}`;
+        // A partial fill is booked to Positions as it happens, so say what was
+        // recorded — otherwise "partial_filled · 30/100" leaves you guessing
+        // whether those 30 shares are being tracked anywhere.
+        const booked = r.materialized ? ` · booked ${r.materialized} to Positions` : '';
+        line = `${(b.status ?? 'unknown').toLowerCase()}${fill}${at}${booked}${r.changed ? '' : ' · no change'}`;
+        if (r.fillWarning) line += ` · ⚠ ${r.fillWarning}`;
       }
       setMsg((m) => ({ ...m, [id]: line }));
       intents.reload();
@@ -741,10 +746,14 @@ function OrdersPanel({ accountId, refreshKey }: { accountId: string; refreshKey:
     setAllMsg(undefined);
     try {
       const r = await client.tradeReconcileAll(accountId.trim());
+      // A bulk refresh must not hide a fill discrepancy behind a tidy count.
+      const warn = r.warnings
+        ? ` ⚠ ${r.warnings} need${r.warnings === 1 ? 's' : ''} attention — refresh individually.`
+        : '';
       setAllMsg(
         r.reconciled === 0
           ? 'No working orders to refresh.'
-          : `Reconciled ${r.reconciled} working order${r.reconciled === 1 ? '' : 's'} — ${r.changed} updated.`,
+          : `Reconciled ${r.reconciled} working order${r.reconciled === 1 ? '' : 's'} — ${r.changed} updated.${warn}`,
       );
       intents.reload();
     } catch (e) {

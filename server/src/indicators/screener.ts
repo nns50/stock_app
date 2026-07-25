@@ -23,7 +23,15 @@ import {
 
 export type Direction = 'long' | 'short';
 
-export type IndicatorKey = 'momentum' | 'relativeVolume' | 'rsi' | 'volatility' | 'gap' | 'trend' | 'relativeStrength';
+export type IndicatorKey =
+  | 'momentum'
+  | 'relativeVolume'
+  | 'rsi'
+  | 'volatility'
+  | 'gap'
+  | 'trend'
+  | 'relativeStrength'
+  | 'sentiment';
 
 export type IndicatorWeights = Record<IndicatorKey, number>;
 
@@ -80,6 +88,14 @@ export interface ScreenerConfig {
    *  scoreSymbol as benchmarkLookbackReturnPct — this module never fetches
    *  data itself. */
   benchmarkSymbol: string;
+  /** Net headline-keyword hits (in the trade direction, services/sentiment.ts's
+   *  computeHeadlineSentiment()) that maps to a full sentiment sub-score. Only
+   *  matters when weights.sentiment is nonzero; the caller (screen.ts) is
+   *  responsible for fetching this symbol's own recent headlines and passing
+   *  the net score into computeIndicators/scoreSymbol as sentimentNetScore —
+   *  this module never fetches data itself, same convention as
+   *  benchmarkLookbackReturnPct above. */
+  sentimentScale: number;
   filters: ScreenerFilters;
 }
 
@@ -113,6 +129,12 @@ export interface IndicatorSnapshot {
    *  computeIndicators's own benchmarkLookbackReturnPct param), same
    *  "null means not computed this cycle" convention as weeklyMaShort. */
   benchmarkLookbackReturnPct: number | null;
+  /** Net headline-keyword hits (positive minus negative, services/sentiment.ts's
+   *  computeHeadlineSentiment()) for this symbol's recent news — null whenever
+   *  the caller didn't compute one this cycle (e.g. because weights.sentiment
+   *  is 0), same "null means not computed" convention as
+   *  benchmarkLookbackReturnPct above. */
+  sentimentNetScore: number | null;
 }
 
 export interface ComponentScore {
@@ -139,7 +161,16 @@ export interface SymbolScore {
 export function defaultScreenerConfig(): ScreenerConfig {
   return {
     direction: 'long',
-    weights: { momentum: 30, relativeVolume: 20, rsi: 15, volatility: 10, gap: 10, trend: 15, relativeStrength: 0 },
+    weights: {
+      momentum: 30,
+      relativeVolume: 20,
+      rsi: 15,
+      volatility: 10,
+      gap: 10,
+      trend: 15,
+      relativeStrength: 0,
+      sentiment: 0,
+    },
     maShort: 20,
     maLong: 50,
     rsiPeriod: 14,
@@ -153,6 +184,7 @@ export function defaultScreenerConfig(): ScreenerConfig {
     relativeStrengthLookbackDays: 20,
     relativeStrengthScale: 10,
     benchmarkSymbol: 'SPY',
+    sentimentScale: 3,
     filters: { minPrice: 1, minAvgVolume: 200_000 },
   };
 }
@@ -315,6 +347,7 @@ export function computeIndicators(
   asOfIndex?: number,
   weeklyIndicators?: CandleIndicators | null,
   benchmarkLookbackReturnPct?: number | null,
+  sentimentNetScore?: number | null,
 ): IndicatorSnapshot | null {
   const end = asOfIndex ?? candles.length - 1;
   if (end < 1 || end >= candles.length) return null;
@@ -362,6 +395,7 @@ export function computeIndicators(
     weeklyMaShort: weeklyIndicators?.maShort ?? null,
     symbolLookbackReturnPct,
     benchmarkLookbackReturnPct: benchmarkLookbackReturnPct ?? null,
+    sentimentNetScore: sentimentNetScore ?? null,
   };
 }
 
@@ -436,6 +470,23 @@ function scoreRelativeStrength(ind: IndicatorSnapshot, cfg: ScreenerConfig): { s
   };
 }
 
+/** Net headline-keyword sentiment (services/sentiment.ts's
+ *  computeHeadlineSentiment()), direction-aware like relativeStrength above:
+ *  a LONG candidate scores higher for net-POSITIVE headlines, a SHORT
+ *  candidate scores higher for net-NEGATIVE ones (bearish news favors a short
+ *  thesis). 0/no-note when the caller never computed a sentiment reading this
+ *  cycle (see IndicatorSnapshot.sentimentNetScore's own doc comment) — same
+ *  "no data, not a guess" posture every other component here has. */
+function scoreSentiment(ind: IndicatorSnapshot, cfg: ScreenerConfig): { score: number; note: string } {
+  if (ind.sentimentNetScore === null) return { score: 0, note: 'no sentiment data' };
+  const sign = cfg.direction === 'long' ? 1 : -1;
+  const score = scale01(sign * ind.sentimentNetScore, -cfg.sentimentScale, cfg.sentimentScale);
+  return {
+    score,
+    note: `${ind.sentimentNetScore > 0 ? '+' : ''}${ind.sentimentNetScore} net headline keyword hits`,
+  };
+}
+
 function scoreTrend(ind: IndicatorSnapshot, cfg: ScreenerConfig): { score: number; note: string } {
   if (ind.maShort === null || ind.maLong === null) {
     return { score: 0, note: 'no MAs (insufficient history)' };
@@ -464,6 +515,7 @@ const LABELS: Record<IndicatorKey, string> = {
   gap: 'Gap',
   trend: 'Trend',
   relativeStrength: 'Rel. Strength',
+  sentiment: 'Sentiment',
 };
 
 /** Score a single symbol; returns the full transparent breakdown.
@@ -479,6 +531,7 @@ export function scoreSymbol(
   asOfIndex?: number,
   weeklyIndicators?: CandleIndicators | null,
   benchmarkLookbackReturnPct?: number | null,
+  sentimentNetScore?: number | null,
 ): SymbolScore {
   const ind = computeIndicators(
     candles,
@@ -488,6 +541,7 @@ export function scoreSymbol(
     asOfIndex,
     weeklyIndicators,
     benchmarkLookbackReturnPct,
+    sentimentNetScore,
   );
   return scoreFromIndicators(symbol, ind, cfg, quote?.last ?? 0);
 }
@@ -511,6 +565,7 @@ export function scoreSymbolBothDirections(
   asOfIndex?: number,
   weeklyIndicators?: CandleIndicators | null,
   benchmarkLookbackReturnPct?: number | null,
+  sentimentNetScore?: number | null,
 ): { long: SymbolScore; short: SymbolScore } {
   const ind = computeIndicators(
     candles,
@@ -520,6 +575,7 @@ export function scoreSymbolBothDirections(
     asOfIndex,
     weeklyIndicators,
     benchmarkLookbackReturnPct,
+    sentimentNetScore,
   );
   const fallbackPrice = quote?.last ?? 0;
   return {
@@ -554,6 +610,7 @@ function scoreFromIndicators(
     gap: scoreGap(ind, cfg),
     trend: scoreTrend(ind, cfg),
     relativeStrength: scoreRelativeStrength(ind, cfg),
+    sentiment: scoreSentiment(ind, cfg),
   };
 
   const rawValues: Record<IndicatorKey, { value: number | null; display: string }> = {
@@ -572,6 +629,10 @@ function scoreFromIndicators(
         ind.symbolLookbackReturnPct === null || ind.benchmarkLookbackReturnPct === null
           ? '—'
           : fmtPct(ind.symbolLookbackReturnPct - ind.benchmarkLookbackReturnPct),
+    },
+    sentiment: {
+      value: ind.sentimentNetScore,
+      display: ind.sentimentNetScore === null ? '—' : `${ind.sentimentNetScore > 0 ? '+' : ''}${ind.sentimentNetScore}`,
     },
   };
 
@@ -652,5 +713,6 @@ function emptySnapshot(price: number): IndicatorSnapshot {
     weeklyMaShort: null,
     symbolLookbackReturnPct: null,
     benchmarkLookbackReturnPct: null,
+    sentimentNetScore: null,
   };
 }

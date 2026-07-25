@@ -7,6 +7,8 @@ import { getOptionsPaperPortfolioSnapshot } from './optionsExecute';
 import { getLivePortfolioSnapshot, getProbationStatus, ProbationStatus } from './liveExecute';
 import { LiveOptionsPosition } from '../../db/autotradeLiveOptionsPositions';
 import { getLiveOptionsPortfolioSnapshot, getOptionsProbationStatus } from './liveOptionsExecute';
+import { buildSectorOf } from './riskCheck';
+import { computeExposure, ExposureSlice, ExposureInput } from '../exposure';
 import { daysToExpiration } from '../../options/blackScholes';
 import { listAutotradeEvents } from '../../db/autotradeEvents';
 import { getLastTick, LastTickRecord } from '../../db/autotradeLastTick';
@@ -106,6 +108,19 @@ export interface AutotradeDashboard {
    *  equity/quantity gates (see LastCorrelatedExposureCheck's doc comment). */
   lastCorrelatedExposureCheck: LastCorrelatedExposureCheck | null;
 
+  /** $ cap = maxSectorExposurePct% of equity. UNLIKE maxCorrelatedExposure
+   *  above, sector concentration genuinely IS a portfolio-wide instantaneous
+   *  value (sector is a static per-symbol classification, not computed
+   *  relative to a hypothetical candidate the way correlation is) — so this
+   *  is a real live read of the current combined (paper + live, equity +
+   *  options) autotrade book, sorted worst-first, not a "last check" journal
+   *  read. Weighted by riskAmount (not notional) across all four position
+   *  pools, matching this dashboard's own existing risk-based combination
+   *  convention (openRisk, maxAggregateOpenRisk, etc.) rather than introducing
+   *  a new notional concept. */
+  sectorExposure: ExposureSlice[];
+  maxSectorExposure: number;
+
   /** Combined equity + options today's (ET) realized paper P&L; negative is a loss. */
   dailyPnl: number;
   /** $ level (negative) at which daily_drawdown_halt blocks new entries. Shared with live. */
@@ -201,6 +216,38 @@ function getLastCorrelatedExposureCheck(): LastCorrelatedExposureCheck | null {
   return null;
 }
 
+/** Current sector concentration across autotrade's WHOLE combined book (paper
+ *  + live, equity + options) — see AutotradeDashboard.sectorExposure's own
+ *  doc comment for why this is computed live rather than read from the
+ *  journal. Equity positions carry their real side; options are always
+ *  'long' (this app only ever buys premium — same convention riskCheck.ts's
+ *  correlatedNotional()/sectorNotional() use). */
+function computeAutotradeSectorExposure(
+  paperEquity: PaperPosition[],
+  paperOptions: OptionsPaperPosition[],
+  liveEquity: Position[],
+  liveOptions: LiveOptionsPosition[],
+): ExposureSlice[] {
+  const sectorOf = buildSectorOf();
+  const inputs: ExposureInput[] = [
+    ...paperEquity.map((p) => ({
+      symbol: p.symbol,
+      side: (p.side === 'buy' ? 'long' : 'short') as 'long' | 'short',
+      value: p.riskAmount,
+    })),
+    // Position (live equity) has no stored riskAmount — same derivation
+    // getPortfolioSnapshot() (riskCheck.ts) uses for its own OpenRiskItem.
+    ...liveEquity.map((p) => ({
+      symbol: p.symbol,
+      side: p.side,
+      value: p.stopPrice != null ? Math.abs(p.entryPrice - p.stopPrice) * p.remainingQuantity * p.multiplier : 0,
+    })),
+    ...paperOptions.map((p) => ({ symbol: p.symbol, side: 'long' as const, value: p.riskAmount })),
+    ...liveOptions.map((p) => ({ symbol: p.symbol, side: 'long' as const, value: p.riskAmount })),
+  ];
+  return computeExposure(inputs, sectorOf).bySector;
+}
+
 export function getAutotradeDashboard(): AutotradeDashboard {
   const config = getAutotradeConfig();
   const equity = config.accountEquityUsd ?? 0;
@@ -226,6 +273,14 @@ export function getAutotradeDashboard(): AutotradeDashboard {
 
     maxCorrelatedExposure: (config.maxCorrelatedExposurePct / 100) * equity,
     lastCorrelatedExposureCheck: getLastCorrelatedExposureCheck(),
+
+    sectorExposure: computeAutotradeSectorExposure(
+      snapshot.openPositions,
+      optionsSnapshot.openPositions,
+      liveSnapshot.openPositions,
+      liveOptionsSnapshot.openPositions,
+    ),
+    maxSectorExposure: (config.maxSectorExposurePct / 100) * equity,
 
     dailyPnl: snapshot.dailyPnl + optionsSnapshot.dailyPnl,
     dailyDrawdownHaltLevel: -(config.maxDailyDrawdownPct / 100) * equity,

@@ -9,19 +9,24 @@ import {
   LIVE_TRADING_CONFIRMATION_PHRASE,
 } from '../db/autotradeConfig';
 import { addExclusion, listExclusions, removeExclusion } from '../db/autotradeExclusions';
+import { addMacroEvent, listMacroEvents, removeMacroEvent } from '../db/macroEvents';
 import { AutotradeStage, listAutotradeEvents, logAutotradeEvent } from '../db/autotradeEvents';
 import { runAutotradeScreen } from '../services/autotrading/screen';
 import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/decide';
 import { OptionsDecisionConfig, runOptionsDecision } from '../services/autotrading/optionsDecide';
 import { runAutotradeRiskCheck } from '../services/autotrading/riskCheck';
 import { runOptionsRiskCheck } from '../services/autotrading/optionsRiskCheck';
-import { defaultScreenerConfig, ScreenerConfig } from '../indicators/screener';
+import { ScreenerConfig } from '../indicators/screener';
+import { computeMarketRegime, RegimeLabel } from '../services/marketRegime';
+import { resolveScoringWeights } from '../services/autotrading/regimeWeights';
 import { computeBacktestStats, runBacktest, runWalkForwardBacktest } from '../services/autotrading/backtest';
 import { runOptionsBacktest, runOptionsWalkForwardBacktest } from '../services/autotrading/optionsBacktest';
 import { runCombinedBacktest, runCombinedWalkForwardBacktest } from '../services/autotrading/combinedBacktest';
+import { computeSignificanceStats } from '../services/autotrading/significance';
 import { listPaperPositions, PaperPosition } from '../db/autotradePaperPositions';
 import { listOptionsPaperPositions, OptionsPaperPosition } from '../db/autotradeOptionsPaperPositions';
 import { listAutotradeLivePositions, syncAccountEquityFromBroker } from '../services/autotrading/liveExecute';
+import { countLiveAddOns } from '../db/autotradeLiveOrders';
 import {
   listLiveOptionsPositions,
   getLiveOptionsPosition,
@@ -31,6 +36,9 @@ import { Position } from '../db/positions';
 import { closeLiveOptionsAutotradePosition } from '../services/trading/closePosition';
 import { runAutotradeLoopTick } from '../services/autotrading/loop';
 import { getAutotradeDashboard } from '../services/autotrading/dashboard';
+import { getOptionsPaperPortfolioSnapshot } from '../services/autotrading/optionsExecute';
+import { getLiveOptionsPortfolioSnapshot } from '../services/autotrading/liveOptionsExecute';
+import { computeAutotradeOptionsGreeks } from '../services/portfolioGreeks';
 import { resolveStockPrices, priceMap } from '../services/quotes';
 import {
   computePaperUnrealizedPnl,
@@ -41,6 +49,7 @@ import {
 import { getProvider } from '../providers';
 import { dispatchNotifications } from '../services/notifier';
 import { suggestLiveCaps } from '../services/autotrading/liveCaps';
+import { computeTargetTune, resetToModerate } from '../services/autotrading/targetTune';
 
 export const autotradeRouter = Router();
 
@@ -61,7 +70,47 @@ autotradeRouter.get('/live-caps/suggest', (_req, res) => {
   if (config.accountEquityUsd == null) {
     throw new HttpError(400, 'Set account equity before requesting suggested live caps.');
   }
-  res.json(suggestLiveCaps(config.accountEquityUsd, config.maxDailyDrawdownPct, config.maxTradesPerDay));
+  res.json(
+    suggestLiveCaps(config.accountEquityUsd, config.maxDailyDrawdownPct, config.maxTradesPerDay, config.riskProfile),
+  );
+});
+
+/** Preview a full "tune from target" — derive the whole risk/aggressiveness
+ *  config from the stored account equity plus a target daily gain % and the
+ *  chosen sizing basis (services/autotrading/targetTune.ts). Pure preview only:
+ *  returns the patch + warnings the UI shows; applying it goes through the
+ *  ordinary PUT /config (so the AGGRESSIVE-label confirmation and per-field
+ *  validation there still apply). Fails closed (400) when equity is unset,
+ *  same posture as /live-caps/suggest — every derived number scales with it. */
+const tunePreviewBody = z.object({
+  targetDailyGainPct: z.number().positive().max(1000),
+  basis: z.enum(['expected', 'perfectDay']),
+});
+
+autotradeRouter.post('/tune/preview', (req, res) => {
+  const body = parseBody(tunePreviewBody, req);
+  const config = getAutotradeConfig();
+  if (config.accountEquityUsd == null) {
+    throw new HttpError(400, 'Set account equity before tuning from a target.');
+  }
+  res.json(
+    computeTargetTune({
+      equityUsd: config.accountEquityUsd,
+      targetDailyGainPct: body.targetDailyGainPct,
+      basis: body.basis,
+      config: { autoTuneEnabled: config.autoTuneEnabled, autoTuneExitsEnabled: config.autoTuneExitsEnabled },
+    }),
+  );
+});
+
+/** The moderate baseline for the current account — the "reset to moderate"
+ *  patch, equity-scaled. Same fail-closed-on-unset-equity posture. */
+autotradeRouter.get('/tune/moderate', (_req, res) => {
+  const config = getAutotradeConfig();
+  if (config.accountEquityUsd == null) {
+    throw new HttpError(400, 'Set account equity before resetting to moderate.');
+  }
+  res.json({ patch: resetToModerate(config.accountEquityUsd) });
 });
 
 const configBody = z.object({
@@ -83,10 +132,26 @@ const configBody = z.object({
   stepDownSizeCutPct: z.number().min(0).max(100).optional(),
   maxAggregateOpenRiskPct: z.number().min(0).max(100).optional(),
   maxCorrelatedExposurePct: z.number().min(0).max(100).optional(),
+  maxSectorExposurePct: z.number().min(0).max(100).optional(),
   maxTradesPerDay: z.number().int().nonnegative().optional(),
   // --- Regime-aware sizing (live + paper only; 0 disables) -------------------
   regimeAtrThresholdPct: z.number().min(0).max(100).optional(),
   regimeSizeCutPct: z.number().min(0).max(100).optional(),
+  equityCurveDeriskEnabled: z.boolean().optional(),
+  equityCurveLookbackDays: z.number().int().min(1).optional(),
+  equityCurveDeriskCutPct: z.number().min(0).max(100).optional(),
+  maxAdvParticipationPct: z.number().min(0).max(100).optional(),
+  convictionGradeAMinScore: z.number().min(0).max(100).optional(),
+  convictionGradeBMinScore: z.number().min(0).max(100).optional(),
+  expectancyWeightingEnabled: z.boolean().optional(),
+  expectancyMinTrades: z.number().int().min(1).optional(),
+  // Bounded, unlike every other risk multiplier in this config, these are the
+  // only ones that can size a trade UP (riskCheck.ts multiplies effectiveRiskPct
+  // by the grade's multiplier). Left unbounded, a typo like 100 would scale
+  // per-trade risk 100x with only the aggregate-open-risk veto behind it.
+  // The ceiling is deliberately generous — the shipped default max is 1.5.
+  expectancyMinMultiplier: z.number().positive().max(3).optional(),
+  expectancyMaxMultiplier: z.number().positive().max(3).optional(),
   // --- Screening/decision thresholds ------------------------------------------
   tradeDirection: z.enum(['long', 'short', 'both']).optional(),
   minRelVol: z.number().nonnegative().optional(),
@@ -94,12 +159,14 @@ const configBody = z.object({
   relativeStrengthWeight: z.number().min(0).max(100).optional(),
   benchmarkSymbol: z.string().min(1).optional(),
   relativeStrengthLookbackDays: z.number().int().min(1).optional(),
+  sentimentWeight: z.number().min(0).max(100).optional(),
   maxTickerAtrPct: z.number().min(0).max(100).optional(),
   maxMarketAtrPct: z.number().min(0).max(100).optional(),
   stopAtrMultiple: z.number().positive().optional(),
   targetRMultiple: z.number().positive().optional(),
   sessionBufferMinutes: z.number().int().nonnegative().optional(),
   earningsBlackoutDays: z.number().int().nonnegative().optional(),
+  macroEventBlackoutHours: z.number().nonnegative().optional(),
   // --- Max hold time (0 disables) --------------------------------------------
   maxHoldDays: z.number().int().nonnegative().optional(),
   // --- Trailing stop / breakeven / partial profit-taking (0 disables each) --
@@ -108,9 +175,23 @@ const configBody = z.object({
   trailStopRMultiple: z.number().nonnegative().optional(),
   partialExitRMultiple: z.number().nonnegative().optional(),
   partialExitPct: z.number().min(0).max(100).optional(),
+  // --- Scale into winners / pyramiding (0 disables) -------------------------
+  addOnTriggerRMultiple: z.number().nonnegative().optional(),
+  addOnSizePct: z.number().min(0).max(100).optional(),
+  maxAddOns: z.number().int().min(0).optional(),
   // --- Correlation methodology (feeds maxCorrelatedExposurePct above) -------
   correlationLookbackDays: z.number().int().min(1).optional(),
   correlationThreshold: z.number().min(0).max(1).optional(),
+  correlationAwareSelectionEnabled: z.boolean().optional(),
+  // --- Regime-conditional scoring weights ------------------------------------
+  regimeAdaptiveWeightsEnabled: z.boolean().optional(),
+  regimeWeightPresets: z
+    .object({
+      riskOn: z.record(z.string(), z.number().min(0)).optional(),
+      neutral: z.record(z.string(), z.number().min(0)).optional(),
+      riskOff: z.record(z.string(), z.number().min(0)).optional(),
+    })
+    .optional(),
   // --- Phase 8: live trading -------------------------------------------------
   liveTradingEnabled: z.boolean().optional(),
   /** Required (and must exactly match LIVE_TRADING_CONFIRMATION_PHRASE) only
@@ -127,6 +208,9 @@ const configBody = z.object({
   liveAllowNakedShort: z.boolean().optional(),
   liveProbationTrades: z.number().int().nonnegative().optional(),
   liveProbationSizeMultiplier: z.number().positive().max(1).optional(),
+  // --- Live scale-into-winners (nested under liveTradingEnabled) --------------
+  liveScaleInEnabled: z.boolean().optional(),
+  liveMaxAddOns: z.number().int().min(0).optional(),
   // --- Task #70: live options trading ----------------------------------------
   /** Nested under liveTradingEnabled — no separate typed confirmation (the
    *  master phrase already covers "real money is now live"); see route
@@ -139,7 +223,17 @@ const configBody = z.object({
   liveOptionsProbationTrades: z.number().int().nonnegative().optional(),
   liveOptionsProbationSizeMultiplier: z.number().positive().max(1).optional(),
   // --- Options strategy shape -------------------------------------------------
-  optionsStrategyType: z.enum(['single_leg', 'debit_spread']).optional(),
+  optionsStrategyType: z.enum(['single_leg', 'debit_spread', 'auto']).optional(),
+  // --- Options entry-rule thresholds (the contract-quality screen run before
+  // risk-check) ---------------------------------------------------------------
+  optionsDeltaMin: z.number().min(0).max(1).optional(),
+  optionsDeltaMax: z.number().min(0).max(1).optional(),
+  optionsMaxSpreadPct: z.number().min(0).max(100).optional(),
+  optionsMinOpenInterest: z.number().int().nonnegative().optional(),
+  optionsMinVolume: z.number().int().nonnegative().optional(),
+  optionsMinDte: z.number().int().nonnegative().optional(),
+  optionsMaxDte: z.number().int().min(1).optional(),
+  optionsIvRankMax: z.number().min(0).max(100).optional(),
   // --- Options stop-loss / take-profit (paper + backtest only; 0 disables) ----
   optionsStopLossPct: z.number().min(0).max(100).optional(),
   optionsTakeProfitPct: z.number().min(0).max(100).optional(),
@@ -154,15 +248,71 @@ const configBody = z.object({
   autoPromoteThreshold: z.number().int().min(1).optional(),
   autoPromoteWindowDays: z.number().int().min(1).optional(),
   autoPromoteMaxSymbols: z.number().int().nonnegative().optional(),
+  // --- Auto-tune from realized edge (autoTuneEnabled false by default; the
+  // three bounds below are inert until it's turned on) -----------------------
+  autoTuneEnabled: z.boolean().optional(),
+  autoTuneMinTrades: z.number().int().min(1).optional(),
+  autoTuneMaxStepPct: z.number().min(0).max(100).optional(),
+  autoTuneSlippageExcludePct: z.number().min(0).max(100).optional(),
+  autoTuneExitsEnabled: z.boolean().optional(),
+  autoTuneExitMaxStep: z.number().positive().optional(),
+  autoTuneRequireOosConfirmation: z.boolean().optional(),
 });
 autotradeRouter.put(
   '/config',
   asyncHandler(async (req, res) => {
     const body = parseBody(configBody, req);
-    if (body.riskProfile === 'AGGRESSIVE' && body.confirmAggressive !== true) {
+    const before = getAutotradeConfig();
+    // Gate the SWITCH, not the label. Comparing the body alone meant a client
+    // that echoes the current riskProfile back on save (any "save everything"
+    // patch, including the /tune patches, which always carry riskProfile) could
+    // never save at all while already AGGRESSIVE.
+    if (body.riskProfile === 'AGGRESSIVE' && before.riskProfile !== 'AGGRESSIVE' && body.confirmAggressive !== true) {
       throw new HttpError(400, 'Switching to AGGRESSIVE requires explicit confirmation (confirmAggressive: true)');
     }
-    const before = getAutotradeConfig();
+
+    // Paired bounds, checked against the MERGED result rather than the body:
+    // this is a partial patch, so a request may move only one side of a pair and
+    // still invert it against the stored value. An inverted pair isn't caught by
+    // any single-field rule, and each fails silently at runtime — an empty delta
+    // band or DTE window makes the options leg stop finding any contract, and
+    // grade B above grade A makes B unreachable (decide.ts tests A first) —
+    // surfacing only as candidates that never trade.
+    const merged = <K extends keyof typeof before>(key: K, sent: (typeof before)[K] | undefined) =>
+      sent !== undefined ? sent : before[key];
+    const orderedPairs: [string, number, string, number, string][] = [
+      [
+        'expectancyMinMultiplier',
+        merged('expectancyMinMultiplier', body.expectancyMinMultiplier),
+        'expectancyMaxMultiplier',
+        merged('expectancyMaxMultiplier', body.expectancyMaxMultiplier),
+        'every conviction grade would size at the same multiplier',
+      ],
+      [
+        'optionsDeltaMin',
+        merged('optionsDeltaMin', body.optionsDeltaMin),
+        'optionsDeltaMax',
+        merged('optionsDeltaMax', body.optionsDeltaMax),
+        'no contract could satisfy the delta band',
+      ],
+      [
+        'optionsMinDte',
+        merged('optionsMinDte', body.optionsMinDte),
+        'optionsMaxDte',
+        merged('optionsMaxDte', body.optionsMaxDte),
+        'the DTE window would be empty',
+      ],
+      [
+        'convictionGradeBMinScore',
+        merged('convictionGradeBMinScore', body.convictionGradeBMinScore),
+        'convictionGradeAMinScore',
+        merged('convictionGradeAMinScore', body.convictionGradeAMinScore),
+        'grade B would be unreachable',
+      ],
+    ];
+    for (const [loName, lo, hiName, hi, consequence] of orderedPairs) {
+      if (lo > hi) throw new HttpError(400, `${loName} (${lo}) cannot exceed ${hiName} (${hi}) — ${consequence}`);
+    }
 
     // Only pass along fields the client actually sent — building
     // { enabled: body.enabled, ... } unconditionally would put an
@@ -183,9 +333,21 @@ autotradeRouter.put(
     if (body.stepDownSizeCutPct !== undefined) patch.stepDownSizeCutPct = body.stepDownSizeCutPct;
     if (body.maxAggregateOpenRiskPct !== undefined) patch.maxAggregateOpenRiskPct = body.maxAggregateOpenRiskPct;
     if (body.maxCorrelatedExposurePct !== undefined) patch.maxCorrelatedExposurePct = body.maxCorrelatedExposurePct;
+    if (body.maxSectorExposurePct !== undefined) patch.maxSectorExposurePct = body.maxSectorExposurePct;
     if (body.maxTradesPerDay !== undefined) patch.maxTradesPerDay = body.maxTradesPerDay;
     if (body.regimeAtrThresholdPct !== undefined) patch.regimeAtrThresholdPct = body.regimeAtrThresholdPct;
     if (body.regimeSizeCutPct !== undefined) patch.regimeSizeCutPct = body.regimeSizeCutPct;
+    if (body.equityCurveDeriskEnabled !== undefined) patch.equityCurveDeriskEnabled = body.equityCurveDeriskEnabled;
+    if (body.equityCurveLookbackDays !== undefined) patch.equityCurveLookbackDays = body.equityCurveLookbackDays;
+    if (body.equityCurveDeriskCutPct !== undefined) patch.equityCurveDeriskCutPct = body.equityCurveDeriskCutPct;
+    if (body.maxAdvParticipationPct !== undefined) patch.maxAdvParticipationPct = body.maxAdvParticipationPct;
+    if (body.convictionGradeAMinScore !== undefined) patch.convictionGradeAMinScore = body.convictionGradeAMinScore;
+    if (body.convictionGradeBMinScore !== undefined) patch.convictionGradeBMinScore = body.convictionGradeBMinScore;
+    if (body.expectancyWeightingEnabled !== undefined)
+      patch.expectancyWeightingEnabled = body.expectancyWeightingEnabled;
+    if (body.expectancyMinTrades !== undefined) patch.expectancyMinTrades = body.expectancyMinTrades;
+    if (body.expectancyMinMultiplier !== undefined) patch.expectancyMinMultiplier = body.expectancyMinMultiplier;
+    if (body.expectancyMaxMultiplier !== undefined) patch.expectancyMaxMultiplier = body.expectancyMaxMultiplier;
     if (body.tradeDirection !== undefined) patch.tradeDirection = body.tradeDirection;
     if (body.minRelVol !== undefined) patch.minRelVol = body.minRelVol;
     if (body.requireWeeklyTrendAlignment !== undefined)
@@ -194,12 +356,14 @@ autotradeRouter.put(
     if (body.benchmarkSymbol !== undefined) patch.benchmarkSymbol = body.benchmarkSymbol;
     if (body.relativeStrengthLookbackDays !== undefined)
       patch.relativeStrengthLookbackDays = body.relativeStrengthLookbackDays;
+    if (body.sentimentWeight !== undefined) patch.sentimentWeight = body.sentimentWeight;
     if (body.maxTickerAtrPct !== undefined) patch.maxTickerAtrPct = body.maxTickerAtrPct;
     if (body.maxMarketAtrPct !== undefined) patch.maxMarketAtrPct = body.maxMarketAtrPct;
     if (body.stopAtrMultiple !== undefined) patch.stopAtrMultiple = body.stopAtrMultiple;
     if (body.targetRMultiple !== undefined) patch.targetRMultiple = body.targetRMultiple;
     if (body.sessionBufferMinutes !== undefined) patch.sessionBufferMinutes = body.sessionBufferMinutes;
     if (body.earningsBlackoutDays !== undefined) patch.earningsBlackoutDays = body.earningsBlackoutDays;
+    if (body.macroEventBlackoutHours !== undefined) patch.macroEventBlackoutHours = body.macroEventBlackoutHours;
     if (body.maxHoldDays !== undefined) patch.maxHoldDays = body.maxHoldDays;
     if (body.breakevenTriggerRMultiple !== undefined) {
       patch.breakevenTriggerRMultiple = body.breakevenTriggerRMultiple;
@@ -208,8 +372,27 @@ autotradeRouter.put(
     if (body.trailStopRMultiple !== undefined) patch.trailStopRMultiple = body.trailStopRMultiple;
     if (body.partialExitRMultiple !== undefined) patch.partialExitRMultiple = body.partialExitRMultiple;
     if (body.partialExitPct !== undefined) patch.partialExitPct = body.partialExitPct;
+    if (body.addOnTriggerRMultiple !== undefined) patch.addOnTriggerRMultiple = body.addOnTriggerRMultiple;
+    if (body.addOnSizePct !== undefined) patch.addOnSizePct = body.addOnSizePct;
+    if (body.maxAddOns !== undefined) patch.maxAddOns = body.maxAddOns;
     if (body.correlationLookbackDays !== undefined) patch.correlationLookbackDays = body.correlationLookbackDays;
     if (body.correlationThreshold !== undefined) patch.correlationThreshold = body.correlationThreshold;
+    if (body.correlationAwareSelectionEnabled !== undefined)
+      patch.correlationAwareSelectionEnabled = body.correlationAwareSelectionEnabled;
+    if (body.regimeAdaptiveWeightsEnabled !== undefined)
+      patch.regimeAdaptiveWeightsEnabled = body.regimeAdaptiveWeightsEnabled;
+    if (body.regimeWeightPresets !== undefined) {
+      // Deep-merge each preset onto the CURRENT presets so a partial send (one
+      // regime, or one weight) only touches what it names and never resets the
+      // other presets/weights — then sanitize() re-fills/validates every key.
+      // The cast bridges the loose request shape to the strict stored type.
+      const p = body.regimeWeightPresets;
+      patch.regimeWeightPresets = {
+        riskOn: { ...before.regimeWeightPresets.riskOn, ...p.riskOn },
+        neutral: { ...before.regimeWeightPresets.neutral, ...p.neutral },
+        riskOff: { ...before.regimeWeightPresets.riskOff, ...p.riskOff },
+      } as AutotradeConfig['regimeWeightPresets'];
+    }
     if (body.liveMaxOrderUsd !== undefined) patch.liveMaxOrderUsd = body.liveMaxOrderUsd;
     if (body.liveMaxDailyLossUsd !== undefined) patch.liveMaxDailyLossUsd = body.liveMaxDailyLossUsd;
     if (body.liveMaxOrdersPerDay !== undefined) patch.liveMaxOrdersPerDay = body.liveMaxOrdersPerDay;
@@ -234,6 +417,14 @@ autotradeRouter.put(
       patch.liveOptionsProbationSizeMultiplier = body.liveOptionsProbationSizeMultiplier;
     }
     if (body.optionsStrategyType !== undefined) patch.optionsStrategyType = body.optionsStrategyType;
+    if (body.optionsDeltaMin !== undefined) patch.optionsDeltaMin = body.optionsDeltaMin;
+    if (body.optionsDeltaMax !== undefined) patch.optionsDeltaMax = body.optionsDeltaMax;
+    if (body.optionsMaxSpreadPct !== undefined) patch.optionsMaxSpreadPct = body.optionsMaxSpreadPct;
+    if (body.optionsMinOpenInterest !== undefined) patch.optionsMinOpenInterest = body.optionsMinOpenInterest;
+    if (body.optionsMinVolume !== undefined) patch.optionsMinVolume = body.optionsMinVolume;
+    if (body.optionsMinDte !== undefined) patch.optionsMinDte = body.optionsMinDte;
+    if (body.optionsMaxDte !== undefined) patch.optionsMaxDte = body.optionsMaxDte;
+    if (body.optionsIvRankMax !== undefined) patch.optionsIvRankMax = body.optionsIvRankMax;
     if (body.optionsStopLossPct !== undefined) patch.optionsStopLossPct = body.optionsStopLossPct;
     if (body.optionsTakeProfitPct !== undefined) patch.optionsTakeProfitPct = body.optionsTakeProfitPct;
     if (body.optionsBreakevenTriggerPct !== undefined) {
@@ -249,6 +440,16 @@ autotradeRouter.put(
     if (body.autoPromoteThreshold !== undefined) patch.autoPromoteThreshold = body.autoPromoteThreshold;
     if (body.autoPromoteWindowDays !== undefined) patch.autoPromoteWindowDays = body.autoPromoteWindowDays;
     if (body.autoPromoteMaxSymbols !== undefined) patch.autoPromoteMaxSymbols = body.autoPromoteMaxSymbols;
+    if (body.autoTuneEnabled !== undefined) patch.autoTuneEnabled = body.autoTuneEnabled;
+    if (body.autoTuneMinTrades !== undefined) patch.autoTuneMinTrades = body.autoTuneMinTrades;
+    if (body.autoTuneMaxStepPct !== undefined) patch.autoTuneMaxStepPct = body.autoTuneMaxStepPct;
+    if (body.autoTuneSlippageExcludePct !== undefined) {
+      patch.autoTuneSlippageExcludePct = body.autoTuneSlippageExcludePct;
+    }
+    if (body.autoTuneExitsEnabled !== undefined) patch.autoTuneExitsEnabled = body.autoTuneExitsEnabled;
+    if (body.autoTuneExitMaxStep !== undefined) patch.autoTuneExitMaxStep = body.autoTuneExitMaxStep;
+    if (body.autoTuneRequireOosConfirmation !== undefined)
+      patch.autoTuneRequireOosConfirmation = body.autoTuneRequireOosConfirmation;
 
     // liveTradingEnabled and liveAccountId are handled together, NOT in the
     // generic patch above: going false -> true requires the typed
@@ -276,7 +477,12 @@ autotradeRouter.put(
       // deliberate clear) the same as "omitted", silently keeping the OLD
       // account instead of honoring the clear. Only fall back to `before`
       // when the field is genuinely absent from this request.
-      const accountId = body.liveAccountId !== undefined ? body.liveAccountId : before.liveAccountId;
+      // Trim BEFORE the guard: sanitize() (db/autotradeConfig.ts) trims and turns
+      // a whitespace-only id into null, so a truthy "   " would pass this check
+      // and then be stored as null — landing in exactly the live-enabled-with-no-
+      // account state this guard exists to make unreachable.
+      const rawAccountId = body.liveAccountId !== undefined ? body.liveAccountId : before.liveAccountId;
+      const accountId = rawAccountId?.trim() ? rawAccountId.trim() : null;
       if (!accountId) {
         throw new HttpError(
           400,
@@ -302,7 +508,13 @@ autotradeRouter.put(
     // becoming) enabled — a plain checkbox nested under a gate that isn't on
     // yet would otherwise silently sit inert with no feedback. Turning it
     // OFF, or an unrelated save that doesn't touch it, always passes through.
-    const masterWillBeEnabled = enablingNow || before.liveTradingEnabled;
+    // A request that turns the master OFF cannot also arm anything nested under
+    // it: without the explicit false check, `before.liveTradingEnabled` kept this
+    // true, so one combined request could disable live trading while enabling
+    // live options / live scale-in — both then already armed the moment the
+    // master was switched back on, without the user ever ticking them in an
+    // enabled state. Sent individually each is correctly rejected.
+    const masterWillBeEnabled = body.liveTradingEnabled === false ? false : enablingNow || before.liveTradingEnabled;
     if (body.liveOptionsEnabled === true && !masterWillBeEnabled) {
       throw new HttpError(400, 'Enabling live options trading requires live trading to be enabled first');
     }
@@ -313,6 +525,16 @@ autotradeRouter.put(
     } else if (body.liveOptionsEnabled !== undefined) {
       patch.liveOptionsEnabled = body.liveOptionsEnabled;
     }
+
+    // liveScaleInEnabled — same "plain checkbox nested under the master gate,
+    // fails closed if requested while the master isn't (concurrently) on" shape
+    // as liveOptionsEnabled above. It ADDS risk to real positions, but the
+    // master's typed confirmation already covers "real money is live".
+    if (body.liveScaleInEnabled === true && !masterWillBeEnabled) {
+      throw new HttpError(400, 'Enabling live scale-in requires live trading to be enabled first');
+    }
+    if (body.liveScaleInEnabled !== undefined) patch.liveScaleInEnabled = body.liveScaleInEnabled;
+    if (body.liveMaxAddOns !== undefined) patch.liveMaxAddOns = body.liveMaxAddOns;
 
     const next = setAutotradeConfig(patch);
     if (next.riskProfile !== before.riskProfile) {
@@ -409,13 +631,49 @@ autotradeRouter.delete(
   }),
 );
 
+// ---- Scheduled macro-event blackout list ------------------------------------
+// User-maintained date-times (FOMC, CPI, jobs reports, ...) checked by
+// macroEventBlackoutHours above — see db/macroEvents.ts's own header comment
+// on why this is hand-maintained rather than fetched from a live calendar.
+
+autotradeRouter.get('/macro-events', (_req, res) => {
+  res.json({ events: listMacroEvents() });
+});
+
+const macroEventBody = z.object({ label: z.string().min(1).max(200), eventAt: z.number().int().positive() });
+autotradeRouter.post(
+  '/macro-events',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(macroEventBody, req);
+    const record = addMacroEvent(body.label, body.eventAt);
+    logAutotradeEvent({ stage: 'config', action: 'macro_event_added', detail: { label: record.label } });
+    res.status(201).json(record);
+  }),
+);
+
+autotradeRouter.delete(
+  '/macro-events/:id',
+  asyncHandler(async (req, res) => {
+    const id = Number(param(req, 'id'));
+    if (!Number.isInteger(id) || !removeMacroEvent(id)) {
+      throw new HttpError(404, `No macro event with id ${param(req, 'id')}`);
+    }
+    logAutotradeEvent({ stage: 'config', action: 'macro_event_removed', detail: { id } });
+    res.json({ removed: id });
+  }),
+);
+
 // ---- Research & Screen ------------------------------------------------------
 
 /** Defaults minRelVol to the persisted config's value — so the manual preview
  *  matches what the automated loop actually does — while still letting an ad
  *  hoc request override it (a caller-supplied filters.minRelVol wins, since
  *  it's spread last). */
-function screenerConfigOverride(config: AutotradeConfig, requested?: Partial<ScreenerConfig>): Partial<ScreenerConfig> {
+function screenerConfigOverride(
+  config: AutotradeConfig,
+  requested?: Partial<ScreenerConfig>,
+  regimeLabel: RegimeLabel | null = null,
+): Partial<ScreenerConfig> {
   return {
     ...requested,
     filters: {
@@ -424,13 +682,23 @@ function screenerConfigOverride(config: AutotradeConfig, requested?: Partial<Scr
       ...requested?.filters,
     },
     weights: {
-      ...defaultScreenerConfig().weights,
-      relativeStrength: config.relativeStrengthWeight,
+      // Base is the regime-adaptive weight set the loop would use right now
+      // (today's fixed defaults when the feature is off), so the manual preview
+      // matches the automated loop; an ad hoc requested.weights still wins.
+      ...resolveScoringWeights(config, regimeLabel),
       ...requested?.weights,
     },
     benchmarkSymbol: requested?.benchmarkSymbol ?? config.benchmarkSymbol,
     relativeStrengthLookbackDays: requested?.relativeStrengthLookbackDays ?? config.relativeStrengthLookbackDays,
   };
+}
+
+/** The current market-regime label when regime-adaptive weighting is on (else
+ *  null), best-effort — a failed regime read falls back to the fixed weights
+ *  rather than failing the request. Mirrors the loop's own gate. */
+async function currentRegimeLabel(config: AutotradeConfig): Promise<RegimeLabel | null> {
+  if (!config.regimeAdaptiveWeightsEnabled) return null;
+  return (await computeMarketRegime().catch(() => null))?.label ?? null;
 }
 
 /** Same reasoning as screenerConfigOverride, for stopAtrMultiple/targetRMultiple. */
@@ -453,8 +721,9 @@ autotradeRouter.post(
   asyncHandler(async (req, res) => {
     const body = parseBody(screenBody, req);
     const config = getAutotradeConfig();
+    const regimeLabel = await currentRegimeLabel(config);
     const result = await runAutotradeScreen({
-      config: screenerConfigOverride(config, body.config as Partial<ScreenerConfig> | undefined),
+      config: screenerConfigOverride(config, body.config as Partial<ScreenerConfig> | undefined, regimeLabel),
       symbols: body.symbols,
       earningsBlackoutDays: config.earningsBlackoutDays,
       directionMode: body.directionMode ?? config.tradeDirection,
@@ -481,8 +750,9 @@ autotradeRouter.post(
   asyncHandler(async (req, res) => {
     const body = parseBody(decideBody, req);
     const config = getAutotradeConfig();
+    const regimeLabel = await currentRegimeLabel(config);
     const screen = await runAutotradeScreen({
-      config: screenerConfigOverride(config, body.config as Partial<ScreenerConfig> | undefined),
+      config: screenerConfigOverride(config, body.config as Partial<ScreenerConfig> | undefined, regimeLabel),
       symbols: body.symbols,
       earningsBlackoutDays: config.earningsBlackoutDays,
       directionMode: body.directionMode ?? config.tradeDirection,
@@ -491,7 +761,19 @@ autotradeRouter.post(
       screen.candidates,
       decisionConfigOverride(config, body.decision as Partial<DecisionConfig> | undefined),
     );
-    const optionsDecision = await runOptionsDecision(screen.candidates, { strategyType: config.optionsStrategyType });
+    const optionsDecision = await runOptionsDecision(screen.candidates, {
+      strategyType: config.optionsStrategyType,
+      entryConfig: {
+        deltaMin: config.optionsDeltaMin,
+        deltaMax: config.optionsDeltaMax,
+        maxSpreadPct: config.optionsMaxSpreadPct,
+        minOpenInterest: config.optionsMinOpenInterest,
+        minVolume: config.optionsMinVolume,
+        minDaysToExpiration: config.optionsMinDte,
+        maxDaysToExpiration: config.optionsMaxDte,
+        ivRankMax: config.optionsIvRankMax,
+      },
+    });
     res.json({ screen, decision, optionsDecision });
   }),
 );
@@ -507,6 +789,12 @@ const signalBody = z.object({
   rMultiple: z.number().positive(),
   rationale: z.string(),
   score: z.number(),
+  // Echoed back by the UI from /decide's own response. Omitting it here meant
+  // zod silently stripped it, so the ADV participation cap (riskCheck.ts, which
+  // only applies when avgVolume != null) went unenforced on this route — the
+  // manual preview then showed a LARGER quantity than the loop, which calls
+  // runAutotradeRiskCheck in-process with the signal intact, actually takes.
+  avgVolume: z.number().nullable().optional(),
 });
 const riskCheckBody = z.object({ signals: z.array(signalBody).min(1) });
 autotradeRouter.post(
@@ -632,10 +920,14 @@ const backtestRiskParamsSchema = {
   maxTradesPerDay: z.number().int().nonnegative().optional(),
   correlationLookbackDays: z.number().int().min(1).optional(),
   correlationThreshold: z.number().min(0).max(1).optional(),
+  correlationAwareSelectionEnabled: z.boolean().optional(),
+  // Scoring flag (not a risk param), accepted on every backtest body via the
+  // shared spread; the presets it uses are pulled from the live config.
+  regimeAdaptiveWeightsEnabled: z.boolean().optional(),
 };
-/** Pulls the nine optional risk-param overrides off an already-parsed
- *  backtest body, for spreading into a runXBacktest({...}) call — avoids
- *  repeating all nine field names at each of the six call sites below. */
+/** Pulls the optional risk-param overrides off an already-parsed backtest
+ *  body, for spreading into a runXBacktest({...}) call — avoids repeating all
+ *  the field names at each of the six call sites below. */
 function backtestRiskParamsFrom(body: {
   riskPerTradePct?: number;
   maxDailyDrawdownPct?: number;
@@ -646,6 +938,7 @@ function backtestRiskParamsFrom(body: {
   maxTradesPerDay?: number;
   correlationLookbackDays?: number;
   correlationThreshold?: number;
+  correlationAwareSelectionEnabled?: boolean;
 }) {
   return {
     riskPerTradePct: body.riskPerTradePct,
@@ -657,6 +950,18 @@ function backtestRiskParamsFrom(body: {
     maxTradesPerDay: body.maxTradesPerDay,
     correlationLookbackDays: body.correlationLookbackDays,
     correlationThreshold: body.correlationThreshold,
+    correlationAwareSelectionEnabled: body.correlationAwareSelectionEnabled,
+  };
+}
+
+/** Regime-adaptive-weights fields for a backtest run. The flag comes from the
+ *  request; the presets themselves are pulled from the LIVE config, so a user
+ *  edits their presets once (on the Config page) and validates them in a
+ *  backtest by just flipping this on — no need to re-send 18 numbers per run. */
+function regimeBacktestFields(body: { regimeAdaptiveWeightsEnabled?: boolean }) {
+  return {
+    regimeAdaptiveWeightsEnabled: body.regimeAdaptiveWeightsEnabled,
+    regimeWeightPresets: body.regimeAdaptiveWeightsEnabled ? getAutotradeConfig().regimeWeightPresets : undefined,
   };
 }
 const backtestBodyBase = z.object({
@@ -672,6 +977,9 @@ const backtestBodyBase = z.object({
   trailStopRMultiple: z.number().nonnegative().optional(),
   partialExitRMultiple: z.number().nonnegative().optional(),
   partialExitPct: z.number().min(0).max(100).optional(),
+  addOnTriggerRMultiple: z.number().nonnegative().optional(),
+  addOnSizePct: z.number().min(0).max(100).optional(),
+  maxAddOns: z.number().int().min(0).optional(),
   ...backtestRiskParamsSchema,
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   decisionConfig: z.record(z.string(), z.unknown()).optional(),
@@ -716,7 +1024,11 @@ autotradeRouter.post(
       trailStopRMultiple: body.trailStopRMultiple,
       partialExitRMultiple: body.partialExitRMultiple,
       partialExitPct: body.partialExitPct,
+      addOnTriggerRMultiple: body.addOnTriggerRMultiple,
+      addOnSizePct: body.addOnSizePct,
+      maxAddOns: body.maxAddOns,
       ...backtestRiskParamsFrom(body),
+      ...regimeBacktestFields(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
       directionMode: body.directionMode,
@@ -743,14 +1055,26 @@ autotradeRouter.post(
       trailStopRMultiple: body.trailStopRMultiple,
       partialExitRMultiple: body.partialExitRMultiple,
       partialExitPct: body.partialExitPct,
+      addOnTriggerRMultiple: body.addOnTriggerRMultiple,
+      addOnSizePct: body.addOnSizePct,
+      maxAddOns: body.maxAddOns,
       ...backtestRiskParamsFrom(body),
+      ...regimeBacktestFields(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
       directionMode: body.directionMode,
     });
     res.json({
-      inSample: { report: wf.inSample, stats: computeBacktestStats(wf.inSample) },
-      outOfSample: { report: wf.outOfSample, stats: computeBacktestStats(wf.outOfSample) },
+      inSample: {
+        report: wf.inSample,
+        stats: computeBacktestStats(wf.inSample),
+        significance: computeSignificanceStats(wf.inSample.trades),
+      },
+      outOfSample: {
+        report: wf.outOfSample,
+        stats: computeBacktestStats(wf.outOfSample),
+        significance: computeSignificanceStats(wf.outOfSample.trades),
+      },
       excludedSymbols: wf.excludedSymbols,
       errors: wf.errors,
     });
@@ -852,8 +1176,16 @@ autotradeRouter.post(
       optionsPartialExitPct: body.optionsPartialExitPct,
     });
     res.json({
-      inSample: { report: wf.inSample, stats: computeBacktestStats(wf.inSample) },
-      outOfSample: { report: wf.outOfSample, stats: computeBacktestStats(wf.outOfSample) },
+      inSample: {
+        report: wf.inSample,
+        stats: computeBacktestStats(wf.inSample),
+        significance: computeSignificanceStats(wf.inSample.trades),
+      },
+      outOfSample: {
+        report: wf.outOfSample,
+        stats: computeBacktestStats(wf.outOfSample),
+        significance: computeSignificanceStats(wf.outOfSample.trades),
+      },
       excludedSymbols: wf.excludedSymbols,
       errors: wf.errors,
     });
@@ -878,6 +1210,12 @@ function combinedStats(report: {
   });
 }
 
+/** Same both-books concatenation as combinedStats() above, for the
+ *  significance check — {pnl} is already satisfied by both trade shapes. */
+function combinedSignificance(report: { equityTrades: { pnl: number }[]; optionsTrades: { pnl: number }[] }) {
+  return computeSignificanceStats([...report.equityTrades, ...report.optionsTrades]);
+}
+
 const combinedBacktestBodyBase = z.object({
   symbols: z.array(z.string().min(1)).min(1).max(50, 'At most 50 symbols per backtest run'),
   from: dateStr,
@@ -891,6 +1229,9 @@ const combinedBacktestBodyBase = z.object({
   trailStopRMultiple: z.number().nonnegative().optional(),
   partialExitRMultiple: z.number().nonnegative().optional(),
   partialExitPct: z.number().min(0).max(100).optional(),
+  addOnTriggerRMultiple: z.number().nonnegative().optional(),
+  addOnSizePct: z.number().min(0).max(100).optional(),
+  maxAddOns: z.number().int().min(0).optional(),
   ...backtestRiskParamsSchema,
   screenerConfig: z.record(z.string(), z.unknown()).optional(),
   decisionConfig: z.record(z.string(), z.unknown()).optional(),
@@ -945,7 +1286,11 @@ autotradeRouter.post(
       trailStopRMultiple: body.trailStopRMultiple,
       partialExitRMultiple: body.partialExitRMultiple,
       partialExitPct: body.partialExitPct,
+      addOnTriggerRMultiple: body.addOnTriggerRMultiple,
+      addOnSizePct: body.addOnSizePct,
+      maxAddOns: body.maxAddOns,
       ...backtestRiskParamsFrom(body),
+      ...regimeBacktestFields(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
@@ -980,7 +1325,11 @@ autotradeRouter.post(
       trailStopRMultiple: body.trailStopRMultiple,
       partialExitRMultiple: body.partialExitRMultiple,
       partialExitPct: body.partialExitPct,
+      addOnTriggerRMultiple: body.addOnTriggerRMultiple,
+      addOnSizePct: body.addOnSizePct,
+      maxAddOns: body.maxAddOns,
       ...backtestRiskParamsFrom(body),
+      ...regimeBacktestFields(body),
       screenerConfig: body.screenerConfig as Partial<ScreenerConfig> | undefined,
       decisionConfig: body.decisionConfig as Partial<DecisionConfig> | undefined,
       optionsDecisionConfig: body.optionsDecisionConfig as Partial<OptionsDecisionConfig> | undefined,
@@ -994,8 +1343,16 @@ autotradeRouter.post(
       optionsPartialExitPct: body.optionsPartialExitPct,
     });
     res.json({
-      inSample: { report: wf.inSample, stats: combinedStats(wf.inSample) },
-      outOfSample: { report: wf.outOfSample, stats: combinedStats(wf.outOfSample) },
+      inSample: {
+        report: wf.inSample,
+        stats: combinedStats(wf.inSample),
+        significance: combinedSignificance(wf.inSample),
+      },
+      outOfSample: {
+        report: wf.outOfSample,
+        stats: combinedStats(wf.outOfSample),
+        significance: combinedSignificance(wf.outOfSample),
+      },
       excludedSymbols: wf.excludedSymbols,
       errors: wf.errors,
     });
@@ -1075,6 +1432,13 @@ export interface OptionsPaperPositionLive extends OptionsPaperPosition {
   /** The short leg's live mark — null for single_leg, a closed position, or
    *  a chain-fetch failure. */
   shortCurrentPrice: number | null;
+  /** The chain fetch's own underlyingPrice as of this request — null for a
+   *  closed position, a chain-fetch failure, or a provider that doesn't
+   *  report it. Free byproduct of the SAME chain fetch marks/shortMarks
+   *  already use, not an extra provider call — lets the web badge derive a
+   *  short leg's intrinsic/extrinsic value (assignment risk) without its
+   *  own stock-quote round trip. */
+  underlyingPrice: number | null;
   /** See computeOptionsPaperUnrealizedPnl — null for a closed position or
    *  when a needed mark is unavailable. */
   unrealizedPnl: number | null;
@@ -1092,6 +1456,7 @@ async function withLiveOptionMarks(positions: OptionsPaperPosition[]): Promise<O
   const open = positions.filter((p) => p.status === 'open');
   const marks = new Map<number, number | null>();
   const shortMarks = new Map<number, number | null>();
+  const underlyingPrices = new Map<number, number | null>();
   if (open.length) {
     const groups = new Map<string, OptionsPaperPosition[]>();
     for (const p of open) {
@@ -1114,11 +1479,13 @@ async function withLiveOptionMarks(positions: OptionsPaperPosition[]): Promise<O
             if (p.kind === 'debit_spread' && p.shortStrike !== null) {
               shortMarks.set(p.id, markFor(p.shortStrike, p.side));
             }
+            underlyingPrices.set(p.id, chain.underlyingPrice ?? null);
           }
         } catch {
           for (const p of members) {
             marks.set(p.id, null);
             if (p.kind === 'debit_spread') shortMarks.set(p.id, null);
+            underlyingPrices.set(p.id, null);
           }
         }
       }),
@@ -1127,10 +1494,12 @@ async function withLiveOptionMarks(positions: OptionsPaperPosition[]): Promise<O
   return positions.map((p) => {
     const currentPrice = p.status === 'open' ? (marks.get(p.id) ?? null) : null;
     const shortCurrentPrice = p.status === 'open' && p.kind === 'debit_spread' ? (shortMarks.get(p.id) ?? null) : null;
+    const underlyingPrice = p.status === 'open' ? (underlyingPrices.get(p.id) ?? null) : null;
     return {
       ...p,
       currentPrice,
       shortCurrentPrice,
+      underlyingPrice,
       unrealizedPnl: computeOptionsPaperUnrealizedPnl(p, currentPrice, shortCurrentPrice),
     };
   });
@@ -1152,6 +1521,9 @@ export interface LiveOptionsPositionLive extends LiveOptionsPosition {
   /** The short leg's live mark — null for single_leg, a closed position, or
    *  a chain-fetch failure. */
   shortCurrentPrice: number | null;
+  /** See OptionsPaperPositionLive's own doc comment — same free byproduct of
+   *  the chain fetch, same null-when-unavailable semantics. */
+  underlyingPrice: number | null;
   /** See computeOptionsPaperUnrealizedPnl — null for a closed position or
    *  when a needed mark is unavailable. Reused as-is (not a live-options
    *  variant): the formula is asset/book-agnostic, keyed structurally off
@@ -1171,6 +1543,7 @@ async function withLiveOptionsPositionMarks(positions: LiveOptionsPosition[]): P
   const open = positions.filter((p) => p.status === 'open');
   const marks = new Map<number, number | null>();
   const shortMarks = new Map<number, number | null>();
+  const underlyingPrices = new Map<number, number | null>();
   if (open.length) {
     const groups = new Map<string, LiveOptionsPosition[]>();
     for (const p of open) {
@@ -1193,11 +1566,13 @@ async function withLiveOptionsPositionMarks(positions: LiveOptionsPosition[]): P
             if (p.kind === 'debit_spread' && p.shortStrike !== null) {
               shortMarks.set(p.id, markFor(p.shortStrike, p.side));
             }
+            underlyingPrices.set(p.id, chain.underlyingPrice ?? null);
           }
         } catch {
           for (const p of members) {
             marks.set(p.id, null);
             if (p.kind === 'debit_spread') shortMarks.set(p.id, null);
+            underlyingPrices.set(p.id, null);
           }
         }
       }),
@@ -1206,10 +1581,12 @@ async function withLiveOptionsPositionMarks(positions: LiveOptionsPosition[]): P
   return positions.map((p) => {
     const currentPrice = p.status === 'open' ? (marks.get(p.id) ?? null) : null;
     const shortCurrentPrice = p.status === 'open' && p.kind === 'debit_spread' ? (shortMarks.get(p.id) ?? null) : null;
+    const underlyingPrice = p.status === 'open' ? (underlyingPrices.get(p.id) ?? null) : null;
     return {
       ...p,
       currentPrice,
       shortCurrentPrice,
+      underlyingPrice,
       unrealizedPnl: computeOptionsPaperUnrealizedPnl(p, currentPrice, shortCurrentPrice),
     };
   });
@@ -1256,6 +1633,10 @@ export interface AutotradeLivePositionLive extends Position {
    *  and the stock/option multiplier difference correctly, unlike paper
    *  trading's simpler single-entry/single-exit shape. */
   pnl: PositionPnl;
+  /** How many scale-in add-ons this live position has had committed (0 unless
+   *  liveScaleInEnabled pyramided it) — surfaced so the Live positions table
+   *  can badge a pyramided position. */
+  addOnsTaken: number;
 }
 
 /** Enrich real autotrade-placed positions with a live price/mark + full P&L —
@@ -1266,7 +1647,13 @@ async function withLivePositionPnl(positions: Position[]): Promise<AutotradeLive
   const prices = await priceMap(positions);
   return positions.map((p) => {
     const info = prices.get(p.id) ?? { price: null, stale: false, asOf: null };
-    return { ...p, currentPrice: info.price, stale: info.stale, pnl: computePositionPnl(p, info.price) };
+    return {
+      ...p,
+      currentPrice: info.price,
+      stale: info.stale,
+      pnl: computePositionPnl(p, info.price),
+      addOnsTaken: countLiveAddOns(p.id),
+    };
   });
 }
 
@@ -1288,6 +1675,25 @@ autotradeRouter.get(
 autotradeRouter.get('/dashboard', (_req, res) => {
   res.json(getAutotradeDashboard());
 });
+
+/** Net delta/theta/vega across autotrade's own combined open options book
+ *  (paper + live) — a SEPARATE, on-demand endpoint rather than a field on
+ *  /dashboard above: computing it needs a live options-chain fetch per open
+ *  (symbol, expiration), unlike every other /dashboard figure (a pure read of
+ *  already-persisted state), and /dashboard is polled far more often than a
+ *  Greeks snapshot needs to be (see AutoTradePage's own polling-frequency
+ *  precedent, Perf #5) — bundling this in would mean either a real network
+ *  round-trip on every dashboard poll, or a rate-limit risk, for a number
+ *  most callers of /dashboard (e.g. dailyHaltAlert.ts's own per-tick read)
+ *  never asked for. */
+autotradeRouter.get(
+  '/portfolio-greeks',
+  asyncHandler(async (_req, res) => {
+    const paperOptions = getOptionsPaperPortfolioSnapshot().openPositions;
+    const liveOptions = getLiveOptionsPortfolioSnapshot().openPositions;
+    res.json(await computeAutotradeOptionsGreeks(paperOptions, liveOptions));
+  }),
+);
 
 const killSwitchBody = z.object({ on: z.boolean() });
 autotradeRouter.post(

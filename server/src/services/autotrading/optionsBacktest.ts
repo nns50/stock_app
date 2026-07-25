@@ -25,6 +25,7 @@ import {
   EquityPoint,
 } from './backtest';
 import {
+  AUTO_STRATEGY_IV_RANK_THRESHOLD,
   defaultAutotradeEntryConfig,
   OptionsDecisionConfig,
   OptionsSignalSide,
@@ -430,7 +431,7 @@ export async function simulateOptionsBacktest(
   // side-independent, for the already-open-position time-exit check below
   // (which runs before that day's candidates, and so before any side, are known).
   const exitMinDaysToExpiration = cfg.optionsDecisionConfig?.entryConfig?.minDaysToExpiration ?? 7;
-  const strategyType: OptionsStrategyType = cfg.optionsDecisionConfig?.strategyType ?? 'single_leg';
+  const configuredStrategyType: OptionsStrategyType = cfg.optionsDecisionConfig?.strategyType ?? 'single_leg';
 
   const fromMs = Date.parse(`${cfg.from}T00:00:00Z`);
   const toMs = Date.parse(`${cfg.to}T00:00:00Z`);
@@ -924,6 +925,16 @@ export async function simulateOptionsBacktest(
         continue;
       }
 
+      // 'auto' resolves per-candidate-per-day here, from that day's own IV
+      // rank — same threshold/rationale as the live path (optionsDecide.ts's
+      // AUTO_STRATEGY_IV_RANK_THRESHOLD), so backtest and live can't drift.
+      const strategyType: 'single_leg' | 'debit_spread' =
+        configuredStrategyType === 'auto'
+          ? ivContext.ivRank >= AUTO_STRATEGY_IV_RANK_THRESHOLD
+            ? 'debit_spread'
+            : 'single_leg'
+          : configuredStrategyType;
+
       let shortRef: ShortLegReference | null = null;
       if (strategyType === 'debit_spread') {
         shortRef = await pickShortLegReferenceContract(
@@ -971,6 +982,11 @@ export async function simulateOptionsBacktest(
         maxConcurrentPositions: cfg.maxConcurrentPositions,
         correlatedNotional: correlated,
         ...riskParams,
+        // Sector exposure cap has no backtest equivalent either (2026-07-18) —
+        // see backtest.ts's own identical note. null unconditionally skips it.
+        sectorNotional: 0,
+        maxSectorExposurePct: 0,
+        candidateSector: null,
         // Regime-aware sizing has no backtest equivalent (2026-07-16) — see
         // backtest.ts's own identical note. null unconditionally disables it.
         marketAtrPct: null,

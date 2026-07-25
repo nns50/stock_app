@@ -29,6 +29,22 @@ describe('api client', () => {
     });
   });
 
+  it('surfaces a non-JSON error body as a clean ApiError, not a SyntaxError', async () => {
+    // A gateway 502 delivered as HTML must not throw "Unexpected token '<'".
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 502,
+        text: async () => '<html><body>Bad Gateway</body></html>',
+      }),
+    );
+    const err = await client.provider().catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(502);
+    expect(err.message).toContain('Bad Gateway');
+  });
+
   it('sends PUT with a JSON body for settings', async () => {
     const fetchMock = mockFetch(200, { key: 'k', value: 1 });
     vi.stubGlobal('fetch', fetchMock);

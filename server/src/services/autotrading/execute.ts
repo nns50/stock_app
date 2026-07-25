@@ -1,6 +1,13 @@
 import { getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
-import { TradeSignal } from './decide';
-import { correlatedNotional, evaluateRiskCheck, RiskCheckContext, RiskCheckResult } from './riskCheck';
+import { TradeSignal, convictionGrade } from './decide';
+import {
+  correlatedNotional,
+  sectorNotional,
+  buildSectorOf,
+  evaluateRiskCheck,
+  RiskCheckContext,
+  RiskCheckResult,
+} from './riskCheck';
 import { computeStreaksAndDrawdown } from '../pnl';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import {
@@ -12,9 +19,13 @@ import {
   partialClosePaperPosition,
   ratchetPaperPositionStop,
   updatePaperPositionBestPrice,
+  addToPaperPosition,
   PaperExitReason,
   PaperPosition,
 } from '../../db/autotradePaperPositions';
+import { computeScaleIn } from './scaleIn';
+import { computeEquityCurveDerisk } from './equityCurveDerisk';
+import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { getProvider } from '../../providers';
 import { mapPool } from '../../util/async';
 
@@ -73,6 +84,9 @@ export async function attemptPaperEntry(
   signal: TradeSignal,
   riskResult: RiskCheckResult,
   riskProfile: RiskProfileName,
+  /** Conviction grade (A/B/C) to stamp on the position, or null. Computed by the
+   *  caller from the signal's score + the configured thresholds. */
+  grade: string | null = null,
 ): Promise<ExecutionOutcome> {
   if (!riskResult.ok) return { symbol: signal.symbol, ok: false, reason: 'Risk check did not pass' };
   if (hasOpenPaperPosition(signal.symbol)) {
@@ -128,6 +142,7 @@ export async function attemptPaperEntry(
       riskAmount: riskResult.approvedRiskAmount,
       riskProfile,
       rationale: signal.rationale,
+      grade,
     });
   } catch (err) {
     // A single candidate's persistence failure must not abort the rest of
@@ -174,6 +189,12 @@ export interface PaperPortfolioSnapshot {
   consecutiveLosses: number;
   /** Paper positions opened today (ET) — open or closed. */
   tradesToday: number;
+  /** Equity-curve de-risk decision from the paper book's own realized curve
+   *  (2026-07-24) — false when disabled or above the average. */
+  equityCurveDeriskActive: boolean;
+  /** grade → sizing multiplier from the paper book's realized per-grade edge
+   *  (2026-07-24); empty when expectancy weighting is off. */
+  gradeExpectancyMultipliers: Record<string, number>;
 }
 
 /**
@@ -199,6 +220,41 @@ export function getPaperPortfolioSnapshot(): PaperPortfolioSnapshot {
   const tradesToday = recent.filter((p) => etDateStr(p.entryAt) === today).length;
   const openRisk = openPositions.reduce((s, p) => s + p.riskAmount, 0);
 
+  // Equity-curve de-risk from the paper book's OWN full realized history (not
+  // just today) — the multi-day curve the moving-average filter needs.
+  const config = getAutotradeConfig();
+  const closedHistory = recent
+    .filter((p) => p.status === 'closed' && p.exitAt !== null && p.exitPrice !== null)
+    .map((p) => ({
+      date: etDateStr(p.exitAt as number),
+      pnl: (p.exitPrice! - p.entryPrice) * p.quantity * (p.side === 'buy' ? 1 : -1),
+    }));
+  const equityCurveDeriskActive = computeEquityCurveDerisk(closedHistory, {
+    enabled: config.equityCurveDeriskEnabled,
+    lookbackDays: config.equityCurveLookbackDays,
+    cutPct: config.equityCurveDeriskCutPct,
+  }).active;
+
+  // Per-grade expectancy multipliers from the paper book's OWN closed trades.
+  const gradeExpectancyMultipliers = computeGradeExpectancyMultipliers(
+    recent.flatMap((p) =>
+      p.status === 'closed' && p.exitPrice !== null && p.riskAmount > 0
+        ? [
+            {
+              grade: p.grade,
+              realizedR: ((p.exitPrice - p.entryPrice) * p.quantity * (p.side === 'buy' ? 1 : -1)) / p.riskAmount,
+            },
+          ]
+        : [],
+    ),
+    {
+      enabled: config.expectancyWeightingEnabled,
+      minTrades: config.expectancyMinTrades,
+      minMultiplier: config.expectancyMinMultiplier,
+      maxMultiplier: config.expectancyMaxMultiplier,
+    },
+  );
+
   return {
     today,
     openPositions,
@@ -207,6 +263,8 @@ export function getPaperPortfolioSnapshot(): PaperPortfolioSnapshot {
     dailyPnl,
     consecutiveLosses,
     tradesToday,
+    equityCurveDeriskActive,
+    gradeExpectancyMultipliers,
   };
 }
 
@@ -284,6 +342,7 @@ export async function runPaperExecution(
     ...seed.positions,
   ];
   const skipSymbols = new Set(snapshot.openPositions.map((p) => p.symbol));
+  const sectorOf = buildSectorOf();
 
   const outcomes: ExecutionOutcome[] = [];
   for (const { signal } of candidates) {
@@ -298,6 +357,12 @@ export async function runPaperExecution(
       runningPositions,
       config.correlationLookbackDays,
       config.correlationThreshold,
+    );
+    const { amount: sectorAmount, sector: candidateSector } = sectorNotional(
+      signal.symbol,
+      signal.side === 'buy' ? 'long' : 'short',
+      runningPositions,
+      sectorOf,
     );
     const ctx: RiskCheckContext = {
       equity,
@@ -316,9 +381,22 @@ export async function runPaperExecution(
       maxCorrelatedExposurePct: config.maxCorrelatedExposurePct,
       maxTradesPerDay: config.maxTradesPerDay,
       correlationThreshold: config.correlationThreshold,
+      sectorNotional: sectorAmount,
+      maxSectorExposurePct: config.maxSectorExposurePct,
+      candidateSector,
       marketAtrPct,
       regimeAtrThresholdPct: config.regimeAtrThresholdPct,
       regimeSizeCutPct: config.regimeSizeCutPct,
+      equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
+      equityCurveDeriskCutPct: config.equityCurveDeriskCutPct,
+      maxAdvParticipationPct: config.maxAdvParticipationPct,
+      expectancyMultiplier:
+        snapshot.gradeExpectancyMultipliers[
+          convictionGrade(signal.score, {
+            aMinScore: config.convictionGradeAMinScore,
+            bMinScore: config.convictionGradeBMinScore,
+          })
+        ] ?? 1,
     };
     const result = evaluateRiskCheck(signal, ctx);
     logAutotradeEvent({
@@ -333,7 +411,11 @@ export async function runPaperExecution(
       continue;
     }
 
-    const outcome = await attemptPaperEntry(signal, result, config.riskProfile);
+    const grade = convictionGrade(signal.score, {
+      aMinScore: config.convictionGradeAMinScore,
+      bMinScore: config.convictionGradeBMinScore,
+    });
+    const outcome = await attemptPaperEntry(signal, result, config.riskProfile, grade);
     outcomes.push(outcome);
     if (outcome.ok && outcome.position) {
       runningRisk += result.approvedRiskAmount;
@@ -440,6 +522,7 @@ function applyPositionManagement(pos: PaperPosition, last: number, cfg: ReturnTy
   // Partial exit — one-time, checked first (a scale-out is the "bigger"
   // action; breakeven/trailing below just adjust where the remainder's stop
   // sits). partialExitTaken guards against re-firing every cycle once done.
+  let partialFired = false;
   if (cfg.partialExitRMultiple > 0 && !pos.partialExitTaken && rMultiple >= cfg.partialExitRMultiple) {
     const closeQty = Math.floor(pos.quantity * (cfg.partialExitPct / 100));
     // Skip (retried next cycle) rather than force an edge case: 0 rounds to
@@ -448,6 +531,7 @@ function applyPositionManagement(pos: PaperPosition, last: number, cfg: ReturnTy
     if (closeQty > 0 && closeQty < pos.quantity) {
       const updated = partialClosePaperPosition(pos.id, { quantity: closeQty, exitPrice: last });
       if (updated) {
+        partialFired = true;
         const pnl = (last - pos.entryPrice) * closeQty * (long ? 1 : -1);
         logAutotradeEvent({
           symbol: pos.symbol,
@@ -488,5 +572,48 @@ function applyPositionManagement(pos: PaperPosition, last: number, cfg: ReturnTy
       detail: { from: pos.stopPrice, to: candidateStop, rMultiple },
       riskProfile: pos.riskProfile,
     });
+  }
+
+  // Scale into a winner (pyramiding) — last, and never in the same cycle as a
+  // partial scale-OUT (they'd fight over the same quantity). Uses the stop as
+  // it stands AFTER any ratchet above (candidateStop), so the add can only
+  // raise it further, never undo a trail. See services/autotrading/scaleIn.ts.
+  if (!partialFired) {
+    const add = computeScaleIn(
+      {
+        side: pos.side,
+        entryPrice: pos.entryPrice,
+        initialStopPrice: pos.initialStopPrice,
+        stopPrice: candidateStop,
+        quantity: pos.quantity,
+        addOnsTaken: pos.addOnsTaken,
+      },
+      last,
+      cfg,
+    );
+    if (add) {
+      const updated = addToPaperPosition(pos.id, {
+        addQty: add.addQty,
+        blendedEntry: add.blendedEntry,
+        newInitialStopPrice: add.newInitialStopPrice,
+        newStopPrice: add.newStopPrice,
+      });
+      if (updated) {
+        logAutotradeEvent({
+          symbol: pos.symbol,
+          stage: 'execution',
+          action: 'paper_scaled_in',
+          detail: {
+            addQty: add.addQty,
+            addPrice: last,
+            blendedEntry: add.blendedEntry,
+            newStop: add.newStopPrice,
+            addOnsTaken: updated.addOnsTaken,
+            rMultiple: add.rMultiple,
+          },
+          riskProfile: pos.riskProfile,
+        });
+      }
+    }
   }
 }

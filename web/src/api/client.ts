@@ -1,5 +1,6 @@
 import type {
   AggregatePnl,
+  AutoTuneRiskAdjustmentEfficacy,
   Candle,
   BenchmarkResult,
   DayStats,
@@ -9,6 +10,10 @@ import type {
   ExitCheckRow,
   ExitRulesConfig,
   Exposure,
+  StressResult,
+  PortfolioCorrelation,
+  MarketRegime,
+  SectorRotation,
   IvContext,
   OptionsIv,
   JournalStats,
@@ -34,7 +39,9 @@ import type {
   WebullPositionsPreview,
   WebullImportSummary,
   WebullSyncResult,
+  PositionComparison,
   WebullSyncConfig,
+  WebullSyncConfigPatch,
   WebullMoversResult,
   OptionLiveQuotesResult,
   MoverList,
@@ -52,6 +59,8 @@ import type {
   SnapshotSummary,
   StrategyAnalysis,
   StrategyLeg,
+  RollLegInput,
+  RollAnalysis,
   SymbolDetail,
   UniverseSymbol,
   TradingConfig,
@@ -63,6 +72,7 @@ import type {
   LivePreviewResult,
   PlaceResult,
   ClosePositionResult,
+  ExpiredOptionsSweepResult,
   ReconcileResult,
   ReconcileAllResult,
   CancelResult,
@@ -74,6 +84,7 @@ import type {
   AutotradeOptionsStrategyType,
   AutotradeTradeDirectionMode,
   AutotradeExclusion,
+  MacroEvent,
   AutotradeScreenResult,
   AutotradeDecideResponse,
   AutotradeSignal,
@@ -100,7 +111,11 @@ import type {
   AutotradeLivePosition,
   LiveOptionsPosition,
   AutotradeDashboard,
+  PortfolioGreeks,
   SuggestedLiveCaps,
+  TuneBasis,
+  TargetTuneResult,
+  TunablePatch,
 } from './types';
 
 export class ApiError extends Error {
@@ -124,7 +139,15 @@ async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
     ...opts,
   });
   const text = await res.text();
-  const body = text ? JSON.parse(text) : {};
+  // A proxy/gateway can return non-JSON (an HTML 502/504, a plain-text 413).
+  // Parse defensively so an error response surfaces as a clean ApiError instead
+  // of an opaque "Unexpected token '<'" SyntaxError that no error UI can read.
+  let body: { error?: string; code?: string } & Record<string, unknown>;
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = { error: text.trim().slice(0, 300) || `Request failed (${res.status})` };
+  }
   if (!res.ok) {
     // A gate rejection (not a wrong-password reply) flips the app to the login screen.
     if (res.status === 401 && body.code === 'unauthenticated') {
@@ -161,7 +184,8 @@ export const client = {
       | 'balance'
       | 'open-orders'
       | 'order-history'
-      | 'subscriptions',
+      | 'subscriptions'
+      | 'instrument',
     opts?: { symbol?: string; accountId?: string },
   ) => api<WebullProbeResult>('/webull/probe', post({ kind, ...opts })),
   webullPositionsPreview: (accountId: string) =>
@@ -169,8 +193,10 @@ export const client = {
   webullPositionsImport: (accountId: string) =>
     api<WebullImportSummary>('/webull/positions/import', post({ accountId })),
   webullPositionsSync: (accountId: string) => api<WebullSyncResult>('/webull/positions/sync', post({ accountId })),
+  webullPositionsCompare: (accountId: string) =>
+    api<PositionComparison>('/webull/positions/compare', post({ accountId })),
   webullSyncSchedulerStatus: () => api<WebullSyncConfig>('/webull/positions/scheduler'),
-  setWebullSyncScheduler: (patch: Partial<WebullSyncConfig>) =>
+  setWebullSyncScheduler: (patch: WebullSyncConfigPatch) =>
     api<WebullSyncConfig>('/webull/positions/scheduler', post(patch)),
   webullMovers: (list: MoverList = 'gainers', session: MoverSession = 'regular', limit = 10) =>
     api<WebullMoversResult>(`/webull/movers?list=${list}&session=${session}&limit=${limit}`),
@@ -186,6 +212,7 @@ export const client = {
   testProvider: (symbol?: string) =>
     api<ProviderTestResult>(`/provider/test${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ''}`),
   refresh: () => api<{ ok: boolean }>('/refresh', { method: 'POST' }),
+  marketRegime: (force?: boolean) => api<MarketRegime>(`/market/regime${force ? '?force=true' : ''}`),
 
   // --- tools ---
   positionSize: (body: {
@@ -212,6 +239,14 @@ export const client = {
     riskFreeRate?: number;
     legs: StrategyLeg[];
   }) => api<StrategyAnalysis>('/tools/strategy', post(body)),
+  analyzeRoll: (body: {
+    side: 'long' | 'short';
+    quantity: number;
+    underlyingPrice: number;
+    riskFreeRate?: number;
+    current: RollLegInput;
+    target: RollLegInput;
+  }) => api<RollAnalysis>('/tools/roll', post(body)),
 
   // --- market data ---
   quote: (symbol: string) => api<Quote>(`/quotes/${encodeURIComponent(symbol)}`),
@@ -243,6 +278,8 @@ export const client = {
     maxSymbols?: number;
     includeFailed?: boolean;
   }) => api<ScreenerResult>('/screener/run', { method: 'POST', body: JSON.stringify(body) }),
+  sectorRotation: (lookbackDays?: number) =>
+    api<SectorRotation>(`/screener/sector-rotation${lookbackDays ? `?lookbackDays=${lookbackDays}` : ''}`),
 
   // --- presets ---
   presets: (kind?: string) => api<{ presets: Preset[] }>(`/presets${kind ? `?kind=${kind}` : ''}`),
@@ -280,10 +317,20 @@ export const client = {
     const qs = new URLSearchParams(params as Record<string, string>).toString();
     return api<{ positions: Position[] }>(`/positions${qs ? `?${qs}` : ''}`);
   },
+  /** Classify expired-but-open option positions WITHOUT writing anything. */
+  expiredOptions: () => api<ExpiredOptionsSweepResult>('/positions/expired-options'),
+
+  /** Book $0 exits for the unambiguously worthless ones; leave the rest open. */
+  sweepExpiredOptions: () =>
+    api<ExpiredOptionsSweepResult>('/positions/expired-options/sweep', { method: 'POST', body: '{}' }),
+
   positionsWithPnl: (params: { status?: string } = {}) => {
     const qs = new URLSearchParams({ ...params, withPnl: 'true' } as Record<string, string>).toString();
     return api<{ positions: PositionWithPnl[]; aggregate: AggregatePnl; exposure: Exposure }>(`/positions?${qs}`);
   },
+  portfolioStress: () => api<StressResult>('/positions/stress-test'),
+  portfolioCorrelation: (lookbackDays?: number) =>
+    api<PortfolioCorrelation>(`/positions/correlation${lookbackDays ? `?lookbackDays=${lookbackDays}` : ''}`),
   createPosition: (body: Record<string, unknown>) =>
     api<Position>('/positions', { method: 'POST', body: JSON.stringify(body) }),
   updatePosition: (id: number, patch: Record<string, unknown>) =>
@@ -291,6 +338,8 @@ export const client = {
   deletePosition: (id: number) => api<{ deleted: number }>(`/positions/${id}`, { method: 'DELETE' }),
   addExit: (id: number, body: Record<string, unknown>) =>
     api<Position>(`/positions/${id}/exits`, { method: 'POST', body: JSON.stringify(body) }),
+  deleteExit: (id: number, exitId: number) =>
+    api<{ deleted: number; position: Position }>(`/positions/${id}/exits/${exitId}`, { method: 'DELETE' }),
   closePosition: (id: number, accountId: string, confirmation: string) =>
     api<ClosePositionResult>(`/positions/${id}/close`, {
       method: 'POST',
@@ -299,6 +348,7 @@ export const client = {
 
   // --- journal ---
   journalStats: () => api<JournalStats>('/journal/stats'),
+  journalAutoTuneEfficacy: () => api<{ adjustments: AutoTuneRiskAdjustmentEfficacy[] }>('/journal/auto-tune-efficacy'),
   journalExcursions: () => api<ExcursionReport>('/journal/excursions'),
   journalBenchmark: (accountSize?: number, symbol = 'SPY') => {
     const qs = new URLSearchParams({ symbol });
@@ -384,6 +434,9 @@ export const client = {
       positionAlerts: PositionExitAlert[];
       checkedAt: number;
     }>('/alerts/evaluate', { method: 'POST' }),
+  // Read-only alert + position-exit snapshot for display; does NOT flip one-shot
+  // triggers (use for pages that merely show state, like the Dashboard).
+  alertsState: () => api<{ alerts: Alert[]; positionAlerts: PositionExitAlert[]; checkedAt: number }>('/alerts/state'),
 
   // Background poller + webhook notifications (server-side watching).
   notifications: () => api<NotificationStatus>('/alerts/notifications'),
@@ -452,6 +505,7 @@ export const client = {
     relativeStrengthWeight?: number;
     benchmarkSymbol?: string;
     relativeStrengthLookbackDays?: number;
+    sentimentWeight?: number;
     maxTickerAtrPct?: number;
     maxMarketAtrPct?: number;
     stopAtrMultiple?: number;
@@ -464,8 +518,16 @@ export const client = {
     partialExitPct?: number;
     sessionBufferMinutes?: number;
     earningsBlackoutDays?: number;
+    macroEventBlackoutHours?: number;
     correlationLookbackDays?: number;
     correlationThreshold?: number;
+    correlationAwareSelectionEnabled?: boolean;
+    regimeAdaptiveWeightsEnabled?: boolean;
+    regimeWeightPresets?: {
+      riskOn?: Record<string, number>;
+      neutral?: Record<string, number>;
+      riskOff?: Record<string, number>;
+    };
     liveTradingEnabled?: boolean;
     confirmLiveTrading?: string;
     liveAccountId?: string | null;
@@ -476,6 +538,8 @@ export const client = {
     liveAllowNakedShort?: boolean;
     liveProbationTrades?: number;
     liveProbationSizeMultiplier?: number;
+    liveScaleInEnabled?: boolean;
+    liveMaxAddOns?: number;
     liveOptionsEnabled?: boolean;
     liveOptionsMaxOrderUsd?: number;
     liveOptionsMaxDailyLossUsd?: number;
@@ -484,6 +548,14 @@ export const client = {
     liveOptionsProbationTrades?: number;
     liveOptionsProbationSizeMultiplier?: number;
     optionsStrategyType?: AutotradeOptionsStrategyType;
+    optionsDeltaMin?: number;
+    optionsDeltaMax?: number;
+    optionsMaxSpreadPct?: number;
+    optionsMinOpenInterest?: number;
+    optionsMinVolume?: number;
+    optionsMinDte?: number;
+    optionsMaxDte?: number;
+    optionsIvRankMax?: number;
     optionsStopLossPct?: number;
     optionsTakeProfitPct?: number;
     optionsBreakevenTriggerPct?: number;
@@ -501,6 +573,11 @@ export const client = {
     api<AutotradeExclusion>('/autotrade/exclusions', post(body)),
   removeAutotradeExclusion: (symbol: string) =>
     api<{ removed: string }>(`/autotrade/exclusions/${encodeURIComponent(symbol)}`, { method: 'DELETE' }),
+  autotradeMacroEvents: () => api<{ events: MacroEvent[] }>('/autotrade/macro-events'),
+  addAutotradeMacroEvent: (body: { label: string; eventAt: number }) =>
+    api<MacroEvent>('/autotrade/macro-events', post(body)),
+  removeAutotradeMacroEvent: (id: number) =>
+    api<{ removed: number }>(`/autotrade/macro-events/${id}`, { method: 'DELETE' }),
   runAutotradeScreen: (body: { symbols?: string[] } = {}) =>
     api<AutotradeScreenResult>('/autotrade/screen', post(body)),
   runAutotradeDecision: (body: { symbols?: string[] } = {}) =>
@@ -550,8 +627,12 @@ export const client = {
       body: JSON.stringify({ accountId, confirmation }),
     }),
   autotradeDashboard: () => api<AutotradeDashboard>('/autotrade/dashboard'),
+  autotradePortfolioGreeks: () => api<PortfolioGreeks>('/autotrade/portfolio-greeks'),
   setAutotradeKillSwitch: (on: boolean) =>
     api<AutotradeConfig>('/autotrade/kill-switch', { method: 'POST', body: JSON.stringify({ on }) }),
   syncAutotradeEquity: () => api<EquitySyncResult>('/autotrade/sync-equity', { method: 'POST' }),
   suggestAutotradeLiveCaps: () => api<SuggestedLiveCaps>('/autotrade/live-caps/suggest'),
+  tuneFromTargetPreview: (body: { targetDailyGainPct: number; basis: TuneBasis }) =>
+    api<TargetTuneResult>('/autotrade/tune/preview', { method: 'POST', body: JSON.stringify(body) }),
+  tuneModerateBaseline: () => api<{ patch: TunablePatch }>('/autotrade/tune/moderate'),
 };

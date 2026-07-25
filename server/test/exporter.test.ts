@@ -53,6 +53,16 @@ describe('csvField', () => {
     expect(csvField('he said "hi"')).toBe('"he said ""hi"""');
     expect(csvField('line1\nline2')).toBe('"line1\nline2"');
   });
+  it('neutralizes formula-injection in text fields with a leading quote', () => {
+    expect(csvField('=HYPERLINK("http://evil","x")')).toBe(`"'=HYPERLINK(""http://evil"",""x"")"`);
+    expect(csvField('@SUM(A1:A9)')).toBe("'@SUM(A1:A9)");
+    expect(csvField('+1-800-EVIL')).toBe("'+1-800-EVIL");
+    expect(csvField('-2+3')).toBe("'-2+3");
+  });
+  it('does NOT mangle a negative number passed as a number (P&L stays numeric)', () => {
+    expect(csvField(-100)).toBe('-100');
+    expect(csvField(-12.5)).toBe('-12.5');
+  });
 });
 
 describe('toCsv', () => {

@@ -18,7 +18,7 @@ function Term({ term, children }: { term: string; children: ReactNode }) {
   );
 }
 
-// The seven scoring components, mirroring server/src/indicators/screener.ts so
+// The eight scoring components, mirroring server/src/indicators/screener.ts so
 // the page stays an accurate description of what the engine actually does.
 const COMPONENTS: { name: string; weight: number; what: string }[] = [
   {
@@ -56,6 +56,11 @@ const COMPONENTS: { name: string; weight: number; what: string }[] = [
     weight: 0,
     what: 'Off by default (opt-in via the Auto-Trade config). This symbol’s own % price change over a lookback window (20 trading days by default) minus a benchmark’s (SPY by default) over the same window — outperformance scores higher for longs, underperformance scores higher for shorts.',
   },
+  {
+    name: 'Sentiment',
+    weight: 0,
+    what: 'Off by default (opt-in via the Auto-Trade config). Counts how many of a small, fixed list of finance-specific positive/negative words or phrases ("beats estimates", "downgraded", "lawsuit", …) appear across the symbol’s recent headlines — net positive hits minus negative. A simple keyword count, not a third-party sentiment API or ML model, so every hit stays traceable to the actual word list. Net-positive headlines score higher for longs, net-negative for shorts.',
+  },
 ];
 
 export default function AboutPage() {
@@ -86,6 +91,21 @@ export default function AboutPage() {
           Every result ships with its full breakdown — raw value, sub-score, weight, and contribution — so nothing is
           hidden. All weights, periods, and scales are editable in the screener config.
         </p>
+        <p className="mt-2">
+          When auto-trading acts on a candidate, that total score is also bucketed into a{' '}
+          <strong className="text-slate-200">conviction grade</strong> stamped on the position — <strong>A</strong> at
+          or above the configured A threshold (75 by default), <strong>B</strong> at or above the B threshold (60), else{' '}
+          <strong>C</strong>. The grade is metadata, not a filter: it doesn’t change which trades are taken, but it lets
+          the Journal report realized edge <em>per conviction tier</em>. An opt-in{' '}
+          <strong className="text-slate-200">expectancy-weighted sizing</strong> setting (off by default) then acts on
+          that edge: each grade’s position size is scaled by its own realized average R —{' '}
+          <span className="tabular-nums">multiplier = 1 + avg&nbsp;R</span>, clamped to a min/max bound you choose (e.g.{' '}
+          <span className="tabular-nums">0.5×–1.5×</span>), so a grade that has proven positive expectancy risks more
+          and one that bleeds risks less, while a grade with too few closed trades stays neutral at{' '}
+          <span className="tabular-nums">1×</span>. It multiplies with the other sizing factors (step-down, regime,
+          equity-curve) and never lifts total exposure past the aggregate-risk cap; paper and live are scored on
+          separate books.
+        </p>
         <div className="mt-2 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -109,6 +129,20 @@ export default function AboutPage() {
         <p className="text-xs text-slate-500">
           Filters (price, average volume, RSI band, trend alignment — daily and weekly) are applied separately — a
           symbol can score well yet be flagged as not passing your filters, with the reasons shown.
+        </p>
+        <p className="mt-2">
+          <strong className="text-slate-200">Regime-adaptive weights</strong> (auto-trade config, off by default) let
+          the six core weights above change with the market. When on, the loop reads the{' '}
+          <strong className="text-slate-200">market-regime</strong> label (see below) at scoring time and swaps in that
+          regime’s weight preset — <span className="tabular-nums">risk-on</span>,{' '}
+          <span className="tabular-nums">neutral</span>, or <span className="tabular-nums">risk-off</span> — so the
+          screener can, say, reward trend more when risk is on and RSI/mean-reversion more when it’s off. The presets
+          default to the standard weights (so enabling changes nothing until you edit one), and{' '}
+          <em>relative strength</em> and <em>sentiment</em> always keep their own separate weights regardless. Off, the
+          weights are the fixed defaults shown above. It applies in live, paper, and{' '}
+          <strong className="text-slate-200">backtests</strong> — a backtest derives each historical day’s regime from
+          the benchmark series it already loads (proxy trend + volatility only; breadth is omitted), so a differentiated
+          preset can be measured before it’s trusted live.
         </p>
       </Section>
 
@@ -142,6 +176,65 @@ export default function AboutPage() {
         </ul>
       </Section>
 
+      <Section id="marketRegime" title="How the market-regime gauge works">
+        <p>
+          The Today dashboard’s <strong className="text-slate-200">Market regime</strong> tile folds four independent,
+          backward-looking signals into one <strong className="text-slate-200">Risk-on / Neutral / Risk-off</strong>{' '}
+          read. It’s context for you — it does <strong className="text-slate-200">not</strong> place, size, or block any
+          trade.
+        </p>
+        <p className="mt-2">Each signal contributes +1 (risk-on), −1 (risk-off), or 0 (neutral):</p>
+        <ul className="list-disc pl-5 space-y-1.5 text-slate-400 mt-2">
+          <li>
+            <strong className="text-slate-200">Primary trend (200-day):</strong> the proxy (SPY) vs its own 200-day
+            average. More than <span className="tabular-nums">+1%</span> above → risk-on; more than{' '}
+            <span className="tabular-nums">1%</span> below → risk-off; inside that band → neutral.
+          </li>
+          <li>
+            <strong className="text-slate-200">Intermediate trend (50-day):</strong> the same ±1% test against the
+            proxy’s 50-day average.
+          </li>
+          <li>
+            <strong className="text-slate-200">Breadth:</strong> the share of your universe (up to 120 names) trading
+            above <em>its own</em> 50-day average. <span className="tabular-nums">≥ 55%</span> → risk-on;{' '}
+            <span className="tabular-nums">≤ 45%</span> → risk-off; between → neutral.
+          </li>
+          <li>
+            <strong className="text-slate-200">Volatility:</strong> the proxy’s ATR as a % of price. Below{' '}
+            <span className="tabular-nums">2%</span> (calm) → risk-on; above <span className="tabular-nums">4%</span>{' '}
+            (stressed) → risk-off; between → neutral.
+          </li>
+        </ul>
+        <p className="mt-2">
+          The four points are summed: <span className="tabular-nums">+2 or more</span> reads{' '}
+          <strong className="text-slate-200">Risk-on</strong>, <span className="tabular-nums">−2 or less</span> reads{' '}
+          <strong className="text-slate-200">Risk-off</strong>, and anything in between stays{' '}
+          <strong className="text-slate-200">Neutral</strong> — a 2-point margin, not a bare majority, is needed to
+          leave neutral. A signal whose data can’t be fetched reads{' '}
+          <strong className="text-slate-200">“no data”</strong> and is dropped from the sum entirely, never counted as a
+          fake neutral in any regime’s favor. The read is cached for an hour, since it turns on the daily close.
+        </p>
+      </Section>
+
+      <Section id="sectorRotation" title="How the sector-rotation board works">
+        <p>
+          The Screener’s <strong className="text-slate-200">Sector rotation</strong> panel ranks your universe’s sectors
+          by the <strong className="text-slate-200">median relative strength</strong> of their members over a 20-day
+          lookback. A member’s relative strength is its own lookback return minus the benchmark’s (
+          <strong className="text-slate-200">SPY</strong>) over the same window — the same idea as the screener’s{' '}
+          <em>Rel. Strength</em> component above. Taking the <strong className="text-slate-200">median</strong> (not the
+          mean) across a sector keeps one runaway member from carrying the whole group.
+        </p>
+        <p className="mt-2">
+          Sectors sort strongest → weakest. If SPY’s own history can’t be fetched, the board degrades to ranking by{' '}
+          <strong className="text-slate-200">absolute return</strong> and labels itself as such; a member whose history
+          can’t be fetched is dropped from its sector’s sample (never a fake 0), and a sector with no resolvable members
+          is listed rather than ranked. It’s a read-only ranking and a navigation aid — clicking a sector scans just its
+          members — and it does <strong className="text-slate-200">not</strong> add any bonus to a symbol’s screener
+          score. Cached hourly.
+        </p>
+      </Section>
+
       <Section id="glossary" title="Glossary">
         <dl>
           <Term term="Moving average">
@@ -159,6 +252,11 @@ export default function AboutPage() {
           <Term term="Rel. volume">
             Today’s volume relative to its recent average; &gt;1× means heavier-than-usual trading.
           </Term>
+          <Term term="Beta">
+            A symbol’s historical sensitivity to the broad market, from your data provider — 1.0 moves with the market,
+            &gt;1 amplifies it, &lt;1 dampens it. Positions → Market stress test uses it to estimate P&L for a
+            hypothetical market move.
+          </Term>
           <Term term="Gap">Overnight move from the prior close to today’s open, as a %.</Term>
           <Term term="Delta">
             Option Greek: ≈ how much the option price moves per $1 move in the underlying; also a rough proxy for the
@@ -174,6 +272,11 @@ export default function AboutPage() {
           <Term term="POP">
             Probability of profit — a lognormal estimate of finishing past breakeven, given your inputs. An estimate,
             not a guarantee.
+          </Term>
+          <Term term="Expected value (options)">
+            The same lognormal model’s probability-weighted average P&amp;L at expiration, in dollars (Strategy Builder,
+            Roll analyzer). A structure with a lower POP can still have a higher EV if its payoff is more favorably
+            skewed — POP alone can’t show that.
           </Term>
           <Term term="Expectancy">Average profit/loss per trade = (win rate × avg win) − (loss rate × avg loss).</Term>
           <Term term="Profit factor">Gross profit ÷ gross loss. Above 1 means winners outweigh losers.</Term>

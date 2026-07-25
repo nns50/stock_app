@@ -731,6 +731,25 @@ starts.
    trade-by-trade table per window. Nothing downstream of this phase — paper or live
    execution — is wired up yet; this phase only produces the report a human reviews
    before either of those is allowed to run.
+
+   **Statistical-significance check on a walk-forward window (2026-07-18) — shipped.**
+   `services/autotrading/significance.ts`'s `computeSignificanceStats()` adds a bootstrap
+   confidence interval and a sign-flip permutation p-value on top of `computeBacktestStats()`'s
+   plain expectancy figure — the stat grid answers "what happened"; this answers "how much
+   to trust it." Both windows' significance is computed the same way regardless of engine
+   (equity, options, or combined's `[...equityTrades, ...optionsTrades]` concatenation,
+   mirroring `combinedStats()`'s own reuse of `computeBacktestStats()`), via the same
+   structural-subset parameter idiom (`{ pnl: number }[]`) so one function serves all
+   three without duplication. Mirrors `services/riskOfRuin.ts`'s own Monte Carlo
+   conventions: an injectable `rng` (default `Math.random`, swapped for a seeded PRNG in
+   tests) and a private sort-then-percentile helper, rather than a shared stats module —
+   this codebase's established small-helper-duplication convention. A sample below 20
+   trades is flagged `reliable: false` rather than hidden, the same floor
+   `pnl.ts`'s `kellySuggestion()` already uses for its own reliability flag. Exactly like
+   the walk-forward harness itself, this renders no pass/fail verdict — the CI and
+   p-value are additional evidence surfaced alongside the existing stat grid (Auto-Trade
+   page's new "significance" panel per window), for the same human review the rest of
+   this phase already defers to, not a new automated gate.
 6. **Paper execution loop — shipped.** `services/autotrading/loop.ts` mirrors the
    alerts-poller's self-rescheduling `setTimeout` pattern exactly (`services/alertScheduler.ts`):
    `autotrade_config.enabled` is read fresh every cycle (no restart to toggle), one
@@ -1031,6 +1050,29 @@ starts.
      left as-is — it mirrors an identical pre-existing gap in the human-confirmed
      path, not something specific to autotrade. Every fix has a regression test
      verified by reverting the fix and confirming it fails against the old code.
+
+     **Resolved 2026-07-24.** The deferred partial-fill finding is fixed on all
+     three live paths at once (human reconcile, live equity, live options), since
+     it was the same defect in three places. Fills are now materialized whenever
+     the broker REPORTS filled quantity — not only at a terminal `filled` — so a
+     partial that is cancelled between two ticks is still recorded; on autotrade's
+     paths that was the sharp edge, because a cancelled intent leaves the pending
+     set permanently and nothing would ever have booked it. Each intent carries a
+     `materialized_qty` / `materialized_notional` high-water mark, so repeated
+     observation books only the unbooked delta and the three independent reconcile
+     callers can't double-book. Later instalments blend into the single position
+     each autotrade order maps to (`position_id` is one column), while the human
+     ledger books independent lots. The shared guards live in
+     `services/trading/fillDelta.ts` so they can't drift between paths: a decrease
+     in reported quantity refuses the book outright, a total exceeding the order's
+     own size is clamped (and priced at the reported average rather than a
+     differenced one, which would inflate it), and every refusal is journaled.
+     The bias is deliberate and one-directional — under-record and flag rather
+     than inflate size or cost basis, because the latter silently corrupts every
+     risk figure derived from it. The underlying broker semantics
+     (`filled_quantity` as a running total) remain UNCONFIRMED against a real
+     partial fill; `npm run capture:broker --watch` exists to settle it, and the
+     guards above are what make correctness not depend on the answer.
 
      **Follow-up, added after live trading was actually enabled (2026-07-03):** live
      fills had no dedicated view on the Auto-Trade page itself — only the Monitoring

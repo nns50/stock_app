@@ -18,6 +18,7 @@ import type {
   OptionsBacktestRunResponse,
   OptionsPaperPosition,
   PaperPosition,
+  SignificanceStats,
   WalkForwardResponse,
 } from '../api/types';
 
@@ -55,15 +56,27 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     stepDownSizeCutPct: 50,
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
+    maxSectorExposurePct: 20,
     maxTradesPerDay: 6,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    equityCurveDeriskEnabled: false,
+    equityCurveLookbackDays: 10,
+    equityCurveDeriskCutPct: 50,
+    maxAdvParticipationPct: 0,
+    convictionGradeAMinScore: 75,
+    convictionGradeBMinScore: 60,
+    expectancyWeightingEnabled: false,
+    expectancyMinTrades: 10,
+    expectancyMinMultiplier: 0.5,
+    expectancyMaxMultiplier: 1.5,
     tradeDirection: 'long',
     minRelVol: 1.5,
     requireWeeklyTrendAlignment: false,
     relativeStrengthWeight: 0,
     benchmarkSymbol: 'SPY',
     relativeStrengthLookbackDays: 20,
+    sentimentWeight: 0,
     maxTickerAtrPct: 15,
     maxMarketAtrPct: 5,
     stopAtrMultiple: 1.5,
@@ -74,6 +87,11 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     trailStopRMultiple: 0,
     partialExitRMultiple: 0,
     partialExitPct: 50,
+    addOnTriggerRMultiple: 0,
+    addOnSizePct: 50,
+    maxAddOns: 0,
+    liveScaleInEnabled: false,
+    liveMaxAddOns: 0,
     optionsStopLossPct: 0,
     optionsTakeProfitPct: 0,
     optionsBreakevenTriggerPct: 0,
@@ -83,8 +101,16 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     optionsPartialExitPct: 50,
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
+    macroEventBlackoutHours: 0,
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
+    correlationAwareSelectionEnabled: false,
+    regimeAdaptiveWeightsEnabled: false,
+    regimeWeightPresets: {
+      riskOn: { momentum: 30, relativeVolume: 20, rsi: 15, volatility: 10, gap: 10, trend: 15 },
+      neutral: { momentum: 30, relativeVolume: 20, rsi: 15, volatility: 10, gap: 10, trend: 15 },
+      riskOff: { momentum: 30, relativeVolume: 20, rsi: 15, volatility: 10, gap: 10, trend: 15 },
+    },
     liveTradingEnabled: false,
     liveEnabledAt: null,
     liveAccountId: null,
@@ -104,6 +130,17 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     liveOptionsProbationTrades: 20,
     liveOptionsProbationSizeMultiplier: 0.5,
     optionsStrategyType: 'single_leg',
+    autoPromoteMoversEnabled: true,
+    autoPromoteThreshold: 3,
+    autoPromoteWindowDays: 10,
+    autoPromoteMaxSymbols: 50,
+    autoTuneEnabled: false,
+    autoTuneMinTrades: 20,
+    autoTuneMaxStepPct: 0.5,
+    autoTuneSlippageExcludePct: 2,
+    autoTuneExitsEnabled: false,
+    autoTuneExitMaxStep: 0.25,
+    autoTuneRequireOosConfirmation: true,
     ...overrides,
   };
 }
@@ -122,6 +159,8 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     maxAggregateOpenRisk: 2_000,
     maxCorrelatedExposure: 6_000,
     lastCorrelatedExposureCheck: null,
+    sectorExposure: [],
+    maxSectorExposure: 20_000,
     dailyPnl: 0,
     dailyDrawdownHaltLevel: -3_000,
     tradesToday: 0,
@@ -188,12 +227,15 @@ beforeEach(() => {
   vi.spyOn(client, 'autotradeExclusions').mockResolvedValue({
     exclusions: [{ symbol: 'VNQ', reason: 'Real estate ETF', source: 'default', createdAt: Date.now() }],
   });
+  vi.spyOn(client, 'autotradeMacroEvents').mockResolvedValue({ events: [] });
   vi.spyOn(client, 'autotradeEvents').mockResolvedValue({ events: [] });
+  vi.spyOn(client, 'events').mockResolvedValue({ events: [] });
   vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeLiveOptionsPositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
+  vi.spyOn(client, 'autotradePortfolioGreeks').mockResolvedValue({ netDelta: 0, netTheta: 0, netVega: 0 });
 });
 
 describe('AutoTradePage', () => {
@@ -279,6 +321,181 @@ describe('AutoTradePage', () => {
     await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ regimeSizeCutPct: 25, confirmAggressive: undefined }));
   });
 
+  it('toggling equity-curve de-risking saves immediately', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Equity-curve de-risking/ }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ equityCurveDeriskEnabled: true, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new equity-curve lookback value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Equity-curve lookback (days)').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '20' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save equity-curve lookback' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ equityCurveLookbackDays: 20, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new max ADV participation value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Max ADV participation (%)').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '2' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save max ADV participation' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ maxAdvParticipationPct: 2, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new conviction grade A threshold', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Conviction grade A ≥ score').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '80' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save conviction grade A threshold' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ convictionGradeAMinScore: 80, confirmAggressive: undefined }),
+    );
+  });
+
+  it('toggling expectancy-weighted sizing saves immediately (no separate Save button)', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Expectancy-weighted sizing/ }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ expectancyWeightingEnabled: true, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new expectancy min sample value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Expectancy min sample (trades/grade)').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '20' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save expectancy min sample' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ expectancyMinTrades: 20, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves new expectancy multiplier bounds independently', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Expectancy multiplier bounds (min / max)').closest('label')!;
+    const inputs = within(field).getAllByRole('textbox');
+    fireEvent.change(inputs[1], { target: { value: '2' } });
+
+    const saveMax = screen.getByRole('button', { name: 'Save expectancy max multiplier' });
+    await waitFor(() => expect(saveMax).not.toBeDisabled());
+    fireEvent.click(saveMax);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ expectancyMaxMultiplier: 2, confirmAggressive: undefined }),
+    );
+  });
+
+  it('toggling correlation-aware selection saves immediately (no separate Save button)', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Correlation-aware selection/ }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ correlationAwareSelectionEnabled: true, confirmAggressive: undefined }),
+    );
+  });
+
+  it('toggling regime-adaptive weights saves immediately', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Regime-adaptive scoring weights/ }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ regimeAdaptiveWeightsEnabled: true, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves an edited risk-off regime weight preset', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    // The Risk-off preset row: bump its Trend weight, then Save that preset.
+    // findByText (not getByText) waits for the config to load — the preset rows
+    // only render once regimeWeightPresetsDraft is seeded from config.data.
+    const riskOffRow = (await screen.findByText('Risk-off')).closest('div')!.parentElement!;
+    const trendInput = within(riskOffRow).getAllByRole('textbox').at(-1)!; // 'Trend' is the last of the six inputs
+    fireEvent.change(trendInput, { target: { value: '40' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save Risk-off weights' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() => expect(setConfig).toHaveBeenCalled());
+    const call = setConfig.mock.calls.find((c) => c[0]?.regimeWeightPresets);
+    expect(call?.[0].regimeWeightPresets?.riskOff).toMatchObject({ trend: 40 });
+  });
+
   it('reflects a fetched requireWeeklyTrendAlignment: true as a checked checkbox', async () => {
     vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture({ requireWeeklyTrendAlignment: true }));
     renderPage();
@@ -351,6 +568,145 @@ describe('AutoTradePage', () => {
     );
   });
 
+  it('toggling auto-tune from realized edge saves immediately (no separate Save button)', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Auto-tune from realized edge/ }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ autoTuneEnabled: true, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new auto-tune min sample size value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Min sample size').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '10' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save min sample size' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ autoTuneMinTrades: 10, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new auto-tune max daily risk-% step value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Max daily risk-% step').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '1' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save max daily risk-% step' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ autoTuneMaxStepPct: 1, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new auto-tune slippage exclusion threshold value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Slippage exclusion threshold (%)').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '3' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save slippage exclusion threshold' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ autoTuneSlippageExcludePct: 3, confirmAggressive: undefined }),
+    );
+  });
+
+  it('toggling the exit-geometry auto-tune saves immediately', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Also auto-tune exit geometry/ }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ autoTuneExitsEnabled: true, confirmAggressive: undefined }),
+    );
+  });
+
+  it('toggling the out-of-sample confirmation guard saves immediately (on by default → off)', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const checkbox = await screen.findByRole('checkbox', { name: /Require out-of-sample confirmation/ });
+    await waitFor(() => expect((checkbox as HTMLInputElement).checked).toBe(true)); // on by default
+    fireEvent.click(checkbox);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ autoTuneRequireOosConfirmation: false, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new max daily exit step value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Max daily exit step').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '0.5' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save max daily exit step' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ autoTuneExitMaxStep: 0.5, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new max sector exposure value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Max sector exposure (%)').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '25' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save max sector exposure' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ maxSectorExposurePct: 25, confirmAggressive: undefined }),
+    );
+  });
+
   it('saves a new relative strength lookback value', async () => {
     const setConfig = vi
       .spyOn(client, 'setAutotradeConfig')
@@ -369,6 +725,84 @@ describe('AutoTradePage', () => {
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ relativeStrengthLookbackDays: 10, confirmAggressive: undefined }),
     );
+  });
+
+  it('saves a new sentiment weight value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const weightField = screen.getByText('Sentiment weight (0-100)').closest('label')!;
+    const weightInput = within(weightField).getByRole('textbox');
+    fireEvent.change(weightInput, { target: { value: '25' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save sentiment weight' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ sentimentWeight: 25, confirmAggressive: undefined }));
+  });
+
+  it('saves a new macro event blackout hours value', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Macro event blackout (hours)').closest('label')!;
+    const input = within(field).getByRole('textbox');
+    fireEvent.change(input, { target: { value: '2' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save macro event blackout' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ macroEventBlackoutHours: 2, confirmAggressive: undefined }),
+    );
+  });
+
+  it('adds a new macro event to the blackout list', async () => {
+    const addEvent = vi.spyOn(client, 'addAutotradeMacroEvent').mockResolvedValue({
+      id: 1,
+      label: 'FOMC decision',
+      eventAt: Date.parse('2026-09-16T18:00'),
+      createdAt: Date.now(),
+    });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const labelField = screen.getByPlaceholderText('FOMC decision');
+    fireEvent.change(labelField, { target: { value: 'FOMC decision' } });
+    const dateField = screen.getByText('Date & time').closest('label')!;
+    const dateInput = within(dateField).getByDisplayValue('');
+    fireEvent.change(dateInput, { target: { value: '2026-09-16T18:00' } });
+
+    // Scoped to this card specifically — the real-estate exclusion list above
+    // it has its own, differently-wired "Add" button with the same text.
+    const card = screen.getByText('Macro event blackout list').closest('.p-4')!;
+    fireEvent.click(within(card).getByRole('button', { name: 'Add' }));
+
+    await waitFor(() =>
+      expect(addEvent).toHaveBeenCalledWith({ label: 'FOMC decision', eventAt: Date.parse('2026-09-16T18:00') }),
+    );
+  });
+
+  it('removes a macro event from the blackout list after confirming', async () => {
+    vi.spyOn(client, 'autotradeMacroEvents').mockResolvedValue({
+      events: [{ id: 7, label: 'FOMC decision', eventAt: Date.now(), createdAt: Date.now() }],
+    });
+    const removeEvent = vi.spyOn(client, 'removeAutotradeMacroEvent').mockResolvedValue({ removed: 7 });
+    renderPage();
+    const row = (await screen.findByText('FOMC decision')).closest('tr')!;
+
+    fireEvent.click(within(row).getByRole('button', { name: 'remove' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+
+    await waitFor(() => expect(removeEvent).toHaveBeenCalledWith(7));
   });
 
   it('saves a new options stop-loss % value', async () => {
@@ -451,6 +885,26 @@ describe('AutoTradePage', () => {
 
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ optionsTrailStartPct: 20, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new scale-in (add-on) trigger R-multiple', async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('Scale-in trigger (R-multiple)').closest('label')!;
+    const input = within(field).getByRole('textbox');
+    fireEvent.change(input, { target: { value: '1.5' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save scale-in trigger' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ addOnTriggerRMultiple: 1.5, confirmAggressive: undefined }),
     );
   });
 
@@ -769,6 +1223,18 @@ describe('AutoTradePage', () => {
     fireEvent.change(screen.getByRole('combobox', { name: /^Trade direction\b/ }), { target: { value: 'both' } });
 
     await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ tradeDirection: 'both' }));
+  });
+
+  it("saves the selected Options strategy on change to 'auto' (IV-rank-adaptive, 2026-07-18)", async () => {
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue(configFixture({ optionsStrategyType: 'auto' }));
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByRole('combobox', { name: /^Options strategy\b/ }), { target: { value: 'auto' } });
+
+    await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ optionsStrategyType: 'auto' }));
   });
 
   it('shows a long/short badge per candidate — one of each from the SAME screen run', async () => {
@@ -1202,6 +1668,17 @@ describe('AutoTradePage', () => {
     },
   });
 
+  const sigStats = (overrides: Partial<SignificanceStats> = {}): SignificanceStats => ({
+    sampleSize: 1,
+    expectancy: 300,
+    ciLow: 100,
+    ciHigh: 500,
+    pValue: 0.03,
+    resamples: 2000,
+    reliable: false,
+    ...overrides,
+  });
+
   it('runs a plain backtest and renders stats + the trade', async () => {
     const run = vi.spyOn(client, 'runAutotradeBacktest').mockResolvedValue(btRun());
     renderDashboard();
@@ -1272,10 +1749,13 @@ describe('AutoTradePage', () => {
     await waitFor(() => expect(combinedRun).toHaveBeenCalledWith(expect.objectContaining({ directionMode: 'both' })));
   });
 
-  it('runs a walk-forward split once a split date is set, showing both windows', async () => {
+  it('runs a walk-forward split once a split date is set, showing both windows and their significance stats', async () => {
     const wfResult: WalkForwardResponse = {
-      inSample: btRun({ totalPnl: 300, returnPct: 0.3 }),
-      outOfSample: btRun({ totalPnl: -50, returnPct: -0.05, wins: 0, losses: 1, winRate: 0 }),
+      inSample: { ...btRun({ totalPnl: 300, returnPct: 0.3 }), significance: sigStats() },
+      outOfSample: {
+        ...btRun({ totalPnl: -50, returnPct: -0.05, wins: 0, losses: 1, winRate: 0 }),
+        significance: sigStats({ expectancy: -50, ciLow: -120, ciHigh: 20, pValue: 0.42 }),
+      },
       excludedSymbols: [],
       errors: [],
     };
@@ -1295,6 +1775,163 @@ describe('AutoTradePage', () => {
     );
     expect(await screen.findByRole('heading', { name: /^In-sample/ })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /^Out-of-sample/ })).toBeInTheDocument();
+    // In-sample's significance (reliable: false, small sample) shows the caution note...
+    expect(screen.getAllByText('Thin sample — treat with caution').length).toBeGreaterThan(0);
+    // ...and both windows' p-values/CIs render somewhere on the page.
+    expect(screen.getByText('0.030')).toBeInTheDocument();
+    expect(screen.getByText('0.420')).toBeInTheDocument();
+    expect(screen.getByText('+$100.00 to +$500.00')).toBeInTheDocument();
+    expect(screen.getByText('-$120.00 to +$20.00')).toBeInTheDocument();
+  });
+
+  it('shows a "no trades" note instead of significance stats for an empty walk-forward window', async () => {
+    const wfResult: WalkForwardResponse = {
+      inSample: {
+        report: {
+          trades: [],
+          equityCurve: [],
+          startingEquity: 100_000,
+          finalEquity: 100_000,
+          excludedSymbols: [],
+          errors: [],
+        },
+        stats: btRun().stats,
+        significance: {
+          sampleSize: 0,
+          expectancy: null,
+          ciLow: null,
+          ciHigh: null,
+          pValue: null,
+          resamples: 0,
+          reliable: false,
+        },
+      },
+      outOfSample: {
+        report: {
+          trades: [],
+          equityCurve: [],
+          startingEquity: 100_000,
+          finalEquity: 100_000,
+          excludedSymbols: [],
+          errors: [],
+        },
+        stats: btRun().stats,
+        significance: {
+          sampleSize: 0,
+          expectancy: null,
+          ciLow: null,
+          ciHigh: null,
+          pValue: null,
+          resamples: 0,
+          reliable: false,
+        },
+      },
+      excludedSymbols: [],
+      errors: [],
+    };
+    vi.spyOn(client, 'runAutotradeWalkForward').mockResolvedValue(wfResult);
+    renderDashboard();
+    await screen.findByText('Monitoring');
+
+    fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'AAPL' } });
+    const dateInputs = document.querySelectorAll('input[type="date"]');
+    fireEvent.change(dateInputs[2], { target: { value: '2024-06-01' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Run walk-forward' }));
+
+    expect(await screen.findByRole('heading', { name: /^In-sample/ })).toBeInTheDocument();
+    expect(screen.getAllByText('No trades in this window — nothing to test for significance.')).toHaveLength(2);
+  });
+
+  describe('Task #153: parameter sweep', () => {
+    const wfAt = (oosExpectancy: number, oosTrades = 10): WalkForwardResponse => ({
+      inSample: { ...btRun(), significance: sigStats() },
+      outOfSample: {
+        ...btRun({ expectancy: oosExpectancy, totalTrades: oosTrades, returnPct: oosExpectancy > 0 ? 0.1 : -0.05 }),
+        significance: sigStats({ expectancy: oosExpectancy, sampleSize: oosTrades }),
+      },
+      excludedSymbols: [],
+      errors: [],
+    });
+
+    it('reruns the walk-forward split once per nearby risk-per-trade value and highlights the base row', async () => {
+      const run = vi.spyOn(client, 'runAutotradeWalkForward').mockImplementation(async (body) =>
+        // The base (1%) looks great; its neighbors look ordinary — the classic
+        // "lucky spike, not a real edge" shape this table exists to surface.
+        wfAt(body.riskPerTradePct === 1 ? 300 : 50),
+      );
+      renderDashboard();
+      await screen.findByText('Monitoring');
+
+      fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'AAPL' } });
+      const dateInputs = document.querySelectorAll('input[type="date"]');
+      fireEvent.change(dateInputs[2], { target: { value: '2024-06-01' } });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Run sweep' }));
+
+      await waitFor(() => expect(run).toHaveBeenCalledTimes(5));
+      expect(run).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ symbols: ['AAPL'], splitDate: '2024-06-01', riskPerTradePct: 0.5 }),
+      );
+      expect(run).toHaveBeenNthCalledWith(2, expect.objectContaining({ riskPerTradePct: 0.75 }));
+      expect(run).toHaveBeenNthCalledWith(3, expect.objectContaining({ riskPerTradePct: 1 }));
+      expect(run).toHaveBeenNthCalledWith(4, expect.objectContaining({ riskPerTradePct: 1.25 }));
+      expect(run).toHaveBeenNthCalledWith(5, expect.objectContaining({ riskPerTradePct: 1.5 }));
+
+      expect(await screen.findByText('1.00% (base)')).toBeInTheDocument();
+      expect(screen.getByText('0.50%')).toBeInTheDocument();
+      expect(screen.getByText('1.50%')).toBeInTheDocument();
+      // Base row's out-of-sample expectancy; neighbor rows share the same
+      // ordinary figure — appears 4 times (0.5, 0.75, 1.25, 1.5%).
+      expect(screen.getByText('+$300.00')).toBeInTheDocument();
+      expect(screen.getAllByText('+$50.00')).toHaveLength(4);
+    });
+
+    it('requires an out-of-sample split date — the sweep has nothing to compare without one', async () => {
+      const run = vi.spyOn(client, 'runAutotradeWalkForward');
+      renderDashboard();
+      await screen.findByText('Monitoring');
+
+      fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'AAPL' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Run sweep' }));
+
+      expect(await screen.findByText(/out-of-sample split date/i)).toBeInTheDocument();
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it('requires a positive center risk-per-trade value', async () => {
+      const run = vi.spyOn(client, 'runAutotradeWalkForward');
+      renderDashboard();
+      await screen.findByText('Monitoring');
+
+      fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'AAPL' } });
+      const dateInputs = document.querySelectorAll('input[type="date"]');
+      fireEvent.change(dateInputs[2], { target: { value: '2024-06-01' } });
+      fireEvent.change(screen.getByPlaceholderText('e.g. 1'), { target: { value: '0' } });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Run sweep' }));
+
+      expect(await screen.findByText(/Enter a risk-per-trade % to sweep around/)).toBeInTheDocument();
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it("marks one value's failure in its own row without losing the others", async () => {
+      vi.spyOn(client, 'runAutotradeWalkForward').mockImplementation(async (body) => {
+        if (body.riskPerTradePct === 1) throw new Error('provider timeout');
+        return wfAt(50);
+      });
+      renderDashboard();
+      await screen.findByText('Monitoring');
+
+      fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'AAPL' } });
+      const dateInputs = document.querySelectorAll('input[type="date"]');
+      fireEvent.change(dateInputs[2], { target: { value: '2024-06-01' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Run sweep' }));
+
+      expect(await screen.findByText('provider timeout')).toBeInTheDocument();
+      // The other four values still rendered their own results.
+      expect(screen.getAllByText('+$50.00')).toHaveLength(4);
+    });
   });
 
   it('shows an inline error and does not call the API when no symbols are entered', async () => {
@@ -1444,6 +2081,48 @@ describe('AutoTradePage', () => {
       expect(run).toHaveBeenCalledWith(
         expect.objectContaining({ optionsDecisionConfig: { strategyType: 'debit_spread' } }),
       ),
+    );
+  });
+
+  it("threads strategyType: 'auto' into the options backtest request the same way (IV-rank-adaptive, 2026-07-18)", async () => {
+    vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture({ optionsStrategyType: 'auto' }));
+    const run = vi.spyOn(client, 'runOptionsBacktest').mockResolvedValue({
+      report: {
+        trades: [],
+        equityCurve: [],
+        startingEquity: 100_000,
+        finalEquity: 100_000,
+        excludedSymbols: [],
+        errors: [],
+        skipped: [],
+      },
+      stats: {
+        totalTrades: 0,
+        wins: 0,
+        losses: 0,
+        winRate: 0,
+        avgWin: 0,
+        avgLoss: 0,
+        expectancy: 0,
+        profitFactor: null,
+        totalPnl: 0,
+        returnPct: 0,
+        avgR: 0,
+        bestR: 0,
+        worstR: 0,
+        maxDrawdown: 0,
+        longestWinStreak: 0,
+        longestLossStreak: 0,
+      },
+    });
+    renderDashboard();
+    await screen.findByText('Monitoring');
+
+    fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Run options backtest' }));
+
+    await waitFor(() =>
+      expect(run).toHaveBeenCalledWith(expect.objectContaining({ optionsDecisionConfig: { strategyType: 'auto' } })),
     );
   });
 
@@ -1810,6 +2489,7 @@ describe('AutoTradePage', () => {
       updatedAt: Date.now(),
       currentPrice: null,
       shortCurrentPrice: null,
+      underlyingPrice: null,
       unrealizedPnl: null,
       ...overrides,
     };
@@ -1958,6 +2638,95 @@ describe('AutoTradePage', () => {
     expect(screen.getByText('$3.00')).toBeInTheDocument(); // Current $ = net value now
     expect(screen.getAllByText('+$200.00').length).toBeGreaterThan(0);
     expect(screen.getByText('0.50R')).toBeInTheDocument(); // 200 / 400
+  });
+
+  it('shows the general assignment-risk badge on a deep-ITM, near-zero-extrinsic short leg of an OPEN debit spread', async () => {
+    vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({
+      positions: [
+        optionsPaperPosition({
+          id: 1,
+          symbol: 'SPRD',
+          side: 'call',
+          kind: 'debit_spread',
+          strike: 100,
+          shortStrike: 90,
+          status: 'open',
+          currentPrice: 25,
+          shortCurrentPrice: 20.02, // 20 intrinsic (110 underlying - 90 strike) + 0.02 extrinsic
+          underlyingPrice: 110,
+        }),
+      ],
+    });
+    renderDashboard();
+    expect(await screen.findByText('SPRD')).toBeInTheDocument();
+    expect(screen.getByText('Assignment risk')).toBeInTheDocument();
+  });
+
+  it('does not show an assignment-risk badge on a single-leg position, even deep ITM — this app never writes a naked short', async () => {
+    vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({
+      positions: [
+        optionsPaperPosition({
+          id: 1,
+          symbol: 'AAPL',
+          side: 'call',
+          kind: 'single_leg',
+          strike: 90,
+          status: 'open',
+          currentPrice: 20.02,
+          underlyingPrice: 110,
+        }),
+      ],
+    });
+    renderDashboard();
+    expect(await screen.findByText('AAPL')).toBeInTheDocument();
+    expect(screen.queryByText('Assignment risk')).toBeNull();
+  });
+
+  it('does not show an assignment-risk badge while the short leg still has real time value', async () => {
+    vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({
+      positions: [
+        optionsPaperPosition({
+          id: 1,
+          symbol: 'SPRD',
+          side: 'call',
+          kind: 'debit_spread',
+          strike: 100,
+          shortStrike: 90,
+          status: 'open',
+          currentPrice: 25,
+          shortCurrentPrice: 21, // 20 intrinsic + 1.00 extrinsic — well above the low-extrinsic threshold
+          underlyingPrice: 110,
+        }),
+      ],
+    });
+    renderDashboard();
+    expect(await screen.findByText('SPRD')).toBeInTheDocument();
+    expect(screen.queryByText('Assignment risk')).toBeNull();
+  });
+
+  it('shows the dividend-specific badge when a deep-ITM short call meets an imminent ex-dividend date', async () => {
+    const soon = new Date(Date.now() + 2 * 86_400_000).toISOString().slice(0, 10);
+    vi.spyOn(client, 'events').mockResolvedValue({ events: [{ symbol: 'SPRD', exDividendDate: soon }] });
+    vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({
+      positions: [
+        optionsPaperPosition({
+          id: 1,
+          symbol: 'SPRD',
+          side: 'call',
+          kind: 'debit_spread',
+          strike: 100,
+          shortStrike: 90,
+          status: 'open',
+          currentPrice: 25,
+          shortCurrentPrice: 20.02,
+          underlyingPrice: 110,
+        }),
+      ],
+    });
+    renderDashboard();
+    expect(await screen.findByText('SPRD')).toBeInTheDocument();
+    expect(await screen.findByText('Div. assignment risk')).toBeInTheDocument();
+    expect(screen.queryByText('Assignment risk')).toBeNull();
   });
 
   it('runs one loop cycle, shows the summary, and reloads positions', async () => {
@@ -2221,6 +2990,70 @@ describe('AutoTradePage', () => {
       renderDashboard();
       expect(await screen.findByText('$8,200.50')).toBeInTheDocument();
       expect(screen.getByText('BLOCKED')).toBeInTheDocument();
+    });
+
+    it('shows "no open positions" for sector exposure with an empty book', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({ sectorExposure: [], maxSectorExposure: 20_000 }),
+      );
+      renderDashboard();
+      expect(await screen.findByText(/of \$20,000\.00 cap — no open positions/)).toBeInTheDocument();
+    });
+
+    it('shows the worst (largest) current sector concentration, sorted first by computeExposure', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          sectorExposure: [
+            { key: 'Technology', gross: 4_500, pct: 60, count: 2 },
+            { key: 'Healthcare', gross: 3_000, pct: 40, count: 1 },
+          ],
+          maxSectorExposure: 20_000,
+        }),
+      );
+      renderDashboard();
+      expect(await screen.findByText('$4,500.00')).toBeInTheDocument();
+      expect(screen.getByText(/of \$20,000\.00 cap — Technology \(2 positions\)/)).toBeInTheDocument();
+    });
+
+    it('flags sector exposure over the cap in red', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          sectorExposure: [{ key: 'Energy', gross: 25_000, pct: 100, count: 3 }],
+          maxSectorExposure: 20_000,
+        }),
+      );
+      renderDashboard();
+      const value = await screen.findByText('$25,000.00');
+      expect(value).toHaveClass('text-bear');
+    });
+
+    it('shows the portfolio Greeks aggregate once loaded', async () => {
+      vi.spyOn(client, 'autotradePortfolioGreeks').mockResolvedValue({
+        netDelta: 1234.5,
+        netTheta: -56.78,
+        netVega: 90.12,
+      });
+      renderDashboard();
+      expect(await screen.findByText('+$1,234.50')).toBeInTheDocument();
+      expect(screen.getByText('-$56.78')).toBeInTheDocument();
+      expect(screen.getByText('+$90.12')).toBeInTheDocument();
+    });
+
+    it('refetches portfolio Greeks when the Refresh button is clicked', async () => {
+      const greeks = vi
+        .spyOn(client, 'autotradePortfolioGreeks')
+        .mockResolvedValue({ netDelta: 0, netTheta: 0, netVega: 0 });
+      renderDashboard();
+      await screen.findByText('Net delta ($)');
+      expect(greeks).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByRole('button', { name: 'Reload Greeks' }));
+      await waitFor(() => expect(greeks).toHaveBeenCalledTimes(2));
+    });
+
+    it('shows an error state with retry when the portfolio-greeks fetch fails', async () => {
+      vi.spyOn(client, 'autotradePortfolioGreeks').mockRejectedValue(new Error('greeks unavailable'));
+      renderDashboard();
+      expect(await screen.findByText('greeks unavailable')).toBeInTheDocument();
     });
 
     it('shows "hasn\'t run yet" for the last cycle before the loop has ever run', async () => {
@@ -2647,6 +3480,7 @@ describe('AutoTradePage', () => {
           remainingQuantity: 10,
           closedQuantity: 0,
         },
+        addOnsTaken: 0,
         ...overrides,
       };
     }
@@ -2748,6 +3582,31 @@ describe('AutoTradePage', () => {
       expect(screen.getAllByText('+$80.00').length).toBeGreaterThan(0);
     });
 
+    it('badges a pyramided position with its add-on count, and omits the badge when none were taken', async () => {
+      vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({
+        positions: [
+          livePosition({ id: 1, symbol: 'AAPL', status: 'open', addOnsTaken: 2 }),
+          livePosition({ id: 2, symbol: 'MSFT', status: 'open', addOnsTaken: 0 }),
+        ],
+      });
+      renderDashboard();
+      await screen.findByText('AAPL');
+      // Pyramided position shows a "+2 adds" chip...
+      expect(screen.getByText('+2 adds')).toBeInTheDocument();
+      // ...and it's the only add badge — the un-pyramided MSFT row shows none.
+      expect(screen.getAllByText(/^\+\d+ add/)).toHaveLength(1);
+      expect(screen.queryByText('+0 adds')).not.toBeInTheDocument();
+    });
+
+    it('singularizes the add-on badge for a single add', async () => {
+      vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({
+        positions: [livePosition({ id: 1, symbol: 'AAPL', status: 'open', addOnsTaken: 1 })],
+      });
+      renderDashboard();
+      await screen.findByText('AAPL');
+      expect(screen.getByText('+1 add')).toBeInTheDocument();
+    });
+
     describe('closing a live equity position (real order)', () => {
       it('shows a close button only for an OPEN position, not a closed one', async () => {
         vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({
@@ -2842,6 +3701,7 @@ describe('AutoTradePage', () => {
         updatedAt: Date.now(),
         currentPrice: null,
         shortCurrentPrice: null,
+        underlyingPrice: null,
         unrealizedPnl: null,
         ...overrides,
       };
@@ -3129,5 +3989,123 @@ describe('AutoTradePage account-equity auto-refresh', () => {
     await act(() => vi.advanceTimersByTimeAsync(60_000));
     expect(sync).not.toHaveBeenCalled(); // skipped — draft no longer matches the last known server value
     expect(equityInput.value).toBe('77000');
+  });
+});
+
+// The class of bug that produced the "Tune from target daily gain" reset: local
+// UI state silently discarded because server state was reapplied on top of it.
+// These lock the general case — one Save must not disturb any OTHER field, and
+// a refresh must not tear the form down mid-edit.
+describe('AutoTradePage config drafts vs server refreshes', () => {
+  it('saving one field leaves other unsaved edits alone', async () => {
+    // The real server echoes the FULL config back from PUT /config; re-seeding
+    // every draft from it used to wipe whatever else the user had typed.
+    vi.spyOn(client, 'setAutotradeConfig').mockImplementation((patch) =>
+      Promise.resolve(configFixture(patch as Partial<AutotradeConfig>)),
+    );
+    renderPage();
+    await screen.findByRole('button', { name: 'Save risk per trade' });
+
+    const riskField = screen.getByText('Risk per trade (%)').closest('label')!;
+    fireEvent.change(within(riskField).getByRole('textbox'), { target: { value: '2' } });
+    const sectorField = screen.getByText('Max sector exposure (%)').closest('label')!;
+    fireEvent.change(within(sectorField).getByRole('textbox'), { target: { value: '35' } });
+
+    const saveRisk = screen.getByRole('button', { name: 'Save risk per trade' });
+    await waitFor(() => expect(saveRisk).not.toBeDisabled());
+    fireEvent.click(saveRisk);
+    await waitFor(() =>
+      expect(client.setAutotradeConfig).toHaveBeenCalledWith({
+        riskPerTradePct: 2,
+        confirmAggressive: undefined,
+      }),
+    );
+
+    // Let the save response AND the follow-up config.reload() both settle —
+    // asserting too early passes trivially, before either could clobber.
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    const sectorAfter = within(screen.getByText('Max sector exposure (%)').closest('label')!).getByRole(
+      'textbox',
+    ) as HTMLInputElement;
+    expect(sectorAfter.value).toBe('35');
+  });
+
+  it('keeps the config form mounted while it refreshes, instead of blanking to a spinner', async () => {
+    // reload() keeps the previous data while refetching, so gating on bare
+    // `loading` tore the whole form down on every save — losing keyboard focus
+    // and any half-typed value with it.
+    vi.spyOn(client, 'autotradeConfig').mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(configFixture()), 80)),
+    );
+    vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture({ riskPerTradePct: 2 }));
+    renderPage();
+    await screen.findByRole('button', { name: 'Save risk per trade' });
+
+    const saveRisk = screen.getByRole('button', { name: 'Save risk per trade' });
+    const riskField = screen.getByText('Risk per trade (%)').closest('label')!;
+    fireEvent.change(within(riskField).getByRole('textbox'), { target: { value: '2' } });
+    await waitFor(() => expect(saveRisk).not.toBeDisabled());
+    fireEvent.click(saveRisk);
+
+    // Sample across the whole reload window — the form must never disappear.
+    for (let i = 0; i < 4; i++) {
+      await act(() => new Promise((r) => setTimeout(r, 30)));
+      expect(screen.queryByText('Max sector exposure (%)')).not.toBeNull();
+    }
+  });
+});
+
+describe('AutoTradePage live-trading settings guards', () => {
+  it('will not batch-save the live caps with a field left blank', async () => {
+    // A cleared NumberInput is undefined, which JSON.stringify drops — the server
+    // reads the missing key as "leave unchanged", so the save used to report
+    // success while the old value quietly came back.
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    // Wait on the SEEDED VALUE rather than the button's enabled state: under a
+    // loaded parallel run the initial config fetch can outlast waitFor's 1s
+    // default, and "button not yet enabled" is indistinguishable from "drafts
+    // not yet seeded" — which made this assertion flaky. The field carrying its
+    // stored value is unambiguous proof the drafts have landed.
+    const maxOrder = screen.getByPlaceholderText('e.g. 20000') as HTMLInputElement;
+    await waitFor(() => expect(maxOrder.value).toBe('25000'), { timeout: 4000 });
+
+    const save = screen.getByRole('button', { name: 'Save live-trading settings' });
+    expect(save).not.toBeDisabled();
+    fireEvent.change(maxOrder, { target: { value: '' } });
+    await waitFor(() => expect(save).toBeDisabled());
+    fireEvent.click(save);
+    expect(setConfig).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it('cannot arm live scale-in while live trading is off, and never sends it', async () => {
+    // The route fails this closed without the master gate, and this card saves
+    // ten fields in one request — so a rejection here lost all of them.
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const scaleIn = screen.getByRole('checkbox', { name: /Scale into live winners/ });
+    expect(scaleIn).toBeDisabled();
+
+    // Same reasoning as above — wait on the seeded value, not the button state.
+    const maxOrder = screen.getByPlaceholderText('e.g. 20000') as HTMLInputElement;
+    await waitFor(() => expect(maxOrder.value).toBe('25000'), { timeout: 4000 });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save live-trading settings' }));
+    await waitFor(() => expect(setConfig).toHaveBeenCalled());
+    expect(setConfig.mock.calls[0][0]).toMatchObject({ liveScaleInEnabled: undefined });
+  });
+
+  it('rejects an out-of-range live cap at the keystroke, not with a batch-wide 400', async () => {
+    renderPage();
+    await screen.findByText('VNQ');
+    // Fat-finger % is bounded 0-100 server-side; the input now enforces it, so a
+    // typo cannot reach the shared request and take the other nine fields down.
+    const fatFinger = screen.getByPlaceholderText('e.g. 10') as HTMLInputElement;
+    fireEvent.change(fatFinger, { target: { value: '150' } });
+    expect(fatFinger.value).not.toBe('150');
   });
 });

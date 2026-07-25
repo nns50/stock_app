@@ -23,6 +23,35 @@ describe('computeRiskSizing', () => {
     expect(r.warnings).toHaveLength(0);
   });
 
+  it('caps the quantity at maxQuantity and recomputes cost/risk from the capped size', () => {
+    const r = computeRiskSizing({
+      accountSize: 10_000,
+      riskPct: 1,
+      entryPrice: 50,
+      stopPrice: 48,
+      assetType: 'stock',
+      maxQuantity: 30, // below the risk-based 50
+    });
+    expect(r.suggestedQuantity).toBe(30);
+    expect(r.positionCost).toBe(1500); // 50 * 30
+    expect(r.riskOfPosition).toBe(60); // $2 * 30, less than the $100 budget
+    expect(r.positionPctOfAccount).toBe(15);
+    expect(r.warnings.join(' ')).toMatch(/capped at 30/);
+  });
+
+  it('leaves the quantity untouched when maxQuantity is above the risk-based size', () => {
+    const r = computeRiskSizing({
+      accountSize: 10_000,
+      riskPct: 1,
+      entryPrice: 50,
+      stopPrice: 48,
+      assetType: 'stock',
+      maxQuantity: 100, // above the risk-based 50
+    });
+    expect(r.suggestedQuantity).toBe(50);
+    expect(r.warnings).toHaveLength(0);
+  });
+
   it('applies the 100x multiplier for options', () => {
     const r = computeRiskSizing({
       accountSize: 10_000,

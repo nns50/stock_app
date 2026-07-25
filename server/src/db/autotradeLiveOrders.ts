@@ -29,6 +29,20 @@ export interface LiveOrderMeta {
   /** Entry: set once the fill materializes into a `positions` row. Exit:
    *  known upfront (the already-open position this order is meant to close). */
   positionId: number | null;
+  /** Entry rows only — the Webull account this order executed in, carried
+   *  forward to positions.accountId once the fill materializes (the account
+   *  can't be re-derived correctly at materialization time: it may no longer
+   *  match whatever's currently configured). Null for exit rows (the
+   *  position being closed already has its own account) and legacy rows. */
+  accountId: string | null;
+  /** Set on a scale-in ADD-ON order to the already-open position it pyramids
+   *  into — its fill MERGES into that position (blended entry) rather than
+   *  creating a new one. Null for normal entries and exits. */
+  addonOfPositionId: number | null;
+  /** Entry rows: conviction grade (A/B/C) from the signal's screener score,
+   *  carried to positions.grade at materialization. Null for exit rows and
+   *  legacy rows. */
+  grade: string | null;
   createdAt: number;
 }
 
@@ -41,6 +55,9 @@ interface Row {
   risk_amount: number;
   risk_profile: string;
   position_id: number | null;
+  account_id: string | null;
+  addon_of_position_id: number | null;
+  grade: string | null;
   created_at: number;
 }
 
@@ -54,6 +71,9 @@ function mapRow(r: Row): LiveOrderMeta {
     riskAmount: r.risk_amount,
     riskProfile: r.risk_profile,
     positionId: r.position_id,
+    accountId: r.account_id,
+    addonOfPositionId: r.addon_of_position_id ?? null,
+    grade: r.grade ?? null,
     createdAt: r.created_at,
   };
 }
@@ -68,11 +88,15 @@ export function recordLiveOrder(input: {
   targetPrice: number;
   riskAmount: number;
   riskProfile: string;
+  accountId?: string | null;
+  /** Conviction grade (A/B/C) from the signal's screener score, carried to
+   *  positions.grade once the fill materializes. */
+  grade?: string | null;
 }): LiveOrderMeta {
   const now = Date.now();
   db.prepare(
-    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, created_at)
-     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?)`,
+    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, grade, created_at)
+     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?)`,
   ).run(
     input.intentId,
     input.symbol.toUpperCase(),
@@ -80,6 +104,8 @@ export function recordLiveOrder(input: {
     input.targetPrice,
     input.riskAmount,
     input.riskProfile,
+    input.accountId ?? null,
+    input.grade ?? null,
     now,
   );
   return getLiveOrder(input.intentId)!;
@@ -103,6 +129,57 @@ export function recordLiveExitOrder(input: {
      VALUES (?, ?, 'exit', 0, 0, 0, ?, ?, ?)`,
   ).run(input.intentId, input.symbol.toUpperCase(), input.riskProfile, input.positionId, now);
   return getLiveOrder(input.intentId)!;
+}
+
+/** Record that `intentId` is an autotrade-placed live-equity SCALE-IN ADD-ON
+ *  order pyramiding into the already-open `addonOfPositionId`. Role stays
+ *  'entry' (it IS an opening order with its own bracket) but `position_id`
+ *  stays NULL until its fill reconciles — reusing the exact "materialize once
+ *  when position_id is null" idempotency the normal entry path has. Its own
+ *  stop/target/risk are the add's (the added shares get their OWN protective
+ *  bracket, so they're never naked), NOT the position's originals. */
+export function recordLiveAddOnOrder(input: {
+  intentId: number;
+  symbol: string;
+  stopPrice: number;
+  targetPrice: number;
+  riskAmount: number;
+  riskProfile: string;
+  addonOfPositionId: number;
+  accountId?: string | null;
+}): LiveOrderMeta {
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, addon_of_position_id, created_at)
+     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?)`,
+  ).run(
+    input.intentId,
+    input.symbol.toUpperCase(),
+    input.stopPrice,
+    input.targetPrice,
+    input.riskAmount,
+    input.riskProfile,
+    input.accountId ?? null,
+    input.addonOfPositionId,
+    now,
+  );
+  return getLiveOrder(input.intentId)!;
+}
+
+/** How many scale-in ADD-ONs a live position has had committed — counts every
+ *  add-on order for it whose intent isn't rejected/cancelled/expired (a placed
+ *  or filled add is a real commitment; a rejected one never happened). This IS
+ *  the live add-ons-taken count the liveMaxAddOns cap is enforced against. */
+export function countLiveAddOns(positionId: number): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n
+         FROM autotrade_live_orders alo
+         JOIN order_intents oi ON oi.id = alo.intent_id
+        WHERE alo.addon_of_position_id = ? AND oi.state NOT IN ('rejected','cancelled','expired')`,
+    )
+    .get(positionId) as { n: number };
+  return row.n;
 }
 
 export function getLiveOrder(intentId: number): LiveOrderMeta | undefined {
@@ -200,7 +277,8 @@ export function countLiveOrdersSince(sinceMs: number): number {
       `SELECT COUNT(*) AS n
          FROM autotrade_live_orders alo
          JOIN order_intents oi ON oi.id = alo.intent_id
-        WHERE alo.created_at >= ? AND alo.role = 'entry' AND oi.state NOT IN ('rejected','cancelled','expired')`,
+        WHERE alo.created_at >= ? AND alo.role = 'entry' AND alo.addon_of_position_id IS NULL
+          AND oi.state NOT IN ('rejected','cancelled','expired')`,
     )
     .get(sinceMs) as { n: number };
   return row.n;

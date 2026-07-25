@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { client } from '../api/client';
-import { fmtNum, fmtUsd, todayISO } from '../lib/format';
+import { fmtDate, fmtNum, fmtUsd, todayISO } from '../lib/format';
 import { useLocalStorage } from '../lib/hooks';
 import { CHECKLIST_SETTING_KEY, DEFAULT_CHECKLIST_RULES, rulesFromSetting } from '../lib/checklist';
 import { Field, Modal, NumberInput, Segmented } from './ui';
 import { useToast } from './ToastContext';
+import { useConfirm } from './ConfirmContext';
 import type { ClosePositionResult, Position, RiskSizingResult } from '../api/types';
 
 const GRADES = ['', 'A', 'B', 'C', 'D', 'F'];
@@ -473,6 +474,23 @@ export function ExitModal({
   const [busy, setBusy] = useState(false);
   const { toast } = useToast();
 
+  // Re-sync when a different position is opened. The modal stays mounted
+  // (hidden via Modal `open`), so its state is created once (when position was
+  // null); without this the previous position's exit price/date/fees/notes
+  // bleed into the next one and the Quantity default never populates. Mirrors
+  // CloseModal/JournalEditModal's re-sync-on-key-change pattern.
+  const key = position?.id;
+  const [lastKey, setLastKey] = useState(key);
+  if (key !== lastKey) {
+    setLastKey(key);
+    setQuantity(position?.remainingQuantity);
+    setExitPrice(undefined);
+    setExitDate(todayISO());
+    setFees(0);
+    setNotes('');
+    setError(undefined);
+  }
+
   const submit = async () => {
     if (!position) return;
     if (!quantity || exitPrice === undefined) return setError('Quantity and exit price are required.');
@@ -676,8 +694,11 @@ export function JournalEditModal({
   const [tags, setTags] = useState((position?.tags ?? []).join(', '));
   const [grade, setGrade] = useState(position?.grade ?? '');
   const [notes, setNotes] = useState(position?.notes ?? '');
+  const [accountId, setAccountId] = useState(position?.accountId ?? '');
   const [busy, setBusy] = useState(false);
+  const [exitBusyId, setExitBusyId] = useState<number | null>(null);
   const { toast } = useToast();
+  const confirm = useConfirm();
 
   // Re-sync when a different position is opened.
   const key = position?.id;
@@ -687,6 +708,7 @@ export function JournalEditModal({
     setTags((position?.tags ?? []).join(', '));
     setGrade(position?.grade ?? '');
     setNotes(position?.notes ?? '');
+    setAccountId(position?.accountId ?? '');
   }
 
   const submit = async () => {
@@ -700,12 +722,36 @@ export function JournalEditModal({
           .filter(Boolean),
         grade: grade || null,
         notes: notes || null,
+        accountId: accountId.trim() || null,
       });
       onSaved();
       onClose();
       toast('Journal updated', { type: 'success' });
     } finally {
       setBusy(false);
+    }
+  };
+
+  const removeExit = async (exitId: number) => {
+    if (!position) return;
+    const ok = await confirm({
+      title: 'Remove this exit?',
+      body: 'Deletes this exit record and reopens the position for the quantity it closed. Use this to undo a mistaken or incorrect exit entry — e.g. one the Webull broker-truth sync auto-recorded against the wrong account.',
+      confirmLabel: 'Remove exit',
+      danger: true,
+    });
+    if (!ok) return;
+    setExitBusyId(exitId);
+    try {
+      await client.deleteExit(position.id, exitId);
+      onSaved();
+      // Closes rather than leaving a now-stale exits list on screen — this
+      // modal's `position` prop is a snapshot from when it opened, not a
+      // live subscription, so it won't reflect the removal on its own.
+      onClose();
+      toast('Exit removed — position reopened for that quantity', { type: 'success' });
+    } finally {
+      setExitBusyId(null);
     }
   };
 
@@ -741,6 +787,43 @@ export function JournalEditModal({
         <Field label="Notes">
           <textarea className="input h-24" value={notes} onChange={(e) => setNotes(e.target.value)} />
         </Field>
+        <Field
+          label="Webull account"
+          hint="Which brokerage account this lot lives in — used to keep the Webull position sync from comparing it against the wrong account. Leave blank for a manually-logged position."
+        >
+          <input
+            className="input font-mono"
+            value={accountId}
+            onChange={(e) => setAccountId(e.target.value)}
+            placeholder="e.g. 1234567_INDIVIDUAL_CASH"
+          />
+        </Field>
+        {position && position.exits.length > 0 && (
+          <div>
+            <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-1">Exits</h4>
+            <div className="space-y-1">
+              {position.exits.map((e) => (
+                <div
+                  key={e.id}
+                  className="flex items-center justify-between gap-2 rounded border border-ink-700/50 px-2 py-1 text-xs"
+                >
+                  <span className="text-slate-300">
+                    {fmtDate(e.exitDate)} — {e.quantity} @ {fmtUsd(e.exitPrice)}
+                    {e.notes && <span className="text-slate-500"> · {e.notes}</span>}
+                  </span>
+                  <button
+                    className="text-slate-500 hover:text-bear shrink-0"
+                    onClick={() => removeExit(e.id)}
+                    disabled={exitBusyId === e.id}
+                    title="Delete this exit and reopen the position for that quantity"
+                  >
+                    {exitBusyId === e.id ? 'removing…' : 'remove'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </Modal>
   );

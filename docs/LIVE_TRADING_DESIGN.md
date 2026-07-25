@@ -96,7 +96,8 @@ rule breakdown). An order with **any** failed hard rule cannot be confirmed.
   explicit, separately-flagged allowance is on; multiplier sanity.
 
 **Soft warnings (surfaced, not blocking):** earnings before expiry, wide live spread (uses
-the new OPRA overlay), low OI/volume, IV-rank context.
+the new OPRA overlay), low OI/volume, IV-rank context, a buy exceeding settled cash (cash-account
+Good Faith Violation risk — §15).
 
 ## 6. Order lifecycle
 
@@ -479,6 +480,21 @@ key becomes `client_order_id`.
   — stay explicit about which one placed the order. `materializeOptionsExitFill` reads it back
   (`meta.exitReason ?? 'time_exit'`, the fallback covering only a pre-migration pending row) once it
   finally closes the position, instead of always hardcoding `'time_exit'`.
+- **`settled_cash` guardrail — cash-account Good Faith Violation warning (shipped, 2026-07-19):**
+  Webull's `/openapi/assets/balance` response includes `account_currency_assets[0].settled_cash`
+  (confirmed alongside `buying_power`/`option_buying_power` — same object, see §14), previously
+  fetched and discarded. `webullAccountState()` now parses it into `AccountState.settledCashUsd`
+  (`undefined`, not a fabricated 0, when the broker omits it — a missing field must skip the
+  check, not warn blind). A new `settled_cash` guardrail (soft warning, like `market_hours`) fires
+  when a BUY's notional exceeds settled cash: this account is a cash account (§13), which risks a
+  **Good Faith Violation** if a position bought with proceeds that haven't cleared T+1 yet is sold
+  again before that funding trade settles. Deliberately NOT a hard block — exact GFV detection
+  needs per-lot settlement-date tracking this app doesn't keep, and a wrong block would suppress
+  ordinary, legal cash-account activity; a warning surfaces the risk instead of guessing at it.
+  (PDT was considered and explicitly rejected: FINRA eliminated the classic Pattern Day Trader
+  rule effective June 4, 2026, and it only ever applied to margin accounts — never this app's cash
+  account — so a PDT guardrail would have been a check against a rule that no longer exists, for
+  an account type it never covered.)
 - **Next:** confirm a real option fill + a real vertical preview; COVERED_STOCK (stock+option) and
   IRON_CONDOR (4-leg) strategies; options brackets / OTOCO; the post-fill bracket-cancel
   behavior above against a real account.

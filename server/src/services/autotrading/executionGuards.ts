@@ -52,6 +52,30 @@ export function checkSessionWindow(bufferMinutes: number, now: Date = new Date()
   return { ok: true };
 }
 
+/**
+ * Hard block within `bufferHours` (either side) of any scheduled macro event
+ * — market-wide, so this runs once per cycle like checkSessionWindow, never
+ * per-candidate. Symmetric (before AND after): a scheduled release distorts
+ * prices both in the run-up (positioning/uncertainty) and in the immediate
+ * reaction, same reasoning checkSessionWindow already applies to the open/
+ * close. 0 (or an empty events list) never blocks. Pure — the caller
+ * (loop.ts) supplies the event list from db/macroEvents.ts; this never
+ * fetches it itself.
+ */
+export function checkMacroEventBlackout(
+  events: { label: string; eventAt: number }[],
+  bufferHours: number,
+  now: number = Date.now(),
+): GuardResult {
+  if (bufferHours <= 0) return { ok: true };
+  const bufferMs = bufferHours * 60 * 60 * 1000;
+  const hit = events.find((e) => Math.abs(e.eventAt - now) <= bufferMs);
+  if (hit) {
+    return { ok: false, reason: `Within ${bufferHours}h of scheduled macro event "${hit.label}"` };
+  }
+  return { ok: true };
+}
+
 export interface VolatilityFilterConfig {
   /** Skip a candidate whose own ATR% exceeds this. */
   maxTickerAtrPct: number;

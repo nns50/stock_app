@@ -1,4 +1,11 @@
-import { AccountState, GuardrailReport, OrderIntent, evaluateGuardrails, orderNotionalUsd } from './guardrails';
+import {
+  AccountState,
+  GuardrailReport,
+  OrderIntent,
+  evaluateGuardrails,
+  orderNotionalUsd,
+  wouldOpenShort,
+} from './guardrails';
 import { marketOpenContext } from './marketHours';
 import { getTradingConfig } from '../../db/trading';
 import { countTodaysOrders } from '../../db/orders';
@@ -50,7 +57,10 @@ export async function livePreview(intent: OrderIntent, accountId: string): Promi
   // those gate PLACING, not estimating. (So a blocked order still shows the
   // broker's take alongside the block.)
   const malformed = guardrails.checks.some((c) => (c.rule === 'quantity' || c.rule === 'limit_price') && !c.passed);
-  const preview = !config.killSwitch && !malformed ? await webullPreviewOrder(accountId, intent) : undefined;
+  // Same SHORT-vs-SELL side the actual place would submit (see placeOrder.ts),
+  // so the broker estimate reflects the real order shape.
+  const isShort = wouldOpenShort(intent, accountState);
+  const preview = !config.killSwitch && !malformed ? await webullPreviewOrder(accountId, intent, isShort) : undefined;
 
   return {
     ok: true,

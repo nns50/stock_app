@@ -8,6 +8,7 @@ import { computeDayStats } from '../services/dayGuard';
 import { aggregateExcursions, computeExcursion, TradeExcursion } from '../services/excursion';
 import { aggregateSlippage, computeSlippage, SlippageRow } from '../services/slippage';
 import { computeBenchmark } from '../services/benchmark';
+import { computeAutoTuneRiskEfficacy } from '../services/autotrading/autoTuneEfficacy';
 import { getProvider } from '../providers';
 
 export const journalRouter = Router();
@@ -82,6 +83,17 @@ journalRouter.get(
   asyncHandler(async (_req, res) => {
     const closed = listPositions({ status: 'closed' });
     res.json(computeJournalStats(closed));
+  }),
+);
+
+// Did auto-tune's past risk-% adjustments (Auto-Trade's "Auto-tune from
+// realized edge" setting) actually help? Before/after stats around each
+// past adjustment's own date — see autoTuneEfficacy.ts's own header comment
+// for why this is informational only (no auto-revert).
+journalRouter.get(
+  '/auto-tune-efficacy',
+  asyncHandler(async (_req, res) => {
+    res.json({ adjustments: computeAutoTuneRiskEfficacy() });
   }),
 );
 

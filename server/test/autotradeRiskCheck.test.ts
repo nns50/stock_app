@@ -41,6 +41,9 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
     maxTradesPerDay: 6,
+    sectorNotional: 0,
+    maxSectorExposurePct: 20,
+    candidateSector: null,
     ...overrides,
   };
 }
@@ -139,6 +142,17 @@ describe('evaluateRiskCheck — pure evaluator', () => {
       expect(result.sizing.suggestedQuantity).toBe(200);
     });
 
+    it('is inactive at a threshold of 0 — "0 disables", as the config documents', () => {
+      // Without the > 0 guard any market ATR% exceeds 0, so setting the threshold
+      // to 0 to turn the feature OFF instead pinned the size cut permanently on.
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({ marketAtrPct: 6, regimeAtrThresholdPct: 0, regimeSizeCutPct: 30 }),
+      );
+      expect(result.regimeActive).toBe(false);
+      expect(result.sizing.suggestedQuantity).toBe(200); // full 1% sizing, uncut
+    });
+
     it('cuts size by regimeSizeCutPct once marketAtrPct exceeds the threshold', () => {
       const result = evaluateRiskCheck(
         signal(),
@@ -169,6 +183,114 @@ describe('evaluateRiskCheck — pure evaluator', () => {
       );
       expect(result.regimeActive).toBe(true);
       expect(result.sizing.suggestedQuantity).toBe(200); // unchanged — same as full 1% sizing
+    });
+  });
+
+  describe('equity-curve de-risk sizing', () => {
+    it('is inactive when the flag is unset (undefined reads as off)', () => {
+      const result = evaluateRiskCheck(signal(), baseCtx());
+      expect(result.equityCurveDeriskActive).toBe(false);
+      expect(result.sizing.suggestedQuantity).toBe(200); // full 1% sizing
+      expect(findCheck(result, 'equity_curve_derisk').detail).toMatch(/inactive/);
+    });
+
+    it('cuts size by equityCurveDeriskCutPct while the curve is below its average', () => {
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({ equityCurveDeriskActive: true, equityCurveDeriskCutPct: 50 }),
+      );
+      expect(result.equityCurveDeriskActive).toBe(true);
+      // 1% * (1 − 50%) = 0.5% of 100,000 = 500 risk / $5 stop = 100 shares
+      expect(result.sizing.suggestedQuantity).toBe(100);
+      expect(findCheck(result, 'equity_curve_derisk').detail).toMatch(/active/);
+    });
+
+    it('stacks multiplicatively with step-down and regime sizing', () => {
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({
+          consecutiveLosses: 2,
+          marketAtrPct: 6,
+          regimeAtrThresholdPct: 3,
+          regimeSizeCutPct: 30,
+          equityCurveDeriskActive: true,
+          equityCurveDeriskCutPct: 50,
+        }),
+      );
+      // 1% * (1−50%) * (1−30%) * (1−50%) = 0.175% of 100,000 = 175 / $5 = 35 shares
+      expect(result.sizing.suggestedQuantity).toBe(35);
+    });
+
+    it('reports active with cutPct 0 but applies no size change', () => {
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({ equityCurveDeriskActive: true, equityCurveDeriskCutPct: 0 }),
+      );
+      expect(result.equityCurveDeriskActive).toBe(true);
+      expect(result.sizing.suggestedQuantity).toBe(200);
+    });
+  });
+
+  describe('ADV participation cap', () => {
+    it('is inactive when the cap is 0 (default) — full risk-based size', () => {
+      const result = evaluateRiskCheck(signal({ avgVolume: 10_000 }), baseCtx({ maxAdvParticipationPct: 0 }));
+      expect(result.sizing.suggestedQuantity).toBe(200); // unchanged
+      expect(findCheck(result, 'adv_participation_cap').detail).toMatch(/no ADV participation cap/);
+    });
+
+    it('caps the sized quantity at maxAdvParticipationPct% of the name’s avg daily volume', () => {
+      // 1% of 10,000 ADV = 100 shares, below the 200 the risk budget would buy.
+      const result = evaluateRiskCheck(signal({ avgVolume: 10_000 }), baseCtx({ maxAdvParticipationPct: 1 }));
+      expect(result.sizing.suggestedQuantity).toBe(100);
+      expect(result.sizing.riskOfPosition).toBe(500); // $5 stop * 100, below the $1,000 budget
+      expect(findCheck(result, 'adv_participation_cap').detail).toMatch(/100 share cap/);
+    });
+
+    it('does not cap when the ADV allowance exceeds the risk-based size', () => {
+      const result = evaluateRiskCheck(signal({ avgVolume: 1_000_000 }), baseCtx({ maxAdvParticipationPct: 1 }));
+      expect(result.sizing.suggestedQuantity).toBe(200); // 1% of 1M = 10k cap, doesn't bind
+    });
+
+    it('skips the cap (does not block) when the signal has no avgVolume', () => {
+      const result = evaluateRiskCheck(signal({ avgVolume: null }), baseCtx({ maxAdvParticipationPct: 1 }));
+      expect(result.sizing.suggestedQuantity).toBe(200); // no cap applied
+      expect(findCheck(result, 'adv_participation_cap').detail).toMatch(/avg daily volume is unavailable/);
+    });
+  });
+
+  describe('expectancy-weighted sizing', () => {
+    it('is neutral (full size) when the multiplier is unset', () => {
+      const result = evaluateRiskCheck(signal(), baseCtx());
+      expect(result.sizing.suggestedQuantity).toBe(200);
+      expect(findCheck(result, 'expectancy_sizing').detail).toMatch(/inactive/);
+    });
+
+    it('sizes up for a grade with proven positive edge', () => {
+      // 1% * 1.5 = 1.5% of 100,000 = 1,500 / $5 stop = 300 shares
+      const result = evaluateRiskCheck(signal(), baseCtx({ expectancyMultiplier: 1.5 }));
+      expect(result.sizing.suggestedQuantity).toBe(300);
+      expect(findCheck(result, 'expectancy_sizing').detail).toMatch(/1\.5× size multiplier/);
+    });
+
+    it('sizes down for a bleeding grade', () => {
+      // 1% * 0.5 = 0.5% of 100,000 = 500 / $5 = 100 shares
+      const result = evaluateRiskCheck(signal(), baseCtx({ expectancyMultiplier: 0.5 }));
+      expect(result.sizing.suggestedQuantity).toBe(100);
+    });
+
+    it('stacks multiplicatively with step-down and regime sizing', () => {
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({
+          consecutiveLosses: 2,
+          marketAtrPct: 6,
+          regimeAtrThresholdPct: 3,
+          regimeSizeCutPct: 30,
+          expectancyMultiplier: 1.2,
+        }),
+      );
+      // 1% * (1−50%) * (1−30%) * 1.2 = 0.42% of 100,000 = 420 / $5 = 84 shares
+      expect(result.sizing.suggestedQuantity).toBe(84);
     });
   });
 
@@ -258,6 +380,42 @@ describe('evaluateRiskCheck — pure evaluator', () => {
     it('passes at exactly the cap boundary', () => {
       const result = evaluateRiskCheck(signal(), baseCtx({ correlatedNotional: 6000 }));
       expect(findCheck(result, 'max_correlated_exposure').passed).toBe(true);
+    });
+  });
+
+  describe('sector exposure cap', () => {
+    it('is skipped entirely (no rule added) when the candidate has no sector classification', () => {
+      const result = evaluateRiskCheck(signal(), baseCtx({ candidateSector: null, sectorNotional: 999_999 }));
+      expect(result.checks.find((c) => c.rule === 'max_sector_exposure')).toBeUndefined();
+      expect(result.ok).toBe(true); // the huge sectorNotional never gets a chance to block anything
+    });
+
+    it("does NOT count the proposed trade's own notional — a lone position in its own sector never blocks on this", () => {
+      const result = evaluateRiskCheck(signal(), baseCtx({ candidateSector: 'Technology', sectorNotional: 0 }));
+      expect(findCheck(result, 'max_sector_exposure').passed).toBe(true);
+    });
+
+    it('blocks when capital already in this sector exceeds the cap', () => {
+      // MODERATE-style fixture: 20% of $100k = $20,000 cap.
+      const result = evaluateRiskCheck(signal(), baseCtx({ candidateSector: 'Technology', sectorNotional: 21_000 }));
+      expect(result.ok).toBe(false);
+      expect(findCheck(result, 'max_sector_exposure').passed).toBe(false);
+      expect(findCheck(result, 'max_sector_exposure').detail).toMatch(/already in Technology/);
+    });
+
+    it('passes at exactly the cap boundary', () => {
+      const result = evaluateRiskCheck(signal(), baseCtx({ candidateSector: 'Technology', sectorNotional: 20_000 }));
+      expect(findCheck(result, 'max_sector_exposure').passed).toBe(true);
+    });
+
+    it('is independent of the correlated-exposure cap — one can block while the other passes', () => {
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({ correlatedNotional: 0, candidateSector: 'Technology', sectorNotional: 25_000 }),
+      );
+      expect(findCheck(result, 'max_correlated_exposure').passed).toBe(true);
+      expect(findCheck(result, 'max_sector_exposure').passed).toBe(false);
+      expect(result.ok).toBe(false);
     });
   });
 

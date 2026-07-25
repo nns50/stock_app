@@ -1,10 +1,11 @@
-import { lazy, memo, ReactNode, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, memo, ReactNode, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { client } from '../api/client';
-import { useAsync, useLocalStorage } from '../lib/hooks';
+import { AsyncState, useAsync, useLocalStorage } from '../lib/hooks';
 import { useToast } from '../components/ToastContext';
 import { useConfirm } from '../components/ConfirmContext';
 import { RefreshBar } from '../components/RefreshBar';
 import { CloseModal } from '../components/PositionForms';
+import { AssignmentRiskBadge } from '../components/AssignmentRiskBadge';
 import { ago, cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd, fmtUsd } from '../lib/format';
 import {
   Badge,
@@ -15,6 +16,7 @@ import {
   Modal,
   NumberInput,
   PageHeader,
+  Segmented,
   Spinner,
   StatTile,
 } from '../components/ui';
@@ -34,17 +36,45 @@ import type {
   ClosePositionResult,
   CombinedBacktestRunResponse,
   CombinedWalkForwardResponse,
+  CombinedWalkForwardWindowResult,
+  IndicatorKey,
   LiveOptionsPosition,
   LoopTickSummary,
   OptionsBacktestRunResponse,
   OptionsPaperPosition,
   OptionsWalkForwardResponse,
+  OptionsWalkForwardWindowResult,
   PaperPosition,
+  PortfolioGreeks,
   Position,
+  SignificanceStats,
   SimulatedOptionsTrade,
   SimulatedTrade,
+  SymbolEvents,
+  TargetTuneResult,
+  TunablePatch,
+  TuneBand,
+  TuneBasis,
   WalkForwardResponse,
+  WalkForwardWindowResult,
 } from '../api/types';
+
+// Regime-conditional scoring weights (2026-07-24): the three regime presets and
+// the six core screener weights each preset governs. relativeStrength/sentiment
+// are intentionally absent — they stay driven by their own weight fields above.
+const REGIME_PRESETS: { key: 'riskOn' | 'neutral' | 'riskOff'; label: string }[] = [
+  { key: 'riskOn', label: 'Risk-on' },
+  { key: 'neutral', label: 'Neutral' },
+  { key: 'riskOff', label: 'Risk-off' },
+];
+const CORE_WEIGHT_KEYS: { key: IndicatorKey; label: string }[] = [
+  { key: 'momentum', label: 'Mom.' },
+  { key: 'relativeVolume', label: 'RelVol' },
+  { key: 'rsi', label: 'RSI' },
+  { key: 'volatility', label: 'Vol.' },
+  { key: 'gap', label: 'Gap' },
+  { key: 'trend', label: 'Trend' },
+];
 
 // Phases 1-8 of docs/AUTOTRADING_SPEC.md: config, real-estate exclusions,
 // Screen/Decision/Risk-Check preview, backtesting, the paper execution loop,
@@ -136,6 +166,41 @@ function BacktestStatsGrid({ stats }: { stats: BacktestStats }) {
   );
 }
 
+/** Bootstrap CI + sign-flip permutation p-value on a walk-forward window's
+ *  own expectancy (services/autotrading/significance.ts) — additional
+ *  evidence toward "is this edge real or noise," not a pass/fail verdict;
+ *  the human reviewing in-sample vs. out-of-sample results still judges
+ *  that, same framing as the rest of this card (see the two hint strings
+ *  passed into *WindowResult below). Only rendered for a walk-forward
+ *  window — a plain single-window backtest has no held-out data to test an
+ *  edge's significance against, so it isn't computed for one server-side. */
+function SignificancePanel({ significance }: { significance: SignificanceStats }) {
+  if (significance.sampleSize === 0) {
+    return <p className="text-xs text-slate-500">No trades in this window — nothing to test for significance.</p>;
+  }
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+      <StatTile
+        label="95% CI on expectancy"
+        value={`${fmtSignedUsd(significance.ciLow)} to ${fmtSignedUsd(significance.ciHigh)}`}
+        info="Bootstrap resampling (2000 draws): the range of average $/trade you'd plausibly see if this same trade-generating process played out again."
+      />
+      <StatTile
+        label="p-value vs. no edge"
+        value={fmtNum(significance.pValue, 3)}
+        valueClass={significance.pValue !== null && significance.pValue < 0.05 ? 'text-bull' : 'text-slate-300'}
+        info="Sign-flip permutation test: the fraction of random sign reassignments (the 'no true edge' null) that produce a mean at least this extreme. Lower is stronger evidence against pure noise — this is evidence, not a verdict."
+      />
+      <StatTile
+        label="Sample size"
+        value={significance.sampleSize}
+        sub={significance.reliable ? undefined : 'Thin sample — treat with caution'}
+        valueClass={significance.reliable ? undefined : 'text-amber-400'}
+      />
+    </div>
+  );
+}
+
 // Its real implementation lives in its own file so it can be lazy-loaded —
 // recharts (~92kB gzip) is only needed once a backtest has actually been
 // run, not on every visit to this page. A thin Suspense-wrapping shim here
@@ -184,7 +249,7 @@ function BacktestTradesTable({ trades }: { trades: SimulatedTrade[] }) {
               <td className="td text-right tabular-nums">{fmtUsd(t.exitPrice)}</td>
               <td className="td">
                 <Badge color={t.exitReason === 'target' ? 'green' : t.exitReason === 'stop' ? 'red' : 'slate'}>
-                  {t.exitReason.replace('_', ' ')}
+                  {t.exitReason.replace(/_/g, ' ')}
                 </Badge>
               </td>
               <td className="td text-right tabular-nums">{t.quantity}</td>
@@ -258,7 +323,7 @@ function OptionsBacktestTradesTable({ trades }: { trades: SimulatedOptionsTrade[
                           : 'blue'
                   }
                 >
-                  {t.exitReason.replace('_', ' ')}
+                  {t.exitReason.replace(/_/g, ' ')}
                 </Badge>
               </td>
               <td className="td text-right tabular-nums">{t.contracts}</td>
@@ -284,7 +349,7 @@ function OptionsBacktestWindowResult({
 }: {
   title: string;
   hint: string;
-  run: OptionsBacktestRunResponse;
+  run: OptionsWalkForwardWindowResult;
   gradientId: string;
 }) {
   return (
@@ -294,6 +359,7 @@ function OptionsBacktestWindowResult({
         <p className="text-[11px] text-slate-500">{hint}</p>
       </div>
       <BacktestStatsGrid stats={run.stats} />
+      <SignificancePanel significance={run.significance} />
       <BacktestEquityChart equityCurve={run.report.equityCurve} gradientId={gradientId} />
       <OptionsBacktestTradesTable trades={run.report.trades} />
     </div>
@@ -312,7 +378,7 @@ function CombinedBacktestWindowResult({
 }: {
   title: string;
   hint: string;
-  run: CombinedBacktestRunResponse;
+  run: CombinedWalkForwardWindowResult;
   gradientId: string;
 }) {
   return (
@@ -322,6 +388,7 @@ function CombinedBacktestWindowResult({
         <p className="text-[11px] text-slate-500">{hint}</p>
       </div>
       <BacktestStatsGrid stats={run.stats} />
+      <SignificancePanel significance={run.significance} />
       <BacktestEquityChart equityCurve={run.report.equityCurve} gradientId={gradientId} />
       <BacktestTradesTable trades={run.report.equityTrades} />
       <OptionsBacktestTradesTable trades={run.report.optionsTrades} />
@@ -417,7 +484,7 @@ const PaperPositionsTable = memo(
                   <td className="td">
                     {p.exitReason ? (
                       <Badge color={p.exitReason === 'target' ? 'green' : p.exitReason === 'stop' ? 'red' : 'slate'}>
-                        {p.exitReason}
+                        {p.exitReason.replace(/_/g, ' ')}
                       </Badge>
                     ) : (
                       '—'
@@ -503,7 +570,17 @@ function optionsPaperPnl(p: OptionsValueShape): number | null {
 }
 
 const OptionsPaperPositionsTable = memo(
-  function OptionsPaperPositionsTable({ positions }: { positions: OptionsPaperPosition[] }) {
+  function OptionsPaperPositionsTable({
+    positions,
+    events,
+  }: {
+    positions: OptionsPaperPosition[];
+    /** Ex-dividend/earnings events for the listed symbols, for the short
+     *  leg's assignment-risk badge — raw array (not a pre-built Map) so the
+     *  outer memo's content-equality comparator below can still see it. */
+    events: SymbolEvents[];
+  }) {
+    const eventsBySymbol = new Map(events.map((e) => [e.symbol.toUpperCase(), e]));
     if (positions.length === 0) {
       return (
         <EmptyState
@@ -548,6 +625,18 @@ const OptionsPaperPositionsTable = memo(
                       {p.kind === 'debit_spread' ? `/${p.shortStrike}` : ''}
                     </Badge>{' '}
                     <span className="text-[11px] text-slate-500">{fmtDate(p.expiration)}</span>
+                    {p.status === 'open' && p.kind === 'debit_spread' && p.shortStrike !== null && (
+                      <>
+                        {' '}
+                        <AssignmentRiskBadge
+                          side={p.side}
+                          strike={p.shortStrike}
+                          mark={p.shortCurrentPrice}
+                          underlyingPrice={p.underlyingPrice}
+                          events={eventsBySymbol.get(p.symbol.toUpperCase())}
+                        />
+                      </>
+                    )}
                   </td>
                   <td className="td">
                     <Badge color={p.status === 'open' ? 'blue' : 'slate'}>{p.status}</Badge>
@@ -570,7 +659,7 @@ const OptionsPaperPositionsTable = memo(
                                 : 'slate'
                         }
                       >
-                        {p.exitReason.replace('_', ' ')}
+                        {p.exitReason.replace(/_/g, ' ')}
                       </Badge>
                     ) : (
                       '—'
@@ -601,7 +690,7 @@ const OptionsPaperPositionsTable = memo(
       </div>
     );
   },
-  (prev, next) => samePositions(prev.positions, next.positions),
+  (prev, next) => samePositions(prev.positions, next.positions) && samePositions(prev.events, next.events),
 );
 
 /** Manually close a live options position autotrade itself opened
@@ -737,10 +826,13 @@ const LiveOptionsPositionsTable = memo(
   function LiveOptionsPositionsTable({
     positions,
     onClose,
+    events,
   }: {
     positions: LiveOptionsPosition[];
     onClose: (p: LiveOptionsPosition) => void;
+    events: SymbolEvents[];
   }) {
+    const eventsBySymbol = new Map(events.map((e) => [e.symbol.toUpperCase(), e]));
     if (positions.length === 0) {
       return (
         <EmptyState
@@ -779,6 +871,14 @@ const LiveOptionsPositionsTable = memo(
                 <tr key={p.id} className="border-b border-ink-700/50">
                   <td className="td font-semibold" title={p.rationale}>
                     {p.symbol}
+                    {p.accountId && (
+                      <span
+                        className="ml-2 chip bg-ink-700 text-slate-400 font-mono text-[10px] font-normal"
+                        title={`Webull account ${p.accountId}`}
+                      >
+                        {p.accountId.length > 14 ? `…${p.accountId.slice(-11)}` : p.accountId}
+                      </span>
+                    )}
                   </td>
                   <td className="td">
                     <Badge color={p.side === 'call' ? 'green' : 'red'}>
@@ -786,6 +886,18 @@ const LiveOptionsPositionsTable = memo(
                       {p.kind === 'debit_spread' ? `/${p.shortStrike}` : ''}
                     </Badge>{' '}
                     <span className="text-[11px] text-slate-500">{fmtDate(p.expiration)}</span>
+                    {p.status === 'open' && p.kind === 'debit_spread' && p.shortStrike !== null && (
+                      <>
+                        {' '}
+                        <AssignmentRiskBadge
+                          side={p.side}
+                          strike={p.shortStrike}
+                          mark={p.shortCurrentPrice}
+                          underlyingPrice={p.underlyingPrice}
+                          events={eventsBySymbol.get(p.symbol.toUpperCase())}
+                        />
+                      </>
+                    )}
                   </td>
                   <td className="td">
                     <Badge color={p.status === 'open' ? 'blue' : 'slate'}>{p.status}</Badge>
@@ -798,7 +910,7 @@ const LiveOptionsPositionsTable = memo(
                   <td className="td">
                     {p.exitReason ? (
                       <Badge color={p.exitReason === 'time_exit' ? 'blue' : 'slate'}>
-                        {p.exitReason.replace('_', ' ')}
+                        {p.exitReason.replace(/_/g, ' ')}
                       </Badge>
                     ) : (
                       '—'
@@ -836,7 +948,7 @@ const LiveOptionsPositionsTable = memo(
       </div>
     );
   },
-  (prev, next) => samePositions(prev.positions, next.positions),
+  (prev, next) => samePositions(prev.positions, next.positions) && samePositions(prev.events, next.events),
 );
 
 /** REAL, live-money positions the autotrade loop itself placed — the exact
@@ -886,7 +998,26 @@ const LivePositionsTable = memo(
                     {p.symbol}
                     {isOption && (
                       <span className="ml-2 text-xs font-normal text-slate-500">
-                        {fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : 'P'} {p.expiration}
+                        {/* optionType is nullable — a bare ternary rendered a null
+                            as "P", showing an unknown (or a call) as a put. */}
+                        {fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : p.optionType === 'put' ? 'P' : '?'}{' '}
+                        {p.expiration}
+                      </span>
+                    )}
+                    {p.accountId && (
+                      <span
+                        className="ml-2 chip bg-ink-700 text-slate-400 font-mono text-[10px] font-normal"
+                        title={`Webull account ${p.accountId}`}
+                      >
+                        {p.accountId.length > 14 ? `…${p.accountId.slice(-11)}` : p.accountId}
+                      </span>
+                    )}
+                    {p.addOnsTaken > 0 && (
+                      <span
+                        className="ml-2 chip bg-accent/15 text-accent text-[10px] font-normal"
+                        title={`Scaled into ${p.addOnsTaken}× after entry (pyramided)`}
+                      >
+                        +{p.addOnsTaken} add{p.addOnsTaken > 1 ? 's' : ''}
                       </span>
                     )}
                   </td>
@@ -991,6 +1122,10 @@ interface LiveTradingSectionProps {
   setLiveProbationTradesDraft: (v: number | undefined) => void;
   liveProbationSizeMultiplierDraft: number | undefined;
   setLiveProbationSizeMultiplierDraft: (v: number | undefined) => void;
+  liveScaleInEnabledDraft: boolean;
+  setLiveScaleInEnabledDraft: (v: boolean) => void;
+  liveMaxAddOnsDraft: number | undefined;
+  setLiveMaxAddOnsDraft: (v: number | undefined) => void;
   liveCapsBusy: boolean;
   onSaveLiveCaps: () => void;
   suggestLiveCapsBusy: boolean;
@@ -1025,6 +1160,26 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
   const track = paperTrackRecord(p.paperPositions);
   const canEnable =
     p.liveAccountIdDraft.trim() !== '' && p.confirmLiveText.trim().toUpperCase() === p.confirmPhrase.toUpperCase();
+
+  // Both cards save their whole group in ONE request, and a cleared NumberInput
+  // yields undefined, which JSON.stringify drops — the server then reads the key
+  // as "leave unchanged" and the UI reports success while the old value quietly
+  // comes back. Block the save instead, so an empty required field is visible.
+  const liveCapsIncomplete =
+    p.liveMaxOrderUsdDraft == null ||
+    p.liveMaxDailyLossUsdDraft == null ||
+    p.liveMaxOrdersPerDayDraft == null ||
+    p.liveFatFingerPctDraft == null ||
+    p.liveProbationTradesDraft == null ||
+    p.liveProbationSizeMultiplierDraft == null ||
+    p.liveMaxAddOnsDraft == null;
+  const liveOptionsCapsIncomplete =
+    p.liveOptionsMaxOrderUsdDraft == null ||
+    p.liveOptionsMaxDailyLossUsdDraft == null ||
+    p.liveOptionsMaxOrdersPerDayDraft == null ||
+    p.liveOptionsFatFingerPctDraft == null ||
+    p.liveOptionsProbationTradesDraft == null ||
+    p.liveOptionsProbationSizeMultiplierDraft == null;
 
   return (
     <div className="space-y-4">
@@ -1061,12 +1216,18 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
         </div>
         <div className="grid sm:grid-cols-3 gap-3">
           <Field label="Max order ($)">
-            <NumberInput value={p.liveMaxOrderUsdDraft} onChange={p.setLiveMaxOrderUsdDraft} placeholder="e.g. 20000" />
+            <NumberInput
+              value={p.liveMaxOrderUsdDraft}
+              onChange={p.setLiveMaxOrderUsdDraft}
+              min={0}
+              placeholder="e.g. 20000"
+            />
           </Field>
           <Field label="Max daily loss ($)">
             <NumberInput
               value={p.liveMaxDailyLossUsdDraft}
               onChange={p.setLiveMaxDailyLossUsdDraft}
+              min={0}
               placeholder="e.g. 3000"
             />
           </Field>
@@ -1074,16 +1235,24 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
             <NumberInput
               value={p.liveMaxOrdersPerDayDraft}
               onChange={p.setLiveMaxOrdersPerDayDraft}
+              min={0}
               placeholder="e.g. 6"
             />
           </Field>
           <Field label="Fat-finger (%)" hint="Limit price must sit within this % of the reference price.">
-            <NumberInput value={p.liveFatFingerPctDraft} onChange={p.setLiveFatFingerPctDraft} placeholder="e.g. 10" />
+            <NumberInput
+              value={p.liveFatFingerPctDraft}
+              onChange={p.setLiveFatFingerPctDraft}
+              min={0}
+              max={100}
+              placeholder="e.g. 10"
+            />
           </Field>
           <Field label="Probation trades" hint="First N live trades after enabling get an extra size cut.">
             <NumberInput
               value={p.liveProbationTradesDraft}
               onChange={p.setLiveProbationTradesDraft}
+              min={0}
               placeholder="e.g. 20"
             />
           </Field>
@@ -1091,6 +1260,8 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
             <NumberInput
               value={p.liveProbationSizeMultiplierDraft}
               onChange={p.setLiveProbationSizeMultiplierDraft}
+              min={0}
+              max={1}
               placeholder="e.g. 0.5"
             />
           </Field>
@@ -1103,9 +1274,41 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
           />
           Allow naked short (defined-risk only is strongly recommended — leave unchecked)
         </label>
-        <button className="btn-ghost mt-3" onClick={p.onSaveLiveCaps} disabled={p.liveCapsBusy}>
+        {/* Nested under the live-trading gate the same way "Live options trading"
+            is: the server fails this closed unless live trading is already (or is
+            concurrently becoming) enabled. Left enabled while the master was off,
+            ticking it made every save of this card 400 — taking the nine other
+            live settings down with it, since they share one request. */}
+        <label className={cx('flex items-center gap-2 text-sm mt-3', !p.config.liveTradingEnabled && 'text-slate-500')}>
+          <input
+            type="checkbox"
+            checked={p.liveScaleInEnabledDraft}
+            disabled={!p.config.liveTradingEnabled}
+            onChange={(e) => p.setLiveScaleInEnabledDraft(e.target.checked)}
+          />
+          Scale into live winners (pyramiding) — ⚠ the one live setting that ADDS risk to an open position
+        </label>
+        <p className="text-[11px] text-amber-400/80 mt-1">
+          Uses the shared scale-in trigger / size (in Equity exits). Each add is placed as its own bracket, so the added
+          shares are never naked and your original stop/target is untouched. Off by default — validate in paper/backtest
+          first.
+          {!p.config.liveTradingEnabled && (
+            <span className="text-slate-500"> Enable live trading first to turn this on.</span>
+          )}
+        </p>
+        <div className="mt-2">
+          <Field label="Max live add-ons (0 disables)">
+            <NumberInput value={p.liveMaxAddOnsDraft} onChange={p.setLiveMaxAddOnsDraft} min={0} placeholder="e.g. 1" />
+          </Field>
+        </div>
+        <button className="btn-ghost mt-3" onClick={p.onSaveLiveCaps} disabled={p.liveCapsBusy || liveCapsIncomplete}>
           {p.liveCapsBusy ? 'Saving…' : 'Save live-trading settings'}
         </button>
+        {liveCapsIncomplete && (
+          <p className="text-[11px] text-amber-400/80 mt-1">
+            Every field above needs a value — these save as one batch, so a blank one would silently keep its old value.
+          </p>
+        )}
       </div>
 
       <div className="rounded-lg border border-ink-600 bg-ink-700/40 p-3">
@@ -1161,6 +1364,7 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsMaxOrderUsdDraft}
                   onChange={p.setLiveOptionsMaxOrderUsdDraft}
+                  min={0}
                   placeholder="e.g. 2000"
                 />
               </Field>
@@ -1168,6 +1372,7 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsMaxDailyLossUsdDraft}
                   onChange={p.setLiveOptionsMaxDailyLossUsdDraft}
+                  min={0}
                   placeholder="e.g. 500"
                 />
               </Field>
@@ -1175,6 +1380,7 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsMaxOrdersPerDayDraft}
                   onChange={p.setLiveOptionsMaxOrdersPerDayDraft}
+                  min={0}
                   placeholder="e.g. 6"
                 />
               </Field>
@@ -1182,6 +1388,8 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsFatFingerPctDraft}
                   onChange={p.setLiveOptionsFatFingerPctDraft}
+                  min={0}
+                  max={100}
                   placeholder="e.g. 10"
                 />
               </Field>
@@ -1189,6 +1397,7 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsProbationTradesDraft}
                   onChange={p.setLiveOptionsProbationTradesDraft}
+                  min={0}
                   placeholder="e.g. 20"
                 />
               </Field>
@@ -1196,6 +1405,8 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsProbationSizeMultiplierDraft}
                   onChange={p.setLiveOptionsProbationSizeMultiplierDraft}
+                  min={0}
+                  max={1}
                   placeholder="e.g. 0.5"
                 />
               </Field>
@@ -1207,7 +1418,11 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 size.
               </p>
             )}
-            <button className="btn-ghost" onClick={p.onSaveLiveOptionsCaps} disabled={p.liveOptionsSaveBusy}>
+            <button
+              className="btn-ghost"
+              onClick={p.onSaveLiveOptionsCaps}
+              disabled={p.liveOptionsSaveBusy || liveOptionsCapsIncomplete}
+            >
               {p.liveOptionsSaveBusy ? 'Saving…' : 'Save live options settings'}
             </button>
           </div>
@@ -1251,7 +1466,13 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
  *  count vs max, and the consecutive-loss streak. Every "used vs limit" pair
  *  here is a direct read of the server's own risk-check math (dashboard.ts),
  *  not re-derived in the UI. */
-function MonitoringDashboard({ dash }: { dash: AutotradeDashboard }) {
+function MonitoringDashboard({
+  dash,
+  portfolioGreeks,
+}: {
+  dash: AutotradeDashboard;
+  portfolioGreeks: AsyncState<PortfolioGreeks>;
+}) {
   const riskBusy = dash.maxAggregateOpenRisk > 0 && dash.openRisk >= dash.maxAggregateOpenRisk;
   const positionsBusy = dash.openPositionsCount >= dash.maxConcurrentPositions;
   const tradesBusy = dash.tradesToday >= dash.maxTradesPerDay;
@@ -1380,7 +1601,61 @@ function MonitoringDashboard({ dash }: { dash: AutotradeDashboard }) {
             }
             valueClass={dash.lastCorrelatedExposureCheck?.passed === false ? 'text-bear' : undefined}
           />
+          <StatTile
+            label="Sector exposure"
+            value={dash.sectorExposure[0] ? fmtUsd(dash.sectorExposure[0].gross) : '—'}
+            sub={
+              dash.sectorExposure[0] ? (
+                <>
+                  of {fmtUsd(dash.maxSectorExposure)} cap — {dash.sectorExposure[0].key} ({dash.sectorExposure[0].count}{' '}
+                  position{dash.sectorExposure[0].count === 1 ? '' : 's'})
+                </>
+              ) : (
+                `of ${fmtUsd(dash.maxSectorExposure)} cap — no open positions`
+              )
+            }
+            valueClass={
+              dash.sectorExposure[0] && dash.sectorExposure[0].gross > dash.maxSectorExposure ? 'text-bear' : undefined
+            }
+          />
         </div>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h4 className="text-xs uppercase tracking-wide text-slate-400">
+            Portfolio Greeks — combined open options book (paper + live)
+          </h4>
+          <button className="btn-ghost text-xs" onClick={portfolioGreeks.reload} disabled={portfolioGreeks.loading}>
+            {portfolioGreeks.loading ? 'Loading…' : 'Reload Greeks'}
+          </button>
+        </div>
+        {portfolioGreeks.error ? (
+          <ErrorState error={portfolioGreeks.error} onRetry={portfolioGreeks.reload} />
+        ) : portfolioGreeks.data ? (
+          <div className="grid grid-cols-3 gap-2">
+            <StatTile
+              label="Net delta ($)"
+              value={fmtSignedUsd(portfolioGreeks.data.netDelta)}
+              sub="$ change per $1 move in the underlying(s)"
+              valueClass={portfolioGreeks.data.netDelta >= 0 ? 'text-bull' : 'text-bear'}
+            />
+            <StatTile
+              label="Net theta ($/day)"
+              value={fmtSignedUsd(portfolioGreeks.data.netTheta)}
+              sub="typically negative — time decay on a long book"
+              valueClass={portfolioGreeks.data.netTheta >= 0 ? 'text-bull' : 'text-bear'}
+            />
+            <StatTile
+              label="Net vega ($/vol pt)"
+              value={fmtSignedUsd(portfolioGreeks.data.netVega)}
+              sub="$ change per 1-point move in implied vol"
+              valueClass={portfolioGreeks.data.netVega >= 0 ? 'text-bull' : 'text-bear'}
+            />
+          </div>
+        ) : (
+          <Spinner />
+        )}
       </div>
 
       {dash.openOptionsPositions.length > 0 && (
@@ -1529,7 +1804,7 @@ function BacktestWindowResult({
 }: {
   title: string;
   hint: string;
-  run: BacktestRunResponse;
+  run: WalkForwardWindowResult;
   gradientId: string;
 }) {
   return (
@@ -1539,21 +1814,423 @@ function BacktestWindowResult({
         <p className="text-[11px] text-slate-500">{hint}</p>
       </div>
       <BacktestStatsGrid stats={run.stats} />
+      <SignificancePanel significance={run.significance} />
       <BacktestEquityChart equityCurve={run.report.equityCurve} gradientId={gradientId} />
       <BacktestTradesTable trades={run.report.trades} />
     </div>
   );
 }
 
+/** Multipliers applied to the sweep's own center risk-per-trade % — a small,
+ *  symmetric-in-log-space neighborhood (half to 1.5x) rather than an
+ *  arbitrary additive step, so it behaves sensibly whether the center is
+ *  0.5% or 2%. Five points: enough to see a trend either side of center
+ *  without firing off an excessive number of walk-forward runs (each one
+ *  simulates the whole date range twice — in-sample and out-of-sample). */
+const SWEEP_MULTIPLIERS = [0.5, 0.75, 1, 1.25, 1.5];
+
+interface SweepRow {
+  riskPerTradePct: number;
+  /** null when this value's own walk-forward run failed — recorded, not
+   *  allowed to abort the rest of the sweep, same best-effort-per-item
+   *  convention as resolveOptionMarks/resolveOptionGreeks server-side. */
+  response: WalkForwardResponse | null;
+  error?: string;
+}
+
+/** Out-of-sample stats + significance side-by-side across nearby
+ *  risk-per-trade % values — a stable run of similar numbers across the row
+ *  reads as a real, size-insensitive edge; one value spiking while its
+ *  neighbors look ordinary or negative reads as a lucky overfit on that
+ *  exact setting rather than a genuine edge. In-sample is deliberately not
+ *  shown here (it almost always looks monotonically "better" with more risk
+ *  per trade regardless of whether the edge is real — see BacktestWindowResult's
+ *  own in-sample hint above); out-of-sample is the number this view exists
+ *  to stress-test. */
+function ParameterSweepTable({ rows, baseValue }: { rows: SweepRow[]; baseValue: number }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead className="border-b border-ink-600/60">
+          <tr>
+            <th className="th text-right">Risk/trade %</th>
+            <th className="th text-right">OOS trades</th>
+            <th className="th text-right">Win rate</th>
+            <th className="th text-right">Expectancy</th>
+            <th className="th text-right">Return</th>
+            <th className="th text-right">Max DD</th>
+            <th className="th text-right">p-value</th>
+            <th className="th">Reliable</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const isBase = Math.abs(row.riskPerTradePct - baseValue) < 1e-9;
+            const labelCell = (
+              <td className={cx('td text-right tabular-nums', isBase && 'font-semibold text-slate-100')}>
+                {fmtNum(row.riskPerTradePct)}%{isBase ? ' (base)' : ''}
+              </td>
+            );
+            if (!row.response) {
+              return (
+                <tr key={row.riskPerTradePct} className={cx('border-b border-ink-700/50', isBase && 'bg-ink-700/40')}>
+                  {labelCell}
+                  <td className="td text-bear" colSpan={7}>
+                    {row.error ?? 'Failed'}
+                  </td>
+                </tr>
+              );
+            }
+            const oos = row.response.outOfSample;
+            return (
+              <tr key={row.riskPerTradePct} className={cx('border-b border-ink-700/50', isBase && 'bg-ink-700/40')}>
+                {labelCell}
+                <td className="td text-right tabular-nums">{oos.stats.totalTrades}</td>
+                <td className="td text-right tabular-nums">{fmtPct(oos.stats.winRate, 0, false)}</td>
+                <td className={cx('td text-right tabular-nums', oos.stats.expectancy >= 0 ? 'text-bull' : 'text-bear')}>
+                  {fmtSignedUsd(oos.stats.expectancy)}
+                </td>
+                <td className={cx('td text-right tabular-nums', oos.stats.returnPct >= 0 ? 'text-bull' : 'text-bear')}>
+                  {fmtPct(oos.stats.returnPct, 1)}
+                </td>
+                <td className="td text-right tabular-nums text-bear">{fmtUsd(oos.stats.maxDrawdown)}</td>
+                <td
+                  className={cx(
+                    'td text-right tabular-nums',
+                    oos.significance.pValue !== null && oos.significance.pValue < 0.05 ? 'text-bull' : 'text-slate-300',
+                  )}
+                >
+                  {oos.significance.pValue === null ? '—' : fmtNum(oos.significance.pValue, 3)}
+                </td>
+                <td className="td">
+                  {oos.significance.sampleSize === 0 ? (
+                    '—'
+                  ) : (
+                    <Badge color={oos.significance.reliable ? 'blue' : 'slate'}>
+                      {oos.significance.reliable ? 'yes' : 'thin sample'}
+                    </Badge>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Human labels + formatting for the tunable-patch keys the "Tune from target"
+// preview shows before -> after. Only these keys are ever in a tune patch (see
+// TunablePatch / targetTune.ts's allowlist).
+const TUNE_FIELD_LABELS: Record<keyof TunablePatch, string> = {
+  riskProfile: 'Risk profile (label)',
+  maxConcurrentPositions: 'Max concurrent positions',
+  riskPerTradePct: 'Risk per trade',
+  maxDailyDrawdownPct: 'Daily drawdown halt',
+  stepDownAfterLosses: 'Step-down after losses',
+  stepDownSizeCutPct: 'Step-down size cut',
+  maxAggregateOpenRiskPct: 'Max aggregate open risk',
+  maxCorrelatedExposurePct: 'Max correlated exposure',
+  maxSectorExposurePct: 'Max sector exposure',
+  maxTradesPerDay: 'Max trades/day',
+  minRelVol: 'Min relative volume',
+  maxTickerAtrPct: 'Max ticker ATR%',
+  maxMarketAtrPct: 'Max market ATR%',
+  targetRMultiple: 'Target R multiple',
+  liveMaxOrderUsd: 'Live max order',
+  liveMaxDailyLossUsd: 'Live max daily loss',
+  liveMaxOrdersPerDay: 'Live max orders/day',
+  liveOptionsMaxOrderUsd: 'Live options max order',
+  liveOptionsMaxDailyLossUsd: 'Live options max daily loss',
+  liveOptionsMaxOrdersPerDay: 'Live options max orders/day',
+  optionsDeltaMin: 'Options delta min',
+  optionsDeltaMax: 'Options delta max',
+  optionsMaxSpreadPct: 'Options max spread%',
+  optionsMinDte: 'Options min DTE',
+  optionsMaxDte: 'Options max DTE',
+  optionsIvRankMax: 'Options IV-rank max',
+  optionsStopLossPct: 'Options stop-loss%',
+  optionsTakeProfitPct: 'Options take-profit%',
+};
+
+const USD_TUNE_KEYS = new Set<keyof TunablePatch>([
+  'liveMaxOrderUsd',
+  'liveMaxDailyLossUsd',
+  'liveOptionsMaxOrderUsd',
+  'liveOptionsMaxDailyLossUsd',
+]);
+const PCT_TUNE_KEYS = new Set<keyof TunablePatch>([
+  'riskPerTradePct',
+  'maxDailyDrawdownPct',
+  'stepDownSizeCutPct',
+  'maxAggregateOpenRiskPct',
+  'maxCorrelatedExposurePct',
+  'maxSectorExposurePct',
+  'maxTickerAtrPct',
+  'maxMarketAtrPct',
+  'optionsMaxSpreadPct',
+  'optionsIvRankMax',
+  'optionsStopLossPct',
+  'optionsTakeProfitPct',
+]);
+
+function fmtTuneValue(key: keyof TunablePatch, value: TunablePatch[keyof TunablePatch]): string {
+  if (typeof value === 'string') return value; // riskProfile
+  if (USD_TUNE_KEYS.has(key)) return fmtUsd(value);
+  if (PCT_TUNE_KEYS.has(key)) return `${fmtNum(value)}%`;
+  return fmtNum(value);
+}
+
+const BAND_LABEL: Record<TuneBand, string> = {
+  conservative: 'Conservative',
+  moderate: 'Moderate',
+  aggressive: 'Aggressive',
+};
+
+/**
+ * "Tune from target" — set a target daily gain % and let it derive the whole
+ * risk/aggressiveness config from that plus your account equity, under either
+ * sizing basis. A preview (every changed field, before -> after) + warnings;
+ * nothing is written until you Apply. Mirrors the one-shot, review-then-apply
+ * shape of "Suggest from equity" — every field stays editable afterward. Gated
+ * on equity being set, since every derived number scales with it.
+ */
+export function TuneFromTargetSection({
+  config,
+  onApply,
+  applying,
+}: {
+  config: AutotradeConfig;
+  onApply: (patch: TunablePatch, band: TuneBand) => Promise<void>;
+  applying: boolean;
+}) {
+  // Persisted (not plain useState) so the chosen target + basis survive a
+  // remount — this section unmounts whenever the config/dashboard view is
+  // toggled or the page is reloaded, and a hardcoded useState default made the
+  // field snap back to 5 every time, reading as "my change didn't take" even
+  // though Apply had already written the derived risk config server-side.
+  const [target, setTarget] = useLocalStorage<number | undefined>('autotrade.tune.target', 5);
+  const [basis, setBasis] = useLocalStorage<TuneBasis>('autotrade.tune.basis', 'expected');
+  const [preview, setPreview] = useState<TargetTuneResult | undefined>();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  const equitySet = config.accountEquityUsd != null;
+
+  // Re-preview whenever target/basis change (debounced), so the table + risk %
+  // update live as the user flips the basis toggle — the whole point of having
+  // both bases one click apart.
+  useEffect(() => {
+    // Reads accountEquityUsd directly rather than the derived `equitySet`
+    // boolean, so this effect depends on the equity AMOUNT (see the deps note
+    // below) without carrying a redundant second dependency for the same value.
+    if (config.accountEquityUsd == null || target == null || target <= 0) {
+      setPreview(undefined);
+      setError(undefined);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    const t = setTimeout(() => {
+      client
+        .tuneFromTargetPreview({ targetDailyGainPct: target, basis })
+        .then((r) => {
+          if (!cancelled) {
+            setPreview(r);
+            setError(undefined);
+          }
+        })
+        .catch((e) => {
+          if (!cancelled) {
+            setPreview(undefined);
+            setError((e as Error).message);
+          }
+        })
+        .finally(() => !cancelled && setLoading(false));
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+    // Keyed on the equity AMOUNT, not just whether it's set: the server derives
+    // the dollar caps (liveMaxOrderUsd, liveMaxDailyLossUsd, and their options
+    // twins) from equity, and equity moves on its own — the loop marks it to
+    // market every tick and this page re-syncs it every 60s. Depending on the
+    // `equitySet` boolean meant the preview only refreshed on the null->set
+    // transition, so the table (and the patch Apply writes) kept dollar caps
+    // scaled to a stale equity while the prose above it showed the new one.
+  }, [target, basis, config.accountEquityUsd]);
+
+  const changedRows = preview
+    ? (Object.keys(preview.patch) as (keyof TunablePatch)[])
+        .map((key) => ({ key, before: config[key], after: preview.patch[key] }))
+        .filter((r) => r.before !== r.after)
+    : [];
+
+  const resetToModerate = async () => {
+    try {
+      const { patch } = await client.tuneModerateBaseline();
+      await onApply(patch, 'moderate');
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  return (
+    <CollapsibleCard id="autotrade.config.tuneFromTarget" title="Tune from target daily gain" defaultCollapsed>
+      {!equitySet ? (
+        <div className="text-sm text-slate-400 py-2">
+          Set <span className="font-medium text-slate-200">Account equity</span> above first — every tuned number scales
+          with it.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-xs text-slate-500">
+            Pick a target daily gain % and a sizing basis; this derives the whole risk config (sizing, exposure caps,
+            screening filters, options selection, and the equity-scaled dollar caps) from it plus your{' '}
+            {fmtUsd(config.accountEquityUsd)} equity. A preview only — nothing changes until you Apply, and every field
+            stays editable afterward. <span className="text-slate-400">This is decision-support, not a promise:</span>{' '}
+            higher targets mean bigger swings both ways.
+          </p>
+
+          <div className="grid sm:grid-cols-2 gap-3 items-end">
+            <Field label="Target daily gain %" hint="On a good day, under the basis chosen at right.">
+              <NumberInput value={target} onChange={setTarget} step={1} placeholder="e.g. 5" />
+            </Field>
+            <Field
+              label="Sizing basis"
+              hint={
+                basis === 'expected'
+                  ? 'Expected: sizes so the target is your AVERAGE day (~45% win rate). More risk per trade.'
+                  : 'Perfect day: sizes so the target is your BEST-CASE ceiling (every trade wins). Less risk per trade.'
+              }
+            >
+              <Segmented
+                value={basis}
+                onChange={(v) => setBasis(v as TuneBasis)}
+                options={[
+                  { value: 'expected', label: 'Expected day' },
+                  { value: 'perfectDay', label: 'Perfect day' },
+                ]}
+              />
+            </Field>
+          </div>
+
+          {error && <div className="text-bear text-sm">{error}</div>}
+          {loading && !preview && <Spinner label="Computing tune…" />}
+
+          {preview && (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+                <span>
+                  Band: <span className="font-medium text-slate-200">{BAND_LABEL[preview.band]}</span>
+                </span>
+                <span>
+                  Risk / trade:{' '}
+                  <span
+                    className={cx('font-medium tabular-nums', preview.patch.riskPerTradePct >= 3 && 'text-amber-400')}
+                  >
+                    {fmtNum(preview.patch.riskPerTradePct)}%
+                  </span>
+                </span>
+                <span className="text-slate-500 text-xs">
+                  edge {fmtNum(preview.edgeR)}R/trade ·{' '}
+                  {preview.basis === 'expected' ? '~45% win assumption' : 'every-trade-wins ceiling'}
+                </span>
+              </div>
+
+              {preview.warnings.length > 0 && (
+                <ul className="space-y-1 text-[13px] text-amber-400/90">
+                  {preview.warnings.map((w, i) => (
+                    <li key={i}>⚠ {w}</li>
+                  ))}
+                </ul>
+              )}
+
+              {changedRows.length === 0 ? (
+                <div className="text-sm text-slate-500">No changes from your current settings.</div>
+              ) : (
+                <div className="overflow-x-auto rounded border border-ink-700/60">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-ink-600/60">
+                        <th className="py-1.5 px-2 font-medium">Setting</th>
+                        <th className="py-1.5 px-2 font-medium text-right">Current</th>
+                        <th className="py-1.5 px-2 font-medium text-right">Tuned</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {changedRows.map((r) => (
+                        <tr key={r.key} className="border-b border-ink-700/40 last:border-0">
+                          <td className="py-1 px-2 text-slate-300">{TUNE_FIELD_LABELS[r.key]}</td>
+                          <td className="py-1 px-2 text-right tabular-nums text-slate-500">
+                            {fmtTuneValue(r.key, r.before as TunablePatch[keyof TunablePatch])}
+                          </td>
+                          <td className="py-1 px-2 text-right tabular-nums text-slate-100">
+                            {fmtTuneValue(r.key, r.after)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  className="btn-primary"
+                  disabled={applying || changedRows.length === 0}
+                  onClick={() => onApply(preview.patch, preview.band)}
+                >
+                  {applying ? 'Applying…' : 'Apply tuned settings'}
+                </button>
+                <button className="btn-ghost" disabled={applying} onClick={resetToModerate}>
+                  Reset to moderate
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Never changes your live-enable switch, kill switch, account ID, or probation ramps — only the
+                risk/aggressiveness settings and the equity-scaled dollar caps. Not financial advice.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+    </CollapsibleCard>
+  );
+}
+
 export default function AutoTradePage() {
   const config = useAsync(() => client.autotradeConfig(), []);
   const exclusions = useAsync(() => client.autotradeExclusions(), []);
+  const macroEvents = useAsync(() => client.autotradeMacroEvents(), []);
   const events = useAsync(() => client.autotradeEvents({ limit: 50 }), []);
   const paperPositions = useAsync(() => client.autotradePaperPositions({ limit: 100 }), []);
   const optionsPaperPositions = useAsync(() => client.autotradeOptionsPaperPositions({ limit: 100 }), []);
   const livePositions = useAsync(() => client.autotradeLivePositions({ limit: 100 }), []);
   const liveOptionsPositions = useAsync(() => client.autotradeLiveOptionsPositions({ limit: 100 }), []);
+  // Ex-dividend/earnings awareness for the options tables' assignment-risk
+  // badge (AssignmentRiskBadge) — same batched-by-symbol fetch PositionsPage
+  // uses for EarningsBadge, just keyed off both options position lists
+  // instead of the human journal's positions.
+  const optionSymbolsKey = [
+    ...new Set(
+      [...(optionsPaperPositions.data?.positions ?? []), ...(liveOptionsPositions.data?.positions ?? [])].map((p) =>
+        p.symbol.toUpperCase(),
+      ),
+    ),
+  ].join(',');
+  const symbolEvents = useAsync(
+    () => (optionSymbolsKey ? client.events(optionSymbolsKey.split(',')) : Promise.resolve({ events: [] })),
+    [optionSymbolsKey],
+  );
   const dashboard = useAsync(() => client.autotradeDashboard(), []);
+  // Deliberately NOT part of refreshLiveData()'s 60s-poll bundle below —
+  // unlike every other dashboard figure (a pure DB read), this needs a live
+  // options-chain fetch per open (symbol, expiration); own on-mount fetch +
+  // manual "Refresh" button only, so it isn't hit on every poll tick.
+  const portfolioGreeks = useAsync(() => client.autotradePortfolioGreeks(), []);
   const [view, setView] = useLocalStorage<'config' | 'dashboard'>('autotrade.view', 'config');
   const { toast } = useToast();
   const confirm = useConfirm();
@@ -1582,6 +2259,7 @@ export default function AutoTradePage() {
     livePositions.reload();
     liveOptionsPositions.reload();
     events.reload();
+    symbolEvents.reload();
   };
 
   const [enabled, setEnabled] = useState(false);
@@ -1589,6 +2267,14 @@ export default function AutoTradePage() {
   const [riskProfile, setRiskProfile] = useState<AutotradeRiskProfile>('MODERATE');
   const [optionsStrategyType, setOptionsStrategyType] = useState<AutotradeOptionsStrategyType>('single_leg');
   const [tradeDirection, setTradeDirection] = useState<AutotradeTradeDirectionMode>('long');
+  const [optionsDeltaMinDraft, setOptionsDeltaMinDraft] = useState<number | undefined>();
+  const [optionsDeltaMaxDraft, setOptionsDeltaMaxDraft] = useState<number | undefined>();
+  const [optionsMaxSpreadPctDraft, setOptionsMaxSpreadPctDraft] = useState<number | undefined>();
+  const [optionsMinOpenInterestDraft, setOptionsMinOpenInterestDraft] = useState<number | undefined>();
+  const [optionsMinVolumeDraft, setOptionsMinVolumeDraft] = useState<number | undefined>();
+  const [optionsMinDteDraft, setOptionsMinDteDraft] = useState<number | undefined>();
+  const [optionsMaxDteDraft, setOptionsMaxDteDraft] = useState<number | undefined>();
+  const [optionsIvRankMaxDraft, setOptionsIvRankMaxDraft] = useState<number | undefined>();
   const [equityDraft, setEquityDraft] = useState<number | undefined>();
   const [maxPositionsDraft, setMaxPositionsDraft] = useState<number | undefined>();
   const [riskPerTradePctDraft, setRiskPerTradePctDraft] = useState<number | undefined>();
@@ -1597,14 +2283,26 @@ export default function AutoTradePage() {
   const [stepDownSizeCutPctDraft, setStepDownSizeCutPctDraft] = useState<number | undefined>();
   const [maxAggregateOpenRiskPctDraft, setMaxAggregateOpenRiskPctDraft] = useState<number | undefined>();
   const [maxCorrelatedExposurePctDraft, setMaxCorrelatedExposurePctDraft] = useState<number | undefined>();
+  const [maxSectorExposurePctDraft, setMaxSectorExposurePctDraft] = useState<number | undefined>();
   const [maxTradesPerDayDraft, setMaxTradesPerDayDraft] = useState<number | undefined>();
   const [regimeAtrThresholdPctDraft, setRegimeAtrThresholdPctDraft] = useState<number | undefined>();
   const [regimeSizeCutPctDraft, setRegimeSizeCutPctDraft] = useState<number | undefined>();
+  const [equityCurveDeriskEnabled, setEquityCurveDeriskEnabled] = useState(false);
+  const [equityCurveLookbackDaysDraft, setEquityCurveLookbackDaysDraft] = useState<number | undefined>();
+  const [equityCurveDeriskCutPctDraft, setEquityCurveDeriskCutPctDraft] = useState<number | undefined>();
+  const [maxAdvParticipationPctDraft, setMaxAdvParticipationPctDraft] = useState<number | undefined>();
+  const [convictionGradeAMinScoreDraft, setConvictionGradeAMinScoreDraft] = useState<number | undefined>();
+  const [convictionGradeBMinScoreDraft, setConvictionGradeBMinScoreDraft] = useState<number | undefined>();
+  const [expectancyWeightingEnabled, setExpectancyWeightingEnabled] = useState(false);
+  const [expectancyMinTradesDraft, setExpectancyMinTradesDraft] = useState<number | undefined>();
+  const [expectancyMinMultiplierDraft, setExpectancyMinMultiplierDraft] = useState<number | undefined>();
+  const [expectancyMaxMultiplierDraft, setExpectancyMaxMultiplierDraft] = useState<number | undefined>();
   const [minRelVolDraft, setMinRelVolDraft] = useState<number | undefined>();
   const [requireWeeklyTrendAlignment, setRequireWeeklyTrendAlignment] = useState(false);
   const [relativeStrengthWeightDraft, setRelativeStrengthWeightDraft] = useState<number | undefined>();
   const [benchmarkSymbolDraft, setBenchmarkSymbolDraft] = useState('');
   const [relativeStrengthLookbackDaysDraft, setRelativeStrengthLookbackDaysDraft] = useState<number | undefined>();
+  const [sentimentWeightDraft, setSentimentWeightDraft] = useState<number | undefined>();
   const [maxTickerAtrPctDraft, setMaxTickerAtrPctDraft] = useState<number | undefined>();
   const [maxMarketAtrPctDraft, setMaxMarketAtrPctDraft] = useState<number | undefined>();
   const [stopAtrMultipleDraft, setStopAtrMultipleDraft] = useState<number | undefined>();
@@ -1615,6 +2313,9 @@ export default function AutoTradePage() {
   const [trailStopRMultipleDraft, setTrailStopRMultipleDraft] = useState<number | undefined>();
   const [partialExitRMultipleDraft, setPartialExitRMultipleDraft] = useState<number | undefined>();
   const [partialExitPctDraft, setPartialExitPctDraft] = useState<number | undefined>();
+  const [addOnTriggerRMultipleDraft, setAddOnTriggerRMultipleDraft] = useState<number | undefined>();
+  const [addOnSizePctDraft, setAddOnSizePctDraft] = useState<number | undefined>();
+  const [maxAddOnsDraft, setMaxAddOnsDraft] = useState<number | undefined>();
   const [optionsStopLossPctDraft, setOptionsStopLossPctDraft] = useState<number | undefined>();
   const [optionsTakeProfitPctDraft, setOptionsTakeProfitPctDraft] = useState<number | undefined>();
   const [optionsBreakevenTriggerPctDraft, setOptionsBreakevenTriggerPctDraft] = useState<number | undefined>();
@@ -1624,8 +2325,12 @@ export default function AutoTradePage() {
   const [optionsPartialExitPctDraft, setOptionsPartialExitPctDraft] = useState<number | undefined>();
   const [sessionBufferMinutesDraft, setSessionBufferMinutesDraft] = useState<number | undefined>();
   const [earningsBlackoutDaysDraft, setEarningsBlackoutDaysDraft] = useState<number | undefined>();
+  const [macroEventBlackoutHoursDraft, setMacroEventBlackoutHoursDraft] = useState<number | undefined>();
   const [correlationLookbackDaysDraft, setCorrelationLookbackDaysDraft] = useState<number | undefined>();
   const [correlationThresholdDraft, setCorrelationThresholdDraft] = useState<number | undefined>();
+  const [correlationAwareSelectionEnabled, setCorrelationAwareSelectionEnabled] = useState(false);
+  const [regimeAdaptiveWeightsEnabled, setRegimeAdaptiveWeightsEnabled] = useState(false);
+  const [regimeWeightPresetsDraft, setRegimeWeightPresetsDraft] = useState<AutotradeConfig['regimeWeightPresets']>();
   const [liveAccountIdDraft, setLiveAccountIdDraft] = useState('');
   const [liveMaxOrderUsdDraft, setLiveMaxOrderUsdDraft] = useState<number | undefined>();
   const [liveMaxDailyLossUsdDraft, setLiveMaxDailyLossUsdDraft] = useState<number | undefined>();
@@ -1634,6 +2339,8 @@ export default function AutoTradePage() {
   const [liveAllowNakedShortDraft, setLiveAllowNakedShortDraft] = useState(false);
   const [liveProbationTradesDraft, setLiveProbationTradesDraft] = useState<number | undefined>();
   const [liveProbationSizeMultiplierDraft, setLiveProbationSizeMultiplierDraft] = useState<number | undefined>();
+  const [liveScaleInEnabledDraft, setLiveScaleInEnabledDraft] = useState(false);
+  const [liveMaxAddOnsDraft, setLiveMaxAddOnsDraft] = useState<number | undefined>();
   const [liveOptionsEnabledDraft, setLiveOptionsEnabledDraft] = useState(false);
   const [liveOptionsMaxOrderUsdDraft, setLiveOptionsMaxOrderUsdDraft] = useState<number | undefined>();
   const [liveOptionsMaxDailyLossUsdDraft, setLiveOptionsMaxDailyLossUsdDraft] = useState<number | undefined>();
@@ -1647,70 +2354,133 @@ export default function AutoTradePage() {
   const [autoPromoteThresholdDraft, setAutoPromoteThresholdDraft] = useState<number | undefined>();
   const [autoPromoteWindowDaysDraft, setAutoPromoteWindowDaysDraft] = useState<number | undefined>();
   const [autoPromoteMaxSymbolsDraft, setAutoPromoteMaxSymbolsDraft] = useState<number | undefined>();
+  const [autoTuneEnabled, setAutoTuneEnabled] = useState(false);
+  const [autoTuneRequireOosConfirmation, setAutoTuneRequireOosConfirmation] = useState(true);
+  const [autoTuneMinTradesDraft, setAutoTuneMinTradesDraft] = useState<number | undefined>();
+  const [autoTuneMaxStepPctDraft, setAutoTuneMaxStepPctDraft] = useState<number | undefined>();
+  const [autoTuneSlippageExcludePctDraft, setAutoTuneSlippageExcludePctDraft] = useState<number | undefined>();
+  const [autoTuneExitsEnabled, setAutoTuneExitsEnabled] = useState(false);
+  const [autoTuneExitMaxStepDraft, setAutoTuneExitMaxStepDraft] = useState<number | undefined>();
+  // Server config -> local drafts. A field is (re-)seeded ONLY when the server's
+  // value for it actually changed since the last seed (or on first load).
+  // Every config.reload() hands back a fresh object — after any save, and on
+  // the 60s equity auto-sync — so an unconditional re-seed would reapply server
+  // state on top of the OTHER fields the user has edited but not yet saved,
+  // silently discarding them. Same class of bug as the tune target snapping
+  // back to 5.
+  const lastSeededRef = useRef<AutotradeConfig | null>(null);
+  const seedDraftsFrom = useCallback((cfg: AutotradeConfig) => {
+    const prev = lastSeededRef.current;
+    lastSeededRef.current = cfg;
+    // regimeWeightPresets is an object: a fresh fetch always yields a new
+    // identity, so compare by value or it would re-seed (and clobber) every time.
+    const same = (a: unknown, b: unknown) =>
+      a !== null && typeof a === 'object' ? JSON.stringify(a) === JSON.stringify(b) : Object.is(a, b);
+    const sync = <K extends keyof AutotradeConfig>(key: K, apply: (v: AutotradeConfig[K]) => void) => {
+      if (!prev || !same(cfg[key], prev[key])) apply(cfg[key]);
+    };
+    sync('enabled', setEnabled);
+    sync('killSwitch', setKillSwitch);
+    sync('riskProfile', setRiskProfile);
+    sync('optionsStrategyType', setOptionsStrategyType);
+    sync('tradeDirection', setTradeDirection);
+    sync('optionsDeltaMin', setOptionsDeltaMinDraft);
+    sync('optionsDeltaMax', setOptionsDeltaMaxDraft);
+    sync('optionsMaxSpreadPct', setOptionsMaxSpreadPctDraft);
+    sync('optionsMinOpenInterest', setOptionsMinOpenInterestDraft);
+    sync('optionsMinVolume', setOptionsMinVolumeDraft);
+    sync('optionsMinDte', setOptionsMinDteDraft);
+    sync('optionsMaxDte', setOptionsMaxDteDraft);
+    sync('optionsIvRankMax', setOptionsIvRankMaxDraft);
+    sync('accountEquityUsd', (v) => setEquityDraft(v ?? undefined));
+    sync('maxConcurrentPositions', setMaxPositionsDraft);
+    sync('riskPerTradePct', setRiskPerTradePctDraft);
+    sync('maxDailyDrawdownPct', setMaxDailyDrawdownPctDraft);
+    sync('stepDownAfterLosses', setStepDownAfterLossesDraft);
+    sync('stepDownSizeCutPct', setStepDownSizeCutPctDraft);
+    sync('maxAggregateOpenRiskPct', setMaxAggregateOpenRiskPctDraft);
+    sync('maxCorrelatedExposurePct', setMaxCorrelatedExposurePctDraft);
+    sync('maxSectorExposurePct', setMaxSectorExposurePctDraft);
+    sync('maxTradesPerDay', setMaxTradesPerDayDraft);
+    sync('regimeAtrThresholdPct', setRegimeAtrThresholdPctDraft);
+    sync('regimeSizeCutPct', setRegimeSizeCutPctDraft);
+    sync('equityCurveDeriskEnabled', setEquityCurveDeriskEnabled);
+    sync('equityCurveLookbackDays', setEquityCurveLookbackDaysDraft);
+    sync('equityCurveDeriskCutPct', setEquityCurveDeriskCutPctDraft);
+    sync('maxAdvParticipationPct', setMaxAdvParticipationPctDraft);
+    sync('convictionGradeAMinScore', setConvictionGradeAMinScoreDraft);
+    sync('convictionGradeBMinScore', setConvictionGradeBMinScoreDraft);
+    sync('expectancyWeightingEnabled', setExpectancyWeightingEnabled);
+    sync('expectancyMinTrades', setExpectancyMinTradesDraft);
+    sync('expectancyMinMultiplier', setExpectancyMinMultiplierDraft);
+    sync('expectancyMaxMultiplier', setExpectancyMaxMultiplierDraft);
+    sync('minRelVol', setMinRelVolDraft);
+    sync('requireWeeklyTrendAlignment', setRequireWeeklyTrendAlignment);
+    sync('relativeStrengthWeight', setRelativeStrengthWeightDraft);
+    sync('benchmarkSymbol', (v) => setBenchmarkSymbolDraft(v ?? ''));
+    sync('relativeStrengthLookbackDays', setRelativeStrengthLookbackDaysDraft);
+    sync('sentimentWeight', setSentimentWeightDraft);
+    sync('maxTickerAtrPct', setMaxTickerAtrPctDraft);
+    sync('maxMarketAtrPct', setMaxMarketAtrPctDraft);
+    sync('stopAtrMultiple', setStopAtrMultipleDraft);
+    sync('targetRMultiple', setTargetRMultipleDraft);
+    sync('maxHoldDays', setMaxHoldDaysDraft);
+    sync('breakevenTriggerRMultiple', setBreakevenTriggerRMultipleDraft);
+    sync('trailStartRMultiple', setTrailStartRMultipleDraft);
+    sync('trailStopRMultiple', setTrailStopRMultipleDraft);
+    sync('partialExitRMultiple', setPartialExitRMultipleDraft);
+    sync('partialExitPct', setPartialExitPctDraft);
+    sync('addOnTriggerRMultiple', setAddOnTriggerRMultipleDraft);
+    sync('addOnSizePct', setAddOnSizePctDraft);
+    sync('maxAddOns', setMaxAddOnsDraft);
+    sync('optionsStopLossPct', setOptionsStopLossPctDraft);
+    sync('optionsTakeProfitPct', setOptionsTakeProfitPctDraft);
+    sync('optionsBreakevenTriggerPct', setOptionsBreakevenTriggerPctDraft);
+    sync('optionsTrailStartPct', setOptionsTrailStartPctDraft);
+    sync('optionsTrailStopPct', setOptionsTrailStopPctDraft);
+    sync('optionsPartialExitTriggerPct', setOptionsPartialExitTriggerPctDraft);
+    sync('optionsPartialExitPct', setOptionsPartialExitPctDraft);
+    sync('sessionBufferMinutes', setSessionBufferMinutesDraft);
+    sync('earningsBlackoutDays', setEarningsBlackoutDaysDraft);
+    sync('macroEventBlackoutHours', setMacroEventBlackoutHoursDraft);
+    sync('correlationLookbackDays', setCorrelationLookbackDaysDraft);
+    sync('correlationThreshold', setCorrelationThresholdDraft);
+    sync('correlationAwareSelectionEnabled', setCorrelationAwareSelectionEnabled);
+    sync('regimeAdaptiveWeightsEnabled', setRegimeAdaptiveWeightsEnabled);
+    sync('regimeWeightPresets', setRegimeWeightPresetsDraft);
+    sync('liveAccountId', (v) => setLiveAccountIdDraft(v ?? ''));
+    sync('liveMaxOrderUsd', setLiveMaxOrderUsdDraft);
+    sync('liveMaxDailyLossUsd', setLiveMaxDailyLossUsdDraft);
+    sync('liveMaxOrdersPerDay', setLiveMaxOrdersPerDayDraft);
+    sync('liveFatFingerPct', setLiveFatFingerPctDraft);
+    sync('liveAllowNakedShort', setLiveAllowNakedShortDraft);
+    sync('liveProbationTrades', setLiveProbationTradesDraft);
+    sync('liveProbationSizeMultiplier', setLiveProbationSizeMultiplierDraft);
+    sync('liveScaleInEnabled', setLiveScaleInEnabledDraft);
+    sync('liveMaxAddOns', setLiveMaxAddOnsDraft);
+    sync('liveOptionsEnabled', setLiveOptionsEnabledDraft);
+    sync('liveOptionsMaxOrderUsd', setLiveOptionsMaxOrderUsdDraft);
+    sync('liveOptionsMaxDailyLossUsd', setLiveOptionsMaxDailyLossUsdDraft);
+    sync('liveOptionsMaxOrdersPerDay', setLiveOptionsMaxOrdersPerDayDraft);
+    sync('liveOptionsFatFingerPct', setLiveOptionsFatFingerPctDraft);
+    sync('liveOptionsProbationTrades', setLiveOptionsProbationTradesDraft);
+    sync('liveOptionsProbationSizeMultiplier', setLiveOptionsProbationSizeMultiplierDraft);
+    sync('autoPromoteMoversEnabled', setAutoPromoteMoversEnabled);
+    sync('autoPromoteThreshold', setAutoPromoteThresholdDraft);
+    sync('autoPromoteWindowDays', setAutoPromoteWindowDaysDraft);
+    sync('autoPromoteMaxSymbols', setAutoPromoteMaxSymbolsDraft);
+    sync('autoTuneEnabled', setAutoTuneEnabled);
+    sync('autoTuneRequireOosConfirmation', setAutoTuneRequireOosConfirmation);
+    sync('autoTuneMinTrades', setAutoTuneMinTradesDraft);
+    sync('autoTuneMaxStepPct', setAutoTuneMaxStepPctDraft);
+    sync('autoTuneSlippageExcludePct', setAutoTuneSlippageExcludePctDraft);
+    sync('autoTuneExitsEnabled', setAutoTuneExitsEnabled);
+    sync('autoTuneExitMaxStep', setAutoTuneExitMaxStepDraft);
+  }, []);
+
   useEffect(() => {
-    if (!config.data) return;
-    setEnabled(config.data.enabled);
-    setKillSwitch(config.data.killSwitch);
-    setRiskProfile(config.data.riskProfile);
-    setOptionsStrategyType(config.data.optionsStrategyType);
-    setTradeDirection(config.data.tradeDirection);
-    setEquityDraft(config.data.accountEquityUsd ?? undefined);
-    setMaxPositionsDraft(config.data.maxConcurrentPositions);
-    setRiskPerTradePctDraft(config.data.riskPerTradePct);
-    setMaxDailyDrawdownPctDraft(config.data.maxDailyDrawdownPct);
-    setStepDownAfterLossesDraft(config.data.stepDownAfterLosses);
-    setStepDownSizeCutPctDraft(config.data.stepDownSizeCutPct);
-    setMaxAggregateOpenRiskPctDraft(config.data.maxAggregateOpenRiskPct);
-    setMaxCorrelatedExposurePctDraft(config.data.maxCorrelatedExposurePct);
-    setMaxTradesPerDayDraft(config.data.maxTradesPerDay);
-    setRegimeAtrThresholdPctDraft(config.data.regimeAtrThresholdPct);
-    setRegimeSizeCutPctDraft(config.data.regimeSizeCutPct);
-    setMinRelVolDraft(config.data.minRelVol);
-    setRequireWeeklyTrendAlignment(config.data.requireWeeklyTrendAlignment);
-    setRelativeStrengthWeightDraft(config.data.relativeStrengthWeight);
-    setBenchmarkSymbolDraft(config.data.benchmarkSymbol ?? '');
-    setRelativeStrengthLookbackDaysDraft(config.data.relativeStrengthLookbackDays);
-    setMaxTickerAtrPctDraft(config.data.maxTickerAtrPct);
-    setMaxMarketAtrPctDraft(config.data.maxMarketAtrPct);
-    setStopAtrMultipleDraft(config.data.stopAtrMultiple);
-    setTargetRMultipleDraft(config.data.targetRMultiple);
-    setMaxHoldDaysDraft(config.data.maxHoldDays);
-    setBreakevenTriggerRMultipleDraft(config.data.breakevenTriggerRMultiple);
-    setTrailStartRMultipleDraft(config.data.trailStartRMultiple);
-    setTrailStopRMultipleDraft(config.data.trailStopRMultiple);
-    setPartialExitRMultipleDraft(config.data.partialExitRMultiple);
-    setPartialExitPctDraft(config.data.partialExitPct);
-    setOptionsStopLossPctDraft(config.data.optionsStopLossPct);
-    setOptionsTakeProfitPctDraft(config.data.optionsTakeProfitPct);
-    setOptionsBreakevenTriggerPctDraft(config.data.optionsBreakevenTriggerPct);
-    setOptionsTrailStartPctDraft(config.data.optionsTrailStartPct);
-    setOptionsTrailStopPctDraft(config.data.optionsTrailStopPct);
-    setOptionsPartialExitTriggerPctDraft(config.data.optionsPartialExitTriggerPct);
-    setOptionsPartialExitPctDraft(config.data.optionsPartialExitPct);
-    setSessionBufferMinutesDraft(config.data.sessionBufferMinutes);
-    setEarningsBlackoutDaysDraft(config.data.earningsBlackoutDays);
-    setCorrelationLookbackDaysDraft(config.data.correlationLookbackDays);
-    setCorrelationThresholdDraft(config.data.correlationThreshold);
-    setLiveAccountIdDraft(config.data.liveAccountId ?? '');
-    setLiveMaxOrderUsdDraft(config.data.liveMaxOrderUsd);
-    setLiveMaxDailyLossUsdDraft(config.data.liveMaxDailyLossUsd);
-    setLiveMaxOrdersPerDayDraft(config.data.liveMaxOrdersPerDay);
-    setLiveFatFingerPctDraft(config.data.liveFatFingerPct);
-    setLiveAllowNakedShortDraft(config.data.liveAllowNakedShort);
-    setLiveProbationTradesDraft(config.data.liveProbationTrades);
-    setLiveProbationSizeMultiplierDraft(config.data.liveProbationSizeMultiplier);
-    setLiveOptionsEnabledDraft(config.data.liveOptionsEnabled);
-    setLiveOptionsMaxOrderUsdDraft(config.data.liveOptionsMaxOrderUsd);
-    setLiveOptionsMaxDailyLossUsdDraft(config.data.liveOptionsMaxDailyLossUsd);
-    setLiveOptionsMaxOrdersPerDayDraft(config.data.liveOptionsMaxOrdersPerDay);
-    setLiveOptionsFatFingerPctDraft(config.data.liveOptionsFatFingerPct);
-    setLiveOptionsProbationTradesDraft(config.data.liveOptionsProbationTrades);
-    setLiveOptionsProbationSizeMultiplierDraft(config.data.liveOptionsProbationSizeMultiplier);
-    setAutoPromoteMoversEnabled(config.data.autoPromoteMoversEnabled);
-    setAutoPromoteThresholdDraft(config.data.autoPromoteThreshold);
-    setAutoPromoteWindowDaysDraft(config.data.autoPromoteWindowDays);
-    setAutoPromoteMaxSymbolsDraft(config.data.autoPromoteMaxSymbols);
-  }, [config.data]);
+    if (config.data) seedDraftsFrom(config.data);
+  }, [config.data, seedDraftsFrom]);
 
   const saveConfig = async (patch: {
     enabled?: boolean;
@@ -1723,15 +2493,27 @@ export default function AutoTradePage() {
     stepDownSizeCutPct?: number;
     maxAggregateOpenRiskPct?: number;
     maxCorrelatedExposurePct?: number;
+    maxSectorExposurePct?: number;
     maxTradesPerDay?: number;
     regimeAtrThresholdPct?: number;
     regimeSizeCutPct?: number;
+    equityCurveDeriskEnabled?: boolean;
+    equityCurveLookbackDays?: number;
+    equityCurveDeriskCutPct?: number;
+    maxAdvParticipationPct?: number;
+    convictionGradeAMinScore?: number;
+    convictionGradeBMinScore?: number;
+    expectancyWeightingEnabled?: boolean;
+    expectancyMinTrades?: number;
+    expectancyMinMultiplier?: number;
+    expectancyMaxMultiplier?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     requireWeeklyTrendAlignment?: boolean;
     relativeStrengthWeight?: number;
     benchmarkSymbol?: string;
     relativeStrengthLookbackDays?: number;
+    sentimentWeight?: number;
     maxTickerAtrPct?: number;
     maxMarketAtrPct?: number;
     stopAtrMultiple?: number;
@@ -1742,6 +2524,9 @@ export default function AutoTradePage() {
     trailStopRMultiple?: number;
     partialExitRMultiple?: number;
     partialExitPct?: number;
+    addOnTriggerRMultiple?: number;
+    addOnSizePct?: number;
+    maxAddOns?: number;
     optionsStopLossPct?: number;
     optionsTakeProfitPct?: number;
     optionsBreakevenTriggerPct?: number;
@@ -1751,13 +2536,36 @@ export default function AutoTradePage() {
     optionsPartialExitPct?: number;
     sessionBufferMinutes?: number;
     earningsBlackoutDays?: number;
+    macroEventBlackoutHours?: number;
     correlationLookbackDays?: number;
     correlationThreshold?: number;
+    correlationAwareSelectionEnabled?: boolean;
+    regimeAdaptiveWeightsEnabled?: boolean;
+    regimeWeightPresets?: {
+      riskOn?: Record<string, number>;
+      neutral?: Record<string, number>;
+      riskOff?: Record<string, number>;
+    };
     optionsStrategyType?: AutotradeOptionsStrategyType;
+    optionsDeltaMin?: number;
+    optionsDeltaMax?: number;
+    optionsMaxSpreadPct?: number;
+    optionsMinOpenInterest?: number;
+    optionsMinVolume?: number;
+    optionsMinDte?: number;
+    optionsMaxDte?: number;
+    optionsIvRankMax?: number;
     autoPromoteMoversEnabled?: boolean;
     autoPromoteThreshold?: number;
     autoPromoteWindowDays?: number;
     autoPromoteMaxSymbols?: number;
+    autoTuneEnabled?: boolean;
+    autoTuneRequireOosConfirmation?: boolean;
+    autoTuneMinTrades?: number;
+    autoTuneMaxStepPct?: number;
+    autoTuneSlippageExcludePct?: number;
+    autoTuneExitsEnabled?: boolean;
+    autoTuneExitMaxStep?: number;
   }) => {
     if (patch.riskProfile === 'AGGRESSIVE' && riskProfile !== 'AGGRESSIVE') {
       const ok = await confirm({
@@ -1773,55 +2581,47 @@ export default function AutoTradePage() {
         ...patch,
         confirmAggressive: patch.riskProfile === 'AGGRESSIVE' ? true : undefined,
       });
-      setEnabled(saved.enabled);
-      setRiskProfile(saved.riskProfile);
-      setOptionsStrategyType(saved.optionsStrategyType);
-      setTradeDirection(saved.tradeDirection);
-      setMaxPositionsDraft(saved.maxConcurrentPositions);
-      setRiskPerTradePctDraft(saved.riskPerTradePct);
-      setMaxDailyDrawdownPctDraft(saved.maxDailyDrawdownPct);
-      setStepDownAfterLossesDraft(saved.stepDownAfterLosses);
-      setStepDownSizeCutPctDraft(saved.stepDownSizeCutPct);
-      setMaxAggregateOpenRiskPctDraft(saved.maxAggregateOpenRiskPct);
-      setMaxCorrelatedExposurePctDraft(saved.maxCorrelatedExposurePct);
-      setMaxTradesPerDayDraft(saved.maxTradesPerDay);
-      setRegimeAtrThresholdPctDraft(saved.regimeAtrThresholdPct);
-      setRegimeSizeCutPctDraft(saved.regimeSizeCutPct);
-      setMinRelVolDraft(saved.minRelVol);
-      setRequireWeeklyTrendAlignment(saved.requireWeeklyTrendAlignment);
-      setRelativeStrengthWeightDraft(saved.relativeStrengthWeight);
-      setBenchmarkSymbolDraft(saved.benchmarkSymbol ?? '');
-      setRelativeStrengthLookbackDaysDraft(saved.relativeStrengthLookbackDays);
-      setMaxTickerAtrPctDraft(saved.maxTickerAtrPct);
-      setMaxMarketAtrPctDraft(saved.maxMarketAtrPct);
-      setStopAtrMultipleDraft(saved.stopAtrMultiple);
-      setTargetRMultipleDraft(saved.targetRMultiple);
-      setMaxHoldDaysDraft(saved.maxHoldDays);
-      setBreakevenTriggerRMultipleDraft(saved.breakevenTriggerRMultiple);
-      setTrailStartRMultipleDraft(saved.trailStartRMultiple);
-      setTrailStopRMultipleDraft(saved.trailStopRMultiple);
-      setPartialExitRMultipleDraft(saved.partialExitRMultiple);
-      setPartialExitPctDraft(saved.partialExitPct);
-      setOptionsStopLossPctDraft(saved.optionsStopLossPct);
-      setOptionsTakeProfitPctDraft(saved.optionsTakeProfitPct);
-      setOptionsBreakevenTriggerPctDraft(saved.optionsBreakevenTriggerPct);
-      setOptionsTrailStartPctDraft(saved.optionsTrailStartPct);
-      setOptionsTrailStopPctDraft(saved.optionsTrailStopPct);
-      setOptionsPartialExitTriggerPctDraft(saved.optionsPartialExitTriggerPct);
-      setOptionsPartialExitPctDraft(saved.optionsPartialExitPct);
-      setSessionBufferMinutesDraft(saved.sessionBufferMinutes);
-      setEarningsBlackoutDaysDraft(saved.earningsBlackoutDays);
-      setCorrelationLookbackDaysDraft(saved.correlationLookbackDays);
-      setCorrelationThresholdDraft(saved.correlationThreshold);
-      setAutoPromoteMoversEnabled(saved.autoPromoteMoversEnabled);
-      setAutoPromoteThresholdDraft(saved.autoPromoteThreshold);
-      setAutoPromoteWindowDaysDraft(saved.autoPromoteWindowDays);
-      setAutoPromoteMaxSymbolsDraft(saved.autoPromoteMaxSymbols);
+      // Reflect server-normalized values for the fields THIS save touched.
+      // Guarded per-field, so an unrelated field the user is still editing
+      // is left alone instead of being reset to the stored value.
+      seedDraftsFrom(saved);
       config.reload(); // keeps config.data — the equity-not-set warning's source of truth — fresh
       refreshLiveData(); // risk profile / equity changes shift the dashboard's caps, and get journaled
       toast('Auto-trading settings saved', { type: 'success' });
     } catch (e) {
       toast((e as Error).message || 'Could not save settings', { type: 'error' });
+    }
+  };
+
+  // Apply a whole "tune from target" patch at once. Uses client.setAutotradeConfig
+  // directly (not saveConfig) because the tune patch also carries the live-cap
+  // fields, which saveConfig's narrower patch type doesn't include. Same
+  // AGGRESSIVE-confirm gate as saveConfig; config.reload() re-seeds every draft
+  // (including the live caps) via the [config.data] effect.
+  const [applyingTune, setApplyingTune] = useState(false);
+  const applyTunePatch = async (patch: TunablePatch, band: TuneBand) => {
+    if (patch.riskProfile === 'AGGRESSIVE' && riskProfile !== 'AGGRESSIVE') {
+      const ok = await confirm({
+        title: 'Apply an aggressive tune?',
+        body: `This ${BAND_LABEL[band].toLowerCase()} tune sizes up per-trade risk to ${fmtNum(patch.riskPerTradePct)}% and loosens the guardrails to chase a bigger daily gain. Losing streaks compound fast at this size. It never enables live trading on its own — but review every changed field before you do.`,
+        confirmLabel: 'Apply tuned settings',
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    setApplyingTune(true);
+    try {
+      await client.setAutotradeConfig({
+        ...patch,
+        confirmAggressive: patch.riskProfile === 'AGGRESSIVE' ? true : undefined,
+      });
+      config.reload();
+      refreshLiveData();
+      toast('Applied tuned settings — review the fields below', { type: 'success' });
+    } catch (e) {
+      toast((e as Error).message || 'Could not apply tuned settings', { type: 'error' });
+    } finally {
+      setApplyingTune(false);
     }
   };
 
@@ -1937,6 +2737,11 @@ export default function AutoTradePage() {
         liveAllowNakedShort: liveAllowNakedShortDraft,
         liveProbationTrades: liveProbationTradesDraft,
         liveProbationSizeMultiplier: liveProbationSizeMultiplierDraft,
+        // Omitted (left unchanged server-side) while live trading is off — the
+        // route rejects arming it without the master gate, and this card saves
+        // ten fields in ONE request, so a rejection here loses all of them.
+        liveScaleInEnabled: config.data?.liveTradingEnabled ? liveScaleInEnabledDraft : undefined,
+        liveMaxAddOns: liveMaxAddOnsDraft,
       });
       config.reload();
       refreshLiveData();
@@ -2039,6 +2844,37 @@ export default function AutoTradePage() {
     }
   };
 
+  const [newEventLabel, setNewEventLabel] = useState('');
+  const [newEventAt, setNewEventAt] = useState('');
+  const addMacroEvent = async () => {
+    const label = newEventLabel.trim();
+    if (!label || !newEventAt) return;
+    try {
+      await client.addAutotradeMacroEvent({ label, eventAt: new Date(newEventAt).getTime() });
+      setNewEventLabel('');
+      setNewEventAt('');
+      macroEvents.reload();
+      toast(`${label} added to the macro event list`, { type: 'success' });
+    } catch (e) {
+      toast((e as Error).message || 'Could not add macro event', { type: 'error' });
+    }
+  };
+  const removeMacroEvent = async (id: number, label: string) => {
+    const ok = await confirm({
+      title: `Remove "${label}" from the macro event list?`,
+      confirmLabel: 'Remove',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await client.removeAutotradeMacroEvent(id);
+      macroEvents.reload();
+      toast(`${label} removed`, { type: 'success' });
+    } catch (e) {
+      toast((e as Error).message || 'Could not remove macro event', { type: 'error' });
+    }
+  };
+
   const [screenBusy, setScreenBusy] = useState(false);
   const [result, setResult] = useState<AutotradeDecideResponse>();
   const [riskResults, setRiskResults] = useState<AutotradeRiskCheckResult[]>([]);
@@ -2075,6 +2911,7 @@ export default function AutoTradePage() {
   };
 
   const exclusionRows = exclusions.data?.exclusions ?? [];
+  const macroEventRows = macroEvents.data?.events ?? [];
   const eventRows = events.data?.events ?? [];
   const screenResult = result?.screen;
   const signalBySymbol = new Map((result?.decision.signals ?? []).map((s) => [s.symbol, s]));
@@ -2101,7 +2938,13 @@ export default function AutoTradePage() {
   // The from/to/splitDate a result actually came from — captured at submit time so
   // the "In-sample (X → Y)" labels below never drift from the form if it's edited
   // again before the response comes back.
+  // One per runner, NOT shared: each of the three walk-forwards keeps its own
+  // result on screen and clears only that result, so a single shared window
+  // would silently relabel an already-rendered panel with the NEXT run's dates —
+  // describing data it was never run on.
   const [btSubmitted, setBtSubmitted] = useState<{ from: string; to: string; splitDate: string }>();
+  const [optBtSubmitted, setOptBtSubmitted] = useState<{ from: string; to: string; splitDate: string }>();
+  const [combinedBtSubmitted, setCombinedBtSubmitted] = useState<{ from: string; to: string; splitDate: string }>();
 
   const runBacktest = async () => {
     const symbols = Array.from(
@@ -2147,6 +2990,77 @@ export default function AutoTradePage() {
     }
   };
 
+  // Parameter sweep (Task #153): a client-side loop over the SAME
+  // walk-forward route above — no server/schema changes — re-running it once
+  // per nearby riskPerTradePct value so a stable plateau vs. a lucky overfit
+  // spike is visually obvious. Shares symbols/from/to/splitDate/riskProfile/
+  // equity/maxPositions/directionMode with the equity form above (same
+  // "don't make the human fill out a second form" reasoning as the options/
+  // combined backtest buttons already share it).
+  const [sweepRiskPerTradePct, setSweepRiskPerTradePct] = useState<number | undefined>(1);
+  const [sweepBusy, setSweepBusy] = useState(false);
+  const [sweepErr, setSweepErr] = useState<string>();
+  const [sweepRows, setSweepRows] = useState<SweepRow[]>();
+  const [sweepBaseSubmitted, setSweepBaseSubmitted] = useState<number>();
+
+  const runParameterSweep = async () => {
+    const symbols = Array.from(
+      new Set(
+        btSymbols
+          .split(',')
+          .map((s) => s.trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    );
+    if (!symbols.length) {
+      setSweepErr('Enter at least one symbol');
+      return;
+    }
+    if (!btFrom || !btTo || !btEquity || !btMaxPositions) {
+      setSweepErr('From, to, starting equity, and max concurrent positions are required');
+      return;
+    }
+    if (!btSplitDate) {
+      setSweepErr('Set an out-of-sample split date above — the sweep needs a held-out window to compare against.');
+      return;
+    }
+    if (!sweepRiskPerTradePct || sweepRiskPerTradePct <= 0) {
+      setSweepErr('Enter a risk-per-trade % to sweep around');
+      return;
+    }
+    setSweepBusy(true);
+    setSweepErr(undefined);
+    setSweepRows(undefined);
+    setSweepBaseSubmitted(sweepRiskPerTradePct);
+    const values = Array.from(new Set(SWEEP_MULTIPLIERS.map((m) => Math.round(sweepRiskPerTradePct * m * 100) / 100)))
+      .filter((v) => v > 0)
+      .sort((a, b) => a - b);
+    const rows: SweepRow[] = [];
+    // Sequential, not Promise.all — each run replays the whole date range
+    // twice (in-sample + out-of-sample); five of those firing at once is
+    // needless server load for a read-only exploratory tool.
+    for (const v of values) {
+      try {
+        const response = await client.runAutotradeWalkForward({
+          symbols,
+          from: btFrom,
+          to: btTo,
+          riskProfile: btRiskProfile,
+          startingEquity: btEquity,
+          maxConcurrentPositions: btMaxPositions,
+          directionMode: btDirectionMode,
+          splitDate: btSplitDate,
+          riskPerTradePct: v,
+        });
+        rows.push({ riskPerTradePct: v, response });
+      } catch (e) {
+        rows.push({ riskPerTradePct: v, response: null, error: (e as Error).message || 'Failed' });
+      }
+    }
+    setSweepRows(rows);
+    setSweepBusy(false);
+  };
+
   const [optBtBusy, setOptBtBusy] = useState(false);
   const [optBtErr, setOptBtErr] = useState<string>();
   const [optBtResult, setOptBtResult] = useState<OptionsBacktestRunResponse>();
@@ -2176,7 +3090,7 @@ export default function AutoTradePage() {
     setOptBtErr(undefined);
     setOptBtResult(undefined);
     setOptBtWfResult(undefined);
-    setBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
+    setOptBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
     try {
       const body = {
         symbols,
@@ -2232,7 +3146,7 @@ export default function AutoTradePage() {
     setCombinedBtErr(undefined);
     setCombinedBtResult(undefined);
     setCombinedBtWfResult(undefined);
-    setBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
+    setCombinedBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
     try {
       const body = {
         symbols,
@@ -2290,6 +3204,8 @@ export default function AutoTradePage() {
               paperPositions.loading ||
               optionsPaperPositions.loading ||
               livePositions.loading ||
+              liveOptionsPositions.loading ||
+              symbolEvents.loading ||
               events.loading
             }
           />
@@ -2332,7 +3248,11 @@ export default function AutoTradePage() {
 
       {view === 'config' && (
         <>
-          {config.loading ? (
+          {/* `&& !data` matters: reload() keeps the previous data while refetching,
+              so gating on bare `loading` would tear the whole form down to a spinner
+              on every save and on each 60s background refresh — losing keyboard focus
+              and any half-typed value mid-edit. */}
+          {config.loading && !config.data ? (
             <Spinner />
           ) : config.error ? (
             <ErrorState error={config.error} onRetry={config.reload} />
@@ -2366,7 +3286,9 @@ export default function AutoTradePage() {
                     hint={
                       optionsStrategyType === 'debit_spread'
                         ? 'Long leg + a further out-of-the-money short leg — caps both max loss and max gain.'
-                        : 'Long call/put only (default) — uncapped upside, simplest structure.'
+                        : optionsStrategyType === 'auto'
+                          ? 'Picks per candidate from its own IV rank: debit spread when IV rank ≥ 50 (rich premium — cap the cost), single leg when below (cheap premium — keep the uncapped upside).'
+                          : 'Long call/put only (default) — uncapped upside, simplest structure.'
                     }
                   >
                     <select
@@ -2378,7 +3300,215 @@ export default function AutoTradePage() {
                     >
                       <option value="single_leg">Single leg (default)</option>
                       <option value="debit_spread">Debit spread</option>
+                      <option value="auto">Auto (by IV rank)</option>
                     </select>
+                  </Field>
+                  <Field
+                    label="Options delta band — min"
+                    hint="A contract's |delta| must fall within [min, max] to pass the entry screen. Lower = further out-of-the-money (cheaper premium, lower probability of expiring in the money)."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsDeltaMinDraft}
+                        onChange={setOptionsDeltaMinDraft}
+                        min={0}
+                        max={1}
+                        step={0.05}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options delta min"
+                        onClick={() =>
+                          optionsDeltaMinDraft != null && saveConfig({ optionsDeltaMin: optionsDeltaMinDraft })
+                        }
+                        disabled={
+                          optionsDeltaMinDraft == null ||
+                          optionsDeltaMinDraft < 0 ||
+                          optionsDeltaMinDraft > 1 ||
+                          optionsDeltaMinDraft === config.data?.optionsDeltaMin
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options delta band — max"
+                    hint="Upper bound of the same delta band. Higher = closer to the money (pricier premium, higher probability of expiring in the money)."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsDeltaMaxDraft}
+                        onChange={setOptionsDeltaMaxDraft}
+                        min={0}
+                        max={1}
+                        step={0.05}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options delta max"
+                        onClick={() =>
+                          optionsDeltaMaxDraft != null && saveConfig({ optionsDeltaMax: optionsDeltaMaxDraft })
+                        }
+                        disabled={
+                          optionsDeltaMaxDraft == null ||
+                          optionsDeltaMaxDraft < 0 ||
+                          optionsDeltaMaxDraft > 1 ||
+                          optionsDeltaMaxDraft === config.data?.optionsDeltaMax
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options max spread (%)"
+                    hint="A contract's (ask − bid) / mid, as a percentage, must be at or below this to pass. Lower = tighter, more liquid markets only; raising it lets in wider-spread (often lower-volume) contracts."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsMaxSpreadPctDraft}
+                        onChange={setOptionsMaxSpreadPctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options max spread"
+                        onClick={() =>
+                          optionsMaxSpreadPctDraft != null &&
+                          saveConfig({ optionsMaxSpreadPct: optionsMaxSpreadPctDraft })
+                        }
+                        disabled={
+                          optionsMaxSpreadPctDraft == null ||
+                          optionsMaxSpreadPctDraft < 0 ||
+                          optionsMaxSpreadPctDraft > 100 ||
+                          optionsMaxSpreadPctDraft === config.data?.optionsMaxSpreadPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options min open interest"
+                    hint="A contract must have at least this much open interest to pass the entry screen — a liquidity floor. Lowering it lets in thinner-traded contracts."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsMinOpenInterestDraft}
+                        onChange={setOptionsMinOpenInterestDraft}
+                        min={0}
+                        step={10}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options min open interest"
+                        onClick={() =>
+                          optionsMinOpenInterestDraft != null &&
+                          saveConfig({ optionsMinOpenInterest: optionsMinOpenInterestDraft })
+                        }
+                        disabled={
+                          optionsMinOpenInterestDraft == null ||
+                          optionsMinOpenInterestDraft < 0 ||
+                          optionsMinOpenInterestDraft === config.data?.optionsMinOpenInterest
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options min volume"
+                    hint="A contract must have traded at least this many contracts today to pass — another liquidity floor, independent of open interest."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput value={optionsMinVolumeDraft} onChange={setOptionsMinVolumeDraft} min={0} step={1} />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options min volume"
+                        onClick={() =>
+                          optionsMinVolumeDraft != null && saveConfig({ optionsMinVolume: optionsMinVolumeDraft })
+                        }
+                        disabled={
+                          optionsMinVolumeDraft == null ||
+                          optionsMinVolumeDraft < 0 ||
+                          optionsMinVolumeDraft === config.data?.optionsMinVolume
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options min days to expiration"
+                    hint="A contract's expiration must be at least this many days out to pass — filters out expiring-soon contracts whose price can move erratically."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput value={optionsMinDteDraft} onChange={setOptionsMinDteDraft} min={0} step={1} />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options min DTE"
+                        onClick={() => optionsMinDteDraft != null && saveConfig({ optionsMinDte: optionsMinDteDraft })}
+                        disabled={
+                          optionsMinDteDraft == null ||
+                          optionsMinDteDraft < 0 ||
+                          optionsMinDteDraft === config.data?.optionsMinDte
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options max days to expiration"
+                    hint="A contract's expiration must be at or within this many days out to pass — the far end of the same DTE window as the min above."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput value={optionsMaxDteDraft} onChange={setOptionsMaxDteDraft} min={1} step={1} />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options max DTE"
+                        onClick={() => optionsMaxDteDraft != null && saveConfig({ optionsMaxDte: optionsMaxDteDraft })}
+                        disabled={
+                          optionsMaxDteDraft == null ||
+                          optionsMaxDteDraft < 1 ||
+                          optionsMaxDteDraft === config.data?.optionsMaxDte
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options IV rank ceiling"
+                    hint="Skip an underlying whose IV rank (0-100) exceeds this — this loop only ever buys premium, so guarding against already-expensive implied volatility is the direction that matters."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsIvRankMaxDraft}
+                        onChange={setOptionsIvRankMaxDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options IV rank ceiling"
+                        onClick={() =>
+                          optionsIvRankMaxDraft != null && saveConfig({ optionsIvRankMax: optionsIvRankMaxDraft })
+                        }
+                        disabled={
+                          optionsIvRankMaxDraft == null ||
+                          optionsIvRankMaxDraft < 0 ||
+                          optionsIvRankMaxDraft > 100 ||
+                          optionsIvRankMaxDraft === config.data?.optionsIvRankMax
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
                   </Field>
                   <Field
                     label="Account equity ($)"
@@ -2436,6 +3566,10 @@ export default function AutoTradePage() {
                   </Field>
                 </div>
               </CollapsibleCard>
+
+              {config.data && (
+                <TuneFromTargetSection config={config.data} onApply={applyTunePatch} applying={applyingTune} />
+              )}
 
               <CollapsibleCard id="autotrade.config.risk" title="Position sizing & risk guardrails">
                 <div className="grid sm:grid-cols-2 gap-3 items-end">
@@ -2673,6 +3807,54 @@ export default function AutoTradePage() {
                       </button>
                     </div>
                   </Field>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={correlationAwareSelectionEnabled}
+                      onChange={(e) => saveConfig({ correlationAwareSelectionEnabled: e.target.checked })}
+                    />
+                    <span>
+                      Correlation-aware selection
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default. Before the caps above bind, re-ranks the score-sorted candidates so that among
+                        names correlated at ≥ the threshold above, the higher-scored one keeps its rank and the
+                        redundant lower one is demoted to the back — diverse picks win the caps instead of a correlated
+                        huddle. Reorders only; it never drops a candidate (the correlated-exposure cap stays the
+                        backstop). Applies to live, paper, and backtests.
+                      </span>
+                    </span>
+                  </label>
+                  <Field
+                    label="Max sector exposure (%)"
+                    hint="Cap on capital (not risk) already concentrated in the candidate's own universe sector, regardless of price correlation — a cheaper backstop to the correlation cap above (two names in the same sector can carry low price correlation and still share the same macro risk)."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={maxSectorExposurePctDraft}
+                        onChange={setMaxSectorExposurePctDraft}
+                        min={0}
+                        max={100}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max sector exposure"
+                        onClick={() =>
+                          maxSectorExposurePctDraft != null &&
+                          saveConfig({ maxSectorExposurePct: maxSectorExposurePctDraft })
+                        }
+                        disabled={
+                          maxSectorExposurePctDraft == null ||
+                          maxSectorExposurePctDraft < 0 ||
+                          maxSectorExposurePctDraft > 100 ||
+                          maxSectorExposurePctDraft === config.data?.maxSectorExposurePct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
                   <Field
                     label="Max trades per day"
                     hint="Hard cap on new entries risk-check will approve per day — paper and live, stocks and options, all combined."
@@ -2697,7 +3879,7 @@ export default function AutoTradePage() {
                   </Field>
                   <Field
                     label="Regime ATR threshold (%)"
-                    hint="A softer, graduated companion to Max market ATR (%) below: once the broad-market proxy's own ATR% crosses THIS lower threshold, new positions size down (see Regime size cut below) instead of being blocked outright — Max market ATR (%) still blocks everything once volatility gets more extreme. Stacks with step-down sizing above if both are active at once. Live + paper only — no backtest equivalent. Check Recent activity's risk_check entries to see it fire."
+                    hint="A softer, graduated companion to Max market ATR (%) below: once the broad-market proxy's own ATR% crosses THIS lower threshold, new positions size down (see Regime size cut below) instead of being blocked outright — Max market ATR (%) still blocks everything once volatility gets more extreme. Stacks with step-down sizing above if both are active at once. 0 disables it — the regime cut never applies, whatever the market's ATR%. Live + paper only — no backtest equivalent. Check Recent activity's risk_check entries to see it fire."
                   >
                     <div className="flex gap-2">
                       <NumberInput
@@ -2752,6 +3934,267 @@ export default function AutoTradePage() {
                         }
                       >
                         Save
+                      </button>
+                    </div>
+                  </Field>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={equityCurveDeriskEnabled}
+                      onChange={(e) => saveConfig({ equityCurveDeriskEnabled: e.target.checked })}
+                    />
+                    <span>
+                      Equity-curve de-risking
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default. A softer alternative to the hard daily-drawdown halt: when the strategy&apos;s
+                        own realized equity curve (cumulative closed P&amp;L, tracked separately for paper vs live) is
+                        below its moving average, cut size by the % below; restore full size once it recovers. Stacks
+                        with step-down and regime sizing. Live + paper only (a backtest has no per-book live curve).
+                      </span>
+                    </span>
+                  </label>
+                  <Field
+                    label="Equity-curve lookback (days)"
+                    hint="Trading days in the moving average the latest equity point is compared against. Needs at least this many days of closed trades before it acts at all."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={equityCurveLookbackDaysDraft}
+                        onChange={setEquityCurveLookbackDaysDraft}
+                        min={1}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save equity-curve lookback"
+                        onClick={() =>
+                          equityCurveLookbackDaysDraft != null &&
+                          saveConfig({ equityCurveLookbackDays: equityCurveLookbackDaysDraft })
+                        }
+                        disabled={
+                          equityCurveLookbackDaysDraft == null ||
+                          equityCurveLookbackDaysDraft < 1 ||
+                          equityCurveLookbackDaysDraft === config.data?.equityCurveLookbackDays
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Equity-curve size cut (%)"
+                    hint="% cut to risk-per-trade while the equity curve is below its average. Only matters when equity-curve de-risking is on."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={equityCurveDeriskCutPctDraft}
+                        onChange={setEquityCurveDeriskCutPctDraft}
+                        min={0}
+                        max={100}
+                        step={5}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save equity-curve size cut"
+                        onClick={() =>
+                          equityCurveDeriskCutPctDraft != null &&
+                          saveConfig({ equityCurveDeriskCutPct: equityCurveDeriskCutPctDraft })
+                        }
+                        disabled={
+                          equityCurveDeriskCutPctDraft == null ||
+                          equityCurveDeriskCutPctDraft < 0 ||
+                          equityCurveDeriskCutPctDraft > 100 ||
+                          equityCurveDeriskCutPctDraft === config.data?.equityCurveDeriskCutPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Max ADV participation (%)"
+                    hint="Cap a single equity position at this % of the name's ~20-day average daily volume, so it stays exitable without moving the market. 0 disables it (default). Options already gate on their own open-interest/volume floors; live + paper only."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={maxAdvParticipationPctDraft}
+                        onChange={setMaxAdvParticipationPctDraft}
+                        min={0}
+                        max={100}
+                        step={0.5}
+                        placeholder="0 (no cap)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max ADV participation"
+                        onClick={() =>
+                          maxAdvParticipationPctDraft != null &&
+                          saveConfig({ maxAdvParticipationPct: maxAdvParticipationPctDraft })
+                        }
+                        disabled={
+                          maxAdvParticipationPctDraft == null ||
+                          maxAdvParticipationPctDraft < 0 ||
+                          maxAdvParticipationPctDraft > 100 ||
+                          maxAdvParticipationPctDraft === config.data?.maxAdvParticipationPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Conviction grade A ≥ score"
+                    hint="Every autotrade entry is stamped with a conviction grade from its screener total score (0–100): A at or above this, B at or above the B threshold, else C. The grade always populates the Journal's per-grade edge report, and (behind a separate flag) can drive expectancy-weighted sizing."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={convictionGradeAMinScoreDraft}
+                        onChange={setConvictionGradeAMinScoreDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save conviction grade A threshold"
+                        onClick={() =>
+                          convictionGradeAMinScoreDraft != null &&
+                          saveConfig({ convictionGradeAMinScore: convictionGradeAMinScoreDraft })
+                        }
+                        disabled={
+                          convictionGradeAMinScoreDraft == null ||
+                          convictionGradeAMinScoreDraft < 0 ||
+                          convictionGradeAMinScoreDraft > 100 ||
+                          convictionGradeAMinScoreDraft === config.data?.convictionGradeAMinScore
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Conviction grade B ≥ score"
+                    hint="Screener score at or above which an entry grades B (below the A threshold); anything under this grades C. Keep it below the A threshold."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={convictionGradeBMinScoreDraft}
+                        onChange={setConvictionGradeBMinScoreDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save conviction grade B threshold"
+                        onClick={() =>
+                          convictionGradeBMinScoreDraft != null &&
+                          saveConfig({ convictionGradeBMinScore: convictionGradeBMinScoreDraft })
+                        }
+                        disabled={
+                          convictionGradeBMinScoreDraft == null ||
+                          convictionGradeBMinScoreDraft < 0 ||
+                          convictionGradeBMinScoreDraft > 100 ||
+                          convictionGradeBMinScoreDraft === config.data?.convictionGradeBMinScore
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={expectancyWeightingEnabled}
+                      onChange={(e) => saveConfig({ expectancyWeightingEnabled: e.target.checked })}
+                    />
+                    <span>
+                      Expectancy-weighted sizing
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default. Sizes each conviction grade by its <em>own</em> realized edge: a grade whose
+                        closed trades average a positive R is sized up, one that bleeds is sized down, breakeven stays
+                        flat (multiplier = 1 + avg R, clamped to the bounds below). A grade with fewer than the
+                        min-sample closed trades stays neutral. Stacks with the other sizing multipliers; the
+                        aggregate-risk cap still binds. Live + paper only, each on its own book.
+                      </span>
+                    </span>
+                  </label>
+                  <Field
+                    label="Expectancy min sample (trades/grade)"
+                    hint="Closed trades a grade needs before its realized edge sizes anything. Below this, that grade stays at 1× (neutral)."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={expectancyMinTradesDraft}
+                        onChange={setExpectancyMinTradesDraft}
+                        min={1}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save expectancy min sample"
+                        onClick={() =>
+                          expectancyMinTradesDraft != null &&
+                          saveConfig({ expectancyMinTrades: expectancyMinTradesDraft })
+                        }
+                        disabled={
+                          expectancyMinTradesDraft == null ||
+                          expectancyMinTradesDraft < 1 ||
+                          expectancyMinTradesDraft === config.data?.expectancyMinTrades
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Expectancy multiplier bounds (min / max)"
+                    hint="Clamp on the per-grade size multiplier. Min (e.g. 0.5) is the smallest a weak grade shrinks to; max (e.g. 1.5) the largest a strong grade grows to."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={expectancyMinMultiplierDraft}
+                        onChange={setExpectancyMinMultiplierDraft}
+                        min={0}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save expectancy min multiplier"
+                        onClick={() =>
+                          expectancyMinMultiplierDraft != null &&
+                          saveConfig({ expectancyMinMultiplier: expectancyMinMultiplierDraft })
+                        }
+                        disabled={
+                          expectancyMinMultiplierDraft == null ||
+                          expectancyMinMultiplierDraft <= 0 ||
+                          expectancyMinMultiplierDraft === config.data?.expectancyMinMultiplier
+                        }
+                      >
+                        Save min
+                      </button>
+                      <NumberInput
+                        value={expectancyMaxMultiplierDraft}
+                        onChange={setExpectancyMaxMultiplierDraft}
+                        min={0}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save expectancy max multiplier"
+                        onClick={() =>
+                          expectancyMaxMultiplierDraft != null &&
+                          saveConfig({ expectancyMaxMultiplier: expectancyMaxMultiplierDraft })
+                        }
+                        disabled={
+                          expectancyMaxMultiplierDraft == null ||
+                          expectancyMaxMultiplierDraft <= 0 ||
+                          expectancyMaxMultiplierDraft === config.data?.expectancyMaxMultiplier
+                        }
+                      >
+                        Save max
                       </button>
                     </div>
                   </Field>
@@ -2900,6 +4343,36 @@ export default function AutoTradePage() {
                     </div>
                   </Field>
                   <Field
+                    label="Sentiment weight (0-100)"
+                    hint="How much a simple, transparent keyword count over each candidate's recent headlines counts toward its total screener score — same 0-100 scale as every other scoring component. 0 (default) disables it entirely, including the extra headline fetch. Direction-aware: a long favors net-positive headlines, a short favors net-negative ones."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={sentimentWeightDraft}
+                        onChange={setSentimentWeightDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                        placeholder="0 (disabled)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save sentiment weight"
+                        onClick={() =>
+                          sentimentWeightDraft != null && saveConfig({ sentimentWeight: sentimentWeightDraft })
+                        }
+                        disabled={
+                          sentimentWeightDraft == null ||
+                          sentimentWeightDraft < 0 ||
+                          sentimentWeightDraft > 100 ||
+                          sentimentWeightDraft === config.data?.sentimentWeight
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
                     label="Max ticker ATR (%)"
                     hint="Skip a candidate whose own ATR% (of price) exceeds this — the loop's own volatility guard, stricter than the manual Screen/Decision preview applies."
                   >
@@ -2957,6 +4430,69 @@ export default function AutoTradePage() {
                       </button>
                     </div>
                   </Field>
+                  <div className="sm:col-span-2 space-y-2">
+                    <label className="flex items-start gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={regimeAdaptiveWeightsEnabled}
+                        onChange={(e) => saveConfig({ regimeAdaptiveWeightsEnabled: e.target.checked })}
+                      />
+                      <span>
+                        Regime-adaptive scoring weights
+                        <span className="block text-[11px] text-slate-500">
+                          Off by default. When on, the loop reads the market regime (SPY proxy, cached ~1h) at scoring
+                          time and weights candidates by the matching preset below instead of the fixed defaults — so
+                          the strategy rewards different signals in risk-on vs risk-off (e.g. lean on trend when risk is
+                          on, on RSI/mean-reversion when it's off). Relative-strength and sentiment stay driven by their
+                          own weight fields above. Presets default to the standard weights, so enabling changes nothing
+                          until you edit one. Live + paper.
+                        </span>
+                      </span>
+                    </label>
+                    {regimeWeightPresetsDraft && (
+                      <div className="space-y-2">
+                        {REGIME_PRESETS.map(({ key: regime, label }) => (
+                          <div key={regime} className="rounded border border-ink-700/50 p-2">
+                            <div className="mb-1 flex items-center justify-between">
+                              <span className="text-xs font-medium text-slate-300">{label}</span>
+                              <button
+                                className="btn-ghost shrink-0 text-xs"
+                                aria-label={`Save ${label} weights`}
+                                onClick={() =>
+                                  saveConfig({ regimeWeightPresets: { [regime]: regimeWeightPresetsDraft[regime] } })
+                                }
+                                disabled={
+                                  JSON.stringify(regimeWeightPresetsDraft[regime]) ===
+                                  JSON.stringify(config.data?.regimeWeightPresets[regime])
+                                }
+                              >
+                                Save
+                              </button>
+                            </div>
+                            <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+                              {CORE_WEIGHT_KEYS.map(({ key: wk, label: wl }) => (
+                                <label key={wk} className="block text-[11px] text-slate-400">
+                                  {wl}
+                                  <NumberInput
+                                    value={regimeWeightPresetsDraft[regime][wk]}
+                                    min={0}
+                                    max={100}
+                                    step={1}
+                                    onChange={(v) =>
+                                      setRegimeWeightPresetsDraft((prev) =>
+                                        prev ? { ...prev, [regime]: { ...prev[regime], [wk]: v ?? 0 } } : prev,
+                                      )
+                                    }
+                                  />
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </CollapsibleCard>
 
@@ -3160,6 +4696,79 @@ export default function AutoTradePage() {
                           partialExitPctDraft < 0 ||
                           partialExitPctDraft > 100 ||
                           partialExitPctDraft === config.data?.partialExitPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Scale-in trigger (R-multiple)"
+                    hint="Scale into winners (PAPER + BACKTEST only): once unrealized gain reaches this many R, add more shares. Each add blends the entry, keeps the R denominator on the original risk, and raises the stop. 0 disables it. LIVE positions are unaffected."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={addOnTriggerRMultipleDraft}
+                        onChange={setAddOnTriggerRMultipleDraft}
+                        min={0}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save scale-in trigger"
+                        onClick={() =>
+                          addOnTriggerRMultipleDraft != null &&
+                          saveConfig({ addOnTriggerRMultiple: addOnTriggerRMultipleDraft })
+                        }
+                        disabled={
+                          addOnTriggerRMultipleDraft == null ||
+                          addOnTriggerRMultipleDraft < 0 ||
+                          addOnTriggerRMultipleDraft === config.data?.addOnTriggerRMultiple
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Scale-in size (% of current)"
+                    hint="Size of each add-on as a % of the position's current quantity. Only meaningful when the scale-in trigger and max add-ons are both nonzero."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={addOnSizePctDraft}
+                        onChange={setAddOnSizePctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save scale-in size"
+                        onClick={() => addOnSizePctDraft != null && saveConfig({ addOnSizePct: addOnSizePctDraft })}
+                        disabled={
+                          addOnSizePctDraft == null ||
+                          addOnSizePctDraft < 0 ||
+                          addOnSizePctDraft > 100 ||
+                          addOnSizePctDraft === config.data?.addOnSizePct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Max add-ons"
+                    hint="Hard cap on how many times a single position may be scaled into. 0 disables scaling in (same as a 0 trigger). Bounds how top-heavy a pyramid can get."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput value={maxAddOnsDraft} onChange={setMaxAddOnsDraft} min={0} step={1} />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max add-ons"
+                        onClick={() => maxAddOnsDraft != null && saveConfig({ maxAddOns: maxAddOnsDraft })}
+                        disabled={
+                          maxAddOnsDraft == null || maxAddOnsDraft < 0 || maxAddOnsDraft === config.data?.maxAddOns
                         }
                       >
                         Save
@@ -3447,6 +5056,34 @@ export default function AutoTradePage() {
                       </button>
                     </div>
                   </Field>
+                  <Field
+                    label="Macro event blackout (hours)"
+                    hint="Hard-block ALL new entries, paper and live, within this many hours (either side) of any date-time on the macro-events list below — market-wide, unlike earnings blackout above. 0 disables this check. No backtest equivalent (no historical event-date archive exists)."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={macroEventBlackoutHoursDraft}
+                        onChange={setMacroEventBlackoutHoursDraft}
+                        min={0}
+                        step={0.5}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save macro event blackout"
+                        onClick={() =>
+                          macroEventBlackoutHoursDraft != null &&
+                          saveConfig({ macroEventBlackoutHours: macroEventBlackoutHoursDraft })
+                        }
+                        disabled={
+                          macroEventBlackoutHoursDraft == null ||
+                          macroEventBlackoutHoursDraft < 0 ||
+                          macroEventBlackoutHoursDraft === config.data?.macroEventBlackoutHours
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
                 </div>
               </CollapsibleCard>
 
@@ -3533,6 +5170,172 @@ export default function AutoTradePage() {
                   </Field>
                 </div>
               </CollapsibleCard>
+              <CollapsibleCard id="autotrade.config.autoTune" title="Auto-tune from realized edge">
+                <div className="grid sm:grid-cols-2 gap-3 items-end">
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={autoTuneEnabled}
+                      onChange={(e) => saveConfig({ autoTuneEnabled: e.target.checked })}
+                    />
+                    <span>
+                      Auto-tune from realized edge
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default. Once a day, nudges risk-per-trade toward the Journal page&apos;s own Kelly
+                        suggestion and auto-excludes any symbol whose average live-fill slippage crosses the threshold
+                        below — both bounded by the settings here, and both journaled to Recent Activity (Dashboard tab)
+                        every time they fire, same as every other automated action this loop takes.
+                      </span>
+                    </span>
+                  </label>
+                  <Field
+                    label="Min sample size"
+                    hint="Decisive closed trades (for the risk-% tune) or live fills with a comparable limit price (for the slippage exclusion) required before a reading is trusted — matches the Journal page's own Kelly reliability floor by default."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={autoTuneMinTradesDraft}
+                        onChange={setAutoTuneMinTradesDraft}
+                        min={1}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save min sample size"
+                        onClick={() =>
+                          autoTuneMinTradesDraft != null && saveConfig({ autoTuneMinTrades: autoTuneMinTradesDraft })
+                        }
+                        disabled={
+                          autoTuneMinTradesDraft == null ||
+                          autoTuneMinTradesDraft < 1 ||
+                          autoTuneMinTradesDraft === config.data?.autoTuneMinTrades
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Max daily risk-% step"
+                    hint="Largest change to risk-per-trade allowed in a single day's adjustment (percentage points) — bounds how fast auto-tune can move live position sizing even if the Kelly suggestion itself jumps sharply."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={autoTuneMaxStepPctDraft}
+                        onChange={setAutoTuneMaxStepPctDraft}
+                        min={0}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max daily risk-% step"
+                        onClick={() =>
+                          autoTuneMaxStepPctDraft != null && saveConfig({ autoTuneMaxStepPct: autoTuneMaxStepPctDraft })
+                        }
+                        disabled={
+                          autoTuneMaxStepPctDraft == null ||
+                          autoTuneMaxStepPctDraft < 0 ||
+                          autoTuneMaxStepPctDraft === config.data?.autoTuneMaxStepPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Slippage exclusion threshold (%)"
+                    hint="A symbol whose average live-fill slippage (% of the limit price you set, same sign convention as the Journal's Execution quality report — positive always cost you money) is at or above this gets auto-excluded from future autotrade candidates."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={autoTuneSlippageExcludePctDraft}
+                        onChange={setAutoTuneSlippageExcludePctDraft}
+                        min={0}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save slippage exclusion threshold"
+                        onClick={() =>
+                          autoTuneSlippageExcludePctDraft != null &&
+                          saveConfig({ autoTuneSlippageExcludePct: autoTuneSlippageExcludePctDraft })
+                        }
+                        disabled={
+                          autoTuneSlippageExcludePctDraft == null ||
+                          autoTuneSlippageExcludePctDraft < 0 ||
+                          autoTuneSlippageExcludePctDraft === config.data?.autoTuneSlippageExcludePct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={autoTuneExitsEnabled}
+                      onChange={(e) => saveConfig({ autoTuneExitsEnabled: e.target.checked })}
+                    />
+                    <span>
+                      Also auto-tune exit geometry
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default, independent of the risk-% tune above. Once a day, nudges the stop (× ATR) and
+                        target (R) toward what your <em>winning</em> autotrade trades actually did — their worst
+                        drawdown (MAE) sizes the stop, their favorable peak (MFE) sizes the target — bounded by the step
+                        below and journaled every time it fires.
+                      </span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={autoTuneRequireOosConfirmation}
+                      onChange={(e) => saveConfig({ autoTuneRequireOosConfirmation: e.target.checked })}
+                    />
+                    <span>
+                      Require out-of-sample confirmation before raising risk
+                      <span className="block text-[11px] text-slate-500">
+                        On by default. A walk-forward guard on the risk-% tune above: it only <em>raises</em> risk-per-
+                        trade if the edge still holds out-of-sample — the most recent half of your closed trades must be
+                        a reliable sample whose expectancy confidence interval sits entirely above zero. A <em>cut</em>{' '}
+                        is always applied (the safe direction). Stops the tune from chasing an in-sample edge that
+                        hasn't held up; a blocked increase is journaled with its reason.
+                      </span>
+                    </span>
+                  </label>
+                  <Field
+                    label="Max daily exit step"
+                    hint="Largest change to the stop (× ATR) or target (R) allowed in a single day's exit-tune (in multiple units, not a %) — the exit-geometry analogue of the risk-% step, so one noisy sample can't swing the loop's exits."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={autoTuneExitMaxStepDraft}
+                        onChange={setAutoTuneExitMaxStepDraft}
+                        min={0}
+                        step={0.05}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save max daily exit step"
+                        onClick={() =>
+                          autoTuneExitMaxStepDraft != null &&
+                          saveConfig({ autoTuneExitMaxStep: autoTuneExitMaxStepDraft })
+                        }
+                        disabled={
+                          autoTuneExitMaxStepDraft == null ||
+                          autoTuneExitMaxStepDraft <= 0 ||
+                          autoTuneExitMaxStepDraft === config.data?.autoTuneExitMaxStep
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                </div>
+              </CollapsibleCard>
             </>
           )}
           {config.data && config.data.accountEquityUsd === null && (
@@ -3586,6 +5389,10 @@ export default function AutoTradePage() {
                 setLiveProbationTradesDraft={setLiveProbationTradesDraft}
                 liveProbationSizeMultiplierDraft={liveProbationSizeMultiplierDraft}
                 setLiveProbationSizeMultiplierDraft={setLiveProbationSizeMultiplierDraft}
+                liveScaleInEnabledDraft={liveScaleInEnabledDraft}
+                setLiveScaleInEnabledDraft={setLiveScaleInEnabledDraft}
+                liveMaxAddOnsDraft={liveMaxAddOnsDraft}
+                setLiveMaxAddOnsDraft={setLiveMaxAddOnsDraft}
                 liveCapsBusy={liveCapsBusy}
                 onSaveLiveCaps={saveLiveCaps}
                 suggestLiveCapsBusy={suggestLiveCapsBusy}
@@ -3631,7 +5438,7 @@ export default function AutoTradePage() {
               autotrade&apos;s own are shown here. Nothing here is simulated; see the Positions and Journal pages for
               your full real book (autotrade&apos;s fills included, unmarked there).
             </p>
-            {livePositions.loading ? (
+            {livePositions.loading && !livePositions.data ? (
               <Spinner />
             ) : livePositions.error ? (
               <ErrorState error={livePositions.error} onRetry={livePositions.reload} />
@@ -3675,7 +5482,7 @@ export default function AutoTradePage() {
               <code className="text-[11px]">autotrade_live_options_positions</code>), separate from the equity live
               positions above since a debit spread needs a second leg&apos;s columns.
             </p>
-            {liveOptionsPositions.loading ? (
+            {liveOptionsPositions.loading && !liveOptionsPositions.data ? (
               <Spinner />
             ) : liveOptionsPositions.error ? (
               <ErrorState error={liveOptionsPositions.error} onRetry={liveOptionsPositions.reload} />
@@ -3706,7 +5513,11 @@ export default function AutoTradePage() {
                         />
                       </div>
                     )}
-                    <LiveOptionsPositionsTable positions={rows} onClose={setCloseOptionsPos} />
+                    <LiveOptionsPositionsTable
+                      positions={rows}
+                      onClose={setCloseOptionsPos}
+                      events={symbolEvents.data?.events ?? []}
+                    />
                   </>
                 );
               })()
@@ -3719,7 +5530,7 @@ export default function AutoTradePage() {
             ) : dashboard.error ? (
               <ErrorState error={dashboard.error} onRetry={dashboard.reload} />
             ) : dashboard.data ? (
-              <MonitoringDashboard dash={dashboard.data} />
+              <MonitoringDashboard dash={dashboard.data} portfolioGreeks={portfolioGreeks} />
             ) : null}
           </CollapsibleCard>
         </>
@@ -3751,7 +5562,7 @@ export default function AutoTradePage() {
                 Add
               </button>
             </div>
-            {exclusions.loading ? (
+            {exclusions.loading && !exclusions.data ? (
               <Spinner />
             ) : exclusions.error ? (
               <ErrorState error={exclusions.error} onRetry={exclusions.reload} />
@@ -3782,6 +5593,73 @@ export default function AutoTradePage() {
                         <button
                           className="text-xs text-slate-500 hover:text-bear"
                           onClick={() => removeExclusion(e.symbol)}
+                        >
+                          remove
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </CollapsibleCard>
+
+          <CollapsibleCard id="autotrade.macroEvents" title="Macro event blackout list">
+            <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-2xl">
+              Hand-maintained scheduled dates (FOMC, CPI, jobs reports, ...) checked by "Macro event blackout (hours)"
+              above — there's no economic-calendar feed in this app, so add your own from the Fed's/BLS's own published
+              calendars.
+            </p>
+            <div className="grid sm:grid-cols-4 gap-2 items-end mb-3">
+              <div className="sm:col-span-2">
+                <Field label="Label">
+                  <input
+                    className="input"
+                    value={newEventLabel}
+                    onChange={(e) => setNewEventLabel(e.target.value)}
+                    placeholder="FOMC decision"
+                  />
+                </Field>
+              </div>
+              <Field label="Date & time">
+                <input
+                  type="datetime-local"
+                  className="input"
+                  value={newEventAt}
+                  onChange={(e) => setNewEventAt(e.target.value)}
+                />
+              </Field>
+              <button className="btn-primary" onClick={addMacroEvent}>
+                Add
+              </button>
+            </div>
+            {macroEvents.loading && !macroEvents.data ? (
+              <Spinner />
+            ) : macroEvents.error ? (
+              <ErrorState error={macroEvents.error} onRetry={macroEvents.reload} />
+            ) : macroEventRows.length === 0 ? (
+              <EmptyState
+                title="No scheduled events"
+                hint="Add a date above — the blackout stays disabled until then."
+              />
+            ) : (
+              <table className="w-full">
+                <thead className="border-b border-ink-600/60">
+                  <tr>
+                    <th className="th">Label</th>
+                    <th className="th">When</th>
+                    <th className="th text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {macroEventRows.map((e) => (
+                    <tr key={e.id} className="border-b border-ink-700/50">
+                      <td className="td font-semibold">{e.label}</td>
+                      <td className="td text-slate-400">{new Date(e.eventAt).toLocaleString()}</td>
+                      <td className="td text-right">
+                        <button
+                          className="text-xs text-slate-500 hover:text-bear"
+                          onClick={() => removeMacroEvent(e.id, e.label)}
                         >
                           remove
                         </button>
@@ -4167,6 +6045,36 @@ export default function AutoTradePage() {
                 />
               </div>
             )}
+
+            <div className="mt-5 pt-5 border-t border-ink-700/60">
+              <h4 className="font-medium text-sm mb-1">Parameter sweep — risk per trade</h4>
+              <p className="text-xs text-slate-500 mb-3">
+                Reruns the SAME walk-forward split above once per nearby risk-per-trade % (half to 1.5x the value
+                below), using the symbols/dates/split/risk profile/equity/max positions/direction set above. Out-of-
+                sample results that stay similar across the row read as a real, size-insensitive edge; one value spiking
+                while its neighbors look ordinary or negative reads as a lucky overfit on that exact setting, not a
+                genuine edge. Read-only — nothing here changes the live Configuration above.
+              </p>
+              <div className="flex gap-3 items-end flex-wrap mb-3">
+                <Field label="Risk per trade % (center)" hint="Swept from 0.5x to 1.5x this value.">
+                  <NumberInput
+                    value={sweepRiskPerTradePct}
+                    onChange={setSweepRiskPerTradePct}
+                    min={0.1}
+                    step={0.1}
+                    placeholder="e.g. 1"
+                  />
+                </Field>
+                <button className="btn-primary" onClick={runParameterSweep} disabled={sweepBusy}>
+                  {sweepBusy ? 'Running…' : 'Run sweep'}
+                </button>
+              </div>
+              {sweepErr && <div className="text-bear text-sm mb-2">{sweepErr}</div>}
+              {sweepRows && sweepBaseSubmitted !== undefined && (
+                <ParameterSweepTable rows={sweepRows} baseValue={sweepBaseSubmitted} />
+              )}
+            </div>
+
             {optBtErr && <div className="text-bear text-sm mb-2">{optBtErr}</div>}
             {optBtResult && (
               <div className="space-y-3">
@@ -4187,7 +6095,7 @@ export default function AutoTradePage() {
                 <OptionsBacktestTradesTable trades={optBtResult.report.trades} />
               </div>
             )}
-            {optBtWfResult && btSubmitted && (
+            {optBtWfResult && optBtSubmitted && (
               <div className="space-y-5">
                 <h4 className="text-xs uppercase tracking-wide text-slate-400">Options overlay</h4>
                 {optBtWfResult.excludedSymbols.length > 0 && (
@@ -4202,13 +6110,13 @@ export default function AutoTradePage() {
                   </p>
                 )}
                 <OptionsBacktestWindowResult
-                  title={`In-sample (${btSubmitted.from} → ${btSubmitted.splitDate})`}
+                  title={`In-sample (${optBtSubmitted.from} → ${optBtSubmitted.splitDate})`}
                   hint="The tuning window — strong performance here alone proves nothing."
                   run={optBtWfResult.inSample}
                   gradientId="optBtEquityIn"
                 />
                 <OptionsBacktestWindowResult
-                  title={`Out-of-sample (${btSubmitted.splitDate} → ${btSubmitted.to})`}
+                  title={`Out-of-sample (${optBtSubmitted.splitDate} → ${optBtSubmitted.to})`}
                   hint="Unseen data — this is the number that matters for the validation gate."
                   run={optBtWfResult.outOfSample}
                   gradientId="optBtEquityOut"
@@ -4239,7 +6147,7 @@ export default function AutoTradePage() {
                 <OptionsBacktestTradesTable trades={combinedBtResult.report.optionsTrades} />
               </div>
             )}
-            {combinedBtWfResult && btSubmitted && (
+            {combinedBtWfResult && combinedBtSubmitted && (
               <div className="space-y-5">
                 <h4 className="text-xs uppercase tracking-wide text-slate-400">Combined (one shared risk budget)</h4>
                 {combinedBtWfResult.excludedSymbols.length > 0 && (
@@ -4254,13 +6162,13 @@ export default function AutoTradePage() {
                   </p>
                 )}
                 <CombinedBacktestWindowResult
-                  title={`In-sample (${btSubmitted.from} → ${btSubmitted.splitDate})`}
+                  title={`In-sample (${combinedBtSubmitted.from} → ${combinedBtSubmitted.splitDate})`}
                   hint="The tuning window — strong performance here alone proves nothing."
                   run={combinedBtWfResult.inSample}
                   gradientId="combinedBtEquityIn"
                 />
                 <CombinedBacktestWindowResult
-                  title={`Out-of-sample (${btSubmitted.splitDate} → ${btSubmitted.to})`}
+                  title={`Out-of-sample (${combinedBtSubmitted.splitDate} → ${combinedBtSubmitted.to})`}
                   hint="Unseen data — this is the number that matters for the validation gate."
                   run={combinedBtWfResult.outOfSample}
                   gradientId="combinedBtEquityOut"
@@ -4306,7 +6214,7 @@ export default function AutoTradePage() {
                 {loopSummary.optionsExitsChecked} ({loopSummary.optionsExitsClosed} closed).
               </p>
             )}
-            {paperPositions.loading ? (
+            {paperPositions.loading && !paperPositions.data ? (
               <Spinner />
             ) : paperPositions.error ? (
               <ErrorState error={paperPositions.error} onRetry={paperPositions.reload} />
@@ -4349,7 +6257,7 @@ export default function AutoTradePage() {
               leg). Automated exit is time-based only (close as expiration approaches, no roll) — take-profit/stop-loss/
               delta-drift stay human-review-only on the Options page.
             </p>
-            {optionsPaperPositions.loading ? (
+            {optionsPaperPositions.loading && !optionsPaperPositions.data ? (
               <Spinner />
             ) : optionsPaperPositions.error ? (
               <ErrorState error={optionsPaperPositions.error} onRetry={optionsPaperPositions.reload} />
@@ -4379,7 +6287,7 @@ export default function AutoTradePage() {
                         />
                       </div>
                     )}
-                    <OptionsPaperPositionsTable positions={rows} />
+                    <OptionsPaperPositionsTable positions={rows} events={symbolEvents.data?.events ?? []} />
                   </>
                 );
               })()
@@ -4387,7 +6295,7 @@ export default function AutoTradePage() {
           </CollapsibleCard>
 
           <CollapsibleCard id="autotrade.recentActivity" title="Recent activity">
-            {events.loading ? (
+            {events.loading && !events.data ? (
               <Spinner />
             ) : events.error ? (
               <ErrorState error={events.error} onRetry={events.reload} />

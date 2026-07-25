@@ -1,4 +1,13 @@
 import { db } from './index';
+import { IndicatorKey, IndicatorWeights, defaultScreenerConfig } from '../indicators/screener';
+
+/** The three regimes the market-regime gauge (services/marketRegime.ts) resolves
+ *  to. Keyed camelCase here to match the config field names. */
+export interface RegimeWeightPresets {
+  riskOn: IndicatorWeights;
+  neutral: IndicatorWeights;
+  riskOff: IndicatorWeights;
+}
 
 // ---------------------------------------------------------------------------
 // Persistence for the auto-trading master switch + active risk profile (see
@@ -38,8 +47,12 @@ export type TradeDirectionMode = 'long' | 'short' | 'both';
  *  phase 9/10's own deferred "debit spread" follow-up). 'single_leg' (long
  *  call/put) by default — a debit spread caps both max loss AND max gain, a
  *  genuinely different risk/reward trade a human should opt into explicitly,
- *  not something the loop silently switches to based on market conditions. */
-export type OptionsStrategyType = 'single_leg' | 'debit_spread';
+ *  not something the loop silently switches to based on market conditions.
+ *  'auto' (2026-07-18) is the one deliberate exception to that: it picks
+ *  single_leg vs. debit_spread PER CANDIDATE from that candidate's own IV
+ *  rank (see optionsDecide.ts's AUTO_STRATEGY_IV_RANK_THRESHOLD) — still an
+ *  explicit opt-in a human chooses once, not a silent default. */
+export type OptionsStrategyType = 'single_leg' | 'debit_spread' | 'auto';
 
 export interface AutotradeConfig {
   /** Master on/off for the auto-trading execution loop. */
@@ -100,6 +113,16 @@ export interface AutotradeConfig {
    *  riskProfiles.ts's CORRELATION_THRESHOLD/CORRELATION_LOOKBACK_DAYS,
    *  still fixed methodology constants, not user-tunable) with the candidate. */
   maxCorrelatedExposurePct: number;
+  /** % of equity — capital (not risk) already concentrated in the candidate's
+   *  OWN universe sector (db/universe.ts's `sector` column), regardless of
+   *  price correlation. A complementary, cheaper backstop to
+   *  maxCorrelatedExposurePct above (see riskCheck.ts's sectorNotional() doc
+   *  comment): two names in the same sector can carry LOW price correlation
+   *  today and still share the same macro/sector-wide risk the correlation
+   *  cap alone would miss. Defaults on (like maxCorrelatedExposurePct) rather
+   *  than opt-in, since this is a passive safety cap, not an active-automation
+   *  toggle — same category as every other risk-check cap on this list. */
+  maxSectorExposurePct: number;
   /** Max entries (paper + live combined) risk-check will approve per day. */
   maxTradesPerDay: number;
   /** Regime-aware sizing (added 2026-07-16, follow-up to phase 17 — see
@@ -127,6 +150,44 @@ export interface AutotradeConfig {
    *  behavior this config merely made tunable), this is a brand-new feature,
    *  so an untouched config changes nothing. */
   regimeSizeCutPct: number;
+  /** Equity-curve de-risking (2026-07-24, services/autotrading/equityCurveDerisk.ts):
+   *  a SOFTER, graduated companion to the binary `maxDailyDrawdownPct` halt.
+   *  When on, and the strategy's OWN realized equity curve (cumulative closed
+   *  P&L, per book — paper vs live) is below its `equityCurveLookbackDays`-day
+   *  moving average, `riskPerTradePct` is cut by `equityCurveDeriskCutPct` — the
+   *  same multiplicative insertion point step-down and regime sizing use, and it
+   *  stacks with them. Off by default (`equityCurveDeriskEnabled` false), so an
+   *  untouched config changes nothing. LIVE + PAPER only — a backtest has no live
+   *  per-book curve wired into its risk-check context (same scope boundary as
+   *  regime sizing). */
+  equityCurveDeriskEnabled: boolean;
+  equityCurveLookbackDays: number;
+  equityCurveDeriskCutPct: number;
+  /** ADV participation cap (2026-07-24): max % of a name's ~20-day average
+   *  daily volume a single equity position may take, so a position stays
+   *  exitable without moving the market. Defaults to 0 = off (a brand-new
+   *  guardrail — untouched changes nothing). LIVE + PAPER equity only; options
+   *  already gate on their own OI/volume floors, and a backtest doesn't set it. */
+  maxAdvParticipationPct: number;
+  /** Conviction-grade score thresholds (2026-07-24): every autotrade entry is
+   *  stamped with a grade from its screener total score — A at/above
+   *  `convictionGradeAMinScore`, B at/above `convictionGradeBMinScore`, else C.
+   *  The grade is metadata that enriches the Journal's per-grade report and (behind
+   *  a separate flag) can drive expectancy-weighted sizing. Grading is always on;
+   *  only the sizing that reads it is gated. */
+  convictionGradeAMinScore: number;
+  convictionGradeBMinScore: number;
+  /** Expectancy-weighted sizing (2026-07-24, services/autotrading/expectancySizing.ts).
+   *  When on, each conviction grade's OWN realized average R shifts new-position
+   *  size around baseline (`multiplier = clamp(1 + avgR, min, max)`), stacking
+   *  with the other sizing multipliers. A grade with fewer than
+   *  `expectancyMinTrades` closed trades stays neutral (1×). Off by default; the
+   *  aggregate-open-risk veto still binds regardless. LIVE + PAPER only (each on
+   *  its own book's edge) — a backtest has no realized per-grade history. */
+  expectancyWeightingEnabled: boolean;
+  expectancyMinTrades: number;
+  expectancyMinMultiplier: number;
+  expectancyMaxMultiplier: number;
 
   // --- Screening/decision thresholds (docs/AUTOTRADING_SPEC.md — RESEARCH &
   // SCREEN / DECISION). Same treatment, extraction, and reasoning as the
@@ -187,6 +248,18 @@ export interface AutotradeConfig {
   /** Trading days back for both the candidate's own and the benchmark's
    *  lookback return that relativeStrengthWeight scores. */
   relativeStrengthLookbackDays: number;
+  /** News-headline sentiment (2026-07-18): weight (0-100, same scale as
+   *  every other indicators/screener.ts component) given to a simple,
+   *  transparent keyword count over each candidate's recent headlines
+   *  (services/sentiment.ts's computeHeadlineSentiment() — a small, fixed,
+   *  documented word list, not a third-party sentiment API or ML model, to
+   *  keep this explainable per this app's own scoring invariant). 0 (the
+   *  default) disables the component entirely — screen.ts doesn't even
+   *  fetch headlines when this is 0, so an untouched config pays no extra
+   *  provider call and changes nothing about existing scores. Direction-
+   *  aware like every other component: a LONG candidate scores higher for
+   *  net-POSITIVE headlines, a SHORT candidate for net-NEGATIVE ones. */
+  sentimentWeight: number;
   /** Skip a candidate whose own ATR% (of price) exceeds this — the loop's
    *  own per-ticker volatility guard, stricter than what the human-reviewed
    *  manual Screen/Decision preview applies (executionGuards.ts's header
@@ -218,6 +291,18 @@ export interface AutotradeConfig {
    *  is — failing closed here would silently starve the loop of candidates
    *  during ordinary Yahoo flakiness. */
   earningsBlackoutDays: number;
+
+  /** Scheduled macro-event blackout (2026-07-18): hard-block new entries,
+   *  paper AND live, within this many hours (either side) of any date-time on
+   *  the hand-maintained macro-events list (db/macroEvents.ts) — market-wide,
+   *  unlike earningsBlackoutDays above, so it's checked once per loop tick
+   *  (executionGuards.ts's checkMacroEventBlackout), the same gating point as
+   *  the session-window check, not per-candidate inside the screener. 0 (the
+   *  default) disables it entirely. No backtest equivalent — same documented
+   *  scope boundary as sessionBufferMinutes/regime sizing/relative strength:
+   *  a historical macro-event-date archive doesn't exist, so there's nothing
+   *  for a backtest to replay this against. */
+  macroEventBlackoutHours: number;
 
   // --- Max hold time (docs/AUTOTRADING_SPEC.md — RESOLVED DECISIONS, added
   // 2026-07-11). Unlike its neighbors above, this DOES have a backtest
@@ -265,6 +350,23 @@ export interface AutotradeConfig {
   /** % of the position closed at the partialExitRMultiple trigger. Only
    *  meaningful when partialExitRMultiple is nonzero. */
   partialExitPct: number;
+  /** Scale into winners (pyramiding): once unrealized gain reaches this many R
+   *  — measured from the position's CURRENT (blended) entry against its frozen
+   *  original per-share risk — add addOnSizePct% more shares, up to maxAddOns
+   *  times. Each add blends the entry up (long) / down (short), shifts the
+   *  recorded initial-stop level by the same amount so the R denominator stays
+   *  the original per-share risk, and RAISES the protective stop to 1R below
+   *  (long) / above (short) the new blended entry — never loosening it. 0
+   *  disables scaling in entirely. PAPER + BACKTEST equity only (LIVE is
+   *  untouched); mutually exclusive with a partial exit in the same cycle. */
+  addOnTriggerRMultiple: number;
+  /** Size of each add-on as a % of the position's CURRENT quantity. Only
+   *  meaningful when addOnTriggerRMultiple and maxAddOns are both nonzero. */
+  addOnSizePct: number;
+  /** Hard cap on how many times a single position may be scaled into. 0
+   *  disables scaling in (same as addOnTriggerRMultiple = 0). Bounds how
+   *  top-heavy a pyramid can get. */
+  maxAddOns: number;
 
   // --- Correlation methodology (docs/AUTOTRADING_SPEC.md — RESOLVED
   // DECISIONS). Formerly riskProfiles.ts's CORRELATION_LOOKBACK_DAYS/
@@ -282,6 +384,32 @@ export interface AutotradeConfig {
   /** |Pearson r| at or above this counts as "correlated" for
    *  maxCorrelatedExposurePct's purposes. 0-1, not a percentage. */
   correlationThreshold: number;
+  /** Correlation-aware candidate selection (2026-07-24, default OFF). When on,
+   *  the score-sorted candidate list is re-ranked before the decision stage so
+   *  that among names correlated at ≥ correlationThreshold, the higher-scored
+   *  one keeps its rank and the redundant lower one is demoted to the back —
+   *  diverse picks win the caps instead of a correlated huddle. Reuses
+   *  correlationThreshold / correlationLookbackDays; reorders only, never drops
+   *  (the exposure veto stays the backstop). Applies to live, paper, and the
+   *  backtest engines. */
+  correlationAwareSelectionEnabled: boolean;
+
+  // --- Regime-conditional scoring weights (2026-07-24) -----------------------
+
+  /** Regime-adaptive screener weights (default OFF). When on, the loop computes
+   *  the market regime (services/marketRegime.ts — SPY proxy, cached ~1h) at
+   *  scoring time and applies the matching `regimeWeightPresets` entry instead
+   *  of the fixed default weights, so the strategy re-weights what it rewards to
+   *  the environment (e.g. lean on trend in risk-on, on mean-reversion/RSI in
+   *  risk-off). Off = today's fixed weights exactly. `relativeStrength` /
+   *  `sentiment` always stay driven by their own weight fields below,
+   *  regardless — the presets only govern the six core weights. */
+  regimeAdaptiveWeightsEnabled: boolean;
+  /** Per-regime screener weight sets, selected by the gauge's risk-on / neutral
+   *  / risk-off label when regimeAdaptiveWeightsEnabled is on. Each defaults to
+   *  the standard screener weights, so enabling with untouched presets changes
+   *  nothing until a preset is actually edited. */
+  regimeWeightPresets: RegimeWeightPresets;
 
   // --- Phase 8: live-trading gate (docs/AUTOTRADING_SPEC.md) -----------------
 
@@ -325,6 +453,20 @@ export interface AutotradeConfig {
    *  sizing and any loss-streak step-down already active (Phase 8 Step B). */
   liveProbationTrades: number;
   liveProbationSizeMultiplier: number;
+  /** Scale into winners on LIVE equity positions — a plain opt-in nested UNDER
+   *  liveTradingEnabled (same relationship liveOptionsEnabled has to the master
+   *  gate). The autotrade loop only pyramids a live position when BOTH this and
+   *  liveTradingEnabled are true (and the shared addOnTriggerRMultiple /
+   *  addOnSizePct drive the WHEN/how-much, same as paper). Defaults false — this
+   *  is the one live setting that ADDS risk to an already-open real position, so
+   *  it's off until deliberately turned on. Each add is placed as its OWN
+   *  bracket (raised stop + the position's target), so the added shares are
+   *  never naked and the original bracket is never touched. */
+  liveScaleInEnabled: boolean;
+  /** Hard cap on live pyramids per position — can be set LOWER than the paper
+   *  maxAddOns for extra caution on real money. 0 disables live scaling in
+   *  entirely regardless of liveScaleInEnabled. */
+  liveMaxAddOns: number;
 
   // --- Task #70: live options trading -----------------------------------
 
@@ -367,6 +509,39 @@ export interface AutotradeConfig {
    *  /decide preview route (routes/autotrade.ts); backtesting is unaffected
    *  (options backtests remain single-leg only). */
   optionsStrategyType: OptionsStrategyType;
+
+  // --- Options entry-rule thresholds (the contract-quality screen the
+  // decision stage runs BEFORE risk-check ever sees a candidate — see
+  // entryRules.ts's EntryStrategyConfig/scanEntries and optionsDecide.ts's
+  // generateOptionsSignal). Previously fixed constants (entryRules.ts's
+  // defaultEntryConfig() plus optionsDecide.ts's own ivRankMax:70 layered on
+  // top) with no way to tune them — same treatment as the screening/decision
+  // thresholds above: a candidate failing the 'delta band'/'max spread %'/
+  // 'min open interest'/'min volume'/DTE/'IV rank' rule (entryRules.ts) could
+  // only be reported, never adjusted. Defaults below match those constants
+  // exactly, so an untouched config's behavior doesn't change. Threaded into
+  // generateOptionsSignal() via OptionsDecisionConfig.entryConfig (an
+  // override already merged onto defaultAutotradeEntryConfig(side) — see that
+  // function's own doc comment) by loop.ts and the /decide preview route,
+  // mirroring exactly how every other screening/decision field above is
+  // wired in. Backtesting is unaffected — optionsBacktest.ts/
+  // combinedBacktest.ts call defaultAutotradeEntryConfig() directly, same
+  // self-contained-hypothesis convention as every other screening/decision
+  // field's own backtest treatment. --------------------------------------
+
+  /** Absolute delta band (0-1) a contract's |delta| must fall within. */
+  optionsDeltaMin: number;
+  optionsDeltaMax: number;
+  /** Max (ask - bid) / mid, as a percentage of mid price. */
+  optionsMaxSpreadPct: number;
+  optionsMinOpenInterest: number;
+  optionsMinVolume: number;
+  optionsMinDte: number;
+  optionsMaxDte: number;
+  /** Underlying IV-rank ceiling (0-100) — this system only ever buys premium,
+   *  so guarding against a high-IV underlying is the one direction that
+   *  matters here. */
+  optionsIvRankMax: number;
 
   // --- Options stop-loss / take-profit (docs/AUTOTRADING_SPEC.md — follow-up
   // to phase 12's own confirmed close-only, time-based exit design; added
@@ -446,6 +621,72 @@ export interface AutotradeConfig {
    *  either way: this is a one-shot "earn a permanent spot," not a rolling
    *  membership that could thrash. */
   autoPromoteMaxSymbols: number;
+
+  // --- Auto-tune from realized edge (docs/AUTOTRADING_SPEC.md — 2026-07-18
+  // follow-up). Off by default, an explicit opt-in mirroring every other
+  // guardrail in this config — nothing here changes on its own unless this is
+  // switched on. Once per (ET) trading day, not per-tick — realized-trade
+  // stats don't move meaningfully inside a day, and re-deriving them every
+  // 60s tick would be wasted work — see services/autotrading/autoTune.ts:
+  //   - riskPerTradePct is nudged toward the Journal page's own Kelly
+  //     suggestion (services/pnl.ts's kellySuggestion — same quarter-Kelly,
+  //     3%-capped math already shown there), once there are enough decisive
+  //     closed trades, by at most autoTuneMaxStepPct percentage points per
+  //     day, so one noisy day can't swing live sizing on its own.
+  //   - a symbol whose average live-fill slippage (services/slippage.ts)
+  //     exceeds autoTuneSlippageExcludePct, over enough fills, gets added to
+  //     the existing exclusion list (db/autotradeExclusions.ts) — the SAME
+  //     list the real-estate/manual exclusions already use, so it's
+  //     immediately visible and removable from Settings, not a separate
+  //     hidden mechanism.
+  // Every adjustment is journaled (autotrade_events), so it shows up on
+  // Recent Activity the same as every other automated action this loop
+  // takes — nothing here happens silently. ------------------------------------
+
+  /** Master on/off for both behaviors above. */
+  autoTuneEnabled: boolean;
+  /** Decisive closed trades (for the risk-% tune) / live fills with a
+   *  comparable limit price (for the slippage exclusion) required before
+   *  auto-tune trusts a reading enough to act on it — defaults to 20,
+   *  matching kellySuggestion's own existing reliable-sample-size floor, so
+   *  this doesn't invent a stricter or looser bar than the Journal page
+   *  already uses for the same number. */
+  autoTuneMinTrades: number;
+  /** Max change to riskPerTradePct in a single day's adjustment (percentage
+   *  points, not a %-of-current-value) — bounds how fast auto-tune can move
+   *  live position sizing even if the Kelly suggestion itself jumps sharply
+   *  between two runs. */
+  autoTuneMaxStepPct: number;
+  /** A symbol's average live-fill slippage (% of limit price, same signed
+   *  convention as services/slippage.ts — positive always cost money) at or
+   *  above this gets auto-excluded from future autotrade candidates. */
+  autoTuneSlippageExcludePct: number;
+  /** Exit-geometry auto-tune (2026-07-24, services/autotrading/excursionTune.ts).
+   *  When on (and autoTuneEnabled), the same once-per-ET-day pass nudges
+   *  stopAtrMultiple / targetRMultiple toward what WINNING autotrade trades
+   *  actually did — a good trade's worst drawdown (MAE) sizes the stop, its
+   *  favorable peak (MFE) sizes the target. Off by default; independent of the
+   *  Kelly risk-% tune above so you can adopt one without the other. */
+  autoTuneExitsEnabled: boolean;
+  /** Max change to stopAtrMultiple or targetRMultiple in a single day's
+   *  exit-tune (in multiple units, not a %), so one noisy sample can't swing
+   *  the loop's exits — the exit-geometry analogue of autoTuneMaxStepPct. */
+  autoTuneExitMaxStep: number;
+  /** When the exit-geometry tuner last moved stopAtrMultiple/targetRMultiple.
+   *  Server-owned bookkeeping (like liveEnabledAt) — not settable via the config
+   *  route. Excursion is measured in R, i.e. against each trade's OWN stop at
+   *  entry, so trades taken before a change can't tell you anything about the
+   *  geometry that replaced them; the tuner uses this to ignore them and wait
+   *  for fresh evidence. See services/autotrading/excursionTune.ts. */
+  autoTuneExitTunedAt: number | null;
+  /** Walk-forward guard on the Kelly risk-% auto-tune (2026-07-24, ON by
+   *  default). When on, a risk-% INCREASE is only applied if the edge still
+   *  holds out-of-sample — the most recent half of closed trades must be a
+   *  reliable sample whose expectancy CI sits entirely above zero (see
+   *  services/autotrading/significance.ts checkOosEdgeConfirmation). A decrease
+   *  is always applied (the safe direction). Only matters when autoTuneEnabled;
+   *  stops the tune from chasing an in-sample edge that hasn't held up. */
+  autoTuneRequireOosConfirmation: boolean;
 }
 
 interface ConfigRow {
@@ -476,29 +717,52 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     stepDownSizeCutPct: 50,
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
+    maxSectorExposurePct: 20,
     maxTradesPerDay: 6,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    equityCurveDeriskEnabled: false,
+    equityCurveLookbackDays: 10,
+    equityCurveDeriskCutPct: 50,
+    maxAdvParticipationPct: 0,
+    convictionGradeAMinScore: 75,
+    convictionGradeBMinScore: 60,
+    expectancyWeightingEnabled: false,
+    expectancyMinTrades: 10,
+    expectancyMinMultiplier: 0.5,
+    expectancyMaxMultiplier: 1.5,
     tradeDirection: 'long',
     minRelVol: 1.5,
     requireWeeklyTrendAlignment: false,
     relativeStrengthWeight: 0,
     benchmarkSymbol: 'SPY',
     relativeStrengthLookbackDays: 20,
+    sentimentWeight: 0,
     maxTickerAtrPct: 15,
     maxMarketAtrPct: 5,
     stopAtrMultiple: 1.5,
     targetRMultiple: 2,
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
+    macroEventBlackoutHours: 0,
     maxHoldDays: 0,
     breakevenTriggerRMultiple: 0,
     trailStartRMultiple: 0,
     trailStopRMultiple: 0,
     partialExitRMultiple: 0,
     partialExitPct: 50,
+    addOnTriggerRMultiple: 0,
+    addOnSizePct: 50,
+    maxAddOns: 0,
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
+    correlationAwareSelectionEnabled: false,
+    regimeAdaptiveWeightsEnabled: false,
+    regimeWeightPresets: {
+      riskOn: { ...defaultScreenerConfig().weights },
+      neutral: { ...defaultScreenerConfig().weights },
+      riskOff: { ...defaultScreenerConfig().weights },
+    },
     liveTradingEnabled: false,
     liveEnabledAt: null,
     liveAccountId: null,
@@ -509,6 +773,8 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveAllowNakedShort: false,
     liveProbationTrades: 20,
     liveProbationSizeMultiplier: 0.5,
+    liveScaleInEnabled: false,
+    liveMaxAddOns: 0,
     liveOptionsEnabled: false,
     liveOptionsEnabledAt: null,
     liveOptionsMaxOrderUsd: 500,
@@ -518,6 +784,14 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveOptionsProbationTrades: 20,
     liveOptionsProbationSizeMultiplier: 0.5,
     optionsStrategyType: 'single_leg',
+    optionsDeltaMin: 0.3,
+    optionsDeltaMax: 0.6,
+    optionsMaxSpreadPct: 10,
+    optionsMinOpenInterest: 100,
+    optionsMinVolume: 10,
+    optionsMinDte: 7,
+    optionsMaxDte: 60,
+    optionsIvRankMax: 70,
     optionsStopLossPct: 0,
     optionsTakeProfitPct: 0,
     optionsBreakevenTriggerPct: 0,
@@ -529,6 +803,14 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     autoPromoteThreshold: 3,
     autoPromoteWindowDays: 10,
     autoPromoteMaxSymbols: 50,
+    autoTuneEnabled: false,
+    autoTuneMinTrades: 20,
+    autoTuneMaxStepPct: 0.5,
+    autoTuneSlippageExcludePct: 2,
+    autoTuneExitsEnabled: false,
+    autoTuneExitMaxStep: 0.25,
+    autoTuneExitTunedAt: null,
+    autoTuneRequireOosConfirmation: true,
   };
 }
 
@@ -575,6 +857,18 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     const n = Number(v);
     return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : fallback;
   };
+  // A screener weight set — coerce every known IndicatorKey to a non-negative
+  // number, filling any missing/invalid key from the fallback (so a partial
+  // preset from an older client, or one missing a newly-added weight key, still
+  // yields a complete, valid set). Unknown extra keys are dropped.
+  const weightsPreset = (v: unknown, fallback: IndicatorWeights): IndicatorWeights => {
+    const src = (v && typeof v === 'object' ? v : {}) as Partial<Record<IndicatorKey, unknown>>;
+    const out = {} as IndicatorWeights;
+    (Object.keys(fallback) as IndicatorKey[]).forEach((k) => {
+      out[k] = nonNeg(src[k], fallback[k]);
+    });
+    return out;
+  };
   const accountId =
     input.liveAccountId === null
       ? null
@@ -600,9 +894,24 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     stepDownSizeCutPct: pct(input.stepDownSizeCutPct, d.stepDownSizeCutPct),
     maxAggregateOpenRiskPct: pct(input.maxAggregateOpenRiskPct, d.maxAggregateOpenRiskPct),
     maxCorrelatedExposurePct: pct(input.maxCorrelatedExposurePct, d.maxCorrelatedExposurePct),
+    maxSectorExposurePct: pct(input.maxSectorExposurePct, d.maxSectorExposurePct),
     maxTradesPerDay: posInt(input.maxTradesPerDay, d.maxTradesPerDay),
     regimeAtrThresholdPct: pct(input.regimeAtrThresholdPct, d.regimeAtrThresholdPct),
     regimeSizeCutPct: pct(input.regimeSizeCutPct, d.regimeSizeCutPct),
+    equityCurveDeriskEnabled:
+      typeof input.equityCurveDeriskEnabled === 'boolean' ? input.equityCurveDeriskEnabled : d.equityCurveDeriskEnabled,
+    equityCurveLookbackDays: posIntMin1(input.equityCurveLookbackDays, d.equityCurveLookbackDays),
+    equityCurveDeriskCutPct: pct(input.equityCurveDeriskCutPct, d.equityCurveDeriskCutPct),
+    maxAdvParticipationPct: pct(input.maxAdvParticipationPct, d.maxAdvParticipationPct),
+    convictionGradeAMinScore: pct(input.convictionGradeAMinScore, d.convictionGradeAMinScore),
+    convictionGradeBMinScore: pct(input.convictionGradeBMinScore, d.convictionGradeBMinScore),
+    expectancyWeightingEnabled:
+      typeof input.expectancyWeightingEnabled === 'boolean'
+        ? input.expectancyWeightingEnabled
+        : d.expectancyWeightingEnabled,
+    expectancyMinTrades: posIntMin1(input.expectancyMinTrades, d.expectancyMinTrades),
+    expectancyMinMultiplier: posDecimal(input.expectancyMinMultiplier, d.expectancyMinMultiplier),
+    expectancyMaxMultiplier: posDecimal(input.expectancyMaxMultiplier, d.expectancyMaxMultiplier),
     tradeDirection:
       input.tradeDirection === 'long' || input.tradeDirection === 'short' || input.tradeDirection === 'both'
         ? input.tradeDirection
@@ -618,20 +927,38 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
         ? input.benchmarkSymbol.trim().toUpperCase()
         : d.benchmarkSymbol,
     relativeStrengthLookbackDays: posIntMin1(input.relativeStrengthLookbackDays, d.relativeStrengthLookbackDays),
+    sentimentWeight: pct(input.sentimentWeight, d.sentimentWeight),
     maxTickerAtrPct: pct(input.maxTickerAtrPct, d.maxTickerAtrPct),
     maxMarketAtrPct: pct(input.maxMarketAtrPct, d.maxMarketAtrPct),
     stopAtrMultiple: posDecimal(input.stopAtrMultiple, d.stopAtrMultiple),
     targetRMultiple: posDecimal(input.targetRMultiple, d.targetRMultiple),
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
     earningsBlackoutDays: posInt(input.earningsBlackoutDays, d.earningsBlackoutDays),
+    macroEventBlackoutHours: nonNeg(input.macroEventBlackoutHours, d.macroEventBlackoutHours),
     maxHoldDays: posInt(input.maxHoldDays, d.maxHoldDays),
     breakevenTriggerRMultiple: nonNeg(input.breakevenTriggerRMultiple, d.breakevenTriggerRMultiple),
     trailStartRMultiple: nonNeg(input.trailStartRMultiple, d.trailStartRMultiple),
     trailStopRMultiple: nonNeg(input.trailStopRMultiple, d.trailStopRMultiple),
     partialExitRMultiple: nonNeg(input.partialExitRMultiple, d.partialExitRMultiple),
     partialExitPct: pct(input.partialExitPct, d.partialExitPct),
+    addOnTriggerRMultiple: nonNeg(input.addOnTriggerRMultiple, d.addOnTriggerRMultiple),
+    addOnSizePct: pct(input.addOnSizePct, d.addOnSizePct),
+    maxAddOns: posInt(input.maxAddOns, d.maxAddOns),
     correlationLookbackDays: posIntMin1(input.correlationLookbackDays, d.correlationLookbackDays),
     correlationThreshold: unitInterval(input.correlationThreshold, d.correlationThreshold),
+    correlationAwareSelectionEnabled:
+      typeof input.correlationAwareSelectionEnabled === 'boolean'
+        ? input.correlationAwareSelectionEnabled
+        : d.correlationAwareSelectionEnabled,
+    regimeAdaptiveWeightsEnabled:
+      typeof input.regimeAdaptiveWeightsEnabled === 'boolean'
+        ? input.regimeAdaptiveWeightsEnabled
+        : d.regimeAdaptiveWeightsEnabled,
+    regimeWeightPresets: {
+      riskOn: weightsPreset(input.regimeWeightPresets?.riskOn, d.regimeWeightPresets.riskOn),
+      neutral: weightsPreset(input.regimeWeightPresets?.neutral, d.regimeWeightPresets.neutral),
+      riskOff: weightsPreset(input.regimeWeightPresets?.riskOff, d.regimeWeightPresets.riskOff),
+    },
     liveTradingEnabled: typeof input.liveTradingEnabled === 'boolean' ? input.liveTradingEnabled : d.liveTradingEnabled,
     liveEnabledAt: enabledAt,
     liveAccountId: accountId,
@@ -646,6 +973,8 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       const n = Number(input.liveProbationSizeMultiplier);
       return Number.isFinite(n) && n > 0 && n <= 1 ? n : d.liveProbationSizeMultiplier;
     })(),
+    liveScaleInEnabled: typeof input.liveScaleInEnabled === 'boolean' ? input.liveScaleInEnabled : d.liveScaleInEnabled,
+    liveMaxAddOns: posInt(input.liveMaxAddOns, d.liveMaxAddOns),
     liveOptionsEnabled: typeof input.liveOptionsEnabled === 'boolean' ? input.liveOptionsEnabled : d.liveOptionsEnabled,
     liveOptionsEnabledAt: optionsEnabledAt,
     liveOptionsMaxOrderUsd: nonNeg(input.liveOptionsMaxOrderUsd, d.liveOptionsMaxOrderUsd),
@@ -658,9 +987,19 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       return Number.isFinite(n) && n > 0 && n <= 1 ? n : d.liveOptionsProbationSizeMultiplier;
     })(),
     optionsStrategyType:
-      input.optionsStrategyType === 'debit_spread' || input.optionsStrategyType === 'single_leg'
+      input.optionsStrategyType === 'debit_spread' ||
+      input.optionsStrategyType === 'single_leg' ||
+      input.optionsStrategyType === 'auto'
         ? input.optionsStrategyType
         : d.optionsStrategyType,
+    optionsDeltaMin: unitInterval(input.optionsDeltaMin, d.optionsDeltaMin),
+    optionsDeltaMax: unitInterval(input.optionsDeltaMax, d.optionsDeltaMax),
+    optionsMaxSpreadPct: pct(input.optionsMaxSpreadPct, d.optionsMaxSpreadPct),
+    optionsMinOpenInterest: posInt(input.optionsMinOpenInterest, d.optionsMinOpenInterest),
+    optionsMinVolume: posInt(input.optionsMinVolume, d.optionsMinVolume),
+    optionsMinDte: posInt(input.optionsMinDte, d.optionsMinDte),
+    optionsMaxDte: posIntMin1(input.optionsMaxDte, d.optionsMaxDte),
+    optionsIvRankMax: pct(input.optionsIvRankMax, d.optionsIvRankMax),
     optionsStopLossPct: pct(input.optionsStopLossPct, d.optionsStopLossPct),
     optionsTakeProfitPct: pct(input.optionsTakeProfitPct, d.optionsTakeProfitPct),
     optionsBreakevenTriggerPct: pct(input.optionsBreakevenTriggerPct, d.optionsBreakevenTriggerPct),
@@ -673,6 +1012,20 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     autoPromoteThreshold: posIntMin1(input.autoPromoteThreshold, d.autoPromoteThreshold),
     autoPromoteWindowDays: posIntMin1(input.autoPromoteWindowDays, d.autoPromoteWindowDays),
     autoPromoteMaxSymbols: posInt(input.autoPromoteMaxSymbols, d.autoPromoteMaxSymbols),
+    autoTuneEnabled: typeof input.autoTuneEnabled === 'boolean' ? input.autoTuneEnabled : d.autoTuneEnabled,
+    autoTuneMinTrades: posIntMin1(input.autoTuneMinTrades, d.autoTuneMinTrades),
+    autoTuneMaxStepPct: pct(input.autoTuneMaxStepPct, d.autoTuneMaxStepPct),
+    autoTuneSlippageExcludePct: pct(input.autoTuneSlippageExcludePct, d.autoTuneSlippageExcludePct),
+    autoTuneExitsEnabled:
+      typeof input.autoTuneExitsEnabled === 'boolean' ? input.autoTuneExitsEnabled : d.autoTuneExitsEnabled,
+    autoTuneExitMaxStep: posDecimal(input.autoTuneExitMaxStep, d.autoTuneExitMaxStep),
+    autoTuneExitTunedAt: Number.isFinite(Number(input.autoTuneExitTunedAt))
+      ? Number(input.autoTuneExitTunedAt)
+      : d.autoTuneExitTunedAt,
+    autoTuneRequireOosConfirmation:
+      typeof input.autoTuneRequireOosConfirmation === 'boolean'
+        ? input.autoTuneRequireOosConfirmation
+        : d.autoTuneRequireOosConfirmation,
   };
 }
 
