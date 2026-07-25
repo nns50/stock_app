@@ -17,6 +17,7 @@ import {
   webullOrderStatus,
   webullCancelOrder,
   listWebullOpenOrders,
+  isExitLeg,
   WebullOpenOrder,
 } from '../../providers/webull/orders';
 import { ackUnknownPlacement, canRetireUnknownPlacement, canStillFill, mapWebullStatus } from '../trading/reconcile';
@@ -54,7 +55,15 @@ import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { pendingLiveOptionsOrdersRisk } from '../../db/autotradeLiveOptionsOrders';
 import { listOpenLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
 import type { LiveOptionsRiskSeed } from './liveOptionsExecute';
-import { createPosition, getPosition, listPositions, updatePosition, addExit, Position } from '../../db/positions';
+import {
+  createPosition,
+  getPosition,
+  listKnownAccountIds,
+  listPositions,
+  updatePosition,
+  addExit,
+  Position,
+} from '../../db/positions';
 import { realizedPnlOf, initialRiskOf, computeStreaksAndDrawdown } from '../pnl';
 import { TradeSignal, convictionGrade } from './decide';
 import {
@@ -1131,7 +1140,7 @@ function reconcileOneLiveOrder(
   // (checkLiveEquityTimeExits places a plain close), so it has no exit legs
   // of its own to look for here.
   if (meta.role === 'entry' && current.state === 'filled' && current.isBracket && broker.legs) {
-    const filledExitLegs = broker.legs.filter((l) => l.comboType && l.comboType !== 'MASTER' && l.status === 'FILLED');
+    const filledExitLegs = broker.legs.filter((l) => isExitLeg(l) && l.status === 'FILLED');
     if (filledExitLegs.length > 1) {
       logAutotradeEvent({
         symbol: intent.symbol,
@@ -1550,8 +1559,7 @@ export async function cancelLiveBracketExitLegs(
     // enough to hit maxHoldDays has very likely aged out of the broker's order
     // history, so blocking on it would break the close for exactly the
     // population this path exists to serve.
-    const filledLeg =
-      combo.found && (combo.legs ?? []).some((l) => l.comboType && l.comboType !== 'MASTER' && l.status === 'FILLED');
+    const filledLeg = combo.found && (combo.legs ?? []).some((l) => isExitLeg(l) && l.status === 'FILLED');
     if (filledLeg) {
       return {
         ok: false,
@@ -1679,10 +1687,25 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
   const accountId = cfg.liveAccountId;
   if (!accountId) return [];
 
+  // Scoped to the account whose open orders we are about to read. Without this
+  // the check compares positions from EVERY account against one account's
+  // resting orders, so on a multi-account login (a cash and a margin account on
+  // the same Webull login is the ordinary case) a position held in the other
+  // account finds no matching order here and gets reported naked when its stop
+  // is sitting there perfectly fine. An alert that fires on healthy positions is
+  // worse than no alert: it trains you to ignore the one that matters.
+  //
+  // A row with NO account recorded is close-eligible only in a single-account
+  // setup, exactly as closePositionsFromPreview decides the same question
+  // (providers/webull/positions.ts, task #120): once a second account is known
+  // we cannot say which one an unassigned row belongs to, so we cannot judge
+  // whether a missing stop is real.
+  const otherAccountKnown = listKnownAccountIds().some((a) => a !== accountId);
   const candidates = listAutotradeLivePositions({ status: 'open' }).filter(
     (p) =>
       p.assetType === 'stock' &&
       p.sourceIntentId !== null &&
+      (p.accountId === accountId || (p.accountId === null && !otherAccountKnown)) &&
       now - p.createdAt >= BRACKET_PROTECTION_GRACE_MS &&
       (getIntent(p.sourceIntentId)?.isBracket ?? false),
   );

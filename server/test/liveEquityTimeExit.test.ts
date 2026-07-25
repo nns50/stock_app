@@ -26,7 +26,7 @@ import {
 import { initDb, db } from '../src/db';
 import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
-import { listPositions } from '../src/db/positions';
+import { createPosition, listPositions } from '../src/db/positions';
 import { createIntent, getIntent, listIntents, type OrderIntentRecord } from '../src/db/orders';
 import { listPendingLiveOrders, getLiveOrder } from '../src/db/autotradeLiveOrders';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
@@ -661,6 +661,52 @@ describe('checkLiveBracketProtection', () => {
     await checkLiveBracketProtection();
     await checkLiveBracketProtection();
     expect(unprotectedFlags()).toHaveLength(1);
+  });
+
+  it('ignores a position held in a DIFFERENT account', async () => {
+    // A cash + margin pair on one login is the ordinary case. Comparing every
+    // account's positions against ONE account's resting orders reports the
+    // other account's healthy positions as naked, and an alert that fires on
+    // healthy positions trains you to ignore the one that matters.
+    const position = await aged();
+    db.prepare('UPDATE positions SET account_id = ? WHERE id = ?').run('OTHER-ACCT', position.id);
+    mockOpenOrders.mockResolvedValue(noOpenOrders); // ACC1 has nothing resting
+
+    expect(await checkLiveBracketProtection()).toEqual([]);
+    expect(unprotectedFlags()).toHaveLength(0);
+  });
+
+  it('still checks an unassigned position when only ONE account is known', async () => {
+    // Legacy rows predate the account column. With a single account they can
+    // only belong to it, so they are still checkable — same rule
+    // closePositionsFromPreview uses for the mirror-image decision.
+    const position = await aged();
+    db.prepare('UPDATE positions SET account_id = NULL WHERE id = ?').run(position.id);
+    mockOpenOrders.mockResolvedValue(noOpenOrders);
+
+    expect(await checkLiveBracketProtection()).toHaveLength(1);
+    expect(unprotectedFlags()).toHaveLength(1);
+  });
+
+  it('leaves an unassigned position alone once a SECOND account is known', async () => {
+    const position = await aged();
+    db.prepare('UPDATE positions SET account_id = NULL WHERE id = ?').run(position.id);
+    // A second account exists in the journal — we can no longer say which one
+    // the legacy row belongs to, so we cannot judge whether its stop is missing.
+    createPosition({
+      assetType: 'stock',
+      symbol: 'MSFT',
+      side: 'long',
+      quantity: 1,
+      entryPrice: 1,
+      entryDate: '2026-01-02',
+      accountId: 'OTHER-ACCT',
+    });
+    mockOpenOrders.mockResolvedValue(noOpenOrders);
+
+    expect(await checkLiveBracketProtection()).toEqual([]);
+    expect(unprotectedFlags()).toHaveLength(0);
+    void position;
   });
 
   it('ignores a position that was never opened with a bracket', async () => {

@@ -9,16 +9,18 @@ import {
   classifyDayPnlSemantics,
   classifyFillSemantics,
   pnlLikeFields,
+  classifyComboLegSemantics,
+  collectComboEvidence,
   redact,
   summarizeOrders,
 } from '../services/brokerCapture';
 
 // ---------------------------------------------------------------------------
-// CLI: `npm run capture:broker` — dumps the RAW Webull payloads behind two
+// CLI: `npm run capture:broker` — dumps the RAW Webull payloads behind three
 // field-semantics questions the app currently guesses at, so the fixes for them
 // are built on confirmed responses rather than a plausible reading of a field
 // name. Same "confirmed payloads, not guesses" discipline as the existing probe
-// UI (providers/webull/account.ts) — this is that probe, aimed at two specific
+// UI (providers/webull/account.ts) — this is that probe, aimed at specific
 // questions and shaped into something safe to share.
 //
 // STRICTLY READ-ONLY. Every call is a GET routed through webullProbe()'s
@@ -39,6 +41,15 @@ import {
 //        fix materializes the delta per observation, which needs a cumulative
 //        field. A snapshot can't answer this — `--watch` polls one order over
 //        time and reports whether the value ever decreases.
+//
+//   Q3 — is `combo_type` echoed back PER LEG? WebullOrderLeg marks this
+//        UNCONFIRMED, and it is load-bearing: it gates the both-legs-FILLED
+//        ambiguity detection, and it is why checkLiveBracketProtection has to
+//        ask "is any exit-side order resting on this symbol" instead of the
+//        precise "is THIS position's stop still there". Unlike Q1/Q2 this is
+//        answerable from a plain snapshot — but only once the account has
+//        actually placed a BRACKET (a spread's legs carry no MASTER/exit roles
+//        and cannot settle it).
 //
 // Usage:
 //   npm run capture:broker
@@ -62,32 +73,54 @@ function arg(name: string): string | undefined {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
-/** Pull the first account_id out of whatever envelope the account list uses. */
-function firstAccountId(payload: unknown): string | undefined {
-  let found: string | undefined;
+/** Every account_id the list endpoint returns, in order. */
+function allAccountIds(payload: unknown): string[] {
+  const found: string[] = [];
   const walk = (v: unknown, depth: number): void => {
-    if (found || depth > 5 || !v || typeof v !== 'object') return;
+    if (depth > 5 || !v || typeof v !== 'object') return;
     if (Array.isArray(v)) {
       v.forEach((i) => walk(i, depth + 1));
       return;
     }
     for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
       if (/^account_?id$/i.test(k) && (typeof val === 'string' || typeof val === 'number')) {
-        found = String(val);
-        return;
+        const id = String(val);
+        if (!found.includes(id)) found.push(id);
+      } else {
+        walk(val, depth + 1);
       }
-      walk(val, depth + 1);
     }
   };
   walk(payload, 0);
   return found;
 }
 
+/**
+ * Which account to probe — and a loud warning when that was a GUESS.
+ *
+ * Falling back to the first account in the list is fine for a single-account
+ * setup and quietly wrong for any other: the app itself trades
+ * autotradeConfig.liveAccountId, which is set separately in the UI and need not
+ * be the first one the broker happens to list. A capture that silently probed a
+ * DIFFERENT account than the app trades reads as "this account has almost no
+ * orders" — indistinguishable from a real answer, and pointing at the wrong
+ * conclusion. So say when the choice was arbitrary rather than leaving the
+ * operator to reconcile a puzzling result later.
+ */
 async function resolveAccountId(): Promise<string | undefined> {
   const explicit = arg('account-id') || process.env.WEBULL_ACCOUNT_ID;
   if (explicit) return explicit;
   const list = await webullProbe('account-list');
-  return list.ok ? firstAccountId(list.data) : undefined;
+  if (!list.ok) return undefined;
+  const ids = allAccountIds(list.data);
+  if (ids.length > 1) {
+    console.warn(
+      `\n⚠  This login has ${ids.length} accounts and none was specified — probing the FIRST one.\n` +
+        '   If the app trades a different account, everything below describes the wrong one.\n' +
+        '   Check Auto-Trade → live account id, then re-run with --account-id <id>.\n',
+    );
+  }
+  return ids[0];
 }
 
 /** Poll ONE order's status and record the filled-quantity series. Read-only. */
@@ -218,6 +251,29 @@ async function main(): Promise<void> {
     console.log('  Re-run with --watch <client_order_id> while an order is actively filling.');
   }
 
+  // ---- Q3 ----
+  // Answerable straight from the snapshot, unlike Q1/Q2: either a bracket is
+  // in the account's order history tagged per leg, or it isn't.
+  const open3 = collectComboEvidence(openOrders.data);
+  const hist3 = collectComboEvidence(history.data);
+  const evidence = {
+    groups: [...open3.groups, ...hist3.groups],
+    totalOrderRows: open3.totalOrderRows + hist3.totalOrderRows,
+  };
+  const comboVerdict = classifyComboLegSemantics(evidence);
+  console.log(`\nQ3 — ${evidence.groups.length} multi-leg combo(s) across ${evidence.totalOrderRows} order row(s):`);
+  for (const e of evidence.groups.slice(0, 10)) {
+    const tags = e.legComboTypes.map((t) => t ?? '«untagged»').join(', ');
+    console.log(`  ${e.clientOrderId ?? e.comboOrderId ?? '—'}  ${e.shape}  ${e.legCount} legs  combo_type: [${tags}]`);
+  }
+  if (!evidence.groups.length) {
+    console.log(
+      evidence.totalOrderRows === 0
+        ? '  none — and no order rows at all, so there is nothing here to read yet.'
+        : '  none — orders exist, but none is multi-leg under either shape.',
+    );
+  }
+
   const watched = watch ? await watchOrder(accountId, watch, Number(arg('watch-seconds') ?? 120)) : undefined;
   const dayPnlWatch = process.argv.includes('--watch-day-pnl')
     ? await watchDayPnl(accountId, Number(arg('samples') ?? 6), Number(arg('every') ?? 20) * 1000)
@@ -236,6 +292,14 @@ async function main(): Promise<void> {
         watch: dayPnlWatch
           ? { samples: dayPnlWatch.samples, verdict: dayPnlWatch.verdict }
           : 'not run — pass --watch-day-pnl',
+      },
+      q3_comboLegSemantics: {
+        appAssumes:
+          'combo_type MAY be echoed per leg — WebullOrderLeg (providers/webull/orders.ts) marks this UNCONFIRMED, and every bracket-exit branch that filters on it is written to fail closed if it is not.',
+        whyItMatters:
+          'It gates the both-legs-FILLED ambiguity detection, and it is why checkLiveBracketProtection has to ask "is any exit-side order resting on this symbol" rather than "is THIS position\'s stop still there".',
+        evidence,
+        verdict: comboVerdict,
       },
       q2_filledQuantitySemantics: {
         appAssumes: 'cumulative across executions (required by the delta-materialization fix in reconcile.ts)',
@@ -263,6 +327,7 @@ async function main(): Promise<void> {
   );
   if (dayPnlWatch) console.log(`\nQ1 verdict [${dayPnlWatch.verdict.semantics}]: ${dayPnlWatch.verdict.detail}`);
   if (watched) console.log(`\nQ2 verdict [${watched.verdict.semantics}]: ${watched.verdict.detail}`);
+  console.log(`\nQ3 verdict [${comboVerdict.semantics}]: ${comboVerdict.detail}`);
 }
 
 void main();
