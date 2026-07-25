@@ -5,6 +5,7 @@ import {
   isComboOrder,
   listIntents,
   recordIntentNote,
+  recordIntentNoteOnce,
   recordReplace,
   transitionIntent,
 } from '../../db/orders';
@@ -24,6 +25,34 @@ import { QTY_EPS, computeFillDelta, isShortBooked } from './fillDelta';
 // advances our lifecycle to match — appending an audit event. READ-ONLY toward
 // the broker: it places and cancels nothing.
 // ---------------------------------------------------------------------------
+
+/** Broker statuses that mean "this order can no longer fill" but have no
+ *  lifecycle state worth jumping to. Kept separate from mapWebullStatus rather
+ *  than guessed into it: calling DELETED a 'cancelled' would put a specific,
+ *  possibly wrong claim in the audit trail, while all the resting check needs
+ *  to know is that it's finished. */
+const EXTRA_TERMINAL_BROKER_STATUSES = new Set(['DELETED', 'INACTIVE']);
+
+/**
+ * Can this broker status still fill? Everything that isn't positively known to
+ * be finished counts as resting — an unrecognized or missing status included,
+ * since assuming an unknown status is safe is exactly the guess that gets a
+ * close placed alongside a live stop.
+ *
+ * Derived FROM mapWebullStatus so there is one vocabulary rather than two.
+ * There used to be a second, independent list in liveExecute.ts, and the two
+ * had already drifted: DELETED and INACTIVE were terminal there but unmapped
+ * here, so one order could be simultaneously "gone, safe to place the close"
+ * for the bracket-cancel scan and "unknown, do nothing" for the reconcilers.
+ * Any status added to mapWebullStatus now flows into both automatically.
+ */
+export function canStillFill(status?: string): boolean {
+  if (!status) return true;
+  const s = status.toUpperCase();
+  if (EXTRA_TERMINAL_BROKER_STATUSES.has(s)) return false;
+  const mapped = mapWebullStatus(s);
+  return mapped === undefined || !isTerminal(mapped);
+}
 
 /** Map a raw Webull order status to our lifecycle state (undefined = unknown). */
 export function mapWebullStatus(status: string): OrderState | undefined {
@@ -54,6 +83,43 @@ export function mapWebullStatus(status: string): OrderState | undefined {
     default:
       return undefined;
   }
+}
+
+/**
+ * How long an unknown-outcome placement must have been outstanding before the
+ * broker denying knowledge of it is trusted enough to retire it.
+ *
+ * The autotrade reconcilers retire such an intent as 'rejected' once both the
+ * open-orders and history endpoints answer without it, on the reasoning that
+ * absence from both is positive evidence it never landed. That reasoning is
+ * sound for an order the broker has had time to record, and NOT sound the tick
+ * after it was sent: the reconcile loop runs every 60s, so an order placed at T
+ * can be judged missing at T+60s, before the broker has necessarily indexed it.
+ * (webullOrderStatus also sends no pagination parameters and scans whatever the
+ * endpoint chose to return, which is a second reason absence is weaker evidence
+ * than presence — less acute here, since a just-placed order would be near the
+ * top of the OPEN list rather than deep in history, but it argues the same way.)
+ *
+ * Retiring wrongly is the expensive direction and the one this guards: it frees
+ * the symbol's dedup slot, so the next cycle re-emits the same signal and places
+ * a SECOND real order against a first that may be working — double size, two
+ * bracket pairs. Waiting is nearly free by comparison; the only cost is the
+ * dedup slot staying held a few minutes longer, which is the safe direction
+ * anyway. So this is deliberately several ticks, not one.
+ */
+export const UNKNOWN_PLACEMENT_RETIRE_GRACE_MS = 5 * 60_000;
+
+/**
+ * Whether an unknown-outcome placement the broker denies knowing can now be
+ * retired. `state === 'submitted'` with no broker order id is reachable ONLY
+ * from an ambiguous placement — every other path out of 'submitted' either
+ * records a broker id (acknowledged) or is terminal (rejected) — and
+ * `updatedAt` is the moment of that submitted transition, since nothing else
+ * touches the row while it sits here.
+ */
+export function canRetireUnknownPlacement(intent: OrderIntentRecord, now: number = Date.now()): boolean {
+  if (intent.state !== 'submitted' || intent.brokerOrderId) return false;
+  return now - intent.updatedAt >= UNKNOWN_PLACEMENT_RETIRE_GRACE_MS;
 }
 
 /**
@@ -282,13 +348,33 @@ export async function reconcileIntent(id: number, accountId: string): Promise<Re
   const acked = acknowledged.acked || drifted.adopted;
 
   const target = mapWebullStatus(broker.status);
+  // A status the mapper doesn't recognize used to fall out of the early return
+  // below and do NOTHING — no state change, no booking, and no trace. If that
+  // response carried a filled quantity, those were real shares dropped in
+  // silence. The status label and the reported fill are separate facts: not
+  // knowing what to call the order's state is no reason to discard what the
+  // broker said it filled, and materializeFill's guards (fillDelta.ts) make
+  // acting on it safe — they only ever book LESS than reported, never more.
+  // So book it, leave the lifecycle alone (we genuinely don't know what state
+  // to claim), and say so in the audit trail.
+  const unrecognized = target === undefined;
+  if (unrecognized) {
+    recordIntentNoteOnce(
+      id,
+      `broker reported an unrecognized status "${broker.status}" — lifecycle left unchanged, ` +
+        `any reported fill is still booked`,
+    );
+  }
+  const unrecognizedFill = unrecognized && (broker.filledQty ?? 0) > 0;
   const canMove = !!target && target !== current.state && canTransition(current.state, target);
   // An order that stays `partially_filled` across two observations has NOT
   // changed state, but it may well have filled further — the old code's
   // `target === intent.state` early return meant every partial after the first
   // was ignored, so a 30/100 that became 90/100 booked nothing for the extra 60.
   const restingPartial = target === 'partially_filled' && current.state === 'partially_filled';
-  if (!canMove && !restingPartial) return { ok: true, changed: acked, intent: current, broker };
+  if (!canMove && !restingPartial && !unrecognizedFill) {
+    return { ok: true, changed: acked, intent: current, broker };
+  }
 
   const fill = broker.filledQty !== undefined ? ` ${broker.filledQty}/${broker.totalQty ?? current.quantity}` : '';
   const at = broker.filledPrice !== undefined ? ` @ ${broker.filledPrice}` : '';

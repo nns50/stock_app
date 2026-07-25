@@ -289,6 +289,23 @@ export function recordIntentNote(id: number, detail: string): void {
   );
 }
 
+/**
+ * Append an audit note only if that exact detail isn't already on the intent,
+ * reporting whether it wrote.
+ *
+ * For a condition re-observed on every poll — an unrecognized broker status,
+ * say, which the reconcilers see again every 60s for as long as it persists —
+ * the FIRST observation is the informative one. Repeating it would bury the
+ * trail it exists to make readable, and would let one stuck order fill the
+ * journal. The return value also gives callers a natural once-per-condition
+ * hook for a louder notification.
+ */
+export function recordIntentNoteOnce(id: number, detail: string): boolean {
+  if (getEvents(id).some((e) => e.detail === detail)) return false;
+  recordIntentNote(id, detail);
+  return true;
+}
+
 /** The audit trail for an intent, oldest first. */
 export function getEvents(intentId: number): OrderEventRecord[] {
   return (

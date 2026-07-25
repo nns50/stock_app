@@ -105,6 +105,19 @@ export const AMBIGUITY_ACTIONS = [
   // rather than guessed closed, so our ledger and the account may disagree
   // about whether it is still on.
   'live_exit_ambiguous',
+  // The broker used an order status the mapper has never seen. Any fill it
+  // reported is still booked, but the order's lifecycle state is now whatever
+  // it was before — so what the broker thinks this order is doing and what we
+  // think are not the same thing. Journaled once per intent+status, not once
+  // per 60s tick, so a persistently stuck order can't flood this.
+  'live_broker_status_unrecognized',
+  'live_options_broker_status_unrecognized',
+  // A real closing order was priced off a contract's LAST TRADE because no
+  // two-sided quote existed. It was still placed (refusing would guarantee the
+  // drift-to-expiration this exit exists to prevent), but a stale-high print
+  // puts the sell limit above where the contract can actually be sold, so the
+  // close can rest unfilled while looking, from outside, like nothing happened.
+  'live_options_exit_stale_quote',
 ];
 /** Our own "we alerted about ambiguity" marker — same restart-safe throttle. */
 const AMBIGUITY_ALERT_ACTION = 'live_ambiguity_alerted';
@@ -206,6 +219,9 @@ const AMBIGUITY_SUMMARY: Record<string, string> = {
   live_time_exit_materialization_failed: 'a time-exit filled at the broker but recording the close failed',
   live_options_materialization_failed: 'an options fill was recorded at the broker but not in the ledger',
   live_exit_ambiguous: 'two bracket exit legs both reported FILLED — the position was left open',
+  live_broker_status_unrecognized: 'the broker reported an order status this app does not recognize',
+  live_options_broker_status_unrecognized: 'the broker reported an options order status this app does not recognize',
+  live_options_exit_stale_quote: 'a closing order was priced off a stale last trade and may rest unfilled',
 };
 
 /**

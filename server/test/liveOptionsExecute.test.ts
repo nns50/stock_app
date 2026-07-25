@@ -23,6 +23,7 @@ import { webullAccountState, webullAccountType } from '../src/providers/webull/a
 import { webullPlaceOrder, webullOrderStatus, WebullOrderStatus } from '../src/providers/webull/orders';
 import { previewWebullPositions } from '../src/providers/webull/positions';
 import { initDb, db } from '../src/db';
+import { UNKNOWN_PLACEMENT_RETIRE_GRACE_MS } from '../src/services/trading/reconcile';
 import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
@@ -101,7 +102,9 @@ function spreadSignal(overrides: Partial<DebitSpreadOptionsSignal> = {}): DebitS
   };
 }
 
-type ContractFixture = { side: 'call' | 'put'; strike: number; mark: number };
+/** `mark` is a live two-sided quote; `last` alone models an illiquid contract
+ *  with no bid/ask, where the only number available is an old trade print. */
+type ContractFixture = { side: 'call' | 'put'; strike: number; mark?: number; last?: number };
 
 function chainsFor(fixtures: Record<string, ContractFixture | ContractFixture[]>) {
   return {
@@ -114,7 +117,8 @@ function chainsFor(fixtures: Record<string, ContractFixture | ContractFixture[]>
         underlying: symbol,
         type: f.side,
         strike: f.strike,
-        mark: f.mark,
+        ...(f.mark !== undefined ? { mark: f.mark } : {}),
+        ...(f.last !== undefined ? { last: f.last } : {}),
         expiration,
       }));
       return {
@@ -266,6 +270,41 @@ describe('getOptionsProbationStatus', () => {
     const status = getOptionsProbationStatus(cfg);
     expect(status.tradesPlaced).toBe(1);
     expect(status.tradesRemaining).toBe(4);
+  });
+});
+
+describe('attemptLiveOptionsEntry — stale marks', () => {
+  // `mark ?? last` made a live two-sided quote and a possibly-days-old trade
+  // print indistinguishable at every call site. Entries are optional, so the
+  // cheap correct move is to decline rather than commit real money at a limit
+  // derived from a print nobody is currently quoting behind.
+  it('refuses a single-leg entry priced only off a last trade', async () => {
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(
+      chainsFor({ AAPL: { side: 'call', strike: 100, last: 2.5 } }) as ReturnType<typeof getProvider>,
+    );
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    const sig = optionSignal();
+
+    const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/last-trade price/i);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(listIntents()).toHaveLength(0); // refused before an intent is even created
+  });
+
+  it('still opens on a real two-sided mark', async () => {
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(
+      chainsFor({ AAPL: { side: 'call', strike: 100, mark: 2.5 } }) as ReturnType<typeof getProvider>,
+    );
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-1' });
+    const sig = optionSignal();
+
+    expect((await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig())).ok).toBe(true);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -891,6 +930,41 @@ describe('checkLiveOptionsExits', () => {
     expect(listOpenLiveOptionsPositions().map((p) => p.id)).toContain(pos.id);
   });
 
+  it('still places an exit priced off a last trade, but journals that it may not fill', async () => {
+    // The opposite call to the entry path's: refusing here would guarantee the
+    // drift-to-expiration the time exit exists to prevent. But a stale-high
+    // print puts the sell limit above where the contract can actually be sold,
+    // so the close can rest unfilled looking exactly like nothing happening —
+    // hence journaled rather than left to be inferred.
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({ expiration: '2024-06-05' });
+    mockGetProvider.mockReturnValue(
+      chainsFor({ AAPL: { side: 'call', strike: pos.strike, last: 3 } }) as ReturnType<typeof getProvider>,
+    );
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPreviewPositions.mockResolvedValue({
+      ok: true,
+      positions: [
+        {
+          symbol: 'AAPL',
+          assetType: 'option',
+          optionType: 'call',
+          strike: pos.strike,
+          expiration: pos.expiration,
+          quantity: pos.quantity,
+        },
+      ],
+    } as never);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-EXIT' });
+
+    const outcomes = await checkLiveOptionsExits();
+
+    expect(outcomes[0]).toMatchObject({ requested: true });
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+    const stale = listAutotradeEvents({ stage: 'execution', actions: ['live_options_exit_stale_quote'] });
+    expect(stale).toHaveLength(1);
+  });
+
   it('reports the reason and leaves the position open when the quote fetch fails after the trigger fires', async () => {
     setAutotradeConfig(liveConfig());
     openLivePosition({ expiration: '2024-06-05' });
@@ -1450,8 +1524,15 @@ describe('reconcileLiveOptionsOrders — partial fills', () => {
     await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
     expect(mockPlaceOrder).not.toHaveBeenCalled();
 
-    // Broker positively has no record of it => retire, freeing the slot.
+    // Broker has no record of it — but it was sent seconds ago, so absence is
+    // not yet evidence: retiring now would free the slot the check above just
+    // proved is what stops a duplicate real order.
     mockOrderStatus.mockResolvedValue({ ok: true, found: false } as WebullOrderStatus);
+    await reconcileLiveOptionsOrders();
+    expect(listPendingLiveOptionsOrders()).toHaveLength(1);
+
+    // Once it has been outstanding past the grace period => retire, freeing the slot.
+    db.prepare('UPDATE order_intents SET updated_at = ?').run(Date.now() - UNKNOWN_PLACEMENT_RETIRE_GRACE_MS - 1000);
     await reconcileLiveOptionsOrders();
     expect(listPendingLiveOptionsOrders()).toHaveLength(0);
     expect(listOpenLiveOptionsPositions()).toHaveLength(0);

@@ -115,12 +115,48 @@ export async function fetchContractMark(
   strike: number,
   side: 'call' | 'put',
 ): Promise<number> {
+  return (await fetchContractQuote(symbol, expiration, strike, side)).price;
+}
+
+export interface ContractQuote {
+  price: number;
+  /** True when `price` is the contract's LAST TRADE, not a two-sided mark —
+   *  i.e. the chain had no usable bid/ask and this is the only number
+   *  available. See fetchContractQuote for why callers should care. */
+  fromLastTrade: boolean;
+}
+
+/**
+ * The same lookup as fetchContractMark, but saying WHICH number came back.
+ *
+ * `mark` is (bid + ask) / 2 — a live, two-sided quote describing where the
+ * contract can actually trade right now. `last` is the price of the most recent
+ * TRADE, which on an illiquid contract can be hours or days old. Collapsing
+ * them with `mark ?? last` (as this function's own caller fetchContractMark
+ * still does, for the paper and backtest paths whose behavior must not shift)
+ * means a stale print is indistinguishable from a live quote at every call
+ * site, and the "No current quote" error only fires when BOTH are missing —
+ * so "current" was never a claim the return value could support.
+ *
+ * That distinction is worth surfacing because the two failure directions are
+ * not symmetric for a real order. Pricing an ENTRY off a stale-low print gives
+ * a limit under the market that simply won't fill; pricing an EXIT off a
+ * stale-HIGH print gives a sell limit above where the contract can be sold, so
+ * the close never fills and the position drifts to expiration — precisely the
+ * outcome the time-exit exists to prevent, reached silently.
+ */
+export async function fetchContractQuote(
+  symbol: string,
+  expiration: string,
+  strike: number,
+  side: 'call' | 'put',
+): Promise<ContractQuote> {
   const chain = await getProvider().getOptionsChain(symbol, expiration);
   const pool = side === 'call' ? chain.calls : chain.puts;
   const match = pool.find((c) => Math.abs(c.strike - strike) < 1e-6);
-  const mark = match?.mark ?? match?.last;
-  if (mark === undefined) throw new Error(`No current quote for ${symbol} ${strike}${side === 'call' ? 'C' : 'P'}`);
-  return mark;
+  if (match?.mark !== undefined) return { price: match.mark, fromLastTrade: false };
+  if (match?.last !== undefined) return { price: match.last, fromLastTrade: true };
+  throw new Error(`No current quote for ${symbol} ${strike}${side === 'call' ? 'C' : 'P'}`);
 }
 
 /** Shared "log + return failure" for an entry attempt, so both the single-leg

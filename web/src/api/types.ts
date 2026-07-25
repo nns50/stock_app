@@ -1268,6 +1268,9 @@ export interface PlaceResult {
  *  whether a resting bracket had to be cancelled first. */
 export interface ClosePositionResult extends PlaceResult {
   bracketCancelled?: boolean;
+  /** The closing limit was priced off a stale last trade rather than a live
+   *  two-sided quote, so the order may simply rest unfilled. */
+  quoteWarning?: string;
 }
 
 // --- auto-trading (docs/AUTOTRADING_SPEC.md) ---

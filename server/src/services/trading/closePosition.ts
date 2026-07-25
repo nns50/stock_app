@@ -7,7 +7,7 @@ import { recordLiveExitOrder, getLiveOrder } from '../../db/autotradeLiveOrders'
 import { recordLiveOptionsExitOrder } from '../../db/autotradeLiveOptionsOrders';
 import { LiveOptionsPosition } from '../../db/autotradeLiveOptionsPositions';
 import { cancelLiveBracketExitLegs, isAutotradePosition } from '../autotrading/liveExecute';
-import { fetchContractMark, validPremium } from '../autotrading/optionsExecute';
+import { fetchContractMark, fetchContractQuote, validPremium } from '../autotrading/optionsExecute';
 import { getProvider } from '../../providers';
 
 // ---------------------------------------------------------------------------
@@ -36,7 +36,17 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-async function buildCloseIntent(pos: Position): Promise<OrderIntent> {
+/** A close intent, plus whether the price behind it is weaker than it looks. */
+interface BuiltCloseIntent {
+  intent: OrderIntent;
+  /** Set when the limit derives from a LAST TRADE rather than a two-sided mark
+   *  — see fetchContractQuote. Reported, not acted on: a human asked for this
+   *  close, and refusing it outright would leave them holding a contract with
+   *  no way to close it from here at all. */
+  quoteWarning?: string;
+}
+
+async function buildCloseIntent(pos: Position): Promise<BuiltCloseIntent> {
   const closeSide: 'buy' | 'sell' = pos.side === 'long' ? 'sell' : 'buy';
   // Selling to close prices BELOW the mark to guarantee a fill; buying to
   // close (covering a short) prices ABOVE it — the same mirror-image
@@ -47,21 +57,28 @@ async function buildCloseIntent(pos: Position): Promise<OrderIntent> {
     if (!pos.optionType || !pos.strike || !pos.expiration) {
       throw new Error(`Position ${pos.id} is missing optionType/strike/expiration`);
     }
-    const mark = await fetchContractMark(pos.symbol, pos.expiration, pos.strike, pos.optionType);
+    const quote = await fetchContractQuote(pos.symbol, pos.expiration, pos.strike, pos.optionType);
+    const mark = quote.price;
     const buffer = 1 + sign * (OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT / 100);
     return {
-      symbol: pos.symbol,
-      assetKind: 'option',
-      side: closeSide,
-      openClose: 'close',
-      quantity: pos.remainingQuantity,
-      orderType: 'limit',
-      limitPrice: round2(mark * buffer),
-      referencePrice: mark,
-      optionType: pos.optionType,
-      strike: pos.strike,
-      expiration: pos.expiration,
-      multiplier: pos.multiplier,
+      quoteWarning: quote.fromLastTrade
+        ? `There is no live bid/ask for this contract, so the limit is based on its last TRADE ` +
+          `($${mark}), which may be hours or days old — the close may rest unfilled. Check it at your broker.`
+        : undefined,
+      intent: {
+        symbol: pos.symbol,
+        assetKind: 'option',
+        side: closeSide,
+        openClose: 'close',
+        quantity: pos.remainingQuantity,
+        orderType: 'limit',
+        limitPrice: round2(mark * buffer),
+        referencePrice: mark,
+        optionType: pos.optionType,
+        strike: pos.strike,
+        expiration: pos.expiration,
+        multiplier: pos.multiplier,
+      },
     };
   }
 
@@ -71,14 +88,16 @@ async function buildCloseIntent(pos: Position): Promise<OrderIntent> {
   }
   const buffer = 1 + sign * (EQUITY_MARKETABLE_LIMIT_BUFFER_PCT / 100);
   return {
-    symbol: pos.symbol,
-    assetKind: 'stock',
-    side: closeSide,
-    openClose: 'close',
-    quantity: pos.remainingQuantity,
-    orderType: 'limit',
-    limitPrice: round2(quote.last * buffer),
-    referencePrice: quote.last,
+    intent: {
+      symbol: pos.symbol,
+      assetKind: 'stock',
+      side: closeSide,
+      openClose: 'close',
+      quantity: pos.remainingQuantity,
+      orderType: 'limit',
+      limitPrice: round2(quote.last * buffer),
+      referencePrice: quote.last,
+    },
   };
 }
 
@@ -87,6 +106,9 @@ export interface ClosePositionResult extends PlaceResult {
    *  cancelling before the close could be placed; absent when there was
    *  nothing to cancel. */
   bracketCancelled?: boolean;
+  /** Set when the closing limit was priced off a stale last trade rather than
+   *  a live two-sided quote, so the order may simply not fill. */
+  quoteWarning?: string;
 }
 
 /**
@@ -144,12 +166,13 @@ export async function closeLivePosition(
     }
   }
 
-  let intent: OrderIntent;
+  let built: BuiltCloseIntent;
   try {
-    intent = await buildCloseIntent(pos);
+    built = await buildCloseIntent(pos);
   } catch (err) {
     return { ok: true, placed: false, reason: 'account_error', error: (err as Error).message, bracketCancelled };
   }
+  const intent = built.intent;
 
   const result = await placeOrder(intent, accountId, confirmation);
 
@@ -169,7 +192,7 @@ export async function closeLivePosition(
     recordLiveExitOrder({ intentId: result.intent.id, symbol: pos.symbol, riskProfile, positionId: pos.id });
   }
 
-  return { ...result, bracketCancelled };
+  return { ...result, bracketCancelled, quoteWarning: built.quoteWarning };
 }
 
 // ---------------------------------------------------------------------------

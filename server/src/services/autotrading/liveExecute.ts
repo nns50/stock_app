@@ -19,7 +19,7 @@ import {
   listWebullOpenOrders,
   WebullOpenOrder,
 } from '../../providers/webull/orders';
-import { ackUnknownPlacement, mapWebullStatus } from '../trading/reconcile';
+import { ackUnknownPlacement, canRetireUnknownPlacement, canStillFill, mapWebullStatus } from '../trading/reconcile';
 import { computeFillDelta } from '../trading/fillDelta';
 import {
   advanceMaterialized,
@@ -28,6 +28,7 @@ import {
   countTodaysOrders,
   getIntent,
   getIntents,
+  recordIntentNoteOnce,
   OrderIntentRecord,
 } from '../../db/orders';
 import { canTransition, isTerminal } from '../trading/orderLifecycle';
@@ -890,12 +891,18 @@ export async function reconcileLiveOrders(): Promise<LiveReconcileOutcome[]> {
       // intent is still 'submitted' with no broker id because we never heard
       // back. Both the open-orders and history endpoints answered and neither
       // knows this client order id, which is positive evidence it never landed —
-      // so retire it now rather than leaving it pending forever, holding the
+      // so retire it rather than leaving it pending forever, holding the
       // symbol's dedup slot and its risk against the aggregate cap.
       // An ACKNOWLEDGED order missing from both is a different case (it landed
       // once and may simply have aged out of the history window), so that one is
       // still left alone.
-      if (intent.state === 'submitted' && !intent.brokerOrderId) {
+      //
+      // Only once it has been outstanding long enough for the broker to have
+      // recorded it — see UNKNOWN_PLACEMENT_RETIRE_GRACE_MS. Retiring on the
+      // very next tick re-opens the double-place hole this branch exists to
+      // close, since freeing the dedup slot is exactly what lets the next cycle
+      // place the same real order again.
+      if (canRetireUnknownPlacement(intent)) {
         transitionIntent(intent.id, 'rejected', {
           detail: 'placement outcome was unknown; broker reports no such order — never reached it',
         });
@@ -949,7 +956,33 @@ function reconcileOneLiveOrder(
   // cancelled intents). Both are handled by materializing on every observed
   // fill rather than only on the terminal one — see materializeLiveFill.
   const restingPartial = masterTarget === 'partially_filled' && current.state === 'partially_filled';
-  if (canMove || restingPartial) {
+  // A status the mapper doesn't recognize used to make this whole function a
+  // silent no-op — and if that response carried a filled quantity, those were
+  // real autotrade-opened shares dropped without a state change, a position
+  // row, or a single line anywhere saying so. The label and the fill are
+  // separate facts: not knowing what to call the state is no reason to discard
+  // what the broker reported filled, and computeFillDelta's guards make acting
+  // on it safe (they only ever book less than reported). Book it, leave the
+  // lifecycle alone, and journal the unrecognized status once so it surfaces.
+  const unrecognizedFill = !!broker.status && masterTarget === undefined && (broker.filledQty ?? 0) > 0;
+  if (!!broker.status && masterTarget === undefined) {
+    const noted = recordIntentNoteOnce(
+      current.id,
+      `broker reported an unrecognized status "${broker.status}" — lifecycle left unchanged, ` +
+        `any reported fill is still booked`,
+    );
+    // Once per intent+status, not once per 60s tick.
+    if (noted) {
+      logAutotradeEvent({
+        symbol: current.symbol,
+        stage: 'execution',
+        action: 'live_broker_status_unrecognized',
+        detail: { intentId: current.id, status: broker.status, filledQty: broker.filledQty ?? 0 },
+        riskProfile,
+      });
+    }
+  }
+  if (canMove || restingPartial || unrecognizedFill) {
     if (canMove) {
       transitionIntent(current.id, masterTarget!, {
         detail: `broker ${broker.status?.toLowerCase()}`,
@@ -1385,20 +1418,13 @@ export interface BracketCancelOutcome {
 /** An order at the broker is "resting" (could still fill and race our close)
  *  unless it's in a known terminal state. Unknown/missing statuses are treated
  *  as resting — conservative: we'll try to cancel and then require the re-scan
- *  to confirm it's gone, rather than assume an unrecognized status is safe. */
-const TERMINAL_ORDER_STATUSES = new Set([
-  'FILLED',
-  'CANCELLED',
-  'CANCELED',
-  'EXPIRED',
-  'REJECTED',
-  'FAILED',
-  'DELETED',
-  'INACTIVE',
-]);
-function isRestingStatus(status?: string): boolean {
-  return !status || !TERMINAL_ORDER_STATUSES.has(status.toUpperCase());
-}
+ *  to confirm it's gone, rather than assume an unrecognized status is safe.
+ *
+ *  This used to be its own status list, independent of reconcile.ts's
+ *  mapWebullStatus, and the two had already drifted apart (DELETED / INACTIVE
+ *  were terminal here and unmapped there). Now there is one vocabulary: adding
+ *  a status in one place changes both. */
+const isRestingStatus = canStillFill;
 
 /** The bracket's resting exit legs, recovered from the broker's live open
  *  orders: same symbol, the EXIT side (a long's stop/target are sells, a

@@ -665,6 +665,9 @@ export function CloseModal({
               aria-label="type to confirm closing this position"
             />
           </div>
+          {result?.quoteWarning && (
+            <div className="rounded-md bg-amber-500/15 text-amber-400 text-sm p-2">⚠ {result.quoteWarning}</div>
+          )}
           {result &&
             (result.placed ? (
               <div className="rounded-md bg-bull/15 text-bull text-sm p-2">

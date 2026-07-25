@@ -5,7 +5,7 @@ import { advanceMaterialized, createIntent, getEvents, getIntent, transitionInte
 import { addExit, createPosition, listPositions } from '../src/db/positions';
 import { recordLiveOrder } from '../src/db/autotradeLiveOrders';
 import { recordLiveOptionsEntryOrder } from '../src/db/autotradeLiveOptionsOrders';
-import { mapWebullStatus, reconcileAllWorking, reconcileIntent } from '../src/services/trading/reconcile';
+import { canStillFill, mapWebullStatus, reconcileAllWorking, reconcileIntent } from '../src/services/trading/reconcile';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
 const origWebull = { ...config.webull };
@@ -428,6 +428,82 @@ describe('reconcileIntent — bracket exit leg (human-placed bracket)', () => {
     const r = await reconcileAllWorking('ACC1');
     expect(r.results.map((x) => x.id)).toContain(id);
     expect(fetchSpy).toHaveBeenCalled();
+  });
+});
+
+describe('unrecognized broker status', () => {
+  const envelope = (over: Record<string, unknown>) => ({
+    client_order_id: CID,
+    combo_order_id: '8AIG1C8LCCE58QHNDSU5NHBP09',
+    orders: [{ client_order_id: CID, symbol: 'AMC', side: 'BUY', ...over }],
+  });
+  const pull = (env: unknown) =>
+    vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp([env]));
+
+  it('books a fill reported alongside a status the mapper does not know', async () => {
+    // The label and the fill are separate facts. This used to hit the early
+    // return and do nothing at all — real shares, dropped in silence.
+    const id = placedIntentId(); // quantity 1
+    pull(envelope({ status: 'DONE_FOR_DAY', filled_quantity: '1', filled_price: '1.90' }));
+
+    const r = await reconcileIntent(id, 'ACC1');
+
+    expect(r.materialized).toBe(1);
+    const positions = listPositions({ status: 'open' });
+    expect(positions).toHaveLength(1);
+    expect(positions[0].entryPrice).toBeCloseTo(1.9);
+    // The lifecycle is deliberately NOT moved — we don't know what to call it.
+    expect(getIntent(id)?.state).toBe('acknowledged');
+    expect(getEvents(id).some((e) => e.detail?.includes('unrecognized status "DONE_FOR_DAY"'))).toBe(true);
+  });
+
+  it('notes the unrecognized status once, not on every poll', async () => {
+    const id = placedIntentId();
+    for (let i = 0; i < 3; i++) {
+      pull(envelope({ status: 'DONE_FOR_DAY' }));
+      await reconcileIntent(id, 'ACC1');
+      vi.restoreAllMocks();
+    }
+    const notes = getEvents(id).filter((e) => e.detail?.includes('unrecognized status'));
+    expect(notes).toHaveLength(1);
+  });
+
+  it('books nothing when an unrecognized status reports no fill', async () => {
+    const id = placedIntentId();
+    pull(envelope({ status: 'SOMETHING_NEW' }));
+    const r = await reconcileIntent(id, 'ACC1');
+    expect(r.materialized ?? 0).toBe(0);
+    expect(listPositions({ status: 'open' })).toHaveLength(0);
+    expect(getIntent(id)?.state).toBe('acknowledged'); // untouched
+  });
+});
+
+describe('canStillFill', () => {
+  it('treats an unknown or missing status as able to fill', () => {
+    expect(canStillFill(undefined)).toBe(true);
+    expect(canStillFill('SOMETHING_NEW')).toBe(true);
+  });
+
+  it('agrees with mapWebullStatus on every status it maps', () => {
+    // The point of deriving one from the other: they cannot drift again.
+    for (const s of ['FILLED', 'CANCELLED', 'CANCELED', 'EXPIRED', 'REJECTED', 'FAILED']) {
+      expect(canStillFill(s), s).toBe(false);
+    }
+    for (const s of ['PENDING', 'WORKING', 'QUEUED', 'NEW', 'ACCEPTED', 'PARTIAL_FILLED']) {
+      expect(canStillFill(s), s).toBe(true);
+    }
+  });
+
+  it('covers the broker-terminal statuses that have no lifecycle equivalent', () => {
+    // These were terminal in liveExecute's own list and unmapped here, so the
+    // same order read as "gone" to the bracket scan and "unknown" to reconcile.
+    expect(mapWebullStatus('DELETED')).toBeUndefined();
+    expect(canStillFill('DELETED')).toBe(false);
+    expect(canStillFill('INACTIVE')).toBe(false);
+    expect(canStillFill('inactive')).toBe(false); // case-insensitive
   });
 });
 

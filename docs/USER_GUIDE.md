@@ -348,7 +348,13 @@ yourself once you've decided.
   (**Limit / Market / Stop / Stop-limit**), **session** (+ strike/expiry for options), plus a
   reference price used for notional and the fat-finger check. **Stop** triggers a market order at
   your **stop (trigger) price**; **Stop-limit** triggers a limit order (needs both a stop and a
-  limit price). Options support every type **except market**.
+  limit price). Options support every type **except market**. For a limit order the server
+  re-derives that reference from **fresh** market data and ignores yours, so the check can't be
+  spoofed away — but only when the data really is fresh: if the provider is down and the only
+  price available comes from the local cache (which has no age limit), the cached number is
+  discarded rather than used, and the fat-finger check falls back to your own reference (or to
+  a warning if you gave none). A price of unknown age deciding whether today's limit is sane is
+  worse than no reference at all.
 - **Bracket** (stock **and single-leg option** limit orders) — optionally attach a **take-profit**
   and/or **stop-loss** that fire as the entry fills (Webull MASTER + STOP_PROFIT/STOP_LOSS, one
   cancels the other). For a buy, take-profit sits **above** the entry and stop-loss **below** (for an
@@ -418,7 +424,10 @@ yourself once you've decided.
   **Refresh all**, which look it up by the client order id the app generated — no broker
   order id needed. **Don't place it again until it resolves**; if it stays unresolved,
   check the order directly at your broker. (Only a definite refusal — a 4xx, e.g.
-  insufficient buying power — is recorded as rejected.)
+  insufficient buying power — is recorded as rejected.) Autotrade's own orders resolve the
+  same way, and it waits several minutes before concluding an unanswered order never landed:
+  concluding that too early would release the guard that stops it placing the same order
+  twice.
 - **Orders** — recent intents (placed + dry-run), newest first, with their lifecycle state. A
   multi-leg or bracketed order carries a small **strategy tag** (`vertical` / `covered` / `condor` /
   `bracket`) so the row explains itself. For an order that reached the broker, **Refresh status**
@@ -561,8 +570,12 @@ nudge, not a blocker — you can still save with items unchecked.
   never answers, you get the same amber **⚠ Outcome unknown** result described under
   [Trade](#trade) — **don't close again until it resolves**, since a first close that
   actually went through would leave the second one overselling (for a long, flipping you
-  short). Use **close** when you still hold the position and want the app to sell it; use
-  **exit** when you've already sold it elsewhere.
+  short). For an **option** with no live bid/ask, the limit falls back to the contract's
+  last **trade**, which can be hours or days old; the close is still placed (refusing would
+  leave you with no way to close it from here) but flagged with an amber warning, because a
+  stale-high print puts the sell limit above where the contract can actually be sold and
+  the order may simply rest unfilled. Use **close** when you still hold the position and
+  want the app to sell it; use **exit** when you've already sold it elsewhere.
 - **Expired options** — an option held **through** expiry never produces a closing order,
   so nothing ever records an exit and the position would sit "open" forever, quietly
   inflating your open exposure, position count, risk caps and unrealized P&L with a contract
@@ -1217,10 +1230,15 @@ shouldn't be a tab-switch away.
   caps above, since options can go live weeks after equity and size differently
   (premium-based, not share-count-based). A single-leg entry places a plain limit
   order; a debit spread places **one** combo order for both legs together, never two
-  separate orders. The automated exit is the same close-only, time-based rule paper
-  options trading already uses (no price-based stop/target) — but here it places a
-  **real** closing order (a single-leg sell, or both spread legs together as one combo)
-  instead of just recording a paper close. A **Live options positions** table (Dashboard
+  separate orders. Both **skip any contract with no live bid/ask** — where the only price
+  available is an old last-trade print, an entry is declined rather than opened at a limit
+  derived from it (the skip is journaled with the reason). The automated exit is the same
+  close-only, time-based rule paper options trading already uses (no price-based
+  stop/target) — but here it places a **real** closing order (a single-leg sell, or both
+  spread legs together as one combo) instead of just recording a paper close. An exit
+  makes the *opposite* call on a stale price: it still places (declining would just leave
+  the position drifting to expiration, which is what the time exit exists to prevent) but
+  journals that the close may rest unfilled, which feeds the unresolved-order alert below. A **Live options positions** table (Dashboard
   tab, below the equity Live positions table) shows every real options position the loop has
   placed, with the same side/strike badges (and both strikes for a spread) as the
   options paper table. Kept accurate every cycle by the same kind of broker-truth
@@ -1262,12 +1280,14 @@ shouldn't be a tab-switch away.
   then at most one reminder an hour while it persists, reset the moment an order gets
   through. Separately, an **unresolved order state** alerts on the *first* occurrence —
   a placement the broker never answered, a fill the app couldn't fully book into its
-  ledger, an order retired because the broker denied knowing it, or a bracket whose
-  stop and target *both* reported filled. These aren't rejections and a later
-  successful order doesn't undo them: each one means the app's records and your
-  broker may already disagree, so the alert says which and points you at the
-  Auto-Trade journal. Throttled to at most one an hour, and it only ever reports
-  what's new since the last one — so it goes quiet on its own once they stop.
+  ledger, an order retired because the broker denied knowing it, a bracket whose
+  stop and target *both* reported filled, an order status the app doesn't recognize,
+  or a closing order priced off a stale last trade that may rest unfilled. These
+  aren't rejections and a later successful order doesn't undo them: each one means
+  the app's records and your broker may already disagree, so the alert says which
+  and points you at the Auto-Trade journal. Throttled to at most one an hour, and it
+  only ever reports what's new since the last one — so it goes quiet on its own once
+  they stop.
   The **daily-drawdown halt** also notifies — paper, live, and live options
   each alert independently the first time that book's day crosses its own halt level,
   at most once per (ET) trading day per book, so a rough day in one doesn't drown out or
