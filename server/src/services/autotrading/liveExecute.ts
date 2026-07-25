@@ -19,7 +19,7 @@ import {
   listWebullOpenOrders,
   WebullOpenOrder,
 } from '../../providers/webull/orders';
-import { mapWebullStatus } from '../trading/reconcile';
+import { ackUnknownPlacement, canRetireUnknownPlacement, canStillFill, mapWebullStatus } from '../trading/reconcile';
 import { computeFillDelta } from '../trading/fillDelta';
 import {
   advanceMaterialized,
@@ -28,6 +28,7 @@ import {
   countTodaysOrders,
   getIntent,
   getIntents,
+  recordIntentNoteOnce,
   OrderIntentRecord,
 } from '../../db/orders';
 import { canTransition, isTerminal } from '../trading/orderLifecycle';
@@ -890,12 +891,18 @@ export async function reconcileLiveOrders(): Promise<LiveReconcileOutcome[]> {
       // intent is still 'submitted' with no broker id because we never heard
       // back. Both the open-orders and history endpoints answered and neither
       // knows this client order id, which is positive evidence it never landed —
-      // so retire it now rather than leaving it pending forever, holding the
+      // so retire it rather than leaving it pending forever, holding the
       // symbol's dedup slot and its risk against the aggregate cap.
       // An ACKNOWLEDGED order missing from both is a different case (it landed
       // once and may simply have aged out of the history window), so that one is
       // still left alone.
-      if (intent.state === 'submitted' && !intent.brokerOrderId) {
+      //
+      // Only once it has been outstanding long enough for the broker to have
+      // recorded it — see UNKNOWN_PLACEMENT_RETIRE_GRACE_MS. Retiring on the
+      // very next tick re-opens the double-place hole this branch exists to
+      // close, since freeing the dedup slot is exactly what lets the next cycle
+      // place the same real order again.
+      if (canRetireUnknownPlacement(intent)) {
         transitionIntent(intent.id, 'rejected', {
           detail: 'placement outcome was unknown; broker reports no such order — never reached it',
         });
@@ -930,20 +937,54 @@ function reconcileOneLiveOrder(
   // (and only) status -- a time-exit closing order is never a bracket, so
   // its fill is exactly this simple, same as a plain non-bracket order.
   const masterTarget = broker.status ? mapWebullStatus(broker.status) : undefined;
+  // The broker knows this order, so an unknown-outcome placement (left at
+  // 'submitted' by attemptLiveEntry's ambiguous branch) is resolved: record the
+  // acknowledgement we never received before applying the status. Without it a
+  // FILLED observed straight off an ambiguous place is an illegal transition
+  // from 'submitted', so canMove was false and the order sat here forever —
+  // polled every tick, holding the symbol's dedup slot, with the real filled
+  // position never materialized. See ackUnknownPlacement.
+  const { intent: current, acked } = ackUnknownPlacement(intent, broker.brokerOrderId);
   const canMove =
     !!masterTarget &&
-    !isTerminal(intent.state) &&
-    masterTarget !== intent.state &&
-    canTransition(intent.state, masterTarget);
+    !isTerminal(current.state) &&
+    masterTarget !== current.state &&
+    canTransition(current.state, masterTarget);
   // An order resting at `partially_filled` across two ticks hasn't changed
   // state but may have filled further, and a partial that is later CANCELLED
   // leaves this table's polling set entirely (listPendingLiveOrders excludes
   // cancelled intents). Both are handled by materializing on every observed
   // fill rather than only on the terminal one — see materializeLiveFill.
-  const restingPartial = masterTarget === 'partially_filled' && intent.state === 'partially_filled';
-  if (canMove || restingPartial) {
+  const restingPartial = masterTarget === 'partially_filled' && current.state === 'partially_filled';
+  // A status the mapper doesn't recognize used to make this whole function a
+  // silent no-op — and if that response carried a filled quantity, those were
+  // real autotrade-opened shares dropped without a state change, a position
+  // row, or a single line anywhere saying so. The label and the fill are
+  // separate facts: not knowing what to call the state is no reason to discard
+  // what the broker reported filled, and computeFillDelta's guards make acting
+  // on it safe (they only ever book less than reported). Book it, leave the
+  // lifecycle alone, and journal the unrecognized status once so it surfaces.
+  const unrecognizedFill = !!broker.status && masterTarget === undefined && (broker.filledQty ?? 0) > 0;
+  if (!!broker.status && masterTarget === undefined) {
+    const noted = recordIntentNoteOnce(
+      current.id,
+      `broker reported an unrecognized status "${broker.status}" — lifecycle left unchanged, ` +
+        `any reported fill is still booked`,
+    );
+    // Once per intent+status, not once per 60s tick.
+    if (noted) {
+      logAutotradeEvent({
+        symbol: current.symbol,
+        stage: 'execution',
+        action: 'live_broker_status_unrecognized',
+        detail: { intentId: current.id, status: broker.status, filledQty: broker.filledQty ?? 0 },
+        riskProfile,
+      });
+    }
+  }
+  if (canMove || restingPartial || unrecognizedFill) {
     if (canMove) {
-      transitionIntent(intent.id, masterTarget!, {
+      transitionIntent(current.id, masterTarget!, {
         detail: `broker ${broker.status?.toLowerCase()}`,
         brokerOrderId: broker.brokerOrderId,
       });
@@ -998,7 +1039,7 @@ function reconcileOneLiveOrder(
         }
         // Nothing new to record — either this fill was already booked on an
         // earlier tick, or the guards refused it.
-        if (qty <= 0) return { changed: canMove, error: warning };
+        if (qty <= 0) return { changed: acked || canMove, error: warning };
 
         if (meta.role === 'exit') {
           // A time-exit closing order — meta.positionId is known upfront
@@ -1006,7 +1047,7 @@ function reconcileOneLiveOrder(
           // null until THIS materialization sets it.
           const recorded = materializeTimeExitFill(meta.positionId!, intent, price, riskProfile, qty);
           if (recorded) advanceMaterialized(intent.id, qty, qty * price);
-          return recorded ? { changed: true, action: 'exit_filled' } : { changed: canMove };
+          return recorded ? { changed: true, action: 'exit_filled' } : { changed: acked || canMove };
         }
         if (meta.addonOfPositionId !== null) {
           // A scale-in ADD-ON fill — MERGE into the already-open position
@@ -1089,7 +1130,7 @@ function reconcileOneLiveOrder(
   // than guessing. Entry rows only — a role='exit' order is never a bracket
   // (checkLiveEquityTimeExits places a plain close), so it has no exit legs
   // of its own to look for here.
-  if (meta.role === 'entry' && intent.state === 'filled' && intent.isBracket && broker.legs) {
+  if (meta.role === 'entry' && current.state === 'filled' && current.isBracket && broker.legs) {
     const filledExitLegs = broker.legs.filter((l) => l.comboType && l.comboType !== 'MASTER' && l.status === 'FILLED');
     if (filledExitLegs.length > 1) {
       logAutotradeEvent({
@@ -1099,7 +1140,10 @@ function reconcileOneLiveOrder(
         detail: { intentId: intent.id, legs: filledExitLegs.map((l) => l.comboType) },
         riskProfile,
       });
-      return { changed: false, error: 'Two exit legs both reported FILLED — ambiguous, left open rather than guessed' };
+      return {
+        changed: acked,
+        error: 'Two exit legs both reported FILLED — ambiguous, left open rather than guessed',
+      };
     }
     const exitLeg = filledExitLegs[0];
     if (exitLeg) {
@@ -1112,7 +1156,7 @@ function reconcileOneLiveOrder(
           riskProfile,
           exitLeg.filledQty,
         );
-        return recorded ? { changed: true, action: 'exit_filled' } : { changed: false };
+        return recorded ? { changed: true, action: 'exit_filled' } : { changed: acked };
       } catch (err) {
         const message = (err as Error).message;
         logAutotradeEvent({
@@ -1129,7 +1173,7 @@ function reconcileOneLiveOrder(
       }
     }
   }
-  return { changed: false };
+  return { changed: acked };
 }
 
 function materializeEntryFill(
@@ -1374,20 +1418,13 @@ export interface BracketCancelOutcome {
 /** An order at the broker is "resting" (could still fill and race our close)
  *  unless it's in a known terminal state. Unknown/missing statuses are treated
  *  as resting — conservative: we'll try to cancel and then require the re-scan
- *  to confirm it's gone, rather than assume an unrecognized status is safe. */
-const TERMINAL_ORDER_STATUSES = new Set([
-  'FILLED',
-  'CANCELLED',
-  'CANCELED',
-  'EXPIRED',
-  'REJECTED',
-  'FAILED',
-  'DELETED',
-  'INACTIVE',
-]);
-function isRestingStatus(status?: string): boolean {
-  return !status || !TERMINAL_ORDER_STATUSES.has(status.toUpperCase());
-}
+ *  to confirm it's gone, rather than assume an unrecognized status is safe.
+ *
+ *  This used to be its own status list, independent of reconcile.ts's
+ *  mapWebullStatus, and the two had already drifted apart (DELETED / INACTIVE
+ *  were terminal here and unmapped there). Now there is one vocabulary: adding
+ *  a status in one place changes both. */
+const isRestingStatus = canStillFill;
 
 /** The bracket's resting exit legs, recovered from the broker's live open
  *  orders: same symbol, the EXIT side (a long's stop/target are sells, a
@@ -1399,6 +1436,47 @@ function restingExitOrders(orders: WebullOpenOrder[], symbol: string, exitSide: 
   return orders.filter(
     (o) => o.symbol?.toUpperCase() === symbol && o.side === exitSide && isRestingStatus(o.status) && !!o.clientOrderId,
   );
+}
+
+/**
+ * Why an empty restingExitOrders() result CANNOT be trusted to mean the exit
+ * side is clear — undefined when it can be.
+ *
+ * restingExitOrders is a filter, so it returns nothing both when there is
+ * genuinely nothing resting AND when the lenient parsing in mapOpenOrder()
+ * couldn't read enough of a real resting leg to match it. Those are opposite
+ * facts with opposite consequences: the first makes a close safe, the second
+ * means the stop is still sitting at the broker and the close will double up
+ * against it — for a long, filling both leaves you short a position nobody
+ * opened, tracked nowhere until a later broker sync imports it as an orphan.
+ *
+ * The parse miss is not hypothetical: logOpenOrdersDiagnostic() exists
+ * precisely because this response shape is unconfirmed against a real account
+ * and the field names may not be the ones mapOpenOrder guesses at — but it only
+ * ever printed a console warning, and the close went ahead anyway.
+ *
+ * Only RESTING orders are considered: a terminal one can't fill, so failing to
+ * parse it costs nothing.
+ */
+function unreadableOpenOrders(orders: WebullOpenOrder[], symbol: string, exitSide: 'buy' | 'sell'): string | undefined {
+  const live = orders.filter((o) => isRestingStatus(o.status));
+  // A resting order whose SYMBOL wouldn't parse could be on any symbol,
+  // including this one — so "nothing resting on SYM" is not a claim we can make.
+  const noSymbol = live.filter((o) => !o.symbol);
+  if (noSymbol.length > 0) {
+    return `${noSymbol.length} resting broker order(s) carried no readable symbol`;
+  }
+  // A resting order that IS on this symbol but that restingExitOrders couldn't
+  // classify: its side wouldn't parse (so it may be an exit leg), or it is on
+  // the exit side but carries no client order id to cancel it by. Either way it
+  // could be the stop/target, and either way we cannot clear it.
+  const unidentified = live.filter(
+    (o) => o.symbol!.toUpperCase() === symbol && (o.side === undefined || (o.side === exitSide && !o.clientOrderId)),
+  );
+  if (unidentified.length > 0) {
+    return `${unidentified.length} resting order(s) on ${symbol} could not be identified as cancellable (unreadable side, or no client order id)`;
+  }
+  return undefined;
 }
 
 export async function cancelLiveBracketExitLegs(
@@ -1428,16 +1506,52 @@ export async function cancelLiveBracketExitLegs(
 
   let resting = restingExitOrders(first.orders, symbol, exitSide);
   if (resting.length === 0) {
-    // Nothing resting on the exit side. Either the bracket is already gone (safe
-    // to close) OR an exit leg just filled and the position is closing on its
-    // own (don't place a second order). Distinguish via the combo status — a
-    // best-effort signal; the close's own naked-short guardrail is the backstop
-    // if the broker doesn't surface the fill here.
+    // Nothing came back on the exit side — but this branch used to read that as
+    // "the bracket is already gone, safe to close" no matter WHY the list was
+    // empty, which is the one reading that can create real untracked exposure.
+    // Absence of evidence is not evidence of absence here; each way of not
+    // seeing a leg is now separated out.
+
+    // 1) The list itself couldn't be read well enough to prove anything.
+    const unreadable = unreadableOpenOrders(first.orders, symbol, exitSide);
+    if (unreadable) {
+      return {
+        ok: false,
+        reason:
+          `Could not confirm ${symbol}'s resting bracket is clear — ${unreadable}. ` +
+          `Not placing a close that could double up against a stop still working at the broker.`,
+      };
+    }
+
+    // 2) This entry never had exit legs (a plain non-bracket entry, or a
+    //    position adopted from the broker), so there is nothing to have missed
+    //    and nothing to confirm — and no reason to spend a broker call on it.
+    if (!intent.isBracket) return { ok: true };
+
+    // 3) A bracket WAS submitted for this entry, so finding none of its legs is
+    //    contradictory rather than reassuring: either they are genuinely gone
+    //    (cancelled, or filled and thus terminal) or we simply can't see them.
+    //    The combo status is the only other witness, so a failure to read it
+    //    leaves the question open — it used to fall through to "safe to close".
+    //    Note this is only ever used to detect a RACE; we never require the legs
+    //    to be echoed back to allow a close, since that response shape is
+    //    unconfirmed (see WebullOrderLeg) and requiring it could block every
+    //    close forever.
     const combo = await webullOrderStatus(accountId, intent.idempotencyKey);
+    if (!combo.ok) {
+      return {
+        ok: false,
+        reason:
+          `Could not check whether a bracket leg raced the close (${combo.error}) — ` +
+          `not placing one while that is unknown.`,
+      };
+    }
+    // A `found: false` is deliberately NOT treated as unresolved: an entry old
+    // enough to hit maxHoldDays has very likely aged out of the broker's order
+    // history, so blocking on it would break the close for exactly the
+    // population this path exists to serve.
     const filledLeg =
-      combo.ok &&
-      combo.found &&
-      combo.legs?.some((l) => l.comboType && l.comboType !== 'MASTER' && l.status === 'FILLED');
+      combo.found && (combo.legs ?? []).some((l) => l.comboType && l.comboType !== 'MASTER' && l.status === 'FILLED');
     if (filledLeg) {
       return {
         ok: false,
@@ -1471,6 +1585,18 @@ export async function cancelLiveBracketExitLegs(
       reason: `Resting ${exitSide} order(s) on ${symbol} did not clear after cancel (${resting
         .map((o) => o.clientOrderId)
         .join(', ')}) — not placing a close that could double up.`,
+    };
+  }
+  // The re-scan is the whole proof that the cancel took effect, so it needs the
+  // same "could this list even be read" test as the first one: an unparseable
+  // re-scan produces an empty filter result that looks exactly like success.
+  const unreadable = unreadableOpenOrders(second.orders, symbol, exitSide);
+  if (unreadable) {
+    return {
+      ok: false,
+      reason:
+        `Cancelled the resting bracket order(s) but could not confirm they cleared — ${unreadable}. ` +
+        `Not placing a close that could double up.`,
     };
   }
   return { ok: true };
@@ -1517,6 +1643,32 @@ export interface LiveEquityTimeExitOutcome {
  *  this needs no override the way options' single-leg close does (options'
  *  account-state read doesn't reflect contract holdings the way equity's
  *  reflects share holdings). */
+/** Journal + return a time-exit that never reached the broker. These bail-outs
+ *  used to return a `reason` string that died in the return value: nothing
+ *  journaled them, so nothing could alert on them (liveFailureAlert reads the
+ *  journal) and nothing recorded that a position past its hold limit had been
+ *  looked at and skipped. Because maxHoldDays does not un-trigger, each one
+ *  repeats every 60s for as long as the cause persists — silently, until now.
+ *  Uses the same 'live_time_exit_failed' action the broker-rejection path
+ *  already does: FAILURE_ACTIONS is explicitly scoped to include "a close we
+ *  couldn't even price", which is exactly what these are. */
+function timeExitFailure(
+  pos: Position,
+  riskProfile: string,
+  reason: string,
+  extra: Record<string, unknown> = {},
+): LiveEquityTimeExitOutcome {
+  const symbol = pos.symbol.toUpperCase();
+  logAutotradeEvent({
+    symbol,
+    stage: 'execution',
+    action: 'live_time_exit_failed',
+    detail: { reason, positionId: pos.id, ...extra },
+    riskProfile,
+  });
+  return { symbol, positionId: pos.id, requested: false, reason };
+}
+
 async function placeLiveEquityTimeExitClose(
   pos: Position,
   accountId: string,
@@ -1528,10 +1680,10 @@ async function placeLiveEquityTimeExitClose(
   try {
     last = (await getProvider().getQuote(symbol)).last;
   } catch (err) {
-    return { symbol, positionId: pos.id, requested: false, reason: `Quote fetch failed: ${(err as Error).message}` };
+    return timeExitFailure(pos, riskProfile, `Quote fetch failed: ${(err as Error).message}`);
   }
   if (!Number.isFinite(last) || last <= 0) {
-    return { symbol, positionId: pos.id, requested: false, reason: `Invalid quote price: ${last}` };
+    return timeExitFailure(pos, riskProfile, `Invalid quote price: ${last}`);
   }
 
   const closeSide: 'buy' | 'sell' = pos.side === 'long' ? 'sell' : 'buy';
@@ -1552,7 +1704,7 @@ async function placeLiveEquityTimeExitClose(
   const liveCfg = buildLiveTradingConfig(getAutotradeConfig());
   const acct = await webullAccountState(accountId, symbol);
   if (!acct.ok || !acct.state) {
-    return { symbol, positionId: pos.id, requested: false, reason: acct.error ?? 'Could not load account state' };
+    return timeExitFailure(pos, riskProfile, acct.error ?? 'Could not load account state');
   }
   const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
   const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
@@ -1711,26 +1863,25 @@ export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutc
     if (pendingExitPositionIds.has(pos.id)) continue;
     if (Date.now() - pos.createdAt < cfg.maxHoldDays * MS_PER_DAY) continue;
 
+    // Both of these leave a position sitting past its hold limit with no close
+    // attempted, every tick, so they are journaled like any other failed close
+    // rather than reported only in this function's return value.
     if (pos.sourceIntentId === null) {
-      outcomes.push({
-        symbol: pos.symbol,
-        positionId: pos.id,
-        requested: false,
-        reason: 'No source intent on this position — cannot locate its bracket to cancel',
-      });
+      outcomes.push(
+        timeExitFailure(
+          pos,
+          cfg.riskProfile,
+          'No source intent on this position — cannot locate its bracket to cancel',
+        ),
+      );
       continue;
     }
     const entryIntent = getIntent(pos.sourceIntentId);
+    const riskProfile = getLiveOrder(pos.sourceIntentId)?.riskProfile ?? cfg.riskProfile;
     if (!entryIntent) {
-      outcomes.push({
-        symbol: pos.symbol,
-        positionId: pos.id,
-        requested: false,
-        reason: `Source intent ${pos.sourceIntentId} not found`,
-      });
+      outcomes.push(timeExitFailure(pos, riskProfile, `Source intent ${pos.sourceIntentId} not found`));
       continue;
     }
-    const riskProfile = getLiveOrder(pos.sourceIntentId)?.riskProfile ?? cfg.riskProfile;
 
     // Re-fetch fresh config for EACH triggered position, same reasoning as
     // checkLiveOptionsExits' own per-position refresh — this loop awaits real

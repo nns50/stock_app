@@ -3,7 +3,17 @@ import { useLocation } from 'react-router-dom';
 import { client } from '../api/client';
 import { useAsync, useLocalStorage, usePolling } from '../lib/hooks';
 import { cx, fmtUsd } from '../lib/format';
-import { Badge, Card, CollapsibleCard, Field, NumberInput, PageHeader, Segmented, Spinner } from '../components/ui';
+import {
+  Badge,
+  Card,
+  CollapsibleCard,
+  Field,
+  NumberInput,
+  PageHeader,
+  Segmented,
+  Spinner,
+  UnknownOutcomeNotice,
+} from '../components/ui';
 import { ExpirySelect, StrikeSelect, chainStrikes, suggestedNet } from '../components/OptionPicker';
 import type {
   AccountStateInput,
@@ -1056,6 +1066,12 @@ function PlaceResultPanel({ result }: { result: PlaceResult }) {
         )}
       </div>
     );
+  }
+  // Neither placed nor refused: the broker never answered, so the order may
+  // well be live. Saying "not placed" here would be a claim the server
+  // deliberately declined to make.
+  if (result.reason === 'outcome_unknown') {
+    return <UnknownOutcomeNotice message={result.error || result.broker?.error || 'the broker did not respond'} />;
   }
   const msg = result.error || result.broker?.error || `not placed (${result.reason})`;
   return <div className="rounded-md bg-bear/15 text-bear text-sm p-2">✕ Not placed — {msg}</div>;

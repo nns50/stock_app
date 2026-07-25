@@ -18,10 +18,11 @@ import {
   transitionIntent,
   countTodaysOrders,
   getIntents,
+  recordIntentNoteOnce,
   OrderIntentRecord,
 } from '../../db/orders';
 import { canTransition, isTerminal } from '../trading/orderLifecycle';
-import { mapWebullStatus } from '../trading/reconcile';
+import { ackUnknownPlacement, canRetireUnknownPlacement, mapWebullStatus } from '../trading/reconcile';
 import { computeFillDelta } from '../trading/fillDelta';
 import {
   recordLiveOptionsEntryOrder,
@@ -50,7 +51,7 @@ import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskC
 import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { dispatchNotifications } from '../notifier';
-import { fetchContractMark, validPremium } from './optionsExecute';
+import { fetchContractQuote, validPremium } from './optionsExecute';
 import { getLivePortfolioSnapshot, combinedLiveOpenRisk, ProbationStatus } from './liveExecute';
 import { previewWebullPositions, contractKey } from '../../providers/webull/positions';
 import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../db/webullMissStreak';
@@ -425,10 +426,25 @@ export async function attemptLiveOptionsEntry(
     let longFill: number;
     let shortFill: number;
     try {
-      [longFill, shortFill] = await Promise.all([
-        fetchContractMark(signal.symbol, signal.expiration, signal.longStrike, signal.side),
-        fetchContractMark(signal.symbol, signal.expiration, signal.shortStrike, signal.side),
+      const [longQ, shortQ] = await Promise.all([
+        fetchContractQuote(signal.symbol, signal.expiration, signal.longStrike, signal.side),
+        fetchContractQuote(signal.symbol, signal.expiration, signal.shortStrike, signal.side),
       ]);
+      // Refuse to open on a LAST-TRADE-only price. A contract with no usable
+      // bid/ask is one nobody is currently quoting, so the only number
+      // available describes a trade that may be hours or days old — and this
+      // path is about to commit real money at a limit derived from it. An
+      // entry is optional, so the cheap and correct move is not to take it.
+      // (An EXIT is not optional and is handled the other way — see
+      // placeLiveOptionsExit.)
+      if (longQ.fromLastTrade || shortQ.fromLastTrade) {
+        return {
+          symbol,
+          ok: false,
+          reason: `No live two-sided quote for ${symbol} (only a last-trade price) — not opening on a stale mark`,
+        };
+      }
+      [longFill, shortFill] = [longQ.price, shortQ.price];
     } catch (err) {
       return { symbol, ok: false, reason: `Quote fetch failed: ${(err as Error).message}` };
     }
@@ -495,7 +511,17 @@ export async function attemptLiveOptionsEntry(
 
   let fillPremium: number;
   try {
-    fillPremium = await fetchContractMark(signal.symbol, signal.expiration, signal.strike, signal.side);
+    const q = await fetchContractQuote(signal.symbol, signal.expiration, signal.strike, signal.side);
+    // Same refusal as the spread branch above: don't open real risk at a limit
+    // derived from a last trade of unknown age.
+    if (q.fromLastTrade) {
+      return {
+        symbol,
+        ok: false,
+        reason: `No live two-sided quote for ${symbol} (only a last-trade price) — not opening on a stale mark`,
+      };
+    }
+    fillPremium = q.price;
   } catch (err) {
     return { symbol, ok: false, reason: `Quote fetch failed: ${(err as Error).message}` };
   }
@@ -766,6 +792,30 @@ export interface LiveOptionsExitCheckOutcome {
  * contract alike) with no asset-type/strike/expiration filter, so trusting it
  * directly could let a sell reach the broker for contracts not actually held
  * (fails OPEN), not just incorrectly block a legitimate one (fails closed). */
+/** Journal + return an exit that never reached the broker. Like equity's own
+ *  timeExitFailure(), these bail-outs used to return a `reason` that died in
+ *  the return value — unjournaled, so unalertable (liveFailureAlert reads the
+ *  journal) and invisible. The time-exit trigger does not un-trigger, so each
+ *  repeats every cycle for as long as its cause persists: an unpriceable
+ *  contract silently retried forever is exactly how a position drifts to
+ *  expiration, the outcome this exit exists to prevent. Reuses the same
+ *  'live_options_exit_failed' action the broker-rejection path already
+ *  journals, which FAILURE_ACTIONS already covers. */
+function optionsExitFailure(
+  pos: LiveOptionsPosition,
+  reason: string,
+  extra: Record<string, unknown> = {},
+): LiveOptionsExitCheckOutcome {
+  logAutotradeEvent({
+    symbol: pos.symbol,
+    stage: 'execution',
+    action: 'live_options_exit_failed',
+    detail: { reason, positionId: pos.id, ...extra },
+    riskProfile: pos.riskProfile,
+  });
+  return { symbol: pos.symbol, requested: false, reason };
+}
+
 async function placeLiveOptionsExit(
   pos: LiveOptionsPosition,
   accountId: string,
@@ -789,7 +839,7 @@ async function placeLiveOptionsExit(
   let heldQty: number;
   try {
     const preview = await previewWebullPositions(accountId);
-    if (!preview.ok) return { symbol, requested: false, reason: `Broker positions unavailable: ${preview.error}` };
+    if (!preview.ok) return optionsExitFailure(pos, `Broker positions unavailable: ${preview.error}`);
     const wantKey = contractKey({
       symbol,
       assetType: 'option',
@@ -811,24 +861,49 @@ async function placeLiveOptionsExit(
       )
       .reduce((s, p) => s + (p.quantity ?? 0), 0);
   } catch (err) {
-    return { symbol, requested: false, reason: `Broker positions fetch failed: ${(err as Error).message}` };
+    return optionsExitFailure(pos, `Broker positions fetch failed: ${(err as Error).message}`);
   }
   if (heldQty <= 0) {
-    return { symbol, requested: false, reason: 'Broker shows 0 contracts held — nothing to close (sync reconciles)' };
+    return optionsExitFailure(pos, 'Broker shows 0 contracts held — nothing to close (sync reconciles)');
   }
   const exitQty = Math.min(pos.quantity, heldQty);
+
+  // Unlike an ENTRY (which refuses a last-trade-only price outright — see
+  // attemptLiveOptionsEntry), an exit priced off a stale print still goes
+  // ahead. Refusing would guarantee the very outcome the time exit exists to
+  // prevent: the position simply sits there and drifts to expiration. But a
+  // stale-HIGH print produces a sell limit above where the contract can
+  // actually be sold, so the close rests unfilled and looks, from the outside,
+  // exactly like nothing happening — which is why it is journaled rather than
+  // left to be inferred from a position that never closes.
+  const noteStaleQuote = (detail: Record<string, unknown>) =>
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_options_exit_stale_quote',
+      detail: { positionId: pos.id, ...detail },
+      riskProfile: pos.riskProfile,
+    });
 
   let intent: OrderIntent;
   if (pos.kind === 'debit_spread') {
     let longMark: number;
     let shortMark: number;
     try {
-      [longMark, shortMark] = await Promise.all([
-        fetchContractMark(symbol, pos.expiration, pos.strike, pos.side),
-        fetchContractMark(symbol, pos.expiration, pos.shortStrike!, pos.side),
+      const [longQ, shortQ] = await Promise.all([
+        fetchContractQuote(symbol, pos.expiration, pos.strike, pos.side),
+        fetchContractQuote(symbol, pos.expiration, pos.shortStrike!, pos.side),
       ]);
+      if (longQ.fromLastTrade || shortQ.fromLastTrade) {
+        noteStaleQuote({
+          reason: 'exit priced off a last-trade price, not a two-sided mark — the close may rest unfilled',
+          longFromLastTrade: longQ.fromLastTrade,
+          shortFromLastTrade: shortQ.fromLastTrade,
+        });
+      }
+      [longMark, shortMark] = [longQ.price, shortQ.price];
     } catch (err) {
-      return { symbol, requested: false, reason: `Quote fetch failed: ${(err as Error).message}` };
+      return optionsExitFailure(pos, `Quote fetch failed: ${(err as Error).message}`);
     }
     const netValue = longMark - shortMark;
     const limitPrice = Math.round(netValue * buffer * 100) / 100;
@@ -840,11 +915,7 @@ async function placeLiveOptionsExit(
     // Skip this cycle with a precise, journaled reason instead of spinning on an
     // unplaceable order (mirrors attemptLiveOptionsEntry's premium guard).
     if (!validPremium(limitPrice)) {
-      return {
-        symbol,
-        requested: false,
-        reason: `No usable exit quote (net ${netValue}: long ${longMark}, short ${shortMark})`,
-      };
+      return optionsExitFailure(pos, `No usable exit quote (net ${netValue}: long ${longMark}, short ${shortMark})`);
     }
     intent = {
       symbol,
@@ -864,9 +935,16 @@ async function placeLiveOptionsExit(
   } else {
     let mark: number;
     try {
-      mark = await fetchContractMark(symbol, pos.expiration, pos.strike, pos.side);
+      const q = await fetchContractQuote(symbol, pos.expiration, pos.strike, pos.side);
+      if (q.fromLastTrade) {
+        noteStaleQuote({
+          reason: 'exit priced off a last-trade price, not a two-sided mark — the close may rest unfilled',
+          mark: q.price,
+        });
+      }
+      mark = q.price;
     } catch (err) {
-      return { symbol, requested: false, reason: `Quote fetch failed: ${(err as Error).message}` };
+      return optionsExitFailure(pos, `Quote fetch failed: ${(err as Error).message}`);
     }
     const limitPrice = Math.round(mark * buffer * 100) / 100;
     // Mirror the entry-side premium guard (attemptLiveOptionsEntry). A
@@ -877,7 +955,7 @@ async function placeLiveOptionsExit(
     // expiration, the exact outcome the time-exit exists to prevent. Skip with
     // a precise, journaled reason instead of spinning on an unplaceable order.
     if (!validPremium(limitPrice)) {
-      return { symbol, requested: false, reason: `No usable exit quote (mark ${mark})` };
+      return optionsExitFailure(pos, `No usable exit quote (mark ${mark})`);
     }
     intent = {
       symbol,
@@ -906,7 +984,9 @@ async function placeLiveOptionsExit(
     // naked_short check sees resultingQty 0 only when we truly hold what we sell.
     pos.kind === 'debit_spread' ? undefined : exitQty,
   );
-  if (!loaded.ok) return { symbol, requested: false, reason: loaded.reason };
+  // Account-state failure only — a guardrail BLOCK comes back ok:true and is
+  // journaled by placeLiveOptionsOrder's own blocked path below.
+  if (!loaded.ok) return optionsExitFailure(pos, loaded.reason);
 
   const placed = await placeLiveOptionsOrder(
     intent,
@@ -1055,7 +1135,11 @@ export async function reconcileLiveOptionsOrders(): Promise<LiveOptionsReconcile
       // forever holding the symbol's dedup slot and its risk. An ACKNOWLEDGED
       // order missing from both landed once and may just have aged out of the
       // history window, so that one is still left alone.
-      if (intent.state === 'submitted' && !intent.brokerOrderId) {
+      //
+      // Gated on the same grace period equity uses: absence is only evidence
+      // once the broker has had time to record the order, and retiring early
+      // frees the dedup slot that stops the next cycle re-placing it.
+      if (canRetireUnknownPlacement(intent)) {
         transitionIntent(intent.id, 'rejected', {
           detail: 'placement outcome was unknown; broker reports no such order — never reached it',
         });
@@ -1075,16 +1159,45 @@ export async function reconcileLiveOptionsOrders(): Promise<LiveOptionsReconcile
 
     const target = broker.status ? mapWebullStatus(broker.status) : undefined;
 
+    // The broker knows this order, so an unknown-outcome placement (left at
+    // 'submitted' by placeLiveOptionsOrder's ambiguous branch) is resolved:
+    // record the acknowledgement we never received before applying the status,
+    // or a FILLED seen straight off an ambiguous place is an illegal transition
+    // from 'submitted' and the order sits here forever, never materialized.
+    // See ackUnknownPlacement.
+    const { intent: current, acked } = ackUnknownPlacement(intent, broker.brokerOrderId);
+
     // Forward-transition the intent if the broker moved it, and materialize a
     // fresh fill in the same pass.
     const canMove =
-      !!target && !isTerminal(intent.state) && target !== intent.state && canTransition(intent.state, target);
+      !!target && !isTerminal(current.state) && target !== current.state && canTransition(current.state, target);
     // A contract count resting at `partially_filled` across ticks hasn't changed
     // state but may have filled further.
-    const restingPartial = target === 'partially_filled' && intent.state === 'partially_filled';
-    if (canMove || restingPartial) {
+    const restingPartial = target === 'partially_filled' && current.state === 'partially_filled';
+    // Same reasoning as equity's own reconciler: an unrecognized status used to
+    // make this a silent no-op, discarding any contracts the broker reported
+    // filled alongside it. Book the fill (computeFillDelta's guards make that
+    // safe), leave the lifecycle alone, and journal the status once.
+    const unrecognizedFill = !!broker.status && target === undefined && (broker.filledQty ?? 0) > 0;
+    if (!!broker.status && target === undefined) {
+      const noted = recordIntentNoteOnce(
+        current.id,
+        `broker reported an unrecognized status "${broker.status}" — lifecycle left unchanged, ` +
+          `any reported fill is still booked`,
+      );
+      if (noted) {
+        logAutotradeEvent({
+          symbol: current.symbol,
+          stage: 'execution',
+          action: 'live_options_broker_status_unrecognized',
+          detail: { intentId: current.id, status: broker.status, filledQty: broker.filledQty ?? 0 },
+          riskProfile: meta.riskProfile,
+        });
+      }
+    }
+    if (canMove || restingPartial || unrecognizedFill) {
       if (canMove) {
-        transitionIntent(intent.id, target!, {
+        transitionIntent(current.id, target!, {
           detail: `broker ${broker.status?.toLowerCase()}`,
           brokerOrderId: broker.brokerOrderId,
         });
@@ -1096,12 +1209,12 @@ export async function reconcileLiveOptionsOrders(): Promise<LiveOptionsReconcile
       // excludes cancelled/rejected/expired). A terminal FILLED implies the
       // whole order even when the quantity field is absent; any other status
       // with no quantity filled nothing.
-      const observedQty = broker.filledQty ?? (target === 'filled' ? intent.quantity : 0);
+      const observedQty = broker.filledQty ?? (target === 'filled' ? current.quantity : 0);
       if (observedQty <= 0) {
         outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: true });
         continue;
       }
-      outcomes.push(materializeLiveOptionsFill(intent, meta, broker, observedQty));
+      outcomes.push(materializeLiveOptionsFill(current, meta, broker, observedQty));
       continue;
     }
 
@@ -1119,12 +1232,12 @@ export async function reconcileLiveOptionsOrders(): Promise<LiveOptionsReconcile
     // isn't idempotent (a create-then-link that threw AFTER the create would
     // double-open), matching equity's own accepted one-shot entry precedent; a
     // failed entry-materialize stays loudly journaled for a human to notice.
-    if (intent.state === 'filled' && meta.role === 'exit') {
-      outcomes.push(materializeLiveOptionsFill(intent, meta, broker));
+    if (current.state === 'filled' && meta.role === 'exit') {
+      outcomes.push(materializeLiveOptionsFill(current, meta, broker));
       continue;
     }
 
-    outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: false });
+    outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: acked });
   }
   return outcomes;
 }
@@ -1453,7 +1566,10 @@ async function safeContractMark(
   side: 'call' | 'put',
 ): Promise<number | null> {
   try {
-    return await fetchContractMark(symbol, expiration, strike, side);
+    // A last-trade fallback is fine here, unlike the order paths above: this
+    // values a position for display and close-detection, it doesn't set a price
+    // anything gets submitted at.
+    return (await fetchContractQuote(symbol, expiration, strike, side)).price;
   } catch {
     return null;
   }

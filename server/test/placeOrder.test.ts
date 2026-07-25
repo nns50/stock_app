@@ -6,6 +6,7 @@ import { setTradingConfig } from '../src/db/trading';
 import { getEvents, listIntents } from '../src/db/orders';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 import * as providersModule from '../src/providers';
+import { resolveStockPrices } from '../src/services/quotes';
 
 // placeOrder re-derives the fat-finger reference from a fresh stock quote
 // (never the client's). Mock that source so it's deterministic and doesn't
@@ -273,5 +274,102 @@ describe('place order (live)', () => {
       'submitted',
       'rejected',
     ]);
+  });
+
+  // A lost response is NOT a rejection. #337 fixed this for the three autotrade
+  // placement paths and left this one — the human Trade page's — behind, so an
+  // order that may well be live at the broker was recorded as terminally
+  // rejected: never polled again, no position when it filled, and a UI that
+  // invites placing it a second time.
+  describe('unknown placement outcome', () => {
+    const lost = (status: number, body: unknown = { msg: 'boom' }) =>
+      vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(okResp(BALANCE))
+        .mockResolvedValueOnce(okResp([]))
+        .mockResolvedValueOnce({ ok: false, status, text: async () => JSON.stringify(body) } as Response);
+
+    it('leaves the intent non-terminal instead of rejecting it', async () => {
+      lost(503);
+      const r = await placeOrder(intent(), 'ACC1', ok());
+
+      expect(r).toMatchObject({ placed: false, reason: 'outcome_unknown' });
+      expect(r.intent?.state).toBe('submitted');
+      expect(r.error).toMatch(/did not respond/i);
+      // The audit trail records the unknown outcome as a note, without
+      // inventing a state the machine doesn't have.
+      const events = getEvents(r.intent!.id);
+      expect(events.map((e) => e.state)).toEqual(['draft', 'validated', 'confirmed', 'submitted', 'submitted']);
+      expect(events.at(-1)?.detail).toMatch(/outcome unknown/i);
+    });
+
+    it.each([
+      ['a network error / client timeout', 0],
+      ['a rate limit, which can arrive after acceptance', 429],
+      ['a server error, which may be raised after processing', 500],
+    ])('treats %s as unknown', async (_label, status) => {
+      // status 0 is produced by the client itself on a fetch rejection.
+      if (status === 0) {
+        vi.spyOn(globalThis, 'fetch')
+          .mockResolvedValueOnce(okResp(BALANCE))
+          .mockResolvedValueOnce(okResp([]))
+          .mockRejectedValueOnce(new Error('socket hang up'));
+      } else {
+        lost(status);
+      }
+      const r = await placeOrder(intent(), 'ACC1', ok());
+      expect(r.reason).toBe('outcome_unknown');
+      expect(r.intent?.state).toBe('submitted');
+    });
+
+    it('a definite 4xx refusal is still terminal', async () => {
+      lost(400, { msg: 'insufficient buying power' });
+      const r = await placeOrder(intent(), 'ACC1', ok());
+      expect(r.reason).toBe('broker_rejected');
+      expect(r.intent?.state).toBe('rejected');
+    });
+  });
+
+  // resolveStockPrices falls back to the never-pruned `quote_cache` table
+  // whenever the provider call fails, returning an unbounded-age price with a
+  // `stale: true` flag beside it. Reading the number and dropping the flag made
+  // fat_finger LOOK stricter while being weaker: it BLOCKS when a reference
+  // exists and only WARNS when none does, so a days-old price silently became
+  // the authority on whether today's limit is sane.
+  describe('stale server-side fat-finger reference', () => {
+    const brokerOk = () =>
+      vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(okResp(BALANCE))
+        .mockResolvedValueOnce(okResp([]))
+        .mockResolvedValueOnce(okResp({ order_id: 'WB-1' }));
+
+    it('ignores a stale price rather than treating it as the reference', async () => {
+      // A long-dead cache row says $0.50; the stock trades at $7 today and the
+      // client's $7 limit is entirely reasonable. Believing the cache would
+      // compute a 1300% deviation and block a perfectly good order.
+      vi.mocked(resolveStockPrices).mockResolvedValueOnce(
+        new Map([['NUVB', { symbol: 'NUVB', price: 0.5, stale: true, asOf: 0 }]]),
+      );
+      brokerOk();
+      const r = await placeOrder(intent(), 'ACC1', ok());
+
+      expect(r.reason).toBe('placed');
+      expect(r.guardrails?.checks.find((c) => c.rule === 'fat_finger')).toMatchObject({ passed: true });
+    });
+
+    it('a FRESH price still overrides the client value', async () => {
+      // The whole point of the server-side re-derivation, which must survive
+      // this change: a client can't spoof the reference away. $0.50 fresh
+      // against a $7 limit still blocks.
+      vi.mocked(resolveStockPrices).mockResolvedValueOnce(
+        new Map([['NUVB', { symbol: 'NUVB', price: 0.5, stale: false, asOf: Date.now() }]]),
+      );
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(okResp(BALANCE)).mockResolvedValueOnce(okResp([]));
+      const r = await placeOrder(intent(), 'ACC1', ok());
+
+      expect(r.reason).toBe('blocked');
+      expect(r.guardrails?.checks.find((c) => c.rule === 'fat_finger')?.passed).toBe(false);
+    });
   });
 });

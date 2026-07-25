@@ -1194,6 +1194,9 @@ export interface ReplaceResult {
     | 'account_error'
     | 'blocked'
     | 'broker_rejected'
+    /** The broker never answered — the modify may or may not have applied.
+     *  NOT a rejection; the order was left as-is and re-checked. */
+    | 'outcome_unknown'
     | 'replaced';
   guardrails?: GuardrailReport;
   intent?: OrderIntentRecord;
@@ -1241,7 +1244,17 @@ export interface PlaceResult {
   ok: boolean;
   placed: boolean;
   reason:
-    'trading_disabled' | 'unsupported' | 'not_confirmed' | 'account_error' | 'blocked' | 'broker_rejected' | 'placed';
+    | 'trading_disabled'
+    | 'unsupported'
+    | 'not_confirmed'
+    | 'account_error'
+    | 'blocked'
+    | 'broker_rejected'
+    | 'duplicate'
+    /** The broker never answered — the order may or may not be live. NOT a
+     *  rejection: it stays pollable, and must never be read as "try again". */
+    | 'outcome_unknown'
+    | 'placed';
   guardrails?: GuardrailReport;
   accountState?: AccountStateInput;
   intent?: OrderIntentRecord;
@@ -1255,6 +1268,9 @@ export interface PlaceResult {
  *  whether a resting bracket had to be cancelled first. */
 export interface ClosePositionResult extends PlaceResult {
   bracketCancelled?: boolean;
+  /** The closing limit was priced off a stale last trade rather than a live
+   *  two-sided quote, so the order may simply rest unfilled. */
+  quoteWarning?: string;
 }
 
 // --- auto-trading (docs/AUTOTRADING_SPEC.md) ---

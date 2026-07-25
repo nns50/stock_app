@@ -33,6 +33,7 @@ import { listPositions } from '../src/db/positions';
 import * as positionsDb from '../src/db/positions';
 import { getLiveOrder, listPendingLiveOrders, countLiveAddOns } from '../src/db/autotradeLiveOrders';
 import { getIntent, listIntents, transitionIntent } from '../src/db/orders';
+import { UNKNOWN_PLACEMENT_RETIRE_GRACE_MS } from '../src/services/trading/reconcile';
 import { evaluateRiskCheck, RiskCheckResult } from '../src/services/autotrading/riskCheck';
 import { TradeSignal } from '../src/services/autotrading/decide';
 import {
@@ -1009,12 +1010,78 @@ describe('reconcileLiveOrders', () => {
     await attemptLiveEntry(sig, entryResult(), 'MODERATE', liveConfig());
     expect(listPendingLiveOrders()).toHaveLength(1);
 
-    // Both endpoints answered and neither knows this client order id.
+    // Both endpoints answered and neither knows this client order id — but the
+    // order was sent seconds ago, and the broker may simply not have recorded it
+    // yet. Retiring here would free the dedup slot and let the next cycle place
+    // the same real order again, which is the hole the ambiguous branch exists
+    // to close.
     mockOrderStatus.mockResolvedValue({ ok: true, found: false } as WebullOrderStatus);
+    await reconcileLiveOrders();
+    expect(listPendingLiveOrders()).toHaveLength(1); // still held
+
+    // Once it has been outstanding long enough that absence really is evidence.
+    db.prepare('UPDATE order_intents SET updated_at = ?').run(Date.now() - UNKNOWN_PLACEMENT_RETIRE_GRACE_MS - 1000);
     await reconcileLiveOrders();
 
     expect(listPendingLiveOrders()).toHaveLength(0); // retired, slot released
     expect(listPositions({ status: 'open' })).toHaveLength(0); // and no phantom position
+  });
+
+  it('a fill arriving during the grace period is still booked, not waited out', async () => {
+    // The grace period defers RETIRING, nothing else — an order that turns out
+    // to have landed must resolve immediately whenever the broker says so.
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'network error', ambiguous: true });
+    const placed = await attemptLiveEntry(signal(), entryResult(), 'MODERATE', liveConfig());
+    const ordered = getIntent(placed.intentId!)!.quantity;
+
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: ordered,
+      filledPrice: 100,
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+
+    expect(getIntent(placed.intentId!)?.state).toBe('filled');
+    expect(listPositions({ status: 'open' })).toHaveLength(1);
+  });
+
+  it('resolves an unknown placement that had actually filled', async () => {
+    // The gap #337 left: it kept an ambiguous placement pending and resolvable
+    // for "never landed" and "can't reach the broker", but not for the most
+    // likely outcome of all. The intent sits at 'submitted', and FILLED is an
+    // illegal transition from there, so canMove was false and the order was
+    // skipped every tick — pending forever, holding the symbol's dedup slot,
+    // with the real filled position never materialized into any ledger.
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'Request timed out', ambiguous: true });
+    const placed = await attemptLiveEntry(signal(), entryResult(), 'MODERATE', liveConfig());
+    const ordered = getIntent(placed.intentId!)!.quantity;
+    expect(getIntent(placed.intentId!)?.state).toBe('submitted'); // non-terminal, as designed
+
+    // It did land after all, and filled before the first reconcile.
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      brokerOrderId: 'WB-LATE',
+      filledQty: ordered,
+      filledPrice: 100,
+    } as WebullOrderStatus);
+    const outcomes = await reconcileLiveOrders();
+
+    expect(outcomes[0]).toMatchObject({ changed: true, action: 'entry_filled' });
+    expect(getIntent(placed.intentId!)?.state).toBe('filled');
+    const positions = listPositions({ status: 'open' });
+    expect(positions).toHaveLength(1);
+    expect(positions[0].symbol).toBe('AAPL');
+    expect(positions[0].quantity).toBe(ordered);
   });
 
   it('leaves an unknown placement pending while the broker cannot be reached', async () => {

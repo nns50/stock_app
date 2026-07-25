@@ -27,7 +27,7 @@ import { initDb, db } from '../src/db';
 import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
 import { listPositions } from '../src/db/positions';
-import { getIntent, listIntents } from '../src/db/orders';
+import { createIntent, getIntent, listIntents, type OrderIntentRecord } from '../src/db/orders';
 import { listPendingLiveOrders, getLiveOrder } from '../src/db/autotradeLiveOrders';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { evaluateRiskCheck } from '../src/services/autotrading/riskCheck';
@@ -36,6 +36,7 @@ import {
   attemptLiveEntry,
   reconcileLiveOrders,
   checkLiveEquityTimeExits,
+  cancelLiveBracketExitLegs,
 } from '../src/services/autotrading/liveExecute';
 
 const mockGetProvider = vi.mocked(getProvider);
@@ -441,5 +442,140 @@ describe('reconcileLiveOrders — time-exit closing orders', () => {
     expect(closedPosition.id).toBe(position.id);
     expect(closedPosition.exits[0]).toMatchObject({ exitPrice: 101.75 });
     expect(getLiveOrder(exitIntentId)?.positionId).toBe(position.id);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An empty restingExitOrders() result is a FILTER result, not a fact: it means
+// "nothing matched", which is produced both by a genuinely clear exit side and
+// by a real resting stop the lenient open-order parsing couldn't read. Those
+// have opposite consequences — the second places a close alongside a working
+// stop, and filling both leaves a long flipped short, tracked nowhere until a
+// later broker sync imports the result as an orphan. These cover the ways of
+// not seeing a leg that must NOT be read as "the bracket is gone".
+// ---------------------------------------------------------------------------
+describe('cancelLiveBracketExitLegs — absence of evidence', () => {
+  const bracketEntry = (over: Partial<Parameters<typeof createIntent>[0]> = {}): OrderIntentRecord =>
+    createIntent(
+      {
+        symbol: 'AAPL',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 10,
+        orderType: 'limit',
+        limitPrice: 100,
+        bracket: { stopLossPrice: 95, takeProfitPrice: 110 },
+        ...over,
+      },
+      `cid-${Math.random()}`,
+    );
+
+  it('refuses when a resting order carried no readable symbol', async () => {
+    // The symbol filter is what produced "nothing on AAPL"; if a resting order's
+    // symbol wouldn't parse, that order could be the stop.
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [{ clientOrderId: 'X', side: 'sell', status: 'WORKING' }], // no symbol
+    });
+    const r = await cancelLiveBracketExitLegs(bracketEntry(), 'ACC1');
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/no readable symbol/i);
+    expect(mockOrderStatus).not.toHaveBeenCalled();
+  });
+
+  it('refuses when a resting order on the symbol has an unreadable side', async () => {
+    // normalizeSide returns undefined for a value it doesn't recognize, and
+    // restingExitOrders requires a POSITIVE side match — so an exit leg whose
+    // side field changed name or format silently drops out of the filter.
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [{ clientOrderId: 'X', symbol: 'AAPL', side: undefined, status: 'WORKING' }],
+    });
+    const r = await cancelLiveBracketExitLegs(bracketEntry(), 'ACC1');
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/could not be identified/i);
+  });
+
+  it('refuses when an exit-side order has no client order id to cancel it by', async () => {
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [{ symbol: 'AAPL', side: 'sell', status: 'WORKING' }], // no clientOrderId
+    });
+    const r = await cancelLiveBracketExitLegs(bracketEntry(), 'ACC1');
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/could not be identified/i);
+  });
+
+  it('refuses when the race check itself could not be run', async () => {
+    // A bracket WAS placed, so seeing none of its legs is contradictory. The
+    // combo status is the only other witness; failing to read it leaves the
+    // question open rather than answering it "safe".
+    mockOpenOrders.mockResolvedValue(noOpenOrders);
+    mockOrderStatus.mockResolvedValue({ ok: false, found: false, error: 'Webull down' } as WebullOrderStatus);
+    const r = await cancelLiveBracketExitLegs(bracketEntry(), 'ACC1');
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/raced the close/i);
+  });
+
+  it('still allows the close when the list is clean and the broker just has no record', async () => {
+    // An entry old enough to hit maxHoldDays has very likely aged out of order
+    // history, so `found: false` must stay allowable — blocking on it would
+    // break the close for exactly the positions this path serves.
+    mockOpenOrders.mockResolvedValue(noOpenOrders);
+    mockOrderStatus.mockResolvedValue({ ok: true, found: false } as WebullOrderStatus);
+    expect(await cancelLiveBracketExitLegs(bracketEntry(), 'ACC1')).toMatchObject({ ok: true });
+  });
+
+  it('ignores TERMINAL orders that could not be parsed — they cannot fill', async () => {
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [
+        { status: 'CANCELLED' }, // unparseable, but terminal
+        { status: 'FILLED', symbol: undefined, side: undefined },
+      ],
+    });
+    mockOrderStatus.mockResolvedValue({ ok: true, found: false } as WebullOrderStatus);
+    expect(await cancelLiveBracketExitLegs(bracketEntry(), 'ACC1')).toMatchObject({ ok: true });
+  });
+
+  it('skips the race check entirely for an entry that never had a bracket', async () => {
+    mockOpenOrders.mockResolvedValue(noOpenOrders);
+    const r = await cancelLiveBracketExitLegs(bracketEntry({ bracket: undefined }), 'ACC1');
+    expect(r).toMatchObject({ ok: true });
+    expect(mockOrderStatus).not.toHaveBeenCalled(); // nothing to have missed
+  });
+
+  it('refuses when the post-cancel re-scan cannot be read', async () => {
+    // The re-scan is the entire proof the cancel took effect — an unparseable
+    // one filters down to empty, which looks exactly like success.
+    mockOpenOrders
+      .mockResolvedValueOnce({ ok: true, orders: [openOrder({ clientOrderId: 'STOP-1' })] })
+      .mockResolvedValueOnce({ ok: true, orders: [{ clientOrderId: 'STOP-1', status: 'WORKING' }] }); // symbol lost
+    mockCancelOrder.mockResolvedValue({ ok: true });
+    const r = await cancelLiveBracketExitLegs(bracketEntry(), 'ACC1');
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/could not confirm they cleared/i);
+  });
+
+  it('blocks the whole force-close end to end, leaving the position and its stop alone', async () => {
+    const { position, quantity } = await openAgedLivePosition(30);
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(quantity) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [{ clientOrderId: 'MYSTERY', symbol: 'AAPL', status: 'WORKING' }], // side unreadable
+    });
+
+    const outcomes = await checkLiveEquityTimeExits();
+
+    expect(outcomes[0]).toMatchObject({ positionId: position.id, requested: false });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(listPositions({ status: 'open' })).toHaveLength(1);
+    // And it is journaled, so the ambiguity alert can surface it.
+    expect(
+      listAutotradeEvents({ stage: 'execution', actions: ['live_time_exit_cancel_failed'] }).length,
+    ).toBeGreaterThan(0);
   });
 });

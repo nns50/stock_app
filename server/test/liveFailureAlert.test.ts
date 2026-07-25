@@ -9,8 +9,12 @@ import { logAutotradeEvent, listAutotradeEvents } from '../src/db/autotradeEvent
 import { dispatchNotifications } from '../src/services/notifier';
 import {
   maybeAlertLiveOrderFailures,
+  maybeAlertLiveAmbiguity,
+  AMBIGUITY_ACTIONS,
+  FAILURE_ACTIONS,
   LIVE_FAILURE_ALERT_THRESHOLD,
   LIVE_FAILURE_REALERT_COOLDOWN_MS,
+  LIVE_AMBIGUITY_REALERT_COOLDOWN_MS,
 } from '../src/services/autotrading/liveFailureAlert';
 
 const mockDispatch = vi.mocked(dispatchNotifications);
@@ -117,5 +121,103 @@ describe('maybeAlertLiveOrderFailures', () => {
     }
     expect(await maybeAlertLiveOrderFailures()).toBe(false);
     expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it('does not count an AMBIGUITY event as a rejection (they are separate alerts)', async () => {
+    for (let i = 0; i < LIVE_FAILURE_ALERT_THRESHOLD + 2; i++) {
+      logAutotradeEvent({
+        symbol: 'X',
+        stage: 'execution',
+        action: 'live_order_outcome_unknown',
+        detail: { reason: 'timed out' },
+      });
+    }
+    expect(await maybeAlertLiveOrderFailures()).toBe(false);
+  });
+});
+
+function ambiguous(action = 'live_order_outcome_unknown', symbol = 'NVDA', reason = 'Request timed out after 10000ms') {
+  logAutotradeEvent({ symbol, stage: 'execution', action, detail: { reason } });
+}
+const ambiguityMarkers = () => listAutotradeEvents({ actions: ['live_ambiguity_alerted'] });
+
+describe('maybeAlertLiveAmbiguity', () => {
+  it('does not alert when nothing is unresolved', async () => {
+    expect(await maybeAlertLiveAmbiguity()).toBe(false);
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it('alerts on the FIRST unresolved order — one is already real exposure', async () => {
+    ambiguous();
+    expect(await maybeAlertLiveAmbiguity()).toBe(true);
+    expect(mockDispatch).toHaveBeenCalledTimes(1);
+    const events = mockDispatch.mock.calls[0][0];
+    expect(events[0].message).toMatch(/1 live order in an UNRESOLVED state/);
+    expect(events[0].message).toMatch(/NVDA/);
+    expect(events[0].message).toMatch(/never answered/);
+    expect(ambiguityMarkers()).toHaveLength(1);
+  });
+
+  it('covers every ambiguity action, each with its own summary line', async () => {
+    for (const action of AMBIGUITY_ACTIONS) {
+      db.exec('DELETE FROM autotrade_events');
+      mockDispatch.mockClear();
+      ambiguous(action);
+      expect(await maybeAlertLiveAmbiguity(), `${action} should alert`).toBe(true);
+      const message = mockDispatch.mock.calls[0][0][0].message;
+      // Never the generic fallback — every action names what actually happened.
+      expect(message, `${action} needs a summary line`).not.toMatch(/could not be resolved/);
+    }
+  });
+
+  it('a later SUCCESS does not clear an unresolved fill (unlike the rejection streak)', async () => {
+    ambiguous('live_fill_not_fully_materialized');
+    placed(); // a real order gets through afterwards...
+    // ...which says nothing about the shares the ledger still hasn't booked.
+    expect(await maybeAlertLiveAmbiguity()).toBe(true);
+    expect(mockDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not re-report what an earlier alert already covered', async () => {
+    ambiguous();
+    expect(await maybeAlertLiveAmbiguity()).toBe(true);
+    mockDispatch.mockClear();
+    // No NEW ambiguity since the marker — nothing to say, even long after the
+    // cooldown has elapsed.
+    const marker = ambiguityMarkers()[0];
+    expect(await maybeAlertLiveAmbiguity(marker.createdAt + LIVE_AMBIGUITY_REALERT_COOLDOWN_MS + 1000)).toBe(false);
+    expect(mockDispatch).not.toHaveBeenCalled();
+    expect(ambiguityMarkers()).toHaveLength(1);
+  });
+
+  it('throttles a fresh ambiguity within the cooldown, then reports it after', async () => {
+    ambiguous();
+    await maybeAlertLiveAmbiguity();
+    const marker = ambiguityMarkers()[0];
+    mockDispatch.mockClear();
+    ambiguous('live_exit_ambiguous', 'AAPL');
+    expect(await maybeAlertLiveAmbiguity(marker.createdAt + 60_000)).toBe(false);
+    expect(await maybeAlertLiveAmbiguity(marker.createdAt + LIVE_AMBIGUITY_REALERT_COOLDOWN_MS + 1000)).toBe(true);
+    expect(mockDispatch.mock.calls[0][0][0].message).toMatch(/AAPL/);
+    expect(ambiguityMarkers()).toHaveLength(2);
+  });
+
+  it('counts several unresolved orders in one report', async () => {
+    ambiguous('live_order_outcome_unknown', 'A');
+    ambiguous('live_options_materialization_failed', 'B');
+    ambiguous('live_exit_ambiguous', 'C');
+    expect(await maybeAlertLiveAmbiguity()).toBe(true);
+    expect(mockDispatch.mock.calls[0][0][0].message).toMatch(/3 live orders in an UNRESOLVED state/);
+  });
+
+  it('ignores plain rejections — those are the other alert', async () => {
+    failN(LIVE_FAILURE_ALERT_THRESHOLD + 2);
+    expect(await maybeAlertLiveAmbiguity()).toBe(false);
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it('the two action sets are disjoint, so no event is reported by both alerts', () => {
+    const overlap = AMBIGUITY_ACTIONS.filter((a) => FAILURE_ACTIONS.includes(a));
+    expect(overlap).toEqual([]);
   });
 });

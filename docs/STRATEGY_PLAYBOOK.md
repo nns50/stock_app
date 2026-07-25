@@ -605,6 +605,18 @@ book that isn't correlated it changes nothing. Because it's genuinely a selectio
 it runs in the **backtest** engines too — so you can measure whether de-crowding actually
 improved your historical risk-adjusted return before enabling it live.
 
+**"What happens when the app isn't sure?"** Worth knowing, because it shapes what you'll
+see: every live-order decision made under an unknown resolves toward **doing less**, not
+toward assuming the convenient answer. A fill the app can't fully account for is booked
+**short** rather than invented. A placement the broker never answered is left **unresolved
+and pollable** rather than declared rejected — so don't re-place it until it settles. A
+force-close that can't confirm the position's resting stop is actually gone **doesn't
+place**, because a close sitting next to a live stop can fill twice and leave a long
+short. The practical consequence for you: an app that occasionally says "I couldn't
+confirm this, so I did nothing" is working as intended, and those messages are worth
+reading rather than clicking past — each one means your records and your broker might
+disagree, and the fix is to look at the broker, not to retry.
+
 ---
 
 ## The weekly review checklist

@@ -19,6 +19,7 @@ import {
   Segmented,
   Spinner,
   StatTile,
+  UnknownOutcomeNotice,
 } from '../components/ui';
 import type {
   AutotradeConfig,
@@ -806,6 +807,10 @@ function CloseLiveOptionsPositionModal({
                 ✓ Close order placed{result.broker?.orderId ? ` · broker order ${result.broker.orderId}` : ''}. It can
                 take a few minutes to fill and show here as closed.
               </div>
+            ) : result.reason === 'outcome_unknown' ? (
+              // Same reasoning as the Positions-page close: "not placed" would
+              // invite a second close against a possibly-filled first one.
+              <UnknownOutcomeNotice message={result.error || result.broker?.error || 'the broker did not respond'} />
             ) : (
               <div className="rounded-md bg-bear/15 text-bear text-sm p-2">
                 ✕ Not placed — {result.error || result.broker?.error || `reason: ${result.reason}`}

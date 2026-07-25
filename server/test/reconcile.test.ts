@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { initDb, db } from '../src/db';
 import { config } from '../src/config';
-import { createIntent, getEvents, getIntent, transitionIntent } from '../src/db/orders';
+import { advanceMaterialized, createIntent, getEvents, getIntent, transitionIntent } from '../src/db/orders';
 import { addExit, createPosition, listPositions } from '../src/db/positions';
 import { recordLiveOrder } from '../src/db/autotradeLiveOrders';
 import { recordLiveOptionsEntryOrder } from '../src/db/autotradeLiveOptionsOrders';
-import { mapWebullStatus, reconcileAllWorking, reconcileIntent } from '../src/services/trading/reconcile';
+import { canStillFill, mapWebullStatus, reconcileAllWorking, reconcileIntent } from '../src/services/trading/reconcile';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
 const origWebull = { ...config.webull };
@@ -431,6 +431,138 @@ describe('reconcileIntent — bracket exit leg (human-placed bracket)', () => {
   });
 });
 
+describe('unrecognized broker status', () => {
+  const envelope = (over: Record<string, unknown>) => ({
+    client_order_id: CID,
+    combo_order_id: '8AIG1C8LCCE58QHNDSU5NHBP09',
+    orders: [{ client_order_id: CID, symbol: 'AMC', side: 'BUY', ...over }],
+  });
+  const pull = (env: unknown) =>
+    vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp([env]));
+
+  it('books a fill reported alongside a status the mapper does not know', async () => {
+    // The label and the fill are separate facts. This used to hit the early
+    // return and do nothing at all — real shares, dropped in silence.
+    const id = placedIntentId(); // quantity 1
+    pull(envelope({ status: 'DONE_FOR_DAY', filled_quantity: '1', filled_price: '1.90' }));
+
+    const r = await reconcileIntent(id, 'ACC1');
+
+    expect(r.materialized).toBe(1);
+    const positions = listPositions({ status: 'open' });
+    expect(positions).toHaveLength(1);
+    expect(positions[0].entryPrice).toBeCloseTo(1.9);
+    // The lifecycle is deliberately NOT moved — we don't know what to call it.
+    expect(getIntent(id)?.state).toBe('acknowledged');
+    expect(getEvents(id).some((e) => e.detail?.includes('unrecognized status "DONE_FOR_DAY"'))).toBe(true);
+  });
+
+  it('notes the unrecognized status once, not on every poll', async () => {
+    const id = placedIntentId();
+    for (let i = 0; i < 3; i++) {
+      pull(envelope({ status: 'DONE_FOR_DAY' }));
+      await reconcileIntent(id, 'ACC1');
+      vi.restoreAllMocks();
+    }
+    const notes = getEvents(id).filter((e) => e.detail?.includes('unrecognized status'));
+    expect(notes).toHaveLength(1);
+  });
+
+  it('books nothing when an unrecognized status reports no fill', async () => {
+    const id = placedIntentId();
+    pull(envelope({ status: 'SOMETHING_NEW' }));
+    const r = await reconcileIntent(id, 'ACC1');
+    expect(r.materialized ?? 0).toBe(0);
+    expect(listPositions({ status: 'open' })).toHaveLength(0);
+    expect(getIntent(id)?.state).toBe('acknowledged'); // untouched
+  });
+});
+
+describe('canStillFill', () => {
+  it('treats an unknown or missing status as able to fill', () => {
+    expect(canStillFill(undefined)).toBe(true);
+    expect(canStillFill('SOMETHING_NEW')).toBe(true);
+  });
+
+  it('agrees with mapWebullStatus on every status it maps', () => {
+    // The point of deriving one from the other: they cannot drift again.
+    for (const s of ['FILLED', 'CANCELLED', 'CANCELED', 'EXPIRED', 'REJECTED', 'FAILED']) {
+      expect(canStillFill(s), s).toBe(false);
+    }
+    for (const s of ['PENDING', 'WORKING', 'QUEUED', 'NEW', 'ACCEPTED', 'PARTIAL_FILLED']) {
+      expect(canStillFill(s), s).toBe(true);
+    }
+  });
+
+  it('covers the broker-terminal statuses that have no lifecycle equivalent', () => {
+    // These were terminal in liveExecute's own list and unmapped here, so the
+    // same order read as "gone" to the bracket scan and "unknown" to reconcile.
+    expect(mapWebullStatus('DELETED')).toBeUndefined();
+    expect(canStillFill('DELETED')).toBe(false);
+    expect(canStillFill('INACTIVE')).toBe(false);
+    expect(canStillFill('inactive')).toBe(false); // case-insensitive
+  });
+});
+
+describe('broker quantity drift', () => {
+  const workingEnvelope = (over: Record<string, unknown>) => ({
+    client_order_id: CID,
+    combo_order_id: '8AIG1C8LCCE58QHNDSU5NHBP09',
+    orders: [{ client_order_id: CID, symbol: 'AMC', side: 'BUY', status: 'WORKING', ...over }],
+  });
+  const pull = (env: unknown) =>
+    vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp([env]));
+
+  it("adopts the broker's quantity when ours is stale", async () => {
+    const id = placedIntentId(); // quantity 1
+    pull(workingEnvelope({ total_quantity: '5' }));
+    await reconcileIntent(id, 'ACC1');
+    expect(getIntent(id)?.quantity).toBe(5);
+    expect(getEvents(id).at(-1)?.detail).toMatch(/quantity corrected 1 → 5/);
+  });
+
+  it('ignores a missing or nonsensical quantity — absence is not evidence', async () => {
+    for (const total of [undefined, '0', 'abc']) {
+      db.exec('DELETE FROM order_events; DELETE FROM order_intents;');
+      const id = placedIntentId();
+      pull(workingEnvelope(total === undefined ? {} : { total_quantity: total }));
+      await reconcileIntent(id, 'ACC1');
+      expect(getIntent(id)?.quantity, `total_quantity=${total}`).toBe(1);
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('never drops below what has already been booked', async () => {
+    const id = placedIntentId();
+    transitionIntent(id, 'partially_filled', { detail: 'partial' });
+    advanceMaterialized(id, 1, 1.89); // a real share, already in the ledger
+    pull(workingEnvelope({ total_quantity: '0.5', status: 'PARTIAL_FILLED' }));
+    await reconcileIntent(id, 'ACC1');
+    expect(getIntent(id)?.quantity).toBe(1);
+  });
+
+  it('leaves a COMBO alone — total_quantity is one leg, not the whole order', async () => {
+    const rec = createIntent(intent({ bracket: { stopLossPrice: 1.5, takeProfitPrice: 2.5 } }), CID);
+    transitionIntent(rec.id, 'validated');
+    transitionIntent(rec.id, 'confirmed');
+    transitionIntent(rec.id, 'submitted');
+    transitionIntent(rec.id, 'acknowledged', { brokerOrderId: 'WB-B' });
+    pull({
+      client_order_id: CID,
+      combo_order_id: 'WB-B',
+      orders: [{ client_order_id: CID, combo_type: 'MASTER', status: 'WORKING', total_quantity: '99' }],
+    });
+    await reconcileIntent(rec.id, 'ACC1');
+    expect(getIntent(rec.id)?.quantity).toBe(1);
+  });
+});
+
 describe('reconcileAllWorking', () => {
   // A live order that reached the broker, under a distinct client id.
   const working = (cid: string): number => {
@@ -441,6 +573,58 @@ describe('reconcileAllWorking', () => {
     transitionIntent(rec.id, 'acknowledged', { brokerOrderId: `WB-${cid}` });
     return rec.id;
   };
+
+  // An order whose placement outcome was UNKNOWN: left at 'submitted' with no
+  // broker id, because we never got a response to read one from.
+  const unknownOutcome = (cid: string): number => {
+    const rec = createIntent(intent(), cid);
+    transitionIntent(rec.id, 'validated');
+    transitionIntent(rec.id, 'confirmed');
+    transitionIntent(rec.id, 'submitted');
+    return rec.id;
+  };
+
+  it('includes an unknown-outcome order despite it having no broker id', async () => {
+    // The broker-id test alone excluded exactly the orders most in need of
+    // resolving — possibly live, possibly filled, invisible until someone finds
+    // out which.
+    const id = unknownOutcome(CID);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp([]));
+    const r = await reconcileAllWorking('ACC1');
+    expect(r.results.map((x) => x.id)).toContain(id);
+  });
+
+  it('resolves an unknown-outcome order that had actually FILLED', async () => {
+    // The likely case for a marketable limit: it fills inside the window before
+    // the first reconcile, so the first status ever seen is FILLED. That is an
+    // illegal jump from 'submitted', so it used to be skipped silently — the
+    // order stuck at 'submitted' forever and the real position never booked.
+    const id = unknownOutcome(CID);
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp([filledEnvelope]));
+
+    const r = await reconcileAllWorking('ACC1');
+
+    expect(r.changed).toBe(1);
+    expect(getIntent(id)?.state).toBe('filled');
+    // The acknowledgement we never received is recorded before the fill, so the
+    // audit trail reads the way it actually happened.
+    const states = getEvents(id).map((e) => e.state);
+    expect(states).toEqual(['draft', 'validated', 'confirmed', 'submitted', 'acknowledged', 'filled', 'filled']);
+    expect(getEvents(id).find((e) => e.state === 'acknowledged')?.detail).toMatch(/outcome was unknown/i);
+    // And the real shares reach the ledger.
+    expect(listPositions({ status: 'open' })).toHaveLength(1);
+  });
+
+  it('leaves an unknown-outcome order alone while the broker has no record of it', async () => {
+    const id = unknownOutcome(CID);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp([]));
+    await reconcileAllWorking('ACC1');
+    // Not acknowledged on nothing, and not retired either — the human path has
+    // no dedup slot to free, so it stays visible and resolvable.
+    expect(getIntent(id)?.state).toBe('submitted');
+  });
 
   it('reconciles every working order and skips terminal / never-placed ones', async () => {
     const a = working('cid-a');

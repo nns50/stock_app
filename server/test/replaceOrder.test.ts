@@ -146,4 +146,77 @@ describe('replaceIntent', () => {
     expect(r).toMatchObject({ ok: true, replaced: false, reason: 'broker_rejected' });
     expect(getIntent(id)?.limitPrice).toBe(1.5); // unchanged
   });
+
+  // A modify is nonIdempotent, so a lost response is never retried — and it was
+  // reported as a rejection, which is a claim we can't make. If the modify DID
+  // apply, our stored quantity is short of the order's, and computeFillDelta
+  // clamps every future booking to that stale ceiling: real shares that no
+  // ledger can ever see.
+  describe('unknown modify outcome', () => {
+    const lostReplace = (status: number) =>
+      vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(okResp(BALANCE)) // account balance
+        .mockResolvedValueOnce(okResp([])) // account positions
+        .mockResolvedValueOnce({ ok: false, status, text: async () => JSON.stringify({ msg: 'gateway' }) } as Response)
+        .mockResolvedValueOnce(okResp([])) // reconcile: open
+        .mockResolvedValueOnce(okResp([])); // reconcile: history
+
+    it('reports it as unknown, not rejected, and persists nothing', async () => {
+      const id = workingIntentId();
+      lostReplace(504);
+      const r = await replaceIntent(id, 'ACC1', { quantity: 5, limitPrice: 1.6 });
+
+      expect(r).toMatchObject({ ok: true, replaced: false, reason: 'outcome_unknown' });
+      expect(r.error).toMatch(/did not respond/i);
+      // Neither guess is made: the record is untouched, and it was re-checked.
+      expect(getIntent(id)).toMatchObject({ quantity: 1, limitPrice: 1.5 });
+      expect(r.reconciled).toBeDefined();
+    });
+
+    it.each([
+      ['a network error / client timeout', 0],
+      ['a rate limit', 429],
+      ['a server error', 500],
+    ])('treats %s as unknown', async (_label, status) => {
+      const id = workingIntentId();
+      if (status === 0) {
+        vi.spyOn(globalThis, 'fetch')
+          .mockResolvedValueOnce(okResp(BALANCE))
+          .mockResolvedValueOnce(okResp([]))
+          .mockRejectedValueOnce(new Error('socket hang up'))
+          .mockResolvedValueOnce(okResp([]))
+          .mockResolvedValueOnce(okResp([]));
+      } else {
+        lostReplace(status);
+      }
+      const r = await replaceIntent(id, 'ACC1', { quantity: 5 });
+      expect(r.reason).toBe('outcome_unknown');
+    });
+
+    it("adopts the broker's own quantity when the lost modify had actually applied", async () => {
+      // The whole point: the broker settles it authoritatively, so the stale
+      // ceiling that made the extra shares unbookable is corrected.
+      const id = workingIntentId();
+      vi.spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(okResp(BALANCE))
+        .mockResolvedValueOnce(okResp([]))
+        .mockResolvedValueOnce({ ok: false, status: 0, text: async () => '' } as Response)
+        .mockResolvedValueOnce(okResp([])) // reconcile: open
+        .mockResolvedValueOnce(
+          okResp([
+            {
+              client_order_id: CID,
+              combo_order_id: 'WB-REP-1',
+              orders: [{ client_order_id: CID, status: 'WORKING', total_quantity: '5', symbol: 'AMC', side: 'BUY' }],
+            },
+          ]),
+        );
+
+      const r = await replaceIntent(id, 'ACC1', { quantity: 5 });
+
+      expect(r.reason).toBe('outcome_unknown');
+      expect(getIntent(id)?.quantity).toBe(5); // corrected from the broker, not guessed
+    });
+  });
 });

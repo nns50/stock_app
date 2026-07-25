@@ -3,7 +3,7 @@ import { client } from '../api/client';
 import { fmtDate, fmtNum, fmtUsd, todayISO } from '../lib/format';
 import { useLocalStorage } from '../lib/hooks';
 import { CHECKLIST_SETTING_KEY, DEFAULT_CHECKLIST_RULES, rulesFromSetting } from '../lib/checklist';
-import { Field, Modal, NumberInput, Segmented } from './ui';
+import { Field, Modal, NumberInput, Segmented, UnknownOutcomeNotice } from './ui';
 import { useToast } from './ToastContext';
 import { useConfirm } from './ConfirmContext';
 import type { ClosePositionResult, Position, RiskSizingResult } from '../api/types';
@@ -665,12 +665,20 @@ export function CloseModal({
               aria-label="type to confirm closing this position"
             />
           </div>
+          {result?.quoteWarning && (
+            <div className="rounded-md bg-amber-500/15 text-amber-400 text-sm p-2">⚠ {result.quoteWarning}</div>
+          )}
           {result &&
             (result.placed ? (
               <div className="rounded-md bg-bull/15 text-bull text-sm p-2">
                 ✓ Close order placed{result.broker?.orderId ? ` · broker order ${result.broker.orderId}` : ''}. It can
                 take a few minutes to fill and show here as closed.
               </div>
+            ) : result.reason === 'outcome_unknown' ? (
+              // Especially important on a CLOSE: read as "not placed", the
+              // obvious next move is to close again — against a position whose
+              // first close may already have filled.
+              <UnknownOutcomeNotice message={result.error || result.broker?.error || 'the broker did not respond'} />
             ) : (
               <div className="rounded-md bg-bear/15 text-bear text-sm p-2">
                 ✕ Not placed — {result.error || result.broker?.error || `reason: ${result.reason}`}
