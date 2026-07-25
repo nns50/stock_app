@@ -19,8 +19,7 @@ export function saveQuote(q: Quote): void {
 
 export function readCachedQuote(symbol: string): { quote: Quote; updatedAt: number } | undefined {
   const row = db.prepare('SELECT data, updated_at FROM quote_cache WHERE symbol = ?').get(symbol.toUpperCase()) as
-    | { data: string; updated_at: number }
-    | undefined;
+    { data: string; updated_at: number } | undefined;
   if (!row) return undefined;
   return { quote: JSON.parse(row.data) as Quote, updatedAt: row.updated_at };
 }

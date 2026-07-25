@@ -17,14 +17,7 @@ import { isPlaceableStructure, strategyToOrder } from '../lib/tradePrefill';
 import type { StrategyAnalysis, StrategyLeg } from '../api/types';
 
 type TemplateName =
-  | 'long-call'
-  | 'long-put'
-  | 'bull-call'
-  | 'bear-put'
-  | 'straddle'
-  | 'strangle'
-  | 'iron-condor'
-  | 'custom';
+  'long-call' | 'long-put' | 'bull-call' | 'bear-put' | 'straddle' | 'strangle' | 'iron-condor' | 'custom';
 
 const TEMPLATES: { value: TemplateName; label: string }[] = [
   { value: 'long-call', label: 'Long call' },

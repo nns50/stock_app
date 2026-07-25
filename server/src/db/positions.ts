@@ -377,8 +377,7 @@ export function addExit(positionId: number, input: ExitInput): Position | undefi
 
 export function deleteExit(exitId: number): boolean {
   const row = db.prepare('SELECT position_id FROM position_exits WHERE id = ?').get(exitId) as
-    | { position_id: number }
-    | undefined;
+    { position_id: number } | undefined;
   const changed = db.prepare('DELETE FROM position_exits WHERE id = ?').run(exitId).changes > 0;
   if (changed && row) recomputeStatus(row.position_id);
   return changed;
