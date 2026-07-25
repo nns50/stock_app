@@ -1,4 +1,4 @@
-import { lazy, memo, ReactNode, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, memo, ReactNode, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { client } from '../api/client';
 import { AsyncState, useAsync, useLocalStorage } from '../lib/hooks';
 import { useToast } from '../components/ToastContext';
@@ -249,7 +249,7 @@ function BacktestTradesTable({ trades }: { trades: SimulatedTrade[] }) {
               <td className="td text-right tabular-nums">{fmtUsd(t.exitPrice)}</td>
               <td className="td">
                 <Badge color={t.exitReason === 'target' ? 'green' : t.exitReason === 'stop' ? 'red' : 'slate'}>
-                  {t.exitReason.replace('_', ' ')}
+                  {t.exitReason.replace(/_/g, ' ')}
                 </Badge>
               </td>
               <td className="td text-right tabular-nums">{t.quantity}</td>
@@ -323,7 +323,7 @@ function OptionsBacktestTradesTable({ trades }: { trades: SimulatedOptionsTrade[
                           : 'blue'
                   }
                 >
-                  {t.exitReason.replace('_', ' ')}
+                  {t.exitReason.replace(/_/g, ' ')}
                 </Badge>
               </td>
               <td className="td text-right tabular-nums">{t.contracts}</td>
@@ -484,7 +484,7 @@ const PaperPositionsTable = memo(
                   <td className="td">
                     {p.exitReason ? (
                       <Badge color={p.exitReason === 'target' ? 'green' : p.exitReason === 'stop' ? 'red' : 'slate'}>
-                        {p.exitReason}
+                        {p.exitReason.replace(/_/g, ' ')}
                       </Badge>
                     ) : (
                       '—'
@@ -659,7 +659,7 @@ const OptionsPaperPositionsTable = memo(
                                 : 'slate'
                         }
                       >
-                        {p.exitReason.replace('_', ' ')}
+                        {p.exitReason.replace(/_/g, ' ')}
                       </Badge>
                     ) : (
                       '—'
@@ -910,7 +910,7 @@ const LiveOptionsPositionsTable = memo(
                   <td className="td">
                     {p.exitReason ? (
                       <Badge color={p.exitReason === 'time_exit' ? 'blue' : 'slate'}>
-                        {p.exitReason.replace('_', ' ')}
+                        {p.exitReason.replace(/_/g, ' ')}
                       </Badge>
                     ) : (
                       '—'
@@ -998,7 +998,10 @@ const LivePositionsTable = memo(
                     {p.symbol}
                     {isOption && (
                       <span className="ml-2 text-xs font-normal text-slate-500">
-                        {fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : 'P'} {p.expiration}
+                        {/* optionType is nullable — a bare ternary rendered a null
+                            as "P", showing an unknown (or a call) as a put. */}
+                        {fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : p.optionType === 'put' ? 'P' : '?'}{' '}
+                        {p.expiration}
                       </span>
                     )}
                     {p.accountId && (
@@ -1158,6 +1161,26 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
   const canEnable =
     p.liveAccountIdDraft.trim() !== '' && p.confirmLiveText.trim().toUpperCase() === p.confirmPhrase.toUpperCase();
 
+  // Both cards save their whole group in ONE request, and a cleared NumberInput
+  // yields undefined, which JSON.stringify drops — the server then reads the key
+  // as "leave unchanged" and the UI reports success while the old value quietly
+  // comes back. Block the save instead, so an empty required field is visible.
+  const liveCapsIncomplete =
+    p.liveMaxOrderUsdDraft == null ||
+    p.liveMaxDailyLossUsdDraft == null ||
+    p.liveMaxOrdersPerDayDraft == null ||
+    p.liveFatFingerPctDraft == null ||
+    p.liveProbationTradesDraft == null ||
+    p.liveProbationSizeMultiplierDraft == null ||
+    p.liveMaxAddOnsDraft == null;
+  const liveOptionsCapsIncomplete =
+    p.liveOptionsMaxOrderUsdDraft == null ||
+    p.liveOptionsMaxDailyLossUsdDraft == null ||
+    p.liveOptionsMaxOrdersPerDayDraft == null ||
+    p.liveOptionsFatFingerPctDraft == null ||
+    p.liveOptionsProbationTradesDraft == null ||
+    p.liveOptionsProbationSizeMultiplierDraft == null;
+
   return (
     <div className="space-y-4">
       <div className="grid sm:grid-cols-2 gap-3 items-end">
@@ -1193,12 +1216,18 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
         </div>
         <div className="grid sm:grid-cols-3 gap-3">
           <Field label="Max order ($)">
-            <NumberInput value={p.liveMaxOrderUsdDraft} onChange={p.setLiveMaxOrderUsdDraft} placeholder="e.g. 20000" />
+            <NumberInput
+              value={p.liveMaxOrderUsdDraft}
+              onChange={p.setLiveMaxOrderUsdDraft}
+              min={0}
+              placeholder="e.g. 20000"
+            />
           </Field>
           <Field label="Max daily loss ($)">
             <NumberInput
               value={p.liveMaxDailyLossUsdDraft}
               onChange={p.setLiveMaxDailyLossUsdDraft}
+              min={0}
               placeholder="e.g. 3000"
             />
           </Field>
@@ -1206,16 +1235,24 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
             <NumberInput
               value={p.liveMaxOrdersPerDayDraft}
               onChange={p.setLiveMaxOrdersPerDayDraft}
+              min={0}
               placeholder="e.g. 6"
             />
           </Field>
           <Field label="Fat-finger (%)" hint="Limit price must sit within this % of the reference price.">
-            <NumberInput value={p.liveFatFingerPctDraft} onChange={p.setLiveFatFingerPctDraft} placeholder="e.g. 10" />
+            <NumberInput
+              value={p.liveFatFingerPctDraft}
+              onChange={p.setLiveFatFingerPctDraft}
+              min={0}
+              max={100}
+              placeholder="e.g. 10"
+            />
           </Field>
           <Field label="Probation trades" hint="First N live trades after enabling get an extra size cut.">
             <NumberInput
               value={p.liveProbationTradesDraft}
               onChange={p.setLiveProbationTradesDraft}
+              min={0}
               placeholder="e.g. 20"
             />
           </Field>
@@ -1223,6 +1260,8 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
             <NumberInput
               value={p.liveProbationSizeMultiplierDraft}
               onChange={p.setLiveProbationSizeMultiplierDraft}
+              min={0}
+              max={1}
               placeholder="e.g. 0.5"
             />
           </Field>
@@ -1235,10 +1274,16 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
           />
           Allow naked short (defined-risk only is strongly recommended — leave unchecked)
         </label>
-        <label className="flex items-center gap-2 text-sm mt-3">
+        {/* Nested under the live-trading gate the same way "Live options trading"
+            is: the server fails this closed unless live trading is already (or is
+            concurrently becoming) enabled. Left enabled while the master was off,
+            ticking it made every save of this card 400 — taking the nine other
+            live settings down with it, since they share one request. */}
+        <label className={cx('flex items-center gap-2 text-sm mt-3', !p.config.liveTradingEnabled && 'text-slate-500')}>
           <input
             type="checkbox"
             checked={p.liveScaleInEnabledDraft}
+            disabled={!p.config.liveTradingEnabled}
             onChange={(e) => p.setLiveScaleInEnabledDraft(e.target.checked)}
           />
           Scale into live winners (pyramiding) — ⚠ the one live setting that ADDS risk to an open position
@@ -1247,15 +1292,23 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
           Uses the shared scale-in trigger / size (in Equity exits). Each add is placed as its own bracket, so the added
           shares are never naked and your original stop/target is untouched. Off by default — validate in paper/backtest
           first.
+          {!p.config.liveTradingEnabled && (
+            <span className="text-slate-500"> Enable live trading first to turn this on.</span>
+          )}
         </p>
         <div className="mt-2">
           <Field label="Max live add-ons (0 disables)">
             <NumberInput value={p.liveMaxAddOnsDraft} onChange={p.setLiveMaxAddOnsDraft} min={0} placeholder="e.g. 1" />
           </Field>
         </div>
-        <button className="btn-ghost mt-3" onClick={p.onSaveLiveCaps} disabled={p.liveCapsBusy}>
+        <button className="btn-ghost mt-3" onClick={p.onSaveLiveCaps} disabled={p.liveCapsBusy || liveCapsIncomplete}>
           {p.liveCapsBusy ? 'Saving…' : 'Save live-trading settings'}
         </button>
+        {liveCapsIncomplete && (
+          <p className="text-[11px] text-amber-400/80 mt-1">
+            Every field above needs a value — these save as one batch, so a blank one would silently keep its old value.
+          </p>
+        )}
       </div>
 
       <div className="rounded-lg border border-ink-600 bg-ink-700/40 p-3">
@@ -1311,6 +1364,7 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsMaxOrderUsdDraft}
                   onChange={p.setLiveOptionsMaxOrderUsdDraft}
+                  min={0}
                   placeholder="e.g. 2000"
                 />
               </Field>
@@ -1318,6 +1372,7 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsMaxDailyLossUsdDraft}
                   onChange={p.setLiveOptionsMaxDailyLossUsdDraft}
+                  min={0}
                   placeholder="e.g. 500"
                 />
               </Field>
@@ -1325,6 +1380,7 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsMaxOrdersPerDayDraft}
                   onChange={p.setLiveOptionsMaxOrdersPerDayDraft}
+                  min={0}
                   placeholder="e.g. 6"
                 />
               </Field>
@@ -1332,6 +1388,8 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsFatFingerPctDraft}
                   onChange={p.setLiveOptionsFatFingerPctDraft}
+                  min={0}
+                  max={100}
                   placeholder="e.g. 10"
                 />
               </Field>
@@ -1339,6 +1397,7 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsProbationTradesDraft}
                   onChange={p.setLiveOptionsProbationTradesDraft}
+                  min={0}
                   placeholder="e.g. 20"
                 />
               </Field>
@@ -1346,6 +1405,8 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsProbationSizeMultiplierDraft}
                   onChange={p.setLiveOptionsProbationSizeMultiplierDraft}
+                  min={0}
+                  max={1}
                   placeholder="e.g. 0.5"
                 />
               </Field>
@@ -1357,7 +1418,11 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 size.
               </p>
             )}
-            <button className="btn-ghost" onClick={p.onSaveLiveOptionsCaps} disabled={p.liveOptionsSaveBusy}>
+            <button
+              className="btn-ghost"
+              onClick={p.onSaveLiveOptionsCaps}
+              disabled={p.liveOptionsSaveBusy || liveOptionsCapsIncomplete}
+            >
               {p.liveOptionsSaveBusy ? 'Saving…' : 'Save live options settings'}
             </button>
           </div>
@@ -1957,7 +2022,10 @@ export function TuneFromTargetSection({
   // update live as the user flips the basis toggle — the whole point of having
   // both bases one click apart.
   useEffect(() => {
-    if (!equitySet || target == null || target <= 0) {
+    // Reads accountEquityUsd directly rather than the derived `equitySet`
+    // boolean, so this effect depends on the equity AMOUNT (see the deps note
+    // below) without carrying a redundant second dependency for the same value.
+    if (config.accountEquityUsd == null || target == null || target <= 0) {
       setPreview(undefined);
       setError(undefined);
       return;
@@ -1985,7 +2053,14 @@ export function TuneFromTargetSection({
       cancelled = true;
       clearTimeout(t);
     };
-  }, [target, basis, equitySet]);
+    // Keyed on the equity AMOUNT, not just whether it's set: the server derives
+    // the dollar caps (liveMaxOrderUsd, liveMaxDailyLossUsd, and their options
+    // twins) from equity, and equity moves on its own — the loop marks it to
+    // market every tick and this page re-syncs it every 60s. Depending on the
+    // `equitySet` boolean meant the preview only refreshed on the null->set
+    // transition, so the table (and the patch Apply writes) kept dollar caps
+    // scaled to a stale equity while the prose above it showed the new one.
+  }, [target, basis, config.accountEquityUsd]);
 
   const changedRows = preview
     ? (Object.keys(preview.patch) as (keyof TunablePatch)[])
@@ -2286,106 +2361,126 @@ export default function AutoTradePage() {
   const [autoTuneSlippageExcludePctDraft, setAutoTuneSlippageExcludePctDraft] = useState<number | undefined>();
   const [autoTuneExitsEnabled, setAutoTuneExitsEnabled] = useState(false);
   const [autoTuneExitMaxStepDraft, setAutoTuneExitMaxStepDraft] = useState<number | undefined>();
+  // Server config -> local drafts. A field is (re-)seeded ONLY when the server's
+  // value for it actually changed since the last seed (or on first load).
+  // Every config.reload() hands back a fresh object — after any save, and on
+  // the 60s equity auto-sync — so an unconditional re-seed would reapply server
+  // state on top of the OTHER fields the user has edited but not yet saved,
+  // silently discarding them. Same class of bug as the tune target snapping
+  // back to 5.
+  const lastSeededRef = useRef<AutotradeConfig | null>(null);
+  const seedDraftsFrom = useCallback((cfg: AutotradeConfig) => {
+    const prev = lastSeededRef.current;
+    lastSeededRef.current = cfg;
+    // regimeWeightPresets is an object: a fresh fetch always yields a new
+    // identity, so compare by value or it would re-seed (and clobber) every time.
+    const same = (a: unknown, b: unknown) =>
+      a !== null && typeof a === 'object' ? JSON.stringify(a) === JSON.stringify(b) : Object.is(a, b);
+    const sync = <K extends keyof AutotradeConfig>(key: K, apply: (v: AutotradeConfig[K]) => void) => {
+      if (!prev || !same(cfg[key], prev[key])) apply(cfg[key]);
+    };
+    sync('enabled', setEnabled);
+    sync('killSwitch', setKillSwitch);
+    sync('riskProfile', setRiskProfile);
+    sync('optionsStrategyType', setOptionsStrategyType);
+    sync('tradeDirection', setTradeDirection);
+    sync('optionsDeltaMin', setOptionsDeltaMinDraft);
+    sync('optionsDeltaMax', setOptionsDeltaMaxDraft);
+    sync('optionsMaxSpreadPct', setOptionsMaxSpreadPctDraft);
+    sync('optionsMinOpenInterest', setOptionsMinOpenInterestDraft);
+    sync('optionsMinVolume', setOptionsMinVolumeDraft);
+    sync('optionsMinDte', setOptionsMinDteDraft);
+    sync('optionsMaxDte', setOptionsMaxDteDraft);
+    sync('optionsIvRankMax', setOptionsIvRankMaxDraft);
+    sync('accountEquityUsd', (v) => setEquityDraft(v ?? undefined));
+    sync('maxConcurrentPositions', setMaxPositionsDraft);
+    sync('riskPerTradePct', setRiskPerTradePctDraft);
+    sync('maxDailyDrawdownPct', setMaxDailyDrawdownPctDraft);
+    sync('stepDownAfterLosses', setStepDownAfterLossesDraft);
+    sync('stepDownSizeCutPct', setStepDownSizeCutPctDraft);
+    sync('maxAggregateOpenRiskPct', setMaxAggregateOpenRiskPctDraft);
+    sync('maxCorrelatedExposurePct', setMaxCorrelatedExposurePctDraft);
+    sync('maxSectorExposurePct', setMaxSectorExposurePctDraft);
+    sync('maxTradesPerDay', setMaxTradesPerDayDraft);
+    sync('regimeAtrThresholdPct', setRegimeAtrThresholdPctDraft);
+    sync('regimeSizeCutPct', setRegimeSizeCutPctDraft);
+    sync('equityCurveDeriskEnabled', setEquityCurveDeriskEnabled);
+    sync('equityCurveLookbackDays', setEquityCurveLookbackDaysDraft);
+    sync('equityCurveDeriskCutPct', setEquityCurveDeriskCutPctDraft);
+    sync('maxAdvParticipationPct', setMaxAdvParticipationPctDraft);
+    sync('convictionGradeAMinScore', setConvictionGradeAMinScoreDraft);
+    sync('convictionGradeBMinScore', setConvictionGradeBMinScoreDraft);
+    sync('expectancyWeightingEnabled', setExpectancyWeightingEnabled);
+    sync('expectancyMinTrades', setExpectancyMinTradesDraft);
+    sync('expectancyMinMultiplier', setExpectancyMinMultiplierDraft);
+    sync('expectancyMaxMultiplier', setExpectancyMaxMultiplierDraft);
+    sync('minRelVol', setMinRelVolDraft);
+    sync('requireWeeklyTrendAlignment', setRequireWeeklyTrendAlignment);
+    sync('relativeStrengthWeight', setRelativeStrengthWeightDraft);
+    sync('benchmarkSymbol', (v) => setBenchmarkSymbolDraft(v ?? ''));
+    sync('relativeStrengthLookbackDays', setRelativeStrengthLookbackDaysDraft);
+    sync('sentimentWeight', setSentimentWeightDraft);
+    sync('maxTickerAtrPct', setMaxTickerAtrPctDraft);
+    sync('maxMarketAtrPct', setMaxMarketAtrPctDraft);
+    sync('stopAtrMultiple', setStopAtrMultipleDraft);
+    sync('targetRMultiple', setTargetRMultipleDraft);
+    sync('maxHoldDays', setMaxHoldDaysDraft);
+    sync('breakevenTriggerRMultiple', setBreakevenTriggerRMultipleDraft);
+    sync('trailStartRMultiple', setTrailStartRMultipleDraft);
+    sync('trailStopRMultiple', setTrailStopRMultipleDraft);
+    sync('partialExitRMultiple', setPartialExitRMultipleDraft);
+    sync('partialExitPct', setPartialExitPctDraft);
+    sync('addOnTriggerRMultiple', setAddOnTriggerRMultipleDraft);
+    sync('addOnSizePct', setAddOnSizePctDraft);
+    sync('maxAddOns', setMaxAddOnsDraft);
+    sync('optionsStopLossPct', setOptionsStopLossPctDraft);
+    sync('optionsTakeProfitPct', setOptionsTakeProfitPctDraft);
+    sync('optionsBreakevenTriggerPct', setOptionsBreakevenTriggerPctDraft);
+    sync('optionsTrailStartPct', setOptionsTrailStartPctDraft);
+    sync('optionsTrailStopPct', setOptionsTrailStopPctDraft);
+    sync('optionsPartialExitTriggerPct', setOptionsPartialExitTriggerPctDraft);
+    sync('optionsPartialExitPct', setOptionsPartialExitPctDraft);
+    sync('sessionBufferMinutes', setSessionBufferMinutesDraft);
+    sync('earningsBlackoutDays', setEarningsBlackoutDaysDraft);
+    sync('macroEventBlackoutHours', setMacroEventBlackoutHoursDraft);
+    sync('correlationLookbackDays', setCorrelationLookbackDaysDraft);
+    sync('correlationThreshold', setCorrelationThresholdDraft);
+    sync('correlationAwareSelectionEnabled', setCorrelationAwareSelectionEnabled);
+    sync('regimeAdaptiveWeightsEnabled', setRegimeAdaptiveWeightsEnabled);
+    sync('regimeWeightPresets', setRegimeWeightPresetsDraft);
+    sync('liveAccountId', (v) => setLiveAccountIdDraft(v ?? ''));
+    sync('liveMaxOrderUsd', setLiveMaxOrderUsdDraft);
+    sync('liveMaxDailyLossUsd', setLiveMaxDailyLossUsdDraft);
+    sync('liveMaxOrdersPerDay', setLiveMaxOrdersPerDayDraft);
+    sync('liveFatFingerPct', setLiveFatFingerPctDraft);
+    sync('liveAllowNakedShort', setLiveAllowNakedShortDraft);
+    sync('liveProbationTrades', setLiveProbationTradesDraft);
+    sync('liveProbationSizeMultiplier', setLiveProbationSizeMultiplierDraft);
+    sync('liveScaleInEnabled', setLiveScaleInEnabledDraft);
+    sync('liveMaxAddOns', setLiveMaxAddOnsDraft);
+    sync('liveOptionsEnabled', setLiveOptionsEnabledDraft);
+    sync('liveOptionsMaxOrderUsd', setLiveOptionsMaxOrderUsdDraft);
+    sync('liveOptionsMaxDailyLossUsd', setLiveOptionsMaxDailyLossUsdDraft);
+    sync('liveOptionsMaxOrdersPerDay', setLiveOptionsMaxOrdersPerDayDraft);
+    sync('liveOptionsFatFingerPct', setLiveOptionsFatFingerPctDraft);
+    sync('liveOptionsProbationTrades', setLiveOptionsProbationTradesDraft);
+    sync('liveOptionsProbationSizeMultiplier', setLiveOptionsProbationSizeMultiplierDraft);
+    sync('autoPromoteMoversEnabled', setAutoPromoteMoversEnabled);
+    sync('autoPromoteThreshold', setAutoPromoteThresholdDraft);
+    sync('autoPromoteWindowDays', setAutoPromoteWindowDaysDraft);
+    sync('autoPromoteMaxSymbols', setAutoPromoteMaxSymbolsDraft);
+    sync('autoTuneEnabled', setAutoTuneEnabled);
+    sync('autoTuneRequireOosConfirmation', setAutoTuneRequireOosConfirmation);
+    sync('autoTuneMinTrades', setAutoTuneMinTradesDraft);
+    sync('autoTuneMaxStepPct', setAutoTuneMaxStepPctDraft);
+    sync('autoTuneSlippageExcludePct', setAutoTuneSlippageExcludePctDraft);
+    sync('autoTuneExitsEnabled', setAutoTuneExitsEnabled);
+    sync('autoTuneExitMaxStep', setAutoTuneExitMaxStepDraft);
+  }, []);
+
   useEffect(() => {
-    if (!config.data) return;
-    setEnabled(config.data.enabled);
-    setKillSwitch(config.data.killSwitch);
-    setRiskProfile(config.data.riskProfile);
-    setOptionsStrategyType(config.data.optionsStrategyType);
-    setTradeDirection(config.data.tradeDirection);
-    setOptionsDeltaMinDraft(config.data.optionsDeltaMin);
-    setOptionsDeltaMaxDraft(config.data.optionsDeltaMax);
-    setOptionsMaxSpreadPctDraft(config.data.optionsMaxSpreadPct);
-    setOptionsMinOpenInterestDraft(config.data.optionsMinOpenInterest);
-    setOptionsMinVolumeDraft(config.data.optionsMinVolume);
-    setOptionsMinDteDraft(config.data.optionsMinDte);
-    setOptionsMaxDteDraft(config.data.optionsMaxDte);
-    setOptionsIvRankMaxDraft(config.data.optionsIvRankMax);
-    setEquityDraft(config.data.accountEquityUsd ?? undefined);
-    setMaxPositionsDraft(config.data.maxConcurrentPositions);
-    setRiskPerTradePctDraft(config.data.riskPerTradePct);
-    setMaxDailyDrawdownPctDraft(config.data.maxDailyDrawdownPct);
-    setStepDownAfterLossesDraft(config.data.stepDownAfterLosses);
-    setStepDownSizeCutPctDraft(config.data.stepDownSizeCutPct);
-    setMaxAggregateOpenRiskPctDraft(config.data.maxAggregateOpenRiskPct);
-    setMaxCorrelatedExposurePctDraft(config.data.maxCorrelatedExposurePct);
-    setMaxSectorExposurePctDraft(config.data.maxSectorExposurePct);
-    setMaxTradesPerDayDraft(config.data.maxTradesPerDay);
-    setRegimeAtrThresholdPctDraft(config.data.regimeAtrThresholdPct);
-    setRegimeSizeCutPctDraft(config.data.regimeSizeCutPct);
-    setEquityCurveDeriskEnabled(config.data.equityCurveDeriskEnabled);
-    setEquityCurveLookbackDaysDraft(config.data.equityCurveLookbackDays);
-    setEquityCurveDeriskCutPctDraft(config.data.equityCurveDeriskCutPct);
-    setMaxAdvParticipationPctDraft(config.data.maxAdvParticipationPct);
-    setConvictionGradeAMinScoreDraft(config.data.convictionGradeAMinScore);
-    setConvictionGradeBMinScoreDraft(config.data.convictionGradeBMinScore);
-    setExpectancyWeightingEnabled(config.data.expectancyWeightingEnabled);
-    setExpectancyMinTradesDraft(config.data.expectancyMinTrades);
-    setExpectancyMinMultiplierDraft(config.data.expectancyMinMultiplier);
-    setExpectancyMaxMultiplierDraft(config.data.expectancyMaxMultiplier);
-    setMinRelVolDraft(config.data.minRelVol);
-    setRequireWeeklyTrendAlignment(config.data.requireWeeklyTrendAlignment);
-    setRelativeStrengthWeightDraft(config.data.relativeStrengthWeight);
-    setBenchmarkSymbolDraft(config.data.benchmarkSymbol ?? '');
-    setRelativeStrengthLookbackDaysDraft(config.data.relativeStrengthLookbackDays);
-    setSentimentWeightDraft(config.data.sentimentWeight);
-    setMaxTickerAtrPctDraft(config.data.maxTickerAtrPct);
-    setMaxMarketAtrPctDraft(config.data.maxMarketAtrPct);
-    setStopAtrMultipleDraft(config.data.stopAtrMultiple);
-    setTargetRMultipleDraft(config.data.targetRMultiple);
-    setMaxHoldDaysDraft(config.data.maxHoldDays);
-    setBreakevenTriggerRMultipleDraft(config.data.breakevenTriggerRMultiple);
-    setTrailStartRMultipleDraft(config.data.trailStartRMultiple);
-    setTrailStopRMultipleDraft(config.data.trailStopRMultiple);
-    setPartialExitRMultipleDraft(config.data.partialExitRMultiple);
-    setPartialExitPctDraft(config.data.partialExitPct);
-    setAddOnTriggerRMultipleDraft(config.data.addOnTriggerRMultiple);
-    setAddOnSizePctDraft(config.data.addOnSizePct);
-    setMaxAddOnsDraft(config.data.maxAddOns);
-    setOptionsStopLossPctDraft(config.data.optionsStopLossPct);
-    setOptionsTakeProfitPctDraft(config.data.optionsTakeProfitPct);
-    setOptionsBreakevenTriggerPctDraft(config.data.optionsBreakevenTriggerPct);
-    setOptionsTrailStartPctDraft(config.data.optionsTrailStartPct);
-    setOptionsTrailStopPctDraft(config.data.optionsTrailStopPct);
-    setOptionsPartialExitTriggerPctDraft(config.data.optionsPartialExitTriggerPct);
-    setOptionsPartialExitPctDraft(config.data.optionsPartialExitPct);
-    setSessionBufferMinutesDraft(config.data.sessionBufferMinutes);
-    setEarningsBlackoutDaysDraft(config.data.earningsBlackoutDays);
-    setMacroEventBlackoutHoursDraft(config.data.macroEventBlackoutHours);
-    setCorrelationLookbackDaysDraft(config.data.correlationLookbackDays);
-    setCorrelationThresholdDraft(config.data.correlationThreshold);
-    setCorrelationAwareSelectionEnabled(config.data.correlationAwareSelectionEnabled);
-    setRegimeAdaptiveWeightsEnabled(config.data.regimeAdaptiveWeightsEnabled);
-    setRegimeWeightPresetsDraft(config.data.regimeWeightPresets);
-    setLiveAccountIdDraft(config.data.liveAccountId ?? '');
-    setLiveMaxOrderUsdDraft(config.data.liveMaxOrderUsd);
-    setLiveMaxDailyLossUsdDraft(config.data.liveMaxDailyLossUsd);
-    setLiveMaxOrdersPerDayDraft(config.data.liveMaxOrdersPerDay);
-    setLiveFatFingerPctDraft(config.data.liveFatFingerPct);
-    setLiveAllowNakedShortDraft(config.data.liveAllowNakedShort);
-    setLiveProbationTradesDraft(config.data.liveProbationTrades);
-    setLiveProbationSizeMultiplierDraft(config.data.liveProbationSizeMultiplier);
-    setLiveScaleInEnabledDraft(config.data.liveScaleInEnabled);
-    setLiveMaxAddOnsDraft(config.data.liveMaxAddOns);
-    setLiveOptionsEnabledDraft(config.data.liveOptionsEnabled);
-    setLiveOptionsMaxOrderUsdDraft(config.data.liveOptionsMaxOrderUsd);
-    setLiveOptionsMaxDailyLossUsdDraft(config.data.liveOptionsMaxDailyLossUsd);
-    setLiveOptionsMaxOrdersPerDayDraft(config.data.liveOptionsMaxOrdersPerDay);
-    setLiveOptionsFatFingerPctDraft(config.data.liveOptionsFatFingerPct);
-    setLiveOptionsProbationTradesDraft(config.data.liveOptionsProbationTrades);
-    setLiveOptionsProbationSizeMultiplierDraft(config.data.liveOptionsProbationSizeMultiplier);
-    setAutoPromoteMoversEnabled(config.data.autoPromoteMoversEnabled);
-    setAutoPromoteThresholdDraft(config.data.autoPromoteThreshold);
-    setAutoPromoteWindowDaysDraft(config.data.autoPromoteWindowDays);
-    setAutoPromoteMaxSymbolsDraft(config.data.autoPromoteMaxSymbols);
-    setAutoTuneEnabled(config.data.autoTuneEnabled);
-    setAutoTuneRequireOosConfirmation(config.data.autoTuneRequireOosConfirmation);
-    setAutoTuneMinTradesDraft(config.data.autoTuneMinTrades);
-    setAutoTuneMaxStepPctDraft(config.data.autoTuneMaxStepPct);
-    setAutoTuneSlippageExcludePctDraft(config.data.autoTuneSlippageExcludePct);
-    setAutoTuneExitsEnabled(config.data.autoTuneExitsEnabled);
-    setAutoTuneExitMaxStepDraft(config.data.autoTuneExitMaxStep);
-  }, [config.data]);
+    if (config.data) seedDraftsFrom(config.data);
+  }, [config.data, seedDraftsFrom]);
 
   const saveConfig = async (patch: {
     enabled?: boolean;
@@ -2486,84 +2581,10 @@ export default function AutoTradePage() {
         ...patch,
         confirmAggressive: patch.riskProfile === 'AGGRESSIVE' ? true : undefined,
       });
-      setEnabled(saved.enabled);
-      setRiskProfile(saved.riskProfile);
-      setOptionsStrategyType(saved.optionsStrategyType);
-      setTradeDirection(saved.tradeDirection);
-      setOptionsDeltaMinDraft(saved.optionsDeltaMin);
-      setOptionsDeltaMaxDraft(saved.optionsDeltaMax);
-      setOptionsMaxSpreadPctDraft(saved.optionsMaxSpreadPct);
-      setOptionsMinOpenInterestDraft(saved.optionsMinOpenInterest);
-      setOptionsMinVolumeDraft(saved.optionsMinVolume);
-      setOptionsMinDteDraft(saved.optionsMinDte);
-      setOptionsMaxDteDraft(saved.optionsMaxDte);
-      setOptionsIvRankMaxDraft(saved.optionsIvRankMax);
-      setMaxPositionsDraft(saved.maxConcurrentPositions);
-      setRiskPerTradePctDraft(saved.riskPerTradePct);
-      setMaxDailyDrawdownPctDraft(saved.maxDailyDrawdownPct);
-      setStepDownAfterLossesDraft(saved.stepDownAfterLosses);
-      setStepDownSizeCutPctDraft(saved.stepDownSizeCutPct);
-      setMaxAggregateOpenRiskPctDraft(saved.maxAggregateOpenRiskPct);
-      setMaxCorrelatedExposurePctDraft(saved.maxCorrelatedExposurePct);
-      setMaxSectorExposurePctDraft(saved.maxSectorExposurePct);
-      setMaxTradesPerDayDraft(saved.maxTradesPerDay);
-      setRegimeAtrThresholdPctDraft(saved.regimeAtrThresholdPct);
-      setRegimeSizeCutPctDraft(saved.regimeSizeCutPct);
-      setEquityCurveDeriskEnabled(saved.equityCurveDeriskEnabled);
-      setEquityCurveLookbackDaysDraft(saved.equityCurveLookbackDays);
-      setEquityCurveDeriskCutPctDraft(saved.equityCurveDeriskCutPct);
-      setMaxAdvParticipationPctDraft(saved.maxAdvParticipationPct);
-      setConvictionGradeAMinScoreDraft(saved.convictionGradeAMinScore);
-      setConvictionGradeBMinScoreDraft(saved.convictionGradeBMinScore);
-      setExpectancyWeightingEnabled(saved.expectancyWeightingEnabled);
-      setExpectancyMinTradesDraft(saved.expectancyMinTrades);
-      setExpectancyMinMultiplierDraft(saved.expectancyMinMultiplier);
-      setExpectancyMaxMultiplierDraft(saved.expectancyMaxMultiplier);
-      setMinRelVolDraft(saved.minRelVol);
-      setRequireWeeklyTrendAlignment(saved.requireWeeklyTrendAlignment);
-      setRelativeStrengthWeightDraft(saved.relativeStrengthWeight);
-      setBenchmarkSymbolDraft(saved.benchmarkSymbol ?? '');
-      setRelativeStrengthLookbackDaysDraft(saved.relativeStrengthLookbackDays);
-      setSentimentWeightDraft(saved.sentimentWeight);
-      setMaxTickerAtrPctDraft(saved.maxTickerAtrPct);
-      setMaxMarketAtrPctDraft(saved.maxMarketAtrPct);
-      setStopAtrMultipleDraft(saved.stopAtrMultiple);
-      setTargetRMultipleDraft(saved.targetRMultiple);
-      setMaxHoldDaysDraft(saved.maxHoldDays);
-      setBreakevenTriggerRMultipleDraft(saved.breakevenTriggerRMultiple);
-      setTrailStartRMultipleDraft(saved.trailStartRMultiple);
-      setTrailStopRMultipleDraft(saved.trailStopRMultiple);
-      setPartialExitRMultipleDraft(saved.partialExitRMultiple);
-      setPartialExitPctDraft(saved.partialExitPct);
-      setAddOnTriggerRMultipleDraft(saved.addOnTriggerRMultiple);
-      setAddOnSizePctDraft(saved.addOnSizePct);
-      setMaxAddOnsDraft(saved.maxAddOns);
-      setOptionsStopLossPctDraft(saved.optionsStopLossPct);
-      setOptionsTakeProfitPctDraft(saved.optionsTakeProfitPct);
-      setOptionsBreakevenTriggerPctDraft(saved.optionsBreakevenTriggerPct);
-      setOptionsTrailStartPctDraft(saved.optionsTrailStartPct);
-      setOptionsTrailStopPctDraft(saved.optionsTrailStopPct);
-      setOptionsPartialExitTriggerPctDraft(saved.optionsPartialExitTriggerPct);
-      setOptionsPartialExitPctDraft(saved.optionsPartialExitPct);
-      setSessionBufferMinutesDraft(saved.sessionBufferMinutes);
-      setEarningsBlackoutDaysDraft(saved.earningsBlackoutDays);
-      setMacroEventBlackoutHoursDraft(saved.macroEventBlackoutHours);
-      setCorrelationLookbackDaysDraft(saved.correlationLookbackDays);
-      setCorrelationThresholdDraft(saved.correlationThreshold);
-      setCorrelationAwareSelectionEnabled(saved.correlationAwareSelectionEnabled);
-      setRegimeAdaptiveWeightsEnabled(saved.regimeAdaptiveWeightsEnabled);
-      setRegimeWeightPresetsDraft(saved.regimeWeightPresets);
-      setAutoPromoteMoversEnabled(saved.autoPromoteMoversEnabled);
-      setAutoPromoteThresholdDraft(saved.autoPromoteThreshold);
-      setAutoPromoteWindowDaysDraft(saved.autoPromoteWindowDays);
-      setAutoPromoteMaxSymbolsDraft(saved.autoPromoteMaxSymbols);
-      setAutoTuneEnabled(saved.autoTuneEnabled);
-      setAutoTuneRequireOosConfirmation(saved.autoTuneRequireOosConfirmation);
-      setAutoTuneMinTradesDraft(saved.autoTuneMinTrades);
-      setAutoTuneMaxStepPctDraft(saved.autoTuneMaxStepPct);
-      setAutoTuneSlippageExcludePctDraft(saved.autoTuneSlippageExcludePct);
-      setAutoTuneExitsEnabled(saved.autoTuneExitsEnabled);
-      setAutoTuneExitMaxStepDraft(saved.autoTuneExitMaxStep);
+      // Reflect server-normalized values for the fields THIS save touched.
+      // Guarded per-field, so an unrelated field the user is still editing
+      // is left alone instead of being reset to the stored value.
+      seedDraftsFrom(saved);
       config.reload(); // keeps config.data — the equity-not-set warning's source of truth — fresh
       refreshLiveData(); // risk profile / equity changes shift the dashboard's caps, and get journaled
       toast('Auto-trading settings saved', { type: 'success' });
@@ -2716,7 +2737,10 @@ export default function AutoTradePage() {
         liveAllowNakedShort: liveAllowNakedShortDraft,
         liveProbationTrades: liveProbationTradesDraft,
         liveProbationSizeMultiplier: liveProbationSizeMultiplierDraft,
-        liveScaleInEnabled: liveScaleInEnabledDraft,
+        // Omitted (left unchanged server-side) while live trading is off — the
+        // route rejects arming it without the master gate, and this card saves
+        // ten fields in ONE request, so a rejection here loses all of them.
+        liveScaleInEnabled: config.data?.liveTradingEnabled ? liveScaleInEnabledDraft : undefined,
         liveMaxAddOns: liveMaxAddOnsDraft,
       });
       config.reload();
@@ -2914,7 +2938,13 @@ export default function AutoTradePage() {
   // The from/to/splitDate a result actually came from — captured at submit time so
   // the "In-sample (X → Y)" labels below never drift from the form if it's edited
   // again before the response comes back.
+  // One per runner, NOT shared: each of the three walk-forwards keeps its own
+  // result on screen and clears only that result, so a single shared window
+  // would silently relabel an already-rendered panel with the NEXT run's dates —
+  // describing data it was never run on.
   const [btSubmitted, setBtSubmitted] = useState<{ from: string; to: string; splitDate: string }>();
+  const [optBtSubmitted, setOptBtSubmitted] = useState<{ from: string; to: string; splitDate: string }>();
+  const [combinedBtSubmitted, setCombinedBtSubmitted] = useState<{ from: string; to: string; splitDate: string }>();
 
   const runBacktest = async () => {
     const symbols = Array.from(
@@ -3060,7 +3090,7 @@ export default function AutoTradePage() {
     setOptBtErr(undefined);
     setOptBtResult(undefined);
     setOptBtWfResult(undefined);
-    setBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
+    setOptBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
     try {
       const body = {
         symbols,
@@ -3116,7 +3146,7 @@ export default function AutoTradePage() {
     setCombinedBtErr(undefined);
     setCombinedBtResult(undefined);
     setCombinedBtWfResult(undefined);
-    setBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
+    setCombinedBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
     try {
       const body = {
         symbols,
@@ -3174,6 +3204,8 @@ export default function AutoTradePage() {
               paperPositions.loading ||
               optionsPaperPositions.loading ||
               livePositions.loading ||
+              liveOptionsPositions.loading ||
+              symbolEvents.loading ||
               events.loading
             }
           />
@@ -3216,7 +3248,11 @@ export default function AutoTradePage() {
 
       {view === 'config' && (
         <>
-          {config.loading ? (
+          {/* `&& !data` matters: reload() keeps the previous data while refetching,
+              so gating on bare `loading` would tear the whole form down to a spinner
+              on every save and on each 60s background refresh — losing keyboard focus
+              and any half-typed value mid-edit. */}
+          {config.loading && !config.data ? (
             <Spinner />
           ) : config.error ? (
             <ErrorState error={config.error} onRetry={config.reload} />
@@ -3843,7 +3879,7 @@ export default function AutoTradePage() {
                   </Field>
                   <Field
                     label="Regime ATR threshold (%)"
-                    hint="A softer, graduated companion to Max market ATR (%) below: once the broad-market proxy's own ATR% crosses THIS lower threshold, new positions size down (see Regime size cut below) instead of being blocked outright — Max market ATR (%) still blocks everything once volatility gets more extreme. Stacks with step-down sizing above if both are active at once. Live + paper only — no backtest equivalent. Check Recent activity's risk_check entries to see it fire."
+                    hint="A softer, graduated companion to Max market ATR (%) below: once the broad-market proxy's own ATR% crosses THIS lower threshold, new positions size down (see Regime size cut below) instead of being blocked outright — Max market ATR (%) still blocks everything once volatility gets more extreme. Stacks with step-down sizing above if both are active at once. 0 disables it — the regime cut never applies, whatever the market's ATR%. Live + paper only — no backtest equivalent. Check Recent activity's risk_check entries to see it fire."
                   >
                     <div className="flex gap-2">
                       <NumberInput
@@ -5402,7 +5438,7 @@ export default function AutoTradePage() {
               autotrade&apos;s own are shown here. Nothing here is simulated; see the Positions and Journal pages for
               your full real book (autotrade&apos;s fills included, unmarked there).
             </p>
-            {livePositions.loading ? (
+            {livePositions.loading && !livePositions.data ? (
               <Spinner />
             ) : livePositions.error ? (
               <ErrorState error={livePositions.error} onRetry={livePositions.reload} />
@@ -5446,7 +5482,7 @@ export default function AutoTradePage() {
               <code className="text-[11px]">autotrade_live_options_positions</code>), separate from the equity live
               positions above since a debit spread needs a second leg&apos;s columns.
             </p>
-            {liveOptionsPositions.loading ? (
+            {liveOptionsPositions.loading && !liveOptionsPositions.data ? (
               <Spinner />
             ) : liveOptionsPositions.error ? (
               <ErrorState error={liveOptionsPositions.error} onRetry={liveOptionsPositions.reload} />
@@ -5526,7 +5562,7 @@ export default function AutoTradePage() {
                 Add
               </button>
             </div>
-            {exclusions.loading ? (
+            {exclusions.loading && !exclusions.data ? (
               <Spinner />
             ) : exclusions.error ? (
               <ErrorState error={exclusions.error} onRetry={exclusions.reload} />
@@ -5597,7 +5633,7 @@ export default function AutoTradePage() {
                 Add
               </button>
             </div>
-            {macroEvents.loading ? (
+            {macroEvents.loading && !macroEvents.data ? (
               <Spinner />
             ) : macroEvents.error ? (
               <ErrorState error={macroEvents.error} onRetry={macroEvents.reload} />
@@ -6059,7 +6095,7 @@ export default function AutoTradePage() {
                 <OptionsBacktestTradesTable trades={optBtResult.report.trades} />
               </div>
             )}
-            {optBtWfResult && btSubmitted && (
+            {optBtWfResult && optBtSubmitted && (
               <div className="space-y-5">
                 <h4 className="text-xs uppercase tracking-wide text-slate-400">Options overlay</h4>
                 {optBtWfResult.excludedSymbols.length > 0 && (
@@ -6074,13 +6110,13 @@ export default function AutoTradePage() {
                   </p>
                 )}
                 <OptionsBacktestWindowResult
-                  title={`In-sample (${btSubmitted.from} → ${btSubmitted.splitDate})`}
+                  title={`In-sample (${optBtSubmitted.from} → ${optBtSubmitted.splitDate})`}
                   hint="The tuning window — strong performance here alone proves nothing."
                   run={optBtWfResult.inSample}
                   gradientId="optBtEquityIn"
                 />
                 <OptionsBacktestWindowResult
-                  title={`Out-of-sample (${btSubmitted.splitDate} → ${btSubmitted.to})`}
+                  title={`Out-of-sample (${optBtSubmitted.splitDate} → ${optBtSubmitted.to})`}
                   hint="Unseen data — this is the number that matters for the validation gate."
                   run={optBtWfResult.outOfSample}
                   gradientId="optBtEquityOut"
@@ -6111,7 +6147,7 @@ export default function AutoTradePage() {
                 <OptionsBacktestTradesTable trades={combinedBtResult.report.optionsTrades} />
               </div>
             )}
-            {combinedBtWfResult && btSubmitted && (
+            {combinedBtWfResult && combinedBtSubmitted && (
               <div className="space-y-5">
                 <h4 className="text-xs uppercase tracking-wide text-slate-400">Combined (one shared risk budget)</h4>
                 {combinedBtWfResult.excludedSymbols.length > 0 && (
@@ -6126,13 +6162,13 @@ export default function AutoTradePage() {
                   </p>
                 )}
                 <CombinedBacktestWindowResult
-                  title={`In-sample (${btSubmitted.from} → ${btSubmitted.splitDate})`}
+                  title={`In-sample (${combinedBtSubmitted.from} → ${combinedBtSubmitted.splitDate})`}
                   hint="The tuning window — strong performance here alone proves nothing."
                   run={combinedBtWfResult.inSample}
                   gradientId="combinedBtEquityIn"
                 />
                 <CombinedBacktestWindowResult
-                  title={`Out-of-sample (${btSubmitted.splitDate} → ${btSubmitted.to})`}
+                  title={`Out-of-sample (${combinedBtSubmitted.splitDate} → ${combinedBtSubmitted.to})`}
                   hint="Unseen data — this is the number that matters for the validation gate."
                   run={combinedBtWfResult.outOfSample}
                   gradientId="combinedBtEquityOut"
@@ -6178,7 +6214,7 @@ export default function AutoTradePage() {
                 {loopSummary.optionsExitsChecked} ({loopSummary.optionsExitsClosed} closed).
               </p>
             )}
-            {paperPositions.loading ? (
+            {paperPositions.loading && !paperPositions.data ? (
               <Spinner />
             ) : paperPositions.error ? (
               <ErrorState error={paperPositions.error} onRetry={paperPositions.reload} />
@@ -6221,7 +6257,7 @@ export default function AutoTradePage() {
               leg). Automated exit is time-based only (close as expiration approaches, no roll) — take-profit/stop-loss/
               delta-drift stay human-review-only on the Options page.
             </p>
-            {optionsPaperPositions.loading ? (
+            {optionsPaperPositions.loading && !optionsPaperPositions.data ? (
               <Spinner />
             ) : optionsPaperPositions.error ? (
               <ErrorState error={optionsPaperPositions.error} onRetry={optionsPaperPositions.reload} />
@@ -6259,7 +6295,7 @@ export default function AutoTradePage() {
           </CollapsibleCard>
 
           <CollapsibleCard id="autotrade.recentActivity" title="Recent activity">
-            {events.loading ? (
+            {events.loading && !events.data ? (
               <Spinner />
             ) : events.error ? (
               <ErrorState error={events.error} onRetry={events.reload} />
