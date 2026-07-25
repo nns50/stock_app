@@ -309,9 +309,18 @@ export interface ComboEvidence {
   totalOrderRows: number;
 }
 
-function legInfo(l: Record<string, unknown>): { comboType: string | null; status?: string } {
+/** A leg's tag and status. `combo_type` is read from the ENVELOPE first —
+ *  confirmed against a real account to be where the broker puts it — falling
+ *  back to the leg for a response that nests and tags per-leg instead. Reading
+ *  only the leg is what made a first live run report every leg of a real
+ *  bracket as untagged, which is the opposite of what the payload said. */
+function legInfo(
+  l: Record<string, unknown>,
+  envelope?: Record<string, unknown>,
+): { comboType: string | null; status?: string } {
+  const comboType = envelope?.combo_type ?? l?.combo_type;
   return {
-    comboType: l?.combo_type ? String(l.combo_type) : null,
+    comboType: comboType ? String(comboType) : null,
     status: l?.status ? String(l.status).toUpperCase() : undefined,
   };
 }
@@ -344,7 +353,7 @@ export function collectComboEvidence(payload: unknown): ComboEvidence {
     if (legs) {
       envelopes.push(o);
       if (legs.length >= 2) {
-        const info = legs.map(legInfo);
+        const info = legs.map((l) => legInfo(l, o));
         groups.push({
           clientOrderId: o.client_order_id ? String(o.client_order_id) : undefined,
           comboOrderId: o.combo_order_id ? String(o.combo_order_id) : undefined,
@@ -362,22 +371,24 @@ export function collectComboEvidence(payload: unknown): ComboEvidence {
   // FLAT shape: several SINGLE-leg envelopes sharing one combo id. Only counted
   // when the id is present and repeated — a combo id on a lone order is just how
   // the broker labels every order and says nothing.
-  const byCombo = new Map<string, Array<Record<string, unknown>>>();
+  const byCombo = new Map<string, Array<{ leg: Record<string, unknown>; env: Record<string, unknown> }>>();
   for (const env of envelopes) {
     const legs = env.orders as Array<Record<string, unknown>>;
     if (legs.length !== 1) continue;
     const id = env.combo_order_id ?? (legs[0] as Record<string, unknown>)?.combo_order_id;
     if (id === undefined || id === null || id === '') continue;
     const key = String(id);
-    (byCombo.get(key) ?? byCombo.set(key, []).get(key)!).push(legs[0]);
+    // The envelope travels with its leg: in this shape the tag is on the
+    // envelope, so dropping it here is exactly how the tag went missing.
+    (byCombo.get(key) ?? byCombo.set(key, []).get(key)!).push({ leg: legs[0], env });
   }
-  for (const [comboOrderId, legs] of byCombo) {
-    if (legs.length < 2) continue;
-    const info = legs.map(legInfo);
+  for (const [comboOrderId, entries] of byCombo) {
+    if (entries.length < 2) continue;
+    const info = entries.map((e) => legInfo(e.leg, e.env));
     groups.push({
       comboOrderId,
       shape: 'flat',
-      legCount: legs.length,
+      legCount: entries.length,
       legComboTypes: info.map((i) => i.comboType),
       legStatuses: info.map((i) => i.status),
     });
@@ -420,11 +431,13 @@ export function classifyComboLegSemantics(evidence: ComboEvidence): ComboLegVerd
     return {
       semantics: 'not-nested',
       detail:
-        `${groups.length} combo(s) came back as SEPARATE top-level rows sharing a combo id, not as one envelope with a ` +
-        'nested legs array. providers/webull/orders.ts reads legs out of `envelope.orders`, so it would see a bracket ' +
-        'as a single-leg order: WebullOrderStatus.legs never holds more than the matched leg, the both-legs-FILLED ' +
-        'detection can never fire, and the bracket-exit branch in reconcile is unreachable. Worth fixing at the parser ' +
-        'before relying on any per-leg reading.',
+        `${groups.length} combo(s) came back as SEPARATE top-level rows sharing a combo id, rather than one envelope ` +
+        'with a nested legs array. This is the CONFIRMED shape for this broker and it is handled: collectLegs ' +
+        '(providers/webull/orders.ts) gathers a combo across its sibling envelopes, and reads combo_type from the ' +
+        'envelope where this broker puts it. Reported rather than silent because it was not always handled — a bracket ' +
+        'used to read as a single-leg order, which made every exit-leg branch unreachable and left stop/target fills to ' +
+        'be booked later by the position sync at an estimated price. Seeing this verdict is normal; seeing the legs ' +
+        'below come back «untagged» would be the surprise.',
     };
   }
 
