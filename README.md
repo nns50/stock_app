@@ -269,9 +269,13 @@ npm run backfill:exits -- --apply   # write the corrections
 
 The dry run prints one line per trade (`recorded → real fill`, and the P&L
 difference), then every skip with its reason. Read-only toward the broker; the
-only write it ever makes is an exit row's price, and only under `--apply`. Safe
-to re-run — a corrected exit reports "already matches the broker fill" on the
-next pass.
+only write it ever makes is an exit row's price, and only under `--apply`.
+
+Safe to re-run: correcting an exit rewrites its note, which is what the
+candidate query keys on, so a corrected row drops **out** of the set entirely
+rather than being re-examined. After an `--apply`, the next run's count falls by
+exactly the number corrected and those rows are simply absent — that's the
+success signal, not a "nothing to do here" line.
 
 It refuses rather than guesses, on the same principle as the rest of the live
 path: a combo that has aged out of order history, two exit legs both reporting

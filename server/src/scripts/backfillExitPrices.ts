@@ -183,7 +183,9 @@ async function main(): Promise<void> {
   );
   console.log(
     apply
-      ? '\nApplied. Re-run to confirm everything now reports "already matches the broker fill".'
+      ? '\nApplied. A corrected exit carries a new note, so it drops OUT of the candidate\n' +
+          'set entirely — re-run and the count should fall by exactly the number corrected,\n' +
+          'with those rows gone rather than listed as skipped.'
       : '\nDRY RUN — nothing written. Re-run with --apply to write these corrections.',
   );
 }
