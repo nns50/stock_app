@@ -1443,6 +1443,7 @@ async function placeLiveEquityTimeExitClose(
   pos: Position,
   accountId: string,
   riskProfile: string,
+  entryIntent: OrderIntentRecord,
 ): Promise<LiveEquityTimeExitOutcome> {
   const symbol = pos.symbol.toUpperCase();
   let last: number;
@@ -1500,6 +1501,31 @@ async function placeLiveEquityTimeExitClose(
       reason: `Guardrails blocked: ${reasons}`,
       intentId: intentRec.id,
     };
+  }
+
+  // ONLY NOW cancel the resting bracket. This used to run in the caller, before
+  // any of the above: the position's only stop was cancelled and confirmed
+  // cleared, and THEN the close was evaluated — so anything that blocks it left
+  // a real position with no stop at the broker and no closing order. The kill
+  // switch is the easiest way to hit it (buildLiveTradingConfig ORs both kill
+  // switches into a block-severity guardrail, and this function is deliberately
+  // not gated on the kill switch, so the loop keeps calling it), which means the
+  // gesture a user makes to stop trading was the one most likely to strip a
+  // position's protection. It also could not self-heal: the rejected intent never
+  // becomes a pending exit order, so the next tick re-entered, found nothing left
+  // to cancel, and was blocked again — every 60s, silently, with none of these
+  // event actions wired into liveFailureAlert.
+  const cancelled = await cancelLiveBracketExitLegs(entryIntent, accountId);
+  if (!cancelled.ok) {
+    transitionIntent(intentRec.id, 'rejected', { detail: `bracket cancel failed: ${cancelled.reason}` });
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_time_exit_cancel_failed',
+      detail: { positionId: pos.id, reason: cancelled.reason, raced: cancelled.raced ?? false },
+      riskProfile,
+    });
+    return { symbol, positionId: pos.id, requested: false, reason: cancelled.reason, intentId: intentRec.id };
   }
 
   transitionIntent(intentRec.id, 'validated', { detail: 'guardrails passed (live time-exit)' });
@@ -1610,23 +1636,21 @@ export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutc
     // broker round-trips between positions, and a kill switch engaged
     // mid-loop must stop the NEXT position's cancel/close immediately, not
     // just the next cycle.
-    const freshAccountId = getAutotradeConfig().liveAccountId;
+    const freshCfg = getAutotradeConfig();
+    const freshAccountId = freshCfg.liveAccountId;
     if (!freshAccountId) continue;
+    // The re-read above used to check ONLY liveAccountId, despite this comment
+    // promising a mid-loop kill switch stops the next cancel/close. It now
+    // actually does. The guardrails inside the close path would catch it too
+    // (and now do so BEFORE the bracket is cancelled), but stopping here means
+    // a halted account doesn't churn a rejected intent per position per tick.
+    const freshLiveCfg = buildLiveTradingConfig(freshCfg);
+    if (!freshLiveCfg.enabled || freshLiveCfg.killSwitch) break;
 
-    const cancelled = await cancelLiveBracketExitLegs(entryIntent, freshAccountId);
-    if (!cancelled.ok) {
-      logAutotradeEvent({
-        symbol: pos.symbol,
-        stage: 'execution',
-        action: 'live_time_exit_cancel_failed',
-        detail: { positionId: pos.id, reason: cancelled.reason, raced: cancelled.raced ?? false },
-        riskProfile,
-      });
-      outcomes.push({ symbol: pos.symbol, positionId: pos.id, requested: false, reason: cancelled.reason });
-      continue;
-    }
-
-    outcomes.push(await placeLiveEquityTimeExitClose(pos, freshAccountId, riskProfile));
+    // The bracket cancel now happens INSIDE placeLiveEquityTimeExitClose, after
+    // its guardrails pass — cancelling here meant a blocked close stripped the
+    // position's only stop. See that function's own comment.
+    outcomes.push(await placeLiveEquityTimeExitClose(pos, freshAccountId, riskProfile, entryIntent));
   }
   return outcomes;
 }

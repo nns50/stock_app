@@ -259,10 +259,39 @@ describe('checkLiveEquityTimeExits', () => {
     expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
   });
 
+  it('never cancels the protective bracket when the close would be blocked (kill switch)', async () => {
+    // The bug: the bracket was cancelled and confirmed cleared BEFORE the close
+    // was evaluated, so any blocking guardrail left a real position with no stop
+    // at the broker and no closing order — and it could not self-heal, because a
+    // rejected intent never becomes a pending exit order, so the next tick did it
+    // again. The kill switch is the easiest trigger, which made "stop trading"
+    // the gesture most likely to strip a position's protection.
+    const { position, quantity } = await openAgedLivePosition(30);
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(quantity) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [openOrder({ clientOrderId: 'STOP-1' })] });
+    mockCancelOrder.mockResolvedValue({ ok: true });
+    setAutotradeConfig({ killSwitch: true });
+
+    const outcomes = await checkLiveEquityTimeExits();
+
+    // The stop stays where it is, and no close is placed.
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(outcomes.every((o) => o.requested === false)).toBe(true);
+    expect(listPositions({ status: 'open' })).toHaveLength(1);
+    void position;
+  });
+
   it('does not close (double-up risk) when a resting exit leg does not clear after cancel', async () => {
-    const { position } = await openAgedLivePosition(30);
+    const { position, quantity } = await openAgedLivePosition(30);
     mockOpenOrders.mockResolvedValue({ ok: true, orders: [openOrder({ clientOrderId: 'STOP-STUCK' })] }); // both scans still show it
     mockCancelOrder.mockResolvedValue({ ok: true });
+    // The close is now evaluated (quote, account state, guardrails) BEFORE the
+    // bracket is cancelled, so these have to be set for the test to reach the
+    // cancel step it is actually about.
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(quantity) as Awaited<ReturnType<typeof webullAccountState>>);
 
     const outcomes = await checkLiveEquityTimeExits();
 
@@ -273,8 +302,13 @@ describe('checkLiveEquityTimeExits', () => {
   });
 
   it('fails closed (no new order) when the broker open orders cannot be read', async () => {
-    const { position } = await openAgedLivePosition(30);
+    const { position, quantity } = await openAgedLivePosition(30);
     mockOpenOrders.mockResolvedValue({ ok: false, orders: [], error: 'Webull open-orders failed (500)' });
+    // The close is now evaluated (quote, account state, guardrails) BEFORE the
+    // bracket is cancelled, so these have to be set for the test to reach the
+    // cancel step it is actually about.
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(quantity) as Awaited<ReturnType<typeof webullAccountState>>);
 
     const outcomes = await checkLiveEquityTimeExits();
 
@@ -284,8 +318,13 @@ describe('checkLiveEquityTimeExits', () => {
   });
 
   it('backs off without placing a new order when a bracket leg raced the cancel and already filled', async () => {
-    const { position } = await openAgedLivePosition(30);
+    const { position, quantity } = await openAgedLivePosition(30);
     mockOpenOrders.mockResolvedValue(noOpenOrders); // the filled leg is terminal — not in open orders
+    // The close is now evaluated (quote, account state, guardrails) BEFORE the
+    // bracket is cancelled, so these have to be set for the test to reach the
+    // cancel step it is actually about.
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(quantity) as Awaited<ReturnType<typeof webullAccountState>>);
     mockOrderStatus.mockResolvedValue({
       ok: true,
       found: true,
