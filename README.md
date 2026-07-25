@@ -235,9 +235,49 @@ npm run lint           # ESLint (flat config) over the monorepo
 npm run format         # Prettier --write
 npm run check:provider # verify the configured market-data provider
 npm run capture:broker # dump raw Webull field shapes (read-only; see below)
+npm run backfill:exits # correct estimated exit prices from real fills (dry run; see below)
 ```
 
 CI runs lint, format-check, typecheck, tests, and build on every PR.
+
+### `backfill:exits` — correcting estimated exit prices
+
+A **dry-run-by-default** one-off repair. Until the bracket response shape was
+confirmed (`capture:broker` Q3, above), a stop or target firing was invisible to
+the order path: `combo_type` sits on the response *envelope* rather than on the
+leg, and a bracket comes back as three separate envelopes sharing a
+`combo_order_id` rather than one with nested legs. So what actually closed those
+positions was the background Webull position sync, which notices a holding has
+gone and books an exit priced from the latest **quote** — an estimate, flagged
+as one in the exit's own note.
+
+That matters more than tidiness. **Expectancy-weighted sizing** reads each closed
+autotrade trade's realized R (`realizedPnl / initialRisk`) and turns a grade's
+average into the multiplier that sizes the next trade in that grade; auto-tune's
+walk-forward guard and the excursion tuner read the same closed-trade P&L. An
+exit-price error lands directly in that numerator, so a grade whose exits were
+booked worse than they filled gets sized down on evidence that never happened.
+
+The real fill is recoverable: position → its entry order → the broker's combo →
+the exit leg that filled, and its `filled_price`.
+
+```bash
+npm run backfill:exits              # report what WOULD change, write nothing
+npm run backfill:exits -- --apply   # write the corrections
+```
+
+The dry run prints one line per trade (`recorded → real fill`, and the P&L
+difference), then every skip with its reason. Read-only toward the broker; the
+only write it ever makes is an exit row's price, and only under `--apply`. Safe
+to re-run — a corrected exit reports "already matches the broker fill" on the
+next pass.
+
+It refuses rather than guesses, on the same principle as the rest of the live
+path: a combo that has aged out of order history, two exit legs both reporting
+filled, a leg whose quantity doesn't match what the exit booked, or no usable
+fill price all leave the row exactly as it was. An estimate that is known to be
+an estimate is recoverable; a confident wrong "correction" writes fiction into
+realized P&L and the tax export.
 
 ### `capture:broker` — confirming broker field semantics
 

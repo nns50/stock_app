@@ -21,6 +21,7 @@
     "format:check": "prettier --check .",
     "check:provider": "npm run check:provider -w server --",
     "capture:broker": "npm run capture:broker -w server --",
+    "backfill:exits": "npm run backfill:exits -w server --",
     "seed": "npm run seed -w server --"
   },
   "overrides": {
