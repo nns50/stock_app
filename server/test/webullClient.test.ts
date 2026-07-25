@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { WebullClient, WebullError } from '../src/providers/webull/client';
+import { WebullClient, WebullError, minIntervalMs } from '../src/providers/webull/client';
 
 // Make the rate-limit backoff sleep instant so retry tests don't actually wait.
 vi.mock('../src/util/http', async (orig) => {
@@ -147,5 +147,40 @@ describe('WebullClient', () => {
     });
     expect(r.status).toBe(429);
     expect(f).toHaveBeenCalledTimes(1); // no retry even on 429 — a 429 can post-date acceptance
+  });
+});
+
+describe('per-endpoint pacing', () => {
+  it('paces the endpoints Webull limits to 2 requests / 2 seconds', () => {
+    for (const p of [
+      '/openapi/trade/order/open',
+      '/openapi/trade/order/history',
+      '/openapi/trade/order/detail',
+      '/openapi/assets/balance',
+      '/openapi/assets/positions',
+    ]) {
+      expect(minIntervalMs(p)).toBe(1000);
+    }
+    // 10 requests / 30 seconds — stricter than one per second.
+    expect(minIntervalMs('/openapi/account/list')).toBe(3000);
+  });
+
+  it('never paces order placement, cancellation or replacement', () => {
+    // These are documented at 600/minute. Gating them would put a cancel or a
+    // replace in line behind whatever status polls are in flight — injecting
+    // latency into the exit path to fix a problem the exit path does not have.
+    for (const p of [
+      '/openapi/trade/order/place',
+      '/openapi/trade/order/cancel',
+      '/openapi/trade/order/replace',
+      '/openapi/trade/order/batch-place',
+      '/openapi/trade/order/preview',
+    ]) {
+      expect(minIntervalMs(p)).toBe(0);
+    }
+  });
+
+  it('leaves market data unpaced', () => {
+    expect(minIntervalMs('/openapi/market-data/stock/snapshot')).toBe(0);
   });
 });

@@ -7,6 +7,7 @@ import {
   webullPreviewOrder,
   webullPlaceOrder,
   webullOrderStatus,
+  webullOrderStatusBatch,
   webullCancelOrder,
   webullReplaceOrder,
   listWebullOpenOrders,
@@ -877,5 +878,157 @@ describe('price rounding (defensive backstop for sub-penny broker prices)', () =
     const [, opts] = fetchSpy.mock.calls[0];
     const body = JSON.parse((opts as RequestInit).body as string);
     expect(body.modify_orders[0]).toMatchObject({ limit_price: '98.15', stop_price: '103.7' });
+  });
+});
+
+describe('webullOrderStatusBatch', () => {
+  const cfg = () => Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+  const openEnv = (cid: string, status: string) => ({
+    client_order_id: cid,
+    combo_order_id: `WB-${cid}`,
+    orders: [{ client_order_id: cid, status, order_id: `WB-${cid}`, total_quantity: '2' }],
+  });
+
+  it('answers for many orders with ONE fetch per list, not one per order', async () => {
+    // The whole point: the order-query endpoints allow 2 requests per 2
+    // seconds, and the old per-order lookup spent two of them EACH.
+    cfg();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify([openEnv('A', 'PENDING'), openEnv('B', 'PENDING'), openEnv('C', 'PENDING')]),
+    } as Response);
+
+    const out = await webullOrderStatusBatch('ACC1', ['A', 'B', 'C']);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(out.get('A')).toMatchObject({ ok: true, found: true, status: 'PENDING', brokerOrderId: 'WB-A' });
+    expect(out.get('C')).toMatchObject({ ok: true, found: true, brokerOrderId: 'WB-C' });
+  });
+
+  it('falls through to history only for the orders open orders did not answer', async () => {
+    cfg();
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify([openEnv('A', 'PENDING')]),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify([openEnv('B', 'FILLED')]),
+      } as Response);
+
+    const out = await webullOrderStatusBatch('ACC1', ['A', 'B']);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(String(fetchSpy.mock.calls[1][0])).toContain('/openapi/trade/order/history');
+    expect(out.get('A')).toMatchObject({ status: 'PENDING' });
+    expect(out.get('B')).toMatchObject({ status: 'FILLED' });
+  });
+
+  it('skips the history call entirely when open orders answered everything', async () => {
+    cfg();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify([openEnv('A', 'PENDING')]),
+    } as Response);
+
+    await webullOrderStatusBatch('ACC1', ['A']);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an error — never "not found" — when open orders cannot be read', async () => {
+    // found:false is positive evidence the order never landed, and a caller
+    // acts on it by retiring the intent. A failed fetch must never look like
+    // that.
+    cfg();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      text: async () => JSON.stringify({ msg: 'upstream unavailable' }),
+    } as Response);
+
+    const out = await webullOrderStatusBatch('ACC1', ['A', 'B']);
+
+    for (const id of ['A', 'B']) {
+      expect(out.get(id)).toMatchObject({ ok: false, found: false });
+      expect(out.get(id)!.error).toMatch(/upstream unavailable/i);
+    }
+  });
+
+  it('keeps answers already resolved from open orders when history then fails', async () => {
+    cfg();
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify([openEnv('A', 'PENDING')]),
+      } as Response)
+      .mockResolvedValueOnce({ ok: false, status: 500, text: async () => JSON.stringify({ msg: 'boom' }) } as Response);
+
+    const out = await webullOrderStatusBatch('ACC1', ['A', 'B']);
+
+    expect(out.get('A')).toMatchObject({ ok: true, found: true, status: 'PENDING' });
+    expect(out.get('B')).toMatchObject({ ok: false, found: false });
+  });
+
+  it('reports found:false only when BOTH lists were read and neither knows the order', async () => {
+    cfg();
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '[]' } as Response)
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '[]' } as Response);
+
+    expect(await webullOrderStatusBatch('ACC1', ['GHOST'])).toEqual(new Map([['GHOST', { ok: true, found: false }]]));
+  });
+
+  it('spends nothing on an empty request, and reports unconfigured without fetching', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    expect(await webullOrderStatusBatch('ACC1', [])).toEqual(new Map());
+
+    Object.assign(config.webull, { appKey: '', appSecret: '' });
+    const out = await webullOrderStatusBatch('ACC1', ['A']);
+    expect(out.get('A')).toMatchObject({ ok: false, found: false, error: expect.stringMatching(/not configured/i) });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('de-duplicates repeated ids rather than asking twice', async () => {
+    cfg();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify([openEnv('A', 'PENDING')]),
+    } as Response);
+
+    const out = await webullOrderStatusBatch('ACC1', ['A', 'A', 'A']);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(out.size).toBe(1);
+  });
+
+  it('surfaces every combo leg, exactly as the single-order lookup does', async () => {
+    // A bracket arrives as sibling envelopes sharing combo_order_id; the batch
+    // must not lose that by resolving orders one at a time.
+    cfg();
+    const leg = (cid: string, comboType: string, status: string) => ({
+      client_order_id: cid,
+      combo_order_id: 'WB-COMBO',
+      combo_type: comboType,
+      status,
+      order_id: `WB-${cid}`,
+      filled_quantity: '10',
+      filled_price: '100',
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify([leg('CID-M', 'MASTER', 'FILLED'), leg('CID-SL', 'STOP_LOSS', 'CANCELLED')]),
+    } as Response);
+
+    const out = await webullOrderStatusBatch('ACC1', ['CID-M']);
+    expect(out.get('CID-M')).toMatchObject({ status: 'FILLED' });
+    expect(out.get('CID-M')!.legs).toHaveLength(2);
   });
 });

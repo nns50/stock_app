@@ -43,6 +43,85 @@ export interface WebullClientConfig {
 
 type Surface = 'market' | 'trade';
 
+// ---------------------------------------------------------------------------
+// Per-endpoint request pacing.
+//
+// Webull rate-limits PER ENDPOINT, and the limits differ by an order of
+// magnitude, so pacing has to be per-endpoint too. From the Trading API
+// reference ("Frequency limit" on each endpoint page):
+//
+//   2 requests / 2 seconds   order/open, order/history, order/detail,
+//                            assets/balance, assets/positions
+//   10 requests / 30 seconds account/list
+//   150 / 10 seconds         order/preview
+//   600 / minute             order/place, order/cancel, order/batch-place
+//
+// Only the first two groups are slow enough to be worth gating. Pacing the
+// 600/minute mutations would be actively harmful: every trade request shares
+// one process, so a queued cancel or replace would wait behind whatever
+// backlog of status polls happened to be in flight — injecting latency into
+// the exit path to solve a problem the exit path does not have.
+//
+// webullClient() builds a FRESH client per call, so a per-instance guard would
+// do nothing; the gates must be module-level, shared by every caller in the
+// process. One gate per endpoint, so a slow account/list never blocks an order
+// status lookup.
+//
+// Pacing is a backstop, not the fix. The reason these were exceeded at all is
+// that a status lookup costs two requests and used to be issued per order —
+// see webullOrderStatusBatch(), which fetches each list once for the whole set.
+//
+// Market data is left alone: separate limits, its own caching layer, and no
+// observed problem.
+//
+// Note: the docs also state a global "less than 90 requests per minute" per
+// user, which contradicts the 600/minute figures on individual endpoints. We
+// pace to the specific documented per-endpoint limits and rely on the 429
+// backoff below for the global ceiling, rather than throttling market data to
+// 1.5 req/s on the strength of a sentence the endpoint pages contradict.
+// ---------------------------------------------------------------------------
+
+/** Minimum spacing between successive calls to the same endpoint, in ms.
+ *  Anything not listed is unpaced. */
+const MIN_INTERVAL_MS: Record<string, number> = {
+  '/openapi/trade/order/open': 1000,
+  '/openapi/trade/order/history': 1000,
+  '/openapi/trade/order/detail': 1000,
+  '/openapi/assets/balance': 1000,
+  '/openapi/assets/positions': 1000,
+  '/openapi/account/list': 3000,
+};
+
+/** Scales every interval above. The test suite sets it to 0 (see
+ *  vitest.config.ts): pacing is about the broker's frequency limit, not about
+ *  any logic the tests exercise, and paying real seconds per request would make
+ *  the suite slower than it is useful. */
+const PACING_SCALE = Number(process.env.WEBULL_PACING_SCALE ?? 1);
+
+const gates = new Map<string, Promise<void>>();
+
+/** The pacing this endpoint is subject to, in ms; 0 means unpaced. Exported so
+ *  the table itself can be asserted on — in particular that the order-placement
+ *  and cancellation paths are never gated behind a queue of status polls. */
+export function minIntervalMs(path: string): number {
+  return MIN_INTERVAL_MS[path] ?? 0;
+}
+
+/** Space successive calls to `path` by its documented limit. Chained rather
+ *  than timestamp-checked so concurrent callers queue behind one another
+ *  instead of all reading the same "last sent" value and firing together. */
+function pace(path: string): Promise<void> {
+  const interval = minIntervalMs(path) * PACING_SCALE;
+  if (!(interval > 0)) return Promise.resolve();
+  const wait = (gates.get(path) ?? Promise.resolve()).then(() => sleep(interval));
+  // Swallow so one rejected link can't poison the chain for every later caller.
+  gates.set(
+    path,
+    wait.catch(() => undefined),
+  );
+  return wait;
+}
+
 export interface CallResult {
   url: string;
   status: number;
@@ -125,6 +204,10 @@ export class WebullClient {
     const body = method === 'POST' ? JSON.stringify(opts.body ?? {}) : undefined;
 
     for (let attempt = 0; ; attempt++) {
+      // Respect this endpoint's documented frequency limit before spending a
+      // request — including on retries, which would otherwise be the fastest way
+      // back into the limit that caused the retry.
+      await pace(path);
       // Re-sign each attempt so the timestamp/nonce stay fresh across retries.
       const signed = signRequest({
         host,

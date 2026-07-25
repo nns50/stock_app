@@ -3,7 +3,7 @@ import { correctExitPrice } from '../db/positions';
 import { getIntent } from '../db/orders';
 import { getAutotradeConfig } from '../db/autotradeConfig';
 import { webullConfigured } from '../providers/webull/account';
-import { webullOrderStatus } from '../providers/webull/orders';
+import { WebullOrderStatus, webullOrderStatusBatch } from '../providers/webull/orders';
 import {
   BackfillSummary,
   ExitCorrection,
@@ -25,6 +25,11 @@ import {
 //
 // Read-only toward the broker — it only pulls order status. The only write it
 // ever makes is an exit row's price, and only with --apply.
+//
+// This is a one-shot repair with an expiry date, not a maintenance tool: the
+// Trading API's order/history covers the past 7 days, so a row whose ENTRY
+// order is older than that can never be corrected from the broker no matter how
+// often this is re-run. Rows that report the 7-day skip below are final.
 //
 // Usage:
 //   npm run backfill:exits                      # dry run: report, change nothing
@@ -93,29 +98,60 @@ async function main(): Promise<void> {
   const summary: BackfillSummary = { examined: 0, corrected: 0, skipped: 0, netPnlDelta: 0 };
   const skips: string[] = [];
 
+  // Resolve every candidate's entry order up front, then ask the broker ONCE
+  // per account rather than once per row. The order-query endpoints allow 2
+  // requests per 2 seconds and a per-row lookup spends two of them, so the
+  // original shape ran itself into a 429 partway down the list.
+  interface Resolved {
+    row: CandidateRow;
+    accountId: string;
+    clientOrderId: string;
+  }
+  const resolved: Resolved[] = [];
   for (const row of rows) {
-    summary.examined++;
     // The position's OWN account, not whatever is configured now: these are
     // historical rows and the live account setting may have changed since.
     const accountId = row.positionAccountId ?? fallbackAccount;
     if (!accountId) {
+      summary.examined++;
       summary.skipped++;
       skips.push(`  ${row.symbol} ${row.exitDate}: no account recorded and none configured`);
       continue;
     }
     const intent = getIntent(row.sourceIntentId);
     if (!intent) {
+      summary.examined++;
       summary.skipped++;
       skips.push(`  ${row.symbol} ${row.exitDate}: entry intent ${row.sourceIntentId} is gone`);
       continue;
     }
+    resolved.push({ row, accountId, clientOrderId: intent.idempotencyKey });
+  }
 
-    const broker = await webullOrderStatus(accountId, intent.idempotencyKey);
+  const byAccount = new Map<string, string[]>();
+  for (const r of resolved) {
+    const ids = byAccount.get(r.accountId) ?? [];
+    ids.push(r.clientOrderId);
+    byAccount.set(r.accountId, ids);
+  }
+  const statuses = new Map<string, Map<string, WebullOrderStatus>>();
+  for (const [accountId, ids] of byAccount) {
+    statuses.set(accountId, await webullOrderStatusBatch(accountId, ids));
+  }
+
+  for (const { row, accountId, clientOrderId } of resolved) {
+    summary.examined++;
+    const broker = statuses.get(accountId)?.get(clientOrderId);
     let decision: ExitCorrection;
-    if (!broker.ok) {
+    if (!broker) {
+      decision = { action: 'skip', reason: 'no status returned for this order' };
+    } else if (!broker.ok) {
       decision = { action: 'skip', reason: `broker lookup failed: ${broker.error}` };
     } else if (!broker.found) {
-      decision = { action: 'skip', reason: 'the broker has no record of this order any more' };
+      // Not "deleted" — Webull's Trading API order/history covers the past 7
+      // days only, so an entry order older than that is gone for good and this
+      // row can never be corrected from the broker. Nothing to retry.
+      decision = { action: 'skip', reason: 'entry order predates the broker’s 7-day history window' };
     } else {
       decision = decideExitCorrection(row, broker.legs ?? []);
     }
