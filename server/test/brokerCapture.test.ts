@@ -252,6 +252,41 @@ describe('collectComboEvidence', () => {
     expect(e.totalOrderRows).toBe(3);
   });
 
+  it('reads combo_type off the ENVELOPE, where this broker actually puts it', () => {
+    // Reading it off the leg reported every leg of a real bracket as untagged
+    // — the opposite of what the payload said, from the one tool whose job is
+    // to report what the payload says.
+    const payload = [
+      {
+        client_order_id: 'A',
+        combo_type: 'MASTER',
+        combo_order_id: 'WB-7',
+        orders: [{ status: 'FILLED', quantity: '5' }],
+      },
+      {
+        client_order_id: 'B',
+        combo_type: 'STOP_LOSS',
+        combo_order_id: 'WB-7',
+        orders: [{ status: 'WORKING', quantity: '5' }],
+      },
+    ];
+    expect(collectComboEvidence(payload).groups[0].legComboTypes).toEqual(['MASTER', 'STOP_LOSS']);
+  });
+
+  it('still reads a leg-level combo_type when that is where it is', () => {
+    const payload = [
+      {
+        client_order_id: 'A',
+        combo_order_id: 'WB-8',
+        orders: [
+          { combo_type: 'MASTER', status: 'FILLED', quantity: '5' },
+          { combo_type: 'STOP_LOSS', status: 'WORKING', quantity: '5' },
+        ],
+      },
+    ];
+    expect(collectComboEvidence(payload).groups[0].legComboTypes).toEqual(['MASTER', 'STOP_LOSS']);
+  });
+
   it('finds a FLAT combo — separate rows sharing one combo id', () => {
     // The shape a nested-only detector would report as "no bracket", which is
     // the same output as a genuinely empty account.
@@ -336,7 +371,8 @@ describe('classifyComboLegSemantics', () => {
       totalOrderRows: 3,
     });
     expect(v.semantics).toBe('not-nested');
-    expect(v.detail).toMatch(/single-leg order/i);
+    expect(v.detail).toMatch(/confirmed shape/i);
+    expect(v.detail).toMatch(/handled/i);
   });
 
   it('refuses to let a SPREAD stand in for a bracket', () => {
