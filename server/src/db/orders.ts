@@ -40,6 +40,14 @@ export interface OrderIntentRecord {
   isBracket: boolean;
   state: OrderState;
   brokerOrderId: string | null;
+  /** Quantity of this order already mirrored into the Positions ledger. The
+   *  high-water mark that makes partial-fill materialization idempotent across
+   *  the three independent reconcile callers. */
+  materializedQty: number;
+  /** Total cost already booked for `materializedQty`. Differencing this against
+   *  the broker's (quantity × average price) recovers the incremental price of
+   *  a new partial, which an average alone can't give. */
+  materializedNotional: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -69,6 +77,8 @@ interface IntentRow {
   is_bracket: number;
   state: OrderState;
   broker_order_id: string | null;
+  materialized_qty: number;
+  materialized_notional: number;
   created_at: number;
   updated_at: number;
 }
@@ -91,6 +101,8 @@ function mapIntent(r: IntentRow): OrderIntentRecord {
     isBracket: r.is_bracket === 1,
     state: r.state,
     brokerOrderId: r.broker_order_id,
+    materializedQty: r.materialized_qty ?? 0,
+    materializedNotional: r.materialized_notional ?? 0,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -233,6 +245,49 @@ export function recordReplace(
     now,
   );
   return getIntent(id)!;
+}
+
+/**
+ * Advance the materialization high-water mark after a fill has been mirrored
+ * into the Positions ledger. Both figures are ADDITIVE deltas, not absolutes,
+ * and the UPDATE is guarded so the mark can only ever move forward: if a
+ * concurrent reconcile already booked past this point, the WHERE clause makes
+ * this a no-op instead of rewinding it. Returns true when this call was the one
+ * that advanced it.
+ *
+ * SQLite (better-sqlite3) is synchronous and single-threaded here, so this
+ * plus reading the mark in the same tick is effectively atomic; the guard
+ * covers the ordering of the three independent reconcile callers rather than
+ * true parallel writes.
+ */
+export function advanceMaterialized(id: number, addQty: number, addNotional: number): boolean {
+  const info = db
+    .prepare(
+      `UPDATE order_intents
+          SET materialized_qty = materialized_qty + ?,
+              materialized_notional = materialized_notional + ?,
+              updated_at = ?
+        WHERE id = ? AND materialized_qty + ? > materialized_qty`,
+    )
+    .run(addQty, addNotional, Date.now(), id, addQty);
+  return info.changes > 0;
+}
+
+/**
+ * Append an audit event at the intent's CURRENT state — a note, not a lifecycle
+ * transition. Used to record materialization decisions (including refusals),
+ * so an order's history explains why a fill was or wasn't mirrored into
+ * Positions without inventing a state the machine doesn't have.
+ */
+export function recordIntentNote(id: number, detail: string): void {
+  const current = getIntent(id);
+  if (!current) return;
+  db.prepare('INSERT INTO order_events (intent_id, state, detail, created_at) VALUES (?,?,?,?)').run(
+    id,
+    current.state,
+    detail,
+    Date.now(),
+  );
 }
 
 /** The audit trail for an intent, oldest first. */

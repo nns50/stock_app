@@ -72,6 +72,7 @@ import type {
   LivePreviewResult,
   PlaceResult,
   ClosePositionResult,
+  ExpiredOptionsSweepResult,
   ReconcileResult,
   ReconcileAllResult,
   CancelResult,
@@ -316,6 +317,13 @@ export const client = {
     const qs = new URLSearchParams(params as Record<string, string>).toString();
     return api<{ positions: Position[] }>(`/positions${qs ? `?${qs}` : ''}`);
   },
+  /** Classify expired-but-open option positions WITHOUT writing anything. */
+  expiredOptions: () => api<ExpiredOptionsSweepResult>('/positions/expired-options'),
+
+  /** Book $0 exits for the unambiguously worthless ones; leave the rest open. */
+  sweepExpiredOptions: () =>
+    api<ExpiredOptionsSweepResult>('/positions/expired-options/sweep', { method: 'POST', body: '{}' }),
+
   positionsWithPnl: (params: { status?: string } = {}) => {
     const qs = new URLSearchParams({ ...params, withPnl: 'true' } as Record<string, string>).toString();
     return api<{ positions: PositionWithPnl[]; aggregate: AggregatePnl; exposure: Exposure }>(`/positions?${qs}`);

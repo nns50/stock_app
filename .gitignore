@@ -26,6 +26,9 @@ logs/
 *.log
 npm-debug.log*
 
+# Broker field captures (npm run capture:broker) — contain real balances/positions
+broker-capture*.json
+
 # Editor / OS
 .DS_Store
 .vscode/

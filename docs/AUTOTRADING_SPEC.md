@@ -1051,6 +1051,29 @@ starts.
      path, not something specific to autotrade. Every fix has a regression test
      verified by reverting the fix and confirming it fails against the old code.
 
+     **Resolved 2026-07-24.** The deferred partial-fill finding is fixed on all
+     three live paths at once (human reconcile, live equity, live options), since
+     it was the same defect in three places. Fills are now materialized whenever
+     the broker REPORTS filled quantity — not only at a terminal `filled` — so a
+     partial that is cancelled between two ticks is still recorded; on autotrade's
+     paths that was the sharp edge, because a cancelled intent leaves the pending
+     set permanently and nothing would ever have booked it. Each intent carries a
+     `materialized_qty` / `materialized_notional` high-water mark, so repeated
+     observation books only the unbooked delta and the three independent reconcile
+     callers can't double-book. Later instalments blend into the single position
+     each autotrade order maps to (`position_id` is one column), while the human
+     ledger books independent lots. The shared guards live in
+     `services/trading/fillDelta.ts` so they can't drift between paths: a decrease
+     in reported quantity refuses the book outright, a total exceeding the order's
+     own size is clamped (and priced at the reported average rather than a
+     differenced one, which would inflate it), and every refusal is journaled.
+     The bias is deliberate and one-directional — under-record and flag rather
+     than inflate size or cost basis, because the latter silently corrupts every
+     risk figure derived from it. The underlying broker semantics
+     (`filled_quantity` as a running total) remain UNCONFIRMED against a real
+     partial fill; `npm run capture:broker --watch` exists to settle it, and the
+     guards above are what make correctness not depend on the answer.
+
      **Follow-up, added after live trading was actually enabled (2026-07-03):** live
      fills had no dedicated view on the Auto-Trade page itself — only the Monitoring
      dashboard's aggregate `liveOpenPositions*` figures, with individual positions

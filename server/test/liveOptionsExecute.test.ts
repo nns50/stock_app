@@ -981,12 +981,16 @@ describe('reconcileLiveOptionsOrders', () => {
     const sig = optionSignal();
     await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
     const intentId = listIntents()[0].id;
+    // Mock the contract count actually ORDERED — a broker cannot fill more than
+    // was ordered, and reconcile now (correctly) refuses to book a fill that
+    // claims otherwise rather than inflating the position.
+    const orderedQty = listIntents()[0].quantity;
 
     mockOrderStatus.mockResolvedValue({
       ok: true,
       found: true,
       status: 'FILLED',
-      filledQty: 2,
+      filledQty: orderedQty,
       filledPrice: 4.1,
     } as WebullOrderStatus);
 
@@ -1001,7 +1005,7 @@ describe('reconcileLiveOptionsOrders', () => {
       contractSymbol: 'AAPL-fixture',
       strike: 100,
       entryPrice: 4.1,
-      quantity: 2,
+      quantity: orderedQty,
     });
     expect(getLiveOptionsOrder(intentId)?.positionId).toBe(positions[0].id);
   });
@@ -1342,5 +1346,90 @@ describe('syncLiveOptionsPositionsFromBroker', () => {
       expect(result).toMatchObject({ closed: 0 });
       expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Partial fills on the live OPTIONS path. Same shape as equity's, with the same
+// sharp edge — a cancelled intent leaves listPendingLiveOptionsOrders() for
+// good — but a different write shape: autotrade_live_options_positions holds
+// ONE row per entry order, so later instalments blend into it.
+// ---------------------------------------------------------------------------
+describe('reconcileLiveOptionsOrders — partial fills', () => {
+  async function placeEntry() {
+    // Probation off, so the order carries enough contracts for a fill to be
+    // split — with the default halving it sizes to a single contract, and a
+    // one-contract order can't demonstrate a partial at all.
+    const cfg = liveConfig({ liveOptionsProbationTrades: 0 });
+    setAutotradeConfig(cfg);
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OP1' });
+    const sig = optionSignal();
+    await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', cfg);
+    const intentId = listIntents()[0].id;
+    return { intentId, orderedQty: listIntents()[0].quantity };
+  }
+
+  const brokerSays = (status: string, filledQty: number, filledPrice: number) =>
+    mockOrderStatus.mockResolvedValue({ ok: true, found: true, status, filledQty, filledPrice } as WebullOrderStatus);
+
+  it('opens a position on a partially-filled contract count', async () => {
+    const { orderedQty } = await placeEntry();
+    expect(orderedQty).toBeGreaterThan(1); // the split below is only meaningful with room
+    brokerSays('PARTIAL_FILLED', 1, 4.1);
+
+    await reconcileLiveOptionsOrders();
+
+    const open = listOpenLiveOptionsPositions();
+    expect(open).toHaveLength(1);
+    expect(open[0].quantity).toBe(1);
+
+    // A later instalment BLENDS into that same row — this table holds one
+    // position per entry order, so a second row would have nothing to link it.
+    brokerSays('FILLED', orderedQty, (1 * 4.1 + (orderedQty - 1) * 4.5) / orderedQty);
+    await reconcileLiveOptionsOrders();
+
+    const after = listOpenLiveOptionsPositions();
+    expect(after).toHaveLength(1);
+    expect(after[0].quantity).toBe(orderedQty);
+    expect(after[0].entryPrice).toBeCloseTo((1 * 4.1 + (orderedQty - 1) * 4.5) / orderedQty, 4);
+  });
+
+  it('books a partial the broker reports as CANCELLED in one shot', async () => {
+    // Booking on STATUS rather than reported quantity would lose these
+    // contracts permanently — the intent is terminal, so it never returns to
+    // the pending set.
+    const { intentId } = await placeEntry();
+    brokerSays('CANCELLED', 1, 4.25);
+
+    await reconcileLiveOptionsOrders();
+
+    const open = listOpenLiveOptionsPositions();
+    expect(open).toHaveLength(1);
+    expect(open[0].quantity).toBe(1);
+    expect(open[0].entryPrice).toBeCloseTo(4.25);
+    expect(listPendingLiveOptionsOrders().some((o) => o.intentId === intentId)).toBe(false);
+  });
+
+  it('does not open a second position when the same fill is seen twice', async () => {
+    await placeEntry();
+    brokerSays('PARTIAL_FILLED', 1, 4.1);
+    await reconcileLiveOptionsOrders();
+    await reconcileLiveOptionsOrders();
+
+    expect(listOpenLiveOptionsPositions()).toHaveLength(1);
+    expect(listOpenLiveOptionsPositions()[0].quantity).toBe(1);
+  });
+
+  it('never opens a position larger than the contract count ordered', async () => {
+    const { orderedQty } = await placeEntry();
+    brokerSays('FILLED', orderedQty + 5, 4.1);
+
+    await reconcileLiveOptionsOrders();
+
+    const open = listOpenLiveOptionsPositions();
+    expect(open[0].quantity).toBe(orderedQty);
+    expect(open[0].entryPrice).toBeCloseTo(4.1); // average, not an inflated slice price
   });
 });

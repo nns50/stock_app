@@ -420,6 +420,16 @@ yourself once you've decided.
   **close** fill **records an exit** against the matching open position(s) — oldest lot first (FIFO),
   a sell-to-close reducing a long and a buy-to-close a short — so the Journal's realized P&L tracks
   live trades automatically. (Spreads aren't auto-tracked — their single-leg fields are null.)
+  **Partial fills are recorded as they happen**, not only once an order completes: each instalment
+  is booked as its own lot at its own fill price, and the refresh line says how much it booked
+  (`partial_filled · 30/100 · booked 30 to Positions`). This matters most when a partly-filled
+  order is then **cancelled** — those shares are real, and they're now tracked instead of being
+  held invisibly. Refreshing the same order repeatedly is safe: only the not-yet-recorded part is
+  ever added. If the broker reports something the ledger can't fully mirror — more filled than you
+  ordered, say — the refresh line shows a **⚠ warning** explaining what was and wasn't recorded
+  (and **Refresh all** flags how many orders need a look), and the reason is written to the order's
+  audit trail. The app deliberately records **less** than it's unsure of rather than inventing
+  shares you don't own, so treat a warning as "check this order against your broker".
   **Cancel** appears on an order that's still working
   (acknowledged / partially filled): it requests a broker cancel, then reconciles to show the
   result. Cancel is risk-reducing, so it works even when `TRADING_ENABLED` is off. **Modify**
@@ -533,6 +543,23 @@ nudge, not a blocker — you can still save with items unchecked.
   via the same background Webull sync that reconciles any other live order). Use **close**
   when you still hold the position and want the app to sell it; use **exit** when you've
   already sold it elsewhere.
+- **Expired options** — an option held **through** expiry never produces a closing order,
+  so nothing ever records an exit and the position would sit "open" forever, quietly
+  inflating your open exposure, position count, risk caps and unrealized P&L with a contract
+  that no longer exists. When any open option's expiry has passed, a banner appears at the
+  top of the page listing them, split into two groups:
+  - Ones that **expired worthless** (the underlying finished clearly out of the money on the
+    expiry date). One button records a **$0 exit** for all of them, dated on the **expiry
+    itself** rather than today — so the realized loss lands in the period it actually
+    belongs to. Nothing is written until you press it: $0 exits change your realized P&L in
+    both the Journal and the CSV/tax export, so it's a deliberate action, not a background one.
+  - Ones that need **you** — finished **in the money** (so it was exercised or assigned,
+    which creates or removes a *stock* position this app doesn't track), or too close to the
+    strike to call, or with no price available for that date. These are **never** closed
+    automatically; the banner explains why for each, and you record the real outcome with
+    **exit** (or delete the row if the trade never happened). Guessing here would write a
+    realized P&L number that never occurred, which is worse than a row you can see is stale.
+  Positions on their own expiration day are left alone — they're still tradeable all session.
 - **journal** edits tags/grade/notes, and (2026-07-17) which **Webull account** the lot
   lives in — shown as a small chip next to the symbol whenever it's set, so you can tell
   positions in different real accounts (e.g. cash vs. margin) apart at a glance. The same
@@ -1110,6 +1137,18 @@ shouldn't be a tab-switch away.
   are enforced by the broker directly. Live trading is blocked if *either* kill switch is
   engaged — this page's own, or the **Trade** page's — since both places orders through
   the same real account; either one's "Halt trading" is a genuine, shared emergency stop.
+  A live order that fills only **partly** is recorded as soon as the loop sees it, rather
+  than waiting for the order to complete — and later instalments of the same order are
+  blended into that one position (bigger size, averaged entry), not opened as a second row.
+  This matters because an autotrade order that is cancelled after filling partly stops
+  being polled for good, so anything not recorded at that moment would never be recorded at
+  all. If the broker reports a fill the loop can't fully record — more filled than was
+  ordered, say — it records only what it can justify and journals a
+  **`live_fill_not_fully_materialized`** entry on **Recent activity** explaining the
+  difference. It deliberately errs toward recording **less** rather than inflating a
+  position's size or cost basis, since every risk figure on this page is derived from those
+  numbers; treat such an entry as "check this order against the broker".
+
   A **Live positions** table (Dashboard tab) shows every real position the loop has actually
   placed — the exact same `positions` rows your own manual trades use on the
   **Positions**/**Journal** pages, filtered here to just autotrade's own fills (tagged

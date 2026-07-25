@@ -214,6 +214,34 @@ export function closeLiveOptionsPosition(id: number, input: CloseLiveOptionsPosi
   return map(row);
 }
 
+/**
+ * Merge a further instalment of the SAME entry order into an already-open live
+ * options position: grow the contract count and blend the entry price toward
+ * the new fill, so cost basis stays honest when an order fills in more than one
+ * execution.
+ *
+ * Needed because this table holds one row per entry order (the intent's
+ * position id is a single column), so a second instalment can't become its own
+ * row the way the human Positions ledger books lots — it has to fold into the
+ * first. A no-op (returns null) if the position is missing or already closed,
+ * so a late fill on a position that's since been exited can't resurrect it.
+ */
+export function blendLiveOptionsPositionEntry(
+  id: number,
+  addQuantity: number,
+  addPrice: number,
+): LiveOptionsPosition | null {
+  const existing = db.prepare('SELECT * FROM autotrade_live_options_positions WHERE id = ?').get(id) as Row | undefined;
+  if (!existing || existing.status !== 'open' || addQuantity <= 0) return null;
+
+  const newQty = existing.quantity + addQuantity;
+  const blended = newQty > 0 ? (existing.entry_price * existing.quantity + addPrice * addQuantity) / newQty : addPrice;
+  db.prepare(
+    'UPDATE autotrade_live_options_positions SET quantity = ?, entry_price = ?, updated_at = ? WHERE id = ?',
+  ).run(newQty, blended, Date.now(), id);
+  return map(db.prepare('SELECT * FROM autotrade_live_options_positions WHERE id = ?').get(id) as Row);
+}
+
 export function getLiveOptionsPosition(id: number): LiveOptionsPosition | undefined {
   const row = db.prepare('SELECT * FROM autotrade_live_options_positions WHERE id = ?').get(id) as Row | undefined;
   return row ? map(row) : undefined;

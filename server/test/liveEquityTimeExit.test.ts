@@ -27,7 +27,7 @@ import { initDb, db } from '../src/db';
 import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
 import { listPositions } from '../src/db/positions';
-import { listIntents } from '../src/db/orders';
+import { getIntent, listIntents } from '../src/db/orders';
 import { listPendingLiveOrders, getLiveOrder } from '../src/db/autotradeLiveOrders';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { evaluateRiskCheck } from '../src/services/autotrading/riskCheck';
@@ -140,7 +140,11 @@ async function openAgedLivePosition(ageDays: number) {
   });
   await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
   const entryIntentId = listIntents()[0].id;
-  const quantity = okResult.sizing.suggestedQuantity;
+  // The quantity actually ORDERED, which post-probation/cap adjustments can be
+  // smaller than the raw suggestion. The broker can't fill more than was
+  // ordered, so mocking the suggestion here would make the fixture describe an
+  // impossible fill — one reconcile now (correctly) refuses to book in full.
+  const quantity = getIntent(entryIntentId)!.quantity;
 
   mockOrderStatus.mockResolvedValue({
     ok: true,

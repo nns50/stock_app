@@ -21,6 +21,7 @@ import { listUniverse } from '../db/universe';
 import { isWebullTracked } from '../providers/webull/positions';
 import { closeLivePosition } from '../services/trading/closePosition';
 import { detectWashSale } from '../services/washSale';
+import { sweepExpiredOptions } from '../services/expiredOptionsSweep';
 
 export const positionsRouter = Router();
 
@@ -152,6 +153,24 @@ positionsRouter.get(
   asyncHandler(async (_req, res) => {
     const open = listPositions({ status: 'open' });
     res.json(await computePortfolioStress(open));
+  }),
+);
+
+// Expired-but-still-open option positions. GET classifies without writing (what
+// the Positions banner shows); POST books the $0 exits for the ones that
+// unambiguously expired worthless and leaves the rest flagged. Both registered
+// ahead of '/:id' so Express doesn't read the literal path as an id.
+positionsRouter.get(
+  '/expired-options',
+  asyncHandler(async (_req, res) => {
+    res.json(await sweepExpiredOptions({ dryRun: true }));
+  }),
+);
+
+positionsRouter.post(
+  '/expired-options/sweep',
+  asyncHandler(async (_req, res) => {
+    res.json(await sweepExpiredOptions());
   }),
 );
 
