@@ -840,7 +840,10 @@ shouldn't be a tab-switch away.
   **preview — every changed field, current → tuned — plus warnings** (e.g. when the
   target would need a dangerous per-trade risk, or when auto-tune is on and will later
   move the risk % anyway); **nothing changes until you click Apply**, and every field
-  stays editable afterward. A **Reset to moderate** button restores the standard moderate
+  stays editable afterward. The target % and sizing basis you pick are remembered in your
+  browser, so the card returns to your last choice after a reload or a view switch (they
+  drive the preview; they aren't themselves a saved setting — Apply writes the derived
+  risk config, not the target). A **Reset to moderate** button restores the standard moderate
   baseline, equity-scaled for your account. It deliberately **never touches your
   live-enable switch, kill switch, account ID, or probation ramps** — only the
   risk/aggressiveness settings and the dollar caps. Deliberately lets you push the target
