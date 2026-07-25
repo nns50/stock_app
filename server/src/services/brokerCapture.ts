@@ -249,3 +249,122 @@ export function classifyDayPnlSemantics(samples: BalanceSample[]): DayPnlVerdict
       'unrealized P&L moved while total_day_profit_loss held steady — it ignores open-position marks, so the existing mapping to realizedPnlTodayUsd is correct and the daily-loss halt is sound as written.',
   };
 }
+
+// ---------------------------------------------------------------------------
+// Q3 — does the order response echo `combo_type` back PER LEG?
+//
+// A bracket is submitted as MASTER + STOP_PROFIT/STOP_LOSS under one
+// client_combo_order_id. Reading a bracket's outcome back — which leg filled,
+// whether the protective stop was even accepted — depends entirely on the
+// response tagging each sub-order. WebullOrderLeg (providers/webull/orders.ts)
+// documents that as UNCONFIRMED: combo_type is what we SEND per leg, and
+// whether it comes BACK per leg has never been checked against a real account.
+//
+// That one unknown is load-bearing. It gates the "two exit legs both reported
+// FILLED" ambiguity detection, and it is the reason the bracket-protection
+// check has to ask the open-orders endpoint "is there a resting exit-side
+// order on this symbol?" instead of the far better question "is THIS
+// position's stop still there?". Confirming it either unlocks the precise
+// version or proves the indirect one is the only one available.
+//
+// The capture already collects everything needed — extractOrders() descends
+// into combo envelopes and summarizeOrders() keeps comboType — it just never
+// asked. This asks.
+// ---------------------------------------------------------------------------
+
+export interface ComboEnvelopeSummary {
+  clientOrderId?: string;
+  comboOrderId?: string;
+  legCount: number;
+  /** Each leg's `combo_type`, in response order; null where the leg omitted it. */
+  legComboTypes: Array<string | null>;
+  legStatuses: Array<string | undefined>;
+}
+
+/** Every multi-leg (combo) envelope in an order payload. A bracket and a spread
+ *  both look like this: one envelope wrapping a nested `orders` array. */
+export function summarizeComboEnvelopes(payload: unknown): ComboEnvelopeSummary[] {
+  const out: ComboEnvelopeSummary[] = [];
+  const walk = (v: unknown, depth: number): void => {
+    if (depth > 6 || !v || typeof v !== 'object') return;
+    if (Array.isArray(v)) {
+      v.forEach((i) => walk(i, depth + 1));
+      return;
+    }
+    const o = v as Record<string, unknown>;
+    const legs = Array.isArray(o.orders) ? (o.orders as Array<Record<string, unknown>>) : undefined;
+    if (legs && legs.length >= 2) {
+      out.push({
+        clientOrderId: o.client_order_id ? String(o.client_order_id) : undefined,
+        comboOrderId: o.combo_order_id ? String(o.combo_order_id) : undefined,
+        legCount: legs.length,
+        legComboTypes: legs.map((l) => (l?.combo_type ? String(l.combo_type) : null)),
+        legStatuses: legs.map((l) => (l?.status ? String(l.status).toUpperCase() : undefined)),
+      });
+    }
+    for (const val of Object.values(o)) walk(val, depth + 1);
+  };
+  walk(payload, 0);
+  return out;
+}
+
+export type ComboLegSemantics = 'echoed' | 'absent' | 'inconclusive';
+
+export interface ComboLegVerdict {
+  semantics: ComboLegSemantics;
+  detail: string;
+}
+
+/**
+ * Read per-leg combo_type support off the combo envelopes actually seen.
+ *
+ * Fails to 'inconclusive' rather than guessing, in BOTH directions — seeing no
+ * combo envelope at all says nothing about the field, and neither does a
+ * spread (whose legs have no MASTER/exit roles to tag). Only a real bracket
+ * settles it, so the verdict says so explicitly rather than letting an
+ * unrelated multi-leg order stand in for one.
+ */
+export function classifyComboLegSemantics(envelopes: ComboEnvelopeSummary[]): ComboLegVerdict {
+  if (envelopes.length === 0) {
+    return {
+      semantics: 'inconclusive',
+      detail:
+        'No multi-leg (combo) order found in open orders or history. Place a bracketed stock entry — an entry with a stop and/or target attached — let it rest or fill, then re-run.',
+    };
+  }
+
+  const tagged = envelopes.filter((e) => e.legComboTypes.every((t) => t !== null));
+  const bracketLike = tagged.find(
+    (e) => e.legComboTypes.includes('MASTER') && e.legComboTypes.some((t) => t !== null && t !== 'MASTER'),
+  );
+  if (bracketLike) {
+    return {
+      semantics: 'echoed',
+      detail:
+        `A ${bracketLike.legCount}-leg combo came back with every leg tagged (${bracketLike.legComboTypes.join(', ')}), ` +
+        'including a MASTER and at least one distinct exit leg. Per-leg combo_type IS echoed, so WebullOrderLeg can be ' +
+        'relied on: the both-legs-FILLED detection is sound, and the bracket-protection check can be tightened from ' +
+        '"is any exit-side order resting on this symbol" to "is THIS position\'s stop still there".',
+    };
+  }
+
+  const anyTagged = envelopes.some((e) => e.legComboTypes.some((t) => t !== null));
+  if (!anyTagged) {
+    return {
+      semantics: 'absent',
+      detail:
+        `${envelopes.length} combo envelope(s) seen and NOT ONE leg carried combo_type. The response does not tag legs, ` +
+        'so WebullOrderLeg.comboType is always undefined in practice: the both-legs-FILLED detection can never fire, ' +
+        'and every bracket-exit branch that filters on comboType is dead code. The open-orders scan is the only way to ' +
+        'reason about a bracket’s legs.',
+    };
+  }
+
+  return {
+    semantics: 'inconclusive',
+    detail:
+      `${envelopes.length} combo envelope(s) seen, but none was an unambiguous bracket (a MASTER leg plus a distinct ` +
+      'exit leg, every leg tagged). A spread’s legs carry no MASTER/exit roles, so it cannot answer this. Re-run after ' +
+      'a bracketed stock entry.',
+  };
+}

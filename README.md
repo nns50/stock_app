@@ -249,7 +249,7 @@ mappers that read those fields can be built against confirmed responses rather
 than a plausible reading of a field name. It places nothing, cancels nothing,
 and writes nothing to the database.
 
-It highlights two fields the app currently has to assume the meaning of:
+It highlights three fields the app currently has to assume the meaning of:
 
 - `total_day_profit_loss` — mapped to `realizedPnlTodayUsd` and used by the
   daily-loss halt, which treats it as **realized only**. If the broker includes
@@ -258,6 +258,12 @@ It highlights two fields the app currently has to assume the meaning of:
 - `filled_quantity` — whether it is **cumulative** across executions or reports
   each execution separately. Only cumulative values can be safely differenced
   when recording partial fills.
+- `combo_type` — whether a bracket's response tags **each leg** (MASTER /
+  STOP_LOSS / STOP_PROFIT) or only the order as a whole. This is what decides
+  whether a bracket's outcome can be read per leg at all: it gates detecting
+  "both exit legs reported filled", and it's why the stop-still-there check has
+  to ask "is any exit-side order resting on this symbol" instead of "is *this*
+  position's stop still there".
 
 ```bash
 npm run capture:broker                              # snapshot + field report
@@ -266,8 +272,12 @@ npm run capture:broker -- --watch-day-pnl           # settles total_day_profit_l
 npm run capture:broker -- --watch <client_order_id> # poll one order while it fills
 ```
 
-Both questions are settled by **watching a value over time**, since a single
-snapshot can't distinguish the readings.
+The first two are settled by **watching a value over time**, since a single
+snapshot can't distinguish the readings. The `combo_type` question is answered
+straight from the plain snapshot — but only once the account has actually placed
+a **bracket**: a spread's legs carry no MASTER/exit roles, so the report refuses
+to let one stand in for a bracket and says `inconclusive` instead. Place a
+bracketed stock entry, let it rest or fill, then re-run.
 
 `--watch-day-pnl` samples the balance repeatedly (default 6 × 20s) while you hold
 an open position and place **no** orders. Realized P&L is pinned for that window,

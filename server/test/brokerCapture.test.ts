@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  classifyComboLegSemantics,
   classifyDayPnlSemantics,
   classifyFillSemantics,
   extractOrders,
   pnlLikeFields,
   redact,
+  summarizeComboEnvelopes,
   summarizeOrders,
 } from '../src/services/brokerCapture';
 
@@ -215,5 +217,81 @@ describe('classifyDayPnlSemantics', () => {
       { dayPnl: -30, unrealizedPnl: -30 },
     ]);
     expect(v.semantics).toBe('includes-unrealized');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Q3 — is combo_type echoed back per leg? The answer decides whether
+// WebullOrderLeg can be relied on at all, so the classifier has to be as
+// unwilling to guess as the other two.
+// ---------------------------------------------------------------------------
+describe('summarizeComboEnvelopes', () => {
+  it('finds multi-leg envelopes and records each leg tag, including missing ones', () => {
+    const payload = [
+      {
+        client_order_id: 'CID-1',
+        combo_order_id: 'WB-1',
+        orders: [
+          { combo_type: 'MASTER', status: 'FILLED' },
+          { combo_type: 'STOP_LOSS', status: 'WORKING' },
+          { status: 'WORKING' }, // untagged
+        ],
+      },
+    ];
+    expect(summarizeComboEnvelopes(payload)).toEqual([
+      {
+        clientOrderId: 'CID-1',
+        comboOrderId: 'WB-1',
+        legCount: 3,
+        legComboTypes: ['MASTER', 'STOP_LOSS', null],
+        legStatuses: ['FILLED', 'WORKING', 'WORKING'],
+      },
+    ]);
+  });
+
+  it('ignores a single-leg order — one leg is not a combo', () => {
+    expect(summarizeComboEnvelopes([{ client_order_id: 'X', orders: [{ status: 'FILLED' }] }])).toEqual([]);
+  });
+});
+
+describe('classifyComboLegSemantics', () => {
+  const envelope = (legComboTypes: Array<string | null>) => ({
+    clientOrderId: 'CID',
+    comboOrderId: 'WB',
+    legCount: legComboTypes.length,
+    legComboTypes,
+    legStatuses: legComboTypes.map(() => 'WORKING'),
+  });
+
+  it('confirms echoed when a real bracket comes back fully tagged', () => {
+    const v = classifyComboLegSemantics([envelope(['MASTER', 'STOP_LOSS', 'STOP_PROFIT'])]);
+    expect(v.semantics).toBe('echoed');
+    expect(v.detail).toMatch(/MASTER/);
+  });
+
+  it('reports absent when combos come back with no leg tagged at all', () => {
+    // The consequential answer: every comboType filter in the app is dead code.
+    const v = classifyComboLegSemantics([envelope([null, null, null])]);
+    expect(v.semantics).toBe('absent');
+    expect(v.detail).toMatch(/dead code/);
+  });
+
+  it('says nothing when no combo order was seen', () => {
+    const v = classifyComboLegSemantics([]);
+    expect(v.semantics).toBe('inconclusive');
+    expect(v.detail).toMatch(/place a bracketed stock entry/i);
+  });
+
+  it('refuses to let a SPREAD stand in for a bracket', () => {
+    // A vertical's legs are tagged NORMAL/NORMAL — no MASTER, no exit roles —
+    // so it proves the field exists but not that bracket roles come back.
+    const v = classifyComboLegSemantics([envelope(['NORMAL', 'NORMAL'])]);
+    expect(v.semantics).toBe('inconclusive');
+    expect(v.detail).toMatch(/spread/i);
+  });
+
+  it('refuses a partially-tagged bracket rather than calling it confirmed', () => {
+    const v = classifyComboLegSemantics([envelope(['MASTER', null])]);
+    expect(v.semantics).toBe('inconclusive');
   });
 });

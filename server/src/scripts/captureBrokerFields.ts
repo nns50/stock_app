@@ -9,16 +9,18 @@ import {
   classifyDayPnlSemantics,
   classifyFillSemantics,
   pnlLikeFields,
+  classifyComboLegSemantics,
   redact,
+  summarizeComboEnvelopes,
   summarizeOrders,
 } from '../services/brokerCapture';
 
 // ---------------------------------------------------------------------------
-// CLI: `npm run capture:broker` — dumps the RAW Webull payloads behind two
+// CLI: `npm run capture:broker` — dumps the RAW Webull payloads behind three
 // field-semantics questions the app currently guesses at, so the fixes for them
 // are built on confirmed responses rather than a plausible reading of a field
 // name. Same "confirmed payloads, not guesses" discipline as the existing probe
-// UI (providers/webull/account.ts) — this is that probe, aimed at two specific
+// UI (providers/webull/account.ts) — this is that probe, aimed at specific
 // questions and shaped into something safe to share.
 //
 // STRICTLY READ-ONLY. Every call is a GET routed through webullProbe()'s
@@ -39,6 +41,15 @@ import {
 //        fix materializes the delta per observation, which needs a cumulative
 //        field. A snapshot can't answer this — `--watch` polls one order over
 //        time and reports whether the value ever decreases.
+//
+//   Q3 — is `combo_type` echoed back PER LEG? WebullOrderLeg marks this
+//        UNCONFIRMED, and it is load-bearing: it gates the both-legs-FILLED
+//        ambiguity detection, and it is why checkLiveBracketProtection has to
+//        ask "is any exit-side order resting on this symbol" instead of the
+//        precise "is THIS position's stop still there". Unlike Q1/Q2 this is
+//        answerable from a plain snapshot — but only once the account has
+//        actually placed a BRACKET (a spread's legs carry no MASTER/exit roles
+//        and cannot settle it).
 //
 // Usage:
 //   npm run capture:broker
@@ -218,6 +229,18 @@ async function main(): Promise<void> {
     console.log('  Re-run with --watch <client_order_id> while an order is actively filling.');
   }
 
+  // ---- Q3 ----
+  // Answerable straight from the snapshot, unlike Q1/Q2: either a bracket is
+  // in the account's order history tagged per leg, or it isn't.
+  const envelopes = [...summarizeComboEnvelopes(openOrders.data), ...summarizeComboEnvelopes(history.data)];
+  const comboVerdict = classifyComboLegSemantics(envelopes);
+  console.log(`\nQ3 — ${envelopes.length} multi-leg (combo) envelope(s) seen:`);
+  for (const e of envelopes.slice(0, 10)) {
+    const tags = e.legComboTypes.map((t) => t ?? '«untagged»').join(', ');
+    console.log(`  ${e.clientOrderId ?? e.comboOrderId ?? '—'}  ${e.legCount} legs  combo_type: [${tags}]`);
+  }
+  if (!envelopes.length) console.log('  none — place a bracketed stock entry and re-run.');
+
   const watched = watch ? await watchOrder(accountId, watch, Number(arg('watch-seconds') ?? 120)) : undefined;
   const dayPnlWatch = process.argv.includes('--watch-day-pnl')
     ? await watchDayPnl(accountId, Number(arg('samples') ?? 6), Number(arg('every') ?? 20) * 1000)
@@ -236,6 +259,14 @@ async function main(): Promise<void> {
         watch: dayPnlWatch
           ? { samples: dayPnlWatch.samples, verdict: dayPnlWatch.verdict }
           : 'not run — pass --watch-day-pnl',
+      },
+      q3_comboLegSemantics: {
+        appAssumes:
+          'combo_type MAY be echoed per leg — WebullOrderLeg (providers/webull/orders.ts) marks this UNCONFIRMED, and every bracket-exit branch that filters on it is written to fail closed if it is not.',
+        whyItMatters:
+          'It gates the both-legs-FILLED ambiguity detection, and it is why checkLiveBracketProtection has to ask "is any exit-side order resting on this symbol" rather than "is THIS position\'s stop still there".',
+        envelopesSeen: envelopes,
+        verdict: comboVerdict,
       },
       q2_filledQuantitySemantics: {
         appAssumes: 'cumulative across executions (required by the delta-materialization fix in reconcile.ts)',
@@ -263,6 +294,7 @@ async function main(): Promise<void> {
   );
   if (dayPnlWatch) console.log(`\nQ1 verdict [${dayPnlWatch.verdict.semantics}]: ${dayPnlWatch.verdict.detail}`);
   if (watched) console.log(`\nQ2 verdict [${watched.verdict.semantics}]: ${watched.verdict.detail}`);
+  console.log(`\nQ3 verdict [${comboVerdict.semantics}]: ${comboVerdict.detail}`);
 }
 
 void main();
