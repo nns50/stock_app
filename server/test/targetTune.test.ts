@@ -7,13 +7,23 @@ import {
   MAX_SUGGESTED_RISK_PER_TRADE_PCT,
   TuneBasis,
 } from '../src/services/autotrading/targetTune';
+import { defaultAutotradeConfig } from '../src/db/autotradeConfig';
 
-const base = (over: { targetDailyGainPct: number; basis?: TuneBasis; equityUsd?: number; autoTuneEnabled?: boolean }) =>
+const base = (over: {
+  targetDailyGainPct: number;
+  basis?: TuneBasis;
+  equityUsd?: number;
+  autoTuneEnabled?: boolean;
+  autoTuneExitsEnabled?: boolean;
+}) =>
   computeTargetTune({
     equityUsd: over.equityUsd ?? 1000,
     targetDailyGainPct: over.targetDailyGainPct,
     basis: over.basis ?? 'expected',
-    config: { autoTuneEnabled: over.autoTuneEnabled ?? false },
+    config: {
+      autoTuneEnabled: over.autoTuneEnabled ?? false,
+      autoTuneExitsEnabled: over.autoTuneExitsEnabled ?? false,
+    },
   });
 
 describe('bandForTarget', () => {
@@ -107,6 +117,20 @@ describe('computeTargetTune — clamps and warnings', () => {
     expect(r.warnings.some((w) => /auto-tune/i.test(w))).toBe(true);
   });
 
+  it('warns when the EXIT tuner is on — it moves the R multiple the risk % was solved from', () => {
+    // targetRMultiple is an input to edgeRFor, so once excursionTune moves it the
+    // risk % no longer corresponds to the target asked for, and nothing re-derives
+    // it. The old warning named only risk-per-trade, so this overlap was silent.
+    const r = base({ targetDailyGainPct: 5, autoTuneExitsEnabled: true });
+    expect(r.warnings.some((w) => /exit geometry/i.test(w))).toBe(true);
+    expect(r.warnings.some((w) => /no longer matches 5%\/day/i.test(w))).toBe(true);
+  });
+
+  it('does not warn about exit geometry when that tuner is off', () => {
+    const r = base({ targetDailyGainPct: 5 });
+    expect(r.warnings.some((w) => /exit geometry/i.test(w))).toBe(false);
+  });
+
   it('caps the daily-loss halt at 40% and floors it at 2%', () => {
     const high = base({ targetDailyGainPct: 60, basis: 'expected' });
     expect(high.patch.maxDailyDrawdownPct).toBeLessThanOrEqual(40);
@@ -116,6 +140,21 @@ describe('computeTargetTune — clamps and warnings', () => {
 });
 
 describe('resetToModerate', () => {
+  it('matches the published moderate band row, which is NOT defaultAutotradeConfig()', () => {
+    // "Reset to moderate" means the moderate row of the band table in
+    // docs/TUNE_FROM_TARGET.md §5 — not the shipped defaults. These three fields
+    // are where the two legitimately differ, so pin them: the daily-loss halt is
+    // DERIVED from the sizing (6 trades x 1% x 0.75), and the options exits come
+    // from the band (both ship at 0 = disabled).
+    const p = resetToModerate(10000);
+    expect(p.maxDailyDrawdownPct).toBe(4.5);
+    expect(p.optionsStopLossPct).toBe(50);
+    expect(p.optionsTakeProfitPct).toBe(80);
+    expect(defaultAutotradeConfig().maxDailyDrawdownPct).toBe(3);
+    expect(defaultAutotradeConfig().optionsStopLossPct).toBe(0);
+    expect(defaultAutotradeConfig().optionsTakeProfitPct).toBe(0);
+  });
+
   it('reproduces the default MODERATE shape at 1% risk, equity-scaled', () => {
     const p = resetToModerate(10000);
     expect(p.riskProfile).toBe('MODERATE');

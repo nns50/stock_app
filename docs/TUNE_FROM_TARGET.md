@@ -65,6 +65,11 @@ it and won't preview anything. You can type equity in manually or sync it from W
 To undo, click **Reset to moderate** — it restores the standard moderate baseline,
 scaled to your equity.
 
+The **target %** and **sizing basis** you pick are remembered in your browser, so the
+card comes back to your last choice after a reload or after switching views — they're a
+preview control, not a saved Auto-Trade setting (what **Apply** writes is the derived
+risk config below, not the target itself).
+
 ## 4. Choosing a sizing basis
 
 Both bases use the **same formula** — they differ only in one assumption about how your

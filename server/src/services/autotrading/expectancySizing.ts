@@ -11,7 +11,12 @@
 // no guessed edge off a tiny sample.
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
-const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
+// Order-safe: a plain Math.max(lo, Math.min(hi, n)) returns `lo` when lo > hi,
+// which for THIS clamp means an inverted min/max pair would size every grade —
+// including the worst-performing one — at the min multiplier. The route rejects
+// an inverted pair, but this multiplies risk directly (riskCheck.ts), so it does
+// not rely on that alone.
+const clamp = (n: number, lo: number, hi: number): number => Math.min(Math.max(n, Math.min(lo, hi)), Math.max(lo, hi));
 
 export interface ExpectancySizingConfig {
   enabled: boolean;

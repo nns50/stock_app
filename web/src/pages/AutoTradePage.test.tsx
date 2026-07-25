@@ -3991,3 +3991,121 @@ describe('AutoTradePage account-equity auto-refresh', () => {
     expect(equityInput.value).toBe('77000');
   });
 });
+
+// The class of bug that produced the "Tune from target daily gain" reset: local
+// UI state silently discarded because server state was reapplied on top of it.
+// These lock the general case — one Save must not disturb any OTHER field, and
+// a refresh must not tear the form down mid-edit.
+describe('AutoTradePage config drafts vs server refreshes', () => {
+  it('saving one field leaves other unsaved edits alone', async () => {
+    // The real server echoes the FULL config back from PUT /config; re-seeding
+    // every draft from it used to wipe whatever else the user had typed.
+    vi.spyOn(client, 'setAutotradeConfig').mockImplementation((patch) =>
+      Promise.resolve(configFixture(patch as Partial<AutotradeConfig>)),
+    );
+    renderPage();
+    await screen.findByRole('button', { name: 'Save risk per trade' });
+
+    const riskField = screen.getByText('Risk per trade (%)').closest('label')!;
+    fireEvent.change(within(riskField).getByRole('textbox'), { target: { value: '2' } });
+    const sectorField = screen.getByText('Max sector exposure (%)').closest('label')!;
+    fireEvent.change(within(sectorField).getByRole('textbox'), { target: { value: '35' } });
+
+    const saveRisk = screen.getByRole('button', { name: 'Save risk per trade' });
+    await waitFor(() => expect(saveRisk).not.toBeDisabled());
+    fireEvent.click(saveRisk);
+    await waitFor(() =>
+      expect(client.setAutotradeConfig).toHaveBeenCalledWith({
+        riskPerTradePct: 2,
+        confirmAggressive: undefined,
+      }),
+    );
+
+    // Let the save response AND the follow-up config.reload() both settle —
+    // asserting too early passes trivially, before either could clobber.
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    const sectorAfter = within(screen.getByText('Max sector exposure (%)').closest('label')!).getByRole(
+      'textbox',
+    ) as HTMLInputElement;
+    expect(sectorAfter.value).toBe('35');
+  });
+
+  it('keeps the config form mounted while it refreshes, instead of blanking to a spinner', async () => {
+    // reload() keeps the previous data while refetching, so gating on bare
+    // `loading` tore the whole form down on every save — losing keyboard focus
+    // and any half-typed value with it.
+    vi.spyOn(client, 'autotradeConfig').mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(configFixture()), 80)),
+    );
+    vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture({ riskPerTradePct: 2 }));
+    renderPage();
+    await screen.findByRole('button', { name: 'Save risk per trade' });
+
+    const saveRisk = screen.getByRole('button', { name: 'Save risk per trade' });
+    const riskField = screen.getByText('Risk per trade (%)').closest('label')!;
+    fireEvent.change(within(riskField).getByRole('textbox'), { target: { value: '2' } });
+    await waitFor(() => expect(saveRisk).not.toBeDisabled());
+    fireEvent.click(saveRisk);
+
+    // Sample across the whole reload window — the form must never disappear.
+    for (let i = 0; i < 4; i++) {
+      await act(() => new Promise((r) => setTimeout(r, 30)));
+      expect(screen.queryByText('Max sector exposure (%)')).not.toBeNull();
+    }
+  });
+});
+
+describe('AutoTradePage live-trading settings guards', () => {
+  it('will not batch-save the live caps with a field left blank', async () => {
+    // A cleared NumberInput is undefined, which JSON.stringify drops — the server
+    // reads the missing key as "leave unchanged", so the save used to report
+    // success while the old value quietly came back.
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    // Wait on the SEEDED VALUE rather than the button's enabled state: under a
+    // loaded parallel run the initial config fetch can outlast waitFor's 1s
+    // default, and "button not yet enabled" is indistinguishable from "drafts
+    // not yet seeded" — which made this assertion flaky. The field carrying its
+    // stored value is unambiguous proof the drafts have landed.
+    const maxOrder = screen.getByPlaceholderText('e.g. 20000') as HTMLInputElement;
+    await waitFor(() => expect(maxOrder.value).toBe('25000'), { timeout: 4000 });
+
+    const save = screen.getByRole('button', { name: 'Save live-trading settings' });
+    expect(save).not.toBeDisabled();
+    fireEvent.change(maxOrder, { target: { value: '' } });
+    await waitFor(() => expect(save).toBeDisabled());
+    fireEvent.click(save);
+    expect(setConfig).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it('cannot arm live scale-in while live trading is off, and never sends it', async () => {
+    // The route fails this closed without the master gate, and this card saves
+    // ten fields in one request — so a rejection here lost all of them.
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const scaleIn = screen.getByRole('checkbox', { name: /Scale into live winners/ });
+    expect(scaleIn).toBeDisabled();
+
+    // Same reasoning as above — wait on the seeded value, not the button state.
+    const maxOrder = screen.getByPlaceholderText('e.g. 20000') as HTMLInputElement;
+    await waitFor(() => expect(maxOrder.value).toBe('25000'), { timeout: 4000 });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save live-trading settings' }));
+    await waitFor(() => expect(setConfig).toHaveBeenCalled());
+    expect(setConfig.mock.calls[0][0]).toMatchObject({ liveScaleInEnabled: undefined });
+  });
+
+  it('rejects an out-of-range live cap at the keystroke, not with a batch-wide 400', async () => {
+    renderPage();
+    await screen.findByText('VNQ');
+    // Fat-finger % is bounded 0-100 server-side; the input now enforces it, so a
+    // typo cannot reach the shared request and take the other nine fields down.
+    const fatFinger = screen.getByPlaceholderText('e.g. 10') as HTMLInputElement;
+    fireEvent.change(fatFinger, { target: { value: '150' } });
+    expect(fatFinger.value).not.toBe('150');
+  });
+});
