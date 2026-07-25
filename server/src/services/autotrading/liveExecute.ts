@@ -1412,6 +1412,47 @@ function restingExitOrders(orders: WebullOpenOrder[], symbol: string, exitSide: 
   );
 }
 
+/**
+ * Why an empty restingExitOrders() result CANNOT be trusted to mean the exit
+ * side is clear — undefined when it can be.
+ *
+ * restingExitOrders is a filter, so it returns nothing both when there is
+ * genuinely nothing resting AND when the lenient parsing in mapOpenOrder()
+ * couldn't read enough of a real resting leg to match it. Those are opposite
+ * facts with opposite consequences: the first makes a close safe, the second
+ * means the stop is still sitting at the broker and the close will double up
+ * against it — for a long, filling both leaves you short a position nobody
+ * opened, tracked nowhere until a later broker sync imports it as an orphan.
+ *
+ * The parse miss is not hypothetical: logOpenOrdersDiagnostic() exists
+ * precisely because this response shape is unconfirmed against a real account
+ * and the field names may not be the ones mapOpenOrder guesses at — but it only
+ * ever printed a console warning, and the close went ahead anyway.
+ *
+ * Only RESTING orders are considered: a terminal one can't fill, so failing to
+ * parse it costs nothing.
+ */
+function unreadableOpenOrders(orders: WebullOpenOrder[], symbol: string, exitSide: 'buy' | 'sell'): string | undefined {
+  const live = orders.filter((o) => isRestingStatus(o.status));
+  // A resting order whose SYMBOL wouldn't parse could be on any symbol,
+  // including this one — so "nothing resting on SYM" is not a claim we can make.
+  const noSymbol = live.filter((o) => !o.symbol);
+  if (noSymbol.length > 0) {
+    return `${noSymbol.length} resting broker order(s) carried no readable symbol`;
+  }
+  // A resting order that IS on this symbol but that restingExitOrders couldn't
+  // classify: its side wouldn't parse (so it may be an exit leg), or it is on
+  // the exit side but carries no client order id to cancel it by. Either way it
+  // could be the stop/target, and either way we cannot clear it.
+  const unidentified = live.filter(
+    (o) => o.symbol!.toUpperCase() === symbol && (o.side === undefined || (o.side === exitSide && !o.clientOrderId)),
+  );
+  if (unidentified.length > 0) {
+    return `${unidentified.length} resting order(s) on ${symbol} could not be identified as cancellable (unreadable side, or no client order id)`;
+  }
+  return undefined;
+}
+
 export async function cancelLiveBracketExitLegs(
   intent: OrderIntentRecord,
   accountId: string,
@@ -1439,16 +1480,52 @@ export async function cancelLiveBracketExitLegs(
 
   let resting = restingExitOrders(first.orders, symbol, exitSide);
   if (resting.length === 0) {
-    // Nothing resting on the exit side. Either the bracket is already gone (safe
-    // to close) OR an exit leg just filled and the position is closing on its
-    // own (don't place a second order). Distinguish via the combo status — a
-    // best-effort signal; the close's own naked-short guardrail is the backstop
-    // if the broker doesn't surface the fill here.
+    // Nothing came back on the exit side — but this branch used to read that as
+    // "the bracket is already gone, safe to close" no matter WHY the list was
+    // empty, which is the one reading that can create real untracked exposure.
+    // Absence of evidence is not evidence of absence here; each way of not
+    // seeing a leg is now separated out.
+
+    // 1) The list itself couldn't be read well enough to prove anything.
+    const unreadable = unreadableOpenOrders(first.orders, symbol, exitSide);
+    if (unreadable) {
+      return {
+        ok: false,
+        reason:
+          `Could not confirm ${symbol}'s resting bracket is clear — ${unreadable}. ` +
+          `Not placing a close that could double up against a stop still working at the broker.`,
+      };
+    }
+
+    // 2) This entry never had exit legs (a plain non-bracket entry, or a
+    //    position adopted from the broker), so there is nothing to have missed
+    //    and nothing to confirm — and no reason to spend a broker call on it.
+    if (!intent.isBracket) return { ok: true };
+
+    // 3) A bracket WAS submitted for this entry, so finding none of its legs is
+    //    contradictory rather than reassuring: either they are genuinely gone
+    //    (cancelled, or filled and thus terminal) or we simply can't see them.
+    //    The combo status is the only other witness, so a failure to read it
+    //    leaves the question open — it used to fall through to "safe to close".
+    //    Note this is only ever used to detect a RACE; we never require the legs
+    //    to be echoed back to allow a close, since that response shape is
+    //    unconfirmed (see WebullOrderLeg) and requiring it could block every
+    //    close forever.
     const combo = await webullOrderStatus(accountId, intent.idempotencyKey);
+    if (!combo.ok) {
+      return {
+        ok: false,
+        reason:
+          `Could not check whether a bracket leg raced the close (${combo.error}) — ` +
+          `not placing one while that is unknown.`,
+      };
+    }
+    // A `found: false` is deliberately NOT treated as unresolved: an entry old
+    // enough to hit maxHoldDays has very likely aged out of the broker's order
+    // history, so blocking on it would break the close for exactly the
+    // population this path exists to serve.
     const filledLeg =
-      combo.ok &&
-      combo.found &&
-      combo.legs?.some((l) => l.comboType && l.comboType !== 'MASTER' && l.status === 'FILLED');
+      combo.found && (combo.legs ?? []).some((l) => l.comboType && l.comboType !== 'MASTER' && l.status === 'FILLED');
     if (filledLeg) {
       return {
         ok: false,
@@ -1482,6 +1559,18 @@ export async function cancelLiveBracketExitLegs(
       reason: `Resting ${exitSide} order(s) on ${symbol} did not clear after cancel (${resting
         .map((o) => o.clientOrderId)
         .join(', ')}) — not placing a close that could double up.`,
+    };
+  }
+  // The re-scan is the whole proof that the cancel took effect, so it needs the
+  // same "could this list even be read" test as the first one: an unparseable
+  // re-scan produces an empty filter result that looks exactly like success.
+  const unreadable = unreadableOpenOrders(second.orders, symbol, exitSide);
+  if (unreadable) {
+    return {
+      ok: false,
+      reason:
+        `Cancelled the resting bracket order(s) but could not confirm they cleared — ${unreadable}. ` +
+        `Not placing a close that could double up.`,
     };
   }
   return { ok: true };

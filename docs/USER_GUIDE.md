@@ -549,7 +549,10 @@ nudge, not a blocker — you can still save with items unchecked.
 - **close** (broker-tracked positions only — imported from Webull, opened by a live fill, or
   linked to a live order) instead places a **real closing order** at your broker: full
   remaining quantity, a marketable-limit price near the current market, cancelling any
-  resting stop/target first. Gated by the same type-to-confirm phrase (`SELL <qty>
+  resting stop/target first — and **refusing to place** if it can't confirm that stop is
+  gone (an unreadable open-order list, an unidentifiable order on the symbol, or a race
+  check that couldn't run), since a close placed next to a working stop can fill twice
+  and leave a long **short**. Gated by the same type-to-confirm phrase (`SELL <qty>
   <symbol>` / `BUY <qty> <symbol>`) as any other live order on the [Trade](#trade) page —
   type it, enter your Webull cash account_id (remembered from Trade), and the server
   re-checks `TRADING_ENABLED`, every guardrail, and the kill switch before it fires. The
@@ -1020,7 +1023,14 @@ shouldn't be a tab-switch away.
   backstop against a position that's just drifting sideways forever. Defaults to
   **0 (disabled)**, so leaving it untouched changes nothing; unlike the eight fields
   above, it has no manual-preview equivalent — there's nothing to preview about how
-  long a position stays open before it's even entered. Five more fields manage an
+  long a position stays open before it's even entered. Because that close has to clear
+  the position's resting stop/target first, it **refuses to run** whenever it can't
+  positively account for them — the broker's open-order list came back unreadable, an
+  order on the symbol couldn't be identified, or the race check couldn't be run. The
+  position keeps its stop and the close is retried next cycle (and journaled, so it
+  reaches the [unresolved-order alert](#auto-trade)). This is deliberately the safe
+  direction: a close placed alongside a stop that's still working can fill twice,
+  which for a long leaves you **short**. Five more fields manage an
   already-open **paper or backtest** equity position the same way a discretionary
   trader might (**live positions are untouched — still a fixed stop/target for
   life**): **breakeven trigger** (once unrealized gain reaches this many R, move the
