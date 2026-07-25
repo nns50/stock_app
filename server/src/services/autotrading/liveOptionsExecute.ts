@@ -549,6 +549,30 @@ async function finishEntryPlacement(
  * budget, mirroring optionsExecute.ts's runOptionsPaperExecution() batch
  * pattern exactly, over live snapshots instead of paper ones.
  */
+/** The live OPTIONS book's contribution to the live EQUITY batch's risk gates.
+ *  Mirrors optionsExecute.ts's optionsSeedForEquity for the paper books.
+ *
+ *  Only the three cross-book figures: open risk and position count already come
+ *  from combinedLiveOpenRisk(), which two-ways both books. Lives here (not in
+ *  liveExecute.ts, which would need getLiveOptionsPortfolioSnapshot and create
+ *  an import cycle) and is threaded in by loop.ts. */
+export interface LiveOptionsRiskSeed {
+  dailyPnl: number;
+  /** Combined via max(), not sum — same reasoning as PaperPortfolioSeed's. */
+  consecutiveLosses: number;
+  tradesToday: number;
+}
+
+export function liveOptionsSeedForEquity(
+  snapshot: ReturnType<typeof getLiveOptionsPortfolioSnapshot> = getLiveOptionsPortfolioSnapshot(),
+): LiveOptionsRiskSeed {
+  return {
+    dailyPnl: snapshot.dailyPnl,
+    consecutiveLosses: snapshot.consecutiveLosses,
+    tradesToday: snapshot.tradesToday,
+  };
+}
+
 export async function runLiveOptionsExecution(
   candidates: { signal: OptionsTradeSignal }[],
   /** Regime-aware sizing (2026-07-16) — same market-ATR% reading loop.ts

@@ -945,6 +945,37 @@ describe('reconcileLiveOrders', () => {
     expect(closed[0].exits[0].exitPrice).toBe(95);
   });
 
+  it("folds the live OPTIONS book into equity's daily-drawdown halt", async () => {
+    // Paper combines both books and the live OPTIONS batch already folds equity
+    // in; only this direction was missing. Without it a day of live options
+    // losses left equity's halt unaware, so it kept opening full-size real
+    // positions past the intended daily cap.
+    setAutotradeConfig(liveConfig({ maxDailyDrawdownPct: 3 }));
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SEED' });
+
+    // Equity book is flat; the OPTIONS book is already past the 3% halt.
+    const outcomes = await runLiveExecution([{ signal: signal('AAPL') }], null, {
+      dailyPnl: -4_000,
+      consecutiveLosses: 0,
+      tradesToday: 0,
+    });
+
+    expect(outcomes[0].ok).toBe(false);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+
+    // Causation: the SAME candidate with a neutral options book is allowed, so
+    // the block above came from the seed and not from some unrelated gate.
+    const allowed = await runLiveExecution([{ signal: signal('AAPL') }], null, {
+      dailyPnl: 0,
+      consecutiveLosses: 0,
+      tradesToday: 0,
+    });
+    expect(allowed[0].ok).toBe(true);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+  });
+
   it('a partially-filled bracket exit leg books only what filled, leaving the rest open', async () => {
     // The leg's filledQty is parsed by the provider but was never passed on, so
     // a leg reporting FILLED on a partial quantity closed the WHOLE position:

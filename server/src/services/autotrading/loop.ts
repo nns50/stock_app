@@ -29,6 +29,7 @@ import {
   checkLiveOptionsExits,
   reconcileLiveOptionsOrders,
   syncLiveOptionsPositionsFromBroker,
+  liveOptionsSeedForEquity,
 } from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures } from './liveFailureAlert';
 import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
@@ -598,6 +599,11 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       const liveOutcomes = await runLiveExecution(
         decision.signals.map((signal) => ({ signal })),
         marketAtrPct,
+        // Cross-seed the live OPTIONS book's daily P&L / streak / trade count,
+        // exactly as the paper batch is seeded from the options paper book just
+        // above. The live options batch already folds equity in the other
+        // direction; this closes the one-way gap.
+        liveOptionsSeedForEquity(),
       );
       summary.liveEntriesOpened = liveOutcomes.filter((o) => o.ok).length;
     }

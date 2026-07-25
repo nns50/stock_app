@@ -52,6 +52,7 @@ import { computeGradeExpectancyMultipliers } from './expectancySizing';
 // service import cycle.
 import { pendingLiveOptionsOrdersRisk } from '../../db/autotradeLiveOptionsOrders';
 import { listOpenLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
+import type { LiveOptionsRiskSeed } from './liveOptionsExecute';
 import { createPosition, getPosition, listPositions, updatePosition, addExit, Position } from '../../db/positions';
 import { realizedPnlOf, initialRiskOf, computeStreaksAndDrawdown } from '../pnl';
 import { TradeSignal, convictionGrade } from './decide';
@@ -657,12 +658,25 @@ export async function runLiveExecution(
    *  re-fetched here. Defaults to null (regime cut inactive) for any caller
    *  that doesn't have/need one, e.g. a direct test call. */
   marketAtrPct: number | null = null,
+  /** The live OPTIONS book's daily P&L / streak / trade count, supplied by
+   *  loop.ts (liveOptionsSeedForEquity). Defaults to zeros for a direct caller.
+   *
+   *  Without it these three gates saw only the equity book, while paper combines
+   *  both and the live OPTIONS batch already folds in equity — so the asymmetry
+   *  was one-way. The consequences were real money: a day of live OPTIONS losses
+   *  left the equity daily-drawdown halt unaware (it could keep opening full-size
+   *  positions past the intended daily cap), and consecutive OPTIONS losses never
+   *  engaged equity's step-down cut — sizing at full risk exactly when the
+   *  strategy was losing. */
+  optionsSeed: LiveOptionsRiskSeed = { dailyPnl: 0, consecutiveLosses: 0, tradesToday: 0 },
 ): Promise<LiveExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
   const equity = cfg.accountEquityUsd ?? 0;
 
   const snapshot = getLivePortfolioSnapshot();
-  const { dailyPnl, consecutiveLosses, tradesToday } = snapshot;
+  const dailyPnl = snapshot.dailyPnl + optionsSeed.dailyPnl;
+  const tradesToday = snapshot.tradesToday + optionsSeed.tradesToday;
+  const consecutiveLosses = Math.max(snapshot.consecutiveLosses, optionsSeed.consecutiveLosses);
   // Seed the running risk/count from the COMBINED live book (both equity and
   // options, positions AND placed-but-unmaterialized orders) -- not this book's
   // position-only snapshot -- so equity and options entries in the same tick

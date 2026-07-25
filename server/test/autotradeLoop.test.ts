@@ -28,6 +28,10 @@ vi.mock('../src/services/autotrading/liveOptionsExecute', () => ({
   checkLiveOptionsExits: vi.fn(),
   reconcileLiveOptionsOrders: vi.fn(),
   syncLiveOptionsPositionsFromBroker: vi.fn(),
+  // Cross-seeds the live OPTIONS book's P&L/streak/trade count into the live
+  // EQUITY batch's risk gates; neutral here so these tests keep asserting the
+  // wiring they are about.
+  liveOptionsSeedForEquity: vi.fn(() => ({ dailyPnl: 0, consecutiveLosses: 0, tradesToday: 0 })),
 }));
 vi.mock('../src/providers/webull/positions', () => ({ runWebullPositionsSync: vi.fn() }));
 vi.mock('../src/services/autotrading/moversPromotion', () => ({ processMoversForPromotion: vi.fn() }));
@@ -1075,7 +1079,13 @@ describe('runAutotradeLoopTick', () => {
 
       expect(mockScreen).toHaveBeenCalledTimes(1); // screening ran — live alone was enough to justify it
       expect(mockExecute).not.toHaveBeenCalled(); // paper stayed off
-      expect(mockLiveExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], 2);
+      // Third arg cross-seeds the live OPTIONS book's P&L/streak/trade count
+      // into equity's risk gates (mocked neutral above).
+      expect(mockLiveExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], 2, {
+        dailyPnl: 0,
+        consecutiveLosses: 0,
+        tradesToday: 0,
+      });
       expect(summary.ranEntries).toBe(true);
       expect(summary.entriesOpened).toBe(0);
       expect(summary.liveEntriesOpened).toBe(1);
