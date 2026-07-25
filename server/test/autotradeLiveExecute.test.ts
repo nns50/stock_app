@@ -945,6 +945,92 @@ describe('reconcileLiveOrders', () => {
     expect(closed[0].exits[0].exitPrice).toBe(95);
   });
 
+  /** Same approving risk-check attemptLiveEntry's own describe block uses. */
+  const entryResult = (): RiskCheckResult =>
+    evaluateRiskCheck(signal(), {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      maxConcurrentPositions: 2,
+      correlatedNotional: 0,
+      riskPerTradePct: 1,
+      maxDailyDrawdownPct: 3,
+      stepDownAfterLosses: 2,
+      stepDownSizeCutPct: 50,
+      maxAggregateOpenRiskPct: 2,
+      maxCorrelatedExposurePct: 6,
+      maxTradesPerDay: 6,
+    });
+
+  it('keeps an AMBIGUOUS placement pending instead of rejecting it, so it cannot be re-placed', async () => {
+    // A lost/timed-out response is indistinguishable from a rejection at the
+    // client layer ({status: 0, ok: false}). Marking it rejected is terminal, so
+    // the intent left listPendingLiveOrders AND the double-open guard, and the
+    // next cycle placed the SAME real order again — double size, two brackets.
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'Request timed out after 10000ms', ambiguous: true });
+
+    const sig = signal();
+    const first = await attemptLiveEntry(sig, entryResult(), 'MODERATE', liveConfig());
+    expect(first.ok).toBe(false);
+    expect(first.reason ?? '').toMatch(/unknown/i);
+    expect(listPendingLiveOrders().map((o) => o.symbol)).toContain('AAPL');
+
+    // A second cycle must NOT place another real order for the same symbol.
+    mockPlaceOrder.mockClear();
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-DUP' });
+    await attemptLiveEntry(sig, entryResult(), 'MODERATE', liveConfig());
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('a definite broker refusal is still terminal (not treated as unknown)', async () => {
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'Insufficient buying power' });
+
+    const sig = signal();
+    const res = await attemptLiveEntry(sig, entryResult(), 'MODERATE', liveConfig());
+    expect(res.reason ?? '').toMatch(/rejected/i);
+    expect(listPendingLiveOrders()).toHaveLength(0);
+  });
+
+  it('reconcile retires an unknown placement once the broker positively has no record of it', async () => {
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'network error', ambiguous: true });
+    const sig = signal();
+    await attemptLiveEntry(sig, entryResult(), 'MODERATE', liveConfig());
+    expect(listPendingLiveOrders()).toHaveLength(1);
+
+    // Both endpoints answered and neither knows this client order id.
+    mockOrderStatus.mockResolvedValue({ ok: true, found: false } as WebullOrderStatus);
+    await reconcileLiveOrders();
+
+    expect(listPendingLiveOrders()).toHaveLength(0); // retired, slot released
+    expect(listPositions({ status: 'open' })).toHaveLength(0); // and no phantom position
+  });
+
+  it('leaves an unknown placement pending while the broker cannot be reached', async () => {
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'network error', ambiguous: true });
+    const sig = signal();
+    await attemptLiveEntry(sig, entryResult(), 'MODERATE', liveConfig());
+
+    // Can't ask => say nothing. Retiring here would re-open the double-place hole.
+    mockOrderStatus.mockResolvedValue({ ok: false, found: false, error: 'Webull down' } as WebullOrderStatus);
+    await reconcileLiveOrders();
+    expect(listPendingLiveOrders()).toHaveLength(1);
+  });
+
   it("folds the live OPTIONS book into equity's daily-drawdown halt", async () => {
     // Paper combines both books and the live OPTIONS batch already folds equity
     // in; only this direction was missing. Without it a day of live options

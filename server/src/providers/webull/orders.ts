@@ -426,6 +426,14 @@ export interface WebullPlaceResult {
   orderId?: string;
   raw?: unknown;
   error?: string;
+  /** The placement's outcome is UNKNOWN, not known-rejected: the request may or
+   *  may not have reached the broker and been accepted. Distinguishing the two
+   *  matters because a placement is nonIdempotent — treating "we never heard
+   *  back" as "definitely rejected" lets the next cycle place the same real
+   *  order a second time. Callers must keep an ambiguous placement pollable
+   *  rather than terminal; webullOrderStatus looks orders up by CLIENT order id,
+   *  so the outcome can be resolved later even with no broker id in hand. */
+  ambiguous?: boolean;
 }
 
 function pickOrderId(data: unknown): string | undefined {
@@ -463,6 +471,12 @@ export async function webullPlaceOrder(
       ok: false,
       raw: r.data,
       error: j.msg || j.message || j.error_msg || `Webull place failed (${r.status})`,
+      // status 0 is a network error or the client's own timeout abort — the
+      // request may well have arrived. 429 can come back AFTER acceptance (the
+      // client's own retry logic says as much), and a 5xx may have been raised
+      // after the order was processed. Only a definite 4xx refusal means the
+      // broker looked at it and said no.
+      ambiguous: r.status === 0 || r.status === 429 || r.status >= 500,
     };
   }
   return { ok: true, orderId: pickOrderId(r.data), raw: r.data };

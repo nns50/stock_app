@@ -586,6 +586,44 @@ export async function attemptLiveEntry(
   transitionIntent(intentRec.id, 'submitted', { detail: `submitting (cid ${clientOrderId})` });
 
   const broker = await webullPlaceOrder(accountId, intent, clientOrderId, isShort);
+  const orderRow = {
+    intentId: intentRec.id,
+    symbol,
+    stopPrice: signal.stop,
+    targetPrice: signal.target,
+    riskAmount: riskResult.approvedRiskAmount,
+    riskProfile,
+    accountId,
+    grade: convictionGrade(signal.score, {
+      aMinScore: autotradeCfg.convictionGradeAMinScore,
+      bMinScore: autotradeCfg.convictionGradeBMinScore,
+    }),
+  };
+  if (!broker.ok && broker.ambiguous) {
+    // We do NOT know whether this order reached the broker, so it must not be
+    // treated as rejected: 'rejected' is terminal, which drops the intent out of
+    // listPendingLiveOrders() and out of the dedup guard, and the NEXT cycle
+    // would place the same real order again — double size, two bracket pairs.
+    // Instead leave the intent at 'submitted' and record the order row anyway,
+    // so it is (a) polled by reconcileLiveOrders, which looks the order up by
+    // CLIENT order id and so can resolve it without a broker id, and (b) counted
+    // by the double-open guard meanwhile. reconcileLiveOrders marks it rejected
+    // once the broker positively reports no such order.
+    recordLiveOrder(orderRow);
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_order_outcome_unknown',
+      detail: { reason: broker.error, clientOrderId },
+      riskProfile,
+    });
+    return {
+      symbol,
+      ok: false,
+      reason: `Placement outcome unknown (kept pending for reconcile): ${broker.error}`,
+      intentId: intentRec.id,
+    };
+  }
   if (!broker.ok) {
     transitionIntent(intentRec.id, 'rejected', { detail: `broker rejected: ${broker.error}` });
     logAutotradeEvent({
@@ -602,19 +640,7 @@ export async function attemptLiveEntry(
     brokerOrderId: broker.orderId,
     detail: `broker accepted${broker.orderId ? ` (order ${broker.orderId})` : ''}`,
   });
-  recordLiveOrder({
-    intentId: intentRec.id,
-    symbol,
-    stopPrice: signal.stop,
-    targetPrice: signal.target,
-    riskAmount: riskResult.approvedRiskAmount,
-    riskProfile,
-    accountId,
-    grade: convictionGrade(signal.score, {
-      aMinScore: autotradeCfg.convictionGradeAMinScore,
-      bMinScore: autotradeCfg.convictionGradeBMinScore,
-    }),
-  });
+  recordLiveOrder(orderRow);
   logAutotradeEvent({
     symbol,
     stage: 'execution',
@@ -854,7 +880,35 @@ export async function reconcileLiveOrders(): Promise<LiveReconcileOutcome[]> {
     const intent = intentsById.get(meta.intentId);
     if (!intent) continue;
     const broker = await webullOrderStatus(accountId, intent.idempotencyKey);
-    if (!broker.ok || !broker.found) {
+    if (!broker.ok) {
+      // Couldn't ask — say nothing about the order and try again next tick.
+      outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: false, error: broker.error });
+      continue;
+    }
+    if (!broker.found) {
+      // Resolve an UNKNOWN placement (attemptLiveEntry's ambiguous branch): the
+      // intent is still 'submitted' with no broker id because we never heard
+      // back. Both the open-orders and history endpoints answered and neither
+      // knows this client order id, which is positive evidence it never landed —
+      // so retire it now rather than leaving it pending forever, holding the
+      // symbol's dedup slot and its risk against the aggregate cap.
+      // An ACKNOWLEDGED order missing from both is a different case (it landed
+      // once and may simply have aged out of the history window), so that one is
+      // still left alone.
+      if (intent.state === 'submitted' && !intent.brokerOrderId) {
+        transitionIntent(intent.id, 'rejected', {
+          detail: 'placement outcome was unknown; broker reports no such order — never reached it',
+        });
+        logAutotradeEvent({
+          symbol: meta.symbol,
+          stage: 'execution',
+          action: 'live_order_never_placed',
+          detail: { intentId: intent.id, clientOrderId: intent.idempotencyKey },
+          riskProfile: meta.riskProfile,
+        });
+        outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: true });
+        continue;
+      }
       outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: false, error: broker.error });
       continue;
     }
@@ -1559,6 +1613,29 @@ async function placeLiveEquityTimeExitClose(
   transitionIntent(intentRec.id, 'submitted', { detail: `submitting (cid ${clientOrderId})` });
 
   const broker = await webullPlaceOrder(accountId, intent, clientOrderId);
+  if (!broker.ok && broker.ambiguous) {
+    // Unknown outcome, so not terminal — see attemptLiveEntry's own branch. It
+    // matters more here: the bracket has already been cancelled by this point,
+    // and marking the close rejected would empty pendingExitPositionIds, so the
+    // next tick would place a SECOND closing order against a position whose
+    // first close may already have filled — overselling, and for a long that
+    // means flipping short.
+    recordLiveExitOrder({ intentId: intentRec.id, symbol, riskProfile, positionId: pos.id });
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_order_outcome_unknown',
+      detail: { reason: broker.error, clientOrderId, positionId: pos.id },
+      riskProfile,
+    });
+    return {
+      symbol,
+      positionId: pos.id,
+      requested: false,
+      reason: `Placement outcome unknown (kept pending for reconcile): ${broker.error}`,
+      intentId: intentRec.id,
+    };
+  }
   if (!broker.ok) {
     transitionIntent(intentRec.id, 'rejected', { detail: `broker rejected: ${broker.error}` });
     logAutotradeEvent({
@@ -1903,6 +1980,36 @@ async function placeLiveScaleInAddOn(
   transitionIntent(intentRec.id, 'submitted', { detail: `submitting add-on (cid ${clientOrderId})` });
 
   const broker = await webullPlaceOrder(accountId, intent, clientOrderId, isShort);
+  const addOnRow = {
+    intentId: intentRec.id,
+    symbol,
+    stopPrice: add.newStopPrice,
+    targetPrice,
+    riskAmount: Math.abs(limitPrice - add.newStopPrice) * add.addQty,
+    riskProfile,
+    addonOfPositionId: pos.id,
+    accountId,
+  };
+  if (!broker.ok && broker.ambiguous) {
+    // Unknown outcome, so not terminal — see attemptLiveEntry's own branch.
+    // checkLiveScaleIns skips a position with any unmaterialized order in
+    // flight, so recording the row is also what stops the next tick adding to
+    // this position a second time.
+    recordLiveAddOnOrder(addOnRow);
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_order_outcome_unknown',
+      detail: { reason: broker.error, clientOrderId, positionId: pos.id },
+      riskProfile,
+    });
+    return {
+      symbol,
+      positionId: pos.id,
+      requested: false,
+      reason: `Placement outcome unknown (kept pending for reconcile): ${broker.error}`,
+    };
+  }
   if (!broker.ok) {
     transitionIntent(intentRec.id, 'rejected', { detail: `broker rejected: ${broker.error}` });
     logAutotradeEvent({
@@ -1919,17 +2026,7 @@ async function placeLiveScaleInAddOn(
     brokerOrderId: broker.orderId,
     detail: `broker accepted${broker.orderId ? ` (order ${broker.orderId})` : ''}`,
   });
-  const riskAmount = Math.abs(limitPrice - add.newStopPrice) * add.addQty;
-  recordLiveAddOnOrder({
-    intentId: intentRec.id,
-    symbol,
-    stopPrice: add.newStopPrice,
-    targetPrice,
-    riskAmount,
-    riskProfile,
-    addonOfPositionId: pos.id,
-    accountId,
-  });
+  recordLiveAddOnOrder(addOnRow);
   logAutotradeEvent({
     symbol,
     stage: 'execution',

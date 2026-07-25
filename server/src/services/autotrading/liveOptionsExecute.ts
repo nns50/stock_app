@@ -225,6 +225,12 @@ interface BrokerPlacementResult {
   ok: boolean;
   reason?: string;
   brokerOrderId?: string;
+  /** The placement's outcome is UNKNOWN rather than known-rejected, so the
+   *  intent has deliberately been left NON-terminal ('submitted'). The caller
+   *  must still record its order row: that is what keeps it pollable by
+   *  reconcileLiveOptionsOrders (which looks orders up by client order id) and
+   *  what stops the next cycle placing the same real order again. */
+  ambiguous?: boolean;
 }
 
 /** Create the intent, check it against the guardrails, and either reject or
@@ -262,6 +268,25 @@ async function placeLiveOptionsOrder(
   transitionIntent(intentRec.id, 'submitted', { detail: `submitting (cid ${clientOrderId})` });
 
   const broker = await webullPlaceOrder(accountId, intent, clientOrderId);
+  if (!broker.ok && broker.ambiguous) {
+    // Left at 'submitted', NOT rejected: we don't know whether this reached the
+    // broker, and 'rejected' is terminal — it would drop the intent out of
+    // listPendingLiveOrders() and out of the double-open guard, so the next
+    // cycle would place the same real order again.
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_options_order_outcome_unknown',
+      detail: { reason: broker.error, clientOrderId },
+      riskProfile,
+    });
+    return {
+      intentId: intentRec.id,
+      ok: false,
+      ambiguous: true,
+      reason: `Placement outcome unknown (kept pending for reconcile): ${broker.error}`,
+    };
+  }
   if (!broker.ok) {
     transitionIntent(intentRec.id, 'rejected', { detail: `broker rejected: ${broker.error}` });
     logAutotradeEvent({
@@ -444,7 +469,10 @@ export async function attemptLiveOptionsEntry(
       'live_options_entry_failed',
       riskProfile,
     );
-    if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId };
+    // Record the order row even when the outcome is UNKNOWN: that is what keeps
+    // it pollable by reconcileLiveOptionsOrders and what stops the next cycle
+    // placing the same real order again. Only a KNOWN refusal returns early.
+    if (!placed.ok && !placed.ambiguous) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId };
 
     recordLiveOptionsEntryOrder({
       intentId: placed.intentId,
@@ -460,6 +488,8 @@ export async function attemptLiveOptionsEntry(
       riskProfile,
       accountId,
     });
+
+    if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId };
     return finishEntryPlacement(symbol, intent, 'debit_spread', placed, riskProfile);
   }
 
@@ -500,7 +530,10 @@ export async function attemptLiveOptionsEntry(
     'live_options_entry_failed',
     riskProfile,
   );
-  if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId };
+  // Record the order row even when the outcome is UNKNOWN: that is what keeps
+  // it pollable by reconcileLiveOptionsOrders and what stops the next cycle
+  // placing the same real order again. Only a KNOWN refusal returns early.
+  if (!placed.ok && !placed.ambiguous) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId };
 
   recordLiveOptionsEntryOrder({
     intentId: placed.intentId,
@@ -514,6 +547,8 @@ export async function attemptLiveOptionsEntry(
     riskProfile,
     accountId,
   });
+
+  if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId };
   return finishEntryPlacement(symbol, intent, 'single_leg', placed, riskProfile);
 }
 
@@ -882,7 +917,11 @@ async function placeLiveOptionsExit(
     'live_options_exit_failed',
     pos.riskProfile,
   );
-  if (!placed.ok) return { symbol, requested: false, reason: placed.reason, intentId: placed.intentId };
+  // Record the order row even when the outcome is UNKNOWN: that is what keeps
+  // it pollable by reconcileLiveOptionsOrders and what stops the next cycle
+  // placing the same real order again. Only a KNOWN refusal returns early.
+  if (!placed.ok && !placed.ambiguous)
+    return { symbol, requested: false, reason: placed.reason, intentId: placed.intentId };
 
   recordLiveOptionsExitOrder({
     intentId: placed.intentId,
@@ -892,6 +931,8 @@ async function placeLiveOptionsExit(
     positionId: pos.id,
     exitReason: 'time_exit',
   });
+
+  if (!placed.ok) return { symbol, requested: false, reason: placed.reason, intentId: placed.intentId };
   logAutotradeEvent({
     symbol,
     stage: 'execution',
@@ -1001,7 +1042,33 @@ export async function reconcileLiveOptionsOrders(): Promise<LiveOptionsReconcile
     const intent = intentsById.get(meta.intentId);
     if (!intent) continue;
     const broker = await webullOrderStatus(accountId, intent.idempotencyKey);
-    if (!broker.ok || !broker.found) {
+    if (!broker.ok) {
+      // Couldn't ask — say nothing and try again next tick.
+      outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: false, error: broker.error });
+      continue;
+    }
+    if (!broker.found) {
+      // Resolve an UNKNOWN placement: still 'submitted' with no broker id
+      // because we never heard back. Both the open-orders and history endpoints
+      // answered and neither knows this client order id, which is positive
+      // evidence it never landed — retire it rather than leave it pending
+      // forever holding the symbol's dedup slot and its risk. An ACKNOWLEDGED
+      // order missing from both landed once and may just have aged out of the
+      // history window, so that one is still left alone.
+      if (intent.state === 'submitted' && !intent.brokerOrderId) {
+        transitionIntent(intent.id, 'rejected', {
+          detail: 'placement outcome was unknown; broker reports no such order — never reached it',
+        });
+        logAutotradeEvent({
+          symbol: meta.symbol,
+          stage: 'execution',
+          action: 'live_options_order_never_placed',
+          detail: { intentId: intent.id, clientOrderId: intent.idempotencyKey },
+          riskProfile: meta.riskProfile,
+        });
+        outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: true });
+        continue;
+      }
       outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: false, error: broker.error });
       continue;
     }

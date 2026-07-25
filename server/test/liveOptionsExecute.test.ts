@@ -1427,6 +1427,48 @@ describe('reconcileLiveOptionsOrders — partial fills', () => {
     expect(after[0].entryPrice).toBeCloseTo((1 * 4.1 + (orderedQty - 1) * 4.5) / orderedQty, 4);
   });
 
+  it('keeps an AMBIGUOUS options placement pending, and reconcile retires it if it never landed', async () => {
+    // Same hazard as equity: a lost response is indistinguishable from a
+    // rejection, and marking it terminal drops the intent out of the pending
+    // set and the double-open guard, so the next cycle re-places the same real
+    // order. The row is recorded even on an unknown outcome so it stays
+    // pollable and keeps blocking a duplicate.
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'Request timed out', ambiguous: true });
+
+    const sig = optionSignal();
+    const res = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+    expect(res.ok).toBe(false);
+    expect(res.reason ?? '').toMatch(/unknown/i);
+    expect(listPendingLiveOptionsOrders()).toHaveLength(1);
+
+    // A second cycle must not place another real order for the same symbol.
+    mockPlaceOrder.mockClear();
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-DUP' });
+    await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+
+    // Broker positively has no record of it => retire, freeing the slot.
+    mockOrderStatus.mockResolvedValue({ ok: true, found: false } as WebullOrderStatus);
+    await reconcileLiveOptionsOrders();
+    expect(listPendingLiveOptionsOrders()).toHaveLength(0);
+    expect(listOpenLiveOptionsPositions()).toHaveLength(0);
+  });
+
+  it('a definite options refusal is still terminal', async () => {
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'Contract not tradable' });
+
+    const sig = optionSignal();
+    const res = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+    expect(res.reason ?? '').toMatch(/rejected/i);
+    expect(listPendingLiveOptionsOrders()).toHaveLength(0);
+  });
+
   it('a partially-filled EXIT shrinks the position instead of closing it', async () => {
     // The bug: the filled quantity was computed and then dropped — the exit
     // path closed the row unconditionally. A 3-contract close filling 1 booked
