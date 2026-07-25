@@ -24,14 +24,7 @@ import {
 export type Direction = 'long' | 'short';
 
 export type IndicatorKey =
-  | 'momentum'
-  | 'relativeVolume'
-  | 'rsi'
-  | 'volatility'
-  | 'gap'
-  | 'trend'
-  | 'relativeStrength'
-  | 'sentiment';
+  'momentum' | 'relativeVolume' | 'rsi' | 'volatility' | 'gap' | 'trend' | 'relativeStrength' | 'sentiment';
 
 export type IndicatorWeights = Record<IndicatorKey, number>;
 

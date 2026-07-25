@@ -1241,13 +1241,7 @@ export interface PlaceResult {
   ok: boolean;
   placed: boolean;
   reason:
-    | 'trading_disabled'
-    | 'unsupported'
-    | 'not_confirmed'
-    | 'account_error'
-    | 'blocked'
-    | 'broker_rejected'
-    | 'placed';
+    'trading_disabled' | 'unsupported' | 'not_confirmed' | 'account_error' | 'blocked' | 'broker_rejected' | 'placed';
   guardrails?: GuardrailReport;
   accountState?: AccountStateInput;
   intent?: OrderIntentRecord;

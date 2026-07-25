@@ -145,8 +145,7 @@ export function isComboOrder(rec: Pick<OrderIntentRecord, 'optionStrategy' | 'is
  */
 export function createIntent(input: OrderIntent, idempotencyKey: string): OrderIntentRecord {
   const existing = db.prepare('SELECT * FROM order_intents WHERE idempotency_key = ?').get(idempotencyKey) as
-    | IntentRow
-    | undefined;
+    IntentRow | undefined;
   if (existing) return mapIntent(existing);
 
   // Persist enough to know later whether this was a multi-order combo: the

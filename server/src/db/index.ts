@@ -928,8 +928,7 @@ function migrate(): void {
  */
 export function reorderStatusLeadingIndex(database: Database.Database, indexName: string, tableName: string): void {
   const row = database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name = ?").get(indexName) as
-    | { sql: string | null }
-    | undefined;
+    { sql: string | null } | undefined;
   if (!row?.sql || /\(\s*status\s*,/i.test(row.sql)) return; // already status-leading, or doesn't exist yet
   database.exec(`DROP INDEX ${indexName}; CREATE INDEX ${indexName} ON ${tableName}(status, symbol);`);
 }
@@ -963,8 +962,7 @@ export function reorderAutotradeEventsStageIndex(database: Database.Database): v
  */
 export function rebuildOrderIntentsTable(database: Database.Database): void {
   const row = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='order_intents'").get() as
-    | { sql: string | null }
-    | undefined;
+    { sql: string | null } | undefined;
   // Fresh DBs create it without the CHECK; a rebuilt DB has none either → bail.
   if (!row?.sql || !/CHECK\s*\(\s*order_type/i.test(row.sql)) return;
 
