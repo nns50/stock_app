@@ -40,6 +40,8 @@ import {
   blendLiveOptionsPositionEntry,
   closeLiveOptionsPosition,
   LiveOptionsPosition,
+  getLiveOptionsPosition,
+  reduceLiveOptionsPositionQuantity,
 } from '../../db/autotradeLiveOptionsPositions';
 import { computeStreaksAndDrawdown } from '../pnl';
 import { defaultExitConfig, evaluateExit } from '../../options/exitRules';
@@ -373,6 +375,16 @@ export async function attemptLiveOptionsEntry(
       ? riskResult.sizing.suggestedContracts
       : riskResult.sizing.suggestedQuantity;
   const quantity = Math.floor(rawQuantity * probation.multiplier);
+  // Scale the recorded risk to the contracts actually ORDERED. For options the
+  // premium IS the risk, so an unscaled approvedRiskAmount overstates it by the
+  // full probation cut — and unlike equity, whose position risk is re-derived
+  // from the real fill by initialRiskOf, this figure is STORED on the position
+  // and read for its whole life by getLiveOptionsPortfolioSnapshot and
+  // combinedLiveOpenRisk. At the default 0.5x probation every live options
+  // position claimed 2x its true risk against the shared aggregate-risk budget,
+  // blocking equity and options entries that were actually within it.
+  const orderedRiskAmount =
+    rawQuantity > 0 ? (riskResult.approvedRiskAmount * quantity) / rawQuantity : riskResult.approvedRiskAmount;
   if (quantity <= 0) {
     return {
       symbol,
@@ -444,7 +456,7 @@ export async function attemptLiveOptionsEntry(
       shortContractSymbol: signal.shortContractSymbol,
       shortStrike: signal.shortStrike,
       expiration: signal.expiration,
-      riskAmount: riskResult.approvedRiskAmount,
+      riskAmount: orderedRiskAmount,
       riskProfile,
       accountId,
     });
@@ -498,7 +510,7 @@ export async function attemptLiveOptionsEntry(
     contractSymbol: signal.contractSymbol,
     strike: signal.strike,
     expiration: signal.expiration,
-    riskAmount: riskResult.approvedRiskAmount,
+    riskAmount: orderedRiskAmount,
     riskProfile,
     accountId,
   });
@@ -547,6 +559,30 @@ async function finishEntryPlacement(
  * budget, mirroring optionsExecute.ts's runOptionsPaperExecution() batch
  * pattern exactly, over live snapshots instead of paper ones.
  */
+/** The live OPTIONS book's contribution to the live EQUITY batch's risk gates.
+ *  Mirrors optionsExecute.ts's optionsSeedForEquity for the paper books.
+ *
+ *  Only the three cross-book figures: open risk and position count already come
+ *  from combinedLiveOpenRisk(), which two-ways both books. Lives here (not in
+ *  liveExecute.ts, which would need getLiveOptionsPortfolioSnapshot and create
+ *  an import cycle) and is threaded in by loop.ts. */
+export interface LiveOptionsRiskSeed {
+  dailyPnl: number;
+  /** Combined via max(), not sum — same reasoning as PaperPortfolioSeed's. */
+  consecutiveLosses: number;
+  tradesToday: number;
+}
+
+export function liveOptionsSeedForEquity(
+  snapshot: ReturnType<typeof getLiveOptionsPortfolioSnapshot> = getLiveOptionsPortfolioSnapshot(),
+): LiveOptionsRiskSeed {
+  return {
+    dailyPnl: snapshot.dailyPnl,
+    consecutiveLosses: snapshot.consecutiveLosses,
+    tradesToday: snapshot.tradesToday,
+  };
+}
+
 export async function runLiveOptionsExecution(
   candidates: { signal: OptionsTradeSignal }[],
   /** Regime-aware sizing (2026-07-16) — same market-ATR% reading loop.ts
@@ -936,8 +972,12 @@ export interface LiveOptionsReconcileOutcome {
   symbol: string;
   changed: boolean;
   /** Set when this reconcile materialized a fill into a real
-   *  autotrade_live_options_positions row (entry) or closed one (exit). */
-  action?: 'entry_filled' | 'exit_filled';
+   *  autotrade_live_options_positions row (entry) or closed one (exit).
+   *  'exit_partially_filled' means the closing order filled for fewer contracts
+   *  than the position holds: the row was shrunk and left OPEN so the remainder
+   *  stays tracked and keeps being worked, rather than being closed out from
+   *  under contracts that are still held. */
+  action?: 'entry_filled' | 'exit_filled' | 'exit_partially_filled';
   error?: string;
 }
 
@@ -1054,7 +1094,7 @@ function materializeLiveOptionsFill(
     const action =
       meta.role === 'entry'
         ? materializeOptionsEntryFill(intent, meta, qty, price)
-        : materializeOptionsExitFill(intent, meta, price);
+        : materializeOptionsExitFill(intent, meta, price, qty);
     advanceMaterialized(intent.id, qty, qty * price);
     return { intentId: intent.id, symbol: meta.symbol, changed: true, action };
   } catch (err) {
@@ -1140,8 +1180,37 @@ function materializeOptionsExitFill(
   intent: OrderIntentRecord,
   meta: LiveOptionsOrderMeta,
   filledPrice: number,
-): 'exit_filled' | undefined {
+  filledQty?: number,
+): 'exit_filled' | 'exit_partially_filled' | undefined {
   if (meta.positionId === null) return undefined;
+  // A partial fill must NOT close the row. This used to ignore the filled
+  // quantity entirely and close unconditionally, so a 3-contract exit that
+  // filled 1 booked one contract's P&L, marked the position closed, and left
+  // 2 real contracts with no ledger row at all — gone from
+  // listOpenLiveOptionsPositions, so never re-priced, never re-exited, never
+  // reconciled, drifting to expiry while realized P&L was overstated 3x.
+  // Equity's materializeTimeExitFill already clamped correctly; this was the
+  // outlier.
+  if (filledQty !== undefined) {
+    const pos = getLiveOptionsPosition(meta.positionId);
+    if (pos && filledQty < pos.quantity) {
+      const reduced = reduceLiveOptionsPositionQuantity(meta.positionId, filledQty);
+      if (!reduced) return undefined;
+      logAutotradeEvent({
+        symbol: intent.symbol,
+        stage: 'execution',
+        action: 'live_options_exit_partially_filled',
+        detail: {
+          positionId: meta.positionId,
+          filledQty,
+          remainingQty: reduced.quantity,
+          filledPrice,
+        },
+        riskProfile: meta.riskProfile,
+      });
+      return 'exit_partially_filled';
+    }
+  }
   const closed = closeLiveOptionsPosition(meta.positionId, {
     exitPrice: filledPrice,
     // A pre-2026-07-16 pending row (from before this column existed) has no

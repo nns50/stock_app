@@ -433,6 +433,37 @@ describe('attemptLiveOptionsEntry', () => {
       }
     });
 
+    it('records the risk of the contracts actually ORDERED, not the pre-probation size', async () => {
+      // For options the premium IS the risk, and unlike equity (whose position
+      // risk is re-derived from the real fill) this figure is STORED and read
+      // for the position's whole life by the aggregate-risk gate. Recording the
+      // uncut amount made every live options position claim 2x its true risk at
+      // the default 0.5x probation, blocking entries that were within budget.
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-RISK' });
+
+      const sig = optionSignal();
+      await attemptLiveOptionsEntry(
+        sig,
+        okResult(sig),
+        'MODERATE',
+        liveConfig({ liveOptionsProbationSizeMultiplier: 0.5 }),
+      );
+      const orderedQty = mockPlaceOrder.mock.calls[0][1].quantity;
+      const recorded = getLiveOptionsOrder(listIntents()[0].id)!;
+      const approved = okResult(sig);
+      const rawQty =
+        'suggestedContracts' in approved.sizing
+          ? approved.sizing.suggestedContracts
+          : approved.sizing.suggestedQuantity;
+      // Scaled in proportion to the contracts actually ordered, rather than
+      // recording the full pre-probation budget.
+      expect(orderedQty).toBeLessThan(rawQty);
+      expect(recorded.riskAmount).toBeCloseTo((approved.approvedRiskAmount * orderedQty) / rawQty, 6);
+      expect(recorded.riskAmount).toBeLessThan(approved.approvedRiskAmount);
+    });
+
     it('sizes the entry down by the probation multiplier when active', async () => {
       mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
       mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
@@ -1394,6 +1425,48 @@ describe('reconcileLiveOptionsOrders — partial fills', () => {
     expect(after).toHaveLength(1);
     expect(after[0].quantity).toBe(orderedQty);
     expect(after[0].entryPrice).toBeCloseTo((1 * 4.1 + (orderedQty - 1) * 4.5) / orderedQty, 4);
+  });
+
+  it('a partially-filled EXIT shrinks the position instead of closing it', async () => {
+    // The bug: the filled quantity was computed and then dropped — the exit
+    // path closed the row unconditionally. A 3-contract close filling 1 booked
+    // one contract's P&L, marked the position closed, and left the other 2 real
+    // contracts with no ledger row: gone from listOpenLiveOptionsPositions, so
+    // never re-priced, never re-exited, never reconciled, drifting to expiry.
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({ expiration: '2024-06-05', quantity: 3 });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-EXIT1' });
+    await checkLiveOptionsExits();
+    expect(mockPlaceOrder).toHaveBeenCalled();
+
+    // Only 1 of the 3 contracts fills.
+    brokerSays('PARTIAL_FILLED', 1, 3.8);
+    await reconcileLiveOptionsOrders();
+
+    const open = listOpenLiveOptionsPositions();
+    expect(open).toHaveLength(1); // still tracked
+    expect(open[0].id).toBe(pos.id);
+    expect(open[0].quantity).toBe(2); // the untouched contracts remain
+    expect(open[0].status).toBe('open');
+  });
+
+  it('closes the position once the remainder of a partial exit fills', async () => {
+    setAutotradeConfig(liveConfig());
+    openLivePosition({ expiration: '2024-06-05', quantity: 3 });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-EXIT2' });
+    await checkLiveOptionsExits();
+
+    brokerSays('PARTIAL_FILLED', 1, 3.8);
+    await reconcileLiveOptionsOrders();
+    expect(listOpenLiveOptionsPositions()[0].quantity).toBe(2);
+
+    brokerSays('FILLED', 3, 3.8);
+    await reconcileLiveOptionsOrders();
+    expect(listOpenLiveOptionsPositions()).toHaveLength(0); // now genuinely closed
   });
 
   it('books a partial the broker reports as CANCELLED in one shot', async () => {

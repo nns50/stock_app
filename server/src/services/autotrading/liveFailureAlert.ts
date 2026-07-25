@@ -28,9 +28,21 @@ import { dispatchNotifications } from '../notifier';
 
 /** A real live order the broker REJECTED (webullPlaceOrder returned !ok), or a
  *  close we couldn't even price — the anomaly class this alert exists for. */
-const FAILURE_ACTIONS = ['live_entry_failed', 'live_options_entry_failed', 'live_options_exit_failed'];
+const FAILURE_ACTIONS = [
+  'live_entry_failed',
+  'live_options_entry_failed',
+  'live_options_exit_failed',
+  // Equity time-exits were missing here. A blocked or failed CLOSE is strictly
+  // worse than a blocked entry — an entry that doesn't happen costs nothing,
+  // while a close that doesn't happen leaves a real position open past the hold
+  // limit, and (before the cancel/place reorder) could leave one with no stop at
+  // all. It repeats every tick, so without these it repeated silently.
+  'live_time_exit_blocked',
+  'live_time_exit_failed',
+  'live_time_exit_cancel_failed',
+];
 /** A real live order that reached the broker — resets the failure streak. */
-const SUCCESS_ACTIONS = ['live_order_placed', 'live_options_order_placed'];
+const SUCCESS_ACTIONS = ['live_order_placed', 'live_options_order_placed', 'live_time_exit_placed'];
 /** Our own "we alerted" marker, journaled so the throttle survives a restart. */
 const ALERT_ACTION = 'live_failure_alerted';
 

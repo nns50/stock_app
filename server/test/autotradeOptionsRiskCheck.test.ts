@@ -153,6 +153,18 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
       expect(result.sizing.suggestedQuantity).toBe(3); // full 1% sizing
     });
 
+    it('is inactive at a threshold of 0 — "0 disables", matching the equity path', () => {
+      // Without the > 0 guard any market ATR% exceeds 0, so setting the threshold
+      // to 0 to turn the feature OFF instead half-sized every options position
+      // while equity (which has the guard) used the full risk %.
+      const result = evaluateOptionsRiskCheck(
+        optionSignal(),
+        baseCtx({ marketAtrPct: 6, regimeAtrThresholdPct: 0, regimeSizeCutPct: 30 }),
+      );
+      expect(result.regimeActive).toBe(false);
+      expect(result.sizing.suggestedQuantity).toBe(3); // full 1% sizing, uncut
+    });
+
     it('cuts size by regimeSizeCutPct once marketAtrPct exceeds the threshold', () => {
       const result = evaluateOptionsRiskCheck(
         optionSignal(),

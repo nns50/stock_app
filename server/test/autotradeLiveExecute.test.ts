@@ -7,6 +7,14 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
   return { ...actual, webullPlaceOrder: vi.fn(), webullOrderStatus: vi.fn() };
 });
 vi.mock('../src/services/quotes', () => ({ priceMap: vi.fn() }));
+// checkLiveScaleIns now enforces the session window itself (a scale-in places a
+// real order that ADDS risk, and loop.ts runs it before its own session gate).
+// These tests run at whatever wall-clock CI happens to be at, so pin the guard
+// open by default; the closed case gets its own test below.
+vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/autotrading/executionGuards')>()),
+  checkSessionWindow: vi.fn(() => ({ ok: true })),
+}));
 
 import { config } from '../src/config';
 import { getProvider } from '../src/providers';
@@ -937,6 +945,97 @@ describe('reconcileLiveOrders', () => {
     expect(closed[0].exits[0].exitPrice).toBe(95);
   });
 
+  it("folds the live OPTIONS book into equity's daily-drawdown halt", async () => {
+    // Paper combines both books and the live OPTIONS batch already folds equity
+    // in; only this direction was missing. Without it a day of live options
+    // losses left equity's halt unaware, so it kept opening full-size real
+    // positions past the intended daily cap.
+    setAutotradeConfig(liveConfig({ maxDailyDrawdownPct: 3 }));
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SEED' });
+
+    // Equity book is flat; the OPTIONS book is already past the 3% halt.
+    const outcomes = await runLiveExecution([{ signal: signal('AAPL') }], null, {
+      dailyPnl: -4_000,
+      consecutiveLosses: 0,
+      tradesToday: 0,
+    });
+
+    expect(outcomes[0].ok).toBe(false);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+
+    // Causation: the SAME candidate with a neutral options book is allowed, so
+    // the block above came from the seed and not from some unrelated gate.
+    const allowed = await runLiveExecution([{ signal: signal('AAPL') }], null, {
+      dailyPnl: 0,
+      consecutiveLosses: 0,
+      tradesToday: 0,
+    });
+    expect(allowed[0].ok).toBe(true);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('a partially-filled bracket exit leg books only what filled, leaving the rest open', async () => {
+    // The leg's filledQty is parsed by the provider but was never passed on, so
+    // a leg reporting FILLED on a partial quantity closed the WHOLE position:
+    // P&L fabricated for shares that never sold, and the real remainder dropped
+    // out of the ledger — invisible to the risk snapshot, to the time-exit
+    // sweep, and to the scale-in loop, while the symbol became re-enterable.
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-PARTIAL-EXIT' });
+    const res = evaluateRiskCheck(signal(), {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      maxConcurrentPositions: 2,
+      correlatedNotional: 0,
+      riskPerTradePct: 1,
+      maxDailyDrawdownPct: 3,
+      stepDownAfterLosses: 2,
+      stepDownSizeCutPct: 50,
+      maxAggregateOpenRiskPct: 2,
+      maxCorrelatedExposurePct: 6,
+      maxTradesPerDay: 6,
+    });
+    await attemptLiveEntry(signal(), res, 'MODERATE', liveConfig());
+
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: res.sizing.suggestedQuantity,
+      filledPrice: 100,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+    const opened = listPositions({ status: 'open' })[0];
+    expect(opened.quantity).toBeGreaterThan(1);
+
+    // The stop leg fills for ONE share only.
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: opened.quantity,
+      filledPrice: 100,
+      legs: [
+        { comboType: 'MASTER', status: 'FILLED' },
+        { comboType: 'STOP_LOSS', status: 'FILLED', filledPrice: 95, filledQty: 1 },
+      ],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+
+    const stillOpen = listPositions({ status: 'open' });
+    expect(stillOpen).toHaveLength(1);
+    expect(stillOpen[0].remainingQuantity).toBe(opened.quantity - 1);
+  });
+
   it('fails closed: an ambiguous leg response (no comboType at all) leaves the position open rather than guessing', async () => {
     setAutotradeConfig({ liveAccountId: 'ACC1' });
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
@@ -1292,6 +1391,23 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
 });
 
 describe('checkLiveScaleIns', () => {
+  it('places no add-on outside the session window', async () => {
+    // A scale-in adds real risk to an open real position. loop.ts calls this
+    // BEFORE its own checkSessionWindow, behind isLiveEntryActive — which has no
+    // market-hours term — and evaluateGuardrails only WARNS on a closed market.
+    // So the gate has to live here or a real add-on can be submitted overnight.
+    const { checkSessionWindow } = await import('../src/services/autotrading/executionGuards');
+    // mockReturnValue (not Once): checkLiveScaleIns returns early on several
+    // cheaper checks, so a queued one-shot could survive into the next test.
+    vi.mocked(checkSessionWindow).mockReturnValue({ ok: false, reason: 'Market is closed' });
+    try {
+      expect(await checkLiveScaleIns()).toEqual([]);
+      expect(vi.mocked(webullPlaceOrder)).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(checkSessionWindow).mockReturnValue({ ok: true });
+    }
+  });
+
   const riskCtx = {
     equity: 100_000,
     dailyPnl: 0,

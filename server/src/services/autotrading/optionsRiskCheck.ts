@@ -130,7 +130,13 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
   if (!equityOk) return blocked(zeroSizing, false, false);
 
   const stepDownActive = ctx.consecutiveLosses >= ctx.stepDownAfterLosses;
-  const regimeActive = ctx.marketAtrPct != null && ctx.marketAtrPct > ctx.regimeAtrThresholdPct;
+  // Mirrors riskCheck.ts's equity guard: a threshold of 0 means OFF. Without
+  // the > 0 term any market ATR% exceeds 0, so setting the threshold to 0 to
+  // disable the feature instead pinned the regime size cut permanently ON —
+  // halving every options position while the equity path correctly used the
+  // full risk %. The equity copy was fixed; this one was missed.
+  const regimeActive =
+    ctx.regimeAtrThresholdPct > 0 && ctx.marketAtrPct != null && ctx.marketAtrPct > ctx.regimeAtrThresholdPct;
   const effectiveRiskPct =
     ctx.riskPerTradePct *
     (stepDownActive ? 1 - ctx.stepDownSizeCutPct / 100 : 1) *

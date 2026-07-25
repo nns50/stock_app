@@ -29,6 +29,7 @@ import {
   checkLiveOptionsExits,
   reconcileLiveOptionsOrders,
   syncLiveOptionsPositionsFromBroker,
+  liveOptionsSeedForEquity,
 } from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures } from './liveFailureAlert';
 import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
@@ -330,9 +331,12 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // would (caught by this function's own outer try, below).
     const liveEquityTimeExitOutcomes = await checkLiveEquityTimeExits();
     // Scale into winners on LIVE positions — gated like an ENTRY (it ADDS risk
-    // to real money), so behind isLiveEntryActive (kill switch, master gate,
-    // market hours) ON TOP OF checkLiveScaleIns' own liveScaleInEnabled/cap
-    // checks. Unlike the time-exit above (which must fire even when entries are
+    // to real money), so behind isLiveEntryActive (kill switch + master gates)
+    // ON TOP OF checkLiveScaleIns' own liveScaleInEnabled/cap checks AND its
+    // own session-window check. Market hours are NOT part of isLiveEntryActive
+    // (this comment used to claim they were), and this call deliberately runs
+    // before the tick's own checkSessionWindow below, so the session gate lives
+    // inside checkLiveScaleIns where it cannot be bypassed by ordering. Unlike the time-exit above (which must fire even when entries are
     // halted, to close), a scale-in must NOT fire while entries are halted.
     // Fail-closed inside — one position's broker hiccup never crashes the loop.
     const liveScaleInOutcomes = isLiveEntryActive(getAutotradeConfig()) ? await checkLiveScaleIns() : [];
@@ -595,6 +599,11 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       const liveOutcomes = await runLiveExecution(
         decision.signals.map((signal) => ({ signal })),
         marketAtrPct,
+        // Cross-seed the live OPTIONS book's daily P&L / streak / trade count,
+        // exactly as the paper batch is seeded from the options paper book just
+        // above. The live options batch already folds equity in the other
+        // direction; this closes the one-way gap.
+        liveOptionsSeedForEquity(),
       );
       summary.liveEntriesOpened = liveOutcomes.filter((o) => o.ok).length;
     }

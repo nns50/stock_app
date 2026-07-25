@@ -44,6 +44,7 @@ import {
   LiveOrderMeta,
 } from '../../db/autotradeLiveOrders';
 import { computeScaleIn } from './scaleIn';
+import { checkSessionWindow } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
 import { computeGradeExpectancyMultipliers } from './expectancySizing';
 // DB-layer reads only (NOT the options execution service) -- so the combined
@@ -51,6 +52,7 @@ import { computeGradeExpectancyMultipliers } from './expectancySizing';
 // service import cycle.
 import { pendingLiveOptionsOrdersRisk } from '../../db/autotradeLiveOptionsOrders';
 import { listOpenLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
+import type { LiveOptionsRiskSeed } from './liveOptionsExecute';
 import { createPosition, getPosition, listPositions, updatePosition, addExit, Position } from '../../db/positions';
 import { realizedPnlOf, initialRiskOf, computeStreaksAndDrawdown } from '../pnl';
 import { TradeSignal, convictionGrade } from './decide';
@@ -656,12 +658,25 @@ export async function runLiveExecution(
    *  re-fetched here. Defaults to null (regime cut inactive) for any caller
    *  that doesn't have/need one, e.g. a direct test call. */
   marketAtrPct: number | null = null,
+  /** The live OPTIONS book's daily P&L / streak / trade count, supplied by
+   *  loop.ts (liveOptionsSeedForEquity). Defaults to zeros for a direct caller.
+   *
+   *  Without it these three gates saw only the equity book, while paper combines
+   *  both and the live OPTIONS batch already folds in equity — so the asymmetry
+   *  was one-way. The consequences were real money: a day of live OPTIONS losses
+   *  left the equity daily-drawdown halt unaware (it could keep opening full-size
+   *  positions past the intended daily cap), and consecutive OPTIONS losses never
+   *  engaged equity's step-down cut — sizing at full risk exactly when the
+   *  strategy was losing. */
+  optionsSeed: LiveOptionsRiskSeed = { dailyPnl: 0, consecutiveLosses: 0, tradesToday: 0 },
 ): Promise<LiveExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
   const equity = cfg.accountEquityUsd ?? 0;
 
   const snapshot = getLivePortfolioSnapshot();
-  const { dailyPnl, consecutiveLosses, tradesToday } = snapshot;
+  const dailyPnl = snapshot.dailyPnl + optionsSeed.dailyPnl;
+  const tradesToday = snapshot.tradesToday + optionsSeed.tradesToday;
+  const consecutiveLosses = Math.max(snapshot.consecutiveLosses, optionsSeed.consecutiveLosses);
   // Seed the running risk/count from the COMBINED live book (both equity and
   // options, positions AND placed-but-unmaterialized orders) -- not this book's
   // position-only snapshot -- so equity and options entries in the same tick
@@ -1041,6 +1056,7 @@ function reconcileOneLiveOrder(
           meta.positionId,
           exitLeg.filledPrice ?? fallbackPrice,
           riskProfile,
+          exitLeg.filledQty,
         );
         return recorded ? { changed: true, action: 'exit_filled' } : { changed: false };
       } catch (err) {
@@ -1185,13 +1201,22 @@ function materializeExitFill(
   positionId: number | null,
   exitPrice: number,
   riskProfile: string,
+  filledQty?: number,
 ): boolean {
   const position = listPositions({ status: 'open', symbol: intent.symbol }).find(
     (p) => isAutotradePosition(p) && (p.sourceIntentId === intent.id || (positionId !== null && p.id === positionId)),
   );
   if (!position) return false;
+  // Book what the leg ACTUALLY filled, not the whole position. A bracket leg
+  // can report FILLED on a partial quantity, and closing the full remainder on
+  // that would both fabricate P&L for shares that never sold and drop the real
+  // remainder out of the ledger — out of getLivePortfolioSnapshot's risk/P&L,
+  // out of checkLiveEquityTimeExits, and out of the scale-in loop — leaving
+  // untracked live exposure. Mirrors materializeTimeExitFill's own clamp.
+  const closeQty = Math.min(filledQty ?? position.remainingQuantity, position.remainingQuantity);
+  if (closeQty <= 0) return false;
   const closed = addExit(position.id, {
-    quantity: position.remainingQuantity,
+    quantity: closeQty,
     exitPrice,
     exitDate: etDateStr(),
     sourceIntentId: intent.id,
@@ -1442,6 +1467,7 @@ async function placeLiveEquityTimeExitClose(
   pos: Position,
   accountId: string,
   riskProfile: string,
+  entryIntent: OrderIntentRecord,
 ): Promise<LiveEquityTimeExitOutcome> {
   const symbol = pos.symbol.toUpperCase();
   let last: number;
@@ -1499,6 +1525,31 @@ async function placeLiveEquityTimeExitClose(
       reason: `Guardrails blocked: ${reasons}`,
       intentId: intentRec.id,
     };
+  }
+
+  // ONLY NOW cancel the resting bracket. This used to run in the caller, before
+  // any of the above: the position's only stop was cancelled and confirmed
+  // cleared, and THEN the close was evaluated — so anything that blocks it left
+  // a real position with no stop at the broker and no closing order. The kill
+  // switch is the easiest way to hit it (buildLiveTradingConfig ORs both kill
+  // switches into a block-severity guardrail, and this function is deliberately
+  // not gated on the kill switch, so the loop keeps calling it), which means the
+  // gesture a user makes to stop trading was the one most likely to strip a
+  // position's protection. It also could not self-heal: the rejected intent never
+  // becomes a pending exit order, so the next tick re-entered, found nothing left
+  // to cancel, and was blocked again — every 60s, silently, with none of these
+  // event actions wired into liveFailureAlert.
+  const cancelled = await cancelLiveBracketExitLegs(entryIntent, accountId);
+  if (!cancelled.ok) {
+    transitionIntent(intentRec.id, 'rejected', { detail: `bracket cancel failed: ${cancelled.reason}` });
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_time_exit_cancel_failed',
+      detail: { positionId: pos.id, reason: cancelled.reason, raced: cancelled.raced ?? false },
+      riskProfile,
+    });
+    return { symbol, positionId: pos.id, requested: false, reason: cancelled.reason, intentId: intentRec.id };
   }
 
   transitionIntent(intentRec.id, 'validated', { detail: 'guardrails passed (live time-exit)' });
@@ -1609,23 +1660,21 @@ export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutc
     // broker round-trips between positions, and a kill switch engaged
     // mid-loop must stop the NEXT position's cancel/close immediately, not
     // just the next cycle.
-    const freshAccountId = getAutotradeConfig().liveAccountId;
+    const freshCfg = getAutotradeConfig();
+    const freshAccountId = freshCfg.liveAccountId;
     if (!freshAccountId) continue;
+    // The re-read above used to check ONLY liveAccountId, despite this comment
+    // promising a mid-loop kill switch stops the next cancel/close. It now
+    // actually does. The guardrails inside the close path would catch it too
+    // (and now do so BEFORE the bracket is cancelled), but stopping here means
+    // a halted account doesn't churn a rejected intent per position per tick.
+    const freshLiveCfg = buildLiveTradingConfig(freshCfg);
+    if (!freshLiveCfg.enabled || freshLiveCfg.killSwitch) break;
 
-    const cancelled = await cancelLiveBracketExitLegs(entryIntent, freshAccountId);
-    if (!cancelled.ok) {
-      logAutotradeEvent({
-        symbol: pos.symbol,
-        stage: 'execution',
-        action: 'live_time_exit_cancel_failed',
-        detail: { positionId: pos.id, reason: cancelled.reason, raced: cancelled.raced ?? false },
-        riskProfile,
-      });
-      outcomes.push({ symbol: pos.symbol, positionId: pos.id, requested: false, reason: cancelled.reason });
-      continue;
-    }
-
-    outcomes.push(await placeLiveEquityTimeExitClose(pos, freshAccountId, riskProfile));
+    // The bracket cancel now happens INSIDE placeLiveEquityTimeExitClose, after
+    // its guardrails pass — cancelling here meant a blocked close stripped the
+    // position's only stop. See that function's own comment.
+    outcomes.push(await placeLiveEquityTimeExitClose(pos, freshAccountId, riskProfile, entryIntent));
   }
   return outcomes;
 }
@@ -1661,6 +1710,16 @@ export async function checkLiveScaleIns(): Promise<LiveScaleInOutcome[]> {
   if (!cfg.liveAccountId) return [];
   if (!cfg.liveScaleInEnabled) return [];
   if (cfg.liveMaxAddOns <= 0 || cfg.addOnTriggerRMultiple <= 0 || cfg.addOnSizePct <= 0) return [];
+  // Session window, checked HERE rather than relying on the caller. A scale-in
+  // places a real, marketable order that ADDS risk to an already-open position,
+  // and loop.ts runs it well before its own checkSessionWindow — behind
+  // isLiveEntryActive, which despite its call-site comment carries no
+  // market-hours term (kill switches and master gates only). The guardrail
+  // layer is not a backstop either: evaluateGuardrails only WARNS on a closed
+  // market, never blocks. Without this, an add-on could be submitted overnight,
+  // at a weekend, or inside the open/close buffer every other entry respects.
+  const session = checkSessionWindow(cfg.sessionBufferMinutes);
+  if (!session.ok) return [];
 
   const open = listAutotradeLivePositions({ status: 'open' }).filter((p) => p.assetType === 'stock');
   if (open.length === 0) return [];
