@@ -73,32 +73,54 @@ function arg(name: string): string | undefined {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
-/** Pull the first account_id out of whatever envelope the account list uses. */
-function firstAccountId(payload: unknown): string | undefined {
-  let found: string | undefined;
+/** Every account_id the list endpoint returns, in order. */
+function allAccountIds(payload: unknown): string[] {
+  const found: string[] = [];
   const walk = (v: unknown, depth: number): void => {
-    if (found || depth > 5 || !v || typeof v !== 'object') return;
+    if (depth > 5 || !v || typeof v !== 'object') return;
     if (Array.isArray(v)) {
       v.forEach((i) => walk(i, depth + 1));
       return;
     }
     for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
       if (/^account_?id$/i.test(k) && (typeof val === 'string' || typeof val === 'number')) {
-        found = String(val);
-        return;
+        const id = String(val);
+        if (!found.includes(id)) found.push(id);
+      } else {
+        walk(val, depth + 1);
       }
-      walk(val, depth + 1);
     }
   };
   walk(payload, 0);
   return found;
 }
 
+/**
+ * Which account to probe — and a loud warning when that was a GUESS.
+ *
+ * Falling back to the first account in the list is fine for a single-account
+ * setup and quietly wrong for any other: the app itself trades
+ * autotradeConfig.liveAccountId, which is set separately in the UI and need not
+ * be the first one the broker happens to list. A capture that silently probed a
+ * DIFFERENT account than the app trades reads as "this account has almost no
+ * orders" — indistinguishable from a real answer, and pointing at the wrong
+ * conclusion. So say when the choice was arbitrary rather than leaving the
+ * operator to reconcile a puzzling result later.
+ */
 async function resolveAccountId(): Promise<string | undefined> {
   const explicit = arg('account-id') || process.env.WEBULL_ACCOUNT_ID;
   if (explicit) return explicit;
   const list = await webullProbe('account-list');
-  return list.ok ? firstAccountId(list.data) : undefined;
+  if (!list.ok) return undefined;
+  const ids = allAccountIds(list.data);
+  if (ids.length > 1) {
+    console.warn(
+      `\n⚠  This login has ${ids.length} accounts and none was specified — probing the FIRST one.\n` +
+        '   If the app trades a different account, everything below describes the wrong one.\n' +
+        '   Check Auto-Trade → live account id, then re-run with --account-id <id>.\n',
+    );
+  }
+  return ids[0];
 }
 
 /** Poll ONE order's status and record the filled-quantity series. Read-only. */
