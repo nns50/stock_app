@@ -1954,7 +1954,10 @@ export interface CombinedWalkForwardRequest extends CombinedBacktestRequest {
 
 // --- Phase 6: paper execution loop ---
 
-export type PaperExitReason = 'stop' | 'target' | 'manual';
+// Mirrors server/src/db/autotradePaperPositions.ts — 'time_exit' is what the
+// max-hold-days rule writes; omitting it here made the union silently wrong and
+// would let a `switch` over it look exhaustive when it isn't.
+export type PaperExitReason = 'stop' | 'target' | 'time_exit' | 'manual';
 
 export interface PaperPosition {
   id: number;

@@ -255,10 +255,14 @@ autotradeRouter.put(
   '/config',
   asyncHandler(async (req, res) => {
     const body = parseBody(configBody, req);
-    if (body.riskProfile === 'AGGRESSIVE' && body.confirmAggressive !== true) {
+    const before = getAutotradeConfig();
+    // Gate the SWITCH, not the label. Comparing the body alone meant a client
+    // that echoes the current riskProfile back on save (any "save everything"
+    // patch, including the /tune patches, which always carry riskProfile) could
+    // never save at all while already AGGRESSIVE.
+    if (body.riskProfile === 'AGGRESSIVE' && before.riskProfile !== 'AGGRESSIVE' && body.confirmAggressive !== true) {
       throw new HttpError(400, 'Switching to AGGRESSIVE requires explicit confirmation (confirmAggressive: true)');
     }
-    const before = getAutotradeConfig();
 
     // Only pass along fields the client actually sent — building
     // { enabled: body.enabled, ... } unconditionally would put an
@@ -423,7 +427,12 @@ autotradeRouter.put(
       // deliberate clear) the same as "omitted", silently keeping the OLD
       // account instead of honoring the clear. Only fall back to `before`
       // when the field is genuinely absent from this request.
-      const accountId = body.liveAccountId !== undefined ? body.liveAccountId : before.liveAccountId;
+      // Trim BEFORE the guard: sanitize() (db/autotradeConfig.ts) trims and turns
+      // a whitespace-only id into null, so a truthy "   " would pass this check
+      // and then be stored as null — landing in exactly the live-enabled-with-no-
+      // account state this guard exists to make unreachable.
+      const rawAccountId = body.liveAccountId !== undefined ? body.liveAccountId : before.liveAccountId;
+      const accountId = rawAccountId?.trim() ? rawAccountId.trim() : null;
       if (!accountId) {
         throw new HttpError(
           400,
@@ -449,7 +458,13 @@ autotradeRouter.put(
     // becoming) enabled — a plain checkbox nested under a gate that isn't on
     // yet would otherwise silently sit inert with no feedback. Turning it
     // OFF, or an unrelated save that doesn't touch it, always passes through.
-    const masterWillBeEnabled = enablingNow || before.liveTradingEnabled;
+    // A request that turns the master OFF cannot also arm anything nested under
+    // it: without the explicit false check, `before.liveTradingEnabled` kept this
+    // true, so one combined request could disable live trading while enabling
+    // live options / live scale-in — both then already armed the moment the
+    // master was switched back on, without the user ever ticking them in an
+    // enabled state. Sent individually each is correctly rejected.
+    const masterWillBeEnabled = body.liveTradingEnabled === false ? false : enablingNow || before.liveTradingEnabled;
     if (body.liveOptionsEnabled === true && !masterWillBeEnabled) {
       throw new HttpError(400, 'Enabling live options trading requires live trading to be enabled first');
     }

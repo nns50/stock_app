@@ -167,6 +167,37 @@ describe('TuneFromTargetSection', () => {
     await waitFor(() => expect(spy).toHaveBeenCalledWith({ targetDailyGainPct: 12, basis: 'perfectDay' }));
   });
 
+  it('re-previews when the account equity AMOUNT changes, not just when it is first set', async () => {
+    // The server scales the dollar caps (liveMaxOrderUsd, liveMaxDailyLossUsd and
+    // their options twins) off equity, and equity moves on its own — the loop
+    // marks it to market and the page re-syncs it every 60s. Keying the effect on
+    // an "is equity set?" boolean left the tuned column, and the patch Apply
+    // writes, scaled to a stale equity.
+    const spy = vi.spyOn(client, 'tuneFromTargetPreview').mockResolvedValue(previewFixture());
+    const { rerender } = render(
+      <ConfirmProvider>
+        <TuneFromTargetSection
+          config={configFixture({ accountEquityUsd: 1000 })}
+          onApply={() => Promise.resolve()}
+          applying={false}
+        />
+      </ConfirmProvider>,
+    );
+    expand();
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+
+    rerender(
+      <ConfirmProvider>
+        <TuneFromTargetSection
+          config={configFixture({ accountEquityUsd: 100_000 })}
+          onApply={() => Promise.resolve()}
+          applying={false}
+        />
+      </ConfirmProvider>,
+    );
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
+  });
+
   it('reset-to-moderate fetches the moderate baseline and applies it', async () => {
     vi.spyOn(client, 'tuneFromTargetPreview').mockResolvedValue(previewFixture());
     const moderatePatch = { ...previewFixture().patch, riskPerTradePct: 1 };

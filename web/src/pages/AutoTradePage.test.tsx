@@ -3991,3 +3991,66 @@ describe('AutoTradePage account-equity auto-refresh', () => {
     expect(equityInput.value).toBe('77000');
   });
 });
+
+// The class of bug that produced the "Tune from target daily gain" reset: local
+// UI state silently discarded because server state was reapplied on top of it.
+// These lock the general case — one Save must not disturb any OTHER field, and
+// a refresh must not tear the form down mid-edit.
+describe('AutoTradePage config drafts vs server refreshes', () => {
+  it('saving one field leaves other unsaved edits alone', async () => {
+    // The real server echoes the FULL config back from PUT /config; re-seeding
+    // every draft from it used to wipe whatever else the user had typed.
+    vi.spyOn(client, 'setAutotradeConfig').mockImplementation((patch) =>
+      Promise.resolve(configFixture(patch as Partial<AutotradeConfig>)),
+    );
+    renderPage();
+    await screen.findByRole('button', { name: 'Save risk per trade' });
+
+    const riskField = screen.getByText('Risk per trade (%)').closest('label')!;
+    fireEvent.change(within(riskField).getByRole('textbox'), { target: { value: '2' } });
+    const sectorField = screen.getByText('Max sector exposure (%)').closest('label')!;
+    fireEvent.change(within(sectorField).getByRole('textbox'), { target: { value: '35' } });
+
+    const saveRisk = screen.getByRole('button', { name: 'Save risk per trade' });
+    await waitFor(() => expect(saveRisk).not.toBeDisabled());
+    fireEvent.click(saveRisk);
+    await waitFor(() =>
+      expect(client.setAutotradeConfig).toHaveBeenCalledWith({
+        riskPerTradePct: 2,
+        confirmAggressive: undefined,
+      }),
+    );
+
+    // Let the save response AND the follow-up config.reload() both settle —
+    // asserting too early passes trivially, before either could clobber.
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    const sectorAfter = within(screen.getByText('Max sector exposure (%)').closest('label')!).getByRole(
+      'textbox',
+    ) as HTMLInputElement;
+    expect(sectorAfter.value).toBe('35');
+  });
+
+  it('keeps the config form mounted while it refreshes, instead of blanking to a spinner', async () => {
+    // reload() keeps the previous data while refetching, so gating on bare
+    // `loading` tore the whole form down on every save — losing keyboard focus
+    // and any half-typed value with it.
+    vi.spyOn(client, 'autotradeConfig').mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(configFixture()), 80)),
+    );
+    vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture({ riskPerTradePct: 2 }));
+    renderPage();
+    await screen.findByRole('button', { name: 'Save risk per trade' });
+
+    const saveRisk = screen.getByRole('button', { name: 'Save risk per trade' });
+    const riskField = screen.getByText('Risk per trade (%)').closest('label')!;
+    fireEvent.change(within(riskField).getByRole('textbox'), { target: { value: '2' } });
+    await waitFor(() => expect(saveRisk).not.toBeDisabled());
+    fireEvent.click(saveRisk);
+
+    // Sample across the whole reload window — the form must never disappear.
+    for (let i = 0; i < 4; i++) {
+      await act(() => new Promise((r) => setTimeout(r, 30)));
+      expect(screen.queryByText('Max sector exposure (%)')).not.toBeNull();
+    }
+  });
+});
