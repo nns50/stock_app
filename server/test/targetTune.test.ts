@@ -8,12 +8,21 @@ import {
   TuneBasis,
 } from '../src/services/autotrading/targetTune';
 
-const base = (over: { targetDailyGainPct: number; basis?: TuneBasis; equityUsd?: number; autoTuneEnabled?: boolean }) =>
+const base = (over: {
+  targetDailyGainPct: number;
+  basis?: TuneBasis;
+  equityUsd?: number;
+  autoTuneEnabled?: boolean;
+  autoTuneExitsEnabled?: boolean;
+}) =>
   computeTargetTune({
     equityUsd: over.equityUsd ?? 1000,
     targetDailyGainPct: over.targetDailyGainPct,
     basis: over.basis ?? 'expected',
-    config: { autoTuneEnabled: over.autoTuneEnabled ?? false },
+    config: {
+      autoTuneEnabled: over.autoTuneEnabled ?? false,
+      autoTuneExitsEnabled: over.autoTuneExitsEnabled ?? false,
+    },
   });
 
 describe('bandForTarget', () => {
@@ -105,6 +114,20 @@ describe('computeTargetTune — clamps and warnings', () => {
   it('warns when auto-tune is enabled (it will re-move the risk %)', () => {
     const r = base({ targetDailyGainPct: 5, autoTuneEnabled: true });
     expect(r.warnings.some((w) => /auto-tune/i.test(w))).toBe(true);
+  });
+
+  it('warns when the EXIT tuner is on — it moves the R multiple the risk % was solved from', () => {
+    // targetRMultiple is an input to edgeRFor, so once excursionTune moves it the
+    // risk % no longer corresponds to the target asked for, and nothing re-derives
+    // it. The old warning named only risk-per-trade, so this overlap was silent.
+    const r = base({ targetDailyGainPct: 5, autoTuneExitsEnabled: true });
+    expect(r.warnings.some((w) => /exit geometry/i.test(w))).toBe(true);
+    expect(r.warnings.some((w) => /no longer matches 5%\/day/i.test(w))).toBe(true);
+  });
+
+  it('does not warn about exit geometry when that tuner is off', () => {
+    const r = base({ targetDailyGainPct: 5 });
+    expect(r.warnings.some((w) => /exit geometry/i.test(w))).toBe(false);
   });
 
   it('caps the daily-loss halt at 40% and floors it at 2%', () => {

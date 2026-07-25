@@ -838,8 +838,9 @@ shouldn't be a tab-switch away.
   aggressive) from the target and sets exposure caps, screening filters, options
   delta/DTE/IV selection, and the equity-scaled dollar caps to match. It shows a full
   **preview — every changed field, current → tuned — plus warnings** (e.g. when the
-  target would need a dangerous per-trade risk, or when auto-tune is on and will later
-  move the risk % anyway); **nothing changes until you click Apply**, and every field
+  target would need a dangerous per-trade risk, or when either auto-tuner is on and will
+  later move what the tune set — the risk %, or the R multiple the risk % was solved
+  from); **nothing changes until you click Apply**, and every field
   stays editable afterward. The target % and sizing basis you pick are remembered in your
   browser, so the card returns to your last choice after a reload or a view switch (they
   drive the preview; they aren't themselves a saved setting — Apply writes the derived
@@ -1102,7 +1103,11 @@ shouldn't be a tab-switch away.
   trade actually took sizes the stop, how far it actually ran sizes the target — and nudges
   each toward that, capped per day by its own **max exit step** so one sample can't swing
   your exits. Winners only, deliberately: a stopped-out loser can't tell you whether a
-  different stop was better. Every adjustment shows up in **Recent activity** the moment it happens, and
+  different stop was better. It also only reads trades **entered since its last change**:
+  both signals are measured against each trade's own stop at entry, so a trade taken under
+  the previous geometry can't judge the one that replaced it — re-reading them would keep
+  re-applying a correction it had already made, walking your stop toward its floor. After
+  an adjustment it waits for enough fresh trades to close before moving again. Every adjustment shows up in **Recent activity** the moment it happens, and
   also pushes a notification through your configured webhooks (see **Alerts** below) —
   a live change to what the loop does is worth more than a line you'd only see if you
   went looking. See `docs/STRATEGY_PLAYBOOK.md`'s sizing and execution-quality sections
@@ -1125,8 +1130,10 @@ shouldn't be a tab-switch away.
   the loop opening real, uncapped-downside equity shorts, not just paper-trading them).
   **Suggest from
   equity** fills the first three of those from your account equity and the configured
-  daily-drawdown %/max-trades-per-day (25% of equity for the order cap, matching those
-  two settings exactly for the other two) — a starting point only, so it fills the
+  daily-drawdown %/max-trades-per-day (25% of equity for the order cap on the moderate
+  profile, 35% on aggressive — the same fractions **Tune from target** uses, so
+  suggesting after a tune can't quietly replace the tune's own order cap; the other two
+  match those settings exactly) — a starting point only, so it fills the
   fields without saving them; review or edit before clicking **Save live-trading
   settings** below. Needs account equity set first (Configuration, above). A **probation**
   setting cuts position size (e.g. to half) for the first N live trades after you enable

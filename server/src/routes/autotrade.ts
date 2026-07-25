@@ -70,7 +70,9 @@ autotradeRouter.get('/live-caps/suggest', (_req, res) => {
   if (config.accountEquityUsd == null) {
     throw new HttpError(400, 'Set account equity before requesting suggested live caps.');
   }
-  res.json(suggestLiveCaps(config.accountEquityUsd, config.maxDailyDrawdownPct, config.maxTradesPerDay));
+  res.json(
+    suggestLiveCaps(config.accountEquityUsd, config.maxDailyDrawdownPct, config.maxTradesPerDay, config.riskProfile),
+  );
 });
 
 /** Preview a full "tune from target" — derive the whole risk/aggressiveness
@@ -96,7 +98,7 @@ autotradeRouter.post('/tune/preview', (req, res) => {
       equityUsd: config.accountEquityUsd,
       targetDailyGainPct: body.targetDailyGainPct,
       basis: body.basis,
-      config: { autoTuneEnabled: config.autoTuneEnabled },
+      config: { autoTuneEnabled: config.autoTuneEnabled, autoTuneExitsEnabled: config.autoTuneExitsEnabled },
     }),
   );
 });

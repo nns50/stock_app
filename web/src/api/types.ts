@@ -1447,6 +1447,8 @@ export interface AutotradeConfig {
   autoTuneSlippageExcludePct: number;
   autoTuneExitsEnabled: boolean;
   autoTuneExitMaxStep: number;
+  /** Server-owned: when the exit tuner last moved the exit multiples. */
+  autoTuneExitTunedAt: number | null;
   /** Walk-forward guard (default on): only raise risk-% if the edge still holds
    *  out-of-sample. Decreases always apply. */
   autoTuneRequireOosConfirmation: boolean;

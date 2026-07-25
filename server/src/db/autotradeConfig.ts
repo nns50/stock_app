@@ -672,6 +672,13 @@ export interface AutotradeConfig {
    *  exit-tune (in multiple units, not a %), so one noisy sample can't swing
    *  the loop's exits — the exit-geometry analogue of autoTuneMaxStepPct. */
   autoTuneExitMaxStep: number;
+  /** When the exit-geometry tuner last moved stopAtrMultiple/targetRMultiple.
+   *  Server-owned bookkeeping (like liveEnabledAt) — not settable via the config
+   *  route. Excursion is measured in R, i.e. against each trade's OWN stop at
+   *  entry, so trades taken before a change can't tell you anything about the
+   *  geometry that replaced them; the tuner uses this to ignore them and wait
+   *  for fresh evidence. See services/autotrading/excursionTune.ts. */
+  autoTuneExitTunedAt: number | null;
   /** Walk-forward guard on the Kelly risk-% auto-tune (2026-07-24, ON by
    *  default). When on, a risk-% INCREASE is only applied if the edge still
    *  holds out-of-sample — the most recent half of closed trades must be a
@@ -802,6 +809,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     autoTuneSlippageExcludePct: 2,
     autoTuneExitsEnabled: false,
     autoTuneExitMaxStep: 0.25,
+    autoTuneExitTunedAt: null,
     autoTuneRequireOosConfirmation: true,
   };
 }
@@ -1011,6 +1019,9 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     autoTuneExitsEnabled:
       typeof input.autoTuneExitsEnabled === 'boolean' ? input.autoTuneExitsEnabled : d.autoTuneExitsEnabled,
     autoTuneExitMaxStep: posDecimal(input.autoTuneExitMaxStep, d.autoTuneExitMaxStep),
+    autoTuneExitTunedAt: Number.isFinite(Number(input.autoTuneExitTunedAt))
+      ? Number(input.autoTuneExitTunedAt)
+      : d.autoTuneExitTunedAt,
     autoTuneRequireOosConfirmation:
       typeof input.autoTuneRequireOosConfirmation === 'boolean'
         ? input.autoTuneRequireOosConfirmation

@@ -38,6 +38,18 @@ export interface ExcursionTuneBounds {
   minTrades: number;
   /** Max change to either multiple in a single run, in multiple units. */
   maxStep: number;
+  /** Epoch ms of the last exit-geometry change, or null if never tuned. Trades
+   *  entered at/before this are EXCLUDED from the sample.
+   *
+   *  Both signals here are denominated in R — maeR and mfeR are measured against
+   *  each trade's own stop AT ENTRY — so a trade taken under the previous
+   *  geometry says nothing about the geometry that replaced it. Without this
+   *  gate the stop rule re-applied the same correction to an already-corrected
+   *  value: winners averaging 0.5R heat give neededRoomR = 0.65, and 1.5 -> 1.25
+   *  -> 1.0 -> 0.75 -> 0.5 walks the stop to its floor in four runs off a sample
+   *  that never changed. Requiring fresh evidence makes each correction settle
+   *  before the next one is judged. */
+  sampleSince?: number | null;
 }
 
 export interface ExcursionTuneResult {
@@ -79,7 +91,14 @@ export function computeExcursionTune(
   bounds: ExcursionTuneBounds,
 ): ExcursionTuneResult {
   const warnings: string[] = [];
-  const winners = report.rows.filter((r) => r.realizedR != null && r.realizedR > 0 && r.maeR != null && r.mfeR != null);
+  const since = bounds.sampleSince ?? null;
+  const allWinners = report.rows.filter(
+    (r) => r.realizedR != null && r.realizedR > 0 && r.maeR != null && r.mfeR != null,
+  );
+  // Only trades entered AFTER the last change — see ExcursionTuneBounds.sampleSince.
+  const winners =
+    since == null ? allWinners : allWinners.filter((r) => new Date(r.entryDate).getTime() > (since as number));
+  const staleExcluded = allWinners.length - winners.length;
 
   const diagnostics: ExcursionTuneResult['diagnostics'] = {
     winners: winners.length,
@@ -93,7 +112,11 @@ export function computeExcursionTune(
   if (winners.length < bounds.minTrades) {
     warnings.push(
       `Only ${winners.length} winning trade${winners.length === 1 ? '' : 's'} with excursion data — ` +
-        `need ${bounds.minTrades} before tuning exits.`,
+        `need ${bounds.minTrades} before tuning exits.` +
+        (staleExcluded > 0
+          ? ` (${staleExcluded} excluded: entered under the previous exit geometry, so their R-denominated` +
+            ` excursion can't judge the current one.)`
+          : ''),
     );
     return { patch: {}, warnings, diagnostics };
   }
