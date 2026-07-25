@@ -998,7 +998,10 @@ const LivePositionsTable = memo(
                     {p.symbol}
                     {isOption && (
                       <span className="ml-2 text-xs font-normal text-slate-500">
-                        {fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : 'P'} {p.expiration}
+                        {/* optionType is nullable — a bare ternary rendered a null
+                            as "P", showing an unknown (or a call) as a put. */}
+                        {fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : p.optionType === 'put' ? 'P' : '?'}{' '}
+                        {p.expiration}
                       </span>
                     )}
                     {p.accountId && (
@@ -1158,6 +1161,26 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
   const canEnable =
     p.liveAccountIdDraft.trim() !== '' && p.confirmLiveText.trim().toUpperCase() === p.confirmPhrase.toUpperCase();
 
+  // Both cards save their whole group in ONE request, and a cleared NumberInput
+  // yields undefined, which JSON.stringify drops — the server then reads the key
+  // as "leave unchanged" and the UI reports success while the old value quietly
+  // comes back. Block the save instead, so an empty required field is visible.
+  const liveCapsIncomplete =
+    p.liveMaxOrderUsdDraft == null ||
+    p.liveMaxDailyLossUsdDraft == null ||
+    p.liveMaxOrdersPerDayDraft == null ||
+    p.liveFatFingerPctDraft == null ||
+    p.liveProbationTradesDraft == null ||
+    p.liveProbationSizeMultiplierDraft == null ||
+    p.liveMaxAddOnsDraft == null;
+  const liveOptionsCapsIncomplete =
+    p.liveOptionsMaxOrderUsdDraft == null ||
+    p.liveOptionsMaxDailyLossUsdDraft == null ||
+    p.liveOptionsMaxOrdersPerDayDraft == null ||
+    p.liveOptionsFatFingerPctDraft == null ||
+    p.liveOptionsProbationTradesDraft == null ||
+    p.liveOptionsProbationSizeMultiplierDraft == null;
+
   return (
     <div className="space-y-4">
       <div className="grid sm:grid-cols-2 gap-3 items-end">
@@ -1193,12 +1216,18 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
         </div>
         <div className="grid sm:grid-cols-3 gap-3">
           <Field label="Max order ($)">
-            <NumberInput value={p.liveMaxOrderUsdDraft} onChange={p.setLiveMaxOrderUsdDraft} placeholder="e.g. 20000" />
+            <NumberInput
+              value={p.liveMaxOrderUsdDraft}
+              onChange={p.setLiveMaxOrderUsdDraft}
+              min={0}
+              placeholder="e.g. 20000"
+            />
           </Field>
           <Field label="Max daily loss ($)">
             <NumberInput
               value={p.liveMaxDailyLossUsdDraft}
               onChange={p.setLiveMaxDailyLossUsdDraft}
+              min={0}
               placeholder="e.g. 3000"
             />
           </Field>
@@ -1206,16 +1235,24 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
             <NumberInput
               value={p.liveMaxOrdersPerDayDraft}
               onChange={p.setLiveMaxOrdersPerDayDraft}
+              min={0}
               placeholder="e.g. 6"
             />
           </Field>
           <Field label="Fat-finger (%)" hint="Limit price must sit within this % of the reference price.">
-            <NumberInput value={p.liveFatFingerPctDraft} onChange={p.setLiveFatFingerPctDraft} placeholder="e.g. 10" />
+            <NumberInput
+              value={p.liveFatFingerPctDraft}
+              onChange={p.setLiveFatFingerPctDraft}
+              min={0}
+              max={100}
+              placeholder="e.g. 10"
+            />
           </Field>
           <Field label="Probation trades" hint="First N live trades after enabling get an extra size cut.">
             <NumberInput
               value={p.liveProbationTradesDraft}
               onChange={p.setLiveProbationTradesDraft}
+              min={0}
               placeholder="e.g. 20"
             />
           </Field>
@@ -1223,6 +1260,8 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
             <NumberInput
               value={p.liveProbationSizeMultiplierDraft}
               onChange={p.setLiveProbationSizeMultiplierDraft}
+              min={0}
+              max={1}
               placeholder="e.g. 0.5"
             />
           </Field>
@@ -1262,9 +1301,14 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
             <NumberInput value={p.liveMaxAddOnsDraft} onChange={p.setLiveMaxAddOnsDraft} min={0} placeholder="e.g. 1" />
           </Field>
         </div>
-        <button className="btn-ghost mt-3" onClick={p.onSaveLiveCaps} disabled={p.liveCapsBusy}>
+        <button className="btn-ghost mt-3" onClick={p.onSaveLiveCaps} disabled={p.liveCapsBusy || liveCapsIncomplete}>
           {p.liveCapsBusy ? 'Saving…' : 'Save live-trading settings'}
         </button>
+        {liveCapsIncomplete && (
+          <p className="text-[11px] text-amber-400/80 mt-1">
+            Every field above needs a value — these save as one batch, so a blank one would silently keep its old value.
+          </p>
+        )}
       </div>
 
       <div className="rounded-lg border border-ink-600 bg-ink-700/40 p-3">
@@ -1320,6 +1364,7 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsMaxOrderUsdDraft}
                   onChange={p.setLiveOptionsMaxOrderUsdDraft}
+                  min={0}
                   placeholder="e.g. 2000"
                 />
               </Field>
@@ -1327,6 +1372,7 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsMaxDailyLossUsdDraft}
                   onChange={p.setLiveOptionsMaxDailyLossUsdDraft}
+                  min={0}
                   placeholder="e.g. 500"
                 />
               </Field>
@@ -1334,6 +1380,7 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsMaxOrdersPerDayDraft}
                   onChange={p.setLiveOptionsMaxOrdersPerDayDraft}
+                  min={0}
                   placeholder="e.g. 6"
                 />
               </Field>
@@ -1341,6 +1388,8 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsFatFingerPctDraft}
                   onChange={p.setLiveOptionsFatFingerPctDraft}
+                  min={0}
+                  max={100}
                   placeholder="e.g. 10"
                 />
               </Field>
@@ -1348,6 +1397,7 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsProbationTradesDraft}
                   onChange={p.setLiveOptionsProbationTradesDraft}
+                  min={0}
                   placeholder="e.g. 20"
                 />
               </Field>
@@ -1355,6 +1405,8 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 <NumberInput
                   value={p.liveOptionsProbationSizeMultiplierDraft}
                   onChange={p.setLiveOptionsProbationSizeMultiplierDraft}
+                  min={0}
+                  max={1}
                   placeholder="e.g. 0.5"
                 />
               </Field>
@@ -1366,7 +1418,11 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
                 size.
               </p>
             )}
-            <button className="btn-ghost" onClick={p.onSaveLiveOptionsCaps} disabled={p.liveOptionsSaveBusy}>
+            <button
+              className="btn-ghost"
+              onClick={p.onSaveLiveOptionsCaps}
+              disabled={p.liveOptionsSaveBusy || liveOptionsCapsIncomplete}
+            >
               {p.liveOptionsSaveBusy ? 'Saving…' : 'Save live options settings'}
             </button>
           </div>
@@ -2882,7 +2938,13 @@ export default function AutoTradePage() {
   // The from/to/splitDate a result actually came from — captured at submit time so
   // the "In-sample (X → Y)" labels below never drift from the form if it's edited
   // again before the response comes back.
+  // One per runner, NOT shared: each of the three walk-forwards keeps its own
+  // result on screen and clears only that result, so a single shared window
+  // would silently relabel an already-rendered panel with the NEXT run's dates —
+  // describing data it was never run on.
   const [btSubmitted, setBtSubmitted] = useState<{ from: string; to: string; splitDate: string }>();
+  const [optBtSubmitted, setOptBtSubmitted] = useState<{ from: string; to: string; splitDate: string }>();
+  const [combinedBtSubmitted, setCombinedBtSubmitted] = useState<{ from: string; to: string; splitDate: string }>();
 
   const runBacktest = async () => {
     const symbols = Array.from(
@@ -3028,7 +3090,7 @@ export default function AutoTradePage() {
     setOptBtErr(undefined);
     setOptBtResult(undefined);
     setOptBtWfResult(undefined);
-    setBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
+    setOptBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
     try {
       const body = {
         symbols,
@@ -3084,7 +3146,7 @@ export default function AutoTradePage() {
     setCombinedBtErr(undefined);
     setCombinedBtResult(undefined);
     setCombinedBtWfResult(undefined);
-    setBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
+    setCombinedBtSubmitted({ from: btFrom, to: btTo, splitDate: btSplitDate });
     try {
       const body = {
         symbols,
@@ -3142,6 +3204,8 @@ export default function AutoTradePage() {
               paperPositions.loading ||
               optionsPaperPositions.loading ||
               livePositions.loading ||
+              liveOptionsPositions.loading ||
+              symbolEvents.loading ||
               events.loading
             }
           />
@@ -3815,7 +3879,7 @@ export default function AutoTradePage() {
                   </Field>
                   <Field
                     label="Regime ATR threshold (%)"
-                    hint="A softer, graduated companion to Max market ATR (%) below: once the broad-market proxy's own ATR% crosses THIS lower threshold, new positions size down (see Regime size cut below) instead of being blocked outright — Max market ATR (%) still blocks everything once volatility gets more extreme. Stacks with step-down sizing above if both are active at once. Live + paper only — no backtest equivalent. Check Recent activity's risk_check entries to see it fire."
+                    hint="A softer, graduated companion to Max market ATR (%) below: once the broad-market proxy's own ATR% crosses THIS lower threshold, new positions size down (see Regime size cut below) instead of being blocked outright — Max market ATR (%) still blocks everything once volatility gets more extreme. Stacks with step-down sizing above if both are active at once. 0 disables it — the regime cut never applies, whatever the market's ATR%. Live + paper only — no backtest equivalent. Check Recent activity's risk_check entries to see it fire."
                   >
                     <div className="flex gap-2">
                       <NumberInput
@@ -6031,7 +6095,7 @@ export default function AutoTradePage() {
                 <OptionsBacktestTradesTable trades={optBtResult.report.trades} />
               </div>
             )}
-            {optBtWfResult && btSubmitted && (
+            {optBtWfResult && optBtSubmitted && (
               <div className="space-y-5">
                 <h4 className="text-xs uppercase tracking-wide text-slate-400">Options overlay</h4>
                 {optBtWfResult.excludedSymbols.length > 0 && (
@@ -6046,13 +6110,13 @@ export default function AutoTradePage() {
                   </p>
                 )}
                 <OptionsBacktestWindowResult
-                  title={`In-sample (${btSubmitted.from} → ${btSubmitted.splitDate})`}
+                  title={`In-sample (${optBtSubmitted.from} → ${optBtSubmitted.splitDate})`}
                   hint="The tuning window — strong performance here alone proves nothing."
                   run={optBtWfResult.inSample}
                   gradientId="optBtEquityIn"
                 />
                 <OptionsBacktestWindowResult
-                  title={`Out-of-sample (${btSubmitted.splitDate} → ${btSubmitted.to})`}
+                  title={`Out-of-sample (${optBtSubmitted.splitDate} → ${optBtSubmitted.to})`}
                   hint="Unseen data — this is the number that matters for the validation gate."
                   run={optBtWfResult.outOfSample}
                   gradientId="optBtEquityOut"
@@ -6083,7 +6147,7 @@ export default function AutoTradePage() {
                 <OptionsBacktestTradesTable trades={combinedBtResult.report.optionsTrades} />
               </div>
             )}
-            {combinedBtWfResult && btSubmitted && (
+            {combinedBtWfResult && combinedBtSubmitted && (
               <div className="space-y-5">
                 <h4 className="text-xs uppercase tracking-wide text-slate-400">Combined (one shared risk budget)</h4>
                 {combinedBtWfResult.excludedSymbols.length > 0 && (
@@ -6098,13 +6162,13 @@ export default function AutoTradePage() {
                   </p>
                 )}
                 <CombinedBacktestWindowResult
-                  title={`In-sample (${btSubmitted.from} → ${btSubmitted.splitDate})`}
+                  title={`In-sample (${combinedBtSubmitted.from} → ${combinedBtSubmitted.splitDate})`}
                   hint="The tuning window — strong performance here alone proves nothing."
                   run={combinedBtWfResult.inSample}
                   gradientId="combinedBtEquityIn"
                 />
                 <CombinedBacktestWindowResult
-                  title={`Out-of-sample (${btSubmitted.splitDate} → ${btSubmitted.to})`}
+                  title={`Out-of-sample (${combinedBtSubmitted.splitDate} → ${combinedBtSubmitted.to})`}
                   hint="Unseen data — this is the number that matters for the validation gate."
                   run={combinedBtWfResult.outOfSample}
                   gradientId="combinedBtEquityOut"

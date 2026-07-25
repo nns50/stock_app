@@ -887,7 +887,8 @@ shouldn't be a tab-switch away.
   ATR still blocks everything once volatility gets more extreme; mirrors step-down
   sizing above, just keyed to market volatility instead of a losing streak, and stacks
   with it if both are active at once. Regime size cut defaults to 0% — disabled, so
-  leaving it untouched changes nothing regardless of the threshold's own value. **Live
+  leaving it untouched changes nothing regardless of the threshold's own value; setting
+  the **threshold** itself to 0 likewise disables the cut entirely. **Live
   and paper only — no backtest equivalent**, same as max market ATR itself; watch
   **Recent activity**'s risk-check entries to see it fire). Finally, **equity-curve
   de-risking** (2026-07-24, off by default) is the same idea keyed to your _own_

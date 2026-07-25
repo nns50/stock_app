@@ -4054,3 +4054,58 @@ describe('AutoTradePage config drafts vs server refreshes', () => {
     }
   });
 });
+
+describe('AutoTradePage live-trading settings guards', () => {
+  it('will not batch-save the live caps with a field left blank', async () => {
+    // A cleared NumberInput is undefined, which JSON.stringify drops — the server
+    // reads the missing key as "leave unchanged", so the save used to report
+    // success while the old value quietly came back.
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    // Wait on the SEEDED VALUE rather than the button's enabled state: under a
+    // loaded parallel run the initial config fetch can outlast waitFor's 1s
+    // default, and "button not yet enabled" is indistinguishable from "drafts
+    // not yet seeded" — which made this assertion flaky. The field carrying its
+    // stored value is unambiguous proof the drafts have landed.
+    const maxOrder = screen.getByPlaceholderText('e.g. 20000') as HTMLInputElement;
+    await waitFor(() => expect(maxOrder.value).toBe('25000'), { timeout: 4000 });
+
+    const save = screen.getByRole('button', { name: 'Save live-trading settings' });
+    expect(save).not.toBeDisabled();
+    fireEvent.change(maxOrder, { target: { value: '' } });
+    await waitFor(() => expect(save).toBeDisabled());
+    fireEvent.click(save);
+    expect(setConfig).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it('cannot arm live scale-in while live trading is off, and never sends it', async () => {
+    // The route fails this closed without the master gate, and this card saves
+    // ten fields in one request — so a rejection here lost all of them.
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const scaleIn = screen.getByRole('checkbox', { name: /Scale into live winners/ });
+    expect(scaleIn).toBeDisabled();
+
+    // Same reasoning as above — wait on the seeded value, not the button state.
+    const maxOrder = screen.getByPlaceholderText('e.g. 20000') as HTMLInputElement;
+    await waitFor(() => expect(maxOrder.value).toBe('25000'), { timeout: 4000 });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save live-trading settings' }));
+    await waitFor(() => expect(setConfig).toHaveBeenCalled());
+    expect(setConfig.mock.calls[0][0]).toMatchObject({ liveScaleInEnabled: undefined });
+  });
+
+  it('rejects an out-of-range live cap at the keystroke, not with a batch-wide 400', async () => {
+    renderPage();
+    await screen.findByText('VNQ');
+    // Fat-finger % is bounded 0-100 server-side; the input now enforces it, so a
+    // typo cannot reach the shared request and take the other nine fields down.
+    const fatFinger = screen.getByPlaceholderText('e.g. 10') as HTMLInputElement;
+    fireEvent.change(fatFinger, { target: { value: '150' } });
+    expect(fatFinger.value).not.toBe('150');
+  });
+});
