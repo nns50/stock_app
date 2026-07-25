@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "check:provider": "tsx src/scripts/checkProvider.ts",
     "capture:broker": "tsx src/scripts/captureBrokerFields.ts",
+    "backfill:exits": "tsx src/scripts/backfillExitPrices.ts",
     "seed": "tsx src/scripts/seed.ts"
   },
   "dependencies": {

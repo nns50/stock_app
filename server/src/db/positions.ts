@@ -375,6 +375,30 @@ export function addExit(positionId: number, input: ExitInput): Position | undefi
   return getPosition(positionId);
 }
 
+/**
+ * Correct a recorded exit's PRICE in place, leaving its quantity and date alone.
+ *
+ * Narrow on purpose. This exists for one job — replacing an ESTIMATED exit price
+ * with the real fill the broker reported (services/exitPriceBackfill.ts) — and a
+ * general-purpose exit updater would be a much easier way to corrupt realized
+ * P&L than anything that job needs. Quantity is deliberately not touchable here:
+ * changing it would move the position's remaining size and could reopen a closed
+ * position, so a quantity disagreement is a reason to REFUSE a correction, not
+ * to apply one.
+ *
+ * Returns the refreshed position, or undefined if the exit id is unknown.
+ */
+export function correctExitPrice(exitId: number, exitPrice: number, notes: string): Position | undefined {
+  const row = db.prepare('SELECT position_id FROM position_exits WHERE id = ?').get(exitId) as
+    { position_id: number } | undefined;
+  if (!row) return undefined;
+  db.prepare('UPDATE position_exits SET exit_price = ?, notes = ? WHERE id = ?').run(exitPrice, notes, exitId);
+  // Status is a function of QUANTITY, not price, so it cannot change here —
+  // recomputed anyway so this can never silently leave a stale derived value.
+  recomputeStatus(row.position_id);
+  return getPosition(row.position_id);
+}
+
 export function deleteExit(exitId: number): boolean {
   const row = db.prepare('SELECT position_id FROM position_exits WHERE id = ?').get(exitId) as
     { position_id: number } | undefined;
