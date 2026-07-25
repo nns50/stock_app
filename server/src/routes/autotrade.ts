@@ -143,8 +143,13 @@ const configBody = z.object({
   convictionGradeBMinScore: z.number().min(0).max(100).optional(),
   expectancyWeightingEnabled: z.boolean().optional(),
   expectancyMinTrades: z.number().int().min(1).optional(),
-  expectancyMinMultiplier: z.number().positive().optional(),
-  expectancyMaxMultiplier: z.number().positive().optional(),
+  // Bounded, unlike every other risk multiplier in this config, these are the
+  // only ones that can size a trade UP (riskCheck.ts multiplies effectiveRiskPct
+  // by the grade's multiplier). Left unbounded, a typo like 100 would scale
+  // per-trade risk 100x with only the aggregate-open-risk veto behind it.
+  // The ceiling is deliberately generous — the shipped default max is 1.5.
+  expectancyMinMultiplier: z.number().positive().max(3).optional(),
+  expectancyMaxMultiplier: z.number().positive().max(3).optional(),
   // --- Screening/decision thresholds ------------------------------------------
   tradeDirection: z.enum(['long', 'short', 'both']).optional(),
   minRelVol: z.number().nonnegative().optional(),
@@ -262,6 +267,49 @@ autotradeRouter.put(
     // never save at all while already AGGRESSIVE.
     if (body.riskProfile === 'AGGRESSIVE' && before.riskProfile !== 'AGGRESSIVE' && body.confirmAggressive !== true) {
       throw new HttpError(400, 'Switching to AGGRESSIVE requires explicit confirmation (confirmAggressive: true)');
+    }
+
+    // Paired bounds, checked against the MERGED result rather than the body:
+    // this is a partial patch, so a request may move only one side of a pair and
+    // still invert it against the stored value. An inverted pair isn't caught by
+    // any single-field rule, and each fails silently at runtime — an empty delta
+    // band or DTE window makes the options leg stop finding any contract, and
+    // grade B above grade A makes B unreachable (decide.ts tests A first) —
+    // surfacing only as candidates that never trade.
+    const merged = <K extends keyof typeof before>(key: K, sent: (typeof before)[K] | undefined) =>
+      sent !== undefined ? sent : before[key];
+    const orderedPairs: [string, number, string, number, string][] = [
+      [
+        'expectancyMinMultiplier',
+        merged('expectancyMinMultiplier', body.expectancyMinMultiplier),
+        'expectancyMaxMultiplier',
+        merged('expectancyMaxMultiplier', body.expectancyMaxMultiplier),
+        'every conviction grade would size at the same multiplier',
+      ],
+      [
+        'optionsDeltaMin',
+        merged('optionsDeltaMin', body.optionsDeltaMin),
+        'optionsDeltaMax',
+        merged('optionsDeltaMax', body.optionsDeltaMax),
+        'no contract could satisfy the delta band',
+      ],
+      [
+        'optionsMinDte',
+        merged('optionsMinDte', body.optionsMinDte),
+        'optionsMaxDte',
+        merged('optionsMaxDte', body.optionsMaxDte),
+        'the DTE window would be empty',
+      ],
+      [
+        'convictionGradeBMinScore',
+        merged('convictionGradeBMinScore', body.convictionGradeBMinScore),
+        'convictionGradeAMinScore',
+        merged('convictionGradeAMinScore', body.convictionGradeAMinScore),
+        'grade B would be unreachable',
+      ],
+    ];
+    for (const [loName, lo, hiName, hi, consequence] of orderedPairs) {
+      if (lo > hi) throw new HttpError(400, `${loName} (${lo}) cannot exceed ${hiName} (${hi}) — ${consequence}`);
     }
 
     // Only pass along fields the client actually sent — building
@@ -739,6 +787,12 @@ const signalBody = z.object({
   rMultiple: z.number().positive(),
   rationale: z.string(),
   score: z.number(),
+  // Echoed back by the UI from /decide's own response. Omitting it here meant
+  // zod silently stripped it, so the ADV participation cap (riskCheck.ts, which
+  // only applies when avgVolume != null) went unenforced on this route — the
+  // manual preview then showed a LARGER quantity than the loop, which calls
+  // runAutotradeRiskCheck in-process with the signal intact, actually takes.
+  avgVolume: z.number().nullable().optional(),
 });
 const riskCheckBody = z.object({ signals: z.array(signalBody).min(1) });
 autotradeRouter.post(

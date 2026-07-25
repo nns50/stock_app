@@ -1235,10 +1235,16 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
           />
           Allow naked short (defined-risk only is strongly recommended — leave unchecked)
         </label>
-        <label className="flex items-center gap-2 text-sm mt-3">
+        {/* Nested under the live-trading gate the same way "Live options trading"
+            is: the server fails this closed unless live trading is already (or is
+            concurrently becoming) enabled. Left enabled while the master was off,
+            ticking it made every save of this card 400 — taking the nine other
+            live settings down with it, since they share one request. */}
+        <label className={cx('flex items-center gap-2 text-sm mt-3', !p.config.liveTradingEnabled && 'text-slate-500')}>
           <input
             type="checkbox"
             checked={p.liveScaleInEnabledDraft}
+            disabled={!p.config.liveTradingEnabled}
             onChange={(e) => p.setLiveScaleInEnabledDraft(e.target.checked)}
           />
           Scale into live winners (pyramiding) — ⚠ the one live setting that ADDS risk to an open position
@@ -1247,6 +1253,9 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
           Uses the shared scale-in trigger / size (in Equity exits). Each add is placed as its own bracket, so the added
           shares are never naked and your original stop/target is untouched. Off by default — validate in paper/backtest
           first.
+          {!p.config.liveTradingEnabled && (
+            <span className="text-slate-500"> Enable live trading first to turn this on.</span>
+          )}
         </p>
         <div className="mt-2">
           <Field label="Max live add-ons (0 disables)">
@@ -2672,7 +2681,10 @@ export default function AutoTradePage() {
         liveAllowNakedShort: liveAllowNakedShortDraft,
         liveProbationTrades: liveProbationTradesDraft,
         liveProbationSizeMultiplier: liveProbationSizeMultiplierDraft,
-        liveScaleInEnabled: liveScaleInEnabledDraft,
+        // Omitted (left unchanged server-side) while live trading is off — the
+        // route rejects arming it without the master gate, and this card saves
+        // ten fields in ONE request, so a rejection here loses all of them.
+        liveScaleInEnabled: config.data?.liveTradingEnabled ? liveScaleInEnabledDraft : undefined,
         liveMaxAddOns: liveMaxAddOnsDraft,
       });
       config.reload();

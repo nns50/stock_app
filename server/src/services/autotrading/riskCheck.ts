@@ -425,7 +425,12 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   if (!equityOk) return blocked(ZERO_SIZING, false, false, false);
 
   const stepDownActive = ctx.consecutiveLosses >= ctx.stepDownAfterLosses;
-  const regimeActive = ctx.marketAtrPct != null && ctx.marketAtrPct > ctx.regimeAtrThresholdPct;
+  // A threshold of 0 means OFF, matching how every other "0 disables" field in
+  // this config reads (and what the config route documents for this one). Without
+  // the > 0 guard, any market ATR% exceeds 0, so setting the threshold to 0 to
+  // turn the feature off instead pinned the regime size cut permanently ON.
+  const regimeActive =
+    ctx.regimeAtrThresholdPct > 0 && ctx.marketAtrPct != null && ctx.marketAtrPct > ctx.regimeAtrThresholdPct;
   const equityCurveDeriskActive = ctx.equityCurveDeriskActive === true;
   const equityCurveCutPct = ctx.equityCurveDeriskCutPct ?? 0;
   const expectancyMultiplier = ctx.expectancyMultiplier ?? 1;

@@ -1583,6 +1583,9 @@ export interface AutotradeSignal {
   rMultiple: number;
   rationale: string;
   score: number;
+  /** Carried through to POST /risk-check so the ADV participation cap applies to
+   *  the previewed size the same way it does inside the loop. */
+  avgVolume?: number | null;
 }
 
 export interface AutotradeDecisionResult {
