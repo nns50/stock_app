@@ -23,9 +23,23 @@ const IDENTIFYING_KEY = /account_?(id|number|no)|customer|user_?(id|name)|email|
  *  keeps field names and types but drops magnitudes. */
 export type CaptureMode = 'values' | 'shapes-only';
 
+/** Enum-like STRUCTURAL fields whose values survive `shapes-only`.
+ *
+ *  A shapes capture exists to reveal how the broker labels things, and these
+ *  labels are the answer — combo_type in particular is the whole of Q3. None of
+ *  them names a person, an account or an amount: they are closed vocabularies
+ *  (MASTER, LIMIT, BUY, FILLED…). Masking them made a shapes-only capture able
+ *  to prove a field EXISTS while withholding the one thing that made it useful,
+ *  which cost a round trip on the first real run. */
+const STRUCTURAL_ENUM_KEY =
+  /^(combo_type|order_type|side|status|instrument_type|time_in_force|entrust_type|support_trading_session|option_type|market)$/i;
+
 export function redact(value: unknown, mode: CaptureMode, key?: string): unknown {
   if (key && IDENTIFYING_KEY.test(key) && (typeof value === 'string' || typeof value === 'number')) {
     return '«redacted»';
+  }
+  if (mode === 'shapes-only' && key && STRUCTURAL_ENUM_KEY.test(key) && typeof value === 'string') {
+    return value;
   }
   if (Array.isArray(value)) return value.map((v) => redact(v, mode));
   if (value && typeof value === 'object') {

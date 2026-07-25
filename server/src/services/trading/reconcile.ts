@@ -11,7 +11,7 @@ import {
 } from '../../db/orders';
 import { Position, addExit, createPosition, listPositions } from '../../db/positions';
 import { OrderState, canTransition, isTerminal } from './orderLifecycle';
-import { WebullOrderStatus, webullOrderStatus } from '../../providers/webull/orders';
+import { WebullOrderStatus, isExitLeg, webullOrderStatus } from '../../providers/webull/orders';
 import { isAutotradeIntent } from '../../db/autotradeLiveOrders';
 import { isAutotradeOptionsIntent } from '../../db/autotradeLiveOptionsOrders';
 import { QTY_EPS, computeFillDelta, isShortBooked } from './fillDelta';
@@ -310,9 +310,7 @@ export async function reconcileIntent(id: number, accountId: string): Promise<Re
     // unambiguously identified as non-MASTER AND FILLED; zero (still working)
     // or two-or-more (shouldn't happen under normal OCO semantics, but not
     // ruled out) both leave the position open rather than guessing.
-    const filledExitLegs = (broker.legs ?? []).filter(
-      (l) => l.comboType && l.comboType !== 'MASTER' && l.status === 'FILLED',
-    );
+    const filledExitLegs = (broker.legs ?? []).filter((l) => isExitLeg(l) && l.status === 'FILLED');
     if (filledExitLegs.length === 1) {
       const leg = filledExitLegs[0];
       // recordCloseAsExit infers which position side to reduce from the

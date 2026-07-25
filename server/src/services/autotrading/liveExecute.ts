@@ -17,6 +17,7 @@ import {
   webullOrderStatus,
   webullCancelOrder,
   listWebullOpenOrders,
+  isExitLeg,
   WebullOpenOrder,
 } from '../../providers/webull/orders';
 import { ackUnknownPlacement, canRetireUnknownPlacement, canStillFill, mapWebullStatus } from '../trading/reconcile';
@@ -1139,7 +1140,7 @@ function reconcileOneLiveOrder(
   // (checkLiveEquityTimeExits places a plain close), so it has no exit legs
   // of its own to look for here.
   if (meta.role === 'entry' && current.state === 'filled' && current.isBracket && broker.legs) {
-    const filledExitLegs = broker.legs.filter((l) => l.comboType && l.comboType !== 'MASTER' && l.status === 'FILLED');
+    const filledExitLegs = broker.legs.filter((l) => isExitLeg(l) && l.status === 'FILLED');
     if (filledExitLegs.length > 1) {
       logAutotradeEvent({
         symbol: intent.symbol,
@@ -1558,8 +1559,7 @@ export async function cancelLiveBracketExitLegs(
     // enough to hit maxHoldDays has very likely aged out of the broker's order
     // history, so blocking on it would break the close for exactly the
     // population this path exists to serve.
-    const filledLeg =
-      combo.found && (combo.legs ?? []).some((l) => l.comboType && l.comboType !== 'MASTER' && l.status === 'FILLED');
+    const filledLeg = combo.found && (combo.legs ?? []).some((l) => isExitLeg(l) && l.status === 'FILLED');
     if (filledLeg) {
       return {
         ok: false,

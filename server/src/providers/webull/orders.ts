@@ -483,13 +483,27 @@ export async function webullPlaceOrder(
 }
 
 /** One sub-order within a combo (bracket MASTER/STOP_PROFIT/STOP_LOSS, or a
- *  spread's legs) as echoed back by the broker. UNVERIFIED against a live
- *  bracket fill — `combo_type` is what we SEND per leg when placing (see
- *  buildOrderRequest below), but whether the order-history response echoes it
- *  back per-leg hasn't been probe-confirmed the way the rest of this file's
- *  shapes have been (design principle #9: confirm every response shape
- *  against a real account before relying on it). Treat `comboType` here as
- *  best-effort until confirmed against a real bracket fill. */
+ *  spread's legs) as echoed back by the broker.
+ *
+ *  CONFIRMED against a real account (npm run capture:broker, Q3) — and the
+ *  answer was not what this file assumed. A bracket does NOT come back as one
+ *  envelope with three nested legs. It comes back as THREE SEPARATE top-level
+ *  envelopes sharing a `combo_order_id`, each wrapping its own single leg, with
+ *  `combo_type` carried on the ENVELOPE rather than on the leg inside it.
+ *
+ *  Both halves of that broke the old reading. Only the matched envelope was
+ *  ever examined, so `legs` never held more than the entry itself, and
+ *  `combo_type` was looked for one level below where it lives, so every
+ *  `comboType` filter matched nothing. The visible consequence was that a
+ *  bracket exit was never detected through the order path at all: a stop or
+ *  target fill was only ever picked up later by the broker-truth position sync,
+ *  which books it at an ESTIMATED price, so realized P&L on every bracketed
+ *  trade was an approximation of a fill we could have read exactly.
+ *
+ *  `comboType` is now populated from the envelope (falling back to the leg, so
+ *  a nested response would still work). Nothing DEPENDS on its value, though —
+ *  see collectLegs() for why role identification uses our own client_order_id
+ *  instead. */
 export interface WebullOrderLeg {
   comboType?: string;
   orderType?: string;
@@ -497,6 +511,31 @@ export interface WebullOrderLeg {
   filledQty?: number;
   filledPrice?: number;
   brokerOrderId?: string;
+  /** This leg's own client_order_id. The bracket's exit legs each got their own
+   *  at placement (buildOrderRequest), which is what lets a leg be told apart
+   *  from the entry without trusting `comboType`. */
+  clientOrderId?: string;
+  /** True for the leg whose client_order_id is the one we asked about — i.e.
+   *  the order WE placed, the bracket's entry. Positive identification rather
+   *  than an inference from a label. */
+  isRequested?: boolean;
+}
+
+/**
+ * Is this combo leg one of the bracket's EXIT legs — i.e. not the order the
+ * caller asked about?
+ *
+ * Prefers positive identification: `isRequested` comes from matching our own
+ * client_order_id, which we generated, so it holds regardless of what the
+ * broker calls the legs. A leg carrying some OTHER client_order_id is
+ * definitively a sibling. Only when the id is missing entirely does this fall
+ * back to the `combo_type` label — the signal that turned out to be absent from
+ * the leg on a real account, which is why it is the fallback and not the test.
+ */
+export function isExitLeg(leg: WebullOrderLeg): boolean {
+  if (leg.isRequested) return false;
+  if (leg.clientOrderId !== undefined) return true;
+  return !!leg.comboType && leg.comboType !== 'MASTER';
 }
 
 export interface WebullOrderStatus {
@@ -521,22 +560,84 @@ export interface WebullOrderStatus {
   error?: string;
 }
 
-/** Order-list envelope shape (confirmed against a real /order/{open,history}). */
+/** Order-list envelope shape (confirmed against a real /order/{open,history}).
+ *
+ *  `combo_type` sits HERE, at the envelope level — not on the rows inside
+ *  `orders`. A bracket is three of these sharing one `combo_order_id`. */
 interface OrderEnvelope {
   client_order_id?: string;
+  combo_type?: string;
   combo_order_id?: string;
   orders?: Array<Record<string, unknown>>;
 }
 
-function mapLeg(o: Record<string, unknown>): WebullOrderLeg {
+function mapLeg(
+  o: Record<string, unknown>,
+  envelope?: OrderEnvelope,
+  requestedClientOrderId?: string,
+  /** The envelope's own client_order_id, passed ONLY when this envelope wraps a
+   *  single leg — i.e. the flat shape, where the envelope and the leg are the
+   *  same order. Inheriting it into a MULTI-leg envelope would give every
+   *  nested leg the same id and make each one look like the requested order. */
+  inheritableClientOrderId?: string,
+): WebullOrderLeg {
+  // Envelope first: that is where the broker actually puts it. The leg-level
+  // read stays as a fallback so a nested response (which is what this file
+  // originally assumed, and what a different endpoint or a future version might
+  // still return) keeps working unchanged.
+  const comboType =
+    typeof envelope?.combo_type === 'string'
+      ? envelope.combo_type
+      : typeof o.combo_type === 'string'
+        ? o.combo_type
+        : undefined;
+  const clientOrderId = typeof o.client_order_id === 'string' ? o.client_order_id : inheritableClientOrderId;
   return {
-    comboType: typeof o.combo_type === 'string' ? o.combo_type : undefined,
+    comboType,
     orderType: typeof o.order_type === 'string' ? o.order_type : undefined,
     status: o.status ? String(o.status).toUpperCase() : undefined,
     filledQty: num(o.filled_quantity),
     filledPrice: num(o.filled_price),
     brokerOrderId: o.order_id !== undefined && o.order_id !== null ? String(o.order_id) : undefined,
+    clientOrderId,
+    isRequested: !!clientOrderId && clientOrderId === requestedClientOrderId,
   };
+}
+
+/**
+ * Every leg of the combo the matched envelope belongs to.
+ *
+ * A bracket is several top-level envelopes sharing a `combo_order_id` (see
+ * OrderEnvelope), so the legs have to be gathered ACROSS the list rather than
+ * read out of one envelope's `orders`. A plain order has no siblings and yields
+ * exactly its own leg, unchanged from before.
+ *
+ * Role identification deliberately does not rest on `combo_type`. The leg whose
+ * client_order_id is the one we asked about is the order WE placed — that is
+ * positive identification from something we generated ourselves, and it holds
+ * whatever the broker chooses to call the legs. `comboType` is passed through
+ * for diagnostics and for callers that want the label, but a caller can tell
+ * entry from exit with `isRequested` alone.
+ */
+function collectLegs(list: unknown, matched: OrderEnvelope, requestedClientOrderId: string): WebullOrderLeg[] {
+  const envelopes = Array.isArray(list) ? (list as OrderEnvelope[]) : [];
+  const comboId = matched.combo_order_id;
+  const siblings =
+    comboId === undefined || comboId === null || comboId === ''
+      ? [matched]
+      : envelopes.filter((e) => e?.combo_order_id === comboId);
+  const group = siblings.length > 0 ? siblings : [matched];
+
+  const legs: WebullOrderLeg[] = [];
+  for (const env of group) {
+    const rows = Array.isArray(env.orders) && env.orders.length ? env.orders : [env as Record<string, unknown>];
+    // Only a single-leg envelope can lend its id to its leg — see mapLeg.
+    const inheritable = rows.length === 1 && typeof env.client_order_id === 'string' ? env.client_order_id : undefined;
+    for (const row of rows) {
+      legs.push(mapLeg(row as Record<string, unknown>, env, requestedClientOrderId, inheritable));
+    }
+  }
+  return legs;
 }
 
 function matchEnvelope(list: unknown, clientOrderId: string): OrderEnvelope | undefined {
@@ -568,19 +669,28 @@ export async function webullOrderStatus(accountId: string, clientOrderId: string
     }
     const env = matchEnvelope(r.data, clientOrderId);
     if (env) {
-      const orders = Array.isArray(env.orders) ? env.orders : [];
-      // A bracket's entry leg is submitted tagged combo_type: 'MASTER' (see
-      // buildOrderRequest below) — prefer that EXPLICIT tag over position
-      // when present, rather than assuming orders[0] is always the entry.
-      // An adversarial review flagged that this response shape is
-      // unconfirmed against a real account; if the broker ever orders a
-      // bracket's legs with an exit first, positionally trusting orders[0]
-      // could misread a cancelled OCO sibling as the entry's own status.
-      // Verticals/covered/iron-condors/plain orders never produce a
-      // 'MASTER'-tagged leg, so they fall through to the exact same
-      // orders[0] behavior as before — unaffected by this change.
-      const explicitMaster = orders.find((leg) => (leg as { combo_type?: string }).combo_type === 'MASTER');
-      const o = (explicitMaster ?? orders[0] ?? {}) as Record<string, unknown>;
+      // Every leg of the combo, gathered across sibling envelopes sharing this
+      // one's combo_order_id — see collectLegs. Previously only THIS envelope's
+      // own `orders` was read, which for a real bracket is just the entry.
+      const legs = collectLegs(r.data, env, clientOrderId);
+      const orders = Array.isArray(env.orders) && env.orders.length ? env.orders : [env as Record<string, unknown>];
+      // The top-level status describes the order the caller ASKED about, so
+      // identify that row by strongest available evidence, in order:
+      //
+      //   1. its client_order_id is the one we asked about — positive, from an
+      //      id we generated ourselves, and what the real (flat) shape gives us
+      //   2. it is tagged combo_type MASTER on the leg — the nested-and-tagged
+      //      shape this file originally assumed. Unobserved in practice so far,
+      //      but costless to keep and the only signal if a different endpoint
+      //      or a later API version returns that shape
+      //   3. positional fallback — a plain order, where orders[0] is the order
+      //
+      // Falling straight to (3) is what made this worth fixing: for a bracket it
+      // can read a cancelled OCO sibling's status as the entry's own.
+      const o = (orders.find((leg) => (leg as { client_order_id?: string })?.client_order_id === clientOrderId) ??
+        orders.find((leg) => (leg as { combo_type?: string })?.combo_type === 'MASTER') ??
+        orders[0] ??
+        {}) as Record<string, unknown>;
       const brokerOrderId = env.combo_order_id ?? (o.order_id as string | undefined);
       return {
         ok: true,
@@ -590,7 +700,7 @@ export async function webullOrderStatus(accountId: string, clientOrderId: string
         filledQty: num(o.filled_quantity),
         totalQty: num(o.total_quantity),
         filledPrice: num(o.filled_price),
-        legs: orders.length ? orders.map((leg) => mapLeg(leg as Record<string, unknown>)) : undefined,
+        legs: legs.length ? legs : undefined,
         raw: env,
       };
     }

@@ -541,6 +541,114 @@ describe('webull stock order + preview', () => {
     expect(r.legs).toHaveLength(3); // all three legs still surfaced for exit-leg detection
   });
 
+  it('reconstructs a REAL bracket from sibling envelopes sharing a combo id', async () => {
+    // The shape confirmed against a live account (capture:broker Q3): a bracket
+    // is THREE top-level envelopes sharing one combo_order_id, each wrapping a
+    // single leg, with combo_type on the ENVELOPE rather than the leg. Reading
+    // only the matched envelope's own `orders` saw just the entry, so no exit
+    // leg was ever detected through the order path and a stop/target fill was
+    // only picked up later by the position sync at an ESTIMATED price.
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const list = [
+      {
+        client_order_id: 'CID-ENTRY',
+        combo_type: 'MASTER',
+        combo_order_id: 'WB-COMBO-1',
+        orders: [
+          {
+            client_order_id: 'CID-ENTRY',
+            status: 'FILLED',
+            order_id: 'WB-ENTRY',
+            order_type: 'LIMIT',
+            total_quantity: '10',
+            filled_quantity: '10',
+            filled_price: '100.5',
+            limit_price: '100.6',
+          },
+        ],
+      },
+      {
+        client_order_id: 'CID-STOP',
+        combo_type: 'STOP_LOSS',
+        combo_order_id: 'WB-COMBO-1',
+        orders: [
+          {
+            client_order_id: 'CID-STOP',
+            status: 'FILLED',
+            order_id: 'WB-SL',
+            order_type: 'STOP_LOSS',
+            filled_price: '95.2',
+            filled_quantity: '10',
+            stop_price: '95',
+          },
+        ],
+      },
+      {
+        client_order_id: 'CID-TGT',
+        combo_type: 'STOP_PROFIT',
+        combo_order_id: 'WB-COMBO-1',
+        orders: [
+          {
+            client_order_id: 'CID-TGT',
+            status: 'CANCELLED',
+            order_id: 'WB-TP',
+            order_type: 'LIMIT',
+            limit_price: '110',
+          },
+        ],
+      },
+    ];
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(list),
+    } as Response);
+
+    const r = await webullOrderStatus('ACC1', 'CID-ENTRY');
+
+    // Top-level status is the order we asked about, not a sibling's.
+    expect(r.status).toBe('FILLED');
+    expect(r.filledQty).toBe(10);
+    // All three legs surfaced, with the envelope's combo_type carried down.
+    expect(r.legs).toHaveLength(3);
+    expect(r.legs?.map((l) => l.comboType)).toEqual(['MASTER', 'STOP_LOSS', 'STOP_PROFIT']);
+    // The entry is identified positively by OUR id, not by the label.
+    expect(r.legs?.filter((l) => l.isRequested).map((l) => l.clientOrderId)).toEqual(['CID-ENTRY']);
+    // ...which is what makes the filled stop detectable, at its REAL price.
+    const exitFills = r.legs?.filter((l) => !l.isRequested && l.status === 'FILLED');
+    expect(exitFills).toHaveLength(1);
+    expect(exitFills?.[0]).toMatchObject({ clientOrderId: 'CID-STOP', filledPrice: 95.2 });
+  });
+
+  it('leaves a plain single order alone — no siblings, one leg', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const list = [
+      {
+        client_order_id: 'CID-SOLO',
+        combo_order_id: 'WB-SOLO',
+        orders: [
+          { client_order_id: 'CID-SOLO', status: 'FILLED', order_id: 'WB-1', filled_quantity: '5', filled_price: '10' },
+        ],
+      },
+      // A DIFFERENT combo id — must not be pulled in.
+      {
+        client_order_id: 'CID-OTHER',
+        combo_order_id: 'WB-OTHER',
+        orders: [{ client_order_id: 'CID-OTHER', status: 'WORKING', order_id: 'WB-2' }],
+      },
+    ];
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(list),
+    } as Response);
+
+    const r = await webullOrderStatus('ACC1', 'CID-SOLO');
+    expect(r.status).toBe('FILLED');
+    expect(r.legs).toHaveLength(1);
+    expect(r.legs?.[0]).toMatchObject({ clientOrderId: 'CID-SOLO', isRequested: true });
+  });
+
   it('falls back to orders[0] when no leg is tagged MASTER — unaffected for verticals/covered/iron-condors/plain orders', async () => {
     Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
     const env = {
