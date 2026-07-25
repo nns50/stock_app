@@ -142,6 +142,17 @@ describe('evaluateRiskCheck — pure evaluator', () => {
       expect(result.sizing.suggestedQuantity).toBe(200);
     });
 
+    it('is inactive at a threshold of 0 — "0 disables", as the config documents', () => {
+      // Without the > 0 guard any market ATR% exceeds 0, so setting the threshold
+      // to 0 to turn the feature OFF instead pinned the size cut permanently on.
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({ marketAtrPct: 6, regimeAtrThresholdPct: 0, regimeSizeCutPct: 30 }),
+      );
+      expect(result.regimeActive).toBe(false);
+      expect(result.sizing.suggestedQuantity).toBe(200); // full 1% sizing, uncut
+    });
+
     it('cuts size by regimeSizeCutPct once marketAtrPct exceeds the threshold', () => {
       const result = evaluateRiskCheck(
         signal(),

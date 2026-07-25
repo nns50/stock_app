@@ -750,6 +750,136 @@ describe('autotrade config routes (integration)', () => {
     expect(final.accountEquityUsd).toBe(100_000);
   });
 
+  it('a whitespace-only liveAccountId cannot stand in for a real one', async () => {
+    // sanitize() trims and stores whitespace as null, so a truthy "   " that
+    // passed the guard would land in the live-enabled-with-no-account state the
+    // guard exists to prevent.
+    const res = await put('/api/autotrade/config', {
+      liveAccountId: '   ',
+      liveTradingEnabled: true,
+      confirmLiveTrading: 'ENABLE LIVE TRADING',
+    });
+    expect(res.status).toBe(400);
+
+    const final = (await getJson('/api/autotrade/config')) as {
+      liveTradingEnabled: boolean;
+      liveAccountId: string | null;
+    };
+    expect(final.liveTradingEnabled).toBe(false);
+    expect(final.liveAccountId).toBeNull();
+  });
+
+  it('cannot clear liveAccountId to whitespace while live trading stays enabled', async () => {
+    await put('/api/autotrade/config', {
+      liveAccountId: 'ACCT-1',
+      liveTradingEnabled: true,
+      confirmLiveTrading: 'ENABLE LIVE TRADING',
+    });
+    const res = await put('/api/autotrade/config', { liveAccountId: '  ' });
+    expect(res.status).toBe(400);
+
+    const final = (await getJson('/api/autotrade/config')) as { liveAccountId: string | null };
+    expect(final.liveAccountId).toBe('ACCT-1');
+  });
+
+  it('one request cannot disable live trading and arm the nested live flags at the same time', async () => {
+    await put('/api/autotrade/config', {
+      liveAccountId: 'ACCT-1',
+      liveTradingEnabled: true,
+      confirmLiveTrading: 'ENABLE LIVE TRADING',
+    });
+
+    // Turning the master OFF must not let the same request arm anything nested
+    // under it — otherwise both are already live the moment it's switched on.
+    const res = await put('/api/autotrade/config', {
+      liveTradingEnabled: false,
+      liveOptionsEnabled: true,
+      liveScaleInEnabled: true,
+    });
+    expect(res.status).toBe(400);
+
+    const final = (await getJson('/api/autotrade/config')) as {
+      liveOptionsEnabled: boolean;
+      liveScaleInEnabled: boolean;
+    };
+    expect(final.liveOptionsEnabled).toBe(false);
+    expect(final.liveScaleInEnabled).toBe(false);
+  });
+
+  it('re-sending the current AGGRESSIVE profile is not a switch and needs no confirmation', async () => {
+    await put('/api/autotrade/config', { riskProfile: 'AGGRESSIVE', confirmAggressive: true });
+
+    // A client echoing the unchanged profile back (any "save everything" patch,
+    // including the /tune patches) must not be permanently unable to save.
+    const res = await put('/api/autotrade/config', { riskProfile: 'AGGRESSIVE', maxTradesPerDay: 8 });
+    expect(res.status).toBe(200);
+    expect((await getJson('/api/autotrade/config')) as { maxTradesPerDay: number }).toMatchObject({
+      maxTradesPerDay: 8,
+    });
+  });
+
+  it('still requires confirmation for a real MODERATE -> AGGRESSIVE switch', async () => {
+    const res = await put('/api/autotrade/config', { riskProfile: 'AGGRESSIVE' });
+    expect(res.status).toBe(400);
+    expect((await getJson('/api/autotrade/config')) as { riskProfile: string }).toMatchObject({
+      riskProfile: 'MODERATE',
+    });
+  });
+
+  it('rejects an inverted expectancy multiplier pair, which would size every grade at the min', async () => {
+    const res = await put('/api/autotrade/config', { expectancyMinMultiplier: 1.5, expectancyMaxMultiplier: 0.5 });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a pair inverted against the STORED value, not just within one request', async () => {
+    await put('/api/autotrade/config', { optionsDeltaMin: 0.3, optionsDeltaMax: 0.6 });
+    // Only the max moves, but the merged result is still an empty delta band.
+    const res = await put('/api/autotrade/config', { optionsDeltaMax: 0.1 });
+    expect(res.status).toBe(400);
+    expect((await getJson('/api/autotrade/config')) as { optionsDeltaMax: number }).toMatchObject({
+      optionsDeltaMax: 0.6,
+    });
+  });
+
+  it('rejects an empty DTE window and an unreachable grade B', async () => {
+    expect((await put('/api/autotrade/config', { optionsMinDte: 90, optionsMaxDte: 60 })).status).toBe(400);
+    expect(
+      (await put('/api/autotrade/config', { convictionGradeAMinScore: 10, convictionGradeBMinScore: 90 })).status,
+    ).toBe(400);
+  });
+
+  it('caps the expectancy multipliers — the only setting that can size a trade UP', async () => {
+    expect((await put('/api/autotrade/config', { expectancyMaxMultiplier: 100 })).status).toBe(400);
+    expect((await put('/api/autotrade/config', { expectancyMaxMultiplier: 2 })).status).toBe(200);
+  });
+
+  it('applies the ADV participation cap on /risk-check — avgVolume survives the request schema', async () => {
+    // The UI echoes /decide's signals straight into /risk-check. avgVolume was
+    // missing from signalBody, so zod stripped it and the cap (which needs it)
+    // was skipped — the manual preview then showed a BIGGER size than the loop,
+    // which risk-checks in-process with the signal intact, would actually take.
+    await put('/api/autotrade/config', { accountEquityUsd: 1_000_000, maxAdvParticipationPct: 1 });
+
+    const signal = {
+      symbol: 'AAPL',
+      side: 'buy' as const,
+      entry: 100,
+      stop: 99,
+      target: 102,
+      rMultiple: 2,
+      rationale: 'test',
+      score: 80,
+      avgVolume: 50_000,
+    };
+    const res = await post('/api/autotrade/risk-check', { signals: [signal] });
+    expect(res.status).toBe(200);
+    const { results } = (await res.json()) as { results: { sizing: { suggestedQuantity: number } }[] };
+
+    // 1% of 50,000 ADV = 500 shares. Unsized by risk alone this would be far
+    // larger ($1M equity, 1% risk, $1 stop distance => 10,000 shares).
+    expect(results[0].sizing.suggestedQuantity).toBe(500);
+  });
+
   it('a save that omits equity does not reset it to null — equity survives an enabled-only save', async () => {
     await put('/api/autotrade/config', { accountEquityUsd: 50_000 });
     await put('/api/autotrade/config', { enabled: true });

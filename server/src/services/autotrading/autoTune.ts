@@ -305,10 +305,18 @@ export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneR
     const result = computeExcursionTune(
       report,
       { stopAtrMultiple: config.stopAtrMultiple, targetRMultiple: config.targetRMultiple },
-      { minTrades: config.autoTuneMinTrades, maxStep: config.autoTuneExitMaxStep },
+      {
+        minTrades: config.autoTuneMinTrades,
+        maxStep: config.autoTuneExitMaxStep,
+        // Ignore trades entered under the PREVIOUS geometry — excursion is
+        // measured against each trade's own stop, so re-reading them would
+        // re-apply a correction that has already been made.
+        sampleSince: config.autoTuneExitTunedAt,
+      },
     );
     if (result.patch.stopAtrMultiple !== undefined || result.patch.targetRMultiple !== undefined) {
-      setAutotradeConfig(result.patch);
+      // Stamp the change so the next run only judges it on trades taken under it.
+      setAutotradeConfig({ ...result.patch, autoTuneExitTunedAt: Date.now() });
       const nextStop = result.patch.stopAtrMultiple ?? config.stopAtrMultiple;
       const nextTarget = result.patch.targetRMultiple ?? config.targetRMultiple;
       logAutotradeEvent({

@@ -12,10 +12,12 @@ import { AutotradeConfig } from '../../db/autotradeConfig';
 // the account id, or the probation ramps — see WRITES / NEVER-WRITES below.
 //
 // It is deliberately independent of services/autotrading/autoTune.ts (which
-// nudges riskPerTradePct toward realized Kelly OVER TIME): this is a one-shot
-// human-initiated preset, that is a continuous background adjuster. If autoTune
-// is enabled, computeTargetTune warns that it will later re-move risk-per-trade
-// — the two writing the same field is surfaced, never silent.
+// nudges riskPerTradePct toward realized Kelly, and — when autoTuneExitsEnabled
+// — stopAtrMultiple/targetRMultiple toward realized excursion, OVER TIME): this
+// is a one-shot human-initiated preset, that is a continuous background
+// adjuster. Both overlaps are surfaced as warnings by computeTargetTune, never
+// silent: riskPerTradePct is written by both, and so is targetRMultiple, which
+// is additionally an INPUT to this file's own risk% solve.
 // ---------------------------------------------------------------------------
 
 /** Which sizing assumption maps the target gain % to per-trade risk. Both use
@@ -84,8 +86,19 @@ interface BandShape {
 }
 
 const BANDS: Record<TuneBand, BandShape> = {
-  // The 'moderate' band reproduces defaultAutotradeConfig()'s shape exactly, so
-  // "reset to moderate" is a true baseline, not a nearby approximation.
+  // The band table IS the definition of conservative/moderate/aggressive here —
+  // it's the one published in docs/TUNE_FROM_TARGET.md §5, and "reset to
+  // moderate" means the moderate row of it.
+  //
+  // It is NOT the same thing as defaultAutotradeConfig(), which this comment
+  // used to claim. Three fields legitimately differ, and all three are the band
+  // table and the derivations doing their job:
+  //   - maxDailyDrawdownPct  — derived (6 trades x 1% x 0.75 = 4.5), not the
+  //     hand-picked default of 3; see shapeToPatch.
+  //   - optionsStopLossPct / optionsTakeProfitPct — 50 / 80 per the published
+  //     moderate row; both ship defaulted to 0 (disabled).
+  // Every one of them shows up in the preview's current -> tuned table before
+  // anything is applied, so none of it lands silently.
   conservative: {
     maxConcurrentPositions: 2,
     maxTradesPerDay: 4,
@@ -153,6 +166,20 @@ const BANDS: Record<TuneBand, BandShape> = {
     maxOrderEquityFraction: 0.35,
   },
 };
+
+/** The single-order notional cap as a fraction of equity, for a stored risk
+ *  profile. Exported so suggestLiveCaps derives the SAME number this tuner does
+ *  instead of hardcoding its own — otherwise "Suggest from equity" silently
+ *  overwrote a tune's order cap with a different one (it used a flat 0.25 while
+ *  an aggressive tune had set 0.35).
+ *
+ *  Note the config only stores MODERATE/AGGRESSIVE, so a conservative tune —
+ *  which journals as MODERATE — reads back as the moderate fraction here. That
+ *  is the closest recoverable answer, and still agrees with the tune for both
+ *  labels the config can actually represent. */
+export function maxOrderEquityFractionFor(riskProfile: 'MODERATE' | 'AGGRESSIVE'): number {
+  return riskProfile === 'AGGRESSIVE' ? BANDS.aggressive.maxOrderEquityFraction : BANDS.moderate.maxOrderEquityFraction;
+}
 
 /** Target daily gain % → aggressiveness band. Fixed thresholds so the mapping
  *  is deterministic and explainable: the target is the master dial, and higher
@@ -281,9 +308,9 @@ export interface ComputeTargetTuneInput {
   equityUsd: number;
   targetDailyGainPct: number;
   basis: TuneBasis;
-  /** Current config — read only to warn about interactions (autoTuneEnabled);
+  /** Current config — read only to warn about interactions (the auto-tuners);
    *  never mutated. */
-  config: Pick<AutotradeConfig, 'autoTuneEnabled'>;
+  config: Pick<AutotradeConfig, 'autoTuneEnabled' | 'autoTuneExitsEnabled'>;
 }
 
 /** Derive a full tunable patch from equity + a target daily gain % under the
@@ -316,13 +343,26 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
       'Auto-tune from realized edge is ON — it re-adjusts risk-per-trade toward your realized Kelly over time, so it will gradually move the risk % this sets. Turn it off if you want this tune to stick exactly.',
     );
   }
+  // The exit tuner writes targetRMultiple, which is an INPUT to the risk% solve
+  // above (edgeRFor). Once it moves, the risk % this tune derived no longer
+  // corresponds to the target you asked for, and nothing re-derives it — so this
+  // is a stronger interaction than the risk-% one, not a footnote to it.
+  if (input.config.autoTuneExitsEnabled) {
+    warnings.push(
+      `Auto-tune of exit geometry is ON — it moves the stop multiple and the ${patch.targetRMultiple}R target toward what your winning trades actually did. The reward:risk is what this tune solved the ${riskPerTradePct}% risk per trade FROM, so once it shifts, the risk % no longer matches ${targetDailyGainPct}%/day and is not re-derived. Turn it off if you want this tune to stick exactly.`,
+    );
+  }
   return { band, basis, targetDailyGainPct, edgeR: round2(edgeR), rawRiskPerTradePct, patch, warnings };
 }
 
-/** The moderate baseline, equity-scaled — "reset to moderate for THIS account".
- *  Same shape defaultAutotradeConfig() ships (the moderate band reproduces it),
- *  with the dollar caps recomputed from current equity and risk-per-trade back
- *  at the 1% default. */
+/** The moderate baseline, equity-scaled — "reset to moderate for THIS account":
+ *  the moderate row of the published band table (docs/TUNE_FROM_TARGET.md §5),
+ *  with risk-per-trade back at the 1% default and the dollar caps recomputed
+ *  from current equity.
+ *
+ *  Deliberately NOT identical to defaultAutotradeConfig() — see the note on
+ *  BANDS above for the three fields that differ and why. "Moderate" here means
+ *  the band, not the shipped defaults. */
 export function resetToModerate(equityUsd: number): TunablePatch {
   return shapeToPatch(BANDS.moderate, equityUsd, 1);
 }

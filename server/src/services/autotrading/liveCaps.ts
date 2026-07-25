@@ -8,6 +8,8 @@
 // the stored config fields remain freely editable afterward.
 // ---------------------------------------------------------------------------
 
+import { maxOrderEquityFractionFor } from './targetTune';
+
 export interface SuggestedLiveCaps {
   liveMaxOrderUsd: number;
   liveMaxDailyLossUsd: number;
@@ -15,11 +17,14 @@ export interface SuggestedLiveCaps {
 }
 
 /**
- * `liveMaxOrderUsd` — 25% of equity as a single-order notional backstop. This
- * is deliberately generous: the risk engine's own %-risk-per-trade sizing
+ * `liveMaxOrderUsd` — a fraction of equity as a single-order notional backstop.
+ * This is deliberately generous: the risk engine's own %-risk-per-trade sizing
  * (computeRiskSizing, stop-distance-based) is the PRIMARY size control, so
  * this cap only needs to catch a sizing bug producing something absurd, not
- * fine-tune ordinary position sizes.
+ * fine-tune ordinary position sizes. The fraction comes from targetTune's own
+ * band table (maxOrderEquityFractionFor) rather than a flat 0.25 of its own, so
+ * clicking "Suggest from equity" after a tune can't silently replace the tune's
+ * order cap with a different number.
  *
  * `liveMaxDailyLossUsd` / `liveMaxOrdersPerDay` — set to exactly match the
  * caller's current maxDailyDrawdownPct/maxTradesPerDay (AutotradeConfig
@@ -36,9 +41,10 @@ export function suggestLiveCaps(
   equityUsd: number,
   maxDailyDrawdownPct: number,
   maxTradesPerDay: number,
+  riskProfile: 'MODERATE' | 'AGGRESSIVE' = 'MODERATE',
 ): SuggestedLiveCaps {
   return {
-    liveMaxOrderUsd: Math.round(equityUsd * 0.25),
+    liveMaxOrderUsd: Math.round(equityUsd * maxOrderEquityFractionFor(riskProfile)),
     liveMaxDailyLossUsd: Math.round(equityUsd * (maxDailyDrawdownPct / 100)),
     liveMaxOrdersPerDay: maxTradesPerDay,
   };

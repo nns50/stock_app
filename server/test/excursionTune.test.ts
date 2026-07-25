@@ -88,3 +88,64 @@ describe('computeExcursionTune', () => {
     expect(r.warnings.join(' ')).toMatch(/already matches/);
   });
 });
+
+describe('computeExcursionTune sample freshness (2026-07-25)', () => {
+  /** Same as `winner` above, but with an explicit entry date. */
+  function winnerOn(entryDate: string, maeR: number, mfeR: number): TradeExcursion {
+    return { ...winner(maeR, mfeR), entryDate };
+  }
+  const at = (iso: string) => new Date(iso).getTime();
+
+  it('ignores trades entered under the previous exit geometry', () => {
+    // maeR and mfeR are denominated in each trade's OWN stop at entry, so a
+    // trade taken before a change cannot judge the geometry that replaced it.
+    const report = aggregateExcursions([winnerOn('2026-01-01', -0.5, 2.5), winnerOn('2026-01-02', -0.5, 2.5)]);
+    const r = computeExcursionTune(
+      report,
+      { stopAtrMultiple: 1.5, targetRMultiple: 2 },
+      { minTrades: 2, maxStep: 0.25, sampleSince: at('2026-02-01') },
+    );
+    expect(r.patch).toEqual({});
+    expect(r.warnings.join(' ')).toMatch(/entered under the previous exit geometry/);
+  });
+
+  it('does not walk the stop down run after run on an unchanged sample', () => {
+    // The regression: neededRoomR = 0.5 * 1.3 = 0.65 applied multiplicatively to
+    // an already-corrected stop gave 1.5 -> 1.25 -> 1.0 -> 0.75 -> 0.5 (the floor)
+    // off a sample that never changed. Once a run has acted, the same trades are
+    // stale, so the next run must find nothing to do until new trades close.
+    const sample = [winnerOn('2026-01-01', -0.5, 2.5), winnerOn('2026-01-02', -0.5, 2.5)];
+    const report = aggregateExcursions(sample);
+
+    const first = computeExcursionTune(
+      report,
+      { stopAtrMultiple: 1.5, targetRMultiple: 2 },
+      { minTrades: 2, maxStep: 0.25, sampleSince: null },
+    );
+    expect(first.patch.stopAtrMultiple).toBe(1.25); // one bounded correction
+
+    // autoTune stamps autoTuneExitTunedAt when it applies the patch; the next run
+    // passes it back and the same trades no longer qualify.
+    const second = computeExcursionTune(
+      report,
+      { stopAtrMultiple: 1.25, targetRMultiple: 2 },
+      { minTrades: 2, maxStep: 0.25, sampleSince: at('2026-01-03') },
+    );
+    expect(second.patch.stopAtrMultiple).toBeUndefined();
+  });
+
+  it('acts again once enough trades have closed under the new geometry', () => {
+    const report = aggregateExcursions([
+      winnerOn('2026-01-01', -0.5, 2.5), // stale
+      winnerOn('2026-02-02', -0.5, 2.5), // fresh
+      winnerOn('2026-02-03', -0.5, 2.5), // fresh
+    ]);
+    const r = computeExcursionTune(
+      report,
+      { stopAtrMultiple: 1.25, targetRMultiple: 2 },
+      { minTrades: 2, maxStep: 0.25, sampleSince: at('2026-02-01') },
+    );
+    expect(r.diagnostics.winners).toBe(2);
+    expect(r.patch.stopAtrMultiple).toBe(1);
+  });
+});
