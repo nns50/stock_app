@@ -32,13 +32,7 @@ import { getProvider } from '../../providers';
 // ---------------------------------------------------------------------------
 
 export type PlaceReason =
-  | 'trading_disabled'
-  | 'not_confirmed'
-  | 'account_error'
-  | 'blocked'
-  | 'broker_rejected'
-  | 'duplicate'
-  | 'placed';
+  'trading_disabled' | 'not_confirmed' | 'account_error' | 'blocked' | 'broker_rejected' | 'duplicate' | 'placed';
 
 export interface PlaceResult {
   /** The request was processed (not whether an order was placed). */

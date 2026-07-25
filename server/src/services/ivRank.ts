@@ -36,9 +36,10 @@ export function atmIvOfChain(chain: OptionsChain): number | undefined {
   const nearest = (arr: OptionsChain['calls']) =>
     arr
       .filter((c) => typeof c.greeks?.iv === 'number')
-      .reduce<
-        OptionsChain['calls'][number] | undefined
-      >((best, c) => (!best || Math.abs(c.strike - u) < Math.abs(best.strike - u) ? c : best), undefined);
+      .reduce<OptionsChain['calls'][number] | undefined>(
+        (best, c) => (!best || Math.abs(c.strike - u) < Math.abs(best.strike - u) ? c : best),
+        undefined,
+      );
   const ivs = [nearest(chain.calls)?.greeks?.iv, nearest(chain.puts)?.greeks?.iv].filter(
     (x): x is number => typeof x === 'number',
   );

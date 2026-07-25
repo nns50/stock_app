@@ -6,6 +6,16 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   test: {
+    // NOTE: the jsdom that actually backs this environment is the ROOT one.
+    // vitest hoists to the workspace root and resolves its optional `jsdom`
+    // peer relative to itself, so web/package.json's own jsdom is never what
+    // loads here — the root devDependency is. It's pinned to ^25 there because
+    // that is the version this suite has always really run on, and jsdom 26+
+    // drops the separator it used to insert between a caption and its hint
+    // when computing accessible names ("Trade directionOnly takes..." instead
+    // of "Trade direction Only takes..."), which breaks the
+    // getByRole(name: /^Caption\b/) queries in AutoTradePage.test.tsx. Moving
+    // to 29 is a real (worthwhile) migration, not a version-number change.
     environment: 'jsdom',
     globals: true,
     setupFiles: './src/test/setup.ts',

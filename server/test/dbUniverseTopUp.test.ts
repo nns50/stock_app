@@ -111,8 +111,7 @@ describe('topUpUniverseOnce', () => {
     topUpUniverseOnce(db);
 
     const marker = db.prepare('SELECT value FROM settings WHERE key = ?').get('universeTopUp') as
-      | { value: string }
-      | undefined;
+      { value: string } | undefined;
     expect(marker).toBeDefined();
     const parsed = JSON.parse(marker!.value) as { appliedAt: number; added: number };
     expect(parsed.added).toBeGreaterThan(300);

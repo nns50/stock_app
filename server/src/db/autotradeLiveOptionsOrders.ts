@@ -167,8 +167,7 @@ export function recordLiveOptionsExitOrder(input: {
 
 export function getLiveOptionsOrder(intentId: number): LiveOptionsOrderMeta | undefined {
   const row = db.prepare('SELECT * FROM autotrade_live_options_orders WHERE intent_id = ?').get(intentId) as
-    | Row
-    | undefined;
+    Row | undefined;
   return row ? mapRow(row) : undefined;
 }
 
