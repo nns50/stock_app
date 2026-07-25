@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  classifyDayPnlSemantics,
   classifyFillSemantics,
   extractOrders,
   pnlLikeFields,
@@ -159,5 +160,60 @@ describe('classifyFillSemantics', () => {
     ]);
     expect(v.semantics).toBe('cumulative');
     expect(v.detail).not.toContain('ending exactly at total_quantity');
+  });
+});
+
+describe('classifyDayPnlSemantics', () => {
+  // Sampled while holding a position and placing NO orders, so realized P&L is
+  // pinned and anything that moves must be mark-to-market.
+
+  it('reads the day figure moving with the mark as including unrealized', () => {
+    const v = classifyDayPnlSemantics([
+      { dayPnl: -120, unrealizedPnl: -120 },
+      { dayPnl: -95, unrealizedPnl: -95 },
+      { dayPnl: -140, unrealizedPnl: -140 },
+    ]);
+    expect(v.semantics).toBe('includes-unrealized');
+    expect(v.detail).toMatch(/not realized-only/i);
+  });
+
+  it('reads a steady day figure against a moving mark as realized-only', () => {
+    const v = classifyDayPnlSemantics([
+      { dayPnl: 0, unrealizedPnl: -120 },
+      { dayPnl: 0, unrealizedPnl: -95 },
+    ]);
+    expect(v.semantics).toBe('realized-only');
+  });
+
+  it('stays inconclusive when the mark never moved — identical samples prove nothing', () => {
+    // The trap this classifier exists for: a flat mark (closed market, illiquid
+    // holding) yields identical samples that LOOK like a clean realized-only
+    // result while carrying no information.
+    const v = classifyDayPnlSemantics([
+      { dayPnl: 0, unrealizedPnl: 0 },
+      { dayPnl: 0, unrealizedPnl: 0 },
+    ]);
+    expect(v.semantics).toBe('inconclusive');
+    expect(v.detail).toMatch(/never moved/i);
+  });
+
+  it('stays inconclusive on a single sample or on missing fields', () => {
+    expect(classifyDayPnlSemantics([{ dayPnl: -5, unrealizedPnl: -5 }]).semantics).toBe('inconclusive');
+    expect(classifyDayPnlSemantics([]).semantics).toBe('inconclusive');
+    expect(
+      classifyDayPnlSemantics([
+        { dayPnl: null, unrealizedPnl: null },
+        { dayPnl: null, unrealizedPnl: null },
+      ]).semantics,
+    ).toBe('inconclusive');
+  });
+
+  it('detects movement even when only part of the series reported a number', () => {
+    const v = classifyDayPnlSemantics([
+      { dayPnl: -10, unrealizedPnl: -10 },
+      { dayPnl: null, unrealizedPnl: null },
+      { dayPnl: -30, unrealizedPnl: -30 },
+    ]);
+    expect(v.semantics).toBe('includes-unrealized');
   });
 });

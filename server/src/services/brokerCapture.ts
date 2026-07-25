@@ -183,3 +183,69 @@ export function classifyFillSemantics(samples: FillSample[]): FillVerdict {
     }.`,
   };
 }
+
+export interface BalanceSample {
+  /** `total_day_profit_loss` — what accountState.ts maps to realizedPnlTodayUsd. */
+  dayPnl: number | null;
+  /** `total_unrealized_profit_loss` — open-position mark-to-market. */
+  unrealizedPnl: number | null;
+}
+
+export type DayPnlSemantics = 'includes-unrealized' | 'realized-only' | 'inconclusive';
+
+export interface DayPnlVerdict {
+  semantics: DayPnlSemantics;
+  detail: string;
+}
+
+/**
+ * Settle whether `total_day_profit_loss` includes UNREALIZED P&L, from repeated
+ * balance samples taken while holding an open position and placing no orders.
+ *
+ * The trick is that no trading happens between samples, so realized P&L is
+ * pinned. Anything that moves must therefore be mark-to-market:
+ *
+ *   unrealized moved AND day P&L moved  → it tracks the mark, so it is NOT
+ *                                          realized-only. guardrails.ts's
+ *                                          daily-loss halt is mis-specified.
+ *   unrealized moved AND day P&L held   → it ignores the mark: realized-only,
+ *                                          and the current mapping is correct.
+ *   unrealized never moved              → no signal at all. Says nothing, and
+ *                                          must not be read as either answer.
+ *
+ * That last case is why this exists as a classifier rather than a glance at two
+ * numbers: a flat mark (a closed market, an illiquid holding) produces two
+ * identical samples that look like a clean "realized-only" result while
+ * actually containing no information.
+ */
+export function classifyDayPnlSemantics(samples: BalanceSample[]): DayPnlVerdict {
+  const moved = (vals: Array<number | null>): boolean => {
+    const nums = vals.filter((v): v is number => typeof v === 'number');
+    return new Set(nums).size > 1;
+  };
+
+  const unrealizedMoved = moved(samples.map((s) => s.unrealizedPnl));
+  const dayMoved = moved(samples.map((s) => s.dayPnl));
+
+  if (!unrealizedMoved) {
+    return {
+      semantics: 'inconclusive',
+      detail:
+        'unrealized P&L never moved across the samples, so there was nothing for the day figure to react to. Re-run during market hours while holding a position whose mark is actually ticking — a flat mark cannot distinguish the two readings.',
+    };
+  }
+
+  if (dayMoved) {
+    return {
+      semantics: 'includes-unrealized',
+      detail:
+        'unrealized P&L moved and total_day_profit_loss moved with it, with no orders placed in between — so it is NOT realized-only. The daily-loss halt currently treats it as realized, meaning it can trip on open-position drawdown that was never actually lost, and an open gain can mask a real realized loss.',
+    };
+  }
+
+  return {
+    semantics: 'realized-only',
+    detail:
+      'unrealized P&L moved while total_day_profit_loss held steady — it ignores open-position marks, so the existing mapping to realizedPnlTodayUsd is correct and the daily-loss halt is sound as written.',
+  };
+}

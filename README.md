@@ -262,12 +262,24 @@ It highlights two fields the app currently has to assume the meaning of:
 ```bash
 npm run capture:broker                              # snapshot + field report
 npm run capture:broker -- --shapes-only             # field names/types, no balances
+npm run capture:broker -- --watch-day-pnl           # settles total_day_profit_loss
 npm run capture:broker -- --watch <client_order_id> # poll one order while it fills
 ```
 
-The `--watch` mode is the only way to settle `filled_quantity`: it samples one
-order's reported fill over time and reports `cumulative`, `per-execution`, or
-`inconclusive`. It deliberately fails to `inconclusive` rather than guessing.
+Both questions are settled by **watching a value over time**, since a single
+snapshot can't distinguish the readings.
+
+`--watch-day-pnl` samples the balance repeatedly (default 6 × 20s) while you hold
+an open position and place **no** orders. Realized P&L is pinned for that window,
+so anything that moves must be mark-to-market — it reports
+`includes-unrealized`, `realized-only`, or `inconclusive`.
+
+`--watch <client_order_id>` samples one order's reported fill while it works, and
+reports `cumulative`, `per-execution`, or `inconclusive`.
+
+Both deliberately return `inconclusive` rather than guessing when the value never
+moved — identical samples would otherwise look like a clean answer while
+containing no information.
 
 The default output contains real balances and positions — review it before
 sharing, or use `--shapes-only`.
