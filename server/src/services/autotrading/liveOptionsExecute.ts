@@ -375,6 +375,16 @@ export async function attemptLiveOptionsEntry(
       ? riskResult.sizing.suggestedContracts
       : riskResult.sizing.suggestedQuantity;
   const quantity = Math.floor(rawQuantity * probation.multiplier);
+  // Scale the recorded risk to the contracts actually ORDERED. For options the
+  // premium IS the risk, so an unscaled approvedRiskAmount overstates it by the
+  // full probation cut — and unlike equity, whose position risk is re-derived
+  // from the real fill by initialRiskOf, this figure is STORED on the position
+  // and read for its whole life by getLiveOptionsPortfolioSnapshot and
+  // combinedLiveOpenRisk. At the default 0.5x probation every live options
+  // position claimed 2x its true risk against the shared aggregate-risk budget,
+  // blocking equity and options entries that were actually within it.
+  const orderedRiskAmount =
+    rawQuantity > 0 ? (riskResult.approvedRiskAmount * quantity) / rawQuantity : riskResult.approvedRiskAmount;
   if (quantity <= 0) {
     return {
       symbol,
@@ -446,7 +456,7 @@ export async function attemptLiveOptionsEntry(
       shortContractSymbol: signal.shortContractSymbol,
       shortStrike: signal.shortStrike,
       expiration: signal.expiration,
-      riskAmount: riskResult.approvedRiskAmount,
+      riskAmount: orderedRiskAmount,
       riskProfile,
       accountId,
     });
@@ -500,7 +510,7 @@ export async function attemptLiveOptionsEntry(
     contractSymbol: signal.contractSymbol,
     strike: signal.strike,
     expiration: signal.expiration,
-    riskAmount: riskResult.approvedRiskAmount,
+    riskAmount: orderedRiskAmount,
     riskProfile,
     accountId,
   });

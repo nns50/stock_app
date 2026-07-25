@@ -433,6 +433,37 @@ describe('attemptLiveOptionsEntry', () => {
       }
     });
 
+    it('records the risk of the contracts actually ORDERED, not the pre-probation size', async () => {
+      // For options the premium IS the risk, and unlike equity (whose position
+      // risk is re-derived from the real fill) this figure is STORED and read
+      // for the position's whole life by the aggregate-risk gate. Recording the
+      // uncut amount made every live options position claim 2x its true risk at
+      // the default 0.5x probation, blocking entries that were within budget.
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-RISK' });
+
+      const sig = optionSignal();
+      await attemptLiveOptionsEntry(
+        sig,
+        okResult(sig),
+        'MODERATE',
+        liveConfig({ liveOptionsProbationSizeMultiplier: 0.5 }),
+      );
+      const orderedQty = mockPlaceOrder.mock.calls[0][1].quantity;
+      const recorded = getLiveOptionsOrder(listIntents()[0].id)!;
+      const approved = okResult(sig);
+      const rawQty =
+        'suggestedContracts' in approved.sizing
+          ? approved.sizing.suggestedContracts
+          : approved.sizing.suggestedQuantity;
+      // Scaled in proportion to the contracts actually ordered, rather than
+      // recording the full pre-probation budget.
+      expect(orderedQty).toBeLessThan(rawQty);
+      expect(recorded.riskAmount).toBeCloseTo((approved.approvedRiskAmount * orderedQty) / rawQty, 6);
+      expect(recorded.riskAmount).toBeLessThan(approved.approvedRiskAmount);
+    });
+
     it('sizes the entry down by the probation multiplier when active', async () => {
       mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
       mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
