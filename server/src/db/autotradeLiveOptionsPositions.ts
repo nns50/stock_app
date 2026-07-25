@@ -226,6 +226,31 @@ export function closeLiveOptionsPosition(id: number, input: CloseLiveOptionsPosi
  * first. A no-op (returns null) if the position is missing or already closed,
  * so a late fill on a position that's since been exited can't resurrect it.
  */
+/** Reduce an OPEN position's contract count by `byQty`, leaving it open.
+ *  For a partially-filled closing order: the row carries a single exit price /
+ *  exit_at pair, so it cannot represent a part-closed position — and closing it
+ *  outright on a partial fill drops the untouched contracts out of the ledger
+ *  entirely (they leave listOpenLiveOptionsPositions, so nothing re-prices,
+ *  re-exits, or reconciles them). Shrinking instead keeps the remainder visible
+ *  and still being worked; the close is booked when the rest fills.
+ *  Returns null if the position isn't open or `byQty` would not leave a
+ *  positive remainder (the caller closes it properly in that case). */
+export function reduceLiveOptionsPositionQuantity(id: number, byQty: number): LiveOptionsPosition | null {
+  if (!Number.isFinite(byQty) || byQty <= 0) return null;
+  const existing = db
+    .prepare("SELECT * FROM autotrade_live_options_positions WHERE id = ? AND status = 'open'")
+    .get(id) as Row | undefined;
+  if (!existing) return null;
+  const remaining = existing.quantity - byQty;
+  if (remaining <= 0) return null;
+  db.prepare('UPDATE autotrade_live_options_positions SET quantity = ?, updated_at = ? WHERE id = ?').run(
+    remaining,
+    Date.now(),
+    id,
+  );
+  return map(db.prepare('SELECT * FROM autotrade_live_options_positions WHERE id = ?').get(id) as Row);
+}
+
 export function blendLiveOptionsPositionEntry(
   id: number,
   addQuantity: number,

@@ -1042,6 +1042,7 @@ function reconcileOneLiveOrder(
           meta.positionId,
           exitLeg.filledPrice ?? fallbackPrice,
           riskProfile,
+          exitLeg.filledQty,
         );
         return recorded ? { changed: true, action: 'exit_filled' } : { changed: false };
       } catch (err) {
@@ -1186,13 +1187,22 @@ function materializeExitFill(
   positionId: number | null,
   exitPrice: number,
   riskProfile: string,
+  filledQty?: number,
 ): boolean {
   const position = listPositions({ status: 'open', symbol: intent.symbol }).find(
     (p) => isAutotradePosition(p) && (p.sourceIntentId === intent.id || (positionId !== null && p.id === positionId)),
   );
   if (!position) return false;
+  // Book what the leg ACTUALLY filled, not the whole position. A bracket leg
+  // can report FILLED on a partial quantity, and closing the full remainder on
+  // that would both fabricate P&L for shares that never sold and drop the real
+  // remainder out of the ledger — out of getLivePortfolioSnapshot's risk/P&L,
+  // out of checkLiveEquityTimeExits, and out of the scale-in loop — leaving
+  // untracked live exposure. Mirrors materializeTimeExitFill's own clamp.
+  const closeQty = Math.min(filledQty ?? position.remainingQuantity, position.remainingQuantity);
+  if (closeQty <= 0) return false;
   const closed = addExit(position.id, {
-    quantity: position.remainingQuantity,
+    quantity: closeQty,
     exitPrice,
     exitDate: etDateStr(),
     sourceIntentId: intent.id,

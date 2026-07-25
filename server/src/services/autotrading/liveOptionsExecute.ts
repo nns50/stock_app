@@ -40,6 +40,8 @@ import {
   blendLiveOptionsPositionEntry,
   closeLiveOptionsPosition,
   LiveOptionsPosition,
+  getLiveOptionsPosition,
+  reduceLiveOptionsPositionQuantity,
 } from '../../db/autotradeLiveOptionsPositions';
 import { computeStreaksAndDrawdown } from '../pnl';
 import { defaultExitConfig, evaluateExit } from '../../options/exitRules';
@@ -936,8 +938,12 @@ export interface LiveOptionsReconcileOutcome {
   symbol: string;
   changed: boolean;
   /** Set when this reconcile materialized a fill into a real
-   *  autotrade_live_options_positions row (entry) or closed one (exit). */
-  action?: 'entry_filled' | 'exit_filled';
+   *  autotrade_live_options_positions row (entry) or closed one (exit).
+   *  'exit_partially_filled' means the closing order filled for fewer contracts
+   *  than the position holds: the row was shrunk and left OPEN so the remainder
+   *  stays tracked and keeps being worked, rather than being closed out from
+   *  under contracts that are still held. */
+  action?: 'entry_filled' | 'exit_filled' | 'exit_partially_filled';
   error?: string;
 }
 
@@ -1054,7 +1060,7 @@ function materializeLiveOptionsFill(
     const action =
       meta.role === 'entry'
         ? materializeOptionsEntryFill(intent, meta, qty, price)
-        : materializeOptionsExitFill(intent, meta, price);
+        : materializeOptionsExitFill(intent, meta, price, qty);
     advanceMaterialized(intent.id, qty, qty * price);
     return { intentId: intent.id, symbol: meta.symbol, changed: true, action };
   } catch (err) {
@@ -1140,8 +1146,37 @@ function materializeOptionsExitFill(
   intent: OrderIntentRecord,
   meta: LiveOptionsOrderMeta,
   filledPrice: number,
-): 'exit_filled' | undefined {
+  filledQty?: number,
+): 'exit_filled' | 'exit_partially_filled' | undefined {
   if (meta.positionId === null) return undefined;
+  // A partial fill must NOT close the row. This used to ignore the filled
+  // quantity entirely and close unconditionally, so a 3-contract exit that
+  // filled 1 booked one contract's P&L, marked the position closed, and left
+  // 2 real contracts with no ledger row at all — gone from
+  // listOpenLiveOptionsPositions, so never re-priced, never re-exited, never
+  // reconciled, drifting to expiry while realized P&L was overstated 3x.
+  // Equity's materializeTimeExitFill already clamped correctly; this was the
+  // outlier.
+  if (filledQty !== undefined) {
+    const pos = getLiveOptionsPosition(meta.positionId);
+    if (pos && filledQty < pos.quantity) {
+      const reduced = reduceLiveOptionsPositionQuantity(meta.positionId, filledQty);
+      if (!reduced) return undefined;
+      logAutotradeEvent({
+        symbol: intent.symbol,
+        stage: 'execution',
+        action: 'live_options_exit_partially_filled',
+        detail: {
+          positionId: meta.positionId,
+          filledQty,
+          remainingQty: reduced.quantity,
+          filledPrice,
+        },
+        riskProfile: meta.riskProfile,
+      });
+      return 'exit_partially_filled';
+    }
+  }
   const closed = closeLiveOptionsPosition(meta.positionId, {
     exitPrice: filledPrice,
     // A pre-2026-07-16 pending row (from before this column existed) has no

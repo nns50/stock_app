@@ -945,6 +945,66 @@ describe('reconcileLiveOrders', () => {
     expect(closed[0].exits[0].exitPrice).toBe(95);
   });
 
+  it('a partially-filled bracket exit leg books only what filled, leaving the rest open', async () => {
+    // The leg's filledQty is parsed by the provider but was never passed on, so
+    // a leg reporting FILLED on a partial quantity closed the WHOLE position:
+    // P&L fabricated for shares that never sold, and the real remainder dropped
+    // out of the ledger — invisible to the risk snapshot, to the time-exit
+    // sweep, and to the scale-in loop, while the symbol became re-enterable.
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-PARTIAL-EXIT' });
+    const res = evaluateRiskCheck(signal(), {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      maxConcurrentPositions: 2,
+      correlatedNotional: 0,
+      riskPerTradePct: 1,
+      maxDailyDrawdownPct: 3,
+      stepDownAfterLosses: 2,
+      stepDownSizeCutPct: 50,
+      maxAggregateOpenRiskPct: 2,
+      maxCorrelatedExposurePct: 6,
+      maxTradesPerDay: 6,
+    });
+    await attemptLiveEntry(signal(), res, 'MODERATE', liveConfig());
+
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: res.sizing.suggestedQuantity,
+      filledPrice: 100,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+    const opened = listPositions({ status: 'open' })[0];
+    expect(opened.quantity).toBeGreaterThan(1);
+
+    // The stop leg fills for ONE share only.
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: opened.quantity,
+      filledPrice: 100,
+      legs: [
+        { comboType: 'MASTER', status: 'FILLED' },
+        { comboType: 'STOP_LOSS', status: 'FILLED', filledPrice: 95, filledQty: 1 },
+      ],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+
+    const stillOpen = listPositions({ status: 'open' });
+    expect(stillOpen).toHaveLength(1);
+    expect(stillOpen[0].remainingQuantity).toBe(opened.quantity - 1);
+  });
+
   it('fails closed: an ambiguous leg response (no comboType at all) leaves the position open rather than guessing', async () => {
     setAutotradeConfig({ liveAccountId: 'ACC1' });
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);

@@ -1396,6 +1396,48 @@ describe('reconcileLiveOptionsOrders — partial fills', () => {
     expect(after[0].entryPrice).toBeCloseTo((1 * 4.1 + (orderedQty - 1) * 4.5) / orderedQty, 4);
   });
 
+  it('a partially-filled EXIT shrinks the position instead of closing it', async () => {
+    // The bug: the filled quantity was computed and then dropped — the exit
+    // path closed the row unconditionally. A 3-contract close filling 1 booked
+    // one contract's P&L, marked the position closed, and left the other 2 real
+    // contracts with no ledger row: gone from listOpenLiveOptionsPositions, so
+    // never re-priced, never re-exited, never reconciled, drifting to expiry.
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({ expiration: '2024-06-05', quantity: 3 });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-EXIT1' });
+    await checkLiveOptionsExits();
+    expect(mockPlaceOrder).toHaveBeenCalled();
+
+    // Only 1 of the 3 contracts fills.
+    brokerSays('PARTIAL_FILLED', 1, 3.8);
+    await reconcileLiveOptionsOrders();
+
+    const open = listOpenLiveOptionsPositions();
+    expect(open).toHaveLength(1); // still tracked
+    expect(open[0].id).toBe(pos.id);
+    expect(open[0].quantity).toBe(2); // the untouched contracts remain
+    expect(open[0].status).toBe('open');
+  });
+
+  it('closes the position once the remainder of a partial exit fills', async () => {
+    setAutotradeConfig(liveConfig());
+    openLivePosition({ expiration: '2024-06-05', quantity: 3 });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-EXIT2' });
+    await checkLiveOptionsExits();
+
+    brokerSays('PARTIAL_FILLED', 1, 3.8);
+    await reconcileLiveOptionsOrders();
+    expect(listOpenLiveOptionsPositions()[0].quantity).toBe(2);
+
+    brokerSays('FILLED', 3, 3.8);
+    await reconcileLiveOptionsOrders();
+    expect(listOpenLiveOptionsPositions()).toHaveLength(0); // now genuinely closed
+  });
+
   it('books a partial the broker reports as CANCELLED in one shot', async () => {
     // Booking on STATUS rather than reported quantity would lose these
     // contracts permanently — the intent is terminal, so it never returns to
