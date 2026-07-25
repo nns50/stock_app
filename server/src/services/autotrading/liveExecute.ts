@@ -15,6 +15,7 @@ import {
   newClientOrderId,
   webullPlaceOrder,
   webullOrderStatus,
+  webullOrderStatusBatch,
   webullCancelOrder,
   listWebullOpenOrders,
   isExitLeg,
@@ -885,11 +886,25 @@ export async function reconcileLiveOrders(): Promise<LiveReconcileOutcome[]> {
 
   const pending = listPendingLiveOrders();
   const intentsById = getIntents(pending.map((p) => p.intentId));
+  // One pair of list fetches for every pending order, rather than a pair each:
+  // the order-query endpoints allow 2 requests per 2 seconds, so polling per
+  // order rate-limited this loop against itself once there were more than a
+  // couple to reconcile. See webullOrderStatusBatch.
+  const statuses = await webullOrderStatusBatch(
+    accountId,
+    pending.map((p) => intentsById.get(p.intentId)?.idempotencyKey).filter((k): k is string => !!k),
+  );
   const outcomes: LiveReconcileOutcome[] = [];
   for (const meta of pending) {
     const intent = intentsById.get(meta.intentId);
     if (!intent) continue;
-    const broker = await webullOrderStatus(accountId, intent.idempotencyKey);
+    // Absent from the map only if the id was never asked about; treat that as
+    // "couldn't ask", never as "the broker has no such order".
+    const broker = statuses.get(intent.idempotencyKey) ?? {
+      ok: false,
+      found: false,
+      error: 'no status returned for this order',
+    };
     if (!broker.ok) {
       // Couldn't ask — say nothing about the order and try again next tick.
       outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: false, error: broker.error });

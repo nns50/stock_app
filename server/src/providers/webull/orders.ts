@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { webullClient, webullConfigured } from './account';
+import type { CallResult } from './client';
 import type { OrderIntent, OrderType } from '../../services/trading/guardrails';
 
 // ---------------------------------------------------------------------------
@@ -651,61 +652,129 @@ function matchEnvelope(list: unknown, clientOrderId: string): OrderEnvelope | un
 }
 
 /**
+ * Read one order's status out of an already-fetched order list. Pure — no I/O,
+ * so one payload can answer for many client_order_ids (see
+ * webullOrderStatusBatch). Returns undefined when this list doesn't mention the
+ * order at all, which is "keep looking", NOT "doesn't exist".
+ */
+function resolveFromList(list: unknown, clientOrderId: string): WebullOrderStatus | undefined {
+  const env = matchEnvelope(list, clientOrderId);
+  if (!env) return undefined;
+  // Every leg of the combo, gathered across sibling envelopes sharing this
+  // one's combo_order_id — see collectLegs. Previously only THIS envelope's
+  // own `orders` was read, which for a real bracket is just the entry.
+  const legs = collectLegs(list, env, clientOrderId);
+  const orders = Array.isArray(env.orders) && env.orders.length ? env.orders : [env as Record<string, unknown>];
+  // The top-level status describes the order the caller ASKED about, so
+  // identify that row by strongest available evidence, in order:
+  //
+  //   1. its client_order_id is the one we asked about — positive, from an
+  //      id we generated ourselves, and what the real (flat) shape gives us
+  //   2. it is tagged combo_type MASTER on the leg — the nested-and-tagged
+  //      shape this file originally assumed. Unobserved in practice so far,
+  //      but costless to keep and the only signal if a different endpoint
+  //      or a later API version returns that shape
+  //   3. positional fallback — a plain order, where orders[0] is the order
+  //
+  // Falling straight to (3) is what made this worth fixing: for a bracket it
+  // can read a cancelled OCO sibling's status as the entry's own.
+  const o = (orders.find((leg) => (leg as { client_order_id?: string })?.client_order_id === clientOrderId) ??
+    orders.find((leg) => (leg as { combo_type?: string })?.combo_type === 'MASTER') ??
+    orders[0] ??
+    {}) as Record<string, unknown>;
+  const brokerOrderId = env.combo_order_id ?? (o.order_id as string | undefined);
+  return {
+    ok: true,
+    found: true,
+    status: o.status ? String(o.status).toUpperCase() : undefined,
+    brokerOrderId: brokerOrderId ? String(brokerOrderId) : undefined,
+    filledQty: num(o.filled_quantity),
+    totalQty: num(o.total_quantity),
+    filledPrice: num(o.filled_price),
+    legs: legs.length ? legs : undefined,
+    raw: env,
+  };
+}
+
+const ORDER_LIST_PATHS = ['/openapi/trade/order/open', '/openapi/trade/order/history'] as const;
+
+function fetchError(path: string, r: CallResult): string {
+  const j = (r.data ?? {}) as { msg?: string; message?: string; error_msg?: string };
+  return j.msg || j.message || j.error_msg || `Webull ${path} failed (${r.status})`;
+}
+
+/**
  * Look up the live status of one of OUR orders by its client_order_id, scanning
  * open orders then history (which covers filled/cancelled). READ-ONLY — places
  * nothing, cancels nothing. Never throws.
+ *
+ * Costs up to two requests. Looking up SEVERAL orders should use
+ * webullOrderStatusBatch instead, which spends the same two for the whole set.
  */
 export async function webullOrderStatus(accountId: string, clientOrderId: string): Promise<WebullOrderStatus> {
   if (!webullConfigured()) return { ok: false, found: false, error: 'Webull is not configured.' };
-  for (const path of ['/openapi/trade/order/open', '/openapi/trade/order/history']) {
+  for (const path of ORDER_LIST_PATHS) {
     const r = await webullClient().call('GET', path, { query: { account_id: accountId }, surface: 'trade' });
-    if (!r.ok) {
-      const j = (r.data ?? {}) as { msg?: string; message?: string; error_msg?: string };
-      return {
-        ok: false,
-        found: false,
-        error: j.msg || j.message || j.error_msg || `Webull ${path} failed (${r.status})`,
-      };
-    }
-    const env = matchEnvelope(r.data, clientOrderId);
-    if (env) {
-      // Every leg of the combo, gathered across sibling envelopes sharing this
-      // one's combo_order_id — see collectLegs. Previously only THIS envelope's
-      // own `orders` was read, which for a real bracket is just the entry.
-      const legs = collectLegs(r.data, env, clientOrderId);
-      const orders = Array.isArray(env.orders) && env.orders.length ? env.orders : [env as Record<string, unknown>];
-      // The top-level status describes the order the caller ASKED about, so
-      // identify that row by strongest available evidence, in order:
-      //
-      //   1. its client_order_id is the one we asked about — positive, from an
-      //      id we generated ourselves, and what the real (flat) shape gives us
-      //   2. it is tagged combo_type MASTER on the leg — the nested-and-tagged
-      //      shape this file originally assumed. Unobserved in practice so far,
-      //      but costless to keep and the only signal if a different endpoint
-      //      or a later API version returns that shape
-      //   3. positional fallback — a plain order, where orders[0] is the order
-      //
-      // Falling straight to (3) is what made this worth fixing: for a bracket it
-      // can read a cancelled OCO sibling's status as the entry's own.
-      const o = (orders.find((leg) => (leg as { client_order_id?: string })?.client_order_id === clientOrderId) ??
-        orders.find((leg) => (leg as { combo_type?: string })?.combo_type === 'MASTER') ??
-        orders[0] ??
-        {}) as Record<string, unknown>;
-      const brokerOrderId = env.combo_order_id ?? (o.order_id as string | undefined);
-      return {
-        ok: true,
-        found: true,
-        status: o.status ? String(o.status).toUpperCase() : undefined,
-        brokerOrderId: brokerOrderId ? String(brokerOrderId) : undefined,
-        filledQty: num(o.filled_quantity),
-        totalQty: num(o.total_quantity),
-        filledPrice: num(o.filled_price),
-        legs: legs.length ? legs : undefined,
-        raw: env,
-      };
-    }
+    if (!r.ok) return { ok: false, found: false, error: fetchError(path, r) };
+    const hit = resolveFromList(r.data, clientOrderId);
+    if (hit) return hit;
   }
   return { ok: true, found: false };
+}
+
+/**
+ * The same lookup for MANY orders at the cost of one list fetch each, instead
+ * of two requests per order.
+ *
+ * This is not just an optimization. The order-query endpoints are limited to 2
+ * requests per 2 seconds (see client.ts), so polling per order meant a busy
+ * reconcile tick rate-limited ITSELF: the calls that failed returned !ok, the
+ * reconcilers correctly read that as "couldn't ask, try next tick", and the
+ * result was reconcile quietly stalling exactly when it had the most to do,
+ * with no symptom other than nothing happening.
+ *
+ * Failure is per-order, not global, and stays fail-closed. If open-orders
+ * cannot be fetched, every id reports the error — never "not found", which a
+ * caller may act on as positive evidence the order never landed. If history
+ * cannot be fetched, only the ids not already resolved from open orders carry
+ * the error; the ones already answered keep their answer. An id absent from
+ * BOTH successfully-fetched lists is the one case that reports
+ * `ok: true, found: false`, exactly as the single-order path does.
+ */
+export async function webullOrderStatusBatch(
+  accountId: string,
+  clientOrderIds: string[],
+): Promise<Map<string, WebullOrderStatus>> {
+  const out = new Map<string, WebullOrderStatus>();
+  const wanted = [...new Set(clientOrderIds)];
+  if (wanted.length === 0) return out;
+  if (!webullConfigured()) {
+    for (const id of wanted) out.set(id, { ok: false, found: false, error: 'Webull is not configured.' });
+    return out;
+  }
+
+  let pending = wanted;
+  for (const path of ORDER_LIST_PATHS) {
+    if (pending.length === 0) break;
+    const r = await webullClient().call('GET', path, { query: { account_id: accountId }, surface: 'trade' });
+    if (!r.ok) {
+      // Couldn't read this list — say nothing about the orders it might have
+      // answered for, rather than letting them fall through to "not found".
+      const error = fetchError(path, r);
+      for (const id of pending) out.set(id, { ok: false, found: false, error });
+      return out;
+    }
+    const rest: string[] = [];
+    for (const id of pending) {
+      const hit = resolveFromList(r.data, id);
+      if (hit) out.set(id, hit);
+      else rest.push(id);
+    }
+    pending = rest;
+  }
+  // Both lists were read and neither mentions these — positive evidence.
+  for (const id of pending) out.set(id, { ok: true, found: false });
+  return out;
 }
 
 /** One currently-open (resting/working) order at the broker, flattened out of

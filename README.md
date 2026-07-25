@@ -188,6 +188,7 @@ Copy `.env.example` to `server/.env`. All keys are read **server-side only**.
 | `TRADIER_BASE_URL`      | `https://sandbox.tradier.com/v1`   | Use `https://api.tradier.com/v1` for production data.           |
 | `WEBULL_APP_KEY`        | _(empty)_                          | Webull OpenAPI app key (server-side only). Required for `webull`. |
 | `WEBULL_APP_SECRET`     | _(empty)_                          | Webull OpenAPI app secret (server-side only).                   |
+| `WEBULL_PACING_SCALE`   | `1`                                | Multiplier on the client's per-endpoint request spacing (Webull limits order/position queries to 2 requests per 2s). `0` disables pacing — used by the test suite; leave at `1` in normal use. |
 | `POLYGON_API_KEY`       | _(empty)_                          | Polygon.io/Massive key for the auto-trading **backtest** harness only (docs/AUTOTRADING_SPEC.md). Separate from `MARKET_DATA_PROVIDER` — never used for live screening/quotes. |
 | `TRADING_ENABLED`       | `false`                            | **Master gate for placing REAL orders.** Off ⇒ the Trade page can dry-run/live-preview but **never** places. Even on, placing also needs the guardrails to pass + kill switch off + type-to-confirm. |
 | `PORT`                  | `3001`                             | API port.                                                       |
@@ -278,6 +279,12 @@ filled, a leg whose quantity doesn't match what the exit booked, or no usable
 fill price all leave the row exactly as it was. An estimate that is known to be
 an estimate is recoverable; a confident wrong "correction" writes fiction into
 realized P&L and the tax export.
+
+**It has an expiry date.** Webull's Trading API serves order history for the
+**past 7 days only**, so a trade whose *entry* order is older than that can
+never be corrected from the broker — re-running won't help, and those rows say
+so explicitly rather than reporting a generic "no record". Anything older is
+permanently an estimate.
 
 ### `capture:broker` — confirming broker field semantics
 

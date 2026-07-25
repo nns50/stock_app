@@ -4,10 +4,13 @@ vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
 vi.mock('../src/providers/webull/accountState', () => ({ webullAccountState: vi.fn() }));
 vi.mock('../src/providers/webull/orders', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/providers/webull/orders')>();
+  const { batchFromSingle } = await import('./helpers/webullOrderStatusMock');
+  const webullOrderStatus = vi.fn();
   return {
     ...actual,
     webullPlaceOrder: vi.fn(),
-    webullOrderStatus: vi.fn(),
+    webullOrderStatus,
+    webullOrderStatusBatch: batchFromSingle(webullOrderStatus),
     webullCancelOrder: vi.fn(),
     listWebullOpenOrders: vi.fn(),
   };

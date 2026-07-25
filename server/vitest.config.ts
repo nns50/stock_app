@@ -12,6 +12,11 @@ export default defineConfig({
     fileParallelism: false,
     env: {
       DATABASE_PATH: path.join(os.tmpdir(), `stock-app-vitest-${process.pid}.db`),
+      // The Webull client paces each endpoint to its documented frequency
+      // limit. That is real wall-clock time the tests have no reason to pay —
+      // they assert on retry/timeout LOGIC, not on the pacing — and seconds per
+      // request would add minutes to the suite.
+      WEBULL_PACING_SCALE: '0',
     },
   },
 });

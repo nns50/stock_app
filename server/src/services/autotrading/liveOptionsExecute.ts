@@ -11,7 +11,12 @@ import {
 } from '../trading/guardrails';
 import { marketOpenContext } from '../trading/marketHours';
 import { webullAccountState, webullAccountType } from '../../providers/webull/accountState';
-import { newClientOrderId, webullPlaceOrder, webullOrderStatus } from '../../providers/webull/orders';
+import {
+  newClientOrderId,
+  webullPlaceOrder,
+  webullOrderStatus,
+  webullOrderStatusBatch,
+} from '../../providers/webull/orders';
 import {
   advanceMaterialized,
   createIntent,
@@ -1117,11 +1122,22 @@ export async function reconcileLiveOptionsOrders(): Promise<LiveOptionsReconcile
 
   const pending = listPendingLiveOptionsOrders();
   const intentsById = getIntents(pending.map((p) => p.intentId));
+  // One pair of list fetches for the whole set — see webullOrderStatusBatch.
+  const statuses = await webullOrderStatusBatch(
+    accountId,
+    pending.map((p) => intentsById.get(p.intentId)?.idempotencyKey).filter((k): k is string => !!k),
+  );
   const outcomes: LiveOptionsReconcileOutcome[] = [];
   for (const meta of pending) {
     const intent = intentsById.get(meta.intentId);
     if (!intent) continue;
-    const broker = await webullOrderStatus(accountId, intent.idempotencyKey);
+    // Absent from the map only if the id was never asked about; treat that as
+    // "couldn't ask", never as "the broker has no such order".
+    const broker = statuses.get(intent.idempotencyKey) ?? {
+      ok: false,
+      found: false,
+      error: 'no status returned for this order',
+    };
     if (!broker.ok) {
       // Couldn't ask — say nothing and try again next tick.
       outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: false, error: broker.error });
