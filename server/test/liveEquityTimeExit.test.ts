@@ -259,6 +259,32 @@ describe('checkLiveEquityTimeExits', () => {
     expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
   });
 
+  it('an AMBIGUOUS close stays pending, so the next tick cannot place a second one', async () => {
+    // Worse here than on entry: the bracket has already been cancelled by this
+    // point, so treating an unknown outcome as a rejection would empty
+    // pendingExitPositionIds and the next tick would place a SECOND close
+    // against a position whose first close may already have filled — for a long
+    // that means selling twice and ending up short.
+    const { position, quantity } = await openAgedLivePosition(30);
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(quantity) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockOpenOrders.mockResolvedValue(noOpenOrders);
+    mockOrderStatus.mockResolvedValue({ ok: true, found: false } as WebullOrderStatus);
+    mockCancelOrder.mockResolvedValue({ ok: true });
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'Request timed out', ambiguous: true });
+
+    const outcomes = await checkLiveEquityTimeExits();
+    expect(outcomes[0]).toMatchObject({ positionId: position.id, requested: false });
+    expect(outcomes[0].reason ?? '').toMatch(/unknown/i);
+
+    // Second tick: the recorded exit order keeps this position out of the sweep.
+    mockPlaceOrder.mockClear();
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-DUP-CLOSE' });
+    await checkLiveEquityTimeExits();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(listPositions({ status: 'open' })).toHaveLength(1);
+  });
+
   it('never cancels the protective bracket when the close would be blocked (kill switch)', async () => {
     // The bug: the bracket was cancelled and confirmed cleared BEFORE the close
     // was evaluated, so any blocking guardrail left a real position with no stop
