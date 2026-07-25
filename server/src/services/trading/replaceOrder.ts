@@ -25,6 +25,9 @@ export type ReplaceReason =
   | 'account_error'
   | 'blocked'
   | 'broker_rejected'
+  /** The broker never answered. The modify may or may not have applied — see
+   *  the ambiguous branch in replaceIntent() below. NOT a rejection. */
+  | 'outcome_unknown'
   | 'replaced';
 
 export interface ReplaceResult {
@@ -145,6 +148,41 @@ export async function replaceIntent(id: number, accountId: string, patch: Replac
   }
 
   const broker = await webullReplaceOrder(accountId, rec.idempotencyKey, patch);
+
+  // We never heard back, so we do not know whether the modify applied. Both
+  // available guesses are wrong in a way that costs real money:
+  //
+  //   record it   — if it did NOT apply, our stored quantity now exceeds the
+  //                 order's, and computeFillDelta would book MORE than was
+  //                 ordered: invented shares, the one thing fillDelta.ts exists
+  //                 to prevent.
+  //   reject it   — if it DID apply, our stored quantity is short of the
+  //                 order's, and computeFillDelta clamps every future booking
+  //                 to that stale ceiling. A replace that raised 100 → 200 then
+  //                 fills 200; we book 100 with a warning, and the other 100
+  //                 shares are unbookable by ANY path — real exposure that no
+  //                 ledger, risk cap or P&L figure can ever see. This was the
+  //                 old behavior, since every !ok became 'broker_rejected'.
+  //
+  // So guess neither: don't touch the record, and reconcile — the broker's own
+  // total_quantity settles it authoritatively (see reconcileIntent's drift
+  // check), which is strictly better than either inference.
+  if (!broker.ok && broker.ambiguous) {
+    const reconciled = await reconcileIntent(id, accountId);
+    return {
+      ok: true,
+      replaced: false,
+      reason: 'outcome_unknown',
+      guardrails,
+      intent: reconciled.intent ?? rec,
+      broker,
+      reconciled,
+      error:
+        `The broker did not respond, so it is unknown whether this change was applied (${broker.error}). ` +
+        `The order was left as-is and re-checked against the broker — confirm its current quantity and ` +
+        `price before changing it again.`,
+    };
+  }
   if (!broker.ok) {
     return {
       ok: true,

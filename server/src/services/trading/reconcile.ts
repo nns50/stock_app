@@ -2,8 +2,10 @@ import {
   OrderIntentRecord,
   advanceMaterialized,
   getIntent,
+  isComboOrder,
   listIntents,
   recordIntentNote,
+  recordReplace,
   transitionIntent,
 } from '../../db/orders';
 import { Position, addExit, createPosition, listPositions } from '../../db/positions';
@@ -11,7 +13,7 @@ import { OrderState, canTransition, isTerminal } from './orderLifecycle';
 import { WebullOrderStatus, webullOrderStatus } from '../../providers/webull/orders';
 import { isAutotradeIntent } from '../../db/autotradeLiveOrders';
 import { isAutotradeOptionsIntent } from '../../db/autotradeLiveOptionsOrders';
-import { computeFillDelta, isShortBooked } from './fillDelta';
+import { QTY_EPS, computeFillDelta, isShortBooked } from './fillDelta';
 
 // ---------------------------------------------------------------------------
 // Reconcile an order intent's state with the broker (design §6 "status reconcile").
@@ -52,6 +54,88 @@ export function mapWebullStatus(status: string): OrderState | undefined {
     default:
       return undefined;
   }
+}
+
+/**
+ * Bring an intent whose placement outcome was UNKNOWN up to the state a
+ * broker-reported status can legally apply from, and report whether it moved.
+ *
+ * An ambiguous placement leaves the intent at 'submitted' with no broker order
+ * id (placeOrder / attemptLiveEntry / placeLiveOptionsOrder all do this rather
+ * than claim a rejection they can't know about). But 'submitted' only leads to
+ * 'acknowledged' or 'rejected' — the state machine models OUR knowledge, and it
+ * says an order must be seen working before it can be seen filled. The broker
+ * is under no such obligation: a marketable limit routinely fills within the
+ * 60s before the first reconcile, so the very first status we ever see for it
+ * is FILLED.
+ *
+ * Every reconciler computes `canTransition(state, target)`, so that arrived as
+ * an ILLEGAL jump and was silently skipped — the intent then sat at 'submitted'
+ * forever, polled every tick, holding its symbol's dedup slot, while the real
+ * filled position was never materialized into any ledger. The whole point of
+ * keeping an ambiguous placement non-terminal is that it stays resolvable, and
+ * for the most likely outcome it wasn't.
+ *
+ * Fixed here rather than by widening TRANSITIONS: the broker answering at all
+ * IS the acknowledgement we never received, so recording it as one is honest,
+ * confined to this exact case, and leaves the audit trail reading the way it
+ * actually happened. Callers must fold the returned `acked` into their own
+ * "did anything change" answer.
+ */
+export function ackUnknownPlacement(
+  intent: OrderIntentRecord,
+  brokerOrderId?: string,
+): { intent: OrderIntentRecord; acked: boolean } {
+  if (intent.state !== 'submitted') return { intent, acked: false };
+  return {
+    intent: transitionIntent(intent.id, 'acknowledged', {
+      brokerOrderId,
+      detail: 'broker has this order — placement outcome was unknown until now',
+    }),
+    acked: true,
+  };
+}
+
+/**
+ * Adopt the broker's own order quantity when it disagrees with ours.
+ *
+ * The broker is authoritative about how big ITS order is, and our copy can be
+ * stale: a replace whose response was lost may have applied (replaceOrder's
+ * ambiguous branch deliberately declines to guess), leaving us describing an
+ * order the broker no longer has. That matters beyond cosmetics, because
+ * computeFillDelta clamps every booking to `intent.quantity` — a stale-low
+ * quantity makes the extra shares unbookable by any path, so they exist at the
+ * broker and in no ledger, cap or P&L figure we have.
+ *
+ * Confined to what can be trusted:
+ *   - a COMBO (bracket / spread) is several broker orders and `total_quantity`
+ *     is read off one leg, so it isn't comparable to our single figure.
+ *     Replace already refuses combos outright, so this can't arise for them.
+ *   - a missing or nonsensical value changes nothing. Absence is not evidence.
+ *   - never below what we've already booked, which really happened.
+ *
+ * Purely informational otherwise: this is a correction to our own record, not
+ * a lifecycle transition, so it's recorded as an audit note at the current
+ * state (recordReplace's existing shape, which is exactly this operation).
+ */
+function adoptBrokerQuantity(
+  intent: OrderIntentRecord,
+  broker: WebullOrderStatus,
+): { intent: OrderIntentRecord; adopted: boolean } {
+  const brokerQty = broker.totalQty;
+  if (isComboOrder(intent)) return { intent, adopted: false };
+  if (brokerQty === undefined || !Number.isFinite(brokerQty) || brokerQty <= 0) return { intent, adopted: false };
+  if (Math.abs(brokerQty - intent.quantity) <= QTY_EPS) return { intent, adopted: false };
+  if (brokerQty < intent.materializedQty - QTY_EPS) return { intent, adopted: false };
+  return {
+    intent: recordReplace(
+      intent.id,
+      { quantity: brokerQty },
+      `quantity corrected ${intent.quantity} → ${brokerQty} from the broker's own order record ` +
+        `(our copy was stale — most likely a modify whose response was lost)`,
+    ),
+    adopted: true,
+  };
 }
 
 export interface ReconcileResult {
@@ -188,18 +272,27 @@ export async function reconcileIntent(id: number, accountId: string): Promise<Re
 
   if (!broker.status) return { ok: true, changed: false, intent, broker };
 
+  // The broker knows this order, so an unknown-outcome placement is resolved:
+  // record the acknowledgement we never received before applying its status,
+  // or a FILLED arriving straight off an ambiguous place is an illegal jump
+  // and gets skipped forever. See ackUnknownPlacement.
+  const acknowledged = ackUnknownPlacement(intent, broker.brokerOrderId);
+  const drifted = adoptBrokerQuantity(acknowledged.intent, broker);
+  const current = drifted.intent;
+  const acked = acknowledged.acked || drifted.adopted;
+
   const target = mapWebullStatus(broker.status);
-  const canMove = !!target && target !== intent.state && canTransition(intent.state, target);
+  const canMove = !!target && target !== current.state && canTransition(current.state, target);
   // An order that stays `partially_filled` across two observations has NOT
   // changed state, but it may well have filled further — the old code's
   // `target === intent.state` early return meant every partial after the first
   // was ignored, so a 30/100 that became 90/100 booked nothing for the extra 60.
-  const restingPartial = target === 'partially_filled' && intent.state === 'partially_filled';
-  if (!canMove && !restingPartial) return { ok: true, changed: false, intent, broker };
+  const restingPartial = target === 'partially_filled' && current.state === 'partially_filled';
+  if (!canMove && !restingPartial) return { ok: true, changed: acked, intent: current, broker };
 
-  const fill = broker.filledQty !== undefined ? ` ${broker.filledQty}/${broker.totalQty ?? intent.quantity}` : '';
+  const fill = broker.filledQty !== undefined ? ` ${broker.filledQty}/${broker.totalQty ?? current.quantity}` : '';
   const at = broker.filledPrice !== undefined ? ` @ ${broker.filledPrice}` : '';
-  let updated = intent;
+  let updated = current;
   if (canMove) {
     updated = transitionIntent(id, target, {
       detail: `broker ${broker.status.toLowerCase()}${fill}${at}`,
@@ -231,8 +324,8 @@ export async function reconcileIntent(id: number, accountId: string): Promise<Re
   // size there but to ZERO on any other status — a CANCELLED carrying no
   // quantity field filled nothing, and assuming otherwise would fabricate a
   // position out of an order that never executed.
-  const singleName = intent.assetKind === 'stock' || intent.optionType !== null;
-  const observedQty = broker.filledQty ?? (target === 'filled' ? intent.quantity : 0);
+  const singleName = current.assetKind === 'stock' || current.optionType !== null;
+  const observedQty = broker.filledQty ?? (target === 'filled' ? current.quantity : 0);
   let outcome: MaterializeOutcome = { booked: 0 };
   if (singleName && observedQty > 0) {
     outcome = materializeFill(updated, observedQty, broker.filledPrice ?? updated.limitPrice ?? 0);
@@ -246,7 +339,7 @@ export async function reconcileIntent(id: number, accountId: string): Promise<Re
     if (isShortBooked(fresh)) {
       outcome.warning = [
         outcome.warning,
-        `order filled but only ${fresh.materializedQty} of ${intent.quantity} is reflected in Positions.`,
+        `order filled but only ${fresh.materializedQty} of ${current.quantity} is reflected in Positions.`,
       ]
         .filter(Boolean)
         .join(' ');
@@ -258,7 +351,7 @@ export async function reconcileIntent(id: number, accountId: string): Promise<Re
 
   return {
     ok: true,
-    changed: canMove || outcome.booked > 0,
+    changed: acked || canMove || outcome.booked > 0,
     intent: getIntent(id) ?? updated,
     broker,
     materialized: outcome.booked,
@@ -359,13 +452,26 @@ export interface ReconcileAllResult {
  * "working" order is non-terminal AND known to the broker (has a broker order id;
  * drafts / guardrail-rejected intents never reached the broker) — PLUS a filled
  * bracket whose position is still open, so its still-working exit leg keeps
- * getting checked (see reconcileIntent's watchingBracketExit). Sequential on
- * purpose — one broker status pull at a time, never a burst.
+ * getting checked (see reconcileIntent's watchingBracketExit), PLUS an order
+ * whose placement outcome is UNKNOWN.
+ *
+ * That last case has no broker order id — we never got a response to read one
+ * from (placeOrder's ambiguous branch) — so the broker-id test alone excluded
+ * precisely the orders most in need of resolving: possibly live, possibly
+ * filled, and invisible to Positions until someone finds out which. It is
+ * identified by shape instead: still 'submitted' with no broker id. That can
+ * only be reached by an ambiguous placement, since every other path out of
+ * 'submitted' either records a broker id (acknowledged) or is terminal
+ * (rejected). reconcileIntent looks orders up by CLIENT order id, so it
+ * resolves these without a broker id.
+ *
+ * Sequential on purpose — one broker status pull at a time, never a burst.
  */
 export async function reconcileAllWorking(accountId: string): Promise<ReconcileAllResult> {
-  const working = listIntents().filter(
-    (i) =>
-      i.brokerOrderId && (!isTerminal(i.state) || (i.isBracket && i.state === 'filled' && hasOpenPositionForIntent(i))),
+  const working = listIntents().filter((i) =>
+    i.brokerOrderId
+      ? !isTerminal(i.state) || (i.isBracket && i.state === 'filled' && hasOpenPositionForIntent(i))
+      : i.state === 'submitted',
   );
   const results: ReconcileAllResult['results'] = [];
   let changed = 0;

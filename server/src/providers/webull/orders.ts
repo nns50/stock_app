@@ -722,6 +722,13 @@ export interface WebullReplaceResult {
   ok: boolean;
   raw?: unknown;
   error?: string;
+  /** The modify's outcome is UNKNOWN, not known-rejected — same three statuses
+   *  and the same reasoning as WebullPlaceResult.ambiguous. It matters for a
+   *  different reason here: a replace that was APPLIED but whose response was
+   *  lost leaves our stored quantity/limit describing an order the broker no
+   *  longer has. Callers must not record the change (we don't know it landed)
+   *  and must not report a rejection either — reconcile against broker state. */
+  ambiguous?: boolean;
 }
 
 /**
@@ -752,6 +759,12 @@ export async function webullReplaceOrder(
       ok: false,
       raw: r.data,
       error: j.msg || j.message || j.error_msg || `Webull replace failed (${r.status})`,
+      // Identical classification to webullPlaceOrder's: status 0 is a network
+      // error or our own timeout abort (the request may well have arrived and
+      // been applied), 429 can come back AFTER acceptance, and a 5xx may be
+      // raised after processing. Only a definite 4xx means the broker looked
+      // at the modify and refused it.
+      ambiguous: r.status === 0 || r.status === 429 || r.status >= 500,
     };
   }
   return { ok: true, raw: r.data };

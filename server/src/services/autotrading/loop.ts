@@ -31,7 +31,7 @@ import {
   syncLiveOptionsPositionsFromBroker,
   liveOptionsSeedForEquity,
 } from './liveOptionsExecute';
-import { maybeAlertLiveOrderFailures } from './liveFailureAlert';
+import { maybeAlertLiveOrderFailures, maybeAlertLiveAmbiguity } from './liveFailureAlert';
 import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
 import { maybeAutoTune } from './autoTune';
 import {
@@ -631,6 +631,14 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // stages (which run before every early return) and the entry stages.
     // Best-effort, throttled, and never throws.
     await maybeAlertLiveOrderFailures();
+    // Same placement and same reasoning, for the other half of the anomaly
+    // surface: the branches that resolved an UNKNOWN by deferring (an
+    // unanswered placement, a fill the guards refused to book, a bracket whose
+    // exit legs both claimed FILLED). Those paths all justify their
+    // conservative choice as "loudly journaled for a human to notice", which
+    // was only true of the journal itself — nothing pushed them anywhere.
+    // Best-effort, throttled, and never throws.
+    await maybeAlertLiveAmbiguity();
     // Same reasoning, same placement: the halt is recomputed from state that's
     // already current by this point regardless of which return path the tick
     // took above. Best-effort, throttled to once per pool per day, never throws.

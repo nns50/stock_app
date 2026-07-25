@@ -2,7 +2,16 @@ import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents
 import { dispatchNotifications } from '../notifier';
 
 // ---------------------------------------------------------------------------
-// Repeated live-order-rejection alerting.
+// Live-order anomaly alerting — two independent alerts over the same journal:
+//
+//   maybeAlertLiveOrderFailures  a RUN of broker rejections (nothing is
+//                                getting through right now)
+//   maybeAlertLiveAmbiguity      a single UNRESOLVED order state (our records
+//                                and the broker may already disagree)
+//
+// Both are throttled and derived entirely from the append-only journal. See
+// the AMBIGUITY_ACTIONS block below for why the second one is separate rather
+// than more actions added to the first.
 //
 // The sub-penny bracket bug rejected 2000+ live entries before anyone noticed,
 // because nothing surfaced a SYSTEMIC run of live-order rejections — only a
@@ -28,7 +37,7 @@ import { dispatchNotifications } from '../notifier';
 
 /** A real live order the broker REJECTED (webullPlaceOrder returned !ok), or a
  *  close we couldn't even price — the anomaly class this alert exists for. */
-const FAILURE_ACTIONS = [
+export const FAILURE_ACTIONS = [
   'live_entry_failed',
   'live_options_entry_failed',
   'live_options_exit_failed',
@@ -45,6 +54,66 @@ const FAILURE_ACTIONS = [
 const SUCCESS_ACTIONS = ['live_order_placed', 'live_options_order_placed', 'live_time_exit_placed'];
 /** Our own "we alerted" marker, journaled so the throttle survives a restart. */
 const ALERT_ACTION = 'live_failure_alerted';
+
+// ---------------------------------------------------------------------------
+// The AMBIGUITY class — a separate alert with separate semantics.
+//
+// Every one of these is journaled by a branch that resolved an UNKNOWN by
+// deferring: a placement whose outcome we never learned, an order retired
+// because the broker denied knowing it, a fill the shared guards refused to
+// book, a bracket whose exit legs both claimed FILLED, a fill recorded at the
+// broker that then failed to reach our ledger. Each of those code paths
+// justifies its conservative choice with some variant of "recoverable, and
+// loudly journaled for a human to notice" — but until now nothing turned the
+// journal entry into anything a human would actually see, so the premise was
+// false and the recovery never started.
+//
+// Deliberately NOT folded into the rejection streak above, because the two
+// have opposite reset semantics. A rejection streak is about a CURRENT
+// condition (nothing is getting through right now), so a later success
+// genuinely clears it. An ambiguity is about a PAST fact that a later success
+// does nothing to resolve: shares the broker filled and our ledger never
+// booked stay unbooked no matter how many orders work afterwards. So this
+// alerts on the FIRST occurrence rather than at a threshold, counts only what
+// arrived since the last ambiguity alert (never re-counting what a previous
+// alert already reported), and is never reset by anything but being reported.
+// ---------------------------------------------------------------------------
+
+/** A branch that resolved an unknown by deferring — see the block comment. */
+export const AMBIGUITY_ACTIONS = [
+  // We never heard back from the broker on a real placement. The order may be
+  // working, filled, or never have landed; the intent is deliberately left
+  // non-terminal so reconcile can settle it by client order id.
+  'live_order_outcome_unknown',
+  'live_options_order_outcome_unknown',
+  // ...and the resolution of the above: the broker positively denied knowing
+  // the order, so it was retired. Worth surfacing because it is inferred from
+  // absence (an unindexed or paged-out order looks identical), not observed.
+  'live_order_never_placed',
+  'live_options_order_never_placed',
+  // A broker fill our own guards refused to book in full (fillDelta.ts). Real
+  // shares exist that the ledger, the risk caps and P&L cannot see.
+  'live_fill_not_fully_materialized',
+  'live_options_fill_not_fully_materialized',
+  // The broker reported a fill and writing it to our ledger then threw. The
+  // intent already moved on, so nothing retries an entry — permanent drift.
+  'live_entry_materialization_failed',
+  'live_exit_materialization_failed',
+  'live_time_exit_materialization_failed',
+  'live_options_materialization_failed',
+  // Two bracket exit legs both reported FILLED. The position was left open
+  // rather than guessed closed, so our ledger and the account may disagree
+  // about whether it is still on.
+  'live_exit_ambiguous',
+];
+/** Our own "we alerted about ambiguity" marker — same restart-safe throttle. */
+const AMBIGUITY_ALERT_ACTION = 'live_ambiguity_alerted';
+/** An unresolved ambiguity is reported on its FIRST occurrence: unlike a
+ *  rejection (normal market friction until it repeats), one of these already
+ *  means real exposure the ledger can't account for. */
+export const LIVE_AMBIGUITY_ALERT_THRESHOLD = 1;
+/** While ambiguities keep arriving, re-remind at most this often. */
+export const LIVE_AMBIGUITY_REALERT_COOLDOWN_MS = 60 * 60_000;
 
 /** Fire once this many live orders are rejected in a row. A single rejection is
  *  normal; a run of them is systemic. */
@@ -118,6 +187,82 @@ export async function maybeAlertLiveOrderFailures(now: number = Date.now()): Pro
       message:
         `⚠️ ${consecutiveFailures} live order attempts REJECTED in a row — no live trades are ` +
         `getting through. Latest: ${symbol} — ${reason}. Check the Auto-Trade page.`,
+    },
+  ]);
+  return true;
+}
+
+/** A one-line "what actually happened" per ambiguity action, so the alert says
+ *  what to go and check rather than just naming an event. */
+const AMBIGUITY_SUMMARY: Record<string, string> = {
+  live_order_outcome_unknown: 'a live order was sent but the broker never answered',
+  live_options_order_outcome_unknown: 'a live options order was sent but the broker never answered',
+  live_order_never_placed: 'an unknown-outcome order was retired — the broker denies knowing it',
+  live_options_order_never_placed: 'an unknown-outcome options order was retired — the broker denies knowing it',
+  live_fill_not_fully_materialized: 'a broker fill could not be fully booked into the ledger',
+  live_options_fill_not_fully_materialized: 'a broker options fill could not be fully booked into the ledger',
+  live_entry_materialization_failed: 'an entry filled at the broker but writing the position failed',
+  live_exit_materialization_failed: 'an exit filled at the broker but recording the close failed',
+  live_time_exit_materialization_failed: 'a time-exit filled at the broker but recording the close failed',
+  live_options_materialization_failed: 'an options fill was recorded at the broker but not in the ledger',
+  live_exit_ambiguous: 'two bracket exit legs both reported FILLED — the position was left open',
+};
+
+/**
+ * Surface UNRESOLVED AMBIGUITIES through the notifier — the branches that
+ * deferred an unknown rather than guessing at it (see AMBIGUITY_ACTIONS).
+ *
+ * Reads the journal newest-first, counts the ambiguity events that arrived
+ * SINCE the last ambiguity alert (so an alert never re-reports what an earlier
+ * one already covered, and the alerting naturally stops once they stop
+ * arriving), and dispatches if the cooldown has elapsed. Unlike the rejection
+ * streak above, a successful placement does NOT reset this: a fill the ledger
+ * never booked stays unbooked regardless of what happens afterwards.
+ *
+ * Best-effort and never throws. Returns true iff it dispatched. `now` is
+ * injectable for tests.
+ */
+export async function maybeAlertLiveAmbiguity(now: number = Date.now()): Promise<boolean> {
+  const events = listAutotradeEvents({
+    stage: 'execution',
+    actions: [...AMBIGUITY_ACTIONS, AMBIGUITY_ALERT_ACTION],
+    limit: 100,
+  });
+
+  let unreported = 0;
+  let latest: { symbol: string | null; action: string; reason: string } | null = null;
+  let lastAlertAt: number | null = null;
+  for (const e of events) {
+    // The most recent marker ends the window — everything older was already
+    // reported by that alert.
+    if (e.action === AMBIGUITY_ALERT_ACTION) {
+      lastAlertAt = e.createdAt;
+      break;
+    }
+    unreported++;
+    if (!latest) latest = { symbol: e.symbol, action: e.action, reason: reasonOf(e.detail) };
+  }
+
+  if (unreported < LIVE_AMBIGUITY_ALERT_THRESHOLD) return false;
+  if (lastAlertAt !== null && now - lastAlertAt < LIVE_AMBIGUITY_REALERT_COOLDOWN_MS) return false;
+
+  const symbol = latest?.symbol ?? 'unknown';
+  const action = latest?.action ?? 'unknown';
+  const what = AMBIGUITY_SUMMARY[action] ?? 'a live order outcome could not be resolved';
+  // Journal the marker BEFORE dispatching, same reasoning as the rejection
+  // alert: the journal is the throttle's source of truth.
+  logAutotradeEvent({
+    stage: 'execution',
+    action: AMBIGUITY_ALERT_ACTION,
+    detail: { unreported, latestSymbol: symbol, latestAction: action, latestReason: latest?.reason ?? null },
+  });
+  await dispatchNotifications([
+    {
+      title: 'Autotrade: unresolved live order state',
+      message:
+        `⚠️ ${unreported} live order${unreported === 1 ? '' : 's'} in an UNRESOLVED state — the app's ` +
+        `records may not match the broker. Latest: ${symbol} — ${what}. ` +
+        `Reconcile against your broker and check the Auto-Trade page's journal.`,
     },
   ]);
   return true;

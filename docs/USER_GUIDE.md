@@ -411,6 +411,14 @@ yourself once you've decided.
   guardrail, checks the kill switch + `TRADING_ENABLED`, and writes the intent + broker
   `order_id` to the audit trail. One order at a time — stock, or a **single-leg option**
   (call/put + strike + expiry; limit or stop types — Webull has no market options).
+  If the broker **never answers** (a timeout, a network drop, a 429 or a 5xx), you get an
+  amber **⚠ Outcome unknown** result rather than a red "not placed": the request may well
+  have arrived and been accepted, so the app refuses to claim a rejection it can't verify.
+  The order stays in the list as **submitted** and is resolved by **Refresh status** /
+  **Refresh all**, which look it up by the client order id the app generated — no broker
+  order id needed. **Don't place it again until it resolves**; if it stays unresolved,
+  check the order directly at your broker. (Only a definite refusal — a 4xx, e.g.
+  insufficient buying power — is recorded as rejected.)
 - **Orders** — recent intents (placed + dry-run), newest first, with their lifecycle state. A
   multi-leg or bracketed order carries a small **strategy tag** (`vertical` / `covered` / `condor` /
   `bracket`) so the row explains itself. For an order that reached the broker, **Refresh status**
@@ -438,7 +446,13 @@ yourself once you've decided.
   re-run against the new values — then reconciled. Modify is offered only for a **single-leg**
   order (stock or single option): a spread or a bracket is one _combo_ of broker orders, so the
   in-place replace can't safely retune it — change it by **Cancel**-and-re-place instead (the
-  server refuses a spread/bracket modify for the same reason).
+  server refuses a spread/bracket modify for the same reason). A modify whose response is
+  **lost** is reported as **unknown**, not rejected, for the same reason a placement is: it may
+  have applied. Nothing is written to the order either way — instead it's re-checked against the
+  broker, and if the broker's own record shows a different quantity than the app has, the app
+  **adopts the broker's number** and notes the correction in the audit trail. That matters
+  because fills are only ever booked up to the order's recorded quantity, so a silently-applied
+  size increase would otherwise leave the extra shares untrackable.
 
 ### Guardrail config
 
@@ -540,9 +554,12 @@ nudge, not a blocker — you can still save with items unchecked.
   type it, enter your Webull cash account_id (remembered from Trade), and the server
   re-checks `TRADING_ENABLED`, every guardrail, and the kill switch before it fires. The
   order can take a few minutes to fill; the position updates once it does (automatically,
-  via the same background Webull sync that reconciles any other live order). Use **close**
-  when you still hold the position and want the app to sell it; use **exit** when you've
-  already sold it elsewhere.
+  via the same background Webull sync that reconciles any other live order). If the broker
+  never answers, you get the same amber **⚠ Outcome unknown** result described under
+  [Trade](#trade) — **don't close again until it resolves**, since a first close that
+  actually went through would leave the second one overselling (for a long, flipping you
+  short). Use **close** when you still hold the position and want the app to sell it; use
+  **exit** when you've already sold it elsewhere.
 - **Expired options** — an option held **through** expiry never produces a closing order,
   so nothing ever records an exit and the position would sit "open" forever, quietly
   inflating your open exposure, position count, risk caps and unrealized P&L with a contract
@@ -1203,7 +1220,9 @@ shouldn't be a tab-switch away.
   counterpart to the equity one above: type `SELL <qty> <symbol>` to arm, and it places
   a real closing order right now — a sell-to-close for a single leg, or the whole spread
   as one combo (selling the long leg, buying back the short) — through the same
-  guardrails and kill-switch checks. A close you trigger this way is recorded as a
+  guardrails and kill-switch checks — including the same amber **⚠ Outcome unknown**
+  result, and the same "don't close again until it resolves" rule, described under
+  [Positions & P&L](#positions--pl). A close you trigger this way is recorded as a
   **manual** exit (vs. the automated **time exit**), so the table's Reason badge tells
   the two apart.
 - **Scale into live winners** (2026-07-24) — a checkbox in the live-trading settings (with a
@@ -1231,7 +1250,15 @@ shouldn't be a tab-switch away.
   (three in a row — a bad price, a broker/account problem, a config error, so no live
   trades are getting through), you get one alert naming the count and the latest reason,
   then at most one reminder an hour while it persists, reset the moment an order gets
-  through. The **daily-drawdown halt** also notifies — paper, live, and live options
+  through. Separately, an **unresolved order state** alerts on the *first* occurrence —
+  a placement the broker never answered, a fill the app couldn't fully book into its
+  ledger, an order retired because the broker denied knowing it, or a bracket whose
+  stop and target *both* reported filled. These aren't rejections and a later
+  successful order doesn't undo them: each one means the app's records and your
+  broker may already disagree, so the alert says which and points you at the
+  Auto-Trade journal. Throttled to at most one an hour, and it only ever reports
+  what's new since the last one — so it goes quiet on its own once they stop.
+  The **daily-drawdown halt** also notifies — paper, live, and live options
   each alert independently the first time that book's day crosses its own halt level,
   at most once per (ET) trading day per book, so a rough day in one doesn't drown out or
   suppress a rough day in another; releasing the next day (a fresh day's P&L starting

@@ -9,7 +9,14 @@ import {
   wouldOpenShort,
 } from './guardrails';
 import { getTradingConfig } from '../../db/trading';
-import { OrderIntentRecord, countTodaysOrders, createIntent, transitionIntent } from '../../db/orders';
+import {
+  OrderIntentRecord,
+  countTodaysOrders,
+  createIntent,
+  getIntent,
+  recordIntentNote,
+  transitionIntent,
+} from '../../db/orders';
 import { webullAccountState, webullAccountType } from '../../providers/webull/accountState';
 import { marketOpenContext } from './marketHours';
 import { WebullPlaceResult, newClientOrderId, webullPlaceOrder } from '../../providers/webull/orders';
@@ -32,7 +39,16 @@ import { getProvider } from '../../providers';
 // ---------------------------------------------------------------------------
 
 export type PlaceReason =
-  'trading_disabled' | 'not_confirmed' | 'account_error' | 'blocked' | 'broker_rejected' | 'duplicate' | 'placed';
+  | 'trading_disabled'
+  | 'not_confirmed'
+  | 'account_error'
+  | 'blocked'
+  | 'broker_rejected'
+  | 'duplicate'
+  | 'placed'
+  /** The broker never answered. The order may or may not be live — see the
+   *  ambiguous branch in placeOrder() below. NOT a rejection. */
+  | 'outcome_unknown';
 
 export interface PlaceResult {
   /** The request was processed (not whether an order was placed). */
@@ -187,6 +203,42 @@ export async function placeOrder(
       detail: `broker accepted${broker.orderId ? ` (order ${broker.orderId})` : ''}`,
     });
     return { ok: true, placed: true, reason: 'placed', guardrails, accountState, intent: acked, broker };
+  }
+
+  // We never heard back — the request may well have reached the broker and been
+  // accepted (see WebullPlaceResult.ambiguous). 'rejected' is TERMINAL, so
+  // recording one here states as fact something we do not know, and the cost is
+  // asymmetric: a real resting order would then have no intent tracking it, no
+  // Positions row when it fills, and no presence in exposure or the caps, while
+  // the UI reports "rejected" — an invitation to place it a second time.
+  //
+  // Leave it at 'submitted' instead. webullOrderStatus looks orders up by CLIENT
+  // order id, so the outcome is still recoverable with no broker id in hand:
+  // reconcileAllWorking() now includes exactly this shape (see its own filter),
+  // and a per-order Refresh reaches it too. This mirrors what the autotrade
+  // paths already do (liveExecute.ts's attemptLiveEntry, liveOptionsExecute.ts's
+  // placeLiveOptionsOrder) — #337 fixed those three call sites and left this
+  // one, the human Trade page's, on the old behavior.
+  //
+  // Deliberately NOT auto-retired the way autotrade retires an unknown
+  // placement the broker denies knowing: that exists to free an unattended
+  // loop's per-symbol dedup slot, and there is no such slot here. A human can
+  // see the order and decide.
+  if (broker.ambiguous) {
+    recordIntentNote(intentRec.id, `placement outcome unknown (no broker response): ${broker.error}`);
+    return {
+      ok: true,
+      placed: false,
+      reason: 'outcome_unknown',
+      guardrails,
+      accountState,
+      intent: getIntent(intentRec.id) ?? intentRec,
+      broker,
+      error:
+        `The broker did not respond, so it is unknown whether this order was accepted (${broker.error}). ` +
+        `It has NOT been marked rejected — refresh the order to resolve it against the broker before ` +
+        `placing another, and check your broker directly if it stays unresolved.`,
+    };
   }
 
   const rej = transitionIntent(intentRec.id, 'rejected', { detail: `broker rejected: ${broker.error}` });

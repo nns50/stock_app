@@ -190,6 +190,20 @@ export function ErrorState({ error, onRetry }: { error: Error; onRetry?: () => v
   );
 }
 
+/**
+ * The outcome of a live order request, when it is neither success nor refusal.
+ *
+ * A place / close / modify whose broker response was LOST is not "not placed" —
+ * the order may be working or already filled at the broker. Rendering it in the
+ * same red "✕ Not placed" box as a rejection tells the user the opposite of the
+ * truth, and on a close it invites a second one (oversell; for a long, a flip to
+ * short). Amber and explicitly unresolved, so the next action is to check rather
+ * than to retry.
+ */
+export function UnknownOutcomeNotice({ message }: { message: string }) {
+  return <div className="rounded-md bg-amber-500/15 text-amber-400 text-sm p-2">⚠ Outcome unknown — {message}</div>;
+}
+
 export function Badge({
   color = 'slate',
   children,

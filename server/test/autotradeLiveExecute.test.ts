@@ -1017,6 +1017,40 @@ describe('reconcileLiveOrders', () => {
     expect(listPositions({ status: 'open' })).toHaveLength(0); // and no phantom position
   });
 
+  it('resolves an unknown placement that had actually filled', async () => {
+    // The gap #337 left: it kept an ambiguous placement pending and resolvable
+    // for "never landed" and "can't reach the broker", but not for the most
+    // likely outcome of all. The intent sits at 'submitted', and FILLED is an
+    // illegal transition from there, so canMove was false and the order was
+    // skipped every tick — pending forever, holding the symbol's dedup slot,
+    // with the real filled position never materialized into any ledger.
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'Request timed out', ambiguous: true });
+    const placed = await attemptLiveEntry(signal(), entryResult(), 'MODERATE', liveConfig());
+    const ordered = getIntent(placed.intentId!)!.quantity;
+    expect(getIntent(placed.intentId!)?.state).toBe('submitted'); // non-terminal, as designed
+
+    // It did land after all, and filled before the first reconcile.
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      brokerOrderId: 'WB-LATE',
+      filledQty: ordered,
+      filledPrice: 100,
+    } as WebullOrderStatus);
+    const outcomes = await reconcileLiveOrders();
+
+    expect(outcomes[0]).toMatchObject({ changed: true, action: 'entry_filled' });
+    expect(getIntent(placed.intentId!)?.state).toBe('filled');
+    const positions = listPositions({ status: 'open' });
+    expect(positions).toHaveLength(1);
+    expect(positions[0].symbol).toBe('AAPL');
+    expect(positions[0].quantity).toBe(ordered);
+  });
+
   it('leaves an unknown placement pending while the broker cannot be reached', async () => {
     setAutotradeConfig(liveConfig());
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
