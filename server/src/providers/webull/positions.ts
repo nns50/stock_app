@@ -336,6 +336,11 @@ export interface ImportSummary {
   imported: number;
   /** Already present as an open journal position. */
   skipped: number;
+  /** Options the broker still lists whose expiration has already PASSED — see
+   *  importFromPreview. Reported rather than folded into `skipped`, because
+   *  "we already have this" and "this contract no longer exists" are different
+   *  facts and only one of them is a duplicate. */
+  expiredSkipped: number;
   /** Present in the payload but not journal-mappable. */
   unmapped: number;
   created: Position[];
@@ -344,9 +349,31 @@ export interface ImportSummary {
 
 function importFromPreview(accountId: string, preview: PositionsPreview): ImportSummary {
   const open = listPositions({ status: 'open', accountId, includeUnassignedAccount: true });
+  const today = etToday();
   const created: Position[] = [];
   let skipped = 0;
+  let expiredSkipped = 0;
   for (const p of preview.positions) {
+    // A contract whose expiration has PASSED cannot be a newly-opened
+    // position — the same impossibility the journal-integrity report calls
+    // entry_after_expiration. A broker still listing it is settlement lag: an
+    // expired option stays in Webull's holdings until it clears, which over a
+    // weekend means all of Saturday and Sunday.
+    //
+    // Without this, that lag fights the expired-option sweep and loses money
+    // in the journal. The sweep closes the expired lot at $0 (booking its
+    // real loss); this import then finds no OPEN position matching it — the
+    // dedup below only looks at open rows — and creates a brand-new one; the
+    // sweep closes that too, booking the SAME loss a second time. It repeats
+    // every sync until the broker finally drops the contract. Deleting the
+    // duplicate doesn't help either, since the next sync re-adds it.
+    //
+    // Strictly BEFORE today (ET), matching findExpiredOpenOptions: a contract
+    // expiring TODAY is still tradeable all session and imports normally.
+    if (p.assetType === 'option' && p.expiration && p.expiration < today) {
+      expiredSkipped++;
+      continue;
+    }
     const match = findMatch(open, p);
     if (match) {
       skipped++;
@@ -358,7 +385,15 @@ function importFromPreview(accountId: string, preview: PositionsPreview): Import
     }
     created.push(createPosition(p));
   }
-  return { ok: true, accountId, imported: created.length, skipped, unmapped: preview.unmapped, created };
+  return {
+    ok: true,
+    accountId,
+    imported: created.length,
+    skipped,
+    expiredSkipped,
+    unmapped: preview.unmapped,
+    created,
+  };
 }
 
 /**
@@ -374,6 +409,7 @@ export async function importWebullPositions(accountId: string): Promise<ImportSu
       accountId,
       imported: 0,
       skipped: 0,
+      expiredSkipped: 0,
       unmapped: preview.unmapped,
       created: [],
       error: preview.error,
