@@ -289,6 +289,10 @@ export interface PositionExit {
   exitDate: string;
   fees: number;
   notes: string | null;
+  /** The order_intents.id whose live fill produced this exit — mirrors
+   *  server/src/db/positions.ts. The API has always sent it; this type omitted
+   *  it, so the field was invisible to the browser. */
+  sourceIntentId: number | null;
   createdAt: number;
 }
 
