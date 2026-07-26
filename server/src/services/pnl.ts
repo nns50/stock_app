@@ -200,6 +200,12 @@ export interface GroupStat {
 
 export interface JournalStats {
   totalClosed: number;
+  /** How many of `totalClosed` carry a usable date, and so appear in the
+   *  equity curve, rolling expectancy, weekday and hold-time breakdowns. Lower
+   *  than totalClosed when a position was imported without an open date (see
+   *  db/positions.ts) — surfaced so a shorter curve reads as "we don't know
+   *  when those happened" rather than as missing trades. */
+  datedTrades: number;
   wins: number;
   losses: number;
   breakeven: number;
@@ -400,8 +406,12 @@ const HOLD_BUCKETS: { label: string; max: number }[] = [
 ];
 const HOLD_ORDER = HOLD_BUCKETS.map((b) => b.label);
 
-/** Whole calendar days held (entry→last exit), clamped at 0 for same-day/bad data. */
-function holdDaysOf(p: Position, exitDate: string): number {
+/** Whole calendar days held (entry→last exit), clamped at 0 for same-day/bad
+ *  data. Null when the entry date is unknown: Date.parse(null) is NaN, and a
+ *  NaN would fall through holdBucket()'s find() into the LAST bucket, quietly
+ *  filing every undated trade under "30+ days". Excluded is the honest answer. */
+function holdDaysOf(p: Position, exitDate: string): number | null {
+  if (p.entryDate === null) return null;
   return Math.max(0, Math.round((Date.parse(exitDate) - Date.parse(p.entryDate)) / 86_400_000));
 }
 
@@ -423,13 +433,25 @@ function sessionOf(time: string): string | null {
   return 'Extended';
 }
 
+/**
+ * The date a completed trade sits at on a timeline: its last exit, else its
+ * entry. Null when neither is known — such a trade cannot be placed in time at
+ * all, so every date-keyed breakdown leaves it out rather than guessing.
+ */
+export function tradeDateOf(p: Position): string | null {
+  return lastExitDate(p) ?? p.entryDate;
+}
+
 /** Stats over CLOSED positions (each closed position = one completed trade). */
 export function computeJournalStats(closed: Position[]): JournalStats {
-  const trades = closed
-    .map((p) => ({
-      date: lastExitDate(p) ?? p.entryDate,
-      pnl: round2(realizedPnlOf(p)),
-    }))
+  // A trade with no date at all still counts toward win rate, expectancy and
+  // profit factor — those need only its P&L. It is dropped from the ordered
+  // series below (equity curve, rolling expectancy) because there is nowhere
+  // to put it, and datedTrades records how many made the cut so the UI can say
+  // so rather than quietly showing a shorter curve.
+  const withPnl = closed.map((p) => ({ date: tradeDateOf(p), pnl: round2(realizedPnlOf(p)) }));
+  const trades = withPnl
+    .filter((t): t is { date: string; pnl: number } => t.date !== null)
     .sort((a, b) => a.date.localeCompare(b.date));
 
   const wins = trades.filter((t) => t.pnl > 0);
@@ -473,9 +495,15 @@ export function computeJournalStats(closed: Position[]): JournalStats {
     for (const tag of new Set(p.tags)) accumulate(tagMap, tag, pnl, r);
     accumulate(gradeMap, p.grade || 'Ungraded', pnl, r);
     accumulate(discMap, disciplineBucket(p), pnl, r);
-    const exitDate = lastExitDate(p) ?? p.entryDate;
-    accumulate(weekdayMap, WEEKDAYS[new Date(`${exitDate}T00:00:00Z`).getUTCDay()], pnl, r);
-    accumulate(holdMap, holdBucket(holdDaysOf(p, exitDate)), pnl, r);
+    // Both of these need a real date. A trade with none is left out of the
+    // breakdown entirely rather than bucketed on a guess — the same posture
+    // byTimeOfDay already takes toward a missing entry TIME.
+    const exitDate = tradeDateOf(p);
+    if (exitDate !== null) {
+      accumulate(weekdayMap, WEEKDAYS[new Date(`${exitDate}T00:00:00Z`).getUTCDay()], pnl, r);
+      const held = holdDaysOf(p, exitDate);
+      if (held !== null) accumulate(holdMap, holdBucket(held), pnl, r);
+    }
     if (p.entryTime) {
       const s = sessionOf(p.entryTime);
       if (s) accumulate(sessionMap, s, pnl, r);
@@ -502,7 +530,11 @@ export function computeJournalStats(closed: Position[]): JournalStats {
   const decisiveWinRate = decisive ? round2((wins.length / decisive) * 100) : 0;
 
   return {
-    totalClosed: trades.length,
+    // Every closed trade counts toward win rate, expectancy and profit factor —
+    // those need only P&L. `datedTrades` is the subset that could be placed in
+    // time at all.
+    totalClosed: withPnl.length,
+    datedTrades: trades.length,
     wins: wins.length,
     losses: losses.length,
     breakeven: breakeven.length,

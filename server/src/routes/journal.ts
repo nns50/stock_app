@@ -13,7 +13,8 @@ import { getProvider } from '../providers';
 
 export const journalRouter = Router();
 
-const lastExitDate = (p: Position): string =>
+/** Null when neither an exit nor an entry date is known. */
+const lastExitDate = (p: Position): string | null =>
   p.exits.length
     ? p.exits
         .map((e) => e.exitDate)
@@ -48,8 +49,18 @@ journalRouter.get(
       );
       return;
     }
-    const startDate = closed.map((p) => p.entryDate).sort()[0];
-    const endDate = closed.map(lastExitDate).sort().slice(-1)[0];
+    // The benchmark compares your realized return against buy-and-hold over the
+    // period you traded, so the window has to come from trades that HAVE dates.
+    // `null` would sort as the string "null" and quietly become the boundary.
+    const startDate = closed
+      .map((p) => p.entryDate)
+      .filter((d): d is string => d !== null)
+      .sort()[0];
+    const endDate = closed
+      .map(lastExitDate)
+      .filter((d): d is string => d !== null)
+      .sort()
+      .slice(-1)[0];
     const totalRealized = closed.reduce((s, p) => s + realizedPnlOf(p), 0);
 
     let benchStart: number | null = null;
@@ -115,7 +126,11 @@ journalRouter.get(
 journalRouter.get(
   '/excursions',
   asyncHandler(async (_req, res) => {
-    const closed = listPositions({ status: 'closed', assetType: 'stock' }).slice(0, 50);
+    // An excursion walks daily candles from the entry to the exit, so a trade
+    // with no known entry date cannot be measured and is left out.
+    const closed = listPositions({ status: 'closed', assetType: 'stock' })
+      .filter((p): p is typeof p & { entryDate: string } => p.entryDate !== null)
+      .slice(0, 50);
     const provider = getProvider();
     const rows: TradeExcursion[] = [];
     await Promise.all(
@@ -123,7 +138,7 @@ journalRouter.get(
         try {
           const candles = await provider.getCandles(p.symbol, 'daily', {
             start: p.entryDate,
-            end: lastExitDate(p),
+            end: lastExitDate(p) ?? undefined,
           });
           const ex = computeExcursion(
             {
@@ -170,7 +185,10 @@ journalRouter.get(
   asyncHandler(async (_req, res) => {
     const rows: SlippageRow[] = [];
     for (const p of listPositions()) {
-      if (p.sourceIntentId != null) {
+      // Entry-side slippage is dated by the entry — see the same guard in
+      // services/autotrading/autoTune.ts's buildSlippageRows().
+      if (p.sourceIntentId != null && p.entryDate !== null) {
+        const entryDate = p.entryDate;
         const intent = getIntent(p.sourceIntentId);
         if (intent?.limitPrice != null) {
           rows.push(
@@ -179,7 +197,7 @@ journalRouter.get(
               symbol: p.symbol,
               kind: 'entry',
               side: intent.side,
-              date: p.entryDate,
+              date: entryDate,
               limitPrice: intent.limitPrice,
               fillPrice: p.entryPrice,
               quantity: p.quantity,

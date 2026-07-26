@@ -64,7 +64,7 @@ function positionRow(p: Position): unknown[] {
     p.quantity,
     p.multiplier,
     p.entryPrice,
-    p.entryDate,
+    p.entryDate ?? '', // blank, not the word "null" — an unknown date is an empty cell
     p.fees,
     p.exits.length,
     lastExit,

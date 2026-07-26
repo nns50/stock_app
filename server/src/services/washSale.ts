@@ -63,6 +63,11 @@ export function detectWashSale(position: Position, sameSymbolPositions: Position
 
   for (const other of sameSymbolPositions) {
     if (other.id === position.id) continue;
+    // A position with no known entry date cannot anchor a 61-day window, so it
+    // can never be the trigger. daysBetween(date, null) is NaN and every
+    // comparison against it is false, which would have reached the same
+    // outcome by accident — stated explicitly so it stays deliberate.
+    if (other.entryDate === null) continue;
     const daysApart = daysBetween(closingDate, other.entryDate);
     if (Math.abs(daysApart) <= WASH_SALE_WINDOW_DAYS) {
       return { triggerPositionId: other.id, triggerEntryDate: other.entryDate, daysApart };

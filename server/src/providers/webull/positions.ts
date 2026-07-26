@@ -10,6 +10,7 @@ import {
   listPositions,
   updatePosition,
 } from '../../db/positions';
+import { orderingDateOf } from '../../db/positions';
 import { priceMap } from '../../services/quotes';
 import { etToday } from '../../util/marketDate';
 import { webullClient, webullConfigured } from './account';
@@ -156,8 +157,17 @@ export function mapWebullPosition(p: Record<string, unknown>, accountId: string)
   const side: Side = sideRaw.includes('SHORT') || (signedQty ?? 0) < 0 ? 'short' : 'long';
 
   const entryPrice = num(pick(p, ['cost_price', 'avg_cost', 'average_cost', 'cost', 'avg_price', 'open_price'])) ?? 0;
+  // Null, not today(). This endpoint returns an aggregate of CURRENT HOLDINGS
+  // — quantity and an AVERAGE cost — so for a lot built from several buys
+  // there is no single open date for it to report, and in practice it often
+  // reports none at all. Stamping the import date turned "unknown" into a
+  // confident wrong answer that then fed hold-time buckets, the wash-sale
+  // window and the equity curve; it also produced entry dates AFTER an
+  // already-expired contract for a position the broker was still listing
+  // overnight. Unknown is recorded as unknown, and the stats that need a date
+  // exclude the row and say so.
   const entryDate =
-    toIsoDate(pick(p, ['open_date', 'entry_date', 'position_date', 'create_time', 'created_at'])) ?? today();
+    toIsoDate(pick(p, ['open_date', 'entry_date', 'position_date', 'create_time', 'created_at'])) ?? null;
 
   // The option's defining fields live in the single leg (Webull's confirmed
   // shape) when present, else at the top level (a flat row). Parse them up
@@ -450,7 +460,10 @@ async function closePositionsFromPreview(
     { lots: Position[]; qty: number; journalQtyBefore: number; brokerQty: number; justConfirmed: boolean }
   >();
   for (const [key, lots] of lotsByKey) {
-    lots.sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.id - b.id); // FIFO: oldest first
+    // FIFO: oldest first. An undated lot orders by the day it was recorded
+    // (orderingDateOf) — FIFO needs SOME sequence, and that proxy never leaks
+    // into a statistic the way writing it to entry_date would have.
+    lots.sort((a, b) => orderingDateOf(a).localeCompare(orderingDateOf(b)) || a.id - b.id);
     const journalQty = lots.reduce((s, p) => s + p.remainingQuantity, 0);
     const brokerQty = liveQtyByKey.get(key) ?? 0;
     const gap = journalQty - brokerQty;

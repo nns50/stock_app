@@ -70,7 +70,12 @@ function buildSlippageRows(): SlippageRow[] {
 
   const rows: SlippageRow[] = [];
   for (const p of positions) {
-    if (p.sourceIntentId != null) {
+    // Entry-side slippage is dated by the entry. A position with none is
+    // skipped rather than labelled with a guess — in practice this excludes
+    // nothing, since only Webull-IMPORTED lots can be undated and those have
+    // no sourceIntentId to compare a fill against in the first place.
+    if (p.sourceIntentId != null && p.entryDate !== null) {
+      const entryDate = p.entryDate;
       const intent = intents.get(p.sourceIntentId);
       if (intent?.limitPrice != null) {
         rows.push(
@@ -79,7 +84,7 @@ function buildSlippageRows(): SlippageRow[] {
             symbol: p.symbol,
             kind: 'entry',
             side: intent.side,
-            date: p.entryDate,
+            date: entryDate,
             limitPrice: intent.limitPrice,
             fillPrice: p.entryPrice,
             quantity: p.quantity,
@@ -116,7 +121,9 @@ function isAutotradePosition(p: Position): boolean {
   return p.tags.includes('autotrade');
 }
 
-const lastExitDateOf = (p: Position): string =>
+/** The date a trade concluded: its last exit, else its entry (null when that
+ *  is unknown too — such a trade has no place on a timeline). */
+const lastExitDateOf = (p: Position): string | null =>
   p.exits.length
     ? p.exits
         .map((e) => e.exitDate)
@@ -133,8 +140,13 @@ const EXCURSION_TUNE_MAX_TRADES = 100;
  *  scoped to autotrade's own fills. Best-effort per trade (a symbol whose
  *  candles can't be fetched is skipped, not fatal). */
 async function buildAutotradeExcursionReport(): Promise<ExcursionReport> {
+  // An excursion walks daily candles from the ENTRY to the exit, so a trade
+  // with no known entry date cannot be measured at all. In practice this
+  // excludes nothing: only Webull-IMPORTED lots can be undated, and those
+  // carry no sourceIntentId, so isAutotradePosition already rejects them.
   const closed = listPositions({ status: 'closed', assetType: 'stock' })
     .filter(isAutotradePosition)
+    .filter((p): p is typeof p & { entryDate: string } => p.entryDate !== null)
     .sort((a, b) => b.entryDate.localeCompare(a.entryDate))
     .slice(0, EXCURSION_TUNE_MAX_TRADES);
   const provider = getProvider();
@@ -144,7 +156,7 @@ async function buildAutotradeExcursionReport(): Promise<ExcursionReport> {
       try {
         const candles = await provider.getCandles(p.symbol, 'daily', {
           start: p.entryDate,
-          end: lastExitDateOf(p),
+          end: lastExitDateOf(p) ?? undefined,
         });
         const ex = computeExcursion(
           {
@@ -223,6 +235,10 @@ export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneR
       if (next > current && config.autoTuneRequireOosConfirmation) {
         const chrono = closedPositions
           .map((p) => ({ pnl: realizedPnlOf(p), date: lastExitDateOf(p) }))
+          // Undated trades have no place on a chronological curve — dropped rather
+          // than anchored to a guessed date (see db/positions.ts on why entryDate
+          // can be null at all).
+          .filter((t): t is { pnl: number; date: string } => t.date !== null)
           .sort((a, b) => a.date.localeCompare(b.date));
         const guard = checkOosEdgeConfirmation(chrono);
         if (!guard.confirmed) {

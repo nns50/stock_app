@@ -268,7 +268,8 @@ non-ISO dates · rows a background job dated in UTC rather than ET · an option
 entered after its own contract expired · exits before their own entry · future
 dates · exits exceeding the position's size · a status that contradicts the
 remaining quantity · a zero/negative entry price · a zero/negative exit quantity
-· a broker-tracked lot with no account recorded.
+· a broker-tracked lot with no account recorded · an imported position with no
+entry date (informational — see below).
 
 Findings are reported at their **cause**, not their symptoms. A row can violate
 several checks for one underlying reason — an option whose entry was stamped
@@ -287,6 +288,30 @@ from 20:00 ET onward. A row is flagged only when its date equals the UTC date at
 the instant it was written *and* that differs from the market date — true of
 every affected row and of no correctly-dated one. It reports the value the row
 should carry; it never writes it.
+
+### Positions with no entry date
+
+Webull's positions endpoint returns current **holdings** — quantity and an
+*average* cost. A lot built from several buys therefore has no single open date
+for it to report, and in practice it often reports none at all; the order-history
+endpoint that does carry dates only reaches back 7 days. Until 2026-07-26 the
+importer papered over this by stamping the date of the **import**, which fed
+hold-time buckets, the wash-sale window and the equity curve as though it were
+fact — and occasionally produced an entry date *after* an already-expired
+contract.
+
+The import now records **no date** rather than inventing one, and `entry_date`
+is nullable (a one-time table rebuild handles existing databases; it preserves
+every position id and every exit). The cost is that an undated trade sits out of
+the equity curve, rolling expectancy, and the weekday/hold-time breakdowns — the
+Journal states how many trades those are computed from, inline, so a shorter
+curve reads as "we don't know when those happened" rather than as missing data.
+Win rate, expectancy and profit factor are unaffected: they need only P&L.
+
+Manually logging a trade still requires a date — you know when you traded.
+`check:journal` lists undated rows as **informational**, so you can fill them in
+from memory via the position's journal dialog and have them rejoin the
+time-based stats.
 
 There is deliberately no repair mode. Several of these have more than one
 defensible fix (is a future-dated exit a typo, or a genuinely mis-recorded

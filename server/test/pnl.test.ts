@@ -514,3 +514,77 @@ describe('computeJournalStats', () => {
     expect(r.sqn).toBeNull();
   });
 });
+
+describe('computeJournalStats — trades with no entry date', () => {
+  const closedTrade = (o: Partial<Position>): Position =>
+    ({
+      id: 1,
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-07-01',
+      entryTime: null,
+      fees: 0,
+      optionType: null,
+      strike: null,
+      expiration: null,
+      multiplier: 1,
+      status: 'closed',
+      tags: [],
+      grade: null,
+      notes: null,
+      checklist: [],
+      stopPrice: null,
+      targetPrice: null,
+      sourceIntentId: null,
+      accountId: null,
+      createdAt: 0,
+      updatedAt: 0,
+      remainingQuantity: 0,
+      exits: [
+        {
+          id: 1,
+          positionId: 1,
+          quantity: 10,
+          exitPrice: 110,
+          exitDate: '2026-07-10',
+          fees: 0,
+          notes: null,
+          sourceIntentId: null,
+          createdAt: 0,
+        },
+      ],
+      ...o,
+    }) as Position;
+
+  it('still counts an undated trade toward win rate and expectancy — those need only P&L', () => {
+    const dated = closedTrade({ id: 1 });
+    // No entry AND no exit date: nowhere to put it on a timeline at all.
+    const undated = closedTrade({ id: 2, entryDate: null, exits: [] });
+
+    const stats = computeJournalStats([dated, undated]);
+    expect(stats.totalClosed).toBe(2);
+    // ...but only one of them can be placed in time.
+    expect(stats.datedTrades).toBe(1);
+    expect(stats.equityCurve).toHaveLength(1);
+  });
+
+  it('leaves an undated trade out of the hold-time and weekday breakdowns', () => {
+    // An undated trade used to reach holdBucket() as NaN, which matched no
+    // bucket and fell through to the LAST one — quietly filing every one of
+    // them under "30+ days".
+    const undated = closedTrade({ id: 2, entryDate: null });
+    const stats = computeJournalStats([undated]);
+    expect(stats.byHold).toEqual([]);
+    // The exit date still places it on a weekday, since that only needs the exit.
+    expect(stats.byWeekday.map((g) => g.key)).toEqual(['Fri']);
+  });
+
+  it('keeps an undated trade in the weekday breakdown when its exit date is known', () => {
+    const stats = computeJournalStats([closedTrade({ entryDate: null })]);
+    expect(stats.byWeekday.reduce((s, g) => s + g.trades, 0)).toBe(1);
+    expect(stats.byHold.reduce((s, g) => s + g.trades, 0)).toBe(0);
+  });
+});

@@ -85,7 +85,8 @@ function etDateStr(ms: number = Date.now()): string {
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
-const lastExitDate = (p: Position): string =>
+/** Null when neither an exit nor an entry date is known. */
+const lastExitDate = (p: Position): string | null =>
   p.exits.length
     ? p.exits
         .map((e) => e.exitDate)
@@ -137,6 +138,10 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
   const closedPositions = listPositions({ status: 'closed' }).filter(isAutotradePosition);
   const closedTrades = closedPositions
     .map((p) => ({ date: lastExitDate(p), pnl: realizedPnlOf(p) }))
+    // Undated trades have no place on a chronological curve — dropped rather
+    // than anchored to a guessed date (see db/positions.ts on why entryDate
+    // can be null at all).
+    .filter((t): t is { date: string; pnl: number } => t.date !== null)
     .sort((a, b) => a.date.localeCompare(b.date));
   const dailyPnl = closedTrades.filter((t) => t.date === todayStr).reduce((s, t) => s + t.pnl, 0);
   const streak = computeStreaksAndDrawdown(closedTrades.map((t) => t.pnl)).currentStreak;

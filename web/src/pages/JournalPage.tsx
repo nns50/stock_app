@@ -321,6 +321,17 @@ export default function JournalPage() {
         action={
           s.totalClosed > 0 && (
             <div className="text-xs text-slate-500 tabular-nums flex flex-wrap gap-x-3">
+              {s.datedTrades < s.totalClosed && (
+                // A curve shorter than the trade count reads as missing data
+                // unless it says why. These trades are counted everywhere that
+                // needs only P&L — they just can't be placed in time.
+                <span
+                  className="text-amber-400/90"
+                  title="Trades imported without an entry date the broker never supplied are counted in win rate and expectancy, but cannot be placed on a timeline."
+                >
+                  {s.datedTrades} of {s.totalClosed} dated
+                </span>
+              )}
               <span>
                 Max drawdown <span className="text-bear">{fmtSignedUsd(-s.maxDrawdown)}</span>
               </span>
@@ -465,6 +476,12 @@ export default function JournalPage() {
           <h2 className="text-sm font-semibold text-slate-300 mb-2">
             Performance by timing
             <span className="text-slate-500 font-normal"> — when do you trade best?</span>
+            {s.datedTrades < s.totalClosed && (
+              <span className="text-amber-400/90 font-normal">
+                {' '}
+                · {s.datedTrades} of {s.totalClosed} trades have the dates these need
+              </span>
+            )}
           </h2>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
             <Breakdown id="byWeekday" title="By weekday (exit)" colLabel="Day" rows={s.byWeekday} />

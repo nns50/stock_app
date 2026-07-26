@@ -931,3 +931,24 @@ describe('comparePositionsToBroker', () => {
     expect(r.error).toBeTruthy();
   });
 });
+
+describe('mapWebullPosition — an entry date the broker never gave', () => {
+  it('records no entry date rather than stamping the day of the import', () => {
+    // The positions endpoint returns current HOLDINGS — quantity and an
+    // AVERAGE cost — so a lot built from several buys has no single open date
+    // to report, and often none is present at all. Stamping today() turned
+    // "unknown" into a confident wrong answer feeding hold-time buckets, the
+    // wash-sale window and the equity curve.
+    const p = mapWebullPosition({ symbol: 'QS', asset_type: 'STOCK', quantity: '17', cost_price: '0.19' }, 'ACC1');
+    expect(p).not.toBeNull();
+    expect(p!.entryDate).toBeNull();
+  });
+
+  it('still uses a real open date when the broker does supply one', () => {
+    const p = mapWebullPosition(
+      { symbol: 'QS', asset_type: 'STOCK', quantity: '17', cost_price: '0.19', open_date: '2026-07-02' },
+      'ACC1',
+    );
+    expect(p!.entryDate).toBe('2026-07-02');
+  });
+});
