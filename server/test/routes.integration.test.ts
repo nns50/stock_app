@@ -565,6 +565,53 @@ describe('positions + journal routes (integration)', () => {
 // at placeOrder()'s own deploy-level master gate rather than making any real
 // network call — sufficient to prove the route reaches closeLivePosition
 // without crashing.
+describe('GET /positions/integrity', () => {
+  it('reports a clean book, naming every check it ran', async () => {
+    const out = (await getJson('/api/positions/integrity')) as {
+      clean: boolean;
+      findings: unknown[];
+      checks: { id: string; count: number }[];
+    };
+    expect(out.clean).toBe(true);
+    expect(out.findings).toEqual([]);
+    // "Clean" is only meaningful against a visible list of what was checked.
+    expect(out.checks.length).toBeGreaterThan(0);
+  });
+
+  it('finds a real defect end-to-end through the route', async () => {
+    const pos = createPosition({
+      assetType: 'stock',
+      symbol: 'BADQTY',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-05-01',
+    });
+    // Written straight to the DB: the exits route refuses this, which is
+    // exactly why an existing row like it would never surface on its own.
+    addExit(pos.id, { quantity: 10, exitPrice: 110, exitDate: '2026-05-10' });
+    db.prepare(
+      `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, created_at)
+       VALUES (?, 5, 111, '2026-05-11', 0, ?)`,
+    ).run(pos.id, Date.now());
+
+    const out = (await getJson('/api/positions/integrity')) as {
+      clean: boolean;
+      findings: { check: string; positionId: number; detail: string }[];
+    };
+    expect(out.clean).toBe(false);
+    const finding = out.findings.find((f) => f.check === 'exits_exceed_quantity')!;
+    expect(finding.positionId).toBe(pos.id);
+    expect(finding.detail).toContain('15');
+  });
+
+  it('exposes no way to write — the report has no apply counterpart', async () => {
+    // Deliberate: several of these have more than one defensible repair, and
+    // guessing at a real trading record is worse than naming the row.
+    expect((await post('/api/positions/integrity', {})).status).toBe(404);
+  });
+});
+
 // A partial result that doesn't say it's partial reads as a complete one.
 describe('per-request caps are reported, not silent', () => {
   it('names the symbols /events never looked up', async () => {

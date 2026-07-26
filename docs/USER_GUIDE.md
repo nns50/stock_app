@@ -763,6 +763,19 @@ Equity curve, edge over time, and drawdown & streaks are shown directly on the p
   rules the log-trade form does — ISO dates, a positive quantity and entry price — so a bad
   file is refused with the offending row named rather than silently landing in your
   journal.
+- **Check the journal for bad rows** — `npm run check:journal` audits every position
+  and exit for defects the app can't show you on screen: a date that isn't `YYYY-MM-DD`,
+  an exit dated before its own entry or in the future, exits that close more than the
+  position ever held (the row just reads as *closed*), a status that contradicts the
+  remaining quantity, a zero entry price, or a broker-tracked lot with no account
+  recorded. It also finds rows that a background job dated a day late, back when the
+  Webull sync and the order reconciler used the server's UTC clock instead of market
+  (ET) time — those land in the wrong day's stats and add a phantom day of hold time.
+  **It reports and stops** — there is no apply mode, deliberately, because several of
+  these have more than one sensible fix and guessing at your real trading record is
+  worse than naming the row. Fix what it finds with **journal** / **exit** / **del** on
+  the Positions page and re-run. Every check is listed whether it fired or not, so
+  "clean" always tells you what it was clean against.
 - **Import CSV** — bring trades in from a spreadsheet journal or a broker export.
   One row = one trade. Headers are matched loosely (case-insensitive, common
   aliases), `$` and thousands-commas are tolerated, and each row is validated on
