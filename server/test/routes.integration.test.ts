@@ -2683,3 +2683,47 @@ describe('autotrade monitoring dashboard + kill switch routes (integration)', ()
     return res;
   }
 });
+
+describe('journal analysis routes tell you what they could not cover (integration)', () => {
+  it('excursions accounts for every closed stock trade, including the ones it skipped', async () => {
+    // An undated trade cannot be measured — an excursion walks candles from the
+    // entry. Before 2026-07-26 that trade, the per-request cap, and any failed
+    // candle fetch all vanished into a `trades` count that only tallied
+    // successes, so averages over a fraction of the book looked complete.
+    const undated = createPosition({
+      assetType: 'stock',
+      symbol: 'EXCU',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: null,
+    });
+    addExit(undated.id, { quantity: 10, exitPrice: 110, exitDate: '2026-06-02' });
+
+    const rep = (await getJson('/api/journal/excursions')) as {
+      trades: number;
+      coverage: { closedStockTrades: number; undated: number; overCap: number; unavailable: number };
+    };
+    expect(rep.coverage.undated).toBeGreaterThanOrEqual(1);
+    // The identity that makes the report checkable: analysed plus each reason
+    // for exclusion equals the whole population. No trade goes unaccounted for.
+    const c = rep.coverage;
+    expect(rep.trades + c.undated + c.overCap + c.unavailable).toBe(c.closedStockTrades);
+  });
+
+  it('benchmark survives a book whose closed trades are all undated', async () => {
+    // startDate came from `.filter(...).sort()[0]`, which is undefined on an
+    // empty array while the type predicate lets TypeScript call it `string`.
+    // The `closed.length === 0` guard never covered "closed but none dated".
+    const rep = (await getJson('/api/journal/benchmark?symbol=SPY')) as {
+      symbol: string;
+      startDate: string | null;
+      totalRealized: number;
+    };
+    expect(rep.symbol).toBe('SPY');
+    // Whatever the window turns out to be, it is a date or an explicit null —
+    // never undefined, which JSON drops entirely and the client reads as absent.
+    expect(rep.startDate === null || typeof rep.startDate === 'string').toBe(true);
+    expect(typeof rep.totalRealized).toBe('number');
+  });
+});

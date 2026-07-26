@@ -280,6 +280,18 @@ export default function AboutPage() {
           </Term>
           <Term term="Expectancy">Average profit/loss per trade = (win rate × avg win) − (loss rate × avg loss).</Term>
           <Term term="Profit factor">Gross profit ÷ gross loss. Above 1 means winners outweigh losers.</Term>
+          <Term term="Dated trades">
+            A position imported from the broker can arrive with no entry date — Webull reports current holdings and an
+            average cost, so a lot built from several buys has no single open date to give. Nothing invents one. Which
+            statistics such a trade appears in depends on what the statistic needs. Anything derived from{' '}
+            <strong className="text-slate-200">P&amp;L alone</strong> counts every closed trade: win rate, expectancy,
+            profit factor, total realized, best/worst trade, and all R-multiple figures — so wins + losses + breakeven
+            always equals your closed-trade count. Anything <strong className="text-slate-200">path-dependent</strong>{' '}
+            needs a place in the sequence and so covers only the dated ones: the equity curve, rolling expectancy, max
+            drawdown, win/loss streaks, and the weekday and hold-time breakdowns. The Journal prints “N of M dated”
+            wherever that distinction changes what you’re looking at. Fill a date in from the position’s journal dialog
+            and the trade rejoins the rest.
+          </Term>
           <Term term="SQN">
             System Quality Number (Van Tharp): mean R ÷ the standard deviation of R, × √N (N capped at 100). Rewards a
             strong, consistent edge across many trades — roughly: ~2 average, 3+ excellent.

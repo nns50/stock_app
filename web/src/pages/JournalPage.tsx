@@ -22,6 +22,7 @@ import {
   Card,
   CollapsibleCard,
   EmptyState,
+  ErrorState,
   InfoTip,
   PageHeader,
   PnL,
@@ -139,8 +140,25 @@ export default function JournalPage() {
   }, [closed.data, tagFilter]);
   const { sorted: sortedRows, sortKey, sortDir, onSort } = useSort(rows, journalSortVal);
 
-  if (stats.loading || closed.loading) return <Spinner label="Loading journal…" />;
-  const s = stats.data!;
+  // Gate on ABSENT data, not on `loading`. useAsync sets loading on every
+  // reload(), so keying the whole page on it meant saving one journal edit
+  // unmounted the entire page — scroll position and every CollapsibleCard's
+  // open/closed state thrown away. Same split PositionsPage settled on.
+  const firstLoadError = stats.error ?? closed.error;
+  if (!stats.data || !closed.data) {
+    // `stats.data!` used to be asserted non-null here, so a failed /journal/stats
+    // threw during render and took the page down with no reason and no retry.
+    if (firstLoadError) {
+      return (
+        <Card>
+          <ErrorState error={firstLoadError} onRetry={reload} />
+        </Card>
+      );
+    }
+    return <Spinner label="Loading journal…" />;
+  }
+  const s = stats.data;
+  const refreshError = stats.error ?? closed.error;
 
   return (
     <div className="space-y-4">
@@ -156,6 +174,17 @@ export default function JournalPage() {
           </>
         }
       />
+
+      {refreshError && (
+        // Data is on screen, so a failed refresh must not discard it — but it
+        // must not pass for fresh either. Stale-but-labelled beats both.
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          ⚠ Couldn&apos;t refresh — showing the last stats that loaded. {refreshError.message}{' '}
+          <button className="underline hover:text-amber-100" onClick={reload}>
+            Retry
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
         <StatTile label="Closed" value={s.totalClosed} sub={`${s.wins}W · ${s.losses}L`} />
@@ -206,7 +235,13 @@ export default function JournalPage() {
                 info="System Quality Number (Van Tharp): mean R ÷ std-dev of R × √N (N capped at 100). Rewards a strong, consistent edge over many trades. ~2 is average, 3+ excellent."
               />
             )}
-            <StatTile label="Best" value={`+${fmtNum(s.bestR, 2)}R`} valueClass="text-bull" />
+            {/* The "+" is conditional: on a book where every stopped trade lost,
+                the best R is still negative and a hardcoded sign renders "+-1.50R". */}
+            <StatTile
+              label="Best"
+              value={`${(s.bestR ?? 0) >= 0 ? '+' : ''}${fmtNum(s.bestR, 2)}R`}
+              valueClass={(s.bestR ?? 0) >= 0 ? 'text-bull' : 'text-bear'}
+            />
             <StatTile label="Worst" value={`${fmtNum(s.worstR, 2)}R`} valueClass="text-bear" />
           </div>
           <div className="space-y-1">
@@ -254,6 +289,18 @@ export default function JournalPage() {
             </div>
           )}
         </CollapsibleCard>
+      )}
+
+      {efficacy.error && !efficacy.data && (
+        // Gated on `efficacy.data && length > 0`, this panel's absence read as
+        // "no adjustments to review" whether that was true or the request failed.
+        <div className="text-[11px] text-amber-400/90">
+          ⚠ Couldn&apos;t load auto-tune efficacy, so it isn&apos;t shown below — this is not the same as having no past
+          adjustments. {efficacy.error.message}{' '}
+          <button className="underline hover:text-amber-100" onClick={efficacy.reload}>
+            Retry
+          </button>
+        </div>
       )}
 
       {efficacy.data && efficacy.data.adjustments.length > 0 && (
@@ -516,15 +563,30 @@ export default function JournalPage() {
 
       {rows.length === 0 ? (
         <Card>
-          <EmptyState
-            title="No closed trades yet"
-            hint="Closed positions appear here with tags, grades, notes, and stats. Log a trade and record an exit to start building your journal."
-            action={
-              <Link to="/positions" className="btn-primary">
-                Log a trade →
-              </Link>
-            }
-          />
+          {/* Two different nothings. With a tag selected, "No closed trades yet"
+              would contradict the stats sitting above it — and the fix is one
+              click away, so say which nothing this is. */}
+          {tagFilter ? (
+            <EmptyState
+              title={`No closed trades tagged “${tagFilter}”`}
+              hint="The stats above cover every closed trade. This table is filtered."
+              action={
+                <button className="btn-primary" onClick={() => setTagFilter(null)}>
+                  Show all trades
+                </button>
+              }
+            />
+          ) : (
+            <EmptyState
+              title="No closed trades yet"
+              hint="Closed positions appear here with tags, grades, notes, and stats. Log a trade and record an exit to start building your journal."
+              action={
+                <Link to="/positions" className="btn-primary">
+                  Log a trade →
+                </Link>
+              }
+            />
+          )}
         </Card>
       ) : (
         <Card className="overflow-auto max-h-[70vh]">

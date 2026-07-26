@@ -68,7 +68,27 @@ export function computeExcursion(p: ExcursionInput, candles: Candle[]): TradeExc
   };
 }
 
+/**
+ * What the analysis actually covered. This endpoint fetches daily candles per
+ * trade, so it caps how many it will do and cannot always get data — both of
+ * which used to happen invisibly: `trades` counts only what SUCCEEDED, so a
+ * report over 12 of your 70 trades was indistinguishable from one over all 12
+ * you have. Averages computed from a silently truncated sample are the kind of
+ * number you would act on without knowing you shouldn't.
+ */
+export interface ExcursionCoverage {
+  /** Closed stock trades in the journal — the population before any filtering. */
+  closedStockTrades: number;
+  /** Skipped: an excursion walks candles from the entry, so it needs an entry date. */
+  undated: number;
+  /** Dropped by the per-request cap, most recent trades kept. */
+  overCap: number;
+  /** Attempted but unusable — the candle fetch failed or returned nothing. */
+  unavailable: number;
+}
+
 export interface ExcursionReport {
+  /** Trades actually analysed — the rows below. See `coverage` for what it took. */
   trades: number;
   avgMfeR: number | null;
   avgMaeR: number | null;
@@ -76,13 +96,20 @@ export interface ExcursionReport {
   /** Average % of the favorable move captured on winning trades. */
   capturePct: number | null;
   rows: TradeExcursion[];
+  coverage: ExcursionCoverage;
 }
 
 function mean(xs: number[]): number | null {
   return xs.length ? round2(xs.reduce((a, b) => a + b, 0) / xs.length) : null;
 }
 
-export function aggregateExcursions(rows: TradeExcursion[]): ExcursionReport {
+/**
+ * `coverage` defaults to "these rows were the whole population", which is true
+ * for a direct call and false for the route — so the route passes its real
+ * counts. It is deliberately not optional-and-ignored: a default that claimed
+ * full coverage while the caller had truncated would reintroduce the bug.
+ */
+export function aggregateExcursions(rows: TradeExcursion[], coverage?: Partial<ExcursionCoverage>): ExcursionReport {
   const withR = rows.filter((r) => r.mfeR !== null);
   const captures = rows.filter((r) => r.capturedPct !== null).map((r) => r.capturedPct as number);
   return {
@@ -92,5 +119,12 @@ export function aggregateExcursions(rows: TradeExcursion[]): ExcursionReport {
     avgRealizedR: mean(withR.map((r) => r.realizedR as number)),
     capturePct: mean(captures),
     rows,
+    coverage: {
+      closedStockTrades: rows.length,
+      undated: 0,
+      overCap: 0,
+      unavailable: 0,
+      ...coverage,
+    },
   };
 }

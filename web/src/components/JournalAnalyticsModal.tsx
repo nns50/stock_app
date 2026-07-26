@@ -51,19 +51,54 @@ function ExcursionsPanel({ active }: { active: boolean }) {
   if (data.loading) return <Spinner label="Fetching candles per trade…" />;
   if (data.error) return <ErrorState error={data.error} onRetry={data.reload} />;
   if (!data.data || data.data.trades === 0) {
+    // "No closed stock trades" is only true when there genuinely are none. If
+    // trades exist but every candle fetch failed, or they're all undated, saying
+    // that is a lie in the same shape as the truncation this endpoint used to
+    // hide — so read the coverage and say which it is.
+    const c = data.data?.coverage;
+    const hadTrades = (c?.closedStockTrades ?? 0) > 0;
     return (
       <EmptyState
-        title="No closed stock trades to analyze"
-        hint="Excursions use daily candles over each closed stock trade's holding period (options are skipped). Log a stop to see results in R."
+        title={hadTrades ? 'Nothing could be measured' : 'No closed stock trades to analyze'}
+        hint={
+          hadTrades
+            ? `${c!.closedStockTrades} closed stock trade(s), none of them analysable: ` +
+              [
+                c!.undated ? `${c!.undated} without an entry date` : null,
+                c!.unavailable ? `${c!.unavailable} with no candle data available` : null,
+                c!.overCap ? `${c!.overCap} beyond this request's cap` : null,
+              ]
+                .filter(Boolean)
+                .join(', ') +
+              '. An excursion needs daily candles across the holding period.'
+            : "Excursions use daily candles over each closed stock trade's holding period (options are skipped). Log a stop to see results in R."
+        }
       />
     );
   }
+  const cov = data.data.coverage;
+  const excluded = cov.undated + cov.overCap + cov.unavailable;
   return (
     <div className="space-y-3">
       <p className="text-xs text-slate-500">
         Over each trade’s holding period: how far price ran in your favor (MFE) and against you (MAE), in R. Compare avg
         MFE to avg realized — a big gap means winners ran further than you held.
       </p>
+      {excluded > 0 && (
+        // These averages are a SAMPLE. Saying so is the difference between a
+        // number you can act on and one you only think you can.
+        <p className="text-[11px] text-amber-400/90">
+          Averages over {data.data.trades} of {cov.closedStockTrades} closed stock trades.{' '}
+          {[
+            cov.undated ? `${cov.undated} have no entry date` : null,
+            cov.unavailable ? `${cov.unavailable} had no candle data` : null,
+            cov.overCap ? `${cov.overCap} beyond this request's cap` : null,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+          .
+        </p>
+      )}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         <StatTile label="Avg MFE" value={r(data.data.avgMfeR)} valueClass="text-bull" sub="best run" />
         <StatTile label="Avg MAE" value={r(data.data.avgMaeR)} valueClass="text-bear" sub="worst dip" />

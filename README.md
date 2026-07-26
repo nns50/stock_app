@@ -318,7 +318,16 @@ every position id and every exit). The cost is that an undated trade sits out of
 the equity curve, rolling expectancy, and the weekday/hold-time breakdowns — the
 Journal states how many trades those are computed from, inline, so a shorter
 curve reads as "we don't know when those happened" rather than as missing data.
-Win rate, expectancy and profit factor are unaffected: they need only P&L.
+
+The split is by what a figure actually needs. **Path-dependent** figures — the
+equity curve, rolling expectancy, max drawdown, win/loss streaks, and the
+weekday and hold-time breakdowns — need a place in the sequence, so an undated
+trade is left out of them. Everything that needs only a **P&L** covers every
+closed trade: win rate, expectancy, profit factor, total realized, best/worst
+trade, and every R-multiple statistic. So `wins + losses + breakeven` always
+equals the closed-trade count. (Until 2026-07-26 the first group's rule was
+applied to the second as well, which quietly dropped undated trades from the
+headline numbers and made that subtotal disagree with the count beside it.)
 
 Manually logging a trade still requires a date — you know when you traded.
 `check:journal` lists undated rows as **informational**, so you can fill them in

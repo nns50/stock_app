@@ -559,16 +559,56 @@ describe('computeJournalStats — trades with no entry date', () => {
       ...o,
     }) as Position;
 
-  it('still counts an undated trade toward win rate and expectancy — those need only P&L', () => {
-    const dated = closedTrade({ id: 1 });
-    // No entry AND no exit date: nowhere to put it on a timeline at all.
-    const undated = closedTrade({ id: 2, entryDate: null, exits: [] });
+  // A trade is undated only when it has NO entry date AND no exit to fall back
+  // on, so its realized P&L can only come from entry fees — which is enough to
+  // make it a decisive loss, and so enough to prove where it is counted.
+  const datedWinner = () => closedTrade({ id: 1 }); // +100
+  const undatedLoser = () => closedTrade({ id: 2, entryDate: null, exits: [], fees: 50 }); // -50
 
-    const stats = computeJournalStats([dated, undated]);
+  it('still counts an undated trade toward win rate and expectancy — those need only P&L', () => {
+    const stats = computeJournalStats([datedWinner(), undatedLoser()]);
     expect(stats.totalClosed).toBe(2);
     // ...but only one of them can be placed in time.
     expect(stats.datedTrades).toBe(1);
     expect(stats.equityCurve).toHaveLength(1);
+
+    // The assertions this test's own name promised, and originally lacked —
+    // which is how the stats came to run over the dated subset unnoticed.
+    expect(stats.wins).toBe(1);
+    expect(stats.losses).toBe(1);
+    expect(stats.winRate).toBe(50); // not 100: the loser is a closed trade
+    expect(stats.expectancy).toBe(25); // (100 - 50) / 2, not 100 / 1
+    expect(stats.totalRealized).toBe(50);
+    expect(stats.profitFactor).toBe(2); // 100 / 50, not ∞
+    expect(stats.worstTrade).toBe(-50); // not +100
+  });
+
+  it('keeps wins + losses + breakeven equal to totalClosed', () => {
+    // The UI prints "N closed" next to "XW · YL", so a subtotal that doesn't
+    // reconcile reads as broken arithmetic rather than a filtered population.
+    const stats = computeJournalStats([datedWinner(), undatedLoser(), closedTrade({ id: 3, exits: [] })]);
+    expect(stats.wins + stats.losses + stats.breakeven).toBe(stats.totalClosed);
+  });
+
+  it('leaves drawdown and streaks over the dated trades only', () => {
+    // Not an oversight: a drawdown is the path the equity took and a streak is a
+    // run of consecutive trades, so a trade with no place in the order cannot
+    // enter either. The dated winner alone never draws down.
+    const stats = computeJournalStats([datedWinner(), undatedLoser()]);
+    expect(stats.maxDrawdown).toBe(0);
+    expect(stats.currentStreak).toEqual({ type: 'win', count: 1 });
+  });
+
+  it('agrees with the R-multiple stats about which trades exist', () => {
+    // rTrades always counted every closed trade with a stop. Before the fix
+    // wins/losses counted only the dated ones, so the two halves of the same
+    // report disagreed about the size of the book.
+    const stats = computeJournalStats([
+      closedTrade({ id: 1, stopPrice: 90 }),
+      closedTrade({ id: 2, entryDate: null, exits: [], fees: 50, stopPrice: 90 }),
+    ]);
+    expect(stats.rTrades).toBe(2);
+    expect(stats.wins + stats.losses + stats.breakeven).toBe(stats.rTrades);
   });
 
   it('leaves an undated trade out of the hold-time and weekday breakdowns', () => {

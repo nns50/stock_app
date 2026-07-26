@@ -488,9 +488,13 @@ export interface SectorRotation {
 
 export interface JournalStats {
   totalClosed: number;
-  /** How many of `totalClosed` carry a usable date and so appear in the equity
-   *  curve, rolling expectancy and the timing breakdowns. Lower when a position
-   *  was imported without an open date the broker never supplied. */
+  /** How many of `totalClosed` carry a usable date and so appear in the
+   *  path-dependent figures: the equity curve, rolling expectancy, drawdown,
+   *  streaks and the timing breakdowns. Lower when a position was imported
+   *  without an open date the broker never supplied. Everything that needs only
+   *  a P&L — win rate, expectancy, profit factor, totalRealized, best/worst
+   *  trade and every R statistic — covers all `totalClosed`, so
+   *  wins + losses + breakeven always equals totalClosed. */
   datedTrades: number;
   wins: number;
   losses: number;
@@ -582,13 +586,28 @@ export interface TradeExcursion {
   capturedPct: number | null;
 }
 
+/** What the excursion analysis covered. `trades` counts only the successes, so
+ *  without this a report over 12 of 70 trades looks like a complete one over 12.
+ *  trades + undated + overCap + unavailable === closedStockTrades. */
+export interface ExcursionCoverage {
+  closedStockTrades: number;
+  /** Skipped: an excursion walks candles from the entry, so it needs a date. */
+  undated: number;
+  /** Dropped by the per-request cap (one candle fetch per trade). */
+  overCap: number;
+  /** Attempted but unusable — the candle fetch failed or returned nothing. */
+  unavailable: number;
+}
+
 export interface ExcursionReport {
+  /** Trades actually analysed — the `rows` below. See `coverage` for the rest. */
   trades: number;
   avgMfeR: number | null;
   avgMaeR: number | null;
   avgRealizedR: number | null;
   capturePct: number | null;
   rows: TradeExcursion[];
+  coverage: ExcursionCoverage;
 }
 
 /** One live-traded fill's execution quality vs. the order's limit price. */
