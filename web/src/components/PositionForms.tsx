@@ -539,7 +539,17 @@ export function ExitModal({
               <NumberInput value={exitPrice} onChange={setExitPrice} step={0.01} />
             </Field>
             <Field label="Exit date">
-              <input type="date" className="input" value={exitDate} onChange={(e) => setExitDate(e.target.value)} />
+              {/* Floored at the entry: the server rejects an exit dated before
+                  it (negative hold-days and a negative wash-sale window), so
+                  the picker shouldn't offer one and make you find out via a
+                  round-trip 400. */}
+              <input
+                type="date"
+                className="input"
+                min={position.entryDate}
+                value={exitDate}
+                onChange={(e) => setExitDate(e.target.value)}
+              />
             </Field>
             <Field label="Fees">
               <NumberInput value={fees} onChange={setFees} step={0.01} />
@@ -705,6 +715,7 @@ export function JournalEditModal({
   const [accountId, setAccountId] = useState(position?.accountId ?? '');
   const [busy, setBusy] = useState(false);
   const [exitBusyId, setExitBusyId] = useState<number | null>(null);
+  const [error, setError] = useState<string>();
   const { toast } = useToast();
   const confirm = useConfirm();
 
@@ -717,11 +728,13 @@ export function JournalEditModal({
     setGrade(position?.grade ?? '');
     setNotes(position?.notes ?? '');
     setAccountId(position?.accountId ?? '');
+    setError(undefined);
   }
 
   const submit = async () => {
     if (!position) return;
     setBusy(true);
+    setError(undefined);
     try {
       await client.updatePosition(position.id, {
         tags: tags
@@ -735,6 +748,11 @@ export function JournalEditModal({
       onSaved();
       onClose();
       toast('Journal updated', { type: 'success' });
+    } catch (e) {
+      // The bare try/finally this replaces swallowed the rejection entirely:
+      // the dialog just went un-busy with the edits still in the fields and no
+      // message anywhere, which reads exactly like a successful save.
+      setError((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -750,6 +768,7 @@ export function JournalEditModal({
     });
     if (!ok) return;
     setExitBusyId(exitId);
+    setError(undefined);
     try {
       await client.deleteExit(position.id, exitId);
       onSaved();
@@ -758,6 +777,11 @@ export function JournalEditModal({
       // live subscription, so it won't reflect the removal on its own.
       onClose();
       toast('Exit removed — position reopened for that quantity', { type: 'success' });
+    } catch (e) {
+      // Same swallowed-rejection problem as submit() above, and worse here:
+      // a failed removal left the exit listed and the dialog open, so the
+      // obvious next move is to press remove again on a row that never went.
+      setError((e as Error).message);
     } finally {
       setExitBusyId(null);
     }
@@ -832,6 +856,7 @@ export function JournalEditModal({
             </div>
           </div>
         )}
+        {error && <div className="text-bear text-sm">{error}</div>}
       </div>
     </Modal>
   );

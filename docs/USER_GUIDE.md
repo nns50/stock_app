@@ -554,7 +554,11 @@ nudge, not a blocker — you can still save with items unchecked.
   when you've **already sold a position outside the app** (directly in the Webull app, or in
   an account the sync doesn't cover) and just want to record the exit, rather than place a
   redundant real order or delete the row and lose its P&L. (Before 2026-07-23 a live position
-  only offered **close**, leaving no clean way to log an already-sold one.)
+  only offered **close**, leaving no clean way to log an already-sold one.) The exit **date
+  picker won't go below the entry date** — an exit before the entry yields negative hold-days
+  and a negative wash-sale window, and the server rejects it anyway. A $0 exit price is
+  allowed for an **option** (that's what expiring worthless looks like) but refused for a
+  **stock**, where it would quietly book a full-loss realized P&L.
 - **close** (broker-tracked positions only — imported from Webull, opened by a live fill, or
   linked to a live order) instead places a **real closing order** at your broker: full
   remaining quantity, a marketable-limit price near the current market, cancelling any
@@ -599,9 +603,21 @@ nudge, not a blocker — you can still save with items unchecked.
   dialog lists the position's **exits** with a **remove** button on each — deletes that
   exit and reopens the position for the quantity it closed; use this to undo a mistaken or
   incorrect exit entry (including one the Webull sync below auto-recorded against the
-  wrong account, before this fix).
-- **del** removes the whole position (with confirm + Undo).
-- An **Exposure panel** summarizes gross/net exposure across the book.
+  wrong account, before this fix). If a save or an exit removal **fails**, the dialog says
+  why and stays open with your edits — it no longer closes silently as though it worked.
+- **del** removes the whole position (with confirm + Undo). A delete or undo that fails
+  now tells you so rather than looking like it succeeded.
+- **Open / Closed / All** filter which rows the table lists; the headline tiles and the
+  panels below always describe the **whole** book. When a tab is empty but the book isn't,
+  the table says so (with a **Show all**) instead of showing the first-run "log your first
+  trade" prompt.
+- **When a refresh fails** (the page auto-polls every minute by default), the table keeps
+  showing the numbers that last loaded and flags it with an amber banner — the last-known
+  P&L is exactly what you still want on screen. The **Updated** clock only advances on a
+  refresh that actually succeeded, so its age is always the true age of what you're looking
+  at. Only a failure with nothing loaded yet replaces the table with an error.
+- An **Exposure panel** summarizes gross/net exposure across the book. A partially-exited
+  position counts at what's **still open**, never the whole original lot.
 - A **Market stress test** panel (2026-07-23, collapsed by default — click to load) shows
   estimated P&L for a small set of hypothetical broad-market moves (−10% / −5% / −2% / 0 /
   +2% / +5% / +10%), beta-weighting every open stock and option position by its own beta

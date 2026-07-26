@@ -1,8 +1,8 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { client } from '../api/client';
 import { useAsync, useSort } from '../lib/hooks';
-import { fmtNum, fmtPct, fmtUsd } from '../lib/format';
+import { ago, fmtNum, fmtPct, fmtUsd } from '../lib/format';
 import {
   Badge,
   CollapsibleCard,
@@ -80,17 +80,36 @@ export default function PositionsPage() {
   // scoped to the tab. The status tab only filters which rows the table shows,
   // done client-side below; switching tabs no longer triggers a refetch.
   const data = useAsync(() => client.positionsWithPnl({}), []);
-  const allRows = data.data?.positions ?? [];
-  const visibleRows = statusFilter === 'all' ? allRows : allRows.filter((r) => r.position.status === statusFilter);
+  // Memoized so useSort's own memo actually holds — derived fresh each render,
+  // its input array is a new identity every time and the whole book re-sorts on
+  // every keystroke and poll tick.
+  const allRows = useMemo(() => data.data?.positions ?? [], [data.data]);
+  const visibleRows = useMemo(
+    () => (statusFilter === 'all' ? allRows : allRows.filter((r) => r.position.status === statusFilter)),
+    [allRows, statusFilter],
+  );
   const { sorted: sortedPositions, sortKey, sortDir, onSort } = useSort(visibleRows, positionSortVal);
 
-  // Earnings/ex-div for the listed symbols, to flag positions with events approaching.
-  const symbolsKey = [...new Set(visibleRows.map((r) => r.position.symbol.toUpperCase()))].join(',');
+  // Earnings/ex-div for the symbols that can actually show a badge — only OPEN
+  // rows render one. Keyed off the open book rather than the visible rows so
+  // switching status tabs (a client-side filter) doesn't refetch this and blank
+  // every badge while it reloads; sorted so the key depends on which symbols
+  // are held, not what order the table happens to be in.
+  const symbolsKey = useMemo(
+    () =>
+      [...new Set(allRows.filter((r) => r.position.status === 'open').map((r) => r.position.symbol.toUpperCase()))]
+        .sort()
+        .join(','),
+    [allRows],
+  );
   const events = useAsync(
     () => (symbolsKey ? client.events(symbolsKey.split(',')) : Promise.resolve({ events: [] })),
     [symbolsKey],
   );
-  const eventsBySym = new Map((events.data?.events ?? []).map((e) => [e.symbol.toUpperCase(), e]));
+  const eventsBySym = useMemo(
+    () => new Map((events.data?.events ?? []).map((e) => [e.symbol.toUpperCase(), e])),
+    [events.data],
+  );
 
   const [sizerOpen, setSizerOpen] = useState(false);
   const [exitPos, setExitPos] = useState<Position | null>(null);
@@ -101,25 +120,25 @@ export default function PositionsPage() {
   const confirm = useConfirm();
 
   // Refresh when a trade is logged from the global modal (header / `n` / palette).
-  // reloadData is useAsync's stable run() — depend on it directly so the
-  // listener isn't re-bound every render.
-  const reloadData = data.reload;
+  // reload is useAsync's stable run() — depend on it directly so the listener
+  // isn't re-bound every render.
+  const reload = data.reload;
   useEffect(() => {
-    const onLogged = () => {
-      setLastUpdated(Date.now());
-      reloadData();
-    };
-    window.addEventListener(TRADE_LOGGED_EVENT, onLogged);
-    return () => window.removeEventListener(TRADE_LOGGED_EVENT, onLogged);
-  }, [reloadData]);
+    window.addEventListener(TRADE_LOGGED_EVENT, reload);
+    return () => window.removeEventListener(TRADE_LOGGED_EVENT, reload);
+  }, [reload]);
 
-  const reload = () => {
-    setLastUpdated(Date.now());
-    reloadData();
-  };
+  // Stamp the "Updated …" clock when a load SUCCEEDS. Stamping it when the
+  // request was fired (what reload() used to do) meant a failed poll still
+  // reported "Updated 0s ago" over numbers that were minutes stale — exactly
+  // when the age of what's on screen matters most. `data` keeps its identity
+  // through a failure, so this only fires on a fresh payload.
+  useEffect(() => {
+    if (data.data) setLastUpdated(Date.now());
+  }, [data.data]);
 
   const remove = async (id: number) => {
-    const found = data.data?.positions.find((r) => r.position.id === id)?.position;
+    const found = allRows.find((r) => r.position.id === id)?.position;
     const ok = await confirm({
       title: 'Delete position?',
       body: 'This removes the trade and its exits from your journal.',
@@ -127,7 +146,14 @@ export default function PositionsPage() {
       danger: true,
     });
     if (!ok) return;
-    await client.deletePosition(id);
+    try {
+      await client.deletePosition(id);
+    } catch (e) {
+      // Unhandled before: a rejected delete left the row on screen with no
+      // toast and no error, reading exactly like a successful one.
+      toast(`Couldn't delete — ${(e as Error).message}`, { type: 'error' });
+      return;
+    }
     reload();
     toast('Position deleted', {
       type: 'success',
@@ -135,8 +161,12 @@ export default function PositionsPage() {
         ? {
             label: 'Undo',
             onClick: async () => {
-              await client.importPositions([found], 'merge');
-              reload();
+              try {
+                await client.importPositions([found], 'merge');
+                reload();
+              } catch (e) {
+                toast(`Couldn't undo — ${(e as Error).message}`, { type: 'error' });
+              }
             },
           }
         : undefined,
@@ -190,60 +220,116 @@ export default function PositionsPage() {
       />
 
       <CollapsibleCard id="positions.table" title="Positions">
-        {data.loading && !data.data ? (
-          <SkeletonTable rows={6} cols={11} />
-        ) : data.error ? (
-          <ErrorState error={data.error} onRetry={reload} />
-        ) : data.data && sortedPositions.length === 0 ? (
-          <EmptyState
-            title="No positions yet"
-            hint="Log your stock and option trades to track live P&L, realized vs unrealized, and build your journal."
-            action={
-              <button className="btn-primary" onClick={() => window.dispatchEvent(new Event(OPEN_LOG_TRADE_EVENT))}>
-                + Log trade
-              </button>
-            }
-          />
+        {!data.data ? (
+          // Nothing loaded yet: a first-load failure is the only case where the
+          // full-card error belongs — once there ARE numbers on screen, a failed
+          // poll is reported by the banner below instead of throwing them away.
+          data.error ? (
+            <ErrorState error={data.error} onRetry={reload} />
+          ) : (
+            <SkeletonTable rows={6} cols={11} />
+          )
         ) : (
-          <div className="overflow-auto max-h-[70vh]">
-            <table className="w-full table-zebra">
-              <thead className="sticky-thead">
-                <tr>
-                  <SortTh label="Symbol" k="symbol" active={sortKey} dir={sortDir} onSort={onSort} />
-                  <SortTh label="Side" k="side" active={sortKey} dir={sortDir} onSort={onSort} />
-                  <SortTh label="Qty" k="qty" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                  <SortTh label="Entry" k="entry" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                  <SortTh label="Price" k="price" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                  <SortTh label="Cost basis" k="cost" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                  <SortTh label="Realized" k="realized" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                  <SortTh
-                    label="Unrealized"
-                    k="unrealized"
-                    active={sortKey}
-                    dir={sortDir}
-                    onSort={onSort}
-                    align="right"
-                  />
-                  <SortTh label="Total P&L" k="total" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                  <SortTh label="Return" k="return" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
-                  <th className="th text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedPositions.map((row) => (
-                  <PositionRow
-                    key={row.position.id}
-                    row={row}
-                    events={eventsBySym.get(row.position.symbol.toUpperCase())}
-                    onExit={setExitPos}
-                    onClose={setClosePos}
-                    onEdit={setEditPos}
-                    onDelete={remove}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <>
+            {data.error && (
+              <div className="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                ⚠ Couldn&apos;t refresh — showing the last numbers that loaded ({ago(lastUpdated)}).{' '}
+                {data.error.message}{' '}
+                <button className="underline hover:text-amber-100" onClick={reload}>
+                  Retry
+                </button>
+              </div>
+            )}
+            {allRows.length === 0 ? (
+              <EmptyState
+                title="No positions yet"
+                hint="Log your stock and option trades to track live P&L, realized vs unrealized, and build your journal."
+                action={
+                  <button className="btn-primary" onClick={() => window.dispatchEvent(new Event(OPEN_LOG_TRADE_EVENT))}>
+                    + Log trade
+                  </button>
+                }
+              />
+            ) : sortedPositions.length === 0 ? (
+              // The book isn't empty, this TAB is — offering the first-run
+              // "log your first trade" pitch here read as "you have no
+              // positions at all", which is just wrong on a book with rows.
+              <EmptyState
+                title={statusFilter === 'open' ? 'No open positions' : 'No closed positions'}
+                hint={
+                  statusFilter === 'open'
+                    ? 'Everything you’ve logged is closed — switch to Closed or All to see it.'
+                    : 'Nothing has been fully exited yet — switch to Open or All to see what you’re holding.'
+                }
+                action={
+                  <button className="btn-ghost" onClick={() => setStatusFilter('all')}>
+                    Show all
+                  </button>
+                }
+              />
+            ) : (
+              <div className="overflow-auto max-h-[70vh]">
+                <table className="w-full table-zebra">
+                  <thead className="sticky-thead">
+                    <tr>
+                      <SortTh label="Symbol" k="symbol" active={sortKey} dir={sortDir} onSort={onSort} />
+                      <SortTh label="Side" k="side" active={sortKey} dir={sortDir} onSort={onSort} />
+                      <SortTh label="Qty" k="qty" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                      <SortTh label="Entry" k="entry" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                      <SortTh label="Price" k="price" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                      <SortTh
+                        label="Cost basis"
+                        k="cost"
+                        active={sortKey}
+                        dir={sortDir}
+                        onSort={onSort}
+                        align="right"
+                      />
+                      <SortTh
+                        label="Realized"
+                        k="realized"
+                        active={sortKey}
+                        dir={sortDir}
+                        onSort={onSort}
+                        align="right"
+                      />
+                      <SortTh
+                        label="Unrealized"
+                        k="unrealized"
+                        active={sortKey}
+                        dir={sortDir}
+                        onSort={onSort}
+                        align="right"
+                      />
+                      <SortTh
+                        label="Total P&L"
+                        k="total"
+                        active={sortKey}
+                        dir={sortDir}
+                        onSort={onSort}
+                        align="right"
+                      />
+                      <SortTh label="Return" k="return" active={sortKey} dir={sortDir} onSort={onSort} align="right" />
+                      <th className="th text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedPositions.map((row) => (
+                      <PositionRow
+                        key={row.position.id}
+                        row={row}
+                        events={eventsBySym.get(row.position.symbol.toUpperCase())}
+                        onExit={setExitPos}
+                        onClose={setClosePos}
+                        onEdit={setEditPos}
+                        onDelete={remove}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         )}
       </CollapsibleCard>
 
@@ -305,16 +391,18 @@ const PositionRow = memo(
           )}
           {p.status === 'open' && (p.stopPrice != null || p.targetPrice != null || pnl.rMultiple != null) && (
             <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums flex flex-wrap gap-x-2">
+              {/* `row.price &&` (not `!= null`) on purpose: a 0 price divides
+                  to Infinity and renders a nonsense "∞%" distance. */}
               {p.stopPrice != null && (
                 <span className="text-bear" title="Stop level (distance from current price)">
                   SL {fmtNum(p.stopPrice)}
-                  {row.price != null && ` ${fmtNum(Math.abs((row.price - p.stopPrice) / row.price) * 100, 0)}%`}
+                  {!!row.price && ` ${fmtNum(Math.abs((row.price - p.stopPrice) / row.price) * 100, 0)}%`}
                 </span>
               )}
               {p.targetPrice != null && (
                 <span className="text-bull" title="Target level (distance from current price)">
                   TP {fmtNum(p.targetPrice)}
-                  {row.price != null && ` ${fmtNum(Math.abs((row.price - p.targetPrice) / row.price) * 100, 0)}%`}
+                  {!!row.price && ` ${fmtNum(Math.abs((row.price - p.targetPrice) / row.price) * 100, 0)}%`}
                 </span>
               )}
               {pnl.rMultiple != null && (

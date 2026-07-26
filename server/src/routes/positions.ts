@@ -1,6 +1,6 @@
-import { Router } from 'express';
+import { Request, Router } from 'express';
 import { z } from 'zod';
-import { asyncHandler, HttpError, parseBody, parseQuery } from './_helpers';
+import { asyncHandler, HttpError, param, parseBody, parseQuery } from './_helpers';
 import {
   addExit,
   createPosition,
@@ -25,6 +25,25 @@ import { sweepExpiredOptions } from '../services/expiredOptionsSweep';
 
 export const positionsRouter = Router();
 
+/** A record id from the path. `Number('abc')` is NaN, which SQLite binds as
+ *  NULL — every lookup then misses and reports a plain "not found", quietly
+ *  presenting a malformed request as a missing row. Parsed strictly so a bad
+ *  id says so (400) and only a genuinely absent row 404s. */
+function idParam(req: Request, name: string): number {
+  const raw = param(req, name);
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) throw new HttpError(400, `invalid ${name}: ${JSON.stringify(raw)}`);
+  return n;
+}
+
+// Every date the journal stores is a plain YYYY-MM-DD string, compared
+// LEXICOGRAPHICALLY (hold-time buckets, the wash-sale window, the equity
+// curve's ordering, the exit-before-entry check below, the CSV/tax export). A
+// merely "long enough" string — '07/26/2026', '2026-7-4' — sorts and subtracts
+// as garbage against those, so it doesn't just display wrong, it silently
+// corrupts the analytics computed from it. Reject it at the door instead.
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be an ISO date (YYYY-MM-DD)');
+
 const createBody = z
   .object({
     assetType: z.enum(['stock', 'option']),
@@ -34,7 +53,7 @@ const createBody = z
     // Must be > 0: a 0 entry makes costBasis 0, so computePositionPnl books the
     // entire market value as unrealized "gain" and returnPct/rMultiple go null.
     entryPrice: z.number().positive(),
-    entryDate: z.string().min(8),
+    entryDate: isoDate,
     entryTime: z
       .string()
       .regex(/^\d{1,2}:\d{2}$/)
@@ -42,7 +61,7 @@ const createBody = z
     fees: z.number().nonnegative().optional(),
     optionType: z.enum(['call', 'put']).nullish(),
     strike: z.number().positive().nullish(),
-    expiration: z.string().min(8).nullish(),
+    expiration: isoDate.nullish(),
     multiplier: z.number().int().positive().optional(),
     tags: z.array(z.string()).optional(),
     grade: z.string().nullish(),
@@ -63,7 +82,7 @@ const patchBody = z.object({
   entryPrice: z.number().positive().optional(),
   quantity: z.number().positive().optional(),
   fees: z.number().nonnegative().optional(),
-  entryDate: z.string().min(8).optional(),
+  entryDate: isoDate.optional(),
   entryTime: z
     .string()
     .regex(/^\d{1,2}:\d{2}$/)
@@ -77,7 +96,7 @@ const patchBody = z.object({
 const exitBody = z.object({
   quantity: z.number().positive(),
   exitPrice: z.number().nonnegative(),
-  exitDate: z.string().min(8),
+  exitDate: isoDate,
   fees: z.number().nonnegative().optional(),
   notes: z.string().nullable().optional(),
 });
@@ -89,18 +108,37 @@ const listQuery = z.object({
   withPnl: z.string().optional(),
 });
 
+/** What the STILL-OPEN part of a lot cost — the honest fallback when no live
+ *  price resolved. The whole-lot costBasis would count a half-exited position
+ *  at twice the capital it actually still has at risk. */
+function remainingCostBasis(p: Position): number {
+  return p.entryPrice * p.remainingQuantity * p.multiplier;
+}
+
 async function withPnlPayload(positions: Position[]) {
-  const prices = await priceMap(positions);
+  // A fully-exited OPTION lot's contract is normally expired and no longer in
+  // any chain, and resolveOptionMarks() spends one provider chain fetch per
+  // (symbol, expiration) group — so pricing closed options burns a request per
+  // refresh (every 60s, on a page that polls) to learn nothing: with nothing
+  // left open, computePositionPnl books 0 unrealized and 0 market value no
+  // matter what the mark is. Stocks stay in — they're one batched, cached
+  // quote call for the whole set, and their last price still reads sensibly
+  // next to a closed row.
+  const prices = await priceMap(positions.filter((p) => p.assetType !== 'option' || p.remainingQuantity > 1e-9));
   // Wash-sale detection needs visibility into EVERY position sharing a
   // symbol, not just the ones this call was filtered to (e.g. status:
   // 'closed' for the Journal) — a reopened lot might still be open. Fetched
   // once, unfiltered, and grouped in memory rather than one query per
-  // closed position.
+  // closed position. Skipped entirely when this payload has no closed row at
+  // all (the Dashboard's open book), since detectWashSale() only ever fires
+  // for a closed one.
   const bySymbol = new Map<string, Position[]>();
-  for (const p of listPositions()) {
-    const arr = bySymbol.get(p.symbol);
-    if (arr) arr.push(p);
-    else bySymbol.set(p.symbol, [p]);
+  if (positions.some((p) => p.status === 'closed')) {
+    for (const p of listPositions()) {
+      const arr = bySymbol.get(p.symbol);
+      if (arr) arr.push(p);
+      else bySymbol.set(p.symbol, [p]);
+    }
   }
   const items = positions.map((p) => {
     const info = prices.get(p.id) ?? { price: null, stale: false, asOf: null };
@@ -125,7 +163,7 @@ async function withPnlPayload(positions: Position[]) {
     .map((i) => ({
       symbol: i.position.symbol,
       side: i.position.side,
-      value: i.pnl.marketValue ?? i.pnl.costBasis,
+      value: i.pnl.marketValue ?? remainingCostBasis(i.position),
     }));
   const exposure = computeExposure(openInputs, (s) => sectorBySymbol.get(s.toUpperCase()) ?? null);
 
@@ -191,7 +229,7 @@ positionsRouter.get(
 positionsRouter.get(
   '/:id',
   asyncHandler(async (req, res) => {
-    const pos = getPosition(Number(req.params.id));
+    const pos = getPosition(idParam(req, 'id'));
     if (!pos) throw new HttpError(404, 'position not found');
     const prices = await priceMap([pos]);
     const info = prices.get(pos.id) ?? { price: null, stale: false, asOf: null };
@@ -224,8 +262,22 @@ positionsRouter.post(
 positionsRouter.patch(
   '/:id',
   asyncHandler(async (req, res) => {
+    const id = idParam(req, 'id');
     const body = parseBody(patchBody, req);
-    const updated = updatePosition(Number(req.params.id), body);
+    const existing = getPosition(id);
+    if (!existing) throw new HttpError(404, 'position not found');
+    // Shrinking the size below what's already been exited leaves a lot holding
+    // exits it can't account for: remainingQuantity clamps at 0, recomputeStatus
+    // flips it to 'closed', and every realized-P&L number is then computed
+    // against a size the position never had. A quantity that contradicts the
+    // exits is a reason to refuse the edit, not to silently absorb it.
+    if (body.quantity !== undefined) {
+      const exited = existing.exits.reduce((s, e) => s + e.quantity, 0);
+      if (body.quantity + 1e-9 < exited) {
+        throw new HttpError(400, `quantity ${body.quantity} is below the ${exited} already exited`);
+      }
+    }
+    const updated = updatePosition(id, body);
     if (!updated) throw new HttpError(404, 'position not found');
     res.json(updated);
   }),
@@ -234,8 +286,9 @@ positionsRouter.patch(
 positionsRouter.delete(
   '/:id',
   asyncHandler(async (req, res) => {
-    if (!deletePosition(Number(req.params.id))) throw new HttpError(404, 'position not found');
-    res.json({ deleted: Number(req.params.id) });
+    const id = idParam(req, 'id');
+    if (!deletePosition(id)) throw new HttpError(404, 'position not found');
+    res.json({ deleted: id });
   }),
 );
 
@@ -243,7 +296,7 @@ positionsRouter.post(
   '/:id/exits',
   asyncHandler(async (req, res) => {
     const body = parseBody(exitBody, req);
-    const pos = getPosition(Number(req.params.id));
+    const pos = getPosition(idParam(req, 'id'));
     if (!pos) throw new HttpError(404, 'position not found');
     if (body.quantity > pos.remainingQuantity + 1e-9) {
       throw new HttpError(400, `exit quantity ${body.quantity} exceeds remaining ${pos.remainingQuantity}`);
@@ -267,8 +320,18 @@ positionsRouter.post(
 positionsRouter.delete(
   '/:id/exits/:exitId',
   asyncHandler(async (req, res) => {
-    if (!deleteExit(Number(req.params.exitId))) throw new HttpError(404, 'exit not found');
-    res.json({ deleted: Number(req.params.exitId), position: getPosition(Number(req.params.id)) });
+    const id = idParam(req, 'id');
+    const exitId = idParam(req, 'exitId');
+    const pos = getPosition(id);
+    if (!pos) throw new HttpError(404, 'position not found');
+    // The delete has to be scoped to THIS position's own exits. Keyed on the
+    // exit id alone, any exit was reachable through any position's URL — so a
+    // mismatched pair silently reopened an unrelated lot for the quantity it
+    // closed, while the response reported the position from the path as if
+    // that were what changed.
+    if (!pos.exits.some((e) => e.id === exitId)) throw new HttpError(404, 'exit not found on this position');
+    if (!deleteExit(exitId)) throw new HttpError(404, 'exit not found');
+    res.json({ deleted: exitId, position: getPosition(id) });
   }),
 );
 
@@ -289,7 +352,7 @@ positionsRouter.post(
   '/:id/close',
   asyncHandler(async (req, res) => {
     const body = parseBody(closeBody, req);
-    const pos = getPosition(Number(req.params.id));
+    const pos = getPosition(idParam(req, 'id'));
     if (!pos) throw new HttpError(404, 'position not found');
     if (pos.status !== 'open' || pos.remainingQuantity <= 1e-9) {
       throw new HttpError(409, 'position is already closed');

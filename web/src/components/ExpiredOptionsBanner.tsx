@@ -95,7 +95,7 @@ export function ExpiredOptionsBanner({ onChanged }: { onChanged: () => void }) {
             ))}
           </ul>
           <div className="opacity-70">
-            Record the real outcome with <b>Log exit</b> on the position (or delete it if it never existed).
+            Record the real outcome with <b>exit</b> on the position (or <b>del</b> it if it never existed).
           </div>
         </div>
       )}

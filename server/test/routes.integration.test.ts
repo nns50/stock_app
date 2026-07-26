@@ -141,6 +141,178 @@ describe('positions + journal routes (integration)', () => {
     expect(res.status).toBe(400);
   });
 
+  // Every date here is stored as a plain string and compared lexicographically
+  // (hold buckets, the wash-sale window, the equity curve's order, the
+  // exit-before-entry check above). A merely long-enough string sorts and
+  // subtracts as garbage against all of them, so the schemas take ISO only.
+  it('rejects a non-ISO date instead of silently corrupting every date-keyed stat', async () => {
+    const fields = {
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+    };
+    expect((await post('/api/positions', { ...fields, entryDate: '05/01/2026' })).status).toBe(400);
+    expect((await post('/api/positions', { ...fields, entryDate: '2026-5-1' })).status).toBe(400);
+
+    const created = await post('/api/positions', { ...fields, entryDate: '2026-05-01' });
+    expect(created.status).toBe(201);
+    const pos = (await created.json()) as { id: number };
+    const badExit = await post(`/api/positions/${pos.id}/exits`, {
+      quantity: 5,
+      exitPrice: 110,
+      exitDate: '2026-5-10',
+    });
+    expect(badExit.status).toBe(400);
+  });
+
+  it('400s a malformed id rather than reporting it as a row that does not exist', async () => {
+    // Number('abc') is NaN, which SQLite binds as NULL — every lookup then
+    // misses and a bad request reads as a missing position.
+    expect((await fetch(`${base}/api/positions/abc`)).status).toBe(400);
+    expect((await fetch(`${base}/api/positions/1.5`)).status).toBe(400);
+    expect((await fetch(`${base}/api/positions/-1`)).status).toBe(400);
+    expect((await fetch(`${base}/api/positions/999999`)).status).toBe(404); // genuinely absent
+  });
+
+  it('refuses a quantity patch below what has already been exited', async () => {
+    const created = await post('/api/positions', {
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-05-01',
+    });
+    const pos = (await created.json()) as { id: number };
+    await post(`/api/positions/${pos.id}/exits`, { quantity: 6, exitPrice: 110, exitDate: '2026-05-10' });
+
+    // 4 < 6 already exited: remainingQuantity would clamp to 0 and the lot
+    // would flip closed holding exits its own size can't account for.
+    const res = await patch(`/api/positions/${pos.id}`, { quantity: 4 });
+    expect(res.status).toBe(400);
+    const untouched = (await getJson(`/api/positions/${pos.id}`)) as {
+      position: { quantity: number; status: string; remainingQuantity: number };
+    };
+    expect(untouched.position).toMatchObject({ quantity: 10, status: 'open', remainingQuantity: 4 });
+
+    // Down to exactly what was exited is legitimate — it just closes the lot.
+    expect((await patch(`/api/positions/${pos.id}`, { quantity: 6 })).status).toBe(200);
+    const closed = (await getJson(`/api/positions/${pos.id}`)) as { position: { status: string } };
+    expect(closed.position.status).toBe('closed');
+  });
+
+  describe('DELETE /positions/:id/exits/:exitId', () => {
+    const openLot = async (symbol: string) => {
+      const res = await post('/api/positions', {
+        assetType: 'stock',
+        symbol,
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        entryDate: '2026-05-01',
+      });
+      return (await res.json()) as { id: number };
+    };
+
+    it("will not delete another position's exit through this position's URL", async () => {
+      const a = await openLot('AAPL');
+      const b = await openLot('MSFT');
+      const exited = await post(`/api/positions/${b.id}/exits`, {
+        quantity: 10,
+        exitPrice: 110,
+        exitDate: '2026-05-10',
+      });
+      const exitId = ((await exited.json()) as { exits: { id: number }[] }).exits[0].id;
+
+      // Keyed on the exit id alone, this silently reopened B for 10 shares
+      // while reporting A as the position that changed.
+      const res = await fetch(`${base}/api/positions/${a.id}/exits/${exitId}`, { method: 'DELETE' });
+      expect(res.status).toBe(404);
+
+      const bNow = (await getJson(`/api/positions/${b.id}`)) as {
+        position: { status: string; remainingQuantity: number; exits: unknown[] };
+      };
+      expect(bNow.position).toMatchObject({ status: 'closed', remainingQuantity: 0 });
+      expect(bNow.position.exits).toHaveLength(1);
+    });
+
+    it("deletes the position's own exit and reopens it for that quantity", async () => {
+      const b = await openLot('MSFT');
+      const exited = await post(`/api/positions/${b.id}/exits`, {
+        quantity: 10,
+        exitPrice: 110,
+        exitDate: '2026-05-10',
+      });
+      const exitId = ((await exited.json()) as { exits: { id: number }[] }).exits[0].id;
+
+      const res = await fetch(`${base}/api/positions/${b.id}/exits/${exitId}`, { method: 'DELETE' });
+      expect(res.status).toBe(200);
+      expect(
+        (await res.json()) as { deleted: number; position: { status: string; remainingQuantity: number } },
+      ).toMatchObject({ deleted: exitId, position: { status: 'open', remainingQuantity: 10 } });
+    });
+  });
+
+  describe('withPnl pricing', () => {
+    const openOption = async (symbol: string, strike: number) => {
+      const res = await post('/api/positions', {
+        assetType: 'option',
+        symbol,
+        side: 'long',
+        quantity: 10,
+        entryPrice: 2,
+        entryDate: '2026-05-01',
+        optionType: 'call',
+        strike,
+        expiration: '2026-05-16',
+      });
+      return (await res.json()) as { id: number };
+    };
+
+    it('does not spend an option-chain fetch pricing a fully-closed lot', async () => {
+      await openOption('AAPL', 200); // stays open — must still be priced
+      const closed = await openOption('MSFT', 200);
+      await post(`/api/positions/${closed.id}/exits`, { quantity: 10, exitPrice: 0, exitDate: '2026-05-16' });
+
+      const chain = vi.spyOn(getProvider(), 'getOptionsChain');
+      try {
+        const body = (await getJson('/api/positions?withPnl=true')) as {
+          positions: { position: { id: number }; price: number | null; pnl: { unrealizedPnl: number | null } }[];
+        };
+        const symbolsFetched = chain.mock.calls.map((c) => c[0]);
+        // One chain fetch per (symbol, expiration) group, on every 60s poll —
+        // and a closed lot's expired contract isn't in any chain anyway, so
+        // the request buys nothing: with none of it left open its P&L is
+        // fully realized either way.
+        expect(symbolsFetched).toContain('AAPL');
+        expect(symbolsFetched).not.toContain('MSFT');
+
+        const closedRow = body.positions.find((r) => r.position.id === closed.id)!;
+        expect(closedRow.price).toBeNull();
+        expect(closedRow.pnl.unrealizedPnl).toBe(0);
+      } finally {
+        chain.mockRestore();
+      }
+    });
+
+    it('falls back to the STILL-OPEN cost basis for exposure when no live price resolves', async () => {
+      // A strike the synthetic chain never carries, so the mark comes back
+      // null and the no-price fallback is what exposure is computed from.
+      const pos = await openOption('AAPL', 99_999);
+      await post(`/api/positions/${pos.id}/exits`, { quantity: 6, exitPrice: 3, exitDate: '2026-05-05' });
+
+      const body = (await getJson('/api/positions?withPnl=true')) as {
+        positions: { position: { id: number }; price: number | null }[];
+        exposure: { gross: number };
+      };
+      expect(body.positions.find((r) => r.position.id === pos.id)!.price).toBeNull();
+      // 4 contracts still open × $2 × 100 — not the whole original lot's $2,000.
+      expect(body.exposure.gross).toBe(800);
+    });
+  });
+
   // Regression (2026-07-17): the Zod body schemas for both routes were
   // written before accountId existed and didn't list it, so Zod silently
   // stripped it from the parsed body before it ever reached the DB layer —
