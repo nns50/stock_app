@@ -70,7 +70,15 @@ export interface IntegrityReport {
   exitsExamined: number;
   checks: IntegrityCheck[];
   findings: IntegrityFinding[];
-  /** True when nothing was found. */
+  /**
+   * True when nothing needs FIXING — no high or medium findings.
+   *
+   * Informational rows deliberately do not flip this. "This position has no
+   * entry date, which is the honest record of one the broker never dated" is
+   * not a defect, and a caller asking "is my journal OK?" should get yes. Read
+   * `findings` for everything reported, including the informational ones; this
+   * flag answers the narrower question.
+   */
   clean: boolean;
 }
 
@@ -365,6 +373,6 @@ export function analyzeJournal(positions: Position[], now: number = Date.now()):
       count: counts.get(id) ?? 0,
     })),
     findings,
-    clean: findings.length === 0,
+    clean: !findings.some((f) => f.severity !== 'info'),
   };
 }

@@ -782,7 +782,9 @@ Equity curve, edge over time, and drawdown & streaks are shown directly on the p
   recorded. An option's **expiration** being in the future is not a defect — that's what
   an open contract is — so it's exempt from the future-date check. It also lists, as
   **informational**, any imported position with **no entry date** (see below) — not a
-  fault, just something you can fill in.
+  fault, just something you can fill in. A run whose only findings are informational
+  still reports your journal as having nothing to fix; it lists those rows anyway, so
+  you can act on them or leave them.
 - **Positions with no entry date.** Webull's positions feed reports your *current
   holdings* — quantity and an average cost — so a lot you built from several buys has no
   single open date for it to give, and often it gives none at all. Rather than invent one

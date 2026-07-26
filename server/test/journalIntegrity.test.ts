@@ -72,6 +72,50 @@ describe('analyzeJournal — a clean book', () => {
   });
 });
 
+describe('analyzeJournal — `clean` means "nothing to FIX", not "nothing to say"', () => {
+  it('stays true when the only findings are informational', () => {
+    // A position the broker never dated is a correct record of an incomplete
+    // fact. Reporting it is useful; calling the book dirty over it is not —
+    // there is no repair to make, and a caller asking "is my journal OK?"
+    // would be told no forever.
+    const report = analyzeJournal([positionFixture({ entryDate: null })], DIVERGENT);
+    expect(report.findings.map((f) => f.severity)).toEqual(['info']);
+    expect(report.clean).toBe(true);
+  });
+
+  it('does not conflate that with an empty report — the rows are still there', () => {
+    // The distinction the CLI depends on: clean AND findings to print. Gate a
+    // "no problems found" shortcut on the flag and these vanish silently.
+    const report = analyzeJournal([positionFixture({ entryDate: null })], DIVERGENT);
+    expect(report.findings.length).toBe(1);
+    expect(report.checks.find((c) => c.id === 'missing_entry_date')?.count).toBe(1);
+  });
+
+  it('goes false on a medium finding', () => {
+    const p = positionFixture({ entryDate: '2026-08-15' });
+    const report = analyzeJournal([p], DIVERGENT);
+    expect(report.findings.map((f) => f.severity)).toEqual(['medium']);
+    expect(report.clean).toBe(false);
+  });
+
+  it('goes false on a high finding', () => {
+    const p = positionFixture({ entryPrice: 0 });
+    const report = analyzeJournal([p], DIVERGENT);
+    expect(report.findings.map((f) => f.severity)).toEqual(['high']);
+    expect(report.clean).toBe(false);
+  });
+
+  it('goes false when a real defect sits alongside informational rows', () => {
+    // Order matters to nothing: one high among any number of infos is dirty.
+    const report = analyzeJournal(
+      [positionFixture({ id: 1, entryDate: null }), positionFixture({ id: 2, entryPrice: 0 })],
+      DIVERGENT,
+    );
+    expect(report.findings.map((f) => f.severity).sort()).toEqual(['high', 'info']);
+    expect(report.clean).toBe(false);
+  });
+});
+
 describe('analyzeJournal — the UTC-dating fingerprint is exact, not heuristic', () => {
   const syncExit = (o: Partial<PositionExit>) =>
     exitFixture({ notes: 'Auto-closed via Webull sync — no longer held at the broker. …', ...o });
