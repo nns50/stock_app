@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import PositionsPage from './PositionsPage';
 import { client } from '../api/client';
@@ -28,6 +28,7 @@ function positionFixture(overrides: Partial<Position> = {}): Position {
     stopPrice: null,
     targetPrice: null,
     sourceIntentId: null,
+    accountId: null,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     exits: [],
@@ -55,15 +56,20 @@ function rowFixture(position: Position): PositionWithPnl {
       remainingQuantity: position.remainingQuantity,
       closedQuantity: 0,
     },
+    washSale: null,
+  };
+}
+
+function payload(rows: PositionWithPnl[]) {
+  return {
+    positions: rows,
+    aggregate: { realized: 0, unrealized: 0, total: 0, openMarketValue: 0, openCount: rows.length, closedCount: 0 },
+    exposure: { gross: 0, net: 0, long: 0, short: 0, bySector: [], largest: null },
   };
 }
 
 function renderWithRows(rows: PositionWithPnl[]) {
-  vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({
-    positions: rows,
-    aggregate: { realized: 0, unrealized: 0, total: 0, openMarketValue: 0, openCount: rows.length, closedCount: 0 },
-    exposure: { gross: 0, net: 0, long: 0, short: 0, bySector: [], largest: null },
-  });
+  vi.spyOn(client, 'positionsWithPnl').mockResolvedValue(payload(rows));
   vi.spyOn(client, 'events').mockResolvedValue({ events: [] });
   return render(
     <MemoryRouter>
@@ -181,5 +187,87 @@ describe('PositionsPage — portfolio-wide tiles vs filtered list', () => {
     expect(await screen.findByText('MSFT')).toBeInTheDocument();
     // Switching tabs filters in memory — it does not trigger another fetch.
     expect((client.positionsWithPnl as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(callsBefore);
+  });
+
+  it('only asks for earnings on the OPEN symbols, and not again when the tab changes', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const open = rowFixture(positionFixture({ id: 1, symbol: 'AAPL', status: 'open' }));
+    const closed = rowFixture(positionFixture({ id: 2, symbol: 'MSFT', status: 'closed', remainingQuantity: 0 }));
+    renderWithRows([open, closed]);
+
+    await screen.findByText('AAPL');
+    // Only open rows can render an earnings badge, so MSFT is not worth asking
+    // about — and the key must not move with the tab, or every tab switch
+    // refetches and blanks every badge while it reloads.
+    await waitFor(() => expect(client.events).toHaveBeenCalledWith(['AAPL']));
+    const callsBefore = (client.events as unknown as { mock: { calls: unknown[] } }).mock.calls.length;
+
+    await userEvent.click(screen.getByText('All'));
+    await screen.findByText('MSFT');
+    expect((client.events as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(callsBefore);
+  });
+});
+
+describe('PositionsPage — empty states', () => {
+  it('offers the first-run "log your first trade" pitch only when the book is genuinely empty', async () => {
+    renderWithRows([]);
+
+    expect(await screen.findByText('No positions yet')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Log trade/ })).toBeInTheDocument();
+  });
+
+  it('says the TAB is empty (not the book) when a filter hides every row', async () => {
+    // A book of only closed trades, viewed on the default Open tab. Showing
+    // "No positions yet" + "log your first trade" here told the user they had
+    // no positions at all, which is plainly wrong with rows one tab away.
+    const closed = rowFixture(positionFixture({ id: 1, symbol: 'MSFT', status: 'closed', remainingQuantity: 0 }));
+    const { default: userEvent } = await import('@testing-library/user-event');
+    renderWithRows([closed]);
+
+    expect(await screen.findByText('No open positions')).toBeInTheDocument();
+    expect(screen.queryByText('No positions yet')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Log trade/ })).toBeNull();
+
+    // ...and its "Show all" action actually reveals them.
+    await userEvent.click(screen.getByRole('button', { name: 'Show all' }));
+    expect(await screen.findByText('MSFT')).toBeInTheDocument();
+  });
+});
+
+describe('PositionsPage — a failed refresh must not throw away the numbers on screen', () => {
+  it('keeps the table and flags the staleness instead of replacing it with an error card', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const row = rowFixture(positionFixture({ id: 1, symbol: 'AAPL', status: 'open' }));
+    vi.spyOn(client, 'positionsWithPnl')
+      .mockResolvedValueOnce(payload([row]))
+      .mockRejectedValue(new Error('network down'));
+    vi.spyOn(client, 'events').mockResolvedValue({ events: [] });
+    render(
+      <MemoryRouter>
+        <PositionsPage />
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('AAPL');
+    await userEvent.click(screen.getByRole('button', { name: /Refresh/ }));
+
+    // The page polls every 60s, so one transient failure used to blank the
+    // whole book — the last-known P&L is exactly what you still want to see.
+    const banner = await screen.findByText(/Couldn't refresh/);
+    expect(banner).toHaveTextContent('network down');
+    expect(screen.getByText('AAPL')).toBeInTheDocument();
+  });
+
+  it('still shows the full error state when the FIRST load fails (nothing to keep)', async () => {
+    vi.spyOn(client, 'positionsWithPnl').mockRejectedValue(new Error('network down'));
+    vi.spyOn(client, 'events').mockResolvedValue({ events: [] });
+    render(
+      <MemoryRouter>
+        <PositionsPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('network down')).toBeInTheDocument();
+    expect(screen.queryByText(/Couldn't refresh/)).toBeNull();
   });
 });

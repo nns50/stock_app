@@ -266,3 +266,61 @@ describe('JournalEditModal — removing a mistaken exit (2026-07-17, multi-accou
     expect(onSaved).toHaveBeenCalled();
   });
 });
+
+// Both of these ran under a bare try/finally, so a rejected request was
+// swallowed whole: the dialog just went un-busy with nothing said anywhere,
+// which reads exactly like it worked.
+describe('JournalEditModal — a failed request has to say so', () => {
+  const exitFixture = {
+    id: 9,
+    positionId: 7,
+    quantity: 50,
+    exitPrice: 10,
+    exitDate: '2026-07-16',
+    fees: 0,
+    notes: null,
+    sourceIntentId: null,
+    createdAt: Date.now(),
+  };
+
+  it('surfaces a failed save and keeps the dialog open with the edits intact', async () => {
+    vi.spyOn(client, 'updatePosition').mockRejectedValue(new Error('quantity is below the 6 already exited'));
+    const onSaved = vi.fn();
+    renderJournalModal(positionFixture({ id: 7, accountId: 'CASH' }), onSaved);
+
+    fireEvent.change(screen.getByPlaceholderText(/INDIVIDUAL_CASH/), { target: { value: 'MARGIN' } });
+    fireEvent.click(screen.getByText('Save'));
+
+    expect(await screen.findByText(/already exited/)).toBeInTheDocument();
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(screen.getByPlaceholderText(/INDIVIDUAL_CASH/)).toHaveValue('MARGIN'); // not discarded
+  });
+
+  it('surfaces a failed exit removal instead of leaving the exit listed with no explanation', async () => {
+    vi.spyOn(client, 'deleteExit').mockRejectedValue(new Error('exit not found on this position'));
+    const onSaved = vi.fn();
+    renderJournalModal(positionFixture({ id: 7, exits: [exitFixture] }), onSaved);
+
+    fireEvent.click(screen.getByText('remove'));
+    await screen.findByText('Remove this exit?');
+    fireEvent.click(screen.getByText('Remove exit'));
+
+    expect(await screen.findByText(/exit not found on this position/)).toBeInTheDocument();
+    expect(onSaved).not.toHaveBeenCalled();
+    // Still listed and still removable — pressing remove again is the obvious
+    // next move, and it must not be stuck busy.
+    expect(screen.getByText('remove')).toBeInTheDocument();
+  });
+});
+
+describe('ExitModal — exit date cannot predate the entry', () => {
+  it('floors the date picker at the entry date the server would reject going below', () => {
+    render(
+      <ToastProvider>
+        <ExitModal position={positionFixture({ entryDate: '2026-07-01' })} onClose={vi.fn()} onSaved={vi.fn()} />
+      </ToastProvider>,
+    );
+    const dateInputs = screen.getAllByDisplayValue(/^\d{4}-\d{2}-\d{2}$/);
+    expect(dateInputs.some((el) => el.getAttribute('min') === '2026-07-01')).toBe(true);
+  });
+});
