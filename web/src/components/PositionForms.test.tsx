@@ -209,6 +209,62 @@ describe('JournalEditModal — Webull account (2026-07-17, multi-account fix)', 
   });
 });
 
+describe('JournalEditModal — correcting the entry date', () => {
+  // The integrity report tells you to fix a mis-dated position "via the
+  // position's journal dialog" — advice that was unfollowable until this
+  // field existed, because the dialog only ever edited tags/grade/notes/account.
+  const dateInput = () => screen.getAllByDisplayValue(/^\d{4}-\d{2}-\d{2}$/)[0];
+
+  it('pre-fills from the position and saves a correction', async () => {
+    const spy = vi.spyOn(client, 'updatePosition').mockResolvedValue(positionFixture());
+    renderJournalModal(positionFixture({ id: 7, entryDate: '2026-07-25' }));
+
+    expect(dateInput()).toHaveValue('2026-07-25');
+    fireEvent.change(dateInput(), { target: { value: '2026-07-20' } });
+    fireEvent.click(screen.getByText('Save'));
+
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(7, expect.objectContaining({ entryDate: '2026-07-20' })));
+  });
+
+  it('sends null when cleared — "I do not know" is a real answer, not an empty box', async () => {
+    const spy = vi.spyOn(client, 'updatePosition').mockResolvedValue(positionFixture());
+    renderJournalModal(positionFixture({ id: 7, entryDate: '2026-07-25' }));
+
+    fireEvent.change(dateInput(), { target: { value: '' } });
+    fireEvent.click(screen.getByText('Save'));
+
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(7, expect.objectContaining({ entryDate: null })));
+  });
+
+  it('renders an undated position with an empty field rather than a guess', () => {
+    renderJournalModal(positionFixture({ entryDate: null }));
+    const inputs = screen.getAllByLabelText(/Entry date/i);
+    expect(inputs[0]).toHaveValue('');
+  });
+
+  it("caps the picker at the position's own exit, which the server also refuses to cross", () => {
+    renderJournalModal(
+      positionFixture({
+        entryDate: '2026-07-01',
+        exits: [
+          {
+            id: 1,
+            positionId: 7,
+            quantity: 100,
+            exitPrice: 110,
+            exitDate: '2026-07-05',
+            fees: 0,
+            notes: null,
+            sourceIntentId: null,
+            createdAt: Date.now(),
+          },
+        ],
+      }),
+    );
+    expect(screen.getAllByLabelText(/Entry date/i)[0]).toHaveAttribute('max', '2026-07-05');
+  });
+});
+
 describe('JournalEditModal — removing a mistaken exit (2026-07-17, multi-account fix recovery path)', () => {
   const exitFixture = {
     id: 9,

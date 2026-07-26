@@ -604,8 +604,8 @@ nudge, not a blocker — you can still save with items unchecked.
     **exit** (or delete the row if the trade never happened). Guessing here would write a
     realized P&L number that never occurred, which is worse than a row you can see is stale.
   Positions on their own expiration day are left alone — they're still tradeable all session.
-- **journal** edits tags/grade/notes, and (2026-07-17) which **Webull account** the lot
-  lives in — shown as a small chip next to the symbol whenever it's set, so you can tell
+- **journal** edits tags/grade/notes, the **entry date**, and (2026-07-17) which
+  **Webull account** the lot lives in — shown as a small chip next to the symbol whenever it's set, so you can tell
   positions in different real accounts (e.g. cash vs. margin) apart at a glance. The same
   dialog lists the position's **exits** with a **remove** button on each — deletes that
   exit and reopens the position for the quantity it closed; use this to undo a mistaken or
