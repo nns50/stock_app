@@ -519,6 +519,14 @@ How to use it:
 Small, evidence-based adjustments here often improve expectancy more than any new
 setup.
 
+**Check the sample before you act on it.** The panel fetches daily candles per trade, so
+it caps how many it does per request and can't measure a trade with no entry date or one
+the provider has no data for. When any of that applies it says so above the table —
+"averages over 12 of 70 closed stock trades" — and that line is the difference between
+"my winners give back half their MFE" and "half of a twelfth of my winners did." Widening
+a target on the second is a decision made from noise. If the excluded count is large,
+treat the averages as a hint and read the individual rows instead.
+
 ---
 
 ## Reducing slippage with execution quality

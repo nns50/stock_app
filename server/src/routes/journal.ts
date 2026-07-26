@@ -52,27 +52,40 @@ journalRouter.get(
     // The benchmark compares your realized return against buy-and-hold over the
     // period you traded, so the window has to come from trades that HAVE dates.
     // `null` would sort as the string "null" and quietly become the boundary.
-    const startDate = closed
-      .map((p) => p.entryDate)
-      .filter((d): d is string => d !== null)
-      .sort()[0];
-    const endDate = closed
-      .map(lastExitDate)
-      .filter((d): d is string => d !== null)
-      .sort()
-      .slice(-1)[0];
+    //
+    // `?? null` is load-bearing: indexing an empty array yields undefined, which
+    // the `is string` predicate lets TypeScript type as `string` anyway. Closed
+    // trades can all be undated (the length check above doesn't cover it), and
+    // an undefined here reached getCandles as a missing bound and computeBenchmark
+    // as an absent field — a broken window reported as a real one.
+    const startDate =
+      closed
+        .map((p) => p.entryDate)
+        .filter((d): d is string => d !== null)
+        .sort()[0] ?? null;
+    const endDate =
+      closed
+        .map(lastExitDate)
+        .filter((d): d is string => d !== null)
+        .sort()
+        .slice(-1)[0] ?? null;
     const totalRealized = closed.reduce((s, p) => s + realizedPnlOf(p), 0);
 
     let benchStart: number | null = null;
     let benchEnd: number | null = null;
-    try {
-      const candles = await getProvider().getCandles(symbol, 'daily', { start: startDate, end: endDate });
-      if (candles.length) {
-        benchStart = candles[0].close;
-        benchEnd = candles[candles.length - 1].close;
+    // No window, no comparison. The realized total is still returned, so the
+    // response says "here is your P&L, there is nothing to compare it against"
+    // instead of inventing a period.
+    if (startDate !== null && endDate !== null) {
+      try {
+        const candles = await getProvider().getCandles(symbol, 'daily', { start: startDate, end: endDate });
+        if (candles.length) {
+          benchStart = candles[0].close;
+          benchEnd = candles[candles.length - 1].close;
+        }
+      } catch {
+        // benchmark unavailable from the provider; return user side only
       }
-    } catch {
-      // benchmark unavailable from the provider; return user side only
     }
     res.json(
       computeBenchmark({
@@ -123,18 +136,24 @@ journalRouter.get(
 // you over the holding period. Fetches daily candles per trade (capped), so it's
 // an on-demand analysis. Options are skipped (excursion would be on the
 // underlying, not the option premium).
+/** One daily-candle fetch per trade, so the work is bounded. Newest trades win
+ *  (listPositions orders by date DESC) and the number dropped is REPORTED — see
+ *  ExcursionCoverage. */
+const EXCURSION_TRADE_CAP = 50;
+
 journalRouter.get(
   '/excursions',
   asyncHandler(async (_req, res) => {
+    const closedStock = listPositions({ status: 'closed', assetType: 'stock' });
     // An excursion walks daily candles from the entry to the exit, so a trade
     // with no known entry date cannot be measured and is left out.
-    const closed = listPositions({ status: 'closed', assetType: 'stock' })
-      .filter((p): p is typeof p & { entryDate: string } => p.entryDate !== null)
-      .slice(0, 50);
+    const dated = closedStock.filter((p): p is typeof p & { entryDate: string } => p.entryDate !== null);
+    const selected = dated.slice(0, EXCURSION_TRADE_CAP);
     const provider = getProvider();
     const rows: TradeExcursion[] = [];
+    let unavailable = 0;
     await Promise.all(
-      closed.map(async (p) => {
+      selected.map(async (p) => {
         try {
           const candles = await provider.getCandles(p.symbol, 'daily', {
             start: p.entryDate,
@@ -154,14 +173,25 @@ journalRouter.get(
             },
             candles,
           );
+          // A null here means the candles arrived but held nothing usable over
+          // the holding window — counted, not discarded, for the same reason a
+          // failed fetch is.
           if (ex) rows.push(ex);
+          else unavailable++;
         } catch {
-          // skip trades whose candles can't be fetched
+          unavailable++;
         }
       }),
     );
     rows.sort((a, b) => b.entryDate.localeCompare(a.entryDate));
-    res.json(aggregateExcursions(rows));
+    res.json(
+      aggregateExcursions(rows, {
+        closedStockTrades: closedStock.length,
+        undated: closedStock.length - dated.length,
+        overCap: dated.length - selected.length,
+        unavailable,
+      }),
+    );
   }),
 );
 

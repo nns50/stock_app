@@ -52,4 +52,37 @@ describe('aggregateExcursions', () => {
     expect(rep.avgMfeR).toBeCloseTo(7.5); // (3+12)/2
     expect(rep.capturePct).not.toBeNull();
   });
+
+  it('defaults coverage to "these rows were the whole population"', () => {
+    // True for a direct call, and the only default that cannot overstate.
+    const a = computeExcursion(longTrade, [candle(130, 94)])!;
+    expect(aggregateExcursions([a]).coverage).toEqual({
+      closedStockTrades: 1,
+      undated: 0,
+      overCap: 0,
+      unavailable: 0,
+    });
+  });
+
+  it('reports what a caller could not analyse, so a truncated sample says so', () => {
+    // The averages above are over ONE trade out of seventy. Without this the
+    // report is indistinguishable from a complete one over a one-trade journal.
+    const a = computeExcursion(longTrade, [candle(130, 94)])!;
+    const rep = aggregateExcursions([a], {
+      closedStockTrades: 70,
+      undated: 4,
+      overCap: 16,
+      unavailable: 49,
+    });
+    expect(rep.trades).toBe(1);
+    expect(rep.coverage.closedStockTrades).toBe(70);
+    expect(rep.coverage.undated).toBe(4);
+    expect(rep.coverage.overCap).toBe(16);
+    expect(rep.coverage.unavailable).toBe(49);
+    // The four buckets account for the whole population: analysed + the reasons
+    // the rest are missing. An identity worth asserting — it is what makes the
+    // numbers checkable rather than decorative.
+    const c = rep.coverage;
+    expect(rep.trades + c.undated + c.overCap + c.unavailable).toBe(c.closedStockTrades);
+  });
 });

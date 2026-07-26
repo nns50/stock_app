@@ -686,6 +686,15 @@ trades.
   on each trade (so always log one). Includes the **expectancy in R**, the spread of
   outcomes, and a **System Quality Number (SQN)** — Van Tharp's measure of edge ×
   consistency (mean R ÷ std-dev of R × √N; ~2 is average, 3+ excellent).
+- **Trades with no entry date** (see "Positions with no entry date" under
+  [Data tools](#data-tools)) are counted in everything above — those need only a P&L — so
+  `XW · YL` under the **Closed** tile always adds up to the count beside it.
+  They're left out only of the figures that need a place in time: the equity curve,
+  rolling expectancy, max drawdown, streaks, and the weekday/hold-time breakdowns, which
+  say "N of M dated" where it matters.
+- If a stats request **fails**, the page says so and offers a retry. It won't tell you
+  your journal is empty because a request didn't come back, and a failed refresh keeps
+  the last numbers on screen with a banner rather than blanking them.
 
 ### Breakdowns
 
@@ -744,7 +753,12 @@ Equity curve, edge over time, and drawdown & streaks are shown directly on the p
 - **Excursions (MAE/MFE)** — for closed *stock* trades, replays daily candles over the
   holding period to show **Maximum Adverse Excursion** (how far underwater it went) and
   **Maximum Favorable Excursion** (how far in profit), in **%** and **R**. Use it to
-  tighten stops and set realistic targets.
+  tighten stops and set realistic targets. Because it fetches candles per trade it caps
+  how many it does per request, and it can't measure a trade with no entry date or one
+  the provider has no candles for — so it now **says what it left out** ("averages over
+  12 of 70 closed stock trades…") rather than presenting a partial sample as the whole
+  picture. If nothing at all could be measured it tells you why, instead of claiming you
+  have no closed stock trades.
 - **Execution quality (slippage)** — for each **live-traded** entry/exit that came from an
   order with a limit price, compares the actual **broker fill** to the **limit you set**.
   Positive $ always means it cost you money, whichever side you were on (a buy filled

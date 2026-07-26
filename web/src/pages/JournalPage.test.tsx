@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import JournalPage from './JournalPage';
 import { client } from '../api/client';
@@ -13,6 +13,7 @@ beforeEach(() => {
 function journalStatsFixture(overrides: Partial<JournalStats> = {}): JournalStats {
   return {
     totalClosed: 0,
+    datedTrades: 0,
     wins: 0,
     losses: 0,
     breakeven: 0,
@@ -232,5 +233,84 @@ describe('JournalPage', () => {
     expect(screen.getByText('0.5R')).toBeInTheDocument(); // breakout's avg R
     expect(screen.getByText('∞')).toBeInTheDocument(); // earnings: all winners, no losses
     expect(screen.getAllByText('—').length).toBeGreaterThan(0); // earnings: no trade logged a stop
+  });
+});
+
+describe('JournalPage — failures must not pass for emptiness', () => {
+  const boom = () => Promise.reject(new Error('network down'));
+
+  it('shows the error and a retry when the stats request fails', async () => {
+    // `const s = stats.data!` asserted non-null, so this threw during render and
+    // took the page down with no message and no way back.
+    vi.spyOn(client, 'journalStats').mockImplementation(boom as never);
+    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({ positions: [] } as never);
+    render(
+      <MemoryRouter>
+        <JournalPage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(/Something went wrong/)).toBeInTheDocument();
+    expect(screen.getByText(/network down/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Retry/ })).toBeInTheDocument();
+  });
+
+  it('does NOT claim you have no closed trades when the trade list failed to load', async () => {
+    // The worst version of this bug: stats load, positions fail, and the page
+    // renders "No closed trades yet — Log a trade to start building your
+    // journal." to someone whose journal is full.
+    vi.spyOn(client, 'journalStats').mockResolvedValue(journalStatsFixture({ totalClosed: 12, wins: 7 }));
+    vi.spyOn(client, 'positionsWithPnl').mockImplementation(boom as never);
+    render(
+      <MemoryRouter>
+        <JournalPage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(/Something went wrong/)).toBeInTheDocument();
+    expect(screen.queryByText(/No closed trades yet/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the table populated when a tag filter is applied', async () => {
+    // The tag-specific empty state guards a STALE filter — filter by a tag, then
+    // edit that trade to drop it — which this level can't drive. What it can
+    // cover is that filtering by a live tag keeps its own rows, so the empty
+    // state is not reachable by simply clicking a chip.
+    vi.spyOn(client, 'journalStats').mockResolvedValue(journalStatsFixture({ totalClosed: 1 }));
+    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({
+      positions: [positionWithPnlFixture({ position: positionFixture({ tags: ['swing'] }) })],
+    } as never);
+    render(
+      <MemoryRouter>
+        <JournalPage />
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'swing' }));
+    expect(screen.getByRole('link', { name: 'WASH' })).toBeInTheDocument();
+    expect(screen.queryByText(/No closed trades/)).not.toBeInTheDocument();
+  });
+});
+
+describe('JournalPage — R-multiple tiles', () => {
+  it('does not render "+-1.50R" when every stopped trade lost', async () => {
+    // bestR had a hardcoded "+". A book where the best R outcome is still a loss
+    // is exactly the book whose owner is most likely to be reading this tile.
+    vi.spyOn(client, 'journalStats').mockResolvedValue(
+      journalStatsFixture({
+        totalClosed: 3,
+        datedTrades: 3,
+        rTrades: 3,
+        avgR: -1.2,
+        bestR: -0.5,
+        worstR: -2,
+        rBuckets: [{ label: '≤ -2R', count: 1 }],
+      }),
+    );
+    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({ positions: [] } as never);
+    render(
+      <MemoryRouter>
+        <JournalPage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('-0.50R')).toBeInTheDocument();
+    expect(screen.queryByText('+-0.50R')).not.toBeInTheDocument();
   });
 });

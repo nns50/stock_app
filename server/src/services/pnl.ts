@@ -201,10 +201,13 @@ export interface GroupStat {
 export interface JournalStats {
   totalClosed: number;
   /** How many of `totalClosed` carry a usable date, and so appear in the
-   *  equity curve, rolling expectancy, weekday and hold-time breakdowns. Lower
-   *  than totalClosed when a position was imported without an open date (see
-   *  db/positions.ts) — surfaced so a shorter curve reads as "we don't know
-   *  when those happened" rather than as missing trades. */
+   *  path-dependent figures: the equity curve, rolling expectancy, drawdown,
+   *  streaks, and the weekday and hold-time breakdowns. Lower than totalClosed
+   *  when a position was imported without an open date (see db/positions.ts) —
+   *  surfaced so a shorter curve reads as "we don't know when those happened"
+   *  rather than as missing trades. Everything that needs only a P&L —
+   *  win rate, expectancy, profit factor, the realized total, best/worst trade,
+   *  and every R-multiple statistic — is over all `totalClosed`. */
   datedTrades: number;
   wins: number;
   losses: number;
@@ -444,25 +447,36 @@ export function tradeDateOf(p: Position): string | null {
 
 /** Stats over CLOSED positions (each closed position = one completed trade). */
 export function computeJournalStats(closed: Position[]): JournalStats {
-  // A trade with no date at all still counts toward win rate, expectancy and
-  // profit factor — those need only its P&L. It is dropped from the ordered
-  // series below (equity curve, rolling expectancy) because there is nowhere
-  // to put it, and datedTrades records how many made the cut so the UI can say
-  // so rather than quietly showing a shorter curve.
+  // Two populations, deliberately:
+  //
+  //   `withPnl` — EVERY closed trade. Win rate, expectancy, profit factor and
+  //     the realized total need only a P&L, so a trade the broker never dated
+  //     still belongs in them. It is a completed trade whose date we don't know,
+  //     not a trade that didn't happen.
+  //   `dated`   — the subset that can be placed on a timeline, in order. The
+  //     equity curve, rolling expectancy, drawdown and streaks are all
+  //     path-dependent: without a date there is no position in the sequence to
+  //     put the trade in, so it is left out rather than guessed at.
+  //
+  // These were one population until 2026-07-26 — everything ran over `dated` —
+  // which silently dropped undated trades from the headline numbers and made
+  // wins + losses + breakeven disagree with totalClosed on screen. The R-multiple
+  // stats below always used every closed trade, so the two halves of this
+  // function contradicted each other about the same book.
   const withPnl = closed.map((p) => ({ date: tradeDateOf(p), pnl: round2(realizedPnlOf(p)) }));
-  const trades = withPnl
+  const dated = withPnl
     .filter((t): t is { date: string; pnl: number } => t.date !== null)
     .sort((a, b) => a.date.localeCompare(b.date));
 
-  const wins = trades.filter((t) => t.pnl > 0);
-  const losses = trades.filter((t) => t.pnl < 0);
-  const breakeven = trades.filter((t) => t.pnl === 0);
+  const wins = withPnl.filter((t) => t.pnl > 0);
+  const losses = withPnl.filter((t) => t.pnl < 0);
+  const breakeven = withPnl.filter((t) => t.pnl === 0);
   const grossProfit = wins.reduce((s, t) => s + t.pnl, 0);
   const grossLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
-  const totalRealized = trades.reduce((s, t) => s + t.pnl, 0);
+  const totalRealized = withPnl.reduce((s, t) => s + t.pnl, 0);
 
   let cumulative = 0;
-  const equityCurve = trades.map((t) => {
+  const equityCurve = dated.map((t) => {
     cumulative = round2(cumulative + t.pnl);
     return { date: t.date, pnl: t.pnl, cumulative };
   });
@@ -473,9 +487,9 @@ export function computeJournalStats(closed: Position[]): JournalStats {
   const ROLL_WINDOW = 20;
   const ROLL_MIN = 8;
   const rollingExpectancy =
-    trades.length >= ROLL_MIN
-      ? trades.map((t, i) => {
-          const window = trades.slice(Math.max(0, i - ROLL_WINDOW + 1), i + 1);
+    dated.length >= ROLL_MIN
+      ? dated.map((t, i) => {
+          const window = dated.slice(Math.max(0, i - ROLL_WINDOW + 1), i + 1);
           return { date: t.date, value: round2(window.reduce((s, x) => s + x.pnl, 0) / window.length) };
         })
       : [];
@@ -520,7 +534,7 @@ export function computeJournalStats(closed: Position[]): JournalStats {
   const stdevR = rs.length >= 2 ? Math.sqrt(rs.reduce((s, r) => s + (r - meanR) ** 2, 0) / (rs.length - 1)) : null;
   const sqn = stdevR && stdevR > 0 ? round2((meanR / stdevR) * Math.sqrt(Math.min(rs.length, 100))) : null;
 
-  const winRate = trades.length ? round2((wins.length / trades.length) * 100) : 0;
+  const winRate = withPnl.length ? round2((wins.length / withPnl.length) * 100) : 0;
   const avgWin = wins.length ? round2(grossProfit / wins.length) : 0;
   const avgLoss = losses.length ? round2(-grossLoss / losses.length) : 0;
   // Kelly models a binary win/loss bet, so its win probability must be over
@@ -530,22 +544,22 @@ export function computeJournalStats(closed: Position[]): JournalStats {
   const decisiveWinRate = decisive ? round2((wins.length / decisive) * 100) : 0;
 
   return {
-    // Every closed trade counts toward win rate, expectancy and profit factor —
-    // those need only P&L. `datedTrades` is the subset that could be placed in
-    // time at all.
+    // wins + losses + breakeven === totalClosed, always. That identity is the
+    // point: the UI puts them side by side, so a subtotal that doesn't add up
+    // reads as a bug in the arithmetic rather than as a filtered population.
     totalClosed: withPnl.length,
-    datedTrades: trades.length,
+    datedTrades: dated.length,
     wins: wins.length,
     losses: losses.length,
     breakeven: breakeven.length,
     winRate,
     avgWin,
     avgLoss,
-    expectancy: trades.length ? round2(totalRealized / trades.length) : 0,
+    expectancy: withPnl.length ? round2(totalRealized / withPnl.length) : 0,
     profitFactor: grossLoss > 0 ? round2(grossProfit / grossLoss) : grossProfit > 0 ? null : 0,
     totalRealized: round2(totalRealized),
-    bestTrade: trades.length ? round2(Math.max(...trades.map((t) => t.pnl))) : 0,
-    worstTrade: trades.length ? round2(Math.min(...trades.map((t) => t.pnl))) : 0,
+    bestTrade: withPnl.length ? round2(Math.max(...withPnl.map((t) => t.pnl))) : 0,
+    worstTrade: withPnl.length ? round2(Math.min(...withPnl.map((t) => t.pnl))) : 0,
     equityCurve,
     rollingExpectancy,
     byTag: toGroupStats(tagMap).sort(byTotalDesc),
@@ -562,7 +576,12 @@ export function computeJournalStats(closed: Position[]): JournalStats {
     sqn,
     rBuckets: bucketRMultiples(rs),
     kelly: kellySuggestion(decisiveWinRate, avgWin, avgLoss, decisive),
-    ...computeStreaksAndDrawdown(trades.map((t) => t.pnl)),
+    // Dated only, and necessarily: a drawdown is the path the equity took, and a
+    // streak is a run of consecutive trades. Both are meaningless for a trade
+    // with no place in the order. So `maxDrawdown` can be smaller than what an
+    // undated loss would have produced — the UI's "N of M dated" badge on the
+    // equity curve is what tells the reader this series is the shorter one.
+    ...computeStreaksAndDrawdown(dated.map((t) => t.pnl)),
   };
 }
 
