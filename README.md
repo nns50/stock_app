@@ -264,10 +264,21 @@ Also available read-only at `GET /api/positions/integrity`.
 
 Every check is listed in the output whether or not it fired — "we looked and
 found none" is a different statement from "we didn't look". What it checks:
-non-ISO dates · rows a background job dated in UTC rather than ET · exits before
-their own entry · future dates · exits exceeding the position's size · a status
-that contradicts the remaining quantity · a zero/negative entry price · a
-zero/negative exit quantity · a broker-tracked lot with no account recorded.
+non-ISO dates · rows a background job dated in UTC rather than ET · an option
+entered after its own contract expired · exits before their own entry · future
+dates · exits exceeding the position's size · a status that contradicts the
+remaining quantity · a zero/negative entry price · a zero/negative exit quantity
+· a broker-tracked lot with no account recorded.
+
+Findings are reported at their **cause**, not their symptoms. A row can violate
+several checks for one underlying reason — an option whose entry was stamped
+after the contract expired will also have an "exit before entry" — so the check
+that proves what is wrong wins and the downstream ones stay quiet. Fix it,
+re-run, and anything genuinely separate surfaces on the next pass.
+
+An option's **expiration** is deliberately exempt from the future-date check: it
+is a term of the contract rather than a record of something that happened, and
+for any open contract it is supposed to be ahead of today.
 
 The UTC-dating check deserves a note, because it is **exact rather than
 heuristic**: until 2026-07-26 the Webull sync and the order reconciler dated

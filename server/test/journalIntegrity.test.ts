@@ -196,6 +196,24 @@ describe('analyzeJournal — rows that are wrong in ways nothing on screen revea
     expect(checksHit([p]).filter((c) => c === 'non_iso_date')).toHaveLength(3);
   });
 
+  it('does NOT call an open option’s expiration a future date', () => {
+    // An expiration is a term of the contract, not a record of something that
+    // happened — for any live option it is SUPPOSED to be ahead of today.
+    // Flagging it made the report cry wolf on a perfectly healthy position.
+    const p = positionFixture({
+      assetType: 'option',
+      optionType: 'call',
+      strike: 6.5,
+      expiration: '2026-08-21',
+    });
+    expect(checksHit([p])).toEqual([]);
+  });
+
+  it('still requires the expiration to be a well-formed date', () => {
+    const p = positionFixture({ assetType: 'option', expiration: '21/08/2026' });
+    expect(checksHit([p])).toEqual(['non_iso_date']);
+  });
+
   it('catches a future date and an exit before its own entry', () => {
     const future = positionFixture({ id: 1, entryDate: '2027-01-01' });
     const backwards = positionFixture({
@@ -222,6 +240,75 @@ describe('analyzeJournal — rows that are wrong in ways nothing on screen revea
   it('catches an exit closing zero quantity', () => {
     expect(checksHit([positionFixture({ exits: [exitFixture({ quantity: 0 })] })])).toContain(
       'nonpositive_exit_quantity',
+    );
+  });
+});
+
+describe('analyzeJournal — an option entered after its own contract expired', () => {
+  // The shape found in a real book (position 489, 2026-07-26): the Webull
+  // import had no open-date in the broker payload, fell back to stamping the
+  // IMPORT date, and the contract — still listed overnight after expiry — had
+  // already expired the day before.
+  const expiredBeforeEntry = positionFixture({
+    id: 489,
+    symbol: 'QS',
+    assetType: 'option',
+    optionType: 'call',
+    strike: 6.5,
+    quantity: 17,
+    entryPrice: 0.19,
+    entryDate: '2026-07-25',
+    expiration: '2026-07-24',
+    tags: ['webull'],
+    notes: 'Imported from Webull',
+    exits: [
+      exitFixture({
+        id: 483,
+        quantity: 17,
+        exitPrice: 0,
+        exitDate: '2026-07-24',
+        notes: 'Expired worthless — auto-recorded by the expired-option sweep (…)',
+      }),
+    ],
+  });
+
+  it('is proof the entry date is wrong, not a judgement about it', () => {
+    const finding = analyzeJournal([expiredBeforeEntry], DIVERGENT).findings.find(
+      (f) => f.check === 'entry_after_expiration',
+    );
+    expect(finding).toBeDefined();
+    expect(finding!.detail).toBe('entry dated 2026-07-25, but the contract expired 2026-07-24');
+  });
+
+  it('names the cause instead of the symptom — the early exit is not reported twice', () => {
+    // The exit is "before the entry" only relative to a date the position
+    // cannot have had. One defect, one entry; fix the entry and re-run.
+    expect(checksHit([expiredBeforeEntry])).toEqual(['entry_after_expiration']);
+  });
+
+  it('still reports an early exit when the entry is not the proven culprit', () => {
+    const p = positionFixture({
+      assetType: 'option',
+      expiration: '2026-12-18',
+      entryDate: '2026-07-10',
+      exits: [exitFixture({ exitDate: '2026-07-01' })],
+    });
+    expect(checksHit([p])).toContain('exit_before_entry');
+  });
+
+  it('leaves a normal option alone — entry before expiry is the ordinary case', () => {
+    const p = positionFixture({
+      assetType: 'option',
+      optionType: 'put',
+      expiration: '2026-08-21',
+      entryDate: '2026-07-01',
+    });
+    expect(checksHit([p])).toEqual([]);
+  });
+
+  it('never fires on a stock, which has no expiration to be after', () => {
+    expect(checksHit([positionFixture({ assetType: 'stock', expiration: null })])).not.toContain(
+      'entry_after_expiration',
     );
   });
 });
