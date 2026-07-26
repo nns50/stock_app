@@ -765,10 +765,13 @@ Equity curve, edge over time, and drawdown & streaks are shown directly on the p
   journal.
 - **Check the journal for bad rows** — `npm run check:journal` audits every position
   and exit for defects the app can't show you on screen: a date that isn't `YYYY-MM-DD`,
-  an exit dated before its own entry or in the future, exits that close more than the
-  position ever held (the row just reads as *closed*), a status that contradicts the
+  an exit dated before its own entry or in the future, an **option whose entry date is
+  after its own expiration** (impossible — usually the Webull import stamping the date
+  it ran, because the broker's payload carried no open date), exits that close more than
+  the position ever held (the row just reads as *closed*), a status that contradicts the
   remaining quantity, a zero entry price, or a broker-tracked lot with no account
-  recorded. It also finds rows that a background job dated a day late, back when the
+  recorded. An option's **expiration** being in the future is not a defect — that's what
+  an open contract is — so it's exempt from the future-date check. It also finds rows that a background job dated a day late, back when the
   Webull sync and the order reconciler used the server's UTC clock instead of market
   (ET) time — those land in the wrong day's stats and add a phantom day of hold time.
   **It reports and stops** — there is no apply mode, deliberately, because several of

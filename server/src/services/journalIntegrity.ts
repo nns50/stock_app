@@ -26,6 +26,7 @@ import { etToday } from '../util/marketDate';
 export type IntegrityCheckId =
   | 'non_iso_date'
   | 'utc_dated_by_background_writer'
+  | 'entry_after_expiration'
   | 'exit_before_entry'
   | 'future_dated'
   | 'exits_exceed_quantity'
@@ -124,6 +125,18 @@ const CHECK_META: Record<IntegrityCheckId, { severity: IntegritySeverity; title:
       'UTC date at the moment it was written AND that differs from the market date, which is true ' +
       'of every affected row and of no correctly-dated one.',
   },
+  entry_after_expiration: {
+    severity: 'high',
+    title: 'Option entered after its own contract expired',
+    why:
+      'Impossible by construction, so the entry date is definitely wrong — no judgement call ' +
+      'needed. The usual cause is the Webull import: when the broker’s payload carries no ' +
+      'open-date field it falls back to stamping the date of the IMPORT, which for a contract ' +
+      'still listed overnight after expiry lands after the expiration. Worth knowing that the ' +
+      'same fallback is silently at work on every imported position the broker gave no open date ' +
+      'for — this check only catches the ones where the invented date is provably impossible. ' +
+      'Hold-time buckets, the wash-sale window and the equity curve’s ordering all read that date.',
+  },
   exit_before_entry: {
     severity: 'high',
     title: 'Exit dated before its own entry',
@@ -134,7 +147,9 @@ const CHECK_META: Record<IntegrityCheckId, { severity: IntegritySeverity; title:
     title: 'Dated in the future',
     why:
       'A trade cannot have happened after today. It sorts past every real row at the end of the ' +
-      'equity curve and lands in a period that has not occurred.',
+      'equity curve and lands in a period that has not occurred. Applies to entry and exit dates ' +
+      'only — an option’s EXPIRATION is a contract term rather than a record of something that ' +
+      'happened, and for any open contract it is supposed to be in the future.',
   },
   exits_exceed_quantity: {
     severity: 'high',
@@ -176,11 +191,18 @@ const CHECK_META: Record<IntegrityCheckId, { severity: IntegritySeverity; title:
   },
 };
 
-/** Every date on a position and its exits, labelled for the report. */
-function datesOf(p: Position): { label: string; value: string }[] {
-  const out = [{ label: 'entry date', value: p.entryDate }];
-  if (p.expiration) out.push({ label: 'expiration', value: p.expiration });
-  for (const e of p.exits) out.push({ label: `exit #${e.id} date`, value: e.exitDate });
+/**
+ * Every date on a position and its exits, labelled for the report.
+ *
+ * `recordsAnEvent` separates dates that state when something HAPPENED (entry,
+ * exit) from an option's expiration, which is a term of the contract. Both must
+ * be well-formed, but only the former can be wrong for being in the future —
+ * an open contract's expiration is supposed to be.
+ */
+function datesOf(p: Position): { label: string; value: string; recordsAnEvent: boolean }[] {
+  const out = [{ label: 'entry date', value: p.entryDate, recordsAnEvent: true }];
+  if (p.expiration) out.push({ label: 'expiration', value: p.expiration, recordsAnEvent: false });
+  for (const e of p.exits) out.push({ label: `exit #${e.id} date`, value: e.exitDate, recordsAnEvent: true });
   return out;
 }
 
@@ -240,20 +262,33 @@ export function analyzeJournal(positions: Position[], now: number = Date.now()):
       }
     }
 
-    for (const { label, value } of datesOf(p)) {
+    for (const { label, value, recordsAnEvent } of datesOf(p)) {
       if (!ISO_DATE.test(value)) add('non_iso_date', p, `${label} is "${value}"`);
-      else if (value > marketDate && !explained.has(label)) {
+      else if (recordsAnEvent && value > marketDate && !explained.has(label)) {
         add('future_dated', p, `${label} is ${value}, after today (${marketDate})`);
       }
     }
 
     if (p.entryPrice <= 0) add('nonpositive_entry_price', p, `entry price is ${p.entryPrice}`);
 
+    // An option cannot be opened after the contract it is written on has
+    // expired, so this is proof the entry date is wrong rather than a
+    // judgement about it.
+    const entryAfterExpiry =
+      p.expiration !== null && ISO_DATE.test(p.entryDate) && ISO_DATE.test(p.expiration) && p.entryDate > p.expiration;
+    if (entryAfterExpiry) {
+      add('entry_after_expiration', p, `entry dated ${p.entryDate}, but the contract expired ${p.expiration}`);
+    }
+
     let exited = 0;
     for (const e of p.exits) {
       exited += e.quantity;
       if (e.quantity <= 0) add('nonpositive_exit_quantity', p, `exit #${e.id} closes ${e.quantity}`);
-      if (ISO_DATE.test(e.exitDate) && ISO_DATE.test(p.entryDate) && e.exitDate < p.entryDate) {
+      // Suppressed when the entry is already proven wrong above: the exit is
+      // then "early" only relative to a date the position cannot have had, so
+      // reporting both splits one fix across two headings. Correct the entry
+      // and re-run — a genuinely early exit surfaces on the next pass.
+      if (!entryAfterExpiry && ISO_DATE.test(e.exitDate) && ISO_DATE.test(p.entryDate) && e.exitDate < p.entryDate) {
         add('exit_before_entry', p, `exit #${e.id} dated ${e.exitDate}, entry is ${p.entryDate}`);
       }
     }
