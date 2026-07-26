@@ -4,7 +4,7 @@ import { CalendarClock, Camera, Star, TriangleAlert } from 'lucide-react';
 import { client } from '../api/client';
 import { useAsync } from '../lib/hooks';
 import { TRADE_LOGGED_EVENT } from '../components/GlobalLogTrade';
-import { cx, fmtDate, fmtPct, fmtUsd } from '../lib/format';
+import { cx, daysUntilLocal, fmtDate, fmtPct, fmtUsd } from '../lib/format';
 import { CollapsibleCard, EmptyState, PageHeader, PnL, Spinner, StatTile } from '../components/ui';
 import { GettingStarted } from '../components/GettingStarted';
 import { DayGuardCard } from '../components/DayGuardCard';
@@ -14,10 +14,6 @@ import { MarketRegimeGauge } from '../components/MarketRegimeGauge';
 import { AssignmentRiskBadge } from '../components/AssignmentRiskBadge';
 import { daysUntil } from '../components/EarningsBadge';
 import type { SymbolEvents } from '../api/types';
-
-function daysToExpiry(exp: string): number {
-  return Math.ceil((Date.parse(exp) - Date.now()) / 86_400_000);
-}
 
 interface CatalystRow {
   symbol: string;
@@ -91,11 +87,17 @@ export default function DashboardPage() {
   const triggered = (alerts.data?.alerts ?? []).filter((a) => a.triggered);
   const attentionCount = positionAlerts.length + triggered.length;
 
-  const expiring = (positions.data?.positions ?? [])
+  // Soonest-first, capped — but the cap is REPORTED below. On a dashboard whose
+  // job is "what needs your attention today", an option quietly held back
+  // because five others expire sooner is the kind of omission you'd only notice
+  // after it hurt.
+  const EXPIRING_SHOWN = 5;
+  const allExpiring = (positions.data?.positions ?? [])
     .filter((p) => p.position.assetType === 'option' && p.position.expiration)
-    .map((p) => ({ p: p.position, price: p.price, dte: daysToExpiry(p.position.expiration as string) }))
-    .sort((a, b) => a.dte - b.dte)
-    .slice(0, 5);
+    .map((p) => ({ p: p.position, price: p.price, dte: daysUntilLocal(p.position.expiration) ?? 0 }))
+    .sort((a, b) => a.dte - b.dte);
+  const expiring = allExpiring.slice(0, EXPIRING_SHOWN);
+  const expiringHidden = allExpiring.length - expiring.length;
 
   // Assignment risk needs each expiring option's UNDERLYING price, not its own
   // mark (already on hand as `price` above) — a dedicated quotes fetch scoped
@@ -115,11 +117,13 @@ export default function DashboardPage() {
 
   const watchBySymbol = new Map((watch.data?.quotes ?? []).map((q) => [q.symbol.toUpperCase(), q]));
   const eventsBySymbol = new Map((events.data?.events ?? []).map((e) => [e.symbol.toUpperCase(), e]));
-  const catalysts = (events.data?.events ?? [])
+  const CATALYSTS_SHOWN = 8;
+  const allCatalysts = (events.data?.events ?? [])
     .flatMap(catalystRowsOf)
     .filter((r) => r.dte <= 14)
-    .sort((a, b) => a.dte - b.dte)
-    .slice(0, 8);
+    .sort((a, b) => a.dte - b.dte);
+  const catalysts = allCatalysts.slice(0, CATALYSTS_SHOWN);
+  const catalystsHidden = allCatalysts.length - catalysts.length;
   const latestSnapshot = snapshots.data?.snapshots?.[0];
 
   return (
@@ -140,8 +144,9 @@ export default function DashboardPage() {
         <StatTile label="Gross exposure" value={exposure ? fmtUsd(exposure.gross) : '—'} />
         <StatTile
           label="Needs attention"
-          value={alerts.loading ? '…' : attentionCount}
-          valueClass={attentionCount > 0 ? 'text-amber-400' : undefined}
+          // '?' not 0 on failure: an unanswered question, not a clean bill.
+          value={alerts.loading ? '…' : alerts.error ? '?' : attentionCount}
+          valueClass={alerts.error ? 'text-amber-300' : attentionCount > 0 ? 'text-amber-400' : undefined}
         />
       </div>
 
@@ -164,6 +169,18 @@ export default function DashboardPage() {
         >
           {alerts.loading ? (
             <Spinner label="Checking…" />
+          ) : alerts.error ? (
+            // The most consequential lie on the page. A failed alerts request
+            // left attentionCount at 0, so this panel said "All clear — nothing
+            // hitting a rule right now" without having checked, and the tile
+            // above read 0. Silence about stops and rules has to mean silence,
+            // never reassurance.
+            <div className="py-2 text-sm text-amber-300">
+              ⚠ Couldn&apos;t check your alerts and stops — this is not an all-clear. {alerts.error.message}{' '}
+              <button className="underline hover:text-amber-100" onClick={alerts.reload}>
+                Retry
+              </button>
+            </div>
           ) : attentionCount === 0 ? (
             <div className="text-sm text-slate-500 py-2">All clear — nothing hitting a rule right now.</div>
           ) : (
@@ -200,6 +217,13 @@ export default function DashboardPage() {
         >
           {watch.loading ? (
             <Spinner label="Loading…" />
+          ) : watch.error ? (
+            <div className="py-2 text-sm text-amber-300">
+              ⚠ Couldn&apos;t load your watchlist. {watch.error.message}{' '}
+              <button className="underline hover:text-amber-100" onClick={watch.reload}>
+                Retry
+              </button>
+            </div>
           ) : !watch.data?.symbols.length ? (
             <div className="text-sm text-slate-500 py-2">
               Nothing watched yet — add symbols on the{' '}
@@ -240,6 +264,15 @@ export default function DashboardPage() {
         >
           {positions.loading ? (
             <Spinner label="Loading…" />
+          ) : positions.error ? (
+            // "No open option positions" is a claim about your book. Don't make
+            // it on the strength of a request that never came back.
+            <div className="py-2 text-sm text-amber-300">
+              ⚠ Couldn&apos;t load your positions, so expirations aren&apos;t shown. {positions.error.message}{' '}
+              <button className="underline hover:text-amber-100" onClick={positions.reload}>
+                Retry
+              </button>
+            </div>
           ) : expiring.length === 0 ? (
             <div className="text-sm text-slate-500 py-2">No open option positions.</div>
           ) : (
@@ -271,6 +304,14 @@ export default function DashboardPage() {
                   </span>
                 </li>
               ))}
+              {expiringHidden > 0 && (
+                <li className="py-1.5 text-xs text-amber-400/90">
+                  + {expiringHidden} more expiring option{expiringHidden === 1 ? '' : 's'} not shown —{' '}
+                  <Link to="/positions" className="underline hover:text-accent">
+                    see all on Positions
+                  </Link>
+                </li>
+              )}
             </ul>
           )}
         </CollapsibleCard>
@@ -302,6 +343,11 @@ export default function DashboardPage() {
                   </span>
                 </li>
               ))}
+              {catalystsHidden > 0 && (
+                <li className="py-1.5 text-xs text-amber-400/90">
+                  + {catalystsHidden} more catalyst{catalystsHidden === 1 ? '' : 's'} in the next 14 days not shown
+                </li>
+              )}
             </ul>
           )}
         </CollapsibleCard>

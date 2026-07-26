@@ -1,14 +1,12 @@
 import { CalendarClock } from 'lucide-react';
-import { cx } from '../lib/format';
+import { cx, daysUntilLocal } from '../lib/format';
 import type { SymbolEvents } from '../api/types';
 
-/** Whole days from now until an ISO date (UTC), or null if absent/unparseable. */
-export function daysUntil(date?: string): number | null {
-  if (!date) return null;
-  const t = Date.parse(`${date}T00:00:00Z`);
-  if (Number.isNaN(t)) return null;
-  return Math.ceil((t - Date.now()) / 86_400_000);
-}
+/** Re-exported for the pages that already import it from here. The logic lives
+ *  in lib/format.ts next to fmtDate, which documents the same local-vs-UTC trap;
+ *  this file, AssignmentRiskBadge and DashboardPage each had their own copy of
+ *  it, all three counting in UTC. */
+export const daysUntil = (date?: string): number | null => daysUntilLocal(date);
 
 /**
  * Compact earnings indicator. Amber when earnings fall within `warnWithin` days
