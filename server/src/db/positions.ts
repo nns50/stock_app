@@ -17,7 +17,10 @@ export interface PositionInput {
   side: Side;
   quantity: number;
   entryPrice: number;
-  entryDate: string;
+  /** Null ONLY where it is genuinely unknown — the Webull holdings endpoint
+   *  reports an aggregate position with no open date, so an imported lot may
+   *  legitimately have none. Manually logged trades always carry one. */
+  entryDate: string | null;
   /** Optional local entry time (HH:MM) for time-of-day analytics. */
   entryTime?: string | null;
   fees?: number;
@@ -59,7 +62,10 @@ export interface Position {
   side: Side;
   quantity: number;
   entryPrice: number;
-  entryDate: string;
+  /** Null means "we do not know when this was opened", not "today". Every
+   *  statistic that needs a date excludes these rows rather than guessing —
+   *  see services/pnl.ts and services/washSale.ts. */
+  entryDate: string | null;
   entryTime: string | null;
   fees: number;
   optionType: OptionType | null;
@@ -89,7 +95,7 @@ interface PositionRow {
   side: Side;
   quantity: number;
   entry_price: number;
-  entry_date: string;
+  entry_date: string | null;
   entry_time: string | null;
   fees: number;
   option_type: OptionType | null;
@@ -197,6 +203,19 @@ function mapPosition(row: PositionRow, exits?: PositionExit[]): Position {
   };
 }
 
+/**
+ * The date to ORDER a position by when a list needs some order and the entry
+ * date may be unknown — falling back to the day the row was recorded.
+ *
+ * Never use this for a statistic. It is a proxy for sequencing, not a claim
+ * about when the trade was opened; that distinction is the entire point of
+ * letting entryDate be null. Deliberately UTC, to match the COALESCE in
+ * listPositions' ORDER BY so the in-memory sorts agree with the SQL one.
+ */
+export function orderingDateOf(p: { entryDate: string | null; createdAt: number }): string {
+  return p.entryDate ?? new Date(p.createdAt).toISOString().slice(0, 10);
+}
+
 export interface PositionFilter {
   status?: 'open' | 'closed';
   symbol?: string;
@@ -234,7 +253,12 @@ export function listPositions(filter: PositionFilter = {}): Position[] {
     where.push(filter.includeUnassignedAccount ? '(account_id = ? OR account_id IS NULL)' : 'account_id = ?');
     params.push(filter.accountId);
   }
-  const sql = `SELECT * FROM positions ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY entry_date DESC, id DESC`;
+  // Ordering and analytics want different things: analytics need the truth
+  // (null when unknown), but a list still needs SOME order. An undated lot
+  // falls back to the day it was recorded, which is a sane proxy for "when did
+  // this enter the book" without any of it leaking into a statistic — the
+  // COALESCE lives here in the ORDER BY only, never in the selected value.
+  const sql = `SELECT * FROM positions ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY COALESCE(entry_date, date(created_at / 1000, 'unixepoch')) DESC, id DESC`;
   const rows = db.prepare(sql).all(...params) as PositionRow[];
   const exitsByPosition = exitsForMany(rows.map((r) => r.id));
   return rows.map((row) => mapPosition(row, exitsByPosition.get(row.id) ?? []));
@@ -303,7 +327,7 @@ export interface PositionPatch {
   entryPrice?: number;
   quantity?: number;
   fees?: number;
-  entryDate?: string;
+  entryDate?: string | null;
   entryTime?: string | null;
   stopPrice?: number | null;
   targetPrice?: number | null;
@@ -423,7 +447,7 @@ export interface ImportablePosition {
   side: Side;
   quantity: number;
   entryPrice: number;
-  entryDate: string;
+  entryDate: string | null;
   entryTime?: string | null;
   fees?: number;
   optionType?: OptionType | null;

@@ -546,7 +546,9 @@ export function ExitModal({
               <input
                 type="date"
                 className="input"
-                min={position.entryDate}
+                // Undated positions have no floor to enforce — the server
+                // skips the exit-before-entry check for them too.
+                min={position.entryDate ?? undefined}
                 value={exitDate}
                 onChange={(e) => setExitDate(e.target.value)}
               />

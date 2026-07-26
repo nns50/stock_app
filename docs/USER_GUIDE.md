@@ -771,7 +771,18 @@ Equity curve, edge over time, and drawdown & streaks are shown directly on the p
   the position ever held (the row just reads as *closed*), a status that contradicts the
   remaining quantity, a zero entry price, or a broker-tracked lot with no account
   recorded. An option's **expiration** being in the future is not a defect — that's what
-  an open contract is — so it's exempt from the future-date check. It also finds rows that a background job dated a day late, back when the
+  an open contract is — so it's exempt from the future-date check. It also lists, as
+  **informational**, any imported position with **no entry date** (see below) — not a
+  fault, just something you can fill in.
+- **Positions with no entry date.** Webull's positions feed reports your *current
+  holdings* — quantity and an average cost — so a lot you built from several buys has no
+  single open date for it to give, and often it gives none at all. Rather than invent one
+  (which used to quietly feed your hold-time stats, wash-sale window and equity curve),
+  the app now records **no date**. Those trades still count in **win rate, expectancy and
+  profit factor** — those need only P&L — but they sit out of the **equity curve**,
+  **rolling expectancy** and the **timing breakdowns**, which say inline how many trades
+  they're based on (e.g. *47 of 54 dated*). Fill the date in from memory via **journal**
+  on the position and it rejoins them. Logging a trade by hand still requires a date. It also finds rows that a background job dated a day late, back when the
   Webull sync and the order reconciler used the server's UTC clock instead of market
   (ET) time — those land in the wrong day's stats and add a phantom day of hold time.
   **It reports and stops** — there is no apply mode, deliberately, because several of

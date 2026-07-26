@@ -346,3 +346,47 @@ describe('analyzeJournal — broker-tracked lots that lost their account', () =>
     expect(checksHit([closed, other])).not.toContain('broker_tracked_without_account');
   });
 });
+
+describe('analyzeJournal — a position with no entry date at all', () => {
+  const undated = positionFixture({
+    id: 12,
+    symbol: 'QS',
+    entryDate: null,
+    tags: ['webull'],
+    notes: 'Imported from Webull',
+    accountId: 'ACC1',
+  });
+
+  it('reports it as INFORMATIONAL, not a defect — it is the honest record', () => {
+    const report = analyzeJournal([undated], DIVERGENT);
+    const finding = report.findings.find((f) => f.check === 'missing_entry_date');
+    expect(finding?.severity).toBe('info');
+    expect(finding?.detail).toMatch(/no entry date recorded/);
+  });
+
+  it('does not also accuse it of a malformed or impossible date', () => {
+    // An ABSENT value has nothing to say about format, futureness, or being
+    // after an expiration — those checks are about a date that is wrong, not
+    // about not having one.
+    expect(checksHit([undated])).toEqual(['missing_entry_date']);
+  });
+
+  it('stays quiet about the format checks even on an undated OPTION', () => {
+    const p = positionFixture({
+      entryDate: null,
+      assetType: 'option',
+      optionType: 'call',
+      strike: 5,
+      expiration: '2026-08-21',
+    });
+    expect(checksHit([p])).toEqual(['missing_entry_date']);
+  });
+
+  it('cannot produce an exit-before-entry finding, since there is no entry to be before', () => {
+    const p = positionFixture({
+      entryDate: null,
+      exits: [exitFixture({ exitDate: '2026-07-01' })],
+    });
+    expect(checksHit([p])).not.toContain('exit_before_entry');
+  });
+});

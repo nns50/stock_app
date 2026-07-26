@@ -125,6 +125,58 @@ const ORDER_INTENTS_COLS =
   'option_type, strike, expiration, option_strategy, is_bracket, state, broker_order_id, ' +
   'materialized_qty, materialized_notional, created_at, updated_at';
 
+/**
+ * The `positions` table, parameterised by name so the fresh schema and the
+ * nullable-entry_date rebuild below share ONE definition rather than two that
+ * can drift.
+ *
+ * `entry_date` is nullable (2026-07-26). It used to be NOT NULL, which forced
+ * the Webull import to invent a date whenever the broker's holdings payload
+ * carried none — and that endpoint is an aggregate of current holdings, so for
+ * a lot built from several buys there is no single open date for it to report.
+ * The invented date then fed hold-time buckets, the wash-sale window and the
+ * equity curve as though it were fact. Null means "we genuinely do not know",
+ * and every statistic that needs a date now excludes those rows and says so.
+ * Manually logged trades still require one — you know when you traded.
+ */
+function positionsTableSql(name: string): string {
+  return `
+CREATE TABLE IF NOT EXISTS ${name} (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_type  TEXT NOT NULL CHECK(asset_type IN ('stock','option')),
+  symbol      TEXT NOT NULL,
+  side        TEXT NOT NULL CHECK(side IN ('long','short')),
+  quantity    REAL NOT NULL,           -- opened qty (shares or contracts)
+  entry_price REAL NOT NULL,           -- per share / per-share premium
+  entry_date  TEXT,                    -- ISO date (YYYY-MM-DD), or NULL when genuinely unknown (see above)
+  entry_time  TEXT,                    -- optional local entry time (HH:MM), for time-of-day stats
+  fees        REAL NOT NULL DEFAULT 0,
+  option_type TEXT CHECK(option_type IN ('call','put') OR option_type IS NULL),
+  strike      REAL,
+  expiration  TEXT,
+  multiplier  INTEGER NOT NULL DEFAULT 1,   -- 1 stock, 100 option
+  status      TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+  tags        TEXT,                    -- JSON array of strings
+  grade       TEXT,                    -- 'A'..'F' or null
+  notes       TEXT,
+  checklist   TEXT,                    -- JSON array of {rule, checked} (pre-trade discipline)
+  stop_price  REAL,                    -- planned stop (price level)
+  target_price REAL,                   -- planned target (price level)
+  source_intent_id INTEGER,            -- order_intents.id that produced this fill (live-traded only; no FK — a manually logged/imported position has none, and order_intents isn't guaranteed to persist forever)
+  account_id  TEXT,                    -- the Webull account this lot lives in (imported/live-traded only; null for a manually-logged position, or a legacy row from before this column existed)
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);`;
+}
+
+/** The positions columns, in DDL order — for the explicit-column copy in the
+ *  rebuild, intersected with what the live table actually has (same
+ *  never-silently-drop-an-ALTER-added-column property as ORDER_INTENTS_COLS). */
+const POSITIONS_COLS =
+  'id, asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees, option_type, ' +
+  'strike, expiration, multiplier, status, tags, grade, notes, checklist, stop_price, target_price, ' +
+  'source_intent_id, account_id, created_at, updated_at';
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS universe (
   symbol     TEXT PRIMARY KEY,
@@ -143,32 +195,7 @@ CREATE TABLE IF NOT EXISTS presets (
   UNIQUE(name, kind)
 );
 
-CREATE TABLE IF NOT EXISTS positions (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  asset_type  TEXT NOT NULL CHECK(asset_type IN ('stock','option')),
-  symbol      TEXT NOT NULL,
-  side        TEXT NOT NULL CHECK(side IN ('long','short')),
-  quantity    REAL NOT NULL,           -- opened qty (shares or contracts)
-  entry_price REAL NOT NULL,           -- per share / per-share premium
-  entry_date  TEXT NOT NULL,           -- ISO date (YYYY-MM-DD)
-  entry_time  TEXT,                    -- optional local entry time (HH:MM), for time-of-day stats
-  fees        REAL NOT NULL DEFAULT 0,
-  option_type TEXT CHECK(option_type IN ('call','put') OR option_type IS NULL),
-  strike      REAL,
-  expiration  TEXT,
-  multiplier  INTEGER NOT NULL DEFAULT 1,   -- 1 stock, 100 option
-  status      TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
-  tags        TEXT,                    -- JSON array of strings
-  grade       TEXT,                    -- 'A'..'F' or null
-  notes       TEXT,
-  checklist   TEXT,                    -- JSON array of {rule, checked} (pre-trade discipline)
-  stop_price  REAL,                    -- planned stop (price level)
-  target_price REAL,                   -- planned target (price level)
-  source_intent_id INTEGER,            -- order_intents.id that produced this fill (live-traded only; no FK — a manually logged/imported position has none, and order_intents isn't guaranteed to persist forever)
-  account_id  TEXT,                    -- the Webull account this lot lives in (imported/live-traded only; null for a manually-logged position, or a legacy row from before this column existed)
-  created_at  INTEGER NOT NULL,
-  updated_at  INTEGER NOT NULL
-);
+${positionsTableSql('positions')}
 
 CREATE TABLE IF NOT EXISTS position_exits (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -794,6 +821,11 @@ function migrate(): void {
 
   rebuildAlertsTable(db);
 
+  // Must run AFTER the positions ADD COLUMNs above (checklist, stop_price,
+  // target_price, entry_time, source_intent_id, account_id) so the
+  // explicit-column copy finds them rather than leaving them behind.
+  rebuildPositionsTableForNullableEntryDate(db);
+
   rebuildAutotradePaperPositionsTable(db);
   rebuildAutotradeOptionsPaperPositionsTable(db);
 
@@ -1010,6 +1042,60 @@ export function rebuildOrderIntentsTable(database: Database.Database): void {
  *  recovery. A transaction rolls the whole thing back so the original survives. */
 function execAtomic(database: Database.Database, sql: string): void {
   database.transaction(() => database.exec(sql))();
+}
+
+/**
+ * Drop the NOT NULL from `positions.entry_date` (2026-07-26). SQLite cannot
+ * relax a column constraint in place, so the rows go through a fresh table.
+ *
+ * This is the ONE rebuild in this file with a dependent table, and that makes
+ * it the dangerous one: `position_exits.position_id` is
+ * `REFERENCES positions(id) ON DELETE CASCADE`, so a careless rebuild deletes
+ * every exit in the journal — realized P&L, the whole trade history.
+ *
+ * Two specific defences, both deliberate:
+ *
+ *  1. It follows rebuildOrderIntentsTable's create-new → copy → drop-old →
+ *     RENAME order, NOT rebuildAlertsTable's rename-old-first order. Renaming
+ *     `positions` out of the way first would make SQLite helpfully rewrite
+ *     position_exits' foreign key to point at `positions_old`, which is then
+ *     dropped — leaving the FK dangling at a table that no longer exists.
+ *     Nothing references `positions_new`, so renaming it INTO place at the end
+ *     rewrites nothing and the existing FK text resolves correctly again.
+ *  2. Foreign keys are switched off across the copy so that dropping the old
+ *     table cannot cascade, and restored afterwards only if they were on.
+ *
+ * `id` is copied explicitly and first: position_exits.position_id points at
+ * those values, so a rebuild that let them be reassigned would silently
+ * re-parent every exit.
+ *
+ * Guarded on the stored DDL still saying NOT NULL, so it runs exactly once and
+ * no-ops on a fresh database.
+ */
+export function rebuildPositionsTableForNullableEntryDate(database: Database.Database): void {
+  const row = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='positions'").get() as
+    { sql: string | null } | undefined;
+  if (!row?.sql || !/entry_date\s+TEXT\s+NOT\s+NULL/i.test(row.sql)) return;
+
+  const present = new Set(
+    (database.prepare('PRAGMA table_info(positions)').all() as { name: string }[]).map((c) => c.name),
+  );
+  const cols = POSITIONS_COLS.split(', ')
+    .filter((c) => present.has(c))
+    .join(', ');
+
+  const hadForeignKeys = database.pragma('foreign_keys', { simple: true }) === 1;
+  database.pragma('foreign_keys = OFF'); // so dropping the old table cannot cascade position_exits away
+  try {
+    database.transaction(() => {
+      database.exec(positionsTableSql('positions_new'));
+      database.exec(`INSERT INTO positions_new (${cols}) SELECT ${cols} FROM positions;`);
+      database.exec('DROP TABLE positions;');
+      database.exec('ALTER TABLE positions_new RENAME TO positions;');
+    })();
+  } finally {
+    if (hadForeignKeys) database.pragma('foreign_keys = ON');
+  }
 }
 
 export function rebuildAlertsTable(database: Database.Database): void {

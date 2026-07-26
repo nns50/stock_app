@@ -86,8 +86,13 @@ export function computeAutoTuneRiskEfficacy(limit = 20): RiskAdjustmentEfficacy[
   return events.map((e) => {
     const detail = e.detail ? (JSON.parse(e.detail) as RiskAdjustedEventDetail) : null;
     const adjustedDate = etDateStr(e.createdAt);
-    const before = closed.filter((p) => p.entryDate < adjustedDate);
-    const after = closed.filter((p) => p.entryDate >= adjustedDate);
+    // An undated trade cannot be attributed to either side of an adjustment,
+    // so it counts toward neither. Left in both (or, as `null < date` would
+    // have it, silently all in `after`) would misattribute the adjustment's
+    // effect to trades that may predate it.
+    const dated = closed.filter((p): p is typeof p & { entryDate: string } => p.entryDate !== null);
+    const before = dated.filter((p) => p.entryDate < adjustedDate);
+    const after = dated.filter((p) => p.entryDate >= adjustedDate);
     return {
       eventId: e.id,
       adjustedAt: e.createdAt,

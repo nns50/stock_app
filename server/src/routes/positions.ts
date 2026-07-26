@@ -320,7 +320,10 @@ positionsRouter.post(
     }
     // An exit before the entry yields negative hold-days and a negative
     // wash-sale window; reject rather than corrupt the journal's time stats.
-    if (body.exitDate < pos.entryDate) {
+    // Skipped when the entry date is unknown — there is nothing to be before.
+    // Guarding against `null` here would silently pass every comparison
+    // (`'2026-01-01' < null` is false), so the check is made explicit.
+    if (pos.entryDate !== null && body.exitDate < pos.entryDate) {
       throw new HttpError(400, `exit date ${body.exitDate} is before entry date ${pos.entryDate}`);
     }
     const updated = addExit(pos.id, body);

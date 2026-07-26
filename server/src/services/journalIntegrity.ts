@@ -33,9 +33,12 @@ export type IntegrityCheckId =
   | 'status_disagrees_with_remaining'
   | 'nonpositive_entry_price'
   | 'nonpositive_exit_quantity'
-  | 'broker_tracked_without_account';
+  | 'broker_tracked_without_account'
+  | 'missing_entry_date';
 
-export type IntegritySeverity = 'high' | 'medium';
+/** 'info' is not a defect. It marks a row that is correctly recorded but
+ *  incomplete — something you can improve, not something that is wrong. */
+export type IntegritySeverity = 'high' | 'medium' | 'info';
 
 export interface IntegrityFinding {
   check: IntegrityCheckId;
@@ -130,12 +133,12 @@ const CHECK_META: Record<IntegrityCheckId, { severity: IntegritySeverity; title:
     title: 'Option entered after its own contract expired',
     why:
       'Impossible by construction, so the entry date is definitely wrong — no judgement call ' +
-      'needed. The usual cause is the Webull import: when the broker’s payload carries no ' +
-      'open-date field it falls back to stamping the date of the IMPORT, which for a contract ' +
-      'still listed overnight after expiry lands after the expiration. Worth knowing that the ' +
-      'same fallback is silently at work on every imported position the broker gave no open date ' +
-      'for — this check only catches the ones where the invented date is provably impossible. ' +
-      'Hold-time buckets, the wash-sale window and the equity curve’s ordering all read that date.',
+      'needed. These are legacy rows from before 2026-07-26, when the Webull import stamped the ' +
+      'date of the IMPORT whenever the broker’s payload carried no open-date field; for a ' +
+      'contract the broker was still listing overnight after expiry, that landed after the ' +
+      'expiration. The import now records no date at all rather than inventing one (see the ' +
+      'informational check below), so no new rows can look like this. Hold-time buckets, the ' +
+      'wash-sale window and the equity curve’s ordering all read that date.',
   },
   exit_before_entry: {
     severity: 'high',
@@ -180,6 +183,18 @@ const CHECK_META: Record<IntegrityCheckId, { severity: IntegritySeverity; title:
     title: 'Exit closes zero or negative quantity',
     why: 'Contributes nothing to the position’s remaining size while still carrying fees and P&L.',
   },
+  missing_entry_date: {
+    severity: 'info',
+    title: 'Imported position with no entry date',
+    why:
+      'Not a defect — this is the honest record of a lot the broker never gave an open date for. ' +
+      'Webull’s positions endpoint returns current HOLDINGS (quantity and an average cost), so a ' +
+      'position built from several buys has no single open date to report, and its order history ' +
+      'only reaches back 7 days. Nothing invents a date for it any more. The cost is that this ' +
+      'trade sits out of the hold-time and weekday breakdowns, the equity curve and the ' +
+      'wash-sale window; the Journal says how many trades it is working from. Fill the date in ' +
+      'from memory via the position’s journal dialog and it rejoins them.',
+  },
   broker_tracked_without_account: {
     severity: 'medium',
     title: 'Broker-tracked position with no account recorded',
@@ -200,7 +215,11 @@ const CHECK_META: Record<IntegrityCheckId, { severity: IntegritySeverity; title:
  * an open contract's expiration is supposed to be.
  */
 function datesOf(p: Position): { label: string; value: string; recordsAnEvent: boolean }[] {
-  const out = [{ label: 'entry date', value: p.entryDate, recordsAnEvent: true }];
+  // A null entry date is not a defect — it is the honest record of a position
+  // whose open date the broker never reported (see db/positions.ts). It is
+  // surfaced by its own informational check below, not by the format and
+  // future-date checks, which have nothing to say about an absent value.
+  const out = p.entryDate === null ? [] : [{ label: 'entry date', value: p.entryDate, recordsAnEvent: true }];
   if (p.expiration) out.push({ label: 'expiration', value: p.expiration, recordsAnEvent: false });
   for (const e of p.exits) out.push({ label: `exit #${e.id} date`, value: e.exitDate, recordsAnEvent: true });
   return out;
@@ -275,7 +294,11 @@ export function analyzeJournal(positions: Position[], now: number = Date.now()):
     // expired, so this is proof the entry date is wrong rather than a
     // judgement about it.
     const entryAfterExpiry =
-      p.expiration !== null && ISO_DATE.test(p.entryDate) && ISO_DATE.test(p.expiration) && p.entryDate > p.expiration;
+      p.entryDate !== null &&
+      p.expiration !== null &&
+      ISO_DATE.test(p.entryDate) &&
+      ISO_DATE.test(p.expiration) &&
+      p.entryDate > p.expiration;
     if (entryAfterExpiry) {
       add('entry_after_expiration', p, `entry dated ${p.entryDate}, but the contract expired ${p.expiration}`);
     }
@@ -288,7 +311,13 @@ export function analyzeJournal(positions: Position[], now: number = Date.now()):
       // then "early" only relative to a date the position cannot have had, so
       // reporting both splits one fix across two headings. Correct the entry
       // and re-run — a genuinely early exit surfaces on the next pass.
-      if (!entryAfterExpiry && ISO_DATE.test(e.exitDate) && ISO_DATE.test(p.entryDate) && e.exitDate < p.entryDate) {
+      if (
+        !entryAfterExpiry &&
+        p.entryDate !== null &&
+        ISO_DATE.test(e.exitDate) &&
+        ISO_DATE.test(p.entryDate) &&
+        e.exitDate < p.entryDate
+      ) {
         add('exit_before_entry', p, `exit #${e.id} dated ${e.exitDate}, entry is ${p.entryDate}`);
       }
     }
@@ -303,6 +332,14 @@ export function analyzeJournal(positions: Position[], now: number = Date.now()):
         'status_disagrees_with_remaining',
         p,
         `status is "${p.status}" with ${p.remainingQuantity} of ${p.quantity} remaining`,
+      );
+    }
+
+    if (p.entryDate === null) {
+      add(
+        'missing_entry_date',
+        p,
+        `no entry date recorded (imported ${new Date(p.createdAt).toISOString().slice(0, 10)})`,
       );
     }
 

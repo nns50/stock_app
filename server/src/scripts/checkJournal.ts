@@ -17,7 +17,7 @@ import { analyzeJournal, IntegrityFinding } from '../services/journalIntegrity';
 //   npm run check:journal -- --json    # machine-readable, for diffing over time
 // ---------------------------------------------------------------------------
 
-const SEVERITY_LABEL = { high: 'HIGH  ', medium: 'MEDIUM' } as const;
+const SEVERITY_LABEL = { high: 'HIGH  ', medium: 'MEDIUM', info: 'INFO  ' } as const;
 
 function wrap(text: string, width: number, indent: string): string {
   const words = text.split(/\s+/);
@@ -85,9 +85,9 @@ function main(): void {
     console.log(`  Checked and clean: ${clean.map((c) => c.title).join(' · ')}\n`);
   }
 
-  const high = report.findings.filter((f) => f.severity === 'high').length;
+  const count = (s: string) => report.findings.filter((f) => f.severity === s).length;
   console.log(
-    `${report.findings.length} finding(s) — ${high} high, ${report.findings.length - high} medium.\n` +
+    `${report.findings.length} finding(s) — ${count('high')} high, ${count('medium')} medium, ${count('info')} info.\n` +
       'Nothing was changed. Fix these from the Positions page (journal · exit · del) or by\n' +
       'correcting the underlying row; re-run to confirm the count drops.\n',
   );

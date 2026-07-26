@@ -299,7 +299,12 @@ export interface Position {
   side: 'long' | 'short';
   quantity: number;
   entryPrice: number;
-  entryDate: string;
+  /** Null when genuinely unknown — the Webull holdings endpoint reports an
+   *  aggregate position with no open date, so an imported lot may have none.
+   *  Manually logged trades always carry one. Every date-keyed statistic
+   *  excludes these rows rather than guessing; see the server's
+   *  db/positions.ts. */
+  entryDate: string | null;
   entryTime: string | null;
   fees: number;
   optionType: 'call' | 'put' | null;
@@ -483,6 +488,10 @@ export interface SectorRotation {
 
 export interface JournalStats {
   totalClosed: number;
+  /** How many of `totalClosed` carry a usable date and so appear in the equity
+   *  curve, rolling expectancy and the timing breakdowns. Lower when a position
+   *  was imported without an open date the broker never supplied. */
+  datedTrades: number;
   wins: number;
   losses: number;
   breakeven: number;

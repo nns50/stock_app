@@ -238,15 +238,20 @@ export function getLivePortfolioSnapshot(): LivePortfolioSnapshot {
   // Equity-curve de-risk from the live book's OWN full realized history — the
   // cumulative curve, dated by each trade's last exit, the MA filter needs.
   const config = getAutotradeConfig();
-  const closedHistory = closedAutotrade.map((p) => ({
-    date: p.exits.length
-      ? p.exits
-          .map((e) => e.exitDate)
-          .sort()
-          .slice(-1)[0]
-      : p.entryDate,
-    pnl: realizedPnlOf(p),
-  }));
+  const closedHistory = closedAutotrade
+    .map((p) => ({
+      date: p.exits.length
+        ? p.exits
+            .map((e) => e.exitDate)
+            .sort()
+            .slice(-1)[0]
+        : p.entryDate,
+      pnl: realizedPnlOf(p),
+    }))
+    // Undated trades have no place on a chronological curve — dropped rather
+    // than anchored to a guessed date (see db/positions.ts on why entryDate
+    // can be null at all).
+    .filter((t): t is { date: string; pnl: number } => t.date !== null);
   const equityCurveDeriskActive = computeEquityCurveDerisk(closedHistory, {
     enabled: config.equityCurveDeriskEnabled,
     lookbackDays: config.equityCurveLookbackDays,

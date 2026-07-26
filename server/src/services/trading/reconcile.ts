@@ -16,6 +16,7 @@ import { isAutotradeIntent } from '../../db/autotradeLiveOrders';
 import { isAutotradeOptionsIntent } from '../../db/autotradeLiveOptionsOrders';
 import { QTY_EPS, computeFillDelta, isShortBooked } from './fillDelta';
 import { etToday } from '../../util/marketDate';
+import { orderingDateOf } from '../../db/positions';
 
 // ---------------------------------------------------------------------------
 // Reconcile an order intent's state with the broker (design §6 "status reconcile").
@@ -495,7 +496,9 @@ function recordCloseAsExit(intent: OrderIntentRecord, quantity: number, exitPric
     const closingSide = intent.side === 'sell' ? 'long' : 'short';
     const open = listPositions({ status: 'open', symbol: intent.symbol, assetType: intent.assetKind })
       .filter((p) => p.side === closingSide && p.remainingQuantity > 0 && sameContract(p, intent))
-      .sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.id - b.id); // FIFO: oldest entry first
+      // FIFO: oldest entry first, with an undated lot ordered by when it was
+      // recorded (see orderingDateOf).
+      .sort((a, b) => orderingDateOf(a).localeCompare(orderingDateOf(b)) || a.id - b.id);
 
     for (const p of open) {
       if (remaining <= 1e-9) break;
