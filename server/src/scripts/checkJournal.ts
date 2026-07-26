@@ -54,7 +54,10 @@ function main(): void {
       `as of ${report.marketDate} (ET).\nREPORT ONLY — this command never writes anything.\n`,
   );
 
-  if (report.clean) {
+  // Gated on there being NOTHING to report, not on `clean` — `clean` now means
+  // "nothing to fix", so an info-only run is clean AND has rows to show. Keyed
+  // on the flag instead, this shortcut would swallow them entirely.
+  if (report.findings.length === 0) {
     // Naming what was checked matters as much as the verdict: "clean" is only
     // meaningful if you can see the list it was clean against.
     console.log('No problems found. Checked:');
@@ -87,9 +90,14 @@ function main(): void {
 
   const count = (s: string) => report.findings.filter((f) => f.severity === s).length;
   console.log(
-    `${report.findings.length} finding(s) — ${count('high')} high, ${count('medium')} medium, ${count('info')} info.\n` +
-      'Nothing was changed. Fix these from the Positions page (journal · exit · del) or by\n' +
-      'correcting the underlying row; re-run to confirm the count drops.\n',
+    report.clean
+      ? `Nothing to fix — ${count('info')} informational note(s) above.\n` +
+          'Those are correctly-recorded rows that are simply incomplete; act on them or\n' +
+          'leave them, but nothing here is wrong.\n'
+      : `${count('high') + count('medium')} to fix — ${count('high')} high, ${count('medium')} medium` +
+          (count('info') ? `, plus ${count('info')} informational.` : '.') +
+          '\nNothing was changed. Fix these from the Positions page (journal · exit · del) or by\n' +
+          'correcting the underlying row; re-run to confirm the count drops.\n',
   );
 }
 

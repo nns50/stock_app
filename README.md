@@ -271,6 +271,12 @@ remaining quantity · a zero/negative entry price · a zero/negative exit quanti
 · a broker-tracked lot with no account recorded · an imported position with no
 entry date (informational — see below).
 
+Findings carry a severity: **high**, **medium** or **info**. The report's
+`clean` flag means *nothing to fix* — it stays `true` when the only findings are
+informational, because an undated import is a correct record of an incomplete
+fact, not a defect. Read `findings` for everything reported; `clean` answers the
+narrower question, and the summary line says which case you are in.
+
 Findings are reported at their **cause**, not their symptoms. A row can violate
 several checks for one underlying reason — an option whose entry was stamped
 after the contract expired will also have an "exit before entry" — so the check
