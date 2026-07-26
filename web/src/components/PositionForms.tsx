@@ -737,6 +737,9 @@ export function JournalEditModal({
   const [grade, setGrade] = useState(position?.grade ?? '');
   const [notes, setNotes] = useState(position?.notes ?? '');
   const [accountId, setAccountId] = useState(position?.accountId ?? '');
+  // '' means "no entry date", which is a real, storable state — not a blank
+  // waiting to be filled. See the field below.
+  const [entryDate, setEntryDate] = useState(position?.entryDate ?? '');
   const [busy, setBusy] = useState(false);
   const [exitBusyId, setExitBusyId] = useState<number | null>(null);
   const [error, setError] = useState<string>();
@@ -752,6 +755,7 @@ export function JournalEditModal({
     setGrade(position?.grade ?? '');
     setNotes(position?.notes ?? '');
     setAccountId(position?.accountId ?? '');
+    setEntryDate(position?.entryDate ?? '');
     setError(undefined);
   }
 
@@ -768,6 +772,9 @@ export function JournalEditModal({
         grade: grade || null,
         notes: notes || null,
         accountId: accountId.trim() || null,
+        // Blank clears it back to "unknown" rather than being ignored — the
+        // route takes null here for exactly that.
+        entryDate: entryDate || null,
       });
       onSaved();
       onClose();
@@ -842,6 +849,21 @@ export function JournalEditModal({
         </Field>
         <Field label="Notes">
           <textarea className="input h-24" value={notes} onChange={(e) => setNotes(e.target.value)} />
+        </Field>
+        <Field
+          label="Entry date"
+          hint="When this position was actually opened. Imported lots can arrive with no date — Webull's holdings feed reports an average cost, not an open date — and an undated trade sits out of the hold-time, weekday and equity-curve stats. Fill it in to bring it back; clear it if you genuinely don't know, which is better than a guess."
+        >
+          <input
+            type="date"
+            className="input"
+            value={entryDate}
+            // Cannot be after the position's own exit or its contract's expiry
+            // — the server refuses both, since either would recreate a state
+            // the journal integrity report exists to flag.
+            max={position?.exits.map((e) => e.exitDate).sort()[0] ?? position?.expiration ?? undefined}
+            onChange={(e) => setEntryDate(e.target.value)}
+          />
         </Field>
         <Field
           label="Webull account"

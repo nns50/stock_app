@@ -203,6 +203,63 @@ describe('positions + journal routes (integration)', () => {
     expect(closed.position.status).toBe('closed');
   });
 
+  describe('PATCH /positions/:id — correcting the entry date', () => {
+    const optionLot = async (entryDate: string, expiration: string) => {
+      const res = await post('/api/positions', {
+        assetType: 'option',
+        symbol: 'QS',
+        side: 'long',
+        quantity: 17,
+        entryPrice: 0.19,
+        entryDate,
+        optionType: 'call',
+        strike: 6.5,
+        expiration,
+      });
+      return (await res.json()) as { id: number };
+    };
+
+    it('sets a corrected date — the whole point of exposing this field', async () => {
+      const pos = await optionLot('2026-07-01', '2026-07-24');
+      const res = await patch(`/api/positions/${pos.id}`, { entryDate: '2026-07-10' });
+      expect(res.status).toBe(200);
+      expect((await res.json()) as { entryDate: string }).toMatchObject({ entryDate: '2026-07-10' });
+    });
+
+    it('clears it back to unknown, which is a real state and not an empty box', async () => {
+      const pos = await optionLot('2026-07-01', '2026-07-24');
+      const res = await patch(`/api/positions/${pos.id}`, { entryDate: null });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { entryDate: string | null }).entryDate).toBeNull();
+    });
+
+    it('refuses a date after the contract expired — the state the report flags', async () => {
+      const pos = await optionLot('2026-07-01', '2026-07-24');
+      const res = await patch(`/api/positions/${pos.id}`, { entryDate: '2026-07-25' });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toMatch(/expired/);
+      // Unchanged — a refused correction must not half-apply.
+      const after = (await getJson(`/api/positions/${pos.id}`)) as { position: { entryDate: string } };
+      expect(after.position.entryDate).toBe('2026-07-01');
+    });
+
+    it("refuses a date after the position's own exit", async () => {
+      const pos = await optionLot('2026-07-01', '2026-12-18');
+      await post(`/api/positions/${pos.id}/exits`, { quantity: 17, exitPrice: 0.5, exitDate: '2026-07-05' });
+      const res = await patch(`/api/positions/${pos.id}`, { entryDate: '2026-07-09' });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toMatch(/exit/);
+    });
+
+    it('applies neither guard when the date is being CLEARED', async () => {
+      // Null has nothing to be inconsistent with, so an already-mis-dated row
+      // can always be reset to unknown.
+      const pos = await optionLot('2026-07-01', '2026-12-18');
+      await post(`/api/positions/${pos.id}/exits`, { quantity: 17, exitPrice: 0.5, exitDate: '2026-07-05' });
+      expect((await patch(`/api/positions/${pos.id}`, { entryDate: null })).status).toBe(200);
+    });
+  });
+
   describe('DELETE /positions/:id/exits/:exitId', () => {
     const openLot = async (symbol: string) => {
       const res = await post('/api/positions', {

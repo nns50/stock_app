@@ -83,7 +83,11 @@ const patchBody = z.object({
   entryPrice: z.number().positive().optional(),
   quantity: z.number().positive().optional(),
   fees: z.number().nonnegative().optional(),
-  entryDate: isoDate.optional(),
+  // Nullable, not just optional: clearing it is a legitimate correction —
+  // realising you do NOT know when a lot was opened is the honest state the
+  // nullable column exists to hold, and re-inventing a date to fill the box
+  // is the exact thing that put the wrong ones there.
+  entryDate: isoDate.nullable().optional(),
   entryTime: z
     .string()
     .regex(/^\d{1,2}:\d{2}$/)
@@ -288,6 +292,23 @@ positionsRouter.patch(
         throw new HttpError(400, `quantity ${body.quantity} is below the ${exited} already exited`);
       }
     }
+    // Setting an entry date is how a mis-dated row gets corrected, so these
+    // guards exist to stop the correction from writing the very states the
+    // integrity report flags. Both are skipped for null — clearing the date
+    // has nothing to be inconsistent with.
+    if (body.entryDate != null) {
+      const earliestExit = existing.exits.map((e) => e.exitDate).sort()[0];
+      if (earliestExit !== undefined && body.entryDate > earliestExit) {
+        throw new HttpError(400, `entry date ${body.entryDate} is after this position's exit on ${earliestExit}`);
+      }
+      if (existing.expiration !== null && body.entryDate > existing.expiration) {
+        throw new HttpError(
+          400,
+          `entry date ${body.entryDate} is after the contract expired on ${existing.expiration}`,
+        );
+      }
+    }
+
     const updated = updatePosition(id, body);
     if (!updated) throw new HttpError(404, 'position not found');
     res.json(updated);
