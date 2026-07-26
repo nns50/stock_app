@@ -604,6 +604,15 @@ nudge, not a blocker — you can still save with items unchecked.
     **exit** (or delete the row if the trade never happened). Guessing here would write a
     realized P&L number that never occurred, which is worse than a row you can see is stale.
   Positions on their own expiration day are left alone — they're still tradeable all session.
+  > **Why an expired contract used to keep coming back.** Webull keeps an expired option in
+  > your holdings until settlement clears — over a weekend, that's all of Saturday and
+  > Sunday. The sweep would close it at $0, and the next position sync (every 5 minutes)
+  > would see it still listed at the broker, find no *open* journal row matching it, and
+  > import it again as a brand-new position — which the sweep would then close at $0 too,
+  > **booking the same loss twice**. Deleting the duplicate didn't help; the next sync
+  > re-added it. Since 2026-07-26 the import refuses any contract whose expiration has
+  > already passed (you can't newly open an expired contract), so the loop can't start. A
+  > contract expiring *today* still imports normally.
 - **journal** edits tags/grade/notes, the **entry date**, and (2026-07-17) which
   **Webull account** the lot lives in — shown as a small chip next to the symbol whenever it's set, so you can tell
   positions in different real accounts (e.g. cash vs. margin) apart at a glance. The same

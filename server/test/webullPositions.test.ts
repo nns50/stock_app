@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { initDb, db } from '../src/db';
-import { listPositions, createPosition, getPosition } from '../src/db/positions';
+import { listPositions, createPosition, getPosition, addExit } from '../src/db/positions';
 import { config } from '../src/config';
 import {
   extractPositions,
@@ -950,5 +950,81 @@ describe('mapWebullPosition — an entry date the broker never gave', () => {
       'ACC1',
     );
     expect(p!.entryDate).toBe('2026-07-02');
+  });
+});
+
+describe('importWebullPositions — an expired contract the broker still lists', () => {
+  // Webull keeps an expired option in its holdings until settlement clears,
+  // which over a weekend means all of Saturday and Sunday. Real incident
+  // (2026-07-26): the sweep closed an expired QS call at $0, and 52 seconds
+  // later the next sync re-imported the identical contract as a brand-new
+  // open position — because the dedup below only looks at OPEN rows, and the
+  // sweep had just closed the one that would have matched.
+  const expiredCall = (expiration: string) => [
+    {
+      symbol: 'QS',
+      instrument_type: 'OPTION',
+      quantity: '17',
+      cost_price: '0.19',
+      option_type: 'CALL',
+      strike_price: '6.5',
+      option_expire_date: expiration,
+    },
+  ];
+
+  const yesterday = () => {
+    const d = new Date(`${etToday()}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - 1);
+    return d.toISOString().slice(0, 10);
+  };
+
+  it('does not import a contract that has already expired', async () => {
+    mockPositions(expiredCall(yesterday()));
+    const r = await importWebullPositions('ACC1');
+    expect(r).toMatchObject({ ok: true, imported: 0, expiredSkipped: 1 });
+    expect(listPositions()).toHaveLength(0);
+  });
+
+  it('does not RE-import one the expiry sweep just closed — the duplicate loop', async () => {
+    // The exact sequence that produced two QS rows for one trade.
+    const expiration = yesterday();
+    const p = createPosition({
+      assetType: 'option',
+      symbol: 'QS',
+      side: 'long',
+      quantity: 17,
+      entryPrice: 0.19,
+      entryDate: '2026-07-01',
+      optionType: 'call',
+      strike: 6.5,
+      expiration,
+      multiplier: 100,
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+    addExit(p.id, { quantity: 17, exitPrice: 0, exitDate: expiration, notes: 'Expired worthless' });
+    expect(getPosition(p.id)!.status).toBe('closed');
+
+    mockPositions(expiredCall(expiration));
+    const r = await importWebullPositions('ACC1');
+
+    // Before the fix this created a second position, which the next sweep
+    // would close at $0 too — booking the same loss twice.
+    expect(r.imported).toBe(0);
+    expect(listPositions()).toHaveLength(1);
+  });
+
+  it('still imports a contract expiring TODAY, which is tradeable all session', async () => {
+    // Matches findExpiredOpenOptions' own strictly-before-today rule; the
+    // sweep deliberately leaves same-day expiries alone.
+    mockPositions(expiredCall(etToday()));
+    const r = await importWebullPositions('ACC1');
+    expect(r).toMatchObject({ imported: 1, expiredSkipped: 0 });
+  });
+
+  it('leaves stocks alone — they have no expiration to be past', async () => {
+    mockPositions([{ symbol: 'AAPL', asset_type: 'STOCK', quantity: '10', cost_price: '100' }]);
+    const r = await importWebullPositions('ACC1');
+    expect(r).toMatchObject({ imported: 1, expiredSkipped: 0 });
   });
 });
