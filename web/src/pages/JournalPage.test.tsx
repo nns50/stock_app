@@ -133,6 +133,24 @@ function positionWithPnlFixture(overrides: Partial<PositionWithPnl> = {}): Posit
   };
 }
 
+/** The full /api/positions?withPnl shape. The mocks used to pass `{ positions }`
+ *  alone, which the API never returns — the page reads aggregate and exposure
+ *  too. Nothing caught it because web test files were excluded from tsc. */
+function positionsResponse(positions: PositionWithPnl[] = []) {
+  return {
+    positions,
+    aggregate: {
+      realized: 0,
+      unrealized: 0,
+      total: 0,
+      openMarketValue: 0,
+      openCount: 0,
+      closedCount: positions.length,
+    },
+    exposure: { gross: 0, net: 0, long: 0, short: 0, bySector: [], largest: null },
+  };
+}
+
 describe('JournalPage', () => {
   it('mounts and shows its loading state without crashing', () => {
     vi.spyOn(client, 'journalStats').mockReturnValue(new Promise(() => {}) as never);
@@ -147,13 +165,13 @@ describe('JournalPage', () => {
 
   it('shows a wash-sale warning badge on a closed loss flagged by the server', async () => {
     vi.spyOn(client, 'journalStats').mockResolvedValue(journalStatsFixture({ totalClosed: 1, totalRealized: -100 }));
-    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({
-      positions: [
+    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue(
+      positionsResponse([
         positionWithPnlFixture({
           washSale: { triggerPositionId: 2, triggerEntryDate: '2026-04-20', daysApart: 10 },
         }),
-      ],
-    });
+      ]),
+    );
     render(
       <MemoryRouter>
         <JournalPage />
@@ -166,7 +184,7 @@ describe('JournalPage', () => {
 
   it('shows no wash-sale badge for a closed trade the server did not flag', async () => {
     vi.spyOn(client, 'journalStats').mockResolvedValue(journalStatsFixture({ totalClosed: 1, totalRealized: 100 }));
-    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({ positions: [positionWithPnlFixture()] });
+    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue(positionsResponse([positionWithPnlFixture()]));
     render(
       <MemoryRouter>
         <JournalPage />
@@ -178,7 +196,7 @@ describe('JournalPage', () => {
 
   it('does not show the auto-tune efficacy card when there are no past adjustments', async () => {
     vi.spyOn(client, 'journalStats').mockResolvedValue(journalStatsFixture());
-    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({ positions: [] });
+    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue(positionsResponse());
     render(
       <MemoryRouter>
         <JournalPage />
@@ -191,7 +209,7 @@ describe('JournalPage', () => {
   it('shows the auto-tune efficacy card with a before/after comparison once adjustments exist', async () => {
     vi.spyOn(client, 'journalAutoTuneEfficacy').mockResolvedValue({ adjustments: [efficacyFixture()] });
     vi.spyOn(client, 'journalStats').mockResolvedValue(journalStatsFixture());
-    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({ positions: [] });
+    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue(positionsResponse());
     render(
       <MemoryRouter>
         <JournalPage />
@@ -222,7 +240,7 @@ describe('JournalPage', () => {
         ],
       }),
     );
-    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({ positions: [] });
+    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue(positionsResponse());
     render(
       <MemoryRouter>
         <JournalPage />
@@ -243,7 +261,7 @@ describe('JournalPage — failures must not pass for emptiness', () => {
     // `const s = stats.data!` asserted non-null, so this threw during render and
     // took the page down with no message and no way back.
     vi.spyOn(client, 'journalStats').mockImplementation(boom as never);
-    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({ positions: [] } as never);
+    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue(positionsResponse());
     render(
       <MemoryRouter>
         <JournalPage />
@@ -304,7 +322,7 @@ describe('JournalPage — R-multiple tiles', () => {
         rBuckets: [{ label: '≤ -2R', count: 1 }],
       }),
     );
-    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({ positions: [] } as never);
+    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue(positionsResponse());
     render(
       <MemoryRouter>
         <JournalPage />

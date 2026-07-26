@@ -99,7 +99,7 @@ describe('ScreenerPage', () => {
 
       await waitFor(() => expect(runScreener).toHaveBeenCalled());
       const payload = runScreener.mock.calls[0][0];
-      expect(payload.config?.filters.requireWeeklyTrendAlignment).toBe(true);
+      expect(payload.config?.filters?.requireWeeklyTrendAlignment).toBe(true);
     });
 
     it('leaving it off does NOT include the filter in the screen run (isolates the toggle above)', async () => {
@@ -115,7 +115,7 @@ describe('ScreenerPage', () => {
 
       await waitFor(() => expect(runScreener).toHaveBeenCalled());
       const payload = runScreener.mock.calls[0][0];
-      expect(payload.config?.filters.requireWeeklyTrendAlignment).toBeFalsy();
+      expect(payload.config?.filters?.requireWeeklyTrendAlignment).toBeFalsy();
     });
   });
 });

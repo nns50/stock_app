@@ -30,6 +30,7 @@ function positionFixture(overrides: Partial<Position> = {}): Position {
     stopPrice: null,
     targetPrice: null,
     sourceIntentId: null,
+    accountId: null,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     exits: [],
