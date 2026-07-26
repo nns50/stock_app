@@ -202,8 +202,10 @@ export const client = {
     api<WebullMoversResult>(`/webull/movers?list=${list}&session=${session}&limit=${limit}`),
   webullOptionQuotes: (symbols: string[]) =>
     api<OptionLiveQuotesResult>(`/webull/option-quotes?symbols=${encodeURIComponent(symbols.join(','))}`),
+  /** `omitted` names any symbols past the server's per-request cap — they were
+   *  never looked up, so "no events" for them means nothing. */
   events: (symbols: string[]) =>
-    api<{ events: SymbolEvents[] }>(`/events?symbols=${encodeURIComponent(symbols.join(','))}`),
+    api<{ events: SymbolEvents[]; omitted?: string[] }>(`/events?symbols=${encodeURIComponent(symbols.join(','))}`),
   news: (symbol: string) => api<{ symbol: string; news: NewsItem[] }>(`/news?symbol=${encodeURIComponent(symbol)}`),
   analyst: (symbol: string) => api<AnalystInfo>(`/analyst?symbol=${encodeURIComponent(symbol)}`),
 

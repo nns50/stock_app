@@ -54,11 +54,23 @@ exportRouter.get(
   }),
 );
 
+// This schema is the RESTORE side of positions.json, so it has to accept
+// everything the export side writes. Zod strips keys a schema doesn't list, so
+// a field missing here isn't a lax check — it's silent data loss on every
+// restore: positionsToJson() emits the whole Position, and any column absent
+// below was quietly dropped on the way back in.
+//
+// It also has to hold the same line routes/positions.ts holds. Import is a
+// second door into the same journal, and a value it lets through is
+// indistinguishable afterwards from one the create route refused — so the
+// date and positivity rules are shared, not re-stated loosely here.
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be an ISO date (YYYY-MM-DD)');
+
 const importedExit = z.object({
-  quantity: z.number(),
-  exitPrice: z.number(),
-  exitDate: z.string(),
-  fees: z.number().optional(),
+  quantity: z.number().positive(),
+  exitPrice: z.number().nonnegative(),
+  exitDate: isoDate,
+  fees: z.number().nonnegative().optional(),
   notes: z.string().nullable().optional(),
   sourceIntentId: z.number().nullable().optional(),
   createdAt: z.number().optional(),
@@ -68,22 +80,36 @@ const importedPosition = z.object({
   assetType: z.enum(['stock', 'option']),
   symbol: z.string().min(1),
   side: z.enum(['long', 'short']),
-  quantity: z.number(),
-  entryPrice: z.number(),
-  entryDate: z.string(),
-  fees: z.number().optional(),
+  quantity: z.number().positive(),
+  // Positive for the same reason POST /positions demands it: a 0 entry makes
+  // costBasis 0, so the entire market value books as unrealized "gain".
+  entryPrice: z.number().positive(),
+  entryDate: isoDate,
+  /** Restores the time-of-day breakdown. Absent here until 2026-07-26, so
+   *  every restore silently flattened it to null. */
+  entryTime: z
+    .string()
+    .regex(/^\d{1,2}:\d{2}$/)
+    .nullable()
+    .optional(),
+  fees: z.number().nonnegative().optional(),
   optionType: z.enum(['call', 'put']).nullable().optional(),
-  strike: z.number().nullable().optional(),
-  expiration: z.string().nullable().optional(),
-  multiplier: z.number().optional(),
+  strike: z.number().positive().nullable().optional(),
+  expiration: isoDate.nullable().optional(),
+  multiplier: z.number().int().positive().optional(),
   status: z.enum(['open', 'closed']).optional(),
   tags: z.array(z.string()).optional(),
   grade: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
   checklist: z.array(z.object({ rule: z.string(), checked: z.boolean() })).optional(),
-  stopPrice: z.number().nullable().optional(),
-  targetPrice: z.number().nullable().optional(),
+  stopPrice: z.number().positive().nullable().optional(),
+  targetPrice: z.number().positive().nullable().optional(),
   sourceIntentId: z.number().nullable().optional(),
+  /** Which brokerage account the lot lives in. Absent here until 2026-07-26,
+   *  so a restore (and the Positions page's own delete-Undo, which round-trips
+   *  through this route) handed every position back unassigned — re-creating
+   *  exactly the account-blind state that column exists to prevent. */
+  accountId: z.string().nullable().optional(),
   createdAt: z.number().optional(),
   updatedAt: z.number().optional(),
   exits: z.array(importedExit).optional(),

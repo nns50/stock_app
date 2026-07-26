@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { client } from '../api/client';
 import { useAsync, useSort } from '../lib/hooks';
@@ -25,6 +25,7 @@ import { ExpiredOptionsBanner } from '../components/ExpiredOptionsBanner';
 import { PortfolioStressPanel } from '../components/PortfolioStressPanel';
 import { CorrelationHeatmapPanel } from '../components/CorrelationHeatmapPanel';
 import { EarningsBadge } from '../components/EarningsBadge';
+import { WashSaleBadge } from '../components/WashSaleBadge';
 import type { SymbolEvents } from '../api/types';
 import { useToast } from '../components/ToastContext';
 import { useConfirm } from '../components/ConfirmContext';
@@ -112,21 +113,58 @@ export default function PositionsPage() {
   );
 
   const [sizerOpen, setSizerOpen] = useState(false);
-  const [exitPos, setExitPos] = useState<Position | null>(null);
-  const [closePos, setClosePos] = useState<Position | null>(null);
-  const [editPos, setEditPos] = useState<Position | null>(null);
+  // The open modals track a position by ID and re-derive it from the current
+  // book, rather than holding the row object they were opened with. That
+  // object is a snapshot: the 60s poll and the background Webull sync both
+  // move remainingQuantity underneath it, so a dialog left open was quietly
+  // acting on a stale size — an exit sized against a quantity that no longer
+  // exists, or a close whose confirmation phrase names the wrong number of
+  // shares. Derived, the dialog follows the truth, and a position that
+  // disappears from the book while its dialog is open simply closes it.
+  const [exitId, setExitId] = useState<number | null>(null);
+  const [closeId, setCloseId] = useState<number | null>(null);
+  const [editId, setEditId] = useState<number | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const { toast } = useToast();
   const confirm = useConfirm();
 
-  // Refresh when a trade is logged from the global modal (header / `n` / palette).
-  // reload is useAsync's stable run() — depend on it directly so the listener
-  // isn't re-bound every render.
+  const positionById = useCallback(
+    (id: number | null) => (id === null ? null : (allRows.find((r) => r.position.id === id)?.position ?? null)),
+    [allRows],
+  );
+  const exitPos = positionById(exitId);
+  const closePos = positionById(closeId);
+  const editPos = positionById(editId);
+
+  // Two different kinds of refresh, deliberately separate:
+  //
+  //   reload()     — re-read prices and P&L. What the 60s poll and the Refresh
+  //                  button do. Cheap: one batched quote call.
+  //   reloadBook() — the COMPOSITION of the book changed (an exit, a close, a
+  //                  delete, a logged trade), so the panels below have to
+  //                  recompute too.
+  //
+  // The panels aren't on the poll because each costs a per-symbol provider
+  // call — fundamentals for the stress test, daily candles for the correlation
+  // grid and the expiry sweep. Recomputing those every minute would be real
+  // provider load for numbers that only move when a position does. Keyed on
+  // the book instead, they stay correct without the cost: before this they
+  // were keyed on nothing at all and simply never refreshed, so the stress
+  // test and the expired-options banner kept describing a book you had
+  // already changed.
   const reload = data.reload;
-  useEffect(() => {
-    window.addEventListener(TRADE_LOGGED_EVENT, reload);
-    return () => window.removeEventListener(TRADE_LOGGED_EVENT, reload);
+  const [bookVersion, setBookVersion] = useState(0);
+  const reloadBook = useCallback(() => {
+    setBookVersion((v) => v + 1);
+    reload();
   }, [reload]);
+
+  // Refresh when a trade is logged from the global modal (header / `n` / palette).
+  useEffect(() => {
+    window.addEventListener(TRADE_LOGGED_EVENT, reloadBook);
+    return () => window.removeEventListener(TRADE_LOGGED_EVENT, reloadBook);
+  }, [reloadBook]);
 
   // Stamp the "Updated …" clock when a load SUCCEEDS. Stamping it when the
   // request was fired (what reload() used to do) meant a failed poll still
@@ -146,6 +184,11 @@ export default function PositionsPage() {
       danger: true,
     });
     if (!ok) return;
+    // Guards the row while the request is in flight. Without it a second click
+    // on a slow connection fires a second DELETE against a row that is already
+    // gone, and the 404 surfaces as "Couldn't delete — position not found"
+    // over a delete that actually worked.
+    setDeletingId(id);
     try {
       await client.deletePosition(id);
     } catch (e) {
@@ -153,8 +196,10 @@ export default function PositionsPage() {
       // toast and no error, reading exactly like a successful one.
       toast(`Couldn't delete — ${(e as Error).message}`, { type: 'error' });
       return;
+    } finally {
+      setDeletingId(null);
     }
-    reload();
+    reloadBook();
     toast('Position deleted', {
       type: 'success',
       action: found
@@ -163,7 +208,7 @@ export default function PositionsPage() {
             onClick: async () => {
               try {
                 await client.importPositions([found], 'merge');
-                reload();
+                reloadBook();
               } catch (e) {
                 toast(`Couldn't undo — ${(e as Error).message}`, { type: 'error' });
               }
@@ -203,11 +248,11 @@ export default function PositionsPage() {
         <SkeletonStats count={6} />
       ) : null}
 
-      <ExpiredOptionsBanner onChanged={reload} />
+      <ExpiredOptionsBanner onChanged={reloadBook} reloadKey={bookVersion} />
 
       {data.data?.exposure && data.data.exposure.gross > 0 && <ExposurePanel exposure={data.data.exposure} />}
-      <PortfolioStressPanel />
-      <CorrelationHeatmapPanel />
+      <PortfolioStressPanel reloadKey={bookVersion} />
+      <CorrelationHeatmapPanel reloadKey={bookVersion} />
 
       <Segmented
         options={[
@@ -238,6 +283,14 @@ export default function PositionsPage() {
                 <button className="underline hover:text-amber-100" onClick={reload}>
                   Retry
                 </button>
+              </div>
+            )}
+            {!!events.data?.omitted?.length && (
+              // A missing earnings badge otherwise reads as "no earnings
+              // coming", which is a materially different thing from "we never
+              // asked about this symbol".
+              <div className="mb-3 text-[11px] text-amber-400/90">
+                ⚠ Past the earnings-lookup limit, so no earnings badge was checked for: {events.data.omitted.join(', ')}
               </div>
             )}
             {allRows.length === 0 ? (
@@ -319,10 +372,11 @@ export default function PositionsPage() {
                         key={row.position.id}
                         row={row}
                         events={eventsBySym.get(row.position.symbol.toUpperCase())}
-                        onExit={setExitPos}
-                        onClose={setClosePos}
-                        onEdit={setEditPos}
+                        onExit={setExitId}
+                        onClose={setCloseId}
+                        onEdit={setEditId}
                         onDelete={remove}
+                        deleting={deletingId === row.position.id}
                       />
                     ))}
                   </tbody>
@@ -334,9 +388,9 @@ export default function PositionsPage() {
       </CollapsibleCard>
 
       <RiskSizingModal open={sizerOpen} onClose={() => setSizerOpen(false)} />
-      <ExitModal position={exitPos} onClose={() => setExitPos(null)} onSaved={reload} />
-      <CloseModal position={closePos} onClose={() => setClosePos(null)} onSaved={reload} />
-      <JournalEditModal position={editPos} onClose={() => setEditPos(null)} onSaved={reload} />
+      <ExitModal position={exitPos} onClose={() => setExitId(null)} onSaved={reloadBook} />
+      <CloseModal position={closePos} onClose={() => setCloseId(null)} onSaved={reloadBook} />
+      <JournalEditModal position={editPos} onClose={() => setEditId(null)} onSaved={reloadBook} />
     </div>
   );
 }
@@ -349,13 +403,15 @@ const PositionRow = memo(
     onClose,
     onEdit,
     onDelete,
+    deleting,
   }: {
     row: PositionWithPnl;
     events?: SymbolEvents;
-    onExit: (p: Position) => void;
-    onClose: (p: Position) => void;
-    onEdit: (p: Position) => void;
+    onExit: (id: number) => void;
+    onClose: (id: number) => void;
+    onEdit: (id: number) => void;
     onDelete: (id: number) => void;
+    deleting: boolean;
   }) {
     const p = row.position;
     const { pnl } = row;
@@ -368,7 +424,10 @@ const PositionRow = memo(
           </Link>
           {isOption && (
             <span className="ml-2 text-xs text-slate-500">
-              {fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : 'P'} {p.expiration}
+              {/* `=== 'put' ? 'P' : 'C'` would invent a call for a null type
+                  exactly as the old `=== 'call' ? 'C' : 'P'` invented a put —
+                  an unknown type has to read as unknown. */}
+              {fmtNum(p.strike)} {p.optionType === 'call' ? 'C' : p.optionType === 'put' ? 'P' : '?'} {p.expiration}
             </span>
           )}
           {p.status === 'open' && events?.earningsDate && (
@@ -379,6 +438,14 @@ const PositionRow = memo(
           {p.status === 'closed' && (
             <span className="ml-2">
               <Badge>closed</Badge>
+            </span>
+          )}
+          {row.washSale && (
+            // The API returns this for every row and the Journal has always
+            // shown it; this table dropped it, so the same closed loss carried
+            // a wash-sale flag on one page and none on the other.
+            <span className="ml-2">
+              <WashSaleBadge washSale={row.washSale} />
             </span>
           )}
           {p.accountId && (
@@ -455,16 +522,18 @@ const PositionRow = memo(
                   an already-sold position without placing a redundant order or
                   deleting it. */}
               <button
-                className="text-xs text-accent hover:underline mr-2"
-                onClick={() => onExit(p)}
+                className="text-xs text-accent hover:underline mr-2 disabled:opacity-40"
+                onClick={() => onExit(p.id)}
+                disabled={deleting}
                 title="Record an exit in your journal — no broker order (use this if you already sold it at the broker)"
               >
                 exit
               </button>
               {isLivePosition(p) && (
                 <button
-                  className="text-xs text-bear hover:underline mr-2"
-                  onClick={() => onClose(p)}
+                  className="text-xs text-bear hover:underline mr-2 disabled:opacity-40"
+                  onClick={() => onClose(p.id)}
+                  disabled={deleting}
                   title="Place a real closing order at your broker"
                 >
                   close
@@ -472,11 +541,19 @@ const PositionRow = memo(
               )}
             </>
           )}
-          <button className="text-xs text-slate-400 hover:text-slate-200 mr-2" onClick={() => onEdit(p)}>
+          <button
+            className="text-xs text-slate-400 hover:text-slate-200 mr-2 disabled:opacity-40"
+            onClick={() => onEdit(p.id)}
+            disabled={deleting}
+          >
             journal
           </button>
-          <button className="text-xs text-slate-500 hover:text-bear" onClick={() => onDelete(p.id)}>
-            del
+          <button
+            className="text-xs text-slate-500 hover:text-bear disabled:opacity-40"
+            onClick={() => onDelete(p.id)}
+            disabled={deleting}
+          >
+            {deleting ? 'deleting…' : 'del'}
           </button>
         </td>
       </tr>
@@ -491,6 +568,7 @@ const PositionRow = memo(
   // SAME data this row's own (content-compared) prop is drawn from, so a
   // row whose content is unchanged would resolve identically either way.
   (prev, next) =>
+    prev.deleting === next.deleting &&
     JSON.stringify(prev.row) === JSON.stringify(next.row) &&
     JSON.stringify(prev.events) === JSON.stringify(next.events),
 );

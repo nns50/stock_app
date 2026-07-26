@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import {
   Badge,
   CollapsibleCard,
@@ -10,6 +10,7 @@ import {
   Segmented,
   SkeletonStats,
   SkeletonTable,
+  SortTh,
   StatTile,
 } from './ui';
 
@@ -181,5 +182,53 @@ describe('skeletons', () => {
     const { container } = render(<SkeletonStats count={6} />);
     // Two shimmer blocks per tile (label + value).
     expect(container.querySelectorAll('.skeleton').length).toBe(12);
+  });
+});
+
+describe('SortTh', () => {
+  // Sorting used to be a click handler on the <th>: unreachable by keyboard,
+  // and a screen reader saw a plain column label with no hint it did anything
+  // or which way the table was currently ordered.
+  const renderTh = (props: Partial<Parameters<typeof SortTh>[0]> = {}) => {
+    const onSort = vi.fn();
+    render(
+      <table>
+        <thead>
+          <tr>
+            <SortTh label="Total P&L" k="total" active="total" dir="desc" onSort={onSort} {...props} />
+          </tr>
+        </thead>
+      </table>,
+    );
+    return onSort;
+  };
+
+  it('exposes the sort control as a real button, so it is focusable and keyboard-operable', () => {
+    const onSort = renderTh();
+    const button = screen.getByRole('button', { name: /Total P&L/ });
+    button.focus();
+    expect(button).toHaveFocus();
+    fireEvent.keyDown(button, { key: 'Enter' });
+    fireEvent.click(button); // what Enter/Space dispatch on a real button
+    expect(onSort).toHaveBeenCalledWith('total');
+  });
+
+  it('announces the current sort direction via aria-sort, and none on inactive columns', () => {
+    renderTh();
+    expect(screen.getByRole('columnheader')).toHaveAttribute('aria-sort', 'descending');
+
+    cleanup();
+    renderTh({ dir: 'asc' });
+    expect(screen.getByRole('columnheader')).toHaveAttribute('aria-sort', 'ascending');
+
+    cleanup();
+    renderTh({ active: 'somethingElse' });
+    expect(screen.getByRole('columnheader')).toHaveAttribute('aria-sort', 'none');
+  });
+
+  it('fires the sort exactly once per click (the handler moved off the th, so it cannot double-toggle)', () => {
+    const onSort = renderTh();
+    fireEvent.click(screen.getByRole('button', { name: /Total P&L/ }));
+    expect(onSort).toHaveBeenCalledTimes(1);
   });
 });

@@ -14,6 +14,7 @@ import {
 } from '../src/providers/webull/positions';
 import { priceMap } from '../src/services/quotes';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
+import { etToday } from '../src/util/marketDate';
 
 vi.mock('../src/services/quotes', () => ({ priceMap: vi.fn() }));
 
@@ -346,6 +347,14 @@ describe('syncClosedWebullPositions', () => {
     expect(closed.exits).toHaveLength(1);
     expect(closed.exits[0]).toMatchObject({ quantity: 50, exitPrice: 10 });
     expect(closed.exits[0].notes).toMatch(/Auto-closed via Webull sync/);
+    // Dated on the MARKET's today, not the box's UTC clock. This sync runs on
+    // a background schedule, so on a UTC-deployed box every run from 20:00 ET
+    // onward used to book the exit a day in the future — wrong day in the
+    // Journal's day/weekday stats, an extra day of hold time, and an exit
+    // sorted past its own session in the equity curve. This assertion only
+    // diverges from the old behaviour during that window, but it is correct at
+    // every hour, so it can never fail for the wrong reason.
+    expect(closed.exits[0].exitDate).toBe(etToday());
   });
 
   it('logs a position_reconciled_from_broker event once the close is confirmed (equity used to close silently)', async () => {

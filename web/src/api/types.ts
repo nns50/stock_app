@@ -425,6 +425,10 @@ export interface PortfolioCorrelation {
   /** Symbols whose daily history couldn't be fetched — never assumed
    *  uncorrelated. */
   unresolved: string[];
+  /** Underlyings dropped before any fetch because the book exceeded the
+   *  server's per-request cap — never looked at, as opposed to looked at and
+   *  failed (`unresolved`). */
+  omitted: string[];
   lookbackDays: number;
 }
 

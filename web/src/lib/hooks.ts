@@ -82,14 +82,33 @@ export function useAsync<T>(loader: () => Promise<T>, deps: unknown[] = []): Asy
   return { data, error, loading, reload: run };
 }
 
-/** Call `cb` every `intervalMs` ms; pass null to disable. */
+/**
+ * Call `cb` every `intervalMs` ms; pass null to disable.
+ *
+ * Ticks are skipped while the tab is hidden, and one fires immediately when it
+ * becomes visible again. A background tab has nobody reading it, but its poll
+ * still spends a real provider call every interval — a Positions page left open
+ * in another window burned one a minute, all day, for numbers nobody saw. The
+ * catch-up on return is what makes skipping safe: you come back to fresh data
+ * rather than to whatever was on screen when you left.
+ */
 export function usePolling(cb: () => void, intervalMs: number | null): void {
   const saved = useRef(cb);
   saved.current = cb;
   useEffect(() => {
     if (!intervalMs) return;
-    const id = setInterval(() => saved.current(), intervalMs);
-    return () => clearInterval(id);
+    const hidden = () => typeof document !== 'undefined' && document.hidden;
+    const id = setInterval(() => {
+      if (!hidden()) saved.current();
+    }, intervalMs);
+    const onVisible = () => {
+      if (!hidden()) saved.current();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [intervalMs]);
 }
 

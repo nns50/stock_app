@@ -359,6 +359,63 @@ describe('positions + journal routes (integration)', () => {
     expect(day).toMatchObject({ entries: 1, exits: 1, realizedPnl: 50 });
   });
 
+  // The import route is the RESTORE side of positions.json — and the route the
+  // Positions page's own delete-Undo round-trips through. Zod strips keys a
+  // schema doesn't list, so a column missing from it isn't a lax check, it's
+  // silent data loss on every restore.
+  describe('POST /export/import — parity with the create route', () => {
+    it('round-trips accountId and entryTime, which the schema used to drop on the floor', async () => {
+      const res = await post('/api/export/import', {
+        mode: 'merge',
+        positions: [
+          {
+            assetType: 'stock',
+            symbol: 'ACCT',
+            side: 'long',
+            quantity: 10,
+            entryPrice: 50,
+            entryDate: '2026-05-01',
+            entryTime: '09:45',
+            accountId: 'ACC1_CASH',
+            tags: ['webull'],
+          },
+        ],
+      });
+      expect(res.status).toBe(200);
+
+      const body = (await getJson('/api/positions?symbol=ACCT')) as {
+        positions: { accountId: string | null; entryTime: string | null }[];
+      };
+      // Dropped, these came back unassigned — re-creating exactly the
+      // account-blind state accountId exists to prevent, and flattening the
+      // journal's time-of-day breakdown to "no entry time" for every row.
+      expect(body.positions[0].accountId).toBe('ACC1_CASH');
+      expect(body.positions[0].entryTime).toBe('09:45');
+    });
+
+    it('holds the same line the create route does on dates and prices', async () => {
+      const base = {
+        assetType: 'stock',
+        symbol: 'STRICT',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        entryDate: '2026-05-01',
+      };
+      const importOne = (p: Record<string, unknown>) => post('/api/export/import', { mode: 'merge', positions: [p] });
+
+      // A value import lets through is indistinguishable afterwards from one
+      // POST /positions refused, so the two doors enforce the same rules.
+      expect((await importOne({ ...base, entryDate: '05/01/2026' })).status).toBe(400);
+      expect((await importOne({ ...base, entryPrice: 0 })).status).toBe(400);
+      expect((await importOne({ ...base, quantity: 0 })).status).toBe(400);
+      expect(
+        (await importOne({ ...base, exits: [{ quantity: 5, exitPrice: 110, exitDate: '2026-5-10' }] })).status,
+      ).toBe(400);
+      expect((await importOne(base)).status).toBe(200);
+    });
+  });
+
   it('round-trips a positions import (merge)', async () => {
     const res = await post('/api/export/import', {
       mode: 'merge',
@@ -508,6 +565,40 @@ describe('positions + journal routes (integration)', () => {
 // at placeOrder()'s own deploy-level master gate rather than making any real
 // network call — sufficient to prove the route reaches closeLivePosition
 // without crashing.
+// A partial result that doesn't say it's partial reads as a complete one.
+describe('per-request caps are reported, not silent', () => {
+  it('names the symbols /events never looked up', async () => {
+    const many = Array.from({ length: 105 }, (_, i) => `SYM${i}`);
+    const out = (await getJson(`/api/events?symbols=${many.join(',')}`)) as {
+      events: unknown[];
+      omitted: string[];
+    };
+    // Without this, a symbol past the cap shows no earnings badge — which
+    // reads as "nothing coming up", not "we never asked".
+    expect(out.omitted).toEqual(['SYM100', 'SYM101', 'SYM102', 'SYM103', 'SYM104']);
+  });
+
+  it('names the underlyings the correlation grid left out entirely', async () => {
+    const { MAX_CORRELATION_SYMBOLS } = await import('../src/services/portfolioCorrelation');
+    for (let i = 0; i < MAX_CORRELATION_SYMBOLS + 3; i++) {
+      createPosition({
+        assetType: 'stock',
+        symbol: `COR${i}`,
+        side: 'long',
+        quantity: 1,
+        entryPrice: 10,
+        entryDate: '2026-05-01',
+      });
+    }
+    const out = (await getJson('/api/positions/correlation')) as { symbols: string[]; omitted: string[] };
+    expect(out.symbols).toHaveLength(MAX_CORRELATION_SYMBOLS);
+    // The panel's whole point is honesty about coverage — a grid quietly
+    // covering 40 of 43 names otherwise reads as the whole book.
+    expect(out.omitted).toHaveLength(3);
+    expect(out.omitted.every((s) => s.startsWith('COR'))).toBe(true);
+  });
+});
+
 describe('POST /positions/:id/close (integration)', () => {
   it('404s for a position that does not exist', async () => {
     const res = await post('/api/positions/999999/close', { accountId: 'ACC1', confirmation: 'SELL 1 X' });

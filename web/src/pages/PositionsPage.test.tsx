@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import PositionsPage from './PositionsPage';
 import { client } from '../api/client';
@@ -231,6 +231,70 @@ describe('PositionsPage — empty states', () => {
     // ...and its "Show all" action actually reveals them.
     await userEvent.click(screen.getByRole('button', { name: 'Show all' }));
     expect(await screen.findByText('MSFT')).toBeInTheDocument();
+  });
+});
+
+describe('PositionsPage — panels follow the book, not the price poll', () => {
+  it('re-checks the expired-options banner after an exit is recorded', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const pos = positionFixture({ id: 1, symbol: 'AAPL', status: 'open' });
+    renderWithRows([rowFixture(pos)]);
+    const expired = vi.spyOn(client, 'expiredOptions').mockResolvedValue({ examined: 0, closed: [], needsReview: [] });
+    vi.spyOn(client, 'addExit').mockResolvedValue(pos);
+
+    await screen.findByText('AAPL');
+    const before = expired.mock.calls.length;
+
+    // Record an exit through the modal — the book has changed, so anything
+    // derived from its composition has to be recomputed. Keyed on nothing,
+    // this banner kept listing a contract you had just exited.
+    await userEvent.click(screen.getByText('exit'));
+    fireEvent.change(screen.getByLabelText('Exit price'), { target: { value: '120' } });
+    await userEvent.click(screen.getByRole('button', { name: /Record exit/i }));
+
+    await waitFor(() => expect(expired.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  it('does NOT recompute them on an ordinary price refresh', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    renderWithRows([rowFixture(positionFixture({ id: 1, symbol: 'AAPL' }))]);
+    const expired = vi.spyOn(client, 'expiredOptions').mockResolvedValue({ examined: 0, closed: [], needsReview: [] });
+
+    await screen.findByText('AAPL');
+    const before = expired.mock.calls.length;
+    await userEvent.click(screen.getByRole('button', { name: /Refresh/ }));
+
+    // Each of these panels costs a per-symbol provider call, and prices moving
+    // doesn't change what's in the book.
+    await waitFor(() => expect(client.positionsWithPnl).toHaveBeenCalledTimes(2));
+    expect(expired.mock.calls.length).toBe(before);
+  });
+});
+
+describe('PositionsPage — open dialogs track the live book', () => {
+  it('follows a remaining-quantity change instead of acting on the size it opened with', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const open = positionFixture({ id: 1, symbol: 'AAPL', quantity: 100, remainingQuantity: 100 });
+    const partiallyExited = { ...open, remainingQuantity: 40 };
+    vi.spyOn(client, 'positionsWithPnl')
+      .mockResolvedValueOnce(payload([rowFixture(open)]))
+      .mockResolvedValue(payload([rowFixture(partiallyExited)]));
+    vi.spyOn(client, 'events').mockResolvedValue({ events: [] });
+    render(
+      <MemoryRouter>
+        <PositionsPage />
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('AAPL');
+    await userEvent.click(screen.getByText('exit'));
+    expect(await screen.findByText(/Remaining open:/)).toHaveTextContent('100');
+
+    // The background sync (or the poll) sells part of it underneath the open
+    // dialog. Holding the row object it opened with, the dialog kept offering
+    // to exit 100 shares of a position that now has 40.
+    await userEvent.click(screen.getByRole('button', { name: /Refresh/ }));
+    await waitFor(() => expect(screen.getByText(/Remaining open:/)).toHaveTextContent('40'));
   });
 });
 

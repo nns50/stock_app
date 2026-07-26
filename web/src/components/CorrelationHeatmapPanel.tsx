@@ -14,10 +14,10 @@ import { CollapsibleCard, EmptyState, ErrorState, Spinner } from './ui';
  * Collapsed by default and fetched only once expanded: like the stress test
  * below it, this needs its own per-symbol candle history.
  */
-export function CorrelationHeatmapPanel() {
+export function CorrelationHeatmapPanel({ reloadKey = 0 }: { reloadKey?: number }) {
   return (
     <CollapsibleCard id="positions.correlation" title="Correlation heatmap" defaultCollapsed>
-      <CorrelationBody />
+      <CorrelationBody reloadKey={reloadKey} />
     </CollapsibleCard>
   );
 }
@@ -32,8 +32,11 @@ function cellStyle(r: number | null): CSSProperties {
   return r >= 0 ? { backgroundColor: `rgba(239, 68, 68, ${a})` } : { backgroundColor: `rgba(34, 197, 94, ${a})` };
 }
 
-function CorrelationBody() {
-  const data = useAsync(() => client.portfolioCorrelation(), []);
+/** `reloadKey` changes when the BOOK changes, not on the page's price poll —
+ *  see PortfolioStressPanel for why. This one fetches daily candles per
+ *  underlying, so the same reasoning applies with more weight. */
+function CorrelationBody({ reloadKey }: { reloadKey: number }) {
+  const data = useAsync(() => client.portfolioCorrelation(), [reloadKey]);
 
   if (data.loading) return <Spinner label="Correlating your open positions…" />;
   if (data.error) return <ErrorState error={data.error} onRetry={data.reload} />;
@@ -46,7 +49,7 @@ function CorrelationBody() {
     );
   }
 
-  const { symbols, matrix, topPair, unresolved, lookbackDays } = data.data;
+  const { symbols, matrix, topPair, unresolved, omitted, lookbackDays } = data.data;
   const resolvedCount = symbols.length - unresolved.length;
 
   if (resolvedCount < 2) {
@@ -124,6 +127,15 @@ function CorrelationBody() {
 
       {unresolved.length > 0 && (
         <p className="text-[11px] text-amber-400/90">⚠ Excluded (no fetchable history): {unresolved.join(', ')}</p>
+      )}
+      {omitted.length > 0 && (
+        // Never fetched at all, as opposed to fetched and failed above — a grid
+        // that quietly covers 40 of your 50 names reads as the whole book.
+        <p className="text-[11px] text-amber-400/90">
+          ⚠ Not correlated — this book is past the {symbols.length}-name per-request limit, so{' '}
+          {omitted.length === 1 ? 'this one was' : `these ${omitted.length} were`} left out entirely:{' '}
+          {omitted.join(', ')}
+        </p>
       )}
     </div>
   );
