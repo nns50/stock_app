@@ -85,13 +85,8 @@ describe('daysUntilLocal', () => {
   // agree on every input — so without this these assertions pass either way and
   // prove nothing. America/New_York is both negative-UTC and the timezone the
   // app's market logic is written against.
-  const origTz = process.env.TZ;
-  beforeAll(() => {
-    process.env.TZ = 'America/New_York';
-  });
-  afterAll(() => {
-    process.env.TZ = origTz;
-  });
+  beforeAll(() => vi.stubEnv('TZ', 'America/New_York'));
+  afterAll(() => vi.unstubAllEnvs());
 
   // Local wall-clock, not an instant: `new Date('2026-07-30T21:00:00')` with no
   // zone suffix is parsed in that pinned timezone, which is what puts the clock

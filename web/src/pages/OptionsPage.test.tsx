@@ -117,7 +117,7 @@ describe('OptionsPage', () => {
 });
 
 describe('optionsTimingRead — an unanswered earnings question is not an all-clear', () => {
-  const base = { symbol: 'AAPL', expiration: '2026-08-21', earningsUnknown: false };
+  const base = { symbol: 'AAPL', expiration: '2026-08-21', earningsUnknown: false, earningsDte: null };
 
   it('warns when earnings fall before expiry', () => {
     const r = optionsTimingRead({ ...base, ivRank: 80, earningsDate: '2026-08-05', earningsDte: 10 });

@@ -92,6 +92,15 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     maxAddOns: 0,
     liveScaleInEnabled: false,
     liveMaxAddOns: 0,
+    optionsDeltaMin: 0.3,
+    optionsDeltaMax: 0.6,
+    optionsMaxSpreadPct: 10,
+    optionsMinOpenInterest: 100,
+    optionsMinVolume: 10,
+    optionsMinDte: 7,
+    optionsMaxDte: 60,
+    optionsIvRankMax: 70,
+    autoTuneExitTunedAt: null,
     optionsStopLossPct: 0,
     optionsTakeProfitPct: 0,
     optionsBreakevenTriggerPct: 0,
@@ -216,6 +225,7 @@ function loopSummaryFixture(overrides: Partial<LoopTickSummary> = {}): LoopTickS
     optionsEntriesOpened: 0,
     liveEntriesOpened: 0,
     liveOptionsEntriesOpened: 0,
+    moversAutoPromoted: 0,
     ...overrides,
   };
 }
@@ -258,7 +268,7 @@ describe('AutoTradePage', () => {
   it('saves a new account equity value', async () => {
     const setConfig = vi
       .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 50_000 });
+      .mockResolvedValue(configFixture({ accountEquityUsd: 50_000 }));
     renderPage();
     await screen.findByText('VNQ');
 
@@ -283,9 +293,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new regime ATR threshold value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -305,9 +313,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new regime size cut value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -322,9 +328,7 @@ describe('AutoTradePage', () => {
   });
 
   it('toggling equity-curve de-risking saves immediately', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -336,9 +340,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new equity-curve lookback value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -355,9 +357,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new max ADV participation value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -374,9 +374,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new conviction grade A threshold', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -393,9 +391,7 @@ describe('AutoTradePage', () => {
   });
 
   it('toggling expectancy-weighted sizing saves immediately (no separate Save button)', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -407,9 +403,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new expectancy min sample value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -426,9 +420,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves new expectancy multiplier bounds independently', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -446,9 +438,7 @@ describe('AutoTradePage', () => {
   });
 
   it('toggling correlation-aware selection saves immediately (no separate Save button)', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -460,9 +450,7 @@ describe('AutoTradePage', () => {
   });
 
   it('toggling regime-adaptive weights saves immediately', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -474,9 +462,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves an edited risk-off regime weight preset', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -484,7 +470,8 @@ describe('AutoTradePage', () => {
     // findByText (not getByText) waits for the config to load — the preset rows
     // only render once regimeWeightPresetsDraft is seeded from config.data.
     const riskOffRow = (await screen.findByText('Risk-off')).closest('div')!.parentElement!;
-    const trendInput = within(riskOffRow).getAllByRole('textbox').at(-1)!; // 'Trend' is the last of the six inputs
+    const riskOffInputs = within(riskOffRow).getAllByRole('textbox');
+    const trendInput = riskOffInputs[riskOffInputs.length - 1]; // 'Trend' is the last of the six inputs
     fireEvent.change(trendInput, { target: { value: '40' } });
 
     const saveButton = screen.getByRole('button', { name: 'Save Risk-off weights' });
@@ -514,9 +501,7 @@ describe('AutoTradePage', () => {
   });
 
   it('toggling require weekly trend alignment saves immediately (no separate Save button)', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -528,9 +513,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new relative strength weight value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -548,9 +531,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new benchmark symbol value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -569,9 +550,7 @@ describe('AutoTradePage', () => {
   });
 
   it('toggling auto-tune from realized edge saves immediately (no separate Save button)', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -583,9 +562,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new auto-tune min sample size value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -602,9 +579,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new auto-tune max daily risk-% step value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -621,9 +596,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new auto-tune slippage exclusion threshold value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -640,9 +613,7 @@ describe('AutoTradePage', () => {
   });
 
   it('toggling the exit-geometry auto-tune saves immediately', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -654,9 +625,7 @@ describe('AutoTradePage', () => {
   });
 
   it('toggling the out-of-sample confirmation guard saves immediately (on by default → off)', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -670,9 +639,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new max daily exit step value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -689,9 +656,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new max sector exposure value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -708,9 +673,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new relative strength lookback value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -728,9 +691,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new sentiment weight value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -746,9 +707,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new macro event blackout hours value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -783,7 +742,7 @@ describe('AutoTradePage', () => {
 
     // Scoped to this card specifically — the real-estate exclusion list above
     // it has its own, differently-wired "Add" button with the same text.
-    const card = screen.getByText('Macro event blackout list').closest('.p-4')!;
+    const card = screen.getByText('Macro event blackout list').closest<HTMLElement>('.p-4')!;
     fireEvent.click(within(card).getByRole('button', { name: 'Add' }));
 
     await waitFor(() =>
@@ -806,9 +765,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new options stop-loss % value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -829,9 +786,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new options take-profit % value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -849,9 +804,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new options breakeven trigger % value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -869,9 +822,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new options trailing start % value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -889,9 +840,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new scale-in (add-on) trigger R-multiple', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -909,9 +858,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new options trailing distance % value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -929,9 +876,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new options partial exit trigger % value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -949,9 +894,7 @@ describe('AutoTradePage', () => {
   });
 
   it('saves a new options partial exit size % value', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: false, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
     renderPage();
     await screen.findByText('VNQ');
 
@@ -1023,12 +966,9 @@ describe('AutoTradePage', () => {
   });
 
   it('requires confirmation before switching to AGGRESSIVE, and does not save on cancel', async () => {
-    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue({
-      enabled: false,
-      killSwitch: false,
-      riskProfile: 'AGGRESSIVE',
-      accountEquityUsd: 100_000,
-    });
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue(configFixture({ riskProfile: 'AGGRESSIVE' }));
     renderPage();
     await screen.findByText('VNQ');
 
@@ -1041,12 +981,9 @@ describe('AutoTradePage', () => {
   });
 
   it('saves with confirmAggressive: true once the switch is confirmed', async () => {
-    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue({
-      enabled: false,
-      killSwitch: false,
-      riskProfile: 'AGGRESSIVE',
-      accountEquityUsd: 100_000,
-    });
+    const setConfig = vi
+      .spyOn(client, 'setAutotradeConfig')
+      .mockResolvedValue(configFixture({ riskProfile: 'AGGRESSIVE' }));
     renderPage();
     await screen.findByText('VNQ');
 
@@ -1057,9 +994,7 @@ describe('AutoTradePage', () => {
   });
 
   it('toggling enabled does not prompt for confirmation', async () => {
-    const setConfig = vi
-      .spyOn(client, 'setAutotradeConfig')
-      .mockResolvedValue({ enabled: true, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture({ enabled: true }));
     renderPage();
     await screen.findByText('VNQ');
 
@@ -2817,21 +2752,14 @@ describe('AutoTradePage', () => {
     });
 
     it('engages on click, with no confirmation prompt, and updates config + dashboard', async () => {
-      const setKill = vi
-        .spyOn(client, 'setAutotradeKillSwitch')
-        .mockResolvedValue({ enabled: false, killSwitch: true, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+      const setKill = vi.spyOn(client, 'setAutotradeKillSwitch').mockResolvedValue(configFixture({ killSwitch: true }));
       // toggleKillSwitch also calls config.reload() right after the optimistic
       // local update — mock its SECOND call (the reload) to agree with the
       // just-applied change, matching what the real server would return; the
       // first call is the page's initial load, still released.
       vi.spyOn(client, 'autotradeConfig')
-        .mockResolvedValueOnce({
-          enabled: false,
-          killSwitch: false,
-          riskProfile: 'MODERATE',
-          accountEquityUsd: 100_000,
-        })
-        .mockResolvedValue({ enabled: false, killSwitch: true, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+        .mockResolvedValueOnce(configFixture())
+        .mockResolvedValue(configFixture({ killSwitch: true }));
       const dash = vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
       renderPage();
       await screen.findByText('VNQ');
@@ -2852,9 +2780,7 @@ describe('AutoTradePage', () => {
 
     it('releases on a second click without touching the enabled flag', async () => {
       vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture({ enabled: true, killSwitch: true }));
-      const setKill = vi
-        .spyOn(client, 'setAutotradeKillSwitch')
-        .mockResolvedValue({ enabled: true, killSwitch: false, riskProfile: 'MODERATE', accountEquityUsd: 100_000 });
+      const setKill = vi.spyOn(client, 'setAutotradeKillSwitch').mockResolvedValue(configFixture({ enabled: true }));
       renderPage();
 
       fireEvent.click(await screen.findByRole('button', { name: '■ Kill switch ENGAGED — release' }));
@@ -2888,19 +2814,9 @@ describe('AutoTradePage', () => {
       // card (enabled checkbox, risk profile, equity) falls back to an error
       // box. The kill-switch button must survive that — it's the one control
       // that can release it, and it reads local state, not config.data.
-      vi.spyOn(client, 'setAutotradeKillSwitch').mockResolvedValue({
-        enabled: false,
-        killSwitch: true,
-        riskProfile: 'MODERATE',
-        accountEquityUsd: 100_000,
-      });
+      vi.spyOn(client, 'setAutotradeKillSwitch').mockResolvedValue(configFixture({ killSwitch: true }));
       vi.spyOn(client, 'autotradeConfig')
-        .mockResolvedValueOnce({
-          enabled: false,
-          killSwitch: false,
-          riskProfile: 'MODERATE',
-          accountEquityUsd: 100_000,
-        })
+        .mockResolvedValueOnce(configFixture())
         .mockRejectedValue(new Error('network blip'));
       renderPage();
       await screen.findByText('VNQ');
@@ -3128,6 +3044,9 @@ describe('AutoTradePage', () => {
               exitReason: null,
               createdAt: Date.now(),
               updatedAt: Date.now(),
+              currentPrice: null,
+              stale: false,
+              unrealizedPnl: null,
             },
           ],
           openOptionsPositions: [
@@ -3135,21 +3054,30 @@ describe('AutoTradePage', () => {
               id: 1,
               symbol: 'MSFT',
               side: 'call',
+              kind: 'single_leg',
               contractSymbol: 'MSFT-fixture',
               strike: 400,
+              shortContractSymbol: null,
+              shortStrike: null,
               expiration: '2026-08-21',
               quantity: 1,
               entryPrice: 3,
+              shortEntryPrice: null,
               entryAt: Date.now(),
               riskAmount: 300,
               riskProfile: 'MODERATE',
               rationale: 'fixture',
               status: 'open',
               exitPrice: null,
+              shortExitPrice: null,
               exitAt: null,
               exitReason: null,
               createdAt: Date.now(),
               updatedAt: Date.now(),
+              currentPrice: null,
+              shortCurrentPrice: null,
+              underlyingPrice: null,
+              unrealizedPnl: null,
               dte: 30,
             },
           ],
@@ -3168,21 +3096,30 @@ describe('AutoTradePage', () => {
         id: overrides.id,
         symbol: overrides.symbol,
         side: 'call' as const,
+        kind: 'single_leg' as const,
         contractSymbol: `${overrides.symbol}-fixture`,
         strike: overrides.strike,
+        shortContractSymbol: null,
+        shortStrike: null,
         expiration: '2026-08-21',
         quantity: 1,
         entryPrice: 3,
+        shortEntryPrice: null,
         entryAt: Date.now(),
         riskAmount: 300,
         riskProfile: 'MODERATE',
         rationale: 'fixture',
         status: 'open' as const,
         exitPrice: null,
+        shortExitPrice: null,
         exitAt: null,
         exitReason: null,
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        currentPrice: null,
+        shortCurrentPrice: null,
+        underlyingPrice: null,
+        unrealizedPnl: null,
         dte: overrides.dte,
       });
       vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
@@ -3442,6 +3379,8 @@ describe('AutoTradePage', () => {
     function livePosition(overrides: Partial<AutotradeLivePosition> = {}): AutotradeLivePosition {
       return {
         id: 1,
+        sourceIntentId: null,
+        accountId: null,
         assetType: 'stock',
         symbol: 'AAPL',
         side: 'long',
@@ -3503,6 +3442,7 @@ describe('AutoTradePage', () => {
               {
                 id: 1,
                 positionId: 2,
+                sourceIntentId: null,
                 quantity: 10,
                 exitPrice: 110,
                 exitDate: '2026-07-02',
@@ -3677,6 +3617,7 @@ describe('AutoTradePage', () => {
     function liveOptionsPosition(overrides: Partial<LiveOptionsPosition> = {}): LiveOptionsPosition {
       return {
         id: 1,
+        accountId: null,
         symbol: 'AAPL',
         side: 'call',
         kind: 'single_leg',

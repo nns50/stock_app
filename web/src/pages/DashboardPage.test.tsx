@@ -24,9 +24,10 @@ beforeEach(() => {
       total: 0,
       unrealized: 0,
       realized: 0,
+      openMarketValue: 0,
       openCount: 0,
       closedCount: 0,
-    } as never,
+    },
     exposure: { gross: 0, net: 0, long: 0, short: 0, bySector: [], largest: null },
   });
   vi.spyOn(client, 'alertsState').mockResolvedValue({
@@ -120,7 +121,7 @@ describe('DashboardPage', () => {
     it('lists earnings and ex-dividend catalysts for both positions and watchlist symbols, soonest first', async () => {
       vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({
         positions: [positionWithPnlFixture({ position: positionFixture({ id: 1, symbol: 'AAPL' }) })],
-        aggregate: { total: 0, unrealized: 0, realized: 0, openCount: 1, closedCount: 0 } as never,
+        aggregate: { total: 0, unrealized: 0, realized: 0, openMarketValue: 0, openCount: 1, closedCount: 0 },
         exposure: { gross: 1000, net: 1000, long: 1000, short: 0, bySector: [], largest: null },
       });
       vi.spyOn(client, 'watchlist').mockResolvedValue({ symbols: ['MSFT'] });
@@ -172,10 +173,10 @@ describe('DashboardPage', () => {
       });
       vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({
         positions: [shortCall],
-        aggregate: { total: 0, unrealized: 0, realized: 0, openCount: 1, closedCount: 0 } as never,
+        aggregate: { total: 0, unrealized: 0, realized: 0, openMarketValue: 0, openCount: 1, closedCount: 0 },
         exposure: { gross: 1000, net: 1000, long: 1000, short: 0, bySector: [], largest: null },
       });
-      vi.spyOn(client, 'quotes').mockResolvedValue({ quotes: [{ symbol: 'TSLA', last: 120 }], asOf: 0 });
+      vi.spyOn(client, 'quotes').mockResolvedValue({ quotes: [{ symbol: 'TSLA', last: 120, timestamp: 0 }], asOf: 0 });
 
       renderPage();
 
@@ -199,10 +200,10 @@ describe('DashboardPage', () => {
       });
       vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({
         positions: [longCall],
-        aggregate: { total: 0, unrealized: 0, realized: 0, openCount: 1, closedCount: 0 } as never,
+        aggregate: { total: 0, unrealized: 0, realized: 0, openMarketValue: 0, openCount: 1, closedCount: 0 },
         exposure: { gross: 1000, net: 1000, long: 1000, short: 0, bySector: [], largest: null },
       });
-      vi.spyOn(client, 'quotes').mockResolvedValue({ quotes: [{ symbol: 'NVDA', last: 120 }], asOf: 0 });
+      vi.spyOn(client, 'quotes').mockResolvedValue({ quotes: [{ symbol: 'NVDA', last: 120, timestamp: 0 }], asOf: 0 });
 
       renderPage();
 
@@ -288,7 +289,7 @@ describe('DashboardPage — capped lists say what they are hiding', () => {
     const positions = [1, 2, 3, 4, 5, 6, 7].map((i) => optionAt(i, `2026-08-${String(10 + i).padStart(2, '0')}`));
     vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({
       positions,
-      aggregate: { total: 0, unrealized: 0, realized: 0, openCount: 7, closedCount: 0 } as never,
+      aggregate: { total: 0, unrealized: 0, realized: 0, openMarketValue: 0, openCount: 7, closedCount: 0 },
       exposure: { gross: 0, net: 0, long: 0, short: 0, bySector: [], largest: null },
     });
     render(
@@ -302,7 +303,7 @@ describe('DashboardPage — capped lists say what they are hiding', () => {
   it('stays quiet when everything fits', async () => {
     vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({
       positions: [optionAt(1, '2026-08-21')],
-      aggregate: { total: 0, unrealized: 0, realized: 0, openCount: 1, closedCount: 0 } as never,
+      aggregate: { total: 0, unrealized: 0, realized: 0, openMarketValue: 0, openCount: 1, closedCount: 0 },
       exposure: { gross: 0, net: 0, long: 0, short: 0, bySector: [], largest: null },
     });
     render(

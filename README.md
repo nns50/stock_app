@@ -240,7 +240,10 @@ npm run backfill:exits # correct estimated exit prices from real fills (dry run;
 npm run check:journal  # audit the trade journal for rows that are already wrong (report only)
 ```
 
-CI runs lint, format-check, typecheck, tests, and build on every PR.
+CI runs lint, format-check, typecheck, tests, and build on every PR. Typecheck
+covers **test files as well as source** — test fixtures are checked against
+`web/src/api/types.ts`, so a mock can't quietly describe a response shape the API
+never returns.
 
 ### `check:journal` — auditing the journal for rows that are already wrong
 
