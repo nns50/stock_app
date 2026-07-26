@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import OptionsPage from './OptionsPage';
+import OptionsPage, { optionsTimingRead } from './OptionsPage';
 import { ProviderProvider } from '../components/ProviderContext';
 import { client } from '../api/client';
 
@@ -113,5 +113,52 @@ describe('OptionsPage', () => {
     expect(screen.getByText('30,882')).toBeInTheDocument(); // live volume
     expect(screen.getByText('-24.26%')).toBeInTheDocument(); // live change
     expect(screen.getAllByText(/^chain/).length).toBeGreaterThan(0);
+  });
+});
+
+describe('optionsTimingRead — an unanswered earnings question is not an all-clear', () => {
+  const base = { symbol: 'AAPL', expiration: '2026-08-21', earningsUnknown: false };
+
+  it('warns when earnings fall before expiry', () => {
+    const r = optionsTimingRead({ ...base, ivRank: 80, earningsDate: '2026-08-05', earningsDte: 10 });
+    expect(r.kind).toBe('warn');
+    expect(r.text).toMatch(/Earnings 2026-08-05 fall before this expiry/);
+  });
+
+  it('warns instead of recommending a premium sale when earnings could not be checked', () => {
+    // The bug: earningsDate was undefined on a failed lookup, so
+    // earningsBeforeExpiry went false and this fell through to the rich-IV
+    // branch — which asserts "and no earnings fall before expiry" and then
+    // recommends selling premium. That is the exact trade an unflagged earnings
+    // event destroys through IV crush.
+    const r = optionsTimingRead({ ...base, ivRank: 80, earningsUnknown: true });
+    expect(r.kind).toBe('warn');
+    expect(r.text).toMatch(/Couldn't check earnings for AAPL/);
+    expect(r.text).not.toMatch(/no earnings fall before expiry/);
+    expect(r.text).not.toMatch(/favor selling premium/);
+  });
+
+  it('takes precedence over every IV-rank branch, not just the rich one', () => {
+    for (const ivRank of [80, 10, 35, null]) {
+      expect(optionsTimingRead({ ...base, ivRank, earningsUnknown: true }).kind).toBe('warn');
+    }
+  });
+
+  it('still recommends selling premium when earnings genuinely were checked and are clear', () => {
+    // The advice has to survive — it's only wrong when nothing was checked.
+    const r = optionsTimingRead({ ...base, ivRank: 80, earningsDate: '2026-09-30', earningsDte: 66 });
+    expect(r.kind).toBe('sell');
+    expect(r.text).toMatch(/no earnings fall before expiry/);
+  });
+
+  it('reads cheap IV as buy and middling as neutral', () => {
+    expect(optionsTimingRead({ ...base, ivRank: 10 }).kind).toBe('buy');
+    expect(optionsTimingRead({ ...base, ivRank: 35 }).kind).toBe('neutral');
+    expect(optionsTimingRead({ ...base, ivRank: null }).kind).toBe('neutral');
+  });
+
+  it('ignores an earnings date that already passed or falls after expiry', () => {
+    expect(optionsTimingRead({ ...base, ivRank: 80, earningsDate: '2026-07-01', earningsDte: -25 }).kind).toBe('sell');
+    expect(optionsTimingRead({ ...base, ivRank: 80, earningsDate: '2026-09-01', earningsDte: 37 }).kind).toBe('sell');
   });
 });

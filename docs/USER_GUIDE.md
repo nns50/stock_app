@@ -261,6 +261,12 @@ provider that exposes option chains — e.g. Tradier; demo mode also works.)
 > earnings** context: _Rich IV_ (rank ≥ 50, no earnings before expiry → selling premium
 > tends to be favored), _Cheap IV_ (rank ≤ 25 → buying premium), or **Event risk** when
 > earnings fall before expiry (IV-crush caution). Decision-support, not advice.
+>
+> If the **earnings lookup itself fails**, the banner shows **Event risk** and says so,
+> rather than falling through to _Rich IV_ — which would have asserted "no earnings fall
+> before expiry" without having checked, and recommended selling premium into an event
+> that could crush it. An unanswered question is treated as risk, not as a clear. If the
+> **IV lookup** fails the banner says that too, instead of disappearing.
 
 ### Chain
 

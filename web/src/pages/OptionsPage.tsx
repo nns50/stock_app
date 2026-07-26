@@ -162,6 +162,72 @@ export default function OptionsPage() {
   );
 }
 
+export interface OptionsTimingRead {
+  kind: 'warn' | 'sell' | 'buy' | 'neutral';
+  text: string;
+}
+
+/**
+ * The decision rule behind the timing banner, as a pure function so it can be
+ * tested directly — it is a recommendation shown to a person about to sell or
+ * buy premium, which makes it worth pinning rather than reaching through the
+ * page to exercise.
+ *
+ * Order matters. `earningsUnknown` is checked BEFORE the IV-rank branches
+ * because it is not the same as "no earnings before expiry": when the events
+ * lookup fails we do not know, and the rich-IV branch states the absence as
+ * fact ("and no earnings fall before expiry") on its way to recommending
+ * selling premium. That is precisely the trade an unflagged earnings event ruins
+ * via IV crush — the risk the warn branch exists to surface. So an unanswered
+ * earnings question has to warn, not fall through to advice.
+ */
+export function optionsTimingRead(a: {
+  symbol: string;
+  expiration: string;
+  ivRank: number | null;
+  earningsDate?: string;
+  earningsDte: number | null;
+  earningsUnknown: boolean;
+}): OptionsTimingRead {
+  const earningsBeforeExpiry = !!(
+    a.earningsDate &&
+    a.earningsDte != null &&
+    a.earningsDte >= 0 &&
+    a.earningsDate <= a.expiration
+  );
+  if (earningsBeforeExpiry) {
+    return {
+      kind: 'warn',
+      text: `Earnings ${a.earningsDate} fall before this expiry — expect an IV drop (crush) right after the report. Long premium is exposed to it; defined-risk or post-event structures tend to be favored.`,
+    };
+  }
+  if (a.earningsUnknown) {
+    return {
+      kind: 'warn',
+      text: `Couldn't check earnings for ${a.symbol}, so whether any fall before this expiry is unknown — check the calendar yourself before selling premium here. IV rank ${
+        a.ivRank == null ? 'is still building history' : a.ivRank.toFixed(0)
+      }.`,
+    };
+  }
+  if (a.ivRank == null) return { kind: 'neutral', text: 'IV rank is still building history for this name.' };
+  if (a.ivRank >= 50) {
+    return {
+      kind: 'sell',
+      text: `IV rank ${a.ivRank.toFixed(0)} — options are richly priced vs this name's own range, and no earnings fall before expiry. Context tends to favor selling premium.`,
+    };
+  }
+  if (a.ivRank <= 25) {
+    return {
+      kind: 'buy',
+      text: `IV rank ${a.ivRank.toFixed(0)} — options are cheap vs this name's own range. Context tends to favor buying premium (long optionality).`,
+    };
+  }
+  return {
+    kind: 'neutral',
+    text: `IV rank ${a.ivRank.toFixed(0)} — middling vs this name's own range; no strong premium-side edge from IV alone.`,
+  };
+}
+
 /**
  * IV-rank + earnings timing context for the selected symbol/expiry. Combines the
  * underlying's IV rank (rich vs cheap vs its own range) with whether earnings
@@ -171,31 +237,34 @@ export default function OptionsPage() {
 function OptionsTimingBanner({ symbol, expiration }: { symbol: string; expiration: string }) {
   const iv = useAsync(() => client.optionsIv(symbol, expiration), [symbol, expiration]);
   const events = useAsync(() => client.events([symbol]), [symbol]);
-  if (iv.loading || !iv.data) return null;
+  if (iv.loading) return null;
+  if (iv.error || !iv.data) {
+    // Returning null here made the whole banner vanish on a failed IV lookup,
+    // which reads as "nothing worth saying about this expiry" — the same
+    // silence-as-reassurance the earnings branch below had.
+    return (
+      <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+        ⚠ No IV or earnings timing context for this expiry — the lookup failed.
+        {iv.error ? ` ${iv.error.message}` : ''}{' '}
+        <button className="underline hover:text-amber-100" onClick={iv.reload}>
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   const { ivRank, method } = iv.data.ivContext;
   const earningsDate = events.data?.events?.[0]?.earningsDate;
-  const erDte = daysUntil(earningsDate);
-  const earningsBeforeExpiry = !!(earningsDate && erDte != null && erDte >= 0 && earningsDate <= expiration);
-
-  let kind: 'warn' | 'sell' | 'buy' | 'neutral';
-  let text: string;
-  if (earningsBeforeExpiry) {
-    kind = 'warn';
-    text = `Earnings ${earningsDate} fall before this expiry — expect an IV drop (crush) right after the report. Long premium is exposed to it; defined-risk or post-event structures tend to be favored.`;
-  } else if (ivRank == null) {
-    kind = 'neutral';
-    text = 'IV rank is still building history for this name.';
-  } else if (ivRank >= 50) {
-    kind = 'sell';
-    text = `IV rank ${ivRank.toFixed(0)} — options are richly priced vs this name's own range, and no earnings fall before expiry. Context tends to favor selling premium.`;
-  } else if (ivRank <= 25) {
-    kind = 'buy';
-    text = `IV rank ${ivRank.toFixed(0)} — options are cheap vs this name's own range. Context tends to favor buying premium (long optionality).`;
-  } else {
-    kind = 'neutral';
-    text = `IV rank ${ivRank.toFixed(0)} — middling vs this name's own range; no strong premium-side edge from IV alone.`;
-  }
+  const { kind, text } = optionsTimingRead({
+    symbol,
+    expiration,
+    ivRank,
+    earningsDate,
+    earningsDte: daysUntil(earningsDate),
+    // Distinct from "no earnings before expiry": a failed lookup means we don't
+    // know. See optionsTimingRead's own note.
+    earningsUnknown: !events.loading && !events.data,
+  });
 
   const S = {
     warn: { box: 'border-amber-500/40 bg-amber-500/10', label: 'text-amber-400', name: 'Event risk' },

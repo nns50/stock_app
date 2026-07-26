@@ -269,6 +269,16 @@ export default function AboutPage() {
             Implied volatility (the market’s expected movement priced into options) and where today’s IV sits within its
             own recent range (0–100%).
           </Term>
+          <Term term="Timing banner">
+            The Options page’s IV-rank + earnings read, in priority order:{' '}
+            <strong className="text-slate-200">Event risk</strong> if earnings fall on or before the expiry;{' '}
+            <strong className="text-slate-200">Event risk</strong> again if the earnings lookup failed, because not
+            knowing is not the same as knowing there are none; <strong className="text-slate-200">Rich IV</strong> at
+            rank ≥ 50 with earnings confirmed clear (context favors selling premium);{' '}
+            <strong className="text-slate-200">Cheap IV</strong> at rank ≤ 25 (favors buying); otherwise neutral. The
+            unknown case ranks above every IV branch on purpose — the Rich IV text states that no earnings fall before
+            expiry, and selling premium into an unflagged report is the trade an IV crush punishes hardest.
+          </Term>
           <Term term="POP">
             Probability of profit — a lognormal estimate of finishing past breakeven, given your inputs. An estimate,
             not a guarantee.
