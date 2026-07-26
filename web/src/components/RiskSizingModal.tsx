@@ -27,6 +27,20 @@ export function RiskSizingModal({ open, onClose }: { open: boolean; onClose: () 
 
   const isSpread = assetType === 'spread';
 
+  // The modal stays mounted (hidden via Modal `open`), so without this it
+  // reopens still showing the sizing from the last time it was used — numbers
+  // computed for a different trade, presented as if they were for this one.
+  // Mirrors the re-sync-on-key-change pattern the position modals use.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
+      setResult(undefined);
+      setSpreadResult(undefined);
+      setError(undefined);
+    }
+  }
+
   const calc = async () => {
     setError(undefined);
     if (!accountSize || !riskPct) {

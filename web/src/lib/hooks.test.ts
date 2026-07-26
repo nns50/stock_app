@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
-import { useAsync, useSort } from './hooks';
+import { useAsync, usePolling, useSort } from './hooks';
 
 type Row = { s: string; n: number | null };
 const rows: Row[] = [
@@ -57,5 +57,61 @@ describe('useAsync', () => {
     // Resolving the new query shows 'B'.
     await act(async () => resolveB('B'));
     await waitFor(() => expect(result.current.data).toBe('B'));
+  });
+});
+
+describe('usePolling', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  const setHidden = (hidden: boolean) => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+  };
+
+  it('skips ticks while the tab is hidden', () => {
+    vi.useFakeTimers();
+    const cb = vi.fn();
+    setHidden(false);
+    renderHook(() => usePolling(cb, 1000));
+
+    vi.advanceTimersByTime(1000);
+    expect(cb).toHaveBeenCalledTimes(1);
+
+    // A background tab has nobody reading it, but its poll still spends a real
+    // provider call every interval.
+    setHidden(true);
+    vi.advanceTimersByTime(3000);
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('catches up immediately when the tab becomes visible again', () => {
+    vi.useFakeTimers();
+    const cb = vi.fn();
+    setHidden(true);
+    renderHook(() => usePolling(cb, 1000));
+    vi.advanceTimersByTime(5000);
+    expect(cb).not.toHaveBeenCalled();
+
+    // This is what makes skipping safe: you come back to fresh data rather
+    // than to whatever was on screen when you left.
+    setHidden(false);
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('does nothing at all when polling is disabled', () => {
+    vi.useFakeTimers();
+    const cb = vi.fn();
+    setHidden(false);
+    renderHook(() => usePolling(cb, null));
+    vi.advanceTimersByTime(5000);
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(cb).not.toHaveBeenCalled();
   });
 });

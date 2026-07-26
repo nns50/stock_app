@@ -580,6 +580,13 @@ nudge, not a blocker — you can still save with items unchecked.
   stale-high print puts the sell limit above where the contract can actually be sold and
   the order may simply rest unfilled. Use **close** when you still hold the position and
   want the app to sell it; use **exit** when you've already sold it elsewhere.
+  > **If a close is refused after your bracket was cancelled, read the red box.** The
+  > close has to cancel a resting stop/target *first* — otherwise it could fill next to a
+  > working stop and sell your position twice. So when the close is then blocked (a
+  > guardrail, the kill switch, an unusable quote), that cancel has **already happened**:
+  > the position is still open and **no longer protected**. The dialog now says so
+  > explicitly, because "✕ Not placed" on its own reads as "nothing changed". Either close
+  > again or re-place the stop at your broker.
 - **Expired options** — an option held **through** expiry never produces a closing order,
   so nothing ever records an exit and the position would sit "open" forever, quietly
   inflating your open exposure, position count, risk caps and unrealized P&L with a contract
@@ -611,6 +618,14 @@ nudge, not a blocker — you can still save with items unchecked.
   panels below always describe the **whole** book. When a tab is empty but the book isn't,
   the table says so (with a **Show all**) instead of showing the first-run "log your first
   trade" prompt.
+- **Refreshing.** Two different things refresh, on purpose. The auto-poll and the
+  **Refresh** button re-read **prices** — cheap, once a minute by default, and skipped
+  entirely while the tab is in the background (it catches up the moment you come back, so
+  you never read stale numbers). The panels below — stress test, correlation, expired
+  options — recompute when the **book itself** changes (an exit, a close, a delete, a
+  logged trade), because each costs a per-symbol data lookup and none of them move just
+  because prices did. Before 2026-07-26 they were wired to nothing and simply never
+  refreshed, so they kept describing a book you had already changed.
 - **When a refresh fails** (the page auto-polls every minute by default), the table keeps
   showing the numbers that last loaded and flags it with an amber banner — the last-known
   P&L is exactly what you still want on screen. The **Updated** clock only advances on a
@@ -626,6 +641,9 @@ nudge, not a blocker — you can still save with items unchecked.
   resolved are **excluded and listed**, never assumed zero-risk — the panel says plainly
   when its coverage is partial. A model of sensitivity, not a prediction: real market moves
   aren't linear and beta drifts over time.
+- **Closed positions** show a `—` in the Price column rather than a live mark. Nothing is
+  left open, so their P&L is entirely realized either way, and pricing an expired contract
+  costs a data request per refresh to learn nothing.
 - A **Correlation heatmap** panel (2026-07-23, collapsed by default — click to load) shows a
   pairwise **Pearson correlation of daily returns** across every open position's underlying
   over the last 30 sessions (a stock and an option on the same name collapse to one row).
@@ -635,7 +653,12 @@ nudge, not a blocker — you can still save with items unchecked.
   cells move **opposite** (a natural hedge); near-zero stays neutral. The strongest pair is
   called out above the grid, with a note when it's tight enough (|r| ≥ 0.7) to be effectively
   one bet. Names whose daily history can't be fetched are **excluded and listed**, never
-  assumed uncorrelated. Correlation is backward-looking and drifts — not a prediction.
+  assumed uncorrelated, and a book larger than the per-request limit says which underlyings
+  were **left out entirely** — never looked at, as opposed to looked at and failed.
+  Correlation is backward-looking and drifts — not a prediction.
+- **Closed losses** carry the same **wash sale?** flag the Journal shows, when the same
+  symbol was re-entered within 30 days either side of the close. Informational only — not
+  tax advice.
 
 ---
 
@@ -732,7 +755,14 @@ Equity curve, edge over time, and drawdown & streaks are shown directly on the p
 ### Data tools
 
 - **Export** CSV or JSON, take a full **`.db` backup**, or **import** a positions
-  export (append or replace). Great for backups and moving between machines.
+  export (append or replace). Great for backups and moving between machines. A restore
+  brings back **everything** the export wrote, including each lot's **Webull account** and
+  **entry time** — before 2026-07-26 the import quietly dropped both, so restoring a backup
+  (or pressing **Undo** on a delete, which round-trips through the same route) handed every
+  position back unassigned and without its time-of-day data. Import also enforces the same
+  rules the log-trade form does — ISO dates, a positive quantity and entry price — so a bad
+  file is refused with the offending row named rather than silently landing in your
+  journal.
 - **Import CSV** — bring trades in from a spreadsheet journal or a broker export.
   One row = one trade. Headers are matched loosely (case-insensitive, common
   aliases), `$` and thousands-commas are tolerated, and each row is validated on

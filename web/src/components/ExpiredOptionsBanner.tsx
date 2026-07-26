@@ -31,8 +31,12 @@ function FindingRow({ f }: { f: ExpiredOptionFinding }) {
   );
 }
 
-export function ExpiredOptionsBanner({ onChanged }: { onChanged: () => void }) {
-  const found = useAsync(() => client.expiredOptions(), []);
+/** `reloadKey` changes when the book changes, so recording the real outcome of
+ *  an expired contract by hand (the "needs you" path below tells you to) drops
+ *  it off this list. Keyed on `[]` it never re-checked, so a position you had
+ *  just exited stayed listed here as still open until a full page reload. */
+export function ExpiredOptionsBanner({ onChanged, reloadKey = 0 }: { onChanged: () => void; reloadKey?: number }) {
+  const found = useAsync(() => client.expiredOptions(), [reloadKey]);
   const [busy, setBusy] = useState(false);
   const { toast } = useToast();
 

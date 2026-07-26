@@ -18,6 +18,7 @@ function fixture(overrides: Partial<PortfolioCorrelation> = {}): PortfolioCorrel
     ],
     topPair: { a: 'AAPL', b: 'MSFT', r: 0.82 },
     unresolved: [],
+    omitted: [],
     lookbackDays: 30,
     ...overrides,
   };
@@ -60,6 +61,7 @@ describe('CorrelationHeatmapPanel', () => {
         ],
         topPair: null,
         unresolved: ['GONE'],
+        omitted: [],
       }),
     );
     render(<CorrelationHeatmapPanel />);
@@ -77,6 +79,7 @@ describe('CorrelationHeatmapPanel', () => {
           [null, null, null],
         ],
         unresolved: ['GONE'],
+        omitted: [],
       }),
     );
     render(<CorrelationHeatmapPanel />);

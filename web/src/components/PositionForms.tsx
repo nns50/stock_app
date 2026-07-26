@@ -611,6 +611,15 @@ export function CloseModal({
       if (r.placed) {
         toast(`Close order placed for ${position.symbol}`, { type: 'success' });
         onSaved();
+      } else if (r.reason === 'outcome_unknown') {
+        // The broker never answered, so an order MAY be working. This is the
+        // one outcome where re-reading the book matters most, and it was the
+        // one that didn't: gated behind `placed`, an unknown outcome left the
+        // page showing the position exactly as it was, which reads as "nothing
+        // happened" — the same wrong impression the notice below exists to
+        // correct. No toast: the amber notice already says it plainly, and a
+        // success-shaped toast would undercut it.
+        onSaved();
       }
     } catch (e) {
       setResult({ ok: false, placed: false, reason: 'account_error', error: (e as Error).message });
@@ -694,6 +703,19 @@ export function CloseModal({
                 ✕ Not placed — {result.error || result.broker?.error || `reason: ${result.reason}`}
               </div>
             ))}
+          {result && !result.placed && result.bracketCancelled && (
+            // The close cancels any resting stop/target FIRST — it has to, or
+            // the close could fill next to a working stop and sell twice. When
+            // the close then doesn't go through, that cancel has already
+            // happened: the position is still open and no longer protected.
+            // "✕ Not placed" alone reads as "nothing changed", which is the
+            // opposite of true and the most expensive thing to get wrong here.
+            <div className="rounded-md border border-bear bg-bear/20 text-bear text-sm p-2 font-medium">
+              ⚠ Your resting stop/target order for this position was already cancelled before the close was attempted,
+              and it was <b>not</b> re-placed. This position is still open and no longer has that protection — close it
+              again, or re-place the stop at your broker.
+            </div>
+          )}
         </div>
       )}
     </Modal>

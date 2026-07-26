@@ -498,17 +498,27 @@ export function SortTh({
   align?: 'left' | 'right';
 }) {
   const is = active === k;
+  // The control is a real <button>, not a click handler on the <th>: sorting
+  // was mouse-only — unreachable by keyboard and invisible to a screen reader,
+  // which saw a plain column label with no hint it did anything. `aria-sort`
+  // on the cell is what announces the current direction.
   return (
     <th
-      className={cx('th cursor-pointer hover:text-slate-200', align === 'right' && 'text-right', className)}
-      onClick={() => onSort(k)}
+      scope="col"
+      aria-sort={is ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+      className={cx('th', align === 'right' && 'text-right', className)}
     >
-      <span className="inline-flex items-center gap-1">
+      <button
+        type="button"
+        onClick={() => onSort(k)}
+        title={`Sort by ${label}`}
+        className={cx('inline-flex items-center gap-1 hover:text-slate-200', align === 'right' && 'w-full justify-end')}
+      >
         {label}
-        <span className={cx('text-[9px]', is ? 'text-accent' : 'text-slate-600')}>
+        <span aria-hidden="true" className={cx('text-[9px]', is ? 'text-accent' : 'text-slate-600')}>
           {is ? (dir === 'asc' ? '▲' : '▼') : '↕'}
         </span>
-      </span>
+      </button>
     </th>
   );
 }

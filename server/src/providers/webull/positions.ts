@@ -11,6 +11,7 @@ import {
   updatePosition,
 } from '../../db/positions';
 import { priceMap } from '../../services/quotes';
+import { etToday } from '../../util/marketDate';
 import { webullClient, webullConfigured } from './account';
 import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../db/webullMissStreak';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
@@ -70,7 +71,11 @@ function toOptionType(v: unknown): OptionType | undefined {
   return undefined;
 }
 
-const today = () => new Date().toISOString().slice(0, 10);
+/** The market's today (ET), not the box's UTC clock. This sync runs on a
+ *  5-minute background schedule and writes real journal rows, so on a
+ *  UTC-deployed box every run from 20:00 ET onward used to date its exits
+ *  tomorrow — see util/marketDate.ts. */
+const today = () => etToday();
 
 /** Map one raw Webull position to an importable journal position (or null if
  *  unusable). `accountId` is stamped onto the result so the reconciliation

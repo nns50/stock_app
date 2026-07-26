@@ -15,6 +15,7 @@ import { WebullOrderStatus, isExitLeg, webullOrderStatus } from '../../providers
 import { isAutotradeIntent } from '../../db/autotradeLiveOrders';
 import { isAutotradeOptionsIntent } from '../../db/autotradeLiveOptionsOrders';
 import { QTY_EPS, computeFillDelta, isShortBooked } from './fillDelta';
+import { etToday } from '../../util/marketDate';
 
 // ---------------------------------------------------------------------------
 // Reconcile an order intent's state with the broker (design §6 "status reconcile").
@@ -456,7 +457,9 @@ function recordFillAsPosition(intent: OrderIntentRecord, quantity: number, entry
       side: intent.side === 'buy' ? 'long' : 'short',
       quantity,
       entryPrice,
-      entryDate: new Date().toISOString().slice(0, 10),
+      // ET, not the box's UTC clock: a fill reconciled after 20:00 ET would
+      // otherwise be dated tomorrow (see util/marketDate.ts).
+      entryDate: etToday(),
       optionType: intent.optionType,
       strike: intent.strike,
       expiration: intent.expiration,
@@ -486,7 +489,8 @@ function recordCloseAsExit(intent: OrderIntentRecord, quantity: number, exitPric
   try {
     let remaining = quantity;
     if (remaining <= 0) return;
-    const exitDate = new Date().toISOString().slice(0, 10);
+    // ET, not UTC — same reason as recordFillAsPosition's entryDate above.
+    const exitDate = etToday();
     // The position being closed is the OPPOSITE side of the closing order.
     const closingSide = intent.side === 'sell' ? 'long' : 'short';
     const open = listPositions({ status: 'open', symbol: intent.symbol, assetType: intent.assetKind })

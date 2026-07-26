@@ -313,6 +313,71 @@ describe('JournalEditModal — a failed request has to say so', () => {
   });
 });
 
+describe('CloseModal — a close that did not go through still changed something', () => {
+  const arm = async (pos: Position) => {
+    const user = userEvent.setup();
+    fireEvent.change(screen.getByPlaceholderText('e.g. 12345678'), { target: { value: 'ACC1' } });
+    await user.type(
+      screen.getByLabelText(/type to confirm/i),
+      `SELL ${pos.remainingQuantity} ${pos.symbol.toUpperCase()}`,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Close position' }));
+  };
+
+  it('warns that the resting stop was cancelled and not re-placed when the close fails', async () => {
+    // closeLivePosition cancels the bracket FIRST — it has to, or the close
+    // could fill next to a working stop and sell twice. When the close then
+    // fails, that cancel already happened and the position is open and
+    // unprotected. "✕ Not placed" alone reads as "nothing changed".
+    vi.spyOn(client, 'closePosition').mockResolvedValue({
+      ok: true,
+      placed: false,
+      reason: 'blocked',
+      error: 'daily loss cap reached',
+      bracketCancelled: true,
+    });
+    const pos = positionFixture({ sourceIntentId: 42 });
+    renderModal(pos);
+    await arm(pos);
+
+    expect(await screen.findByText(/no longer has that protection/i)).toBeInTheDocument();
+  });
+
+  it('does not cry wolf when there was no bracket to cancel', async () => {
+    vi.spyOn(client, 'closePosition').mockResolvedValue({
+      ok: true,
+      placed: false,
+      reason: 'blocked',
+      error: 'daily loss cap reached',
+    });
+    const pos = positionFixture();
+    renderModal(pos);
+    await arm(pos);
+
+    expect(await screen.findByText(/Not placed/)).toBeInTheDocument();
+    expect(screen.queryByText(/no longer has that protection/i)).toBeNull();
+  });
+
+  it('refreshes the page on an UNKNOWN outcome — the order may be working', async () => {
+    vi.spyOn(client, 'closePosition').mockResolvedValue({
+      ok: true,
+      placed: false,
+      reason: 'outcome_unknown',
+      error: 'the broker did not respond',
+    });
+    const onSaved = vi.fn();
+    const pos = positionFixture();
+    renderModal(pos, onSaved);
+    await arm(pos);
+
+    expect(await screen.findByText(/Outcome unknown/)).toBeInTheDocument();
+    // Gated behind `placed`, this left the page showing the position exactly
+    // as it was — reading as "nothing happened" on the one outcome where
+    // re-reading the truth matters most.
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  });
+});
+
 describe('ExitModal — exit date cannot predate the entry', () => {
   it('floors the date picker at the entry date the server would reject going below', () => {
     render(

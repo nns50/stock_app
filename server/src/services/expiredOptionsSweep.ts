@@ -1,5 +1,6 @@
 import { addExit, listPositions } from '../db/positions';
 import { getProvider } from '../providers';
+import { etToday } from '../util/marketDate';
 import { ExpiredOptionFinding, classifyExpiredOptions, findExpiredOpenOptions, optionLabel } from './expiredOptions';
 
 // ---------------------------------------------------------------------------
@@ -13,17 +14,12 @@ import { ExpiredOptionFinding, classifyExpiredOptions, findExpiredOpenOptions, o
 
 /** Today (YYYY-MM-DD) on the US market calendar. Expiry is an ET concept, and
  *  on a UTC-deployed box local "today" is already tomorrow for part of the
- *  session — which would sweep positions on their own expiration day. */
-export function etToday(now: number = Date.now()): string {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(now);
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
-  return `${get('year')}-${get('month')}-${get('day')}`;
-}
+ *  session — which would sweep positions on their own expiration day.
+ *
+ *  Now lives in util/marketDate.ts, since the order reconciler and the Webull
+ *  position sync need the identical answer for exactly the same reason.
+ *  Re-exported here so this module's long-standing entry point still works. */
+export { etToday };
 
 export interface ExpiredOptionsSweepResult {
   /** Expired-but-open option positions examined. */

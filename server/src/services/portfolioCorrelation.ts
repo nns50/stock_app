@@ -40,6 +40,12 @@ export interface PortfolioCorrelation {
   /** Symbols whose daily history couldn't be fetched — excluded from every
    *  correlation, never assumed uncorrelated. */
   unresolved: string[];
+  /** Underlyings dropped before any fetch because the book exceeded
+   *  MAX_CORRELATION_SYMBOLS. Distinct from `unresolved` (tried and failed):
+   *  these were never looked at. Reported for the same reason `unresolved` is
+   *  — a grid that quietly covers 40 of your 50 names reads as the whole
+   *  picture, which is the one thing this panel exists not to do. */
+  omitted: string[];
   lookbackDays: number;
 }
 
@@ -50,6 +56,7 @@ export function computeCorrelationMatrix(
   symbols: string[],
   returnsBySymbol: Map<string, number[]>,
   lookbackDays: number,
+  omitted: string[] = [],
 ): PortfolioCorrelation {
   const matrix: (number | null)[][] = symbols.map((rowSym, i) =>
     symbols.map((colSym, j) => {
@@ -72,7 +79,7 @@ export function computeCorrelationMatrix(
   }
 
   const unresolved = symbols.filter((s) => !returnsBySymbol.has(s));
-  return { symbols, matrix, topPair, unresolved, lookbackDays };
+  return { symbols, matrix, topPair, unresolved, omitted, lookbackDays };
 }
 
 /** Async orchestrator: dedupes the open positions' underlyings, fetches each
@@ -83,9 +90,12 @@ export async function computePortfolioCorrelation(
   positions: Position[],
   lookbackDays: number,
 ): Promise<PortfolioCorrelation> {
-  const symbols = Array.from(new Set(positions.map((p) => p.symbol.toUpperCase()))).slice(0, MAX_CORRELATION_SYMBOLS);
+  const all = Array.from(new Set(positions.map((p) => p.symbol.toUpperCase())));
+  const symbols = all.slice(0, MAX_CORRELATION_SYMBOLS);
+  // Anything past the cap is reported, not silently absent — see `omitted`.
+  const omitted = all.slice(MAX_CORRELATION_SYMBOLS);
   if (symbols.length === 0) {
-    return { symbols: [], matrix: [], topPair: null, unresolved: [], lookbackDays };
+    return { symbols: [], matrix: [], topPair: null, unresolved: [], omitted, lookbackDays };
   }
 
   const provider = getProvider();
@@ -102,5 +112,5 @@ export async function computePortfolioCorrelation(
     }),
   );
 
-  return computeCorrelationMatrix(symbols, returnsBySymbol, lookbackDays);
+  return computeCorrelationMatrix(symbols, returnsBySymbol, lookbackDays, omitted);
 }
