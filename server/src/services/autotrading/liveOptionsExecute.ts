@@ -51,6 +51,7 @@ import {
 } from '../../db/autotradeLiveOptionsPositions';
 import { computeStreaksAndDrawdown } from '../pnl';
 import { defaultExitConfig, evaluateExit } from '../../options/exitRules';
+import { convictionGrade } from './decide';
 import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskCheck';
 import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
@@ -376,6 +377,12 @@ export async function attemptLiveOptionsEntry(
   riskResult: OptionsRiskCheckResult,
   riskProfile: RiskProfileName,
   autotradeCfg: AutotradeConfig,
+  /** At-entry context (2026-07-26), recorded on the entry order row and
+   *  carried to the position at materialization — the market regime label +
+   *  market ATR% the loop read this cycle. Nullable, defaulting to null for
+   *  direct callers (e.g. tests). */
+  marketRegime: string | null = null,
+  marketAtrPct: number | null = null,
 ): Promise<LiveOptionsExecutionOutcome> {
   const symbol = signal.symbol.toUpperCase();
   if (!config.trading.placeEnabled) {
@@ -426,6 +433,19 @@ export async function attemptLiveOptionsEntry(
 
   const liveCfg = buildLiveOptionsTradingConfig(autotradeCfg);
   const buffer = 1 + OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT / 100;
+
+  // At-entry context recorded on the order row (either kind) and carried to
+  // the position at materialization — mirrors equity's orderRow fields.
+  const entryContext = {
+    grade: convictionGrade(signal.score, {
+      aMinScore: autotradeCfg.convictionGradeAMinScore,
+      bMinScore: autotradeCfg.convictionGradeBMinScore,
+    }) as string,
+    entryScore: signal.score,
+    ivRank: signal.ivRank,
+    marketRegime,
+    marketAtrPct,
+  };
 
   if (signal.kind === 'debit_spread') {
     let longFill: number;
@@ -508,6 +528,7 @@ export async function attemptLiveOptionsEntry(
       riskAmount: orderedRiskAmount,
       riskProfile,
       accountId,
+      ...entryContext,
     });
 
     if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId };
@@ -577,6 +598,7 @@ export async function attemptLiveOptionsEntry(
     riskAmount: orderedRiskAmount,
     riskProfile,
     accountId,
+    ...entryContext,
   });
 
   if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId };
@@ -656,6 +678,10 @@ export async function runLiveOptionsExecution(
    *  re-fetched here. Defaults to null (regime cut inactive) for any caller
    *  that doesn't have/need one, e.g. a direct test call. */
   marketAtrPct: number | null = null,
+  /** Market regime label the loop read this cycle (2026-07-26) — recorded on
+   *  the entry order row and carried to the position at materialization as
+   *  at-entry context; never used for sizing here. */
+  marketRegime: string | null = null,
 ): Promise<LiveOptionsExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
   const equity = cfg.accountEquityUsd ?? 0;
@@ -760,7 +786,14 @@ export async function runLiveOptionsExecution(
     // must not abort the rest of the batch.
     let outcome: LiveOptionsExecutionOutcome;
     try {
-      outcome = await attemptLiveOptionsEntry(signal, result, freshCfg.riskProfile, freshCfg);
+      outcome = await attemptLiveOptionsEntry(
+        signal,
+        result,
+        freshCfg.riskProfile,
+        freshCfg,
+        marketRegime,
+        marketAtrPct,
+      );
     } catch (err) {
       const reason = `Unexpected error placing order: ${(err as Error).message}`;
       logAutotradeEvent({ symbol, stage: 'execution', action: 'live_options_entry_failed', detail: { reason } });
@@ -1355,6 +1388,11 @@ function materializeOptionsEntryFill(
     // rather than inventing a synthetic per-leg split.
     rationale: `Auto-placed by autotrade — order #${intent.id}${intent.brokerOrderId ? ` (broker ${intent.brokerOrderId})` : ''}`,
     accountId: meta.accountId,
+    grade: meta.grade,
+    entryScore: meta.entryScore,
+    ivRank: meta.ivRank,
+    marketRegime: meta.marketRegime,
+    marketAtrPct: meta.marketAtrPct,
   });
   setLiveOptionsOrderPositionId(intent.id, position.id);
   logAutotradeEvent({

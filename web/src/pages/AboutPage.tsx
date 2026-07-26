@@ -106,6 +106,17 @@ export default function AboutPage() {
           equity-curve) and never lifts total exposure past the aggregate-risk cap; paper and live are scored on
           separate books.
         </p>
+        <p className="mt-2">
+          Alongside the grade, every auto-traded entry also records its <em>at-entry context</em>: the{' '}
+          <strong className="text-slate-200">raw 0–100 score</strong> itself (not just the letter), the{' '}
+          <strong className="text-slate-200">market regime</strong> label at entry (risk-on / neutral / risk-off, from
+          the same gauge the Today page shows — best-effort, blank if the read failed), the{' '}
+          <strong className="text-slate-200">market ATR%</strong> reading that cycle, the entry’s ET wall-clock time,
+          and — for options — the <strong className="text-slate-200">IV rank</strong> the decision gated on. Live
+          bracket exits additionally record <em>why</em> they closed (stop / target / time-exit). None of it changes any
+          decision; it exists so realized results can later be sliced by score band, regime, session, and exit mechanism
+          instead of guessed at.
+        </p>
         <div className="mt-2 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>

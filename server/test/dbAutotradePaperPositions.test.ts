@@ -110,3 +110,23 @@ describe('autotradePaperPositions', () => {
     expect(rows[1].symbol).toBe('PPIII');
   });
 });
+
+describe('at-entry context (2026-07-26)', () => {
+  it('round-trips entryScore / marketRegime / marketAtrPct', () => {
+    const pos = openPaperPosition(input({ entryScore: 72.3, marketRegime: 'risk-on', marketAtrPct: 1.8 }));
+    expect(pos.entryScore).toBe(72.3);
+    expect(pos.marketRegime).toBe('risk-on');
+    expect(pos.marketAtrPct).toBe(1.8);
+    const listed = listPaperPositions({ symbol: pos.symbol })[0];
+    expect(listed.entryScore).toBe(72.3);
+    expect(listed.marketRegime).toBe('risk-on');
+    expect(listed.marketAtrPct).toBe(1.8);
+  });
+
+  it('defaults every context field to null when omitted — never a guessed value', () => {
+    const pos = openPaperPosition(input());
+    expect(pos.entryScore).toBeNull();
+    expect(pos.marketRegime).toBeNull();
+    expect(pos.marketAtrPct).toBeNull();
+  });
+});

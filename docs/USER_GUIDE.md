@@ -722,6 +722,21 @@ trades.
   which win rate and P&L alone can't show. Same null conventions as the headline stats: `∞`
   for a group with wins and no losses yet, `—` for a group where no trade logged a stop.
   This is how you discover *which setups and which behaviors* make you money.
+- **What auto-trading now records at entry (2026-07-26).** Every trade the automated
+  loop opens — paper and live, stocks and options — is stamped with its *at-entry
+  context*: the screener's **raw 0–100 score** (not just the A/B/C grade), the
+  **market regime** label that cycle (risk-on / neutral / risk-off; best-effort — blank
+  if the read failed, never guessed), the **market ATR%** reading, and, for options,
+  the **IV rank** the decision gated on. Live-placed positions also get a real
+  **entry time** (ET), so from now on the bot's trades appear in the entry-session
+  breakdown above — they previously carried no time at all and were silently absent
+  from it. Live bracket exits record an **exit reason** (`stop` / `target` /
+  `time_exit`) on the exit itself, so you can see *which exit mechanism* is making or
+  losing the money instead of inferring it from prices. All of it is capture-only —
+  nothing about entries, sizing, or exits changes — and it flows through the CSV/JSON
+  export (new `entryTime`, `entryScore`, `marketRegime`, `marketAtrPct`, and
+  `lastExitReason` columns) so a month of trades can be sliced by score band, regime,
+  and session offline.
 
 ### Wash-sale awareness
 

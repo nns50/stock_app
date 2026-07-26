@@ -293,6 +293,10 @@ export interface PositionExit {
    *  server/src/db/positions.ts. The API has always sent it; this type omitted
    *  it, so the field was invisible to the browser. */
   sourceIntentId: number | null;
+  /** Why the exit happened ('stop' | 'target' | 'time_exit' | 'manual') —
+   *  stamped by autotrade's live exit materialization, null for hand-logged
+   *  exits and rows that predate the column. */
+  exitReason: 'stop' | 'target' | 'time_exit' | 'manual' | null;
   createdAt: number;
 }
 
@@ -328,6 +332,13 @@ export interface Position {
   /** The Webull account this lot lives in — null for a manually-logged
    *  position, or a legacy row from before this field existed. */
   accountId: string | null;
+  /** At-entry context, stamped by autotrade's live materialization — the raw
+   *  screener total behind `grade`, the market regime label ('risk-on' |
+   *  'neutral' | 'risk-off'), and the market (SPY) ATR% at entry. All null
+   *  for manual/imported trades and rows that predate these fields. */
+  entryScore: number | null;
+  marketRegime: string | null;
+  marketAtrPct: number | null;
   createdAt: number;
   updatedAt: number;
   exits: PositionExit[];

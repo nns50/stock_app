@@ -40,7 +40,20 @@ export interface PositionInput {
   /** The Webull account this lot lives in (imported/live-traded only). Omit
    *  for a manually-logged position — there's no brokerage account to record. */
   accountId?: string | null;
+  /** At-entry context, stamped by autotrade's live materialization (see the
+   *  positions DDL comment in db/index.ts). Omit for manual/imported trades. */
+  entryScore?: number | null;
+  /** 'risk-on' | 'neutral' | 'risk-off' — the market regime label at entry. */
+  marketRegime?: string | null;
+  /** Market (SPY) ATR% the loop read the cycle this entry was placed. */
+  marketAtrPct?: number | null;
 }
+
+/** Why an exit happened. Stamped by autotrade's live exit materialization —
+ *  'stop'/'target' from which bracket leg filled, 'time_exit' from the
+ *  maxHoldDays close, 'manual' from a human-triggered close. Null (absent) for
+ *  hand-logged exits and rows that predate the column. */
+export type PositionExitReason = 'stop' | 'target' | 'time_exit' | 'manual';
 
 export interface PositionExit {
   id: number;
@@ -52,6 +65,8 @@ export interface PositionExit {
   notes: string | null;
   /** The order_intents.id whose live fill produced this exit. */
   sourceIntentId: number | null;
+  /** Why this exit happened — see PositionExitReason. */
+  exitReason: PositionExitReason | null;
   createdAt: number;
 }
 
@@ -81,6 +96,11 @@ export interface Position {
   targetPrice: number | null;
   sourceIntentId: number | null;
   accountId: string | null;
+  /** At-entry context — autotrade-stamped, null for manual/imported trades
+   *  and rows that predate these columns (see the DDL comment in db/index.ts). */
+  entryScore: number | null;
+  marketRegime: string | null;
+  marketAtrPct: number | null;
   createdAt: number;
   updatedAt: number;
   exits: PositionExit[];
@@ -111,6 +131,9 @@ interface PositionRow {
   target_price: number | null;
   source_intent_id: number | null;
   account_id: string | null;
+  entry_score: number | null;
+  market_regime: string | null;
+  market_atr_pct: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -124,6 +147,7 @@ interface ExitRow {
   fees: number;
   notes: string | null;
   source_intent_id: number | null;
+  exit_reason: PositionExitReason | null;
   created_at: number;
 }
 
@@ -137,6 +161,7 @@ function mapExit(r: ExitRow): PositionExit {
     fees: r.fees,
     notes: r.notes,
     sourceIntentId: r.source_intent_id,
+    exitReason: r.exit_reason ?? null,
     createdAt: r.created_at,
   };
 }
@@ -196,6 +221,9 @@ function mapPosition(row: PositionRow, exits?: PositionExit[]): Position {
     targetPrice: row.target_price,
     sourceIntentId: row.source_intent_id,
     accountId: row.account_id,
+    entryScore: row.entry_score ?? null,
+    marketRegime: row.market_regime ?? null,
+    marketAtrPct: row.market_atr_pct ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     exits: resolvedExits,
@@ -290,8 +318,9 @@ export function createPosition(input: PositionInput): Position {
       `INSERT INTO positions
         (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
          option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
-         stop_price, target_price, source_intent_id, account_id, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?)`,
+         stop_price, target_price, source_intent_id, account_id,
+         entry_score, market_regime, market_atr_pct, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       input.assetType,
@@ -314,6 +343,9 @@ export function createPosition(input: PositionInput): Position {
       input.targetPrice ?? null,
       input.sourceIntentId ?? null,
       input.accountId ?? null,
+      input.entryScore ?? null,
+      input.marketRegime ?? null,
+      input.marketAtrPct ?? null,
       now,
       now,
     );
@@ -376,6 +408,9 @@ export interface ExitInput {
   notes?: string | null;
   /** The order_intents.id whose live fill produced this exit. */
   sourceIntentId?: number | null;
+  /** Why this exit happened — see PositionExitReason. Omit when unknown
+   *  (hand-logged exits); never guess one. */
+  exitReason?: PositionExitReason | null;
 }
 
 export function addExit(positionId: number, input: ExitInput): Position | undefined {
@@ -383,8 +418,8 @@ export function addExit(positionId: number, input: ExitInput): Position | undefi
   if (!pos) return undefined;
   const now = Date.now();
   db.prepare(
-    `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, source_intent_id, created_at)
-     VALUES (?,?,?,?,?,?,?,?)`,
+    `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, source_intent_id, exit_reason, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
   ).run(
     positionId,
     input.quantity,
@@ -393,6 +428,7 @@ export function addExit(positionId: number, input: ExitInput): Position | undefi
     input.fees ?? 0,
     input.notes ?? null,
     input.sourceIntentId ?? null,
+    input.exitReason ?? null,
     now,
   );
   recomputeStatus(positionId);
@@ -438,6 +474,7 @@ export interface ImportableExit {
   fees?: number;
   notes?: string | null;
   sourceIntentId?: number | null;
+  exitReason?: PositionExitReason | null;
   createdAt?: number;
 }
 
@@ -463,6 +500,9 @@ export interface ImportablePosition {
   targetPrice?: number | null;
   sourceIntentId?: number | null;
   accountId?: string | null;
+  entryScore?: number | null;
+  marketRegime?: string | null;
+  marketAtrPct?: number | null;
   createdAt?: number;
   updatedAt?: number;
   exits?: ImportableExit[];
@@ -483,12 +523,13 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
     `INSERT INTO positions
        (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
         option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
-        stop_price, target_price, source_intent_id, account_id, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        stop_price, target_price, source_intent_id, account_id,
+        entry_score, market_regime, market_atr_pct, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   );
   const insertExit = db.prepare(
-    `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, source_intent_id, created_at)
-     VALUES (?,?,?,?,?,?,?,?)`,
+    `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, source_intent_id, exit_reason, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
   );
   const tx = db.transaction((items: ImportablePosition[]) => {
     if (mode === 'replace') db.prepare('DELETE FROM positions').run();
@@ -518,6 +559,9 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
         p.targetPrice ?? null,
         p.sourceIntentId ?? null,
         p.accountId ?? null,
+        p.entryScore ?? null,
+        p.marketRegime ?? null,
+        p.marketAtrPct ?? null,
         p.createdAt ?? now,
         p.updatedAt ?? now,
       );
@@ -531,6 +575,7 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
           e.fees ?? 0,
           e.notes ?? null,
           e.sourceIntentId ?? null,
+          e.exitReason ?? null,
           e.createdAt ?? now,
         );
       }

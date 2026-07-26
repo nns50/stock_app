@@ -61,3 +61,38 @@ describe('listPositions — batched exits (not one query per position)', () => {
     expect(listPositions()).toEqual([]);
   });
 });
+
+describe('at-entry context and exit reasons (2026-07-26)', () => {
+  it('round-trips entryScore / marketRegime / marketAtrPct on a position', () => {
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'CTX',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-07-01',
+      entryScore: 66.7,
+      marketRegime: 'risk-off',
+      marketAtrPct: 3.2,
+    });
+    const got = getPosition(p.id)!;
+    expect(got.entryScore).toBe(66.7);
+    expect(got.marketRegime).toBe('risk-off');
+    expect(got.marketAtrPct).toBe(3.2);
+  });
+
+  it('leaves context null for a plain manual entry — never a guessed value', () => {
+    const p = makePosition('CTXB');
+    expect(p.entryScore).toBeNull();
+    expect(p.marketRegime).toBeNull();
+    expect(p.marketAtrPct).toBeNull();
+  });
+
+  it('round-trips an exit reason, and leaves it null when the caller has none', () => {
+    const p = makePosition('CTXC');
+    addExit(p.id, { quantity: 40, exitPrice: 12, exitDate: '2026-01-05', exitReason: 'stop' });
+    addExit(p.id, { quantity: 60, exitPrice: 13, exitDate: '2026-01-10' });
+    const exits = getPosition(p.id)!.exits;
+    expect(exits.map((e) => e.exitReason)).toEqual(['stop', null]);
+  });
+});

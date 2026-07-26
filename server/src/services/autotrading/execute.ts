@@ -87,6 +87,11 @@ export async function attemptPaperEntry(
   /** Conviction grade (A/B/C) to stamp on the position, or null. Computed by the
    *  caller from the signal's score + the configured thresholds. */
   grade: string | null = null,
+  /** At-entry context to stamp alongside the grade (2026-07-26): the market
+   *  regime label + market ATR% the loop read this cycle. Both nullable —
+   *  a failed best-effort regime read stamps nothing, never a guess. */
+  marketRegime: string | null = null,
+  marketAtrPct: number | null = null,
 ): Promise<ExecutionOutcome> {
   if (!riskResult.ok) return { symbol: signal.symbol, ok: false, reason: 'Risk check did not pass' };
   if (hasOpenPaperPosition(signal.symbol)) {
@@ -143,6 +148,9 @@ export async function attemptPaperEntry(
       riskProfile,
       rationale: signal.rationale,
       grade,
+      entryScore: signal.score,
+      marketRegime,
+      marketAtrPct,
     });
   } catch (err) {
     // A single candidate's persistence failure must not abort the rest of
@@ -323,6 +331,10 @@ export async function runPaperExecution(
    *  re-fetched here. Defaults to null (regime cut inactive) for any caller
    *  that doesn't have/need one, e.g. a direct test call. */
   marketAtrPct: number | null = null,
+  /** Market regime label the loop read this cycle (2026-07-26) — stamped on
+   *  each opened position as at-entry context, never used for sizing here.
+   *  Defaults to null for callers without one. */
+  marketRegime: string | null = null,
 ): Promise<ExecutionOutcome[]> {
   const config = getAutotradeConfig();
   const equity = config.accountEquityUsd ?? 0;
@@ -415,7 +427,7 @@ export async function runPaperExecution(
       aMinScore: config.convictionGradeAMinScore,
       bMinScore: config.convictionGradeBMinScore,
     });
-    const outcome = await attemptPaperEntry(signal, result, config.riskProfile, grade);
+    const outcome = await attemptPaperEntry(signal, result, config.riskProfile, grade, marketRegime, marketAtrPct);
     outcomes.push(outcome);
     if (outcome.ok && outcome.position) {
       runningRisk += result.approvedRiskAmount;

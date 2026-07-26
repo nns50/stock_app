@@ -49,6 +49,13 @@ export interface CreateLiveOptionsPositionInput {
    *  holdings apart from another's. Omit only for a legacy row that predates
    *  this column. */
   accountId?: string | null;
+  /** At-entry context, carried from the entry order's own row (see
+   *  db/autotradeLiveOptionsOrders.ts) — all optional/nullable. */
+  grade?: string | null;
+  entryScore?: number | null;
+  ivRank?: number | null;
+  marketRegime?: string | null;
+  marketAtrPct?: number | null;
 }
 
 export interface CloseLiveOptionsPositionInput {
@@ -82,6 +89,13 @@ export interface LiveOptionsPosition {
   exitAt: number | null;
   exitReason: LiveOptionsExitReason | null;
   accountId: string | null;
+  /** At-entry context — null for rows that predate these columns or where the
+   *  best-effort read failed. See the DDL comment in db/index.ts. */
+  grade: string | null;
+  entryScore: number | null;
+  ivRank: number | null;
+  marketRegime: string | null;
+  marketAtrPct: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -128,6 +142,11 @@ interface Row {
   exit_at: number | null;
   exit_reason: LiveOptionsExitReason | null;
   account_id: string | null;
+  grade: string | null;
+  entry_score: number | null;
+  iv_rank: number | null;
+  market_regime: string | null;
+  market_atr_pct: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -156,6 +175,11 @@ function map(r: Row): LiveOptionsPosition {
     exitAt: r.exit_at,
     exitReason: r.exit_reason,
     accountId: r.account_id,
+    grade: r.grade ?? null,
+    entryScore: r.entry_score ?? null,
+    ivRank: r.iv_rank ?? null,
+    marketRegime: r.market_regime ?? null,
+    marketAtrPct: r.market_atr_pct ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -169,8 +193,9 @@ export function createLiveOptionsPosition(input: CreateLiveOptionsPositionInput)
       `INSERT INTO autotrade_live_options_positions
          (symbol, side, kind, contract_symbol, strike, short_contract_symbol, short_strike,
           expiration, quantity, entry_price, short_entry_price, entry_at,
-          risk_amount, risk_profile, rationale, status, account_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
+          risk_amount, risk_profile, rationale, status, account_id,
+          grade, entry_score, iv_rank, market_regime, market_atr_pct, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.symbol.toUpperCase(),
@@ -189,6 +214,11 @@ export function createLiveOptionsPosition(input: CreateLiveOptionsPositionInput)
       input.riskProfile,
       input.rationale,
       input.accountId ?? null,
+      input.grade ?? null,
+      input.entryScore ?? null,
+      input.ivRank ?? null,
+      input.marketRegime ?? null,
+      input.marketAtrPct ?? null,
       now,
       now,
     );

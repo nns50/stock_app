@@ -72,6 +72,16 @@ describe('attemptPaperEntry', () => {
     expect(outcome.position!.status).toBe('open');
   });
 
+  it('stamps the conviction grade plus at-entry context on the opened position (2026-07-26)', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 101.5 }) as never);
+    const outcome = await attemptPaperEntry(signal(), okResult, 'MODERATE', 'B', 'risk-on', 2.2);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.position!.grade).toBe('B');
+    expect(outcome.position!.entryScore).toBe(70); // the signal's raw score, not the bucketed letter
+    expect(outcome.position!.marketRegime).toBe('risk-on');
+    expect(outcome.position!.marketAtrPct).toBe(2.2);
+  });
+
   it('opens a short paper position from a sell-side signal — no naked-short-style gate for paper (guardrails.ts is never in its path)', async () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 101.5 }) as never);
     const shortSignal = signal({ side: 'sell', stop: 105, target: 90 });

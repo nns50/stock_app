@@ -1,4 +1,5 @@
 import { getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
+import { convictionGrade } from './decide';
 import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskCheck';
 import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
@@ -193,6 +194,14 @@ export async function attemptOptionsPaperEntry(
   signal: OptionsTradeSignal,
   riskResult: OptionsRiskCheckResult,
   riskProfile: RiskProfileName,
+  /** Conviction grade (A/B/C) from the underlying's screener score, or null.
+   *  Computed by the caller from the configured thresholds — mirrors
+   *  execute.ts's attemptPaperEntry. */
+  grade: string | null = null,
+  /** At-entry context to stamp alongside the grade (2026-07-26) — the market
+   *  regime label + market ATR% the loop read this cycle. Both nullable. */
+  marketRegime: string | null = null,
+  marketAtrPct: number | null = null,
 ): Promise<OptionsExecutionOutcome> {
   if (!riskResult.ok) return { symbol: signal.symbol, ok: false, reason: 'Risk check did not pass' };
   if (hasOpenOptionsPaperPosition(signal.symbol)) {
@@ -239,6 +248,11 @@ export async function attemptOptionsPaperEntry(
         riskAmount: riskResult.approvedRiskAmount,
         riskProfile,
         rationale: signal.rationale,
+        grade,
+        entryScore: signal.score,
+        ivRank: signal.ivRank,
+        marketRegime,
+        marketAtrPct,
       });
     } catch (err) {
       return entryFailure(
@@ -295,6 +309,11 @@ export async function attemptOptionsPaperEntry(
       riskAmount: riskResult.approvedRiskAmount,
       riskProfile,
       rationale: signal.rationale,
+      grade,
+      entryScore: signal.score,
+      ivRank: signal.ivRank,
+      marketRegime,
+      marketAtrPct,
     });
   } catch (err) {
     return entryFailure(
@@ -395,6 +414,9 @@ export async function runOptionsPaperExecution(
    *  re-fetched here. Defaults to null (regime cut inactive) for any caller
    *  that doesn't have/need one, e.g. a direct test call. */
   marketAtrPct: number | null = null,
+  /** Market regime label the loop read this cycle (2026-07-26) — stamped on
+   *  each opened position as at-entry context, never used for sizing here. */
+  marketRegime: string | null = null,
 ): Promise<OptionsExecutionOutcome[]> {
   const config = getAutotradeConfig();
   const equity = config.accountEquityUsd ?? 0;
@@ -483,7 +505,18 @@ export async function runOptionsPaperExecution(
       continue;
     }
 
-    const outcome = await attemptOptionsPaperEntry(signal, result, config.riskProfile);
+    const grade = convictionGrade(signal.score, {
+      aMinScore: config.convictionGradeAMinScore,
+      bMinScore: config.convictionGradeBMinScore,
+    });
+    const outcome = await attemptOptionsPaperEntry(
+      signal,
+      result,
+      config.riskProfile,
+      grade,
+      marketRegime,
+      marketAtrPct,
+    );
     outcomes.push(outcome);
     if (outcome.ok && outcome.position) {
       runningRisk += result.approvedRiskAmount;

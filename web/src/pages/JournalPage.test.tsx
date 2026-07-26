@@ -88,6 +88,9 @@ function positionFixture(overrides: Partial<Position> = {}): Position {
     targetPrice: null,
     sourceIntentId: null,
     accountId: null,
+    entryScore: null,
+    marketRegime: null,
+    marketAtrPct: null,
     createdAt: 0,
     updatedAt: 0,
     exits: [
@@ -100,6 +103,7 @@ function positionFixture(overrides: Partial<Position> = {}): Position {
         fees: 0,
         notes: null,
         sourceIntentId: null,
+        exitReason: null,
         createdAt: 0,
       },
     ],

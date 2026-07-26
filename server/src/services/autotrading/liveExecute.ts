@@ -66,6 +66,7 @@ import {
   Position,
 } from '../../db/positions';
 import { realizedPnlOf, initialRiskOf, computeStreaksAndDrawdown } from '../pnl';
+import { etTimeOfDay } from '../../util/marketDate';
 import { TradeSignal, convictionGrade } from './decide';
 import {
   RiskCheckContext,
@@ -509,6 +510,12 @@ export async function attemptLiveEntry(
   riskResult: RiskCheckResult,
   riskProfile: string,
   autotradeCfg: AutotradeConfig,
+  /** At-entry context (2026-07-26), recorded on the order row and carried to
+   *  the position at materialization — the market regime label + market ATR%
+   *  the loop read this cycle. Both nullable, defaulting to null for direct
+   *  callers (e.g. tests) that don't have them. */
+  marketRegime: string | null = null,
+  marketAtrPct: number | null = null,
 ): Promise<LiveExecutionOutcome> {
   const symbol = signal.symbol.toUpperCase();
   // The deploy-level master gate, checked FIRST — mirrors placeOrder.ts's own
@@ -614,6 +621,9 @@ export async function attemptLiveEntry(
       aMinScore: autotradeCfg.convictionGradeAMinScore,
       bMinScore: autotradeCfg.convictionGradeBMinScore,
     }),
+    entryScore: signal.score,
+    marketRegime,
+    marketAtrPct,
   };
   if (!broker.ok && broker.ambiguous) {
     // We do NOT know whether this order reached the broker, so it must not be
@@ -711,6 +721,10 @@ export async function runLiveExecution(
    *  engaged equity's step-down cut — sizing at full risk exactly when the
    *  strategy was losing. */
   optionsSeed: LiveOptionsRiskSeed = { dailyPnl: 0, consecutiveLosses: 0, tradesToday: 0 },
+  /** Market regime label the loop read this cycle (2026-07-26) — recorded on
+   *  the entry order row and carried to the position at materialization as
+   *  at-entry context; never used for sizing here. */
+  marketRegime: string | null = null,
 ): Promise<LiveExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
   const equity = cfg.accountEquityUsd ?? 0;
@@ -836,7 +850,7 @@ export async function runLiveExecution(
     // than throwing (the broker client never throws), so this is a backstop.
     let outcome: LiveExecutionOutcome;
     try {
-      outcome = await attemptLiveEntry(signal, result, freshCfg.riskProfile, freshCfg);
+      outcome = await attemptLiveEntry(signal, result, freshCfg.riskProfile, freshCfg, marketRegime, marketAtrPct);
     } catch (err) {
       const reason = `Unexpected error placing order: ${(err as Error).message}`;
       logAutotradeEvent({ symbol, stage: 'execution', action: 'live_entry_failed', detail: { reason } });
@@ -1184,6 +1198,9 @@ function reconcileOneLiveOrder(
           exitLeg.filledPrice ?? fallbackPrice,
           riskProfile,
           exitLeg.filledQty,
+          // Which bracket leg filled IS the exit reason — the one place in the
+          // live path that knows it firsthand rather than inferring from price.
+          exitLeg.comboType === 'STOP_LOSS' ? 'stop' : 'target',
         );
         return recorded ? { changed: true, action: 'exit_filled' } : { changed: acked };
       } catch (err) {
@@ -1246,18 +1263,30 @@ function materializeEntryFill(
     return 'linked_adopted';
   }
 
+  // Entry timestamp: the ORDER's placement moment, not this reconcile pass's
+  // wall clock. A marketable-limit entry fills within seconds of placement,
+  // while materialization happens on a LATER reconcile tick (a minute later
+  // normally, longer if a tick was missed) — dating the entry by the reconcile
+  // would drift every fill toward "later than it happened", and entry_time is
+  // exactly the field the Journal's time-of-day session buckets read.
+  const orderMeta = getLiveOrder(intent.id);
+  const placedAt = orderMeta?.createdAt ?? Date.now();
   const position = createPosition({
     assetType: 'stock',
     symbol: intent.symbol,
     side: intent.side === 'buy' ? 'long' : 'short',
     quantity: filledQty,
     entryPrice: filledPrice,
-    entryDate: etDateStr(),
+    entryDate: etDateStr(placedAt),
+    entryTime: etTimeOfDay(placedAt),
     stopPrice,
     targetPrice,
     notes: `Auto-placed by autotrade — order #${intent.id}${intent.brokerOrderId ? ` (broker ${intent.brokerOrderId})` : ''}`,
     tags: AUTOTRADE_TAGS,
-    grade: getLiveOrder(intent.id)?.grade ?? null,
+    grade: orderMeta?.grade ?? null,
+    entryScore: orderMeta?.entryScore ?? null,
+    marketRegime: orderMeta?.marketRegime ?? null,
+    marketAtrPct: orderMeta?.marketAtrPct ?? null,
     sourceIntentId: intent.id,
     accountId,
   });
@@ -1329,6 +1358,10 @@ function materializeExitFill(
   exitPrice: number,
   riskProfile: string,
   filledQty?: number,
+  /** Which bracket leg produced this exit — 'stop' (STOP_LOSS) or 'target'
+   *  (STOP_PROFIT), stamped on the position_exits row (2026-07-26). Omitted
+   *  only by a caller that genuinely doesn't know; never guessed here. */
+  exitReason?: 'stop' | 'target',
 ): boolean {
   const position = listPositions({ status: 'open', symbol: intent.symbol }).find(
     (p) => isAutotradePosition(p) && (p.sourceIntentId === intent.id || (positionId !== null && p.id === positionId)),
@@ -1347,13 +1380,14 @@ function materializeExitFill(
     exitPrice,
     exitDate: etDateStr(),
     sourceIntentId: intent.id,
+    exitReason: exitReason ?? null,
   });
   if (!closed) return false;
   logAutotradeEvent({
     symbol: intent.symbol,
     stage: 'execution',
     action: 'live_position_closed',
-    detail: { exitPrice, pnl: realizedPnlOf(closed) },
+    detail: { exitPrice, pnl: realizedPnlOf(closed), exitReason: exitReason ?? null },
     riskProfile,
   });
   return true;
@@ -1386,6 +1420,7 @@ function materializeTimeExitFill(
     exitPrice,
     exitDate: etDateStr(),
     sourceIntentId: intent.id,
+    exitReason: 'time_exit',
   });
   if (!closed) return false;
   logAutotradeEvent({

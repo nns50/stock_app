@@ -652,6 +652,13 @@ Spend 20 minutes every weekend in the **Journal**:
       less (or smaller) there.
 - [ ] **By grade** — are your A-setups actually your best results? If not, your grading
       criteria need work.
+- [ ] **The bot's at-entry context (2026-07-26)** — auto-traded rows now carry the raw
+      screener score, the market-regime label, market ATR%, an ET entry time, and (on
+      live bracket exits) the exit reason. Export the journal to CSV and ask: do
+      higher-score entries actually earn more? Does the system bleed in one regime and
+      earn in another? Are stops doing all the closing while targets never hit? A month
+      of trades is enough for a first read; none of these questions were answerable
+      before these fields existed.
 - [ ] **By discipline** — do checklist-followed trades beat the rushed ones? (They
       almost always do. Proof you can show yourself.)
 - [ ] **Edge Report** — are top-ranked screener picks outperforming? Re-weight if not.

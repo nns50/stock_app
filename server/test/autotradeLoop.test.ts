@@ -34,6 +34,12 @@ vi.mock('../src/services/autotrading/liveOptionsExecute', () => ({
   liveOptionsSeedForEquity: vi.fn(() => ({ dailyPnl: 0, consecutiveLosses: 0, tradesToday: 0 })),
 }));
 vi.mock('../src/providers/webull/positions', () => ({ runWebullPositionsSync: vi.fn() }));
+// Deterministic regime for the at-entry-context threading assertions below —
+// the real computeMarketRegime would score MockProvider candles (and scan the
+// seeded universe for breadth) inside every loop test.
+vi.mock('../src/services/marketRegime', () => ({
+  computeMarketRegime: vi.fn(async () => ({ label: 'neutral' })),
+}));
 vi.mock('../src/services/autotrading/moversPromotion', () => ({ processMoversForPromotion: vi.fn() }));
 vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/autotrading/executionGuards')>();
@@ -587,7 +593,7 @@ describe('runAutotradeLoopTick', () => {
 
     expect(mockScreen).toHaveBeenCalledTimes(1);
     expect(mockDecide).toHaveBeenCalledWith([candidate('AAPL', 2)], { stopAtrMultiple: 1.5, targetRMultiple: 2 });
-    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed, 2);
+    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral');
     expect(summary.ranEntries).toBe(true);
     expect(summary.candidatesScreened).toBe(1);
     expect(summary.candidatesPassedVolatility).toBe(1);
@@ -613,7 +619,7 @@ describe('runAutotradeLoopTick', () => {
     // Not re-fetched a second time for sizing — the SAME reading already
     // computed for the volatility filter is threaded through to execution.
     expect(mockMarketAtr).toHaveBeenCalledTimes(1);
-    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed, 2);
+    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral');
   });
 
   it('threads the configured screening/decision thresholds through, not the hardcoded legacy defaults', async () => {
@@ -730,9 +736,9 @@ describe('runAutotradeLoopTick', () => {
 
     // Equity's batch is seeded from options' pre-existing snapshot...
     expect(mockOptionsSeed).toHaveBeenCalledWith(optSnapshot);
-    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], seed, 2);
+    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], seed, 2, 'neutral');
     // ...and options execution runs too, on its own decided signals.
-    expect(mockOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }], 2);
+    expect(mockOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }], 2, 'neutral');
     expect(summary.optionsEntriesOpened).toBe(1);
   });
 
@@ -1081,11 +1087,16 @@ describe('runAutotradeLoopTick', () => {
       expect(mockExecute).not.toHaveBeenCalled(); // paper stayed off
       // Third arg cross-seeds the live OPTIONS book's P&L/streak/trade count
       // into equity's risk gates (mocked neutral above).
-      expect(mockLiveExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], 2, {
-        dailyPnl: 0,
-        consecutiveLosses: 0,
-        tradesToday: 0,
-      });
+      expect(mockLiveExecute).toHaveBeenCalledWith(
+        [{ signal: signal('AAPL') }],
+        2,
+        {
+          dailyPnl: 0,
+          consecutiveLosses: 0,
+          tradesToday: 0,
+        },
+        'neutral',
+      );
       expect(summary.ranEntries).toBe(true);
       expect(summary.entriesOpened).toBe(0);
       expect(summary.liveEntriesOpened).toBe(1);
@@ -1229,7 +1240,7 @@ describe('runAutotradeLoopTick', () => {
 
       const summary = await runAutotradeLoopTick();
 
-      expect(mockLiveOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }], 2);
+      expect(mockLiveOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }], 2, 'neutral');
       expect(summary.liveOptionsEntriesOpened).toBe(1);
     });
 

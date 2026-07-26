@@ -104,6 +104,38 @@ describe('positionsToCsv', () => {
     ]);
     expect(csv.trim().split('\r\n')[1]).toMatch(/,2\/3$/);
   });
+  it('carries the at-entry context and exit-reason columns (2026-07-26)', () => {
+    const csv = positionsToCsv([
+      pos({
+        entryTime: '09:47',
+        entryScore: 72.3,
+        marketRegime: 'risk-on',
+        marketAtrPct: 1.8,
+        exits: [
+          {
+            id: 1,
+            positionId: 1,
+            quantity: 100,
+            exitPrice: 110,
+            exitDate: '2026-01-05',
+            fees: 1,
+            notes: null,
+            sourceIntentId: null,
+            exitReason: 'target',
+            createdAt: 2,
+          },
+        ],
+      }),
+    ]);
+    const [header, row] = csv.split('\r\n');
+    for (const col of ['entryTime', 'entryScore', 'marketRegime', 'marketAtrPct', 'lastExitReason']) {
+      expect(header).toContain(col);
+    }
+    expect(row).toContain('09:47');
+    expect(row).toContain('72.3');
+    expect(row).toContain('risk-on');
+    expect(row).toContain('target');
+  });
 });
 
 describe('positionsToJson', () => {

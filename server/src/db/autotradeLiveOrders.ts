@@ -43,6 +43,11 @@ export interface LiveOrderMeta {
    *  carried to positions.grade at materialization. Null for exit rows and
    *  legacy rows. */
   grade: string | null;
+  /** Entry rows: at-entry context carried to the same-named positions columns
+   *  at materialization, exactly like grade. Null for exit/legacy rows. */
+  entryScore: number | null;
+  marketRegime: string | null;
+  marketAtrPct: number | null;
   createdAt: number;
 }
 
@@ -58,6 +63,9 @@ interface Row {
   account_id: string | null;
   addon_of_position_id: number | null;
   grade: string | null;
+  entry_score: number | null;
+  market_regime: string | null;
+  market_atr_pct: number | null;
   created_at: number;
 }
 
@@ -74,6 +82,9 @@ function mapRow(r: Row): LiveOrderMeta {
     accountId: r.account_id,
     addonOfPositionId: r.addon_of_position_id ?? null,
     grade: r.grade ?? null,
+    entryScore: r.entry_score ?? null,
+    marketRegime: r.market_regime ?? null,
+    marketAtrPct: r.market_atr_pct ?? null,
     createdAt: r.created_at,
   };
 }
@@ -92,11 +103,16 @@ export function recordLiveOrder(input: {
   /** Conviction grade (A/B/C) from the signal's screener score, carried to
    *  positions.grade once the fill materializes. */
   grade?: string | null;
+  /** At-entry context, carried to positions once the fill materializes —
+   *  same lifecycle as grade above. */
+  entryScore?: number | null;
+  marketRegime?: string | null;
+  marketAtrPct?: number | null;
 }): LiveOrderMeta {
   const now = Date.now();
   db.prepare(
-    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, grade, created_at)
-     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?)`,
+    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, grade, entry_score, market_regime, market_atr_pct, created_at)
+     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.intentId,
     input.symbol.toUpperCase(),
@@ -106,6 +122,9 @@ export function recordLiveOrder(input: {
     input.riskProfile,
     input.accountId ?? null,
     input.grade ?? null,
+    input.entryScore ?? null,
+    input.marketRegime ?? null,
+    input.marketAtrPct ?? null,
     now,
   );
   return getLiveOrder(input.intentId)!;

@@ -53,6 +53,17 @@ export interface OpenOptionsPaperPositionInput {
   riskAmount: number;
   riskProfile: string;
   rationale: string;
+  /** Conviction grade (A/B/C) from the underlying's screener score, or null. */
+  grade?: string | null;
+  /** The raw screener total (0-100) the grade was bucketed from, or null. */
+  entryScore?: number | null;
+  /** IV rank (0-100) the decision stage gated on, or null. */
+  ivRank?: number | null;
+  /** Market regime label at entry ('risk-on' | 'neutral' | 'risk-off'), or
+   *  null when the best-effort regime read failed that cycle. */
+  marketRegime?: string | null;
+  /** Market (SPY) ATR% the loop read the cycle this entry was placed, or null. */
+  marketAtrPct?: number | null;
 }
 
 export interface CloseOptionsPaperPositionInput {
@@ -96,6 +107,13 @@ export interface OptionsPaperPosition {
   stopFloorPct: number | null;
   /** Whether the one-time partial-exit trigger has already fired. */
   partialExitTaken: boolean;
+  /** At-entry context — null for rows that predate these columns or where the
+   *  best-effort read failed. See the DDL comment in db/index.ts. */
+  grade: string | null;
+  entryScore: number | null;
+  ivRank: number | null;
+  marketRegime: string | null;
+  marketAtrPct: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -132,6 +150,11 @@ interface Row {
   best_basis_since_entry: number | null;
   stop_floor_pct: number | null;
   partial_exit_taken: number;
+  grade: string | null;
+  entry_score: number | null;
+  iv_rank: number | null;
+  market_regime: string | null;
+  market_atr_pct: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -162,6 +185,11 @@ function map(r: Row): OptionsPaperPosition {
     bestBasisSinceEntry: r.best_basis_since_entry,
     stopFloorPct: r.stop_floor_pct,
     partialExitTaken: r.partial_exit_taken === 1,
+    grade: r.grade ?? null,
+    entryScore: r.entry_score ?? null,
+    ivRank: r.iv_rank ?? null,
+    marketRegime: r.market_regime ?? null,
+    marketAtrPct: r.market_atr_pct ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -181,8 +209,9 @@ export function openOptionsPaperPosition(input: OpenOptionsPaperPositionInput): 
       `INSERT INTO autotrade_options_paper_positions
          (symbol, side, kind, contract_symbol, strike, short_contract_symbol, short_strike,
           expiration, quantity, entry_price, short_entry_price, entry_at,
-          risk_amount, risk_profile, rationale, status, best_basis_since_entry, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
+          risk_amount, risk_profile, rationale, status, best_basis_since_entry,
+          grade, entry_score, iv_rank, market_regime, market_atr_pct, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.symbol.toUpperCase(),
@@ -201,6 +230,11 @@ export function openOptionsPaperPosition(input: OpenOptionsPaperPositionInput): 
       input.riskProfile,
       input.rationale,
       entryBasis,
+      input.grade ?? null,
+      input.entryScore ?? null,
+      input.ivRank ?? null,
+      input.marketRegime ?? null,
+      input.marketAtrPct ?? null,
       now,
       now,
     );

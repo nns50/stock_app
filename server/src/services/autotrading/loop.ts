@@ -460,22 +460,25 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       return summary;
     }
 
-    // Regime-conditional weights (2026-07-24, default off): when enabled, read
-    // the market regime (SPY proxy, cached ~1h — cheap) and score this tick with
-    // that regime's weight preset instead of the fixed defaults. Own gate + a
-    // best-effort read (a failed regime fetch falls back to the fixed weights,
-    // never blocks the tick), so the default path does no extra work and behaves
-    // exactly as before.
-    let regimeLabel: 'risk-on' | 'neutral' | 'risk-off' | null = null;
-    if (config.regimeAdaptiveWeightsEnabled) {
-      regimeLabel = (await computeMarketRegime().catch(() => null))?.label ?? null;
-      if (regimeLabel) {
-        logAutotradeEvent({
-          stage: 'screen',
-          action: 'regime_weights_applied',
-          detail: { regime: regimeLabel },
-        });
-      }
+    // Market regime read (best-effort, cached ~1h in marketRegime.ts): used
+    // two ways. (1) Regime-conditional weights (2026-07-24, default off):
+    // when enabled, this tick scores with the regime's weight preset instead
+    // of the fixed defaults — resolveScoringWeights itself checks the flag,
+    // so reading the label unconditionally can't change scoring while the
+    // flag is off. (2) At-entry context (2026-07-26): the label is stamped
+    // on every position opened this tick, so realized outcomes can later be
+    // sliced by the regime they were entered under — which is why the read
+    // is no longer gated on the weights flag. A failed fetch resolves to
+    // null (context stays empty, weights fall back to the fixed defaults)
+    // and never blocks the tick.
+    const regimeLabel: 'risk-on' | 'neutral' | 'risk-off' | null =
+      (await computeMarketRegime().catch(() => null))?.label ?? null;
+    if (config.regimeAdaptiveWeightsEnabled && regimeLabel) {
+      logAutotradeEvent({
+        stage: 'screen',
+        action: 'regime_weights_applied',
+        detail: { regime: regimeLabel },
+      });
     }
     const screenResult = await runAutotradeScreen({
       config: {
@@ -614,12 +617,14 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         decision.signals.map((signal) => ({ signal })),
         seed,
         marketAtrPct,
+        regimeLabel,
       );
       summary.entriesOpened = outcomes.filter((o) => o.ok).length;
 
       const optionsOutcomes = await runOptionsPaperExecution(
         optionsDecision.signals.map((signal) => ({ signal })),
         marketAtrPct,
+        regimeLabel,
       );
       summary.optionsEntriesOpened = optionsOutcomes.filter((o) => o.ok).length;
     }
@@ -632,6 +637,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         // above. The live options batch already folds equity in the other
         // direction; this closes the one-way gap.
         liveOptionsSeedForEquity(),
+        regimeLabel,
       );
       summary.liveEntriesOpened = liveOutcomes.filter((o) => o.ok).length;
     }
@@ -639,6 +645,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       const liveOptionsOutcomes = await runLiveOptionsExecution(
         optionsDecision.signals.map((signal) => ({ signal })),
         marketAtrPct,
+        regimeLabel,
       );
       summary.liveOptionsEntriesOpened = liveOptionsOutcomes.filter((o) => o.ok).length;
     }
