@@ -577,7 +577,11 @@ export default function ScreenerPage() {
           </Card>
         )}
 
-        {result && (includeFailed ? result.filteredOut.length > 0 : result.filteredOut.length > 0) && (
+        {/* Both branches of the ternary that used to be here were identical, so
+            includeFailed never affected this card — it only changes what the
+            server puts in `results` vs `filteredOut`. Left as-is behaviourally;
+            the dead conditional just implied a dependency that isn't there. */}
+        {result && result.filteredOut.length > 0 && (
           <Card className="p-4">
             <button className="text-sm text-slate-400 hover:text-slate-200" onClick={() => setShowFiltered((s) => !s)}>
               {showFiltered ? '▾' : '▸'} Filtered out ({result.filteredOut.length})
