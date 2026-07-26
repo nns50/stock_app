@@ -21,6 +21,7 @@ import { listUniverse } from '../db/universe';
 import { isWebullTracked } from '../providers/webull/positions';
 import { closeLivePosition } from '../services/trading/closePosition';
 import { detectWashSale } from '../services/washSale';
+import { analyzeJournal } from '../services/journalIntegrity';
 import { sweepExpiredOptions } from '../services/expiredOptionsSweep';
 
 export const positionsRouter = Router();
@@ -209,6 +210,16 @@ positionsRouter.post(
   '/expired-options/sweep',
   asyncHandler(async (_req, res) => {
     res.json(await sweepExpiredOptions());
+  }),
+);
+
+// Read-only audit of the journal — see services/journalIntegrity.ts. There is
+// deliberately no POST counterpart: this reports, it never repairs. Registered
+// ahead of '/:id' like the other literal paths.
+positionsRouter.get(
+  '/integrity',
+  asyncHandler(async (_req, res) => {
+    res.json(analyzeJournal(listPositions()));
   }),
 );
 

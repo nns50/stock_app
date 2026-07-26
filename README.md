@@ -237,9 +237,51 @@ npm run format         # Prettier --write
 npm run check:provider # verify the configured market-data provider
 npm run capture:broker # dump raw Webull field shapes (read-only; see below)
 npm run backfill:exits # correct estimated exit prices from real fills (dry run; see below)
+npm run check:journal  # audit the trade journal for rows that are already wrong (report only)
 ```
 
 CI runs lint, format-check, typecheck, tests, and build on every PR.
+
+### `check:journal` — auditing the journal for rows that are already wrong
+
+**Report only. There is no `--apply`, by design.** It reads the local database
+and prints; it opens no write path and never contacts the broker.
+
+A bug that gets fixed stops writing bad rows — it does not repair the rows it
+already wrote. And the defects worth worrying about here are the ones the UI
+*cannot* show you: an exit dated a day late, a position whose exits close more
+than it ever held (`remainingQuantity` clamps at zero, so it just reads as
+closed), a lot that lost the account it belongs to. Each renders as a perfectly
+ordinary row while feeding the Positions P&L, the Journal's expectancy and the
+tax export.
+
+```bash
+npm run check:journal            # grouped by check, with why each one matters
+npm run check:journal -- --json  # machine-readable, for diffing over time
+```
+
+Also available read-only at `GET /api/positions/integrity`.
+
+Every check is listed in the output whether or not it fired — "we looked and
+found none" is a different statement from "we didn't look". What it checks:
+non-ISO dates · rows a background job dated in UTC rather than ET · exits before
+their own entry · future dates · exits exceeding the position's size · a status
+that contradicts the remaining quantity · a zero/negative entry price · a
+zero/negative exit quantity · a broker-tracked lot with no account recorded.
+
+The UTC-dating check deserves a note, because it is **exact rather than
+heuristic**: until 2026-07-26 the Webull sync and the order reconciler dated
+rows off the server's UTC clock, which on a UTC-deployed box is already tomorrow
+from 20:00 ET onward. A row is flagged only when its date equals the UTC date at
+the instant it was written *and* that differs from the market date — true of
+every affected row and of no correctly-dated one. It reports the value the row
+should carry; it never writes it.
+
+There is deliberately no repair mode. Several of these have more than one
+defensible fix (is a future-dated exit a typo, or a genuinely mis-recorded
+date?), and guessing at someone's real trading record is worse than naming the
+row and stopping. Fix what it finds from the Positions page — **journal**,
+**exit**, **del** — and re-run to confirm the count drops.
 
 ### `backfill:exits` — correcting estimated exit prices
 
