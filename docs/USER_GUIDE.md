@@ -142,17 +142,26 @@ Your at-a-glance morning screen.
   does not place, size, or block any trade, and it's cached hourly (regime turns on the
   daily close). Formula details live on the **About** page.
 - **Needs attention** panel — positions that hit their stop/target or option exit
-  rules, plus any triggered symbol alerts, each linking to where you act.
+  rules, plus any triggered symbol alerts, each linking to where you act. If the check
+  itself **fails**, the panel says so and the tile reads `?` instead of `0` — an
+  unanswered question, never an all-clear. Silence about your stops means silence, not
+  reassurance.
 - **Watchlist** mini-view with last price and % change.
 - **Upcoming expirations** — your open option positions sorted by days-to-expiry (≤ 7
-  days turns amber). A short position also shows an **assignment risk** badge (2026-07-23)
+  days turns amber). Only the five soonest are listed, and if you hold more it says
+  **"+ N more expiring options not shown"** with a link to Positions — a contract held
+  back because five others expire sooner is exactly the one you'd want named. Day counts
+  are **calendar days in your own timezone**, so an option expiring tomorrow reads `1d`
+  even late in the evening (it used to read `0d` after ~20:00 ET, because the arithmetic
+  was done against UTC midnight). A short position also shows an **assignment risk** badge (2026-07-23)
   when it's deep ITM with essentially no time value left — the same badge and pure
   intrinsic/extrinsic math the Auto page's options tables use, applied here to your own
   logged/imported option positions.
 - **Upcoming catalysts** (2026-07-23) — earnings and ex-dividend dates within the next 14
   days, across the union of your **open positions'** underlyings and your **watchlist**,
   soonest first (≤ 7 days turns amber). One place to see what's coming up before you plan
-  the day, instead of checking each symbol's page individually.
+  the day, instead of checking each symbol's page individually. Capped at eight, and it
+  tells you how many more fall in the window.
 - **Latest screener snapshot** — the most recent run you saved.
 - **Getting started** — a dismissible checklist for new accounts (build a watchlist →
   run the screener → log a trade → set an alert). It reflects your *real* progress and

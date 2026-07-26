@@ -216,3 +216,101 @@ describe('DashboardPage', () => {
 function futureIso(days: number): string {
   return new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
 }
+
+describe('DashboardPage — a failed check must never read as an all-clear', () => {
+  const boom = () => Promise.reject(new Error('alerts service down'));
+
+  it('does not say "All clear" when the alerts request failed', async () => {
+    // The worst instance of this in the app. attentionCount fell back to 0 on
+    // failure, so the panel affirmed that nothing was hitting a stop or a rule
+    // without having checked, and the tile above it read 0.
+    vi.spyOn(client, 'alertsState').mockImplementation(boom as never);
+    render(
+      <MemoryRouter>
+        <DashboardPage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(/this is not an all-clear/i)).toBeInTheDocument();
+    expect(screen.getByText(/alerts service down/)).toBeInTheDocument();
+    expect(screen.queryByText(/All clear/)).not.toBeInTheDocument();
+  });
+
+  it('shows "?" rather than 0 on the Needs attention tile when it could not check', async () => {
+    vi.spyOn(client, 'alertsState').mockImplementation(boom as never);
+    render(
+      <MemoryRouter>
+        <DashboardPage />
+      </MemoryRouter>,
+    );
+    await screen.findByText(/this is not an all-clear/i);
+    expect(screen.getByText('?')).toBeInTheDocument();
+  });
+
+  it('does not claim "No open option positions" when the positions request failed', async () => {
+    vi.spyOn(client, 'positionsWithPnl').mockImplementation((() =>
+      Promise.reject(new Error('positions unavailable'))) as never);
+    render(
+      <MemoryRouter>
+        <DashboardPage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(/expirations aren.t shown/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No open option positions/)).not.toBeInTheDocument();
+  });
+
+  it('still gives the real all-clear when the check genuinely came back empty', async () => {
+    // The reassurance has to survive — it's only a lie when nothing was checked.
+    render(
+      <MemoryRouter>
+        <DashboardPage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(/All clear/)).toBeInTheDocument();
+  });
+});
+
+describe('DashboardPage — capped lists say what they are hiding', () => {
+  const optionAt = (id: number, expiration: string): PositionWithPnl =>
+    positionWithPnlFixture({
+      position: positionFixture({
+        id,
+        symbol: `OPT${id}`,
+        assetType: 'option',
+        optionType: 'call',
+        strike: 100,
+        expiration,
+      }),
+    });
+
+  it('reports how many expiring options it left out', async () => {
+    // Seven open options, five slots. On a page whose job is "what needs your
+    // attention today", the two it drops are exactly the ones you'd want named.
+    const positions = [1, 2, 3, 4, 5, 6, 7].map((i) => optionAt(i, `2026-08-${String(10 + i).padStart(2, '0')}`));
+    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({
+      positions,
+      aggregate: { total: 0, unrealized: 0, realized: 0, openCount: 7, closedCount: 0 } as never,
+      exposure: { gross: 0, net: 0, long: 0, short: 0, bySector: [], largest: null },
+    });
+    render(
+      <MemoryRouter>
+        <DashboardPage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(/\+ 2 more expiring options not shown/)).toBeInTheDocument();
+  });
+
+  it('stays quiet when everything fits', async () => {
+    vi.spyOn(client, 'positionsWithPnl').mockResolvedValue({
+      positions: [optionAt(1, '2026-08-21')],
+      aggregate: { total: 0, unrealized: 0, realized: 0, openCount: 1, closedCount: 0 } as never,
+      exposure: { gross: 0, net: 0, long: 0, short: 0, bySector: [], largest: null },
+    });
+    render(
+      <MemoryRouter>
+        <DashboardPage />
+      </MemoryRouter>,
+    );
+    await screen.findByText('OPT1');
+    expect(screen.queryByText(/more expiring options not shown/)).not.toBeInTheDocument();
+  });
+});

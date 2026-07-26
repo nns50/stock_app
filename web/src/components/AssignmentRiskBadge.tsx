@@ -1,5 +1,5 @@
 import { TriangleAlert } from 'lucide-react';
-import { cx } from '../lib/format';
+import { cx, daysUntilLocal } from '../lib/format';
 import type { AutotradeOptionsSignalSide, SymbolEvents } from '../api/types';
 
 /** How close to $0/share a short leg's extrinsic (time) value has to be
@@ -44,13 +44,6 @@ export function extrinsicValue(
   return Math.max(0, mark - intrinsic);
 }
 
-function daysUntil(date?: string): number | null {
-  if (!date) return null;
-  const t = Date.parse(`${date}T00:00:00Z`);
-  if (Number.isNaN(t)) return null;
-  return Math.ceil((t - Date.now()) / 86_400_000);
-}
-
 export interface AssignmentRiskBadgeProps {
   /** The SHORT leg's own side/strike/mark — this app never writes a naked
    *  call/put, so the only leg that can ever be assigned is a debit
@@ -82,7 +75,7 @@ export function AssignmentRiskBadge({ side, strike, mark, underlyingPrice, event
   const extrinsic = extrinsicValue(side, strike, mark, underlyingPrice);
   if (intrinsic === null || extrinsic === null || intrinsic <= 0 || extrinsic > LOW_EXTRINSIC_THRESHOLD) return null;
 
-  const exDte = daysUntil(events?.exDividendDate);
+  const exDte = daysUntilLocal(events?.exDividendDate);
   const dividendRisk = side === 'call' && exDte !== null && exDte >= 0 && exDte <= DIVIDEND_RISK_WINDOW_DAYS;
 
   return (

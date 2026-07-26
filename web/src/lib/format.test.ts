@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { ago, cx, fmtCompact, fmtDate, fmtNum, fmtPct, fmtSignedUsd, fmtUsd, pnlClass } from './format';
+import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from 'vitest';
+import { ago, cx, daysUntilLocal, fmtCompact, fmtDate, fmtNum, fmtPct, fmtSignedUsd, fmtUsd, pnlClass } from './format';
 
 describe('currency formatting', () => {
   it('fmtUsd', () => {
@@ -73,5 +73,61 @@ describe('fmtDate', () => {
     expect(fmtDate(null)).toBe('—');
     expect(fmtDate(undefined)).toBe('—');
     expect(fmtDate('')).toBe('—');
+  });
+});
+
+describe('daysUntilLocal', () => {
+  // The bug this replaces: `Date.parse(`${d}T00:00:00Z`) - Date.now()` compares a
+  // UTC midnight against a local instant, so for part of every day in any
+  // negative-UTC zone the count is one short. Pin the exact window.
+  // The timezone is pinned, and that is the whole point. CI runs in UTC, where
+  // the broken UTC-midnight arithmetic and the correct local-calendar version
+  // agree on every input — so without this these assertions pass either way and
+  // prove nothing. America/New_York is both negative-UTC and the timezone the
+  // app's market logic is written against.
+  const origTz = process.env.TZ;
+  beforeAll(() => {
+    process.env.TZ = 'America/New_York';
+  });
+  afterAll(() => {
+    process.env.TZ = origTz;
+  });
+
+  // Local wall-clock, not an instant: `new Date('2026-07-30T21:00:00')` with no
+  // zone suffix is parsed in that pinned timezone, which is what puts the clock
+  // on the far side of UTC midnight.
+  const freeze = (localIso: string) => vi.setSystemTime(new Date(localIso));
+  afterEach(() => vi.useRealTimers());
+
+  it('counts 0 for today and 1 for tomorrow at midday', () => {
+    freeze('2026-07-30T12:00:00');
+    expect(daysUntilLocal('2026-07-30')).toBe(0);
+    expect(daysUntilLocal('2026-07-31')).toBe(1);
+    expect(daysUntilLocal('2026-08-06')).toBe(7);
+  });
+
+  it('still says 1 for tomorrow late in the evening', () => {
+    // 21:00 local. If the machine is behind UTC, "tomorrow" is already today in
+    // UTC — the old code returned 0 here and an option expiring tomorrow was
+    // shown as expiring today.
+    freeze('2026-07-30T21:00:00');
+    expect(daysUntilLocal('2026-07-31')).toBe(1);
+    expect(daysUntilLocal('2026-07-30')).toBe(0);
+  });
+
+  it('goes negative for past dates', () => {
+    freeze('2026-07-30T12:00:00');
+    expect(daysUntilLocal('2026-07-29')).toBe(-1);
+    expect(daysUntilLocal('2026-07-23')).toBe(-7);
+  });
+
+  it('returns null for absent or malformed input rather than NaN', () => {
+    // NaN would compare false against every threshold and silently disable the
+    // expiry and earnings warnings.
+    expect(daysUntilLocal(undefined)).toBeNull();
+    expect(daysUntilLocal(null)).toBeNull();
+    expect(daysUntilLocal('')).toBeNull();
+    expect(daysUntilLocal('07/31/2026')).toBeNull();
+    expect(daysUntilLocal('2026-7-31')).toBeNull();
   });
 });
