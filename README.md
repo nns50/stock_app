@@ -262,6 +262,12 @@ npm run check:journal -- --json  # machine-readable, for diffing over time
 
 Also available read-only at `GET /api/positions/integrity`.
 
+On a deployed instance the `npm run` form doesn't work — the runtime image ships
+compiled JS only. See [DEPLOY.md → Running the maintenance scripts on
+Fly](docs/DEPLOY.md#running-the-maintenance-scripts-on-fly) for the `node` form,
+and for the `DATABASE_PATH` trap that otherwise audits an empty database and
+reports it clean.
+
 Every check is listed in the output whether or not it fired — "we looked and
 found none" is a different statement from "we didn't look". What it checks:
 non-ISO dates · rows a background job dated in UTC rather than ET · an option

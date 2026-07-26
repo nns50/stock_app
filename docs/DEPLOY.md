@@ -190,6 +190,59 @@ fire 24/7 with nothing open.
   (the volume, and your data, persist).
 - **Back up** from the UI (**Settings → Data → export**) — simplest for a single volume.
 
+### Running the maintenance scripts on Fly
+
+**`npm run check:journal` (and the other `npm run` scripts) do not work on Fly.** They
+run `tsx src/scripts/…`, and the runtime image copies `server/dist` but not
+`server/src` — so there is no TypeScript there to run. Call `node` on the built file
+instead:
+
+```bash
+fly ssh console -a your-stock-app -C \
+  "env DATABASE_PATH=/app/data/stock_app.db node /app/server/dist/scripts/checkJournal.js"
+```
+
+| Locally | On Fly (`/app/server/dist/scripts/…`) |
+|---|---|
+| `npm run check:journal` | `checkJournal.js` — read-only journal audit |
+| `npm run check:provider` | `checkProvider.js` — probe the configured market-data provider |
+| `npm run capture:broker` | `captureBrokerFields.js` — dump raw Webull field shapes |
+| `npm run backfill:exits` | `backfillExitPrices.js` — dry run unless you add `--apply` |
+
+Flags pass through the same way, minus the `--` separator npm needs: append `--json`,
+`--apply`, `--force` directly. Prefer `fly ssh console` with no `-C` if you want a shell
+to poke around in.
+
+**Never run `seed.js` against a real volume** — it adds demo trades to your journal.
+
+#### Always pass `DATABASE_PATH` explicitly
+
+`config.ts` falls back to `./data/stock_app.db` *relative to the server package*, and
+creates it if absent. So a session that doesn't carry the image's env resolves to
+`/app/server/data/stock_app.db` — **not** your volume — and the script cheerfully makes
+an empty database and audits that:
+
+```
+Journal integrity — 0 position(s), 0 exit(s) …
+No problems found.
+```
+
+A clean bill of health from a file it just created. `fly ssh console` usually does
+inherit the image env, so this often works by accident; the failure is silent and reads
+as good news, so don't rely on it. **Sanity-check the position count in the first line
+of output** — if it's 0, you read the wrong file.
+
+#### Safe to run against the live app?
+
+Yes. The database is opened in WAL mode, so a second process reading while the server
+runs is fine. `initDb()` isn't strictly read-only — it runs `CREATE TABLE IF NOT EXISTS`
+and the migrations — but those are idempotent and already applied, so in practice it
+takes a brief lock and reads. The journal audit itself writes nothing, by design.
+
+For the journal audit specifically there's a simpler route that needs no `flyctl` at
+all: `GET /api/positions/integrity` returns the same report as JSON, behind the same
+`APP_PASSWORD` login as the rest of the app. Open it in a browser you're signed into.
+
 ### Auto-deploy from GitHub (CI/CD)
 
 The repo includes `.github/workflows/fly-deploy.yml`, which deploys to Fly **after CI
