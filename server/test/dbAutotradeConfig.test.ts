@@ -416,6 +416,14 @@ describe('autotrade config persistence', () => {
       expect(over.maxMarketAtrPct).toBe(100);
     });
 
+    it('minSignalScore (2026-07-26) defaults to 0 (gate off) and clamps to the 0-100 score scale', () => {
+      expect(defaultAutotradeConfig().minSignalScore).toBe(0);
+      expect(setAutotradeConfig({ minSignalScore: 60 }).minSignalScore).toBe(60);
+      expect(getAutotradeConfig().minSignalScore).toBe(60); // round-trips
+      expect(setAutotradeConfig({ minSignalScore: 150 }).minSignalScore).toBe(100);
+      expect(setAutotradeConfig({ minSignalScore: -10 }).minSignalScore).toBe(0);
+    });
+
     it('rejects a zero or negative stopAtrMultiple/targetRMultiple, failing closed to the default (a stop/target must be real)', () => {
       setAutotradeConfig({ stopAtrMultiple: 2, targetRMultiple: 3 });
       // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback

@@ -1101,7 +1101,18 @@ shouldn't be a tab-switch away.
   entries are unaffected either way — an autotrade options position is always long the
   contract, a put for a bearish read instead of a call, which is already defined-risk),
   **min relative volume** (a candidate's volume must be at least this many
-  times its own average to pass the screener), **require weekly trend alignment** (a
+  times its own average to pass the screener), **min signal score** (2026-07-26 — the
+  conviction gate: a candidate's **weighted total screener score** must reach this
+  0-100 floor to pass screening at all. Before this existed, the score only sorted
+  candidates and stamped the A/B/C grade — a symbol scoring 3 that cleared the raw
+  filters could trade at full size on a thin day exactly like one scoring 90. 0
+  disables (the default, so an untouched config changes nothing); the B-grade
+  threshold — 60 by default — is a natural starting point. Applies to equity and
+  options candidates alike (options decide from the same screened set), to the manual
+  Screen/Decision preview, and — because it counts as failing screening — a mover that
+  scores below it also stops accruing movers-auto-promotion days. A backtest can apply
+  the same gate via its screener-config override, so you can measure a floor before
+  turning it on live), **require weekly trend alignment** (a
   second, longer-horizon confirmation on top of the daily setup: price must ALSO be on
   the right side of its own WEEKLY moving average — unlike the plain "require trend
   alignment" screener filter, this one is wired into the unattended loop itself, so
@@ -1151,10 +1162,11 @@ shouldn't be a tab-switch away.
   in this app, so that list is entirely hand-maintained: add your own FOMC/CPI/jobs-
   report dates from the Fed's/BLS's own published calendars; nothing is pre-seeded, and
   the blackout stays off regardless of the hours value until at least one date is on
-  the list). All thirteen default to the values the loop always used before they were
+  the list). All fourteen default to the values the loop always used before they were
   configurable (trade direction to `Long`; earnings blackout's own "before" is simply
-  never checking — 0 disables it; relative strength weight 0, benchmark `SPY`, lookback
-  20 days; sentiment weight 0; macro event blackout 0 hours with an empty list), so
+  never checking — 0 disables it; min signal score 0 — no conviction gate; relative
+  strength weight 0, benchmark `SPY`, lookback 20 days; sentiment weight 0; macro
+  event blackout 0 hours with an empty list), so
   leaving them untouched changes nothing; the manual
   Screen/Decision preview
   below defaults to these same saved values too (so it previews what the loop would

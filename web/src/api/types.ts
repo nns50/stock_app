@@ -119,6 +119,10 @@ export interface ScreenerFilters {
   /** Multi-timeframe confirmation (2026-07-16) — require price to ALSO align
    *  with the chosen direction relative to its WEEKLY moving average. */
   requireWeeklyTrendAlignment?: boolean;
+  /** Minimum weighted TOTAL score (0-100) to pass filters (2026-07-26) —
+   *  unlike the other filters this reads the composite score, not one raw
+   *  indicator. 0/undefined disables. */
+  minScore?: number;
 }
 
 export interface ScreenerConfig {
@@ -1367,6 +1371,10 @@ export interface AutotradeConfig {
   // --- Screening/decision thresholds ---
   tradeDirection: AutotradeTradeDirectionMode;
   minRelVol: number;
+  /** Conviction gate (2026-07-26): minimum weighted total screener score
+   *  (0-100) a candidate must reach to pass screening at all. 0 disables —
+   *  the score then only sorts candidates and stamps the A/B/C grade. */
+  minSignalScore: number;
   requireWeeklyTrendAlignment: boolean;
   /** Relative-strength-vs-benchmark (2026-07-17): weight (0-100, same scale
    *  as every other screener component) given to how much a candidate has

@@ -422,3 +422,36 @@ describe('computeCandleIndicatorSeries / candleIndicatorsAt — precomputed-once
     expect(withoutIndex).toEqual(withExplicitLastIndex);
   });
 });
+
+describe('filters.minScore — the conviction gate (2026-07-26)', () => {
+  it('fails a symbol whose weighted total lands below the floor, with the score named in the reason', () => {
+    const r = scoreSymbol('UP', uptrend, undefined, resolveScreenerConfig({ direction: 'long' }));
+    const gated = scoreSymbol(
+      'UP',
+      uptrend,
+      undefined,
+      resolveScreenerConfig({ direction: 'long', filters: { minScore: r.total + 1 } }),
+    );
+    expect(gated.total).toBe(r.total); // the SCORE itself is untouched — only the pass/fail flips
+    expect(gated.passedFilters).toBe(false);
+    expect(gated.filterReasons).toContain(`score < ${r.total + 1}`);
+  });
+
+  it('passes a symbol at or above the floor, and 0 disables the gate entirely', () => {
+    const r = scoreSymbol('UP', uptrend, undefined, resolveScreenerConfig({ direction: 'long' }));
+    const atFloor = scoreSymbol(
+      'UP',
+      uptrend,
+      undefined,
+      resolveScreenerConfig({ direction: 'long', filters: { minScore: r.total } }),
+    );
+    expect(atFloor.passedFilters).toBe(r.passedFilters); // the gate itself adds no reason at the floor
+    const off = scoreSymbol(
+      'UP',
+      uptrend,
+      undefined,
+      resolveScreenerConfig({ direction: 'long', filters: { minScore: 0 } }),
+    );
+    expect(off.filterReasons.some((x) => x.startsWith('score <'))).toBe(false);
+  });
+});

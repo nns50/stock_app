@@ -219,6 +219,17 @@ export interface AutotradeConfig {
    *  default. 0 disables this specific filter (every relative-volume reading
    *  passes). */
   minRelVol: number;
+  /** Minimum weighted TOTAL screener score (0-100) a candidate must reach to
+   *  pass screening (2026-07-26) — the conviction gate. Before this existed,
+   *  the score only sorted candidates and stamped the A/B/C grade; a symbol
+   *  scoring 3 that cleared the raw filters traded exactly like one scoring
+   *  90 whenever the day was thin. Threaded into ScreenerFilters.minScore for
+   *  the loop and the manual Screen/Decision previews alike (a backtest can
+   *  apply the same gate via its screenerConfig.filters.minScore override).
+   *  0 (the default) disables — an untouched config's behavior is unchanged.
+   *  The conviction-grade thresholds (convictionGradeBMinScore, 60 by
+   *  default) are a natural starting point: "only trade B-grade or better." */
+  minSignalScore: number;
   /** Multi-timeframe confirmation (2026-07-16, docs/AUTOTRADING_SPEC.md
    *  phase 19): require price to ALSO be aligned with the chosen direction
    *  relative to its WEEKLY moving average, on top of whatever the daily
@@ -733,6 +744,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     expectancyMaxMultiplier: 1.5,
     tradeDirection: 'long',
     minRelVol: 1.5,
+    minSignalScore: 0,
     requireWeeklyTrendAlignment: false,
     relativeStrengthWeight: 0,
     benchmarkSymbol: 'SPY',
@@ -917,6 +929,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
         ? input.tradeDirection
         : d.tradeDirection,
     minRelVol: nonNeg(input.minRelVol, d.minRelVol),
+    minSignalScore: pct(input.minSignalScore, d.minSignalScore),
     requireWeeklyTrendAlignment:
       typeof input.requireWeeklyTrendAlignment === 'boolean'
         ? input.requireWeeklyTrendAlignment

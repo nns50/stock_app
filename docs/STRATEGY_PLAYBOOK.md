@@ -413,6 +413,16 @@ A setup is only worth trading if it **outperforms**. The workflow:
 This loop — hypothesize → snapshot → measure forward returns → re-weight — is the
 single highest-leverage thing the app enables.
 
+**Then make the score bite.** Ranking is only half the job: without a floor, the
+auto-trade loop will still take its 6 trades a day from whatever passed the raw
+filters, even when the best available score is a 12. Once the Edge Report shows your
+top tier genuinely outperforms, set **min signal score** (auto-trade config,
+2026-07-26, 0 = off) so the loop simply sits out when nothing clears the bar — the
+B-grade threshold (60 by default) is a sensible first floor. Fewer, better trades is
+an edge in itself: every skipped low-conviction entry is commission, slippage, and a
+risk-budget slot saved for a real one. Backtest the floor first via the screener-config
+override if you want the number to be evidence rather than taste.
+
 **One weight set may not fit every market.** The same weights that reward fresh trend
 breakouts in a risk-on tape can chop you up in a risk-off one, where fading extremes pays
 better. **Regime-adaptive scoring weights** (auto-trade config, off by default) lets the

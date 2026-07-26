@@ -96,7 +96,10 @@ export default function AboutPage() {
           <strong className="text-slate-200">conviction grade</strong> stamped on the position — <strong>A</strong> at
           or above the configured A threshold (75 by default), <strong>B</strong> at or above the B threshold (60), else{' '}
           <strong>C</strong>. The grade is metadata, not a filter: it doesn’t change which trades are taken, but it lets
-          the Journal report realized edge <em>per conviction tier</em>. An opt-in{' '}
+          the Journal report realized edge <em>per conviction tier</em>. The raw score <em>can</em> gate, though: an
+          opt-in <strong className="text-slate-200">min signal score</strong> (Auto-Trade config, 0 = off) sets a
+          weighted-total floor a candidate must reach to pass screening at all — below it, no signal is generated no
+          matter how thin the day. Separately, an opt-in{' '}
           <strong className="text-slate-200">expectancy-weighted sizing</strong> setting (off by default) then acts on
           that edge: each grade’s position size is scaled by its own realized average R —{' '}
           <span className="tabular-nums">multiplier = 1 + avg&nbsp;R</span>, clamped to a min/max bound you choose (e.g.{' '}

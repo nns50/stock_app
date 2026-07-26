@@ -625,6 +625,7 @@ describe('runAutotradeLoopTick', () => {
   it('threads the configured screening/decision thresholds through, not the hardcoded legacy defaults', async () => {
     setAutotradeConfig({
       minRelVol: 3,
+      minSignalScore: 55,
       requireWeeklyTrendAlignment: true,
       maxTickerAtrPct: 25,
       maxMarketAtrPct: 8,
@@ -648,7 +649,7 @@ describe('runAutotradeLoopTick', () => {
     expect(mockSessionWindow).toHaveBeenCalledWith(30);
     expect(mockScreen).toHaveBeenCalledWith({
       config: {
-        filters: { minRelVol: 3, requireWeeklyTrendAlignment: true },
+        filters: { minRelVol: 3, minScore: 55, requireWeeklyTrendAlignment: true },
         weights: {
           momentum: 30,
           relativeVolume: 20,

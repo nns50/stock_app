@@ -47,6 +47,15 @@ export interface ScreenerFilters {
    *  IndicatorSnapshot.weeklyMaShort) blocks the candidate rather than
    *  silently passing it. */
   requireWeeklyTrendAlignment?: boolean;
+  /** Minimum WEIGHTED TOTAL score (0-100) a symbol must reach to pass filters
+   *  (2026-07-26). Unlike every other filter here, this reads the composite
+   *  score the active weight set produces, not a single raw indicator — it
+   *  exists because nothing else gates on conviction at all: without it, a
+   *  symbol scoring 3 that clears the raw filters becomes a candidate exactly
+   *  like one scoring 90, and on a thin day the sort order alone won't save
+   *  you. 0/undefined disables (a total is never below 0), preserving
+   *  every existing config's behavior. */
+  minScore?: number;
 }
 
 export interface ScreenerConfig {
@@ -650,12 +659,13 @@ function scoreFromIndicators(
   });
 
   const total = weightSum > 0 ? weighted / weightSum : 0;
-  const { passed, reasons } = applyFilters(ind, cfg);
+  const roundedTotal = Math.round(total * 10) / 10;
+  const { passed, reasons } = applyFilters(ind, cfg, roundedTotal);
 
   return {
     symbol,
     price: ind.price,
-    total: Math.round(total * 10) / 10,
+    total: roundedTotal,
     passedFilters: passed,
     filterReasons: reasons,
     components,
@@ -663,7 +673,13 @@ function scoreFromIndicators(
   };
 }
 
-function applyFilters(ind: IndicatorSnapshot, cfg: ScreenerConfig): { passed: boolean; reasons: string[] } {
+function applyFilters(
+  ind: IndicatorSnapshot,
+  cfg: ScreenerConfig,
+  /** The symbol's weighted total — the ROUNDED value the result reports, so
+   *  the minScore filter can never disagree with the number on screen. */
+  total: number,
+): { passed: boolean; reasons: string[] } {
   const f = cfg.filters;
   const reasons: string[] = [];
   if (f.minPrice !== undefined && ind.price < f.minPrice) reasons.push(`price < ${f.minPrice}`);
@@ -685,6 +701,7 @@ function applyFilters(ind: IndicatorSnapshot, cfg: ScreenerConfig): { passed: bo
       ind.weeklyMaShort !== null && (long ? ind.price > ind.weeklyMaShort : ind.price < ind.weeklyMaShort);
     if (!aligned) reasons.push(`not ${cfg.direction}-aligned vs weekly ${cfg.maShort}MA`);
   }
+  if (f.minScore !== undefined && total < f.minScore) reasons.push(`score < ${f.minScore}`);
   return { passed: reasons.length === 0, reasons };
 }
 

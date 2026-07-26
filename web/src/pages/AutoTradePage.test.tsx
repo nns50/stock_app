@@ -72,6 +72,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     expectancyMaxMultiplier: 1.5,
     tradeDirection: 'long',
     minRelVol: 1.5,
+    minSignalScore: 0,
     requireWeeklyTrendAlignment: false,
     relativeStrengthWeight: 0,
     benchmarkSymbol: 'SPY',
