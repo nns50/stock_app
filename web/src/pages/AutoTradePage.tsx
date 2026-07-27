@@ -2313,6 +2313,9 @@ export default function AutoTradePage() {
   const [expectancyMinMultiplierDraft, setExpectancyMinMultiplierDraft] = useState<number | undefined>();
   const [expectancyMaxMultiplierDraft, setExpectancyMaxMultiplierDraft] = useState<number | undefined>();
   const [minRelVolDraft, setMinRelVolDraft] = useState<number | undefined>();
+  const [minPriceDraft, setMinPriceDraft] = useState<number | undefined>();
+  const [minAvgVolumeDraft, setMinAvgVolumeDraft] = useState<number | undefined>();
+  const [moversDiscoveryEnabled, setMoversDiscoveryEnabled] = useState(true);
   const [minSignalScoreDraft, setMinSignalScoreDraft] = useState<number | undefined>();
   const [requireWeeklyTrendAlignment, setRequireWeeklyTrendAlignment] = useState(false);
   const [relativeStrengthWeightDraft, setRelativeStrengthWeightDraft] = useState<number | undefined>();
@@ -2431,6 +2434,9 @@ export default function AutoTradePage() {
     sync('expectancyMinMultiplier', setExpectancyMinMultiplierDraft);
     sync('expectancyMaxMultiplier', setExpectancyMaxMultiplierDraft);
     sync('minRelVol', setMinRelVolDraft);
+    sync('minPrice', setMinPriceDraft);
+    sync('minAvgVolume', setMinAvgVolumeDraft);
+    sync('moversDiscoveryEnabled', setMoversDiscoveryEnabled);
     sync('minSignalScore', setMinSignalScoreDraft);
     sync('requireWeeklyTrendAlignment', setRequireWeeklyTrendAlignment);
     sync('relativeStrengthWeight', setRelativeStrengthWeightDraft);
@@ -2526,6 +2532,9 @@ export default function AutoTradePage() {
     expectancyMaxMultiplier?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
+    minPrice?: number;
+    minAvgVolume?: number;
+    moversDiscoveryEnabled?: boolean;
     minSignalScore?: number;
     requireWeeklyTrendAlignment?: boolean;
     relativeStrengthWeight?: number;
@@ -4259,6 +4268,56 @@ export default function AutoTradePage() {
                       </button>
                     </div>
                   </Field>
+                  <Field
+                    label="Min share price ($)"
+                    hint="Liquidity floor: candidates below this price fail screening. Sub-$3 movers carry a spread/slippage tax the backtester can't see — on the live book, a fifth of all losses landed BEYOND the declared stop, concentrated in exactly these names. 0 disables; 1 is the old hardcoded floor."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput value={minPriceDraft} onChange={setMinPriceDraft} min={0} step={1} />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save min share price"
+                        onClick={() => minPriceDraft != null && saveConfig({ minPrice: minPriceDraft })}
+                        disabled={minPriceDraft == null || minPriceDraft < 0 || minPriceDraft === config.data?.minPrice}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Min avg volume (shares)"
+                    hint="The other half of the liquidity floor: minimum ~20-day average daily volume. 0 disables; 200,000 is the old hardcoded floor."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput value={minAvgVolumeDraft} onChange={setMinAvgVolumeDraft} min={0} step={50000} />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save min avg volume"
+                        onClick={() => minAvgVolumeDraft != null && saveConfig({ minAvgVolume: minAvgVolumeDraft })}
+                        disabled={
+                          minAvgVolumeDraft == null ||
+                          minAvgVolumeDraft < 0 ||
+                          minAvgVolumeDraft === config.data?.minAvgVolume
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <div>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={moversDiscoveryEnabled}
+                        onChange={(e) => saveConfig({ moversDiscoveryEnabled: e.target.checked })}
+                      />
+                      Discover Webull premarket movers
+                    </label>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Off = the loop screens only your curated universe. Movers auto-promotion goes quiet too, since it
+                      only ever considers movers-sourced candidates.
+                    </p>
+                  </div>
                   <Field
                     label="Min signal score (0–100)"
                     hint="Conviction gate: a candidate's weighted total score must reach this to pass screening at all — below it, no signal is generated for it, no matter how thin the day. 0 disables (the score then only sorts candidates). The B-grade threshold (60 by default) is a natural starting point."

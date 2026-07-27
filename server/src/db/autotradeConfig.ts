@@ -219,6 +219,28 @@ export interface AutotradeConfig {
    *  default. 0 disables this specific filter (every relative-volume reading
    *  passes). */
   minRelVol: number;
+  /** Screener's minimum share price (2026-07-27) — previously stuck at the
+   *  engine's hardcoded $1, which let sub-$3 movers through, where the
+   *  bid-ask spread is a large fraction of the ATR stop distance and live
+   *  fills routinely lose beyond the declared stop (measured on the live
+   *  book: ~20% of all losses were incurred past the stop, concentrated in
+   *  exactly these names — a friction tax the zero-cost backtester never
+   *  shows). 0 disables. Default 1 = the engine's old constant, so an
+   *  untouched config changes nothing. */
+  minPrice: number;
+  /** Screener's minimum ~20-day average daily volume (shares) — the other
+   *  half of the liquidity floor above. 0 disables. Default 200000 = the
+   *  engine's old constant. */
+  minAvgVolume: number;
+  /** Whether the screen's discovery unions Webull's premarket movers
+   *  (unusual volume + gainers) into the candidate set (2026-07-27).
+   *  Previously hardwired ON whenever Webull was configured — there was no
+   *  way to run a universe-only loop without unplugging Webull entirely
+   *  (which live trading needs). OFF = the loop trades only the curated
+   *  `universe` list; movers auto-promotion naturally goes quiet too, since
+   *  it only ever considers movers-sourced candidates. Default true —
+   *  untouched configs keep discovering movers exactly as before. */
+  moversDiscoveryEnabled: boolean;
   /** Minimum weighted TOTAL screener score (0-100) a candidate must reach to
    *  pass screening (2026-07-26) — the conviction gate. Before this existed,
    *  the score only sorted candidates and stamped the A/B/C grade; a symbol
@@ -744,6 +766,9 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     expectancyMaxMultiplier: 1.5,
     tradeDirection: 'long',
     minRelVol: 1.5,
+    minPrice: 1,
+    minAvgVolume: 200_000,
+    moversDiscoveryEnabled: true,
     minSignalScore: 0,
     requireWeeklyTrendAlignment: false,
     relativeStrengthWeight: 0,
@@ -929,6 +954,10 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
         ? input.tradeDirection
         : d.tradeDirection,
     minRelVol: nonNeg(input.minRelVol, d.minRelVol),
+    minPrice: nonNeg(input.minPrice, d.minPrice),
+    minAvgVolume: nonNeg(input.minAvgVolume, d.minAvgVolume),
+    moversDiscoveryEnabled:
+      typeof input.moversDiscoveryEnabled === 'boolean' ? input.moversDiscoveryEnabled : d.moversDiscoveryEnabled,
     minSignalScore: pct(input.minSignalScore, d.minSignalScore),
     requireWeeklyTrendAlignment:
       typeof input.requireWeeklyTrendAlignment === 'boolean'

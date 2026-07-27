@@ -1101,7 +1101,17 @@ shouldn't be a tab-switch away.
   entries are unaffected either way — an autotrade options position is always long the
   contract, a put for a bearish read instead of a call, which is already defined-risk),
   **min relative volume** (a candidate's volume must be at least this many
-  times its own average to pass the screener), **min signal score** (2026-07-26 — the
+  times its own average to pass the screener), **min share price ($)** and **min avg
+  volume (shares)** (2026-07-27 — the liquidity floors, previously stuck at the
+  engine's hardcoded $1 / 200,000. Sub-$3 movers carry a bid-ask/slippage tax the
+  zero-cost backtester can't show — measured on the live book, roughly a fifth of all
+  bot losses landed *beyond* the declared stop, concentrated in exactly those names.
+  Raising the price floor is the single most direct way to stop paying that tax; 0
+  disables either floor), **discover Webull premarket movers** (2026-07-27 — on by
+  default, matching the old always-on behavior. Off = the loop screens only your
+  curated universe, without unplugging Webull (which live trading still needs);
+  movers auto-promotion naturally goes quiet too, since it only ever considers
+  movers-sourced candidates), **min signal score** (2026-07-26 — the
   conviction gate: a candidate's **weighted total screener score** must reach this
   0-100 floor to pass screening at all. Before this existed, the score only sorted
   candidates and stamped the A/B/C grade — a symbol scoring 3 that cleared the raw
@@ -1162,11 +1172,12 @@ shouldn't be a tab-switch away.
   in this app, so that list is entirely hand-maintained: add your own FOMC/CPI/jobs-
   report dates from the Fed's/BLS's own published calendars; nothing is pre-seeded, and
   the blackout stays off regardless of the hours value until at least one date is on
-  the list). All fourteen default to the values the loop always used before they were
+  the list). All seventeen default to the values the loop always used before they were
   configurable (trade direction to `Long`; earnings blackout's own "before" is simply
-  never checking — 0 disables it; min signal score 0 — no conviction gate; relative
-  strength weight 0, benchmark `SPY`, lookback 20 days; sentiment weight 0; macro
-  event blackout 0 hours with an empty list), so
+  never checking — 0 disables it; min share price $1 and min avg volume 200,000 — the
+  old engine constants; movers discovery on; min signal score 0 — no conviction gate;
+  relative strength weight 0, benchmark `SPY`, lookback 20 days; sentiment weight 0;
+  macro event blackout 0 hours with an empty list), so
   leaving them untouched changes nothing; the manual
   Screen/Decision preview
   below defaults to these same saved values too (so it previews what the loop would

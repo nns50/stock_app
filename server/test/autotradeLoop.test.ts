@@ -625,6 +625,9 @@ describe('runAutotradeLoopTick', () => {
   it('threads the configured screening/decision thresholds through, not the hardcoded legacy defaults', async () => {
     setAutotradeConfig({
       minRelVol: 3,
+      minPrice: 5,
+      minAvgVolume: 500_000,
+      moversDiscoveryEnabled: false,
       minSignalScore: 55,
       requireWeeklyTrendAlignment: true,
       maxTickerAtrPct: 25,
@@ -649,7 +652,7 @@ describe('runAutotradeLoopTick', () => {
     expect(mockSessionWindow).toHaveBeenCalledWith(30);
     expect(mockScreen).toHaveBeenCalledWith({
       config: {
-        filters: { minRelVol: 3, minScore: 55, requireWeeklyTrendAlignment: true },
+        filters: { minRelVol: 3, minPrice: 5, minAvgVolume: 500_000, minScore: 55, requireWeeklyTrendAlignment: true },
         weights: {
           momentum: 30,
           relativeVolume: 20,
@@ -665,6 +668,7 @@ describe('runAutotradeLoopTick', () => {
       },
       earningsBlackoutDays: 0,
       directionMode: 'long',
+      moversEnabled: false,
     });
     expect(mockDecide).toHaveBeenCalledWith([candidate('AAPL', 2)], { stopAtrMultiple: 2.5, targetRMultiple: 3 });
   });

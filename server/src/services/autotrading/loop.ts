@@ -484,6 +484,8 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       config: {
         filters: {
           minRelVol: config.minRelVol,
+          minPrice: config.minPrice,
+          minAvgVolume: config.minAvgVolume,
           minScore: config.minSignalScore,
           requireWeeklyTrendAlignment: config.requireWeeklyTrendAlignment,
         },
@@ -493,6 +495,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       },
       earningsBlackoutDays: config.earningsBlackoutDays,
       directionMode: config.tradeDirection,
+      moversEnabled: config.moversDiscoveryEnabled,
     });
     summary.candidatesScreened = screenResult.candidates.length;
 

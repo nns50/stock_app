@@ -15,6 +15,7 @@
     "capture:broker": "tsx src/scripts/captureBrokerFields.ts",
     "backfill:exits": "tsx src/scripts/backfillExitPrices.ts",
     "check:journal": "tsx src/scripts/checkJournal.ts",
+    "research": "tsx src/scripts/researchSweep.ts",
     "seed": "tsx src/scripts/seed.ts"
   },
   "dependencies": {
