@@ -56,9 +56,7 @@ import { getProvider } from '../src/providers';
 import { getNews } from '../src/services/news';
 
 const mockGetNews = vi.mocked(getNews);
-// eslint-disable-next-line import/first
 import { webullConfigured } from '../src/providers/webull/account';
-// eslint-disable-next-line import/first
 import { webullMovers } from '../src/providers/webull/movers';
 const mockWebullConfigured = vi.mocked(webullConfigured);
 const mockWebullMovers = vi.mocked(webullMovers);
