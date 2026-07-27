@@ -376,6 +376,15 @@ pin risk). The engine flags which rule is live; the same logic feeds your exit a
 A simple, robust default: **take profit into strength, cut at your stop %, and never
 hold a long option into the last few days unless it's deep ITM.**
 
+**If auto-trading trades options for you, set its stop too.** Auto-Trade's **Options
+stop-loss (%)** / **Options take-profit (%)** now apply to **live** positions as well
+as paper (2026-07-26) — but they still default to **0/off**, which leaves the 7-DTE
+time exit as a live position's only automated brake. A long option can lose its entire
+premium long before expiry; a stop of 50% of premium (the manual exit-rules default)
+with a take-profit around 50–100% is a sane starting shape. Whatever numbers you pick,
+they're % of premium (net debit for a spread), and the Journal's exit-reason badges
+will show you which rule is actually doing the closing.
+
 **Considering a roll instead of closing outright? (Options → Strategy → Roll analyzer,
 2026-07-23.)** A time-exit trigger, or an ITM short leg risking assignment, doesn't have
 to mean flat — rolling to a later expiration (and often a different strike) keeps the
@@ -412,6 +421,16 @@ A setup is only worth trading if it **outperforms**. The workflow:
 
 This loop — hypothesize → snapshot → measure forward returns → re-weight — is the
 single highest-leverage thing the app enables.
+
+**Then make the score bite.** Ranking is only half the job: without a floor, the
+auto-trade loop will still take its 6 trades a day from whatever passed the raw
+filters, even when the best available score is a 12. Once the Edge Report shows your
+top tier genuinely outperforms, set **min signal score** (auto-trade config,
+2026-07-26, 0 = off) so the loop simply sits out when nothing clears the bar — the
+B-grade threshold (60 by default) is a sensible first floor. Fewer, better trades is
+an edge in itself: every skipped low-conviction entry is commission, slippage, and a
+risk-budget slot saved for a real one. Backtest the floor first via the screener-config
+override if you want the number to be evidence rather than taste.
 
 **One weight set may not fit every market.** The same weights that reward fresh trend
 breakouts in a risk-on tape can chop you up in a risk-off one, where fading extremes pays
@@ -652,6 +671,13 @@ Spend 20 minutes every weekend in the **Journal**:
       less (or smaller) there.
 - [ ] **By grade** — are your A-setups actually your best results? If not, your grading
       criteria need work.
+- [ ] **The bot's at-entry context (2026-07-26)** — auto-traded rows now carry the raw
+      screener score, the market-regime label, market ATR%, an ET entry time, and (on
+      live bracket exits) the exit reason. Export the journal to CSV and ask: do
+      higher-score entries actually earn more? Does the system bleed in one regime and
+      earn in another? Are stops doing all the closing while targets never hit? A month
+      of trades is enough for a first read; none of these questions were answerable
+      before these fields existed.
 - [ ] **By discipline** — do checklist-followed trades beat the rushed ones? (They
       almost always do. Proof you can show yourself.)
 - [ ] **Edge Report** — are top-ranked screener picks outperforming? Re-weight if not.

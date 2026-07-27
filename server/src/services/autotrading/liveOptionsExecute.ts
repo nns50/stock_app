@@ -46,11 +46,13 @@ import {
   blendLiveOptionsPositionEntry,
   closeLiveOptionsPosition,
   LiveOptionsPosition,
+  LiveOptionsExitReason,
   getLiveOptionsPosition,
   reduceLiveOptionsPositionQuantity,
 } from '../../db/autotradeLiveOptionsPositions';
 import { computeStreaksAndDrawdown } from '../pnl';
 import { defaultExitConfig, evaluateExit } from '../../options/exitRules';
+import { convictionGrade } from './decide';
 import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskCheck';
 import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
@@ -71,11 +73,14 @@ import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../d
 // getQuote() the way a stock is.
 //
 // No bracket, ever: autotrade's options signals never carried a price-based
-// stop/target (Phase 12's confirmed close-only, time-based exit design), and
+// stop/target (Phase 12's confirmed close-only exit design — originally
+// time-based only; the configured stop-loss/take-profit percentages joined
+// 2026-07-26, still as placed CLOSING orders, never bracket legs), and
 // buildOrderRequest() only attaches a bracket to a stock or a SINGLE-strategy
 // option anyway (never a VERTICAL) -- so both an entry and an exit here are
 // always plain orders. An exit (Step C) is a SEPARATE closing order this
-// loop places itself when the time-exit trigger fires, tracked via the
+// loop places itself when an exit trigger (time / stop-loss / take-profit)
+// fires, tracked via the
 // entry/exit `role` split (db/autotradeLiveOptionsOrders.ts) rather than a
 // bracket child leg -- there's no existing "close a spread" precedent
 // anywhere in this codebase (the human Trade page only ever builds fresh
@@ -107,9 +112,13 @@ import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../d
  *  (price below the mark to guarantee a sell). */
 const OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT = 5;
 
-/** The only exit rule this phase automates -- mirrors optionsExecute.ts's own
+/** The always-on exit backstop -- mirrors optionsExecute.ts's own
  *  AUTOTRADE_TIME_EXIT_DAYS constant exactly (duplicated per this codebase's
- *  established paper/live parallel-implementation convention). */
+ *  established paper/live parallel-implementation convention). Originally the
+ *  ONLY exit rule this file automated; since 2026-07-26 the configured
+ *  optionsStopLossPct/optionsTakeProfitPct price rules apply to LIVE
+ *  positions too (checkLiveOptionsExits) -- this constant remains the
+ *  quote-free floor under both. */
 const AUTOTRADE_TIME_EXIT_DAYS = defaultExitConfig().timeExitDaysBeforeExpiry ?? 7;
 
 /** Combine the autotrade-specific LIVE OPTIONS caps with BOTH kill switches
@@ -376,6 +385,12 @@ export async function attemptLiveOptionsEntry(
   riskResult: OptionsRiskCheckResult,
   riskProfile: RiskProfileName,
   autotradeCfg: AutotradeConfig,
+  /** At-entry context (2026-07-26), recorded on the entry order row and
+   *  carried to the position at materialization — the market regime label +
+   *  market ATR% the loop read this cycle. Nullable, defaulting to null for
+   *  direct callers (e.g. tests). */
+  marketRegime: string | null = null,
+  marketAtrPct: number | null = null,
 ): Promise<LiveOptionsExecutionOutcome> {
   const symbol = signal.symbol.toUpperCase();
   if (!config.trading.placeEnabled) {
@@ -426,6 +441,19 @@ export async function attemptLiveOptionsEntry(
 
   const liveCfg = buildLiveOptionsTradingConfig(autotradeCfg);
   const buffer = 1 + OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT / 100;
+
+  // At-entry context recorded on the order row (either kind) and carried to
+  // the position at materialization — mirrors equity's orderRow fields.
+  const entryContext = {
+    grade: convictionGrade(signal.score, {
+      aMinScore: autotradeCfg.convictionGradeAMinScore,
+      bMinScore: autotradeCfg.convictionGradeBMinScore,
+    }) as string,
+    entryScore: signal.score,
+    ivRank: signal.ivRank,
+    marketRegime,
+    marketAtrPct,
+  };
 
   if (signal.kind === 'debit_spread') {
     let longFill: number;
@@ -508,6 +536,7 @@ export async function attemptLiveOptionsEntry(
       riskAmount: orderedRiskAmount,
       riskProfile,
       accountId,
+      ...entryContext,
     });
 
     if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId };
@@ -577,6 +606,7 @@ export async function attemptLiveOptionsEntry(
     riskAmount: orderedRiskAmount,
     riskProfile,
     accountId,
+    ...entryContext,
   });
 
   if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId };
@@ -656,6 +686,10 @@ export async function runLiveOptionsExecution(
    *  re-fetched here. Defaults to null (regime cut inactive) for any caller
    *  that doesn't have/need one, e.g. a direct test call. */
   marketAtrPct: number | null = null,
+  /** Market regime label the loop read this cycle (2026-07-26) — recorded on
+   *  the entry order row and carried to the position at materialization as
+   *  at-entry context; never used for sizing here. */
+  marketRegime: string | null = null,
 ): Promise<LiveOptionsExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
   const equity = cfg.accountEquityUsd ?? 0;
@@ -760,7 +794,14 @@ export async function runLiveOptionsExecution(
     // must not abort the rest of the batch.
     let outcome: LiveOptionsExecutionOutcome;
     try {
-      outcome = await attemptLiveOptionsEntry(signal, result, freshCfg.riskProfile, freshCfg);
+      outcome = await attemptLiveOptionsEntry(
+        signal,
+        result,
+        freshCfg.riskProfile,
+        freshCfg,
+        marketRegime,
+        marketAtrPct,
+      );
     } catch (err) {
       const reason = `Unexpected error placing order: ${(err as Error).message}`;
       logAutotradeEvent({ symbol, stage: 'execution', action: 'live_options_entry_failed', detail: { reason } });
@@ -825,6 +866,10 @@ async function placeLiveOptionsExit(
   pos: LiveOptionsPosition,
   accountId: string,
   cfg: AutotradeConfig,
+  /** Which rule fired — recorded on the exit order row (carried to the
+   *  position's exit_reason at materialization) and named in the
+   *  notification, so a stop-loss close is never journaled as a time-exit. */
+  exitReason: LiveOptionsExitReason,
 ): Promise<LiveOptionsExitCheckOutcome> {
   const symbol = pos.symbol;
   // Selling to close -- price BELOW the mark to guarantee a fill (the mirror
@@ -1014,10 +1059,11 @@ async function placeLiveOptionsExit(
     kind: pos.kind,
     riskProfile: pos.riskProfile,
     positionId: pos.id,
-    exitReason: 'time_exit',
+    exitReason,
   });
 
   if (!placed.ok) return { symbol, requested: false, reason: placed.reason, intentId: placed.intentId };
+  const reasonLabel = exitReason.replace('_', '-');
   logAutotradeEvent({
     symbol,
     stage: 'execution',
@@ -1028,27 +1074,66 @@ async function placeLiveOptionsExit(
       limitPrice: intent.limitPrice,
       orderId: placed.brokerOrderId,
       positionId: pos.id,
+      exitReason,
     },
     riskProfile: pos.riskProfile,
   });
   await dispatchNotifications([
     {
       title: symbol,
-      message: `Autotrade LIVE OPTIONS closing ${pos.kind === 'debit_spread' ? 'spread' : 'position'}: ${symbol} (time-exit)`,
+      message: `Autotrade LIVE OPTIONS closing ${pos.kind === 'debit_spread' ? 'spread' : 'position'}: ${symbol} (${reasonLabel})`,
     },
   ]);
   return { symbol, requested: true, intentId: placed.intentId };
 }
 
+/** Map exitRules.ts's kebab-case rule ids onto the live table's snake_case
+ *  exit_reason values — same mapping (and same defensive default) as
+ *  optionsExecute.ts's own exitReasonFor. 'delta-drift' is unreachable here
+ *  (no delta band is ever configured on this path) but mapped rather than
+ *  left to throw. */
+function liveExitReasonFor(activeRule: string): LiveOptionsExitReason {
+  switch (activeRule) {
+    case 'stop-loss':
+      return 'stop_loss';
+    case 'take-profit':
+      return 'take_profit';
+    default:
+      return 'time_exit';
+  }
+}
+
 /**
- * Check every open live options position for the time-exit trigger
- * (days-to-expiration <= AUTOTRADE_TIME_EXIT_DAYS) and PLACE a real closing
- * order for whichever fires -- the live counterpart to optionsExecute.ts's
- * checkOptionsPaperExits(), which just records a paper close. A position with
- * an exit order ALREADY in flight (pending, per listPendingLiveOptionsOrders())
- * is skipped -- the trigger condition doesn't change within the same day, so
- * without this guard every tick would submit ANOTHER closing order for the
- * same still-open (fill pending) position.
+ * Check every open live options position for an exit trigger and PLACE a real
+ * closing order for whichever fires -- the live counterpart to
+ * optionsExecute.ts's checkOptionsPaperExits(), which just records a paper
+ * close. Two kinds of trigger, shared with paper via the same exitRules.ts
+ * engine:
+ *
+ *   - time-exit (days-to-expiration <= AUTOTRADE_TIME_EXIT_DAYS) -- always on,
+ *     quote-free, the original sole automated live options exit.
+ *   - stop-loss / take-profit on the configured optionsStopLossPct /
+ *     optionsTakeProfitPct (2026-07-26; 0/unset disables each, so an untouched
+ *     config keeps the original time-only behavior AND the original provider
+ *     load -- no quote is fetched unless a price rule is actually on). For a
+ *     debit spread both rules read the NET basis (long mark minus short mark,
+ *     at entry and now), the same basis paper P&L already uses. Before this,
+ *     the configured stop/take-profit percentages applied to the PAPER book
+ *     only -- a live long option could ride to zero with the 7-DTE time exit
+ *     as the only automated brake.
+ *
+ * Evaluation quotes accept a last-trade-only price (unlike an ENTRY, which
+ * refuses one): an exit is not optional, and a dying contract's vanishing
+ * bid/ask is exactly when the stop most needs to be able to fire --
+ * placeLiveOptionsExit already journals stale pricing when it places. A
+ * failed or unusable (non-positive basis) quote skips the price rules for
+ * that cycle -- never a fabricated trigger -- leaving the time exit as the
+ * backstop, retried next cycle.
+ *
+ * A position with an exit order ALREADY in flight (pending, per
+ * listPendingLiveOptionsOrders()) is skipped -- the trigger condition doesn't
+ * change within the same day, so without this guard every tick would submit
+ * ANOTHER closing order for the same still-open (fill pending) position.
  */
 export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutcome[]> {
   // The deploy-level master gate, checked FIRST -- mirrors attemptLiveOptionsEntry()'s
@@ -1073,22 +1158,54 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
   for (const pos of open) {
     if (pendingExitPositionIds.has(pos.id)) continue;
 
+    // Fresh config per POSITION (not one snapshot for the sweep), same
+    // reasoning as runLiveOptionsExecution()'s own per-candidate refresh (an
+    // adversarial review caught this file reusing one stale snapshot here) --
+    // this loop awaits real broker round-trips between positions, and a kill
+    // switch engaged (or a stop % changed) mid-loop must affect the NEXT
+    // position immediately, not just the next cycle. Fetched BEFORE the
+    // trigger evaluation now, since the stop/take-profit thresholds
+    // themselves come from it.
+    const freshCfg = getAutotradeConfig();
+    const priceRulesActive = freshCfg.optionsStopLossPct > 0 || freshCfg.optionsTakeProfitPct > 0;
+
+    let currentBasis: number | null = null;
+    if (priceRulesActive) {
+      try {
+        if (pos.kind === 'debit_spread') {
+          const [longQ, shortQ] = await Promise.all([
+            fetchContractQuote(pos.symbol, pos.expiration, pos.strike, pos.side),
+            fetchContractQuote(pos.symbol, pos.expiration, pos.shortStrike!, pos.side),
+          ]);
+          const net = longQ.price - shortQ.price;
+          // Crossed/stale legs can put the net at or below 0, which would read
+          // as a <= -100% "loss" and fire the stop off a quote artifact every
+          // cycle (the placement path would then refuse the same numbers as
+          // "no usable exit quote" anyway). Non-positive net = no evaluation.
+          currentBasis = net > 0 ? net : null;
+        } else {
+          const q = await fetchContractQuote(pos.symbol, pos.expiration, pos.strike, pos.side);
+          currentBasis = validPremium(q.price) ? q.price : null;
+        }
+      } catch {
+        currentBasis = null; // quote unavailable — time exit still evaluates below
+      }
+    }
+
+    const entryBasis = pos.kind === 'debit_spread' ? pos.entryPrice - (pos.shortEntryPrice ?? 0) : pos.entryPrice;
     const ev = evaluateExit(
-      { entryPrice: pos.entryPrice, currentPrice: null, side: 'long', expiration: pos.expiration },
-      { timeExitDaysBeforeExpiry: AUTOTRADE_TIME_EXIT_DAYS },
+      { entryPrice: entryBasis, currentPrice: currentBasis, side: 'long', expiration: pos.expiration },
+      {
+        timeExitDaysBeforeExpiry: AUTOTRADE_TIME_EXIT_DAYS,
+        stopLossPct: freshCfg.optionsStopLossPct || undefined,
+        takeProfitPct: freshCfg.optionsTakeProfitPct || undefined,
+      },
     );
     if (!ev.triggered) continue;
 
-    // Re-fetch fresh config for EACH triggered position, same reasoning as
-    // runLiveOptionsExecution()'s own per-candidate refresh (an adversarial
-    // review caught this file reusing one stale snapshot here) -- this loop
-    // awaits real broker round-trips between positions, and a kill switch
-    // engaged mid-loop must stop the NEXT position's close immediately, not
-    // just the next cycle.
-    const freshCfg = getAutotradeConfig();
     const accountId = freshCfg.liveAccountId;
     if (!accountId) continue; // account cleared mid-loop -- don't use a stale id
-    outcomes.push(await placeLiveOptionsExit(pos, accountId, freshCfg));
+    outcomes.push(await placeLiveOptionsExit(pos, accountId, freshCfg, liveExitReasonFor(ev.activeRule!)));
   }
   return outcomes;
 }
@@ -1355,6 +1472,11 @@ function materializeOptionsEntryFill(
     // rather than inventing a synthetic per-leg split.
     rationale: `Auto-placed by autotrade — order #${intent.id}${intent.brokerOrderId ? ` (broker ${intent.brokerOrderId})` : ''}`,
     accountId: meta.accountId,
+    grade: meta.grade,
+    entryScore: meta.entryScore,
+    ivRank: meta.ivRank,
+    marketRegime: meta.marketRegime,
+    marketAtrPct: meta.marketAtrPct,
   });
   setLiveOptionsOrderPositionId(intent.id, position.id);
   logAutotradeEvent({

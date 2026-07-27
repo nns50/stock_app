@@ -155,6 +155,7 @@ const configBody = z.object({
   // --- Screening/decision thresholds ------------------------------------------
   tradeDirection: z.enum(['long', 'short', 'both']).optional(),
   minRelVol: z.number().nonnegative().optional(),
+  minSignalScore: z.number().min(0).max(100).optional(),
   requireWeeklyTrendAlignment: z.boolean().optional(),
   relativeStrengthWeight: z.number().min(0).max(100).optional(),
   benchmarkSymbol: z.string().min(1).optional(),
@@ -350,6 +351,7 @@ autotradeRouter.put(
     if (body.expectancyMaxMultiplier !== undefined) patch.expectancyMaxMultiplier = body.expectancyMaxMultiplier;
     if (body.tradeDirection !== undefined) patch.tradeDirection = body.tradeDirection;
     if (body.minRelVol !== undefined) patch.minRelVol = body.minRelVol;
+    if (body.minSignalScore !== undefined) patch.minSignalScore = body.minSignalScore;
     if (body.requireWeeklyTrendAlignment !== undefined)
       patch.requireWeeklyTrendAlignment = body.requireWeeklyTrendAlignment;
     if (body.relativeStrengthWeight !== undefined) patch.relativeStrengthWeight = body.relativeStrengthWeight;
@@ -678,6 +680,7 @@ function screenerConfigOverride(
     ...requested,
     filters: {
       minRelVol: config.minRelVol,
+      minScore: config.minSignalScore,
       requireWeeklyTrendAlignment: config.requireWeeklyTrendAlignment,
       ...requested?.filters,
     },

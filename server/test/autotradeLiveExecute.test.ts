@@ -874,7 +874,7 @@ describe('reconcileLiveOrders', () => {
       maxCorrelatedExposurePct: 6,
       maxTradesPerDay: 6,
     });
-    await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
+    await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg, 'risk-off', 2.5);
     const intentId = listIntents()[0].id;
 
     mockOrderStatus.mockResolvedValue({
@@ -898,6 +898,14 @@ describe('reconcileLiveOrders', () => {
     expect(getLiveOrder(intentId)?.grade).toBe('B');
     expect(positions[0].grade).toBe('B');
     expect(getLiveOrder(intentId)?.positionId).toBe(positions[0].id);
+    // At-entry context (2026-07-26) rides the same order-metadata path: raw
+    // score, regime label, and market ATR% land on the position, and the
+    // entry gets a real ET wall-clock time (from the order's placement
+    // moment) so the Journal's time-of-day session buckets can see it.
+    expect(positions[0].entryScore).toBe(70);
+    expect(positions[0].marketRegime).toBe('risk-off');
+    expect(positions[0].marketAtrPct).toBe(2.5);
+    expect(positions[0].entryTime).toMatch(/^\d{2}:\d{2}$/);
   });
 
   it('closes the position when a bracket exit leg unambiguously reports FILLED', async () => {
@@ -951,6 +959,8 @@ describe('reconcileLiveOrders', () => {
     expect(listPositions({ status: 'open' })).toHaveLength(0);
     const closed = listPositions({ status: 'closed' });
     expect(closed[0].exits[0].exitPrice).toBe(95);
+    // The filled STOP_LOSS leg IS the exit reason — recorded, not inferred.
+    expect(closed[0].exits[0].exitReason).toBe('stop');
   });
 
   /** Same approving risk-check attemptLiveEntry's own describe block uses. */

@@ -914,7 +914,17 @@ const LiveOptionsPositionsTable = memo(
                   <td className="td text-right tabular-nums">{exitValue === null ? '—' : fmtUsd(exitValue)}</td>
                   <td className="td">
                     {p.exitReason ? (
-                      <Badge color={p.exitReason === 'time_exit' ? 'blue' : 'slate'}>
+                      <Badge
+                        color={
+                          p.exitReason === 'take_profit'
+                            ? 'green'
+                            : p.exitReason === 'stop_loss'
+                              ? 'red'
+                              : p.exitReason === 'time_exit'
+                                ? 'blue'
+                                : 'slate'
+                        }
+                      >
                         {p.exitReason.replace(/_/g, ' ')}
                       </Badge>
                     ) : (
@@ -2303,6 +2313,7 @@ export default function AutoTradePage() {
   const [expectancyMinMultiplierDraft, setExpectancyMinMultiplierDraft] = useState<number | undefined>();
   const [expectancyMaxMultiplierDraft, setExpectancyMaxMultiplierDraft] = useState<number | undefined>();
   const [minRelVolDraft, setMinRelVolDraft] = useState<number | undefined>();
+  const [minSignalScoreDraft, setMinSignalScoreDraft] = useState<number | undefined>();
   const [requireWeeklyTrendAlignment, setRequireWeeklyTrendAlignment] = useState(false);
   const [relativeStrengthWeightDraft, setRelativeStrengthWeightDraft] = useState<number | undefined>();
   const [benchmarkSymbolDraft, setBenchmarkSymbolDraft] = useState('');
@@ -2420,6 +2431,7 @@ export default function AutoTradePage() {
     sync('expectancyMinMultiplier', setExpectancyMinMultiplierDraft);
     sync('expectancyMaxMultiplier', setExpectancyMaxMultiplierDraft);
     sync('minRelVol', setMinRelVolDraft);
+    sync('minSignalScore', setMinSignalScoreDraft);
     sync('requireWeeklyTrendAlignment', setRequireWeeklyTrendAlignment);
     sync('relativeStrengthWeight', setRelativeStrengthWeightDraft);
     sync('benchmarkSymbol', (v) => setBenchmarkSymbolDraft(v ?? ''));
@@ -2514,6 +2526,7 @@ export default function AutoTradePage() {
     expectancyMaxMultiplier?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
+    minSignalScore?: number;
     requireWeeklyTrendAlignment?: boolean;
     relativeStrengthWeight?: number;
     benchmarkSymbol?: string;
@@ -4240,6 +4253,35 @@ export default function AutoTradePage() {
                         onClick={() => minRelVolDraft != null && saveConfig({ minRelVol: minRelVolDraft })}
                         disabled={
                           minRelVolDraft == null || minRelVolDraft < 0 || minRelVolDraft === config.data?.minRelVol
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Min signal score (0–100)"
+                    hint="Conviction gate: a candidate's weighted total score must reach this to pass screening at all — below it, no signal is generated for it, no matter how thin the day. 0 disables (the score then only sorts candidates). The B-grade threshold (60 by default) is a natural starting point."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={minSignalScoreDraft}
+                        onChange={setMinSignalScoreDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save min signal score"
+                        onClick={() =>
+                          minSignalScoreDraft != null && saveConfig({ minSignalScore: minSignalScoreDraft })
+                        }
+                        disabled={
+                          minSignalScoreDraft == null ||
+                          minSignalScoreDraft < 0 ||
+                          minSignalScoreDraft > 100 ||
+                          minSignalScoreDraft === config.data?.minSignalScore
                         }
                       >
                         Save

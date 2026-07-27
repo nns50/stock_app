@@ -49,6 +49,14 @@ export interface LiveOptionsOrderMeta {
    *  materializes. Null for exit rows and legacy rows — see
    *  autotradeLiveOrders.ts's twin field for the full reasoning. */
   accountId: string | null;
+  /** Entry rows only — at-entry context carried to the same-named
+   *  autotrade_live_options_positions columns at materialization. Null for
+   *  exit rows and legacy rows. */
+  grade: string | null;
+  entryScore: number | null;
+  ivRank: number | null;
+  marketRegime: string | null;
+  marketAtrPct: number | null;
   createdAt: number;
 }
 
@@ -68,6 +76,11 @@ interface Row {
   position_id: number | null;
   exit_reason: LiveOptionsExitReason | null;
   account_id: string | null;
+  grade: string | null;
+  entry_score: number | null;
+  iv_rank: number | null;
+  market_regime: string | null;
+  market_atr_pct: number | null;
   created_at: number;
 }
 
@@ -88,6 +101,11 @@ function mapRow(r: Row): LiveOptionsOrderMeta {
     positionId: r.position_id,
     exitReason: r.exit_reason,
     accountId: r.account_id,
+    grade: r.grade ?? null,
+    entryScore: r.entry_score ?? null,
+    ivRank: r.iv_rank ?? null,
+    marketRegime: r.market_regime ?? null,
+    marketAtrPct: r.market_atr_pct ?? null,
     createdAt: r.created_at,
   };
 }
@@ -109,13 +127,20 @@ export function recordLiveOptionsEntryOrder(input: {
   riskAmount: number;
   riskProfile: string;
   accountId?: string | null;
+  /** At-entry context, carried to the position once the fill materializes. */
+  grade?: string | null;
+  entryScore?: number | null;
+  ivRank?: number | null;
+  marketRegime?: string | null;
+  marketAtrPct?: number | null;
 }): LiveOptionsOrderMeta {
   const now = Date.now();
   db.prepare(
     `INSERT INTO autotrade_live_options_orders
        (intent_id, symbol, role, kind, side, contract_symbol, strike, short_contract_symbol, short_strike,
-        expiration, risk_amount, risk_profile, position_id, account_id, created_at)
-     VALUES (?, ?, 'entry', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+        expiration, risk_amount, risk_profile, position_id, account_id,
+        grade, entry_score, iv_rank, market_regime, market_atr_pct, created_at)
+     VALUES (?, ?, 'entry', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.intentId,
     input.symbol.toUpperCase(),
@@ -129,6 +154,11 @@ export function recordLiveOptionsEntryOrder(input: {
     input.riskAmount,
     input.riskProfile,
     input.accountId ?? null,
+    input.grade ?? null,
+    input.entryScore ?? null,
+    input.ivRank ?? null,
+    input.marketRegime ?? null,
+    input.marketAtrPct ?? null,
     now,
   );
   return getLiveOptionsOrder(input.intentId)!;

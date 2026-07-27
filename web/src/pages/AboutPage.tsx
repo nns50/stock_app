@@ -96,7 +96,10 @@ export default function AboutPage() {
           <strong className="text-slate-200">conviction grade</strong> stamped on the position — <strong>A</strong> at
           or above the configured A threshold (75 by default), <strong>B</strong> at or above the B threshold (60), else{' '}
           <strong>C</strong>. The grade is metadata, not a filter: it doesn’t change which trades are taken, but it lets
-          the Journal report realized edge <em>per conviction tier</em>. An opt-in{' '}
+          the Journal report realized edge <em>per conviction tier</em>. The raw score <em>can</em> gate, though: an
+          opt-in <strong className="text-slate-200">min signal score</strong> (Auto-Trade config, 0 = off) sets a
+          weighted-total floor a candidate must reach to pass screening at all — below it, no signal is generated no
+          matter how thin the day. Separately, an opt-in{' '}
           <strong className="text-slate-200">expectancy-weighted sizing</strong> setting (off by default) then acts on
           that edge: each grade’s position size is scaled by its own realized average R —{' '}
           <span className="tabular-nums">multiplier = 1 + avg&nbsp;R</span>, clamped to a min/max bound you choose (e.g.{' '}
@@ -105,6 +108,17 @@ export default function AboutPage() {
           <span className="tabular-nums">1×</span>. It multiplies with the other sizing factors (step-down, regime,
           equity-curve) and never lifts total exposure past the aggregate-risk cap; paper and live are scored on
           separate books.
+        </p>
+        <p className="mt-2">
+          Alongside the grade, every auto-traded entry also records its <em>at-entry context</em>: the{' '}
+          <strong className="text-slate-200">raw 0–100 score</strong> itself (not just the letter), the{' '}
+          <strong className="text-slate-200">market regime</strong> label at entry (risk-on / neutral / risk-off, from
+          the same gauge the Today page shows — best-effort, blank if the read failed), the{' '}
+          <strong className="text-slate-200">market ATR%</strong> reading that cycle, the entry’s ET wall-clock time,
+          and — for options — the <strong className="text-slate-200">IV rank</strong> the decision gated on. Live
+          bracket exits additionally record <em>why</em> they closed (stop / target / time-exit). None of it changes any
+          decision; it exists so realized results can later be sliced by score band, regime, session, and exit mechanism
+          instead of guessed at.
         </p>
         <div className="mt-2 overflow-x-auto">
           <table className="w-full text-sm">

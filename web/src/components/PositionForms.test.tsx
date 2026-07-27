@@ -31,6 +31,9 @@ function positionFixture(overrides: Partial<Position> = {}): Position {
     targetPrice: null,
     sourceIntentId: null,
     accountId: null,
+    entryScore: null,
+    marketRegime: null,
+    marketAtrPct: null,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     exits: [],
@@ -257,6 +260,7 @@ describe('JournalEditModal — correcting the entry date', () => {
             fees: 0,
             notes: null,
             sourceIntentId: null,
+            exitReason: null,
             createdAt: Date.now(),
           },
         ],
@@ -276,6 +280,7 @@ describe('JournalEditModal — removing a mistaken exit (2026-07-17, multi-accou
     fees: 0,
     notes: 'Auto-closed via Webull sync — no longer held at the broker.',
     sourceIntentId: null,
+    exitReason: null,
     createdAt: Date.now(),
   };
 
@@ -337,6 +342,7 @@ describe('JournalEditModal — a failed request has to say so', () => {
     fees: 0,
     notes: null,
     sourceIntentId: null,
+    exitReason: null,
     createdAt: Date.now(),
   };
 

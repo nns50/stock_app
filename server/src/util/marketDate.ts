@@ -28,3 +28,22 @@ export function etToday(now: number = Date.now()): string {
   const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
+
+/** Wall-clock time (HH:MM, 24h) in America/New_York for `now` — the value
+ *  `positions.entry_time` expects ("optional local entry time... for
+ *  time-of-day stats"), so an autotrade fill lands in the same session
+ *  buckets (Open / Late AM / Midday / Power hour) a hand-logged trade does.
+ *  Same reasoning as etToday above: the server runs in UTC, so a naive
+ *  getHours() would put every fill 4-5 hours into the wrong session. */
+export function etTimeOfDay(now: number = Date.now()): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(now);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+  // Intl may render midnight as "24:00" with hour12: false — normalize to "00".
+  const hour = get('hour') === '24' ? '00' : get('hour');
+  return `${hour}:${get('minute')}`;
+}

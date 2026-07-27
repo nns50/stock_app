@@ -119,6 +119,10 @@ export interface ScreenerFilters {
   /** Multi-timeframe confirmation (2026-07-16) — require price to ALSO align
    *  with the chosen direction relative to its WEEKLY moving average. */
   requireWeeklyTrendAlignment?: boolean;
+  /** Minimum weighted TOTAL score (0-100) to pass filters (2026-07-26) —
+   *  unlike the other filters this reads the composite score, not one raw
+   *  indicator. 0/undefined disables. */
+  minScore?: number;
 }
 
 export interface ScreenerConfig {
@@ -293,6 +297,10 @@ export interface PositionExit {
    *  server/src/db/positions.ts. The API has always sent it; this type omitted
    *  it, so the field was invisible to the browser. */
   sourceIntentId: number | null;
+  /** Why the exit happened ('stop' | 'target' | 'time_exit' | 'manual') —
+   *  stamped by autotrade's live exit materialization, null for hand-logged
+   *  exits and rows that predate the column. */
+  exitReason: 'stop' | 'target' | 'time_exit' | 'manual' | null;
   createdAt: number;
 }
 
@@ -328,6 +336,13 @@ export interface Position {
   /** The Webull account this lot lives in — null for a manually-logged
    *  position, or a legacy row from before this field existed. */
   accountId: string | null;
+  /** At-entry context, stamped by autotrade's live materialization — the raw
+   *  screener total behind `grade`, the market regime label ('risk-on' |
+   *  'neutral' | 'risk-off'), and the market (SPY) ATR% at entry. All null
+   *  for manual/imported trades and rows that predate these fields. */
+  entryScore: number | null;
+  marketRegime: string | null;
+  marketAtrPct: number | null;
   createdAt: number;
   updatedAt: number;
   exits: PositionExit[];
@@ -1356,6 +1371,10 @@ export interface AutotradeConfig {
   // --- Screening/decision thresholds ---
   tradeDirection: AutotradeTradeDirectionMode;
   minRelVol: number;
+  /** Conviction gate (2026-07-26): minimum weighted total screener score
+   *  (0-100) a candidate must reach to pass screening at all. 0 disables —
+   *  the score then only sorts candidates and stamps the A/B/C grade. */
+  minSignalScore: number;
   requireWeeklyTrendAlignment: boolean;
   /** Relative-strength-vs-benchmark (2026-07-17): weight (0-100, same scale
    *  as every other screener component) given to how much a candidate has
@@ -2139,7 +2158,7 @@ export interface AutotradeProbationStatus {
   tradesRemaining: number;
 }
 
-export type LiveOptionsExitReason = 'time_exit' | 'manual';
+export type LiveOptionsExitReason = 'time_exit' | 'stop_loss' | 'take_profit' | 'manual';
 
 /** A REAL, live-money options position the autotrade loop itself placed
  *  (Task #70) — the options counterpart to AutotradeLivePosition, over its

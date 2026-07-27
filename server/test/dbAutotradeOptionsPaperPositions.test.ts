@@ -121,3 +121,28 @@ describe('autotradeOptionsPaperPositions', () => {
     expect(rows[1].symbol).toBe('OPPIII');
   });
 });
+
+describe('at-entry context (2026-07-26)', () => {
+  it('round-trips grade / entryScore / ivRank / marketRegime / marketAtrPct', () => {
+    const pos = openOptionsPaperPosition(
+      input({ grade: 'A', entryScore: 81.5, ivRank: 42, marketRegime: 'neutral', marketAtrPct: 2.1 }),
+    );
+    expect(pos.grade).toBe('A');
+    expect(pos.entryScore).toBe(81.5);
+    expect(pos.ivRank).toBe(42);
+    expect(pos.marketRegime).toBe('neutral');
+    expect(pos.marketAtrPct).toBe(2.1);
+    const listed = listOptionsPaperPositions({ symbol: pos.symbol })[0];
+    expect(listed.grade).toBe('A');
+    expect(listed.ivRank).toBe(42);
+  });
+
+  it('defaults every context field to null when omitted — never a guessed value', () => {
+    const pos = openOptionsPaperPosition(input());
+    expect(pos.grade).toBeNull();
+    expect(pos.entryScore).toBeNull();
+    expect(pos.ivRank).toBeNull();
+    expect(pos.marketRegime).toBeNull();
+    expect(pos.marketAtrPct).toBeNull();
+  });
+});

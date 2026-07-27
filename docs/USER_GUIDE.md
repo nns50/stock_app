@@ -722,6 +722,21 @@ trades.
   which win rate and P&L alone can't show. Same null conventions as the headline stats: `∞`
   for a group with wins and no losses yet, `—` for a group where no trade logged a stop.
   This is how you discover *which setups and which behaviors* make you money.
+- **What auto-trading now records at entry (2026-07-26).** Every trade the automated
+  loop opens — paper and live, stocks and options — is stamped with its *at-entry
+  context*: the screener's **raw 0–100 score** (not just the A/B/C grade), the
+  **market regime** label that cycle (risk-on / neutral / risk-off; best-effort — blank
+  if the read failed, never guessed), the **market ATR%** reading, and, for options,
+  the **IV rank** the decision gated on. Live-placed positions also get a real
+  **entry time** (ET), so from now on the bot's trades appear in the entry-session
+  breakdown above — they previously carried no time at all and were silently absent
+  from it. Live bracket exits record an **exit reason** (`stop` / `target` /
+  `time_exit`) on the exit itself, so you can see *which exit mechanism* is making or
+  losing the money instead of inferring it from prices. All of it is capture-only —
+  nothing about entries, sizing, or exits changes — and it flows through the CSV/JSON
+  export (new `entryTime`, `entryScore`, `marketRegime`, `marketAtrPct`, and
+  `lastExitReason` columns) so a month of trades can be sliced by score band, regime,
+  and session offline.
 
 ### Wash-sale awareness
 
@@ -1086,7 +1101,18 @@ shouldn't be a tab-switch away.
   entries are unaffected either way — an autotrade options position is always long the
   contract, a put for a bearish read instead of a call, which is already defined-risk),
   **min relative volume** (a candidate's volume must be at least this many
-  times its own average to pass the screener), **require weekly trend alignment** (a
+  times its own average to pass the screener), **min signal score** (2026-07-26 — the
+  conviction gate: a candidate's **weighted total screener score** must reach this
+  0-100 floor to pass screening at all. Before this existed, the score only sorted
+  candidates and stamped the A/B/C grade — a symbol scoring 3 that cleared the raw
+  filters could trade at full size on a thin day exactly like one scoring 90. 0
+  disables (the default, so an untouched config changes nothing); the B-grade
+  threshold — 60 by default — is a natural starting point. Applies to equity and
+  options candidates alike (options decide from the same screened set), to the manual
+  Screen/Decision preview, and — because it counts as failing screening — a mover that
+  scores below it also stops accruing movers-auto-promotion days. A backtest can apply
+  the same gate via its screener-config override, so you can measure a floor before
+  turning it on live), **require weekly trend alignment** (a
   second, longer-horizon confirmation on top of the daily setup: price must ALSO be on
   the right side of its own WEEKLY moving average — unlike the plain "require trend
   alignment" screener filter, this one is wired into the unattended loop itself, so
@@ -1136,10 +1162,11 @@ shouldn't be a tab-switch away.
   in this app, so that list is entirely hand-maintained: add your own FOMC/CPI/jobs-
   report dates from the Fed's/BLS's own published calendars; nothing is pre-seeded, and
   the blackout stays off regardless of the hours value until at least one date is on
-  the list). All thirteen default to the values the loop always used before they were
+  the list). All fourteen default to the values the loop always used before they were
   configurable (trade direction to `Long`; earnings blackout's own "before" is simply
-  never checking — 0 disables it; relative strength weight 0, benchmark `SPY`, lookback
-  20 days; sentiment weight 0; macro event blackout 0 hours with an empty list), so
+  never checking — 0 disables it; min signal score 0 — no conviction gate; relative
+  strength weight 0, benchmark `SPY`, lookback 20 days; sentiment weight 0; macro
+  event blackout 0 hours with an empty list), so
   leaving them untouched changes nothing; the manual
   Screen/Decision preview
   below defaults to these same saved values too (so it previews what the loop would
@@ -1185,11 +1212,21 @@ shouldn't be a tab-switch away.
   nothing. It's an edge _amplifier_, not a signal — validate it in the backtester
   before trusting it. This is the one place the app _adds_ risk to a live-feeling
   paper position, which is exactly why it's capped and paper/backtest-only.
-  Seven more fields do the same for an already-open **paper or backtest options**
-  position (**live options positions are untouched — still time-exit only**, the
-  same scope boundary as the five equity fields above): **Options stop-loss (%)**
-  and **Options take-profit (%)** close the position once unrealized loss/gain
-  reaches that % of premium paid (net debit, for a spread). The remaining five
+  Seven more fields do the same for an already-open **options** position:
+  **Options stop-loss (%)** and **Options take-profit (%)** close the position
+  once unrealized loss/gain reaches that % of premium paid (net debit, for a
+  spread) — and since **2026-07-26 these two apply to LIVE options positions
+  too**, not just paper/backtest: when either fires on a live position, the
+  loop places a real closing order (the same separate sell-to-close it already
+  places for a time-exit — never a bracket leg), records the reason
+  (`stop_loss` / `take_profit`), and skips re-triggering while that close is
+  still working. Before this, a live long option's only automated exit was the
+  7-days-to-expiry time exit — it could ride to worthless with no brake. Live
+  evaluation fetches a fresh mark each cycle **only when a price rule is
+  actually set** (0 keeps the original no-quote, time-only behavior); a cycle
+  whose quote is unavailable or unusable skips the price rules that cycle
+  (never fabricating a trigger) and the time exit remains the backstop. The
+  remaining five stay **paper/backtest-only** and
   mirror the equity breakeven/trailing/partial-exit fields above, but in
   percentage-of-premium terms rather than R-multiples — a long option/spread has
   no ATR-based stop price to measure R against: **Options breakeven trigger (%)**
@@ -1345,10 +1382,14 @@ shouldn't be a tab-switch away.
   order; a debit spread places **one** combo order for both legs together, never two
   separate orders. Both **skip any contract with no live bid/ask** — where the only price
   available is an old last-trade print, an entry is declined rather than opened at a limit
-  derived from it (the skip is journaled with the reason). The automated exit is the same
-  close-only, time-based rule paper options trading already uses (no price-based
-  stop/target) — but here it places a **real** closing order (a single-leg sell, or both
-  spread legs together as one combo) instead of just recording a paper close. An exit
+  derived from it (the skip is journaled with the reason). The automated exits are the same
+  close-only rules paper options trading already uses — the always-on **time exit** near
+  expiry, plus (2026-07-26) the configured **Options stop-loss (%)** / **Options
+  take-profit (%)** — but here a trigger places a **real** closing order (a single-leg
+  sell, or both spread legs together as one combo) instead of just recording a paper
+  close, with the reason (`stop_loss` / `take_profit` / `time_exit`) recorded on the
+  exit and shown by the table's Reason badge. There's never a resting bracket: a live
+  options exit is always a fresh closing order the loop places when its rule fires. An exit
   makes the *opposite* call on a stale price: it still places (declining would just leave
   the position drifting to expiration, which is what the time exit exists to prevent) but
   journals that the close may rest unfilled, which feeds the unresolved-order alert below.

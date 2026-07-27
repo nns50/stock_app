@@ -38,11 +38,16 @@ const POSITION_COLUMNS = [
   'multiplier',
   'entryPrice',
   'entryDate',
+  'entryTime',
   'fees',
   'exitsCount',
   'lastExitDate',
+  'lastExitReason',
   'realizedPnl',
   'grade',
+  'entryScore',
+  'marketRegime',
+  'marketAtrPct',
   'tags',
   'notes',
   'stopPrice',
@@ -52,6 +57,7 @@ const POSITION_COLUMNS = [
 
 function positionRow(p: Position): unknown[] {
   const lastExit = p.exits.length ? p.exits[p.exits.length - 1].exitDate : '';
+  const lastExitReason = p.exits.length ? (p.exits[p.exits.length - 1].exitReason ?? '') : '';
   return [
     p.id,
     p.status,
@@ -65,12 +71,17 @@ function positionRow(p: Position): unknown[] {
     p.multiplier,
     p.entryPrice,
     p.entryDate ?? '', // blank, not the word "null" — an unknown date is an empty cell
+    p.entryTime ?? '',
     p.fees,
     p.exits.length,
     lastExit,
+    lastExitReason,
     // Realized P&L is meaningful for closed/partially-closed trades; 0 otherwise.
     Number(realizedPnlOf(p).toFixed(2)),
     p.grade ?? '',
+    p.entryScore ?? '',
+    p.marketRegime ?? '',
+    p.marketAtrPct ?? '',
     p.tags.join('|'),
     p.notes ?? '',
     p.stopPrice ?? '',

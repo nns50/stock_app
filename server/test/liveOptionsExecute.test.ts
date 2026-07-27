@@ -1636,3 +1636,157 @@ describe('reconcileLiveOptionsOrders — partial fills', () => {
     expect(open[0].entryPrice).toBeCloseTo(4.1); // average, not an inflated slice price
   });
 });
+
+describe('checkLiveOptionsExits — price-based exits (2026-07-26)', () => {
+  // Every position here expires 2030-01-18 (openLivePosition's default), so
+  // the always-on time exit can never be what fires — any trigger observed
+  // is the stop-loss/take-profit path under test.
+
+  it('places a stop-loss close when unrealized loss reaches optionsStopLossPct, and records the reason', async () => {
+    setAutotradeConfig(liveConfig({ optionsStopLossPct: 50 }));
+    const pos = openLivePosition({ entryPrice: 3 });
+    // mark 1.4 → (1.4 - 3) / 3 = -53.3% ≤ -50% → stop fires
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 1.4 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SL-1' });
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', requested: true });
+    expect(getLiveOptionsOrder(outcomes[0].intentId!)).toMatchObject({
+      role: 'exit',
+      positionId: pos.id,
+      exitReason: 'stop_loss',
+    });
+    const placedEvent = listAutotradeEvents({}).find((e) => e.action === 'live_options_exit_placed')!;
+    expect(JSON.parse(placedEvent.detail!)).toMatchObject({ exitReason: 'stop_loss' });
+  });
+
+  it('places a take-profit close when unrealized gain reaches optionsTakeProfitPct', async () => {
+    setAutotradeConfig(liveConfig({ optionsTakeProfitPct: 80 }));
+    const pos = openLivePosition({ entryPrice: 3 });
+    // mark 5.5 → (5.5 - 3) / 3 = +83.3% ≥ +80% → take-profit fires
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 5.5 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-TP-1' });
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', requested: true });
+    expect(getLiveOptionsOrder(outcomes[0].intentId!)).toMatchObject({ exitReason: 'take_profit' });
+  });
+
+  it('fetches a quote but places nothing while the position sits inside both thresholds', async () => {
+    setAutotradeConfig(liveConfig({ optionsStopLossPct: 50, optionsTakeProfitPct: 80 }));
+    openLivePosition({ entryPrice: 3 });
+    const provider = chainsFor({ AAPL: { side: 'call', strike: 100, mark: 2.7 } }); // -10%: neither rule
+    mockGetProvider.mockReturnValue(provider as never);
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes).toEqual([]);
+    expect(provider.getOptionsChain).toHaveBeenCalled(); // price rules DID evaluate
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('never fabricates a trigger when the evaluation quote is unavailable', async () => {
+    setAutotradeConfig(liveConfig({ optionsStopLossPct: 50 }));
+    openLivePosition({ entryPrice: 3 });
+    mockGetProvider.mockReturnValue({
+      getOptionsChain: vi.fn(async () => {
+        throw new Error('provider down');
+      }),
+    } as never);
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes).toEqual([]); // price rules skipped this cycle; far-out expiry means no time exit either
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('still evaluates off a last-trade-only price — a dying contract with no bid/ask is when the stop matters most', async () => {
+    setAutotradeConfig(liveConfig({ optionsStopLossPct: 50 }));
+    const pos = openLivePosition({ entryPrice: 3 });
+    // No mark at all — only an old print at 0.9 → -70% → stop fires anyway.
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, last: 0.9 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SL-STALE' });
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', requested: true });
+    expect(getLiveOptionsOrder(outcomes[0].intentId!)).toMatchObject({ exitReason: 'stop_loss' });
+  });
+
+  it('evaluates a debit spread on its NET basis, and ignores a crossed (non-positive) net quote', async () => {
+    setAutotradeConfig(liveConfig({ optionsStopLossPct: 50 }));
+    openLivePosition({
+      kind: 'debit_spread',
+      contractSymbol: 'AAPL-long',
+      strike: 100,
+      shortContractSymbol: 'AAPL-short',
+      shortStrike: 110,
+      entryPrice: 3,
+      shortEntryPrice: 1, // entry net basis = 2
+    });
+    // Crossed/stale legs: net 0.9 - 1.0 <= 0 — would read as < -100% "loss";
+    // must be treated as no quote, not a trigger.
+    mockGetProvider.mockReturnValue(
+      chainsFor({
+        AAPL: [
+          { side: 'call', strike: 100, mark: 0.9 },
+          { side: 'call', strike: 110, mark: 1.0 },
+        ],
+      }) as never,
+    );
+    expect(await checkLiveOptionsExits()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+
+    // Real quotes: net 1.6 - 0.8 = 0.8 → (0.8 - 2) / 2 = -60% ≤ -50% → stop fires.
+    mockGetProvider.mockReturnValue(
+      chainsFor({
+        AAPL: [
+          { side: 'call', strike: 100, mark: 1.6 },
+          { side: 'call', strike: 110, mark: 0.8 },
+        ],
+      }) as never,
+    );
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockAccountType.mockResolvedValue('INDIVIDUAL_MARGIN');
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SL-SPREAD' });
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', requested: true });
+    expect(getLiveOptionsOrder(outcomes[0].intentId!)).toMatchObject({ kind: 'debit_spread', exitReason: 'stop_loss' });
+  });
+
+  it("carries 'stop_loss' all the way onto the closed position once the fill reconciles", async () => {
+    setAutotradeConfig(liveConfig({ optionsStopLossPct: 50 }));
+    const pos = openLivePosition({ entryPrice: 3, quantity: 2 });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 1.4 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SL-FILL' });
+    await checkLiveOptionsExits();
+    const exitIntentId = listPendingLiveOptionsOrders().find((o) => o.role === 'exit')!.intentId;
+
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: 2,
+      filledPrice: 1.35,
+    } as WebullOrderStatus);
+
+    const outcomes = await reconcileLiveOptionsOrders();
+    expect(outcomes).toEqual([{ intentId: exitIntentId, symbol: 'AAPL', changed: true, action: 'exit_filled' }]);
+    expect(getLiveOptionsPosition(pos.id)).toMatchObject({
+      status: 'closed',
+      exitPrice: 1.35,
+      exitReason: 'stop_loss',
+    });
+  });
+});
