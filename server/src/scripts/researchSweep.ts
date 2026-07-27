@@ -17,7 +17,12 @@
 //   --symbols  a,b,c        comma-separated (required; the API caps at 50)
 //   --from/--to YYYY-MM-DD  backtest window (required; span capped at 1095 days)
 //   --split    YYYY-MM-DD   walk-forward split (required; from <= split < to)
-//   --experiments list      subset of: exits,minscore,direction,weights (default all)
+//   --experiments list      subset of: exits,minscore,direction,weights,ivrv
+//                           (default: the four equity sets; `ivrv` is OPT-IN —
+//                           it runs the OPTIONS walk-forward, whose first run
+//                           fetches option contract references and per-contract
+//                           bars from Polygon, far heavier than equity daily
+//                           bars. Run it over a HANDFUL of liquid names.)
 //   --equity   N            starting equity (default 100000)
 //   --risk     NAME         MODERATE | AGGRESSIVE (default MODERATE)
 //   --max-concurrent N      max concurrent positions (default 3)
@@ -33,6 +38,7 @@
 
 import fs from 'node:fs';
 import {
+  ALL_EXPERIMENT_NAMES,
   allZeroTrades,
   buildExperiments,
   EXPERIMENT_NAMES,
@@ -60,12 +66,15 @@ function requireArg(name: string): string {
 }
 
 const USAGE = `npm run research -- --symbols A,B,C --from YYYY-MM-DD --to YYYY-MM-DD --split YYYY-MM-DD
-  [--experiments exits,minscore,direction,weights] [--equity 100000] [--risk MODERATE]
+  [--experiments exits,minscore,direction,weights,ivrv] [--equity 100000] [--risk MODERATE]
   [--max-concurrent 3] [--base http://localhost:3001] [--password APP_PASSWORD] [--code TOTP]
   [--out research-results.json]
 
 Requires a RUNNING server (npm run dev). Symbols cap at 50, window span at 1095 days,
-and from <= split < to. See this file's header comment for the full story.`;
+and from <= split < to. The default experiment set is the four equity ones; 'ivrv'
+(the options-engine IV/RV cheapness-gate ladder) is opt-in because its first run
+fetches option contract data from Polygon — run it over a few liquid names.
+See this file's header comment for the full story.`;
 
 async function main(): Promise<void> {
   if (process.argv.includes('--help')) {
@@ -85,13 +94,15 @@ async function main(): Promise<void> {
   const to = requireArg('to');
   const splitDate = requireArg('split');
 
+  // Default = the four equity sets. `ivrv` (the options-engine IV/RV ladder)
+  // is deliberately opt-in — see the header comment on its data cost.
   const experimentsArg = (argValue('experiments') ?? EXPERIMENT_NAMES.join(','))
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  const unknown = experimentsArg.filter((e) => !(EXPERIMENT_NAMES as readonly string[]).includes(e));
+  const unknown = experimentsArg.filter((e) => !(ALL_EXPERIMENT_NAMES as readonly string[]).includes(e));
   if (unknown.length) {
-    console.error(`Unknown experiment(s): ${unknown.join(', ')}. Valid: ${EXPERIMENT_NAMES.join(', ')}`);
+    console.error(`Unknown experiment(s): ${unknown.join(', ')}. Valid: ${ALL_EXPERIMENT_NAMES.join(', ')}`);
     process.exit(1);
   }
 
@@ -144,7 +155,7 @@ async function main(): Promise<void> {
   for (const [i, v] of variants.entries()) {
     process.stdout.write(`[${i + 1}/${variants.length}] ${v.experiment} · ${v.label} … `);
     try {
-      const res = await fetch(`${base}/api/autotrade/backtest/walk-forward`, {
+      const res = await fetch(`${base}${v.endpoint}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
         body: JSON.stringify(v.body),

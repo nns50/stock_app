@@ -373,8 +373,11 @@ premium), while respecting that **time and volatility work against long options.
   vol, with **~1.0** meaning "implied no richer than realized". Expect it to cut trade
   count — its whole job is skipping entries where the premium itself is the losing
   bet — and like every gate here, **backtest it first**: the options/combined backtest
-  API accepts the same `maxIvRvRatio` (via `optionsDecisionConfig`), so you can
-  measure what the gate would have skipped before trusting it live.
+  API accepts the same `maxIvRvRatio` (via `optionsDecisionConfig`), and
+  `npm run research -- --experiments ivrv` runs the pre-registered ratio ladder
+  (off/1.5/1.2/1.0/0.8) through the options walk-forward for you, ranked by
+  out-of-sample expectancy — so you can measure what the gate would have skipped
+  before trusting it live.
 - Give yourself **enough DTE** that time decay isn't brutal for your hold (swing trades
   generally want weeks, not days).
 
@@ -438,7 +441,10 @@ single highest-leverage thing the app enables.
 runs a pre-registered set of walk-forward experiments against a running instance —
 exit geometry (the shipped 2R bracket vs. breakeven+trailing "runner" shapes),
 min-signal-score at 0/40/60/75, long-only vs. both directions, and two
-relative-strength-tilted weight presets — and ranks every variant by
+relative-strength-tilted weight presets, plus an **opt-in** options-engine set
+(`--experiments ivrv`): the IV/RV cheapness-gate ladder at off/1.5/1.2/1.0/0.8,
+opt-in because its first run fetches option contract data from Polygon (run it over
+a few liquid names) — and ranks every variant by
 **out-of-sample** expectancy with the server's own bootstrap CI and p-value. The
 discipline is baked in: one axis per experiment, OOS-only verdicts, and a closing
 reminder that a sweep is many looks at one history — treat a winner as a hypothesis

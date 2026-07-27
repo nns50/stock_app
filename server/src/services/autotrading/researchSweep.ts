@@ -32,9 +32,17 @@ export interface SweepBase {
   maxConcurrentPositions: number;
 }
 
+/** The two walk-forward engines a variant can target. Same response envelope
+ *  ({inSample/outOfSample: {report, stats, significance}, excludedSymbols,
+ *  errors}), so the script's handling is endpoint-agnostic. */
+export const EQUITY_WALK_FORWARD_PATH = '/api/autotrade/backtest/walk-forward';
+export const OPTIONS_WALK_FORWARD_PATH = '/api/autotrade/backtest-options/walk-forward';
+
 export interface SweepVariant {
   experiment: string;
   label: string;
+  /** API path to POST `body` to — equity or options walk-forward. */
+  endpoint: string;
   /** A COMPLETE walk-forward request body — post as-is. */
   body: Record<string, unknown>;
 }
@@ -66,8 +74,34 @@ function baseBody(base: SweepBase): Record<string, unknown> {
   };
 }
 
+/** Base body for the OPTIONS walk-forward — same underlying screen (complete
+ *  weights/filters, same shallow-merge trap) but no equity decisionConfig:
+ *  the options engine's own contract-selection and time-exit defaults are the
+ *  shipped behavior under test. */
+function optionsBaseBody(base: SweepBase): Record<string, unknown> {
+  return {
+    symbols: base.symbols,
+    from: base.from,
+    to: base.to,
+    splitDate: base.splitDate,
+    riskProfile: base.riskProfile,
+    startingEquity: base.startingEquity,
+    maxConcurrentPositions: base.maxConcurrentPositions,
+    screenerConfig: { weights: completeWeights(), filters: completeFilters() },
+  };
+}
+
+/** The DEFAULT experiment set — every variant here hits the EQUITY walk-forward,
+ *  whose data cost is daily bars only (cheap, and cached after run #1). */
 export const EXPERIMENT_NAMES = ['exits', 'minscore', 'direction', 'weights'] as const;
-export type ExperimentName = (typeof EXPERIMENT_NAMES)[number];
+/** OPT-IN experiments, excluded from the default run because they hit the
+ *  OPTIONS walk-forward: the first run fetches option CONTRACT references and
+ *  per-contract price bars from Polygon — far heavier than equity daily bars,
+ *  and painful on a rate-limited key with a wide symbol list. Run explicitly
+ *  via `--experiments ivrv`, ideally over a handful of liquid names. */
+export const OPTIN_EXPERIMENT_NAMES = ['ivrv'] as const;
+export const ALL_EXPERIMENT_NAMES = [...EXPERIMENT_NAMES, ...OPTIN_EXPERIMENT_NAMES] as const;
+export type ExperimentName = (typeof ALL_EXPERIMENT_NAMES)[number];
 
 /**
  * The pre-registered experiment sets. Each varies ONE axis; everything else
@@ -85,13 +119,22 @@ export type ExperimentName = (typeof EXPERIMENT_NAMES)[number];
  * - `weights`: default vs a relative-strength tilt (cross-sectional momentum
  *   is the best-evidenced component and ships at weight 0) vs a trend/RS
  *   shape that also drops the "more ATR is better" volatility component.
+ * - `ivrv` (opt-in, options engine): the IV/RV cheapness-gate ladder — long
+ *   premium pays the variance risk premium whenever implied outruns realized
+ *   vol (the Goyal–Saretto direction), so the gate should earn its trade-count
+ *   cut. Off / 1.5 / 1.2 / 1.0 / 0.8.
  */
 export function buildExperiments(base: SweepBase, which: readonly ExperimentName[]): SweepVariant[] {
   const variants: SweepVariant[] = [];
-  const add = (experiment: string, label: string, patch: (b: Record<string, unknown>) => void) => {
-    const body = baseBody(base);
+  const add = (
+    experiment: string,
+    label: string,
+    patch: (b: Record<string, unknown>) => void,
+    opts: { endpoint?: string; body?: Record<string, unknown> } = {},
+  ) => {
+    const body = opts.body ?? baseBody(base);
     patch(body);
-    variants.push({ experiment, label, body });
+    variants.push({ experiment, label, endpoint: opts.endpoint ?? EQUITY_WALK_FORWARD_PATH, body });
   };
 
   if (which.includes('exits')) {
@@ -160,6 +203,30 @@ export function buildExperiments(base: SweepBase, which: readonly ExperimentName
         filters: completeFilters(),
       };
     });
+  }
+
+  // OPT-IN (see OPTIN_EXPERIMENT_NAMES): the IV/RV cheapness-gate ladder, on
+  // the OPTIONS walk-forward. One axis — optionsDecisionConfig.maxIvRvRatio —
+  // from off through progressively stricter "implied must be no richer than
+  // realized" cuts. 1.0 is the natural boundary (implied == realized); 1.5/1.2
+  // are tolerance bands above it and 0.8 demands premium strictly BELOW
+  // realized. Expect trade count to fall as the ratio tightens — the question
+  // the OOS column answers is whether expectancy rises enough to justify it.
+  if (which.includes('ivrv')) {
+    add('ivrv', 'gate off (baseline)', () => {}, {
+      endpoint: OPTIONS_WALK_FORWARD_PATH,
+      body: optionsBaseBody(base),
+    });
+    for (const ratio of [1.5, 1.2, 1.0, 0.8]) {
+      add(
+        'ivrv',
+        `maxIvRvRatio ${ratio}`,
+        (b) => {
+          b.optionsDecisionConfig = { maxIvRvRatio: ratio };
+        },
+        { endpoint: OPTIONS_WALK_FORWARD_PATH, body: optionsBaseBody(base) },
+      );
+    }
   }
 
   return variants;
