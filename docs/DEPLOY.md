@@ -230,6 +230,10 @@ fly ssh console -a your-stock-app -C \
    --from 2024-08-01 --to 2026-07-25 --split 2025-12-01"
 ```
 
+An instance with MFA enforced needs the current TOTP too: add `--code 123456` next to
+`--password` (the login is a single request at script start, well inside one code's
+validity window).
+
 If the public URL is live you can point `--base` straight at `https://your-app.fly.dev`;
 should the first (cache-warming) variant time out at the edge, just re-run — the bar
 cache persisted, so the retry is pure local compute.

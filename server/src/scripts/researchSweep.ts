@@ -23,6 +23,7 @@
 //   --max-concurrent N      max concurrent positions (default 3)
 //   --base     URL          server base URL (default http://localhost:3001)
 //   --password PW           APP_PASSWORD, when the instance has auth enabled
+//   --code     NNNNNN       current TOTP code, when the instance enforces MFA
 //   --out      FILE         JSON results path (default research-results.json)
 //
 // The first run over a new (symbols x window) pays the provider fetches; the
@@ -57,7 +58,8 @@ function requireArg(name: string): string {
 
 const USAGE = `npm run research -- --symbols A,B,C --from YYYY-MM-DD --to YYYY-MM-DD --split YYYY-MM-DD
   [--experiments exits,minscore,direction,weights] [--equity 100000] [--risk MODERATE]
-  [--max-concurrent 3] [--base http://localhost:3001] [--password APP_PASSWORD] [--out research-results.json]
+  [--max-concurrent 3] [--base http://localhost:3001] [--password APP_PASSWORD] [--code TOTP]
+  [--out research-results.json]
 
 Requires a RUNNING server (npm run dev). Symbols cap at 50, window span at 1095 days,
 and from <= split < to. See this file's header comment for the full story.`;
@@ -97,16 +99,23 @@ async function main(): Promise<void> {
   const outPath = argValue('out') ?? 'research-results.json';
 
   // Cookie auth (sa_session) — only needed when the instance sets APP_PASSWORD.
+  // --code carries the current TOTP when the instance enforces MFA; it's a
+  // one-shot login at script start, well inside a code's validity window.
   let cookie = '';
   const password = argValue('password');
   if (password) {
+    const code = argValue('code');
     const res = await fetch(`${base}/api/auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify(code ? { password, code } : { password }),
     });
     if (!res.ok) {
-      console.error(`Login failed (${res.status}): ${await res.text()}`);
+      const text = await res.text();
+      console.error(`Login failed (${res.status}): ${text}`);
+      if (text.includes('mfa_required')) {
+        console.error('This instance enforces MFA — re-run with --code <current 6-digit TOTP>.');
+      }
       process.exit(1);
     }
     const setCookie = res.headers.get('set-cookie') ?? '';

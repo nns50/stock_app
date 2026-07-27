@@ -264,7 +264,8 @@ npm run research -- \
 ```
 
 `--experiments exits,minscore,direction,weights` picks a subset; `--password` logs
-in first when `APP_PASSWORD` is set; `--out` names the JSON results file. The first
+in first when `APP_PASSWORD` is set (add `--code <TOTP>` if MFA is enforced);
+`--out` names the JSON results file. The first
 variant pays the provider fetches, then the bar cache makes the rest local compute.
 Read `docs/STRATEGY_PLAYBOOK.md`'s backtest-reality sections before acting on a
 winner — the engine models zero slippage/commissions, and a sweep is many looks at
