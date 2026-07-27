@@ -45,8 +45,20 @@ interface PolygonAggsResponse {
   message?: string;
 }
 
-function mapBar(b: PolygonBar): Candle {
-  return { time: b.t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v };
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function mapBar(b: PolygonBar, timeframe: Timeframe): Candle {
+  // Polygon stamps a daily/weekly aggregate's `t` at midnight EASTERN — 04:00
+  // or 05:00 UTC depending on DST — while the backtest engines iterate
+  // calendar days at midnight UTC and match bars to days by EXACT equality
+  // (backtest.ts's `candles[idx].time !== dayMs` guard). Un-normalized, a real
+  // Polygon daily bar therefore never matches its own trading day and the
+  // whole simulation silently no-ops: zero trades, zero errors. Floor
+  // day-level timeframes to UTC midnight of the same calendar date (midnight
+  // ET is always later than midnight UTC, so the date is unchanged); intraday
+  // bars keep their real timestamps.
+  const time = timeframe === 'daily' || timeframe === 'weekly' ? b.t - (b.t % DAY_MS) : b.t;
+  return { time, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v };
 }
 
 function timespanFor(timeframe: Timeframe): { multiplier: number; timespan: string } {
@@ -92,7 +104,7 @@ export async function fetchPolygonBars(
     if (!res.ok) {
       throw new PolygonError(body.error || body.message || `Polygon request failed (${res.status})`, res.status);
     }
-    for (const bar of body.results ?? []) bars.push(mapBar(bar));
+    for (const bar of body.results ?? []) bars.push(mapBar(bar, timeframe));
     url = body.next_url || undefined;
   }
   return bars;
