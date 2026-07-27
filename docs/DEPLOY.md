@@ -213,6 +213,27 @@ Flags pass through the same way, minus the `--` separator npm needs: append `--j
 `--apply`, `--force` directly. Prefer `fly ssh console` with no `-C` if you want a shell
 to poke around in.
 
+**`npm run research` is the exception — it's an HTTP client, not a DB script.** The
+walk-forward sweeps execute server-side (your deployed app's Polygon key and bar
+cache), so the script runs wherever is convenient and just needs the API's URL:
+
+```bash
+# From a local clone, tunneled (robust for the slow first, cache-warming variant):
+fly proxy 3001:3001 -a your-stock-app          # terminal 1
+npm run research -- --base http://localhost:3001 --password 'your-APP_PASSWORD' \
+  --symbols AAPL,MSFT,NVDA --from 2024-08-01 --to 2026-07-25 --split 2025-12-01
+
+# Or on the machine itself (compiled, like the scripts above; results print to stdout):
+fly ssh console -a your-stock-app -C \
+  "node /app/server/dist/scripts/researchSweep.js --base http://localhost:3001 \
+   --password 'your-APP_PASSWORD' --symbols AAPL,MSFT,NVDA \
+   --from 2024-08-01 --to 2026-07-25 --split 2025-12-01"
+```
+
+If the public URL is live you can point `--base` straight at `https://your-app.fly.dev`;
+should the first (cache-warming) variant time out at the edge, just re-run — the bar
+cache persisted, so the retry is pure local compute.
+
 **Never run `seed.js` against a real volume** — it adds demo trades to your journal.
 
 #### Always pass `DATABASE_PATH` explicitly
