@@ -47,6 +47,38 @@ interface PolygonAggsResponse {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Max 429 retries per page — at the free tier's 5 req/min, a long multi-page
+ *  fetch WILL hit the limiter repeatedly; failing the whole backtest on the
+ *  first 429 made any sizable options-contract fetch effectively impossible. */
+const MAX_RATE_LIMIT_RETRIES = 8;
+const DEFAULT_RATE_LIMIT_WAIT_S = 15;
+
+/**
+ * GET one Polygon JSON page with Bearer auth, retrying HTTP 429 with a
+ * backoff that honors Retry-After when present. Throws PolygonError on any
+ * other non-ok response (or when the retries run out). Shared by the bar and
+ * option-contract clients so both survive rate-limited multi-page fetches.
+ */
+export async function fetchPolygonPage<T extends { error?: string; message?: string }>(
+  url: string,
+  apiKey: string,
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+    if (res.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
+      const retryAfter = Number(res.headers?.get?.('retry-after'));
+      const waitS = Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter : DEFAULT_RATE_LIMIT_WAIT_S;
+      await new Promise((resolve) => setTimeout(resolve, waitS * 1000));
+      continue;
+    }
+    const body = (await res.json()) as T;
+    if (!res.ok) {
+      throw new PolygonError(body.error || body.message || `Polygon request failed (${res.status})`, res.status);
+    }
+    return body;
+  }
+}
+
 function mapBar(b: PolygonBar, timeframe: Timeframe): Candle {
   // Polygon stamps a daily/weekly aggregate's `t` at midnight EASTERN — 04:00
   // or 05:00 UTC depending on DST — while the backtest engines iterate
@@ -99,11 +131,9 @@ export async function fetchPolygonBars(
 
   const bars: Candle[] = [];
   for (let page = 0; url && page < MAX_PAGES; page++) {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
-    const body = (await res.json()) as PolygonAggsResponse;
-    if (!res.ok) {
-      throw new PolygonError(body.error || body.message || `Polygon request failed (${res.status})`, res.status);
-    }
+    // Explicitly annotated — inferring it would circle through `url`'s own
+    // control-flow narrowing (TS7022), since `url` is reassigned from `body`.
+    const body: PolygonAggsResponse = await fetchPolygonPage<PolygonAggsResponse>(url, apiKey);
     for (const bar of body.results ?? []) bars.push(mapBar(bar, timeframe));
     url = body.next_url || undefined;
   }

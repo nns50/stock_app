@@ -1,5 +1,5 @@
 import { config } from '../../config';
-import { PolygonError } from './polygonClient';
+import { fetchPolygonPage, PolygonError } from './polygonClient';
 
 // ---------------------------------------------------------------------------
 // Polygon.io options CONTRACT REFERENCE data (which contracts — strike,
@@ -100,11 +100,9 @@ export async function fetchPolygonOptionContracts(
       `&expiration_date.gte=${fromExpiration}&expiration_date.lte=${toExpiration}&expired=${expired}&limit=1000`;
 
     for (let page = 0; url && page < MAX_PAGES; page++) {
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
-      const body = (await res.json()) as PolygonContractsResponse;
-      if (!res.ok) {
-        throw new PolygonError(body.error || body.message || `Polygon request failed (${res.status})`, res.status);
-      }
+      // Explicitly annotated — same TS7022 inference-cycle avoidance as
+      // fetchPolygonBars' own call site.
+      const body: PolygonContractsResponse = await fetchPolygonPage<PolygonContractsResponse>(url, apiKey);
       for (const c of body.results ?? []) {
         const mapped = mapContract(c);
         if (mapped) byTicker.set(mapped.ticker, mapped);

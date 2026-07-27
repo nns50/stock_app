@@ -78,6 +78,16 @@ describe('runOptionsBacktest', () => {
     expect(mockGetBars).toHaveBeenCalledWith('OK1', 'daily', expect.any(String), expect.any(String));
   });
 
+  it("reports a failed contract fetch as that symbol's error instead of 500ing the whole run", async () => {
+    mockGetBars.mockResolvedValue([bar('2024-01-01'), bar('2024-01-02')]);
+    mockGetContracts.mockRejectedValue(new Error('Polygon request failed (429)'));
+    const report = await runOptionsBacktest(cfg());
+    expect(report.errors).toEqual([
+      { symbol: 'OK1', message: expect.stringContaining('option contracts fetch failed') },
+    ]);
+    expect(report.trades).toEqual([]); // the symbol simply has no contracts — the run still completes
+  });
+
   it('excludes a sector-classified real-estate symbol before fetching any bars or contracts for it', async () => {
     mockClassifySector.mockImplementation(async (s) =>
       s === 'RE2'

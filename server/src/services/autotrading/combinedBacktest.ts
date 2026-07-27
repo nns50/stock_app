@@ -322,10 +322,19 @@ export async function simulateCombinedBacktest(
   const tradingDays = Array.from(dateSet).sort();
 
   const barsMemo = new Map<string, Candle[]>();
+  // A failed contract-bar fetch degrades to "no bars" and reports through the
+  // errors channel instead of throwing the whole simulation away as a 500 —
+  // see optionsBacktest.ts's identical guard.
+  const barErrors = new Map<string, string>();
   const getContractBars = async (ticker: string): Promise<Candle[]> => {
     if (!barsMemo.has(ticker)) {
-      const bars = await getHistoricalBars(ticker, 'daily', addDays(cfg.from, -WARMUP_PADDING_DAYS), cfg.to);
-      barsMemo.set(ticker, bars);
+      try {
+        const bars = await getHistoricalBars(ticker, 'daily', addDays(cfg.from, -WARMUP_PADDING_DAYS), cfg.to);
+        barsMemo.set(ticker, bars);
+      } catch (err) {
+        barErrors.set(ticker, (err as Error).message);
+        barsMemo.set(ticker, []);
+      }
     }
     return barsMemo.get(ticker)!;
   };
@@ -1334,7 +1343,7 @@ export async function simulateCombinedBacktest(
     startingEquity: cfg.startingEquity,
     finalEquity: equity,
     excludedSymbols: [],
-    errors: [],
+    errors: Array.from(barErrors, ([symbol, message]) => ({ symbol, message })),
     optionsSkipped,
   };
 }
@@ -1358,8 +1367,13 @@ export async function runCombinedBacktest(cfg: CombinedBacktestConfig): Promise<
   const maxDte = defaultAutotradeEntryConfig('call').maxDaysToExpiration ?? 60;
   const contractsBySymbol = new Map<string, OptionContractRef[]>();
   for (const symbol of historyBySymbol.keys()) {
-    const contracts = await getHistoricalOptionContracts(symbol, cfg.from, addDays(cfg.to, maxDte));
-    contractsBySymbol.set(symbol, contracts);
+    // Per-symbol, not fatal — see optionsBacktest.ts's identical guard.
+    try {
+      contractsBySymbol.set(symbol, await getHistoricalOptionContracts(symbol, cfg.from, addDays(cfg.to, maxDte)));
+    } catch (err) {
+      errors.push({ symbol, message: `option contracts fetch failed: ${(err as Error).message}` });
+      contractsBySymbol.set(symbol, []);
+    }
   }
   const report = await simulateCombinedBacktest(
     historyBySymbol,
@@ -1368,7 +1382,7 @@ export async function runCombinedBacktest(cfg: CombinedBacktestConfig): Promise<
     weeklyHistoryBySymbol,
     benchmarkCandles,
   );
-  return { ...report, excludedSymbols, errors };
+  return { ...report, excludedSymbols, errors: [...errors, ...report.errors] };
 }
 
 export interface CombinedWalkForwardConfig extends CombinedBacktestConfig {
@@ -1402,8 +1416,13 @@ export async function runCombinedWalkForwardBacktest(
   const maxDte = defaultAutotradeEntryConfig('call').maxDaysToExpiration ?? 60;
   const contractsBySymbol = new Map<string, OptionContractRef[]>();
   for (const symbol of historyBySymbol.keys()) {
-    const contracts = await getHistoricalOptionContracts(symbol, cfg.from, addDays(cfg.to, maxDte));
-    contractsBySymbol.set(symbol, contracts);
+    // Per-symbol, not fatal — see optionsBacktest.ts's identical guard.
+    try {
+      contractsBySymbol.set(symbol, await getHistoricalOptionContracts(symbol, cfg.from, addDays(cfg.to, maxDte)));
+    } catch (err) {
+      errors.push({ symbol, message: `option contracts fetch failed: ${(err as Error).message}` });
+      contractsBySymbol.set(symbol, []);
+    }
   }
   const outOfSampleFrom = addDays(cfg.splitDate, 1);
   const inSample = await simulateCombinedBacktest(
@@ -1420,5 +1439,15 @@ export async function runCombinedWalkForwardBacktest(
     weeklyHistoryBySymbol,
     benchmarkCandles,
   );
+  // Both windows' own bar-fetch errors join the loader's — deduped, same as
+  // optionsBacktest.ts's walk-forward wrapper.
+  const seen = new Set(errors.map((e) => `${e.symbol}|${e.message}`));
+  for (const e of [...inSample.errors, ...outOfSample.errors]) {
+    const key = `${e.symbol}|${e.message}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      errors.push(e);
+    }
+  }
   return { inSample, outOfSample, excludedSymbols, errors };
 }
