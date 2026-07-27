@@ -238,12 +238,37 @@ npm run check:provider # verify the configured market-data provider
 npm run capture:broker # dump raw Webull field shapes (read-only; see below)
 npm run backfill:exits # correct estimated exit prices from real fills (dry run; see below)
 npm run check:journal  # audit the trade journal for rows that are already wrong (report only)
+npm run research       # scripted walk-forward sweep over the backtest API (needs a running server; see below)
 ```
 
 CI runs lint, format-check, typecheck, tests, and build on every PR. Typecheck
 covers **test files as well as source** — test fixtures are checked against
 `web/src/api/types.ts`, so a mock can't quietly describe a response shape the API
 never returns.
+
+### `research` — scripted walk-forward sweeps
+
+Runs a small, pre-registered set of experiments (exit geometry, min-signal-score,
+direction mode, weight presets) against the **walk-forward backtest API** of a
+running instance, one request per variant, and ranks every variant by its
+**out-of-sample** expectancy with the bootstrap CI / p-value the server already
+computes. It exists because the API accepts far more than the backtest UI exposes
+(full screener weights and filters, stop/target multiples, the trailing-exit
+toolkit) and there is no server-side sweep.
+
+```bash
+npm run dev   # in one terminal — the sweep talks to the HTTP API
+npm run research -- \
+  --symbols AAPL,MSFT,NVDA,AMD,META,AMZN,GOOGL,TSLA,NFLX,SMCI \
+  --from 2024-08-01 --to 2026-07-01 --split 2025-12-01
+```
+
+`--experiments exits,minscore,direction,weights` picks a subset; `--password` logs
+in first when `APP_PASSWORD` is set; `--out` names the JSON results file. The first
+variant pays the provider fetches, then the bar cache makes the rest local compute.
+Read `docs/STRATEGY_PLAYBOOK.md`'s backtest-reality sections before acting on a
+winner — the engine models zero slippage/commissions, and a sweep is many looks at
+one history.
 
 ### `check:journal` — auditing the journal for rows that are already wrong
 

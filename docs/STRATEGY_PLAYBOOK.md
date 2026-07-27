@@ -422,6 +422,18 @@ A setup is only worth trading if it **outperforms**. The workflow:
 This loop — hypothesize → snapshot → measure forward returns → re-weight — is the
 single highest-leverage thing the app enables.
 
+**Sweep it, don't eyeball it.** `npm run research` (see the README's script list)
+runs a pre-registered set of walk-forward experiments against a running instance —
+exit geometry (the shipped 2R bracket vs. breakeven+trailing "runner" shapes),
+min-signal-score at 0/40/60/75, long-only vs. both directions, and two
+relative-strength-tilted weight presets — and ranks every variant by
+**out-of-sample** expectancy with the server's own bootstrap CI and p-value. The
+discipline is baked in: one axis per experiment, OOS-only verdicts, and a closing
+reminder that a sweep is many looks at one history — treat a winner as a hypothesis
+to confirm on a fresh split (or forward, via snapshots and the Edge Report), never
+as a conclusion. Costs aren't modeled, so favor liquid symbol sets and haircut
+anything marginal.
+
 **Then make the score bite.** Ranking is only half the job: without a floor, the
 auto-trade loop will still take its 6 trades a day from whatever passed the raw
 filters, even when the best available score is a 12. Once the Edge Report shows your
