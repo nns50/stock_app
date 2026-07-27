@@ -90,4 +90,18 @@ describe('backtest_option_contracts_fetch_log', () => {
     logFetchedExpirationRange('BTOPTLOG5A', '2024-01-01', '2024-12-31');
     expect(isExpirationRangeFetched('BTOPTLOG5B', '2024-01-01', '2024-12-31')).toBe(false);
   });
+
+  it('ignores legacy active-only fetches (includes_expired = 0), forcing a corrective re-fetch', () => {
+    // A row written by the pre-2026-07-27 client, which ran Polygon's default
+    // expired=false and cached a contract set missing every historical
+    // expiration — it must NOT satisfy the coverage check.
+    db.prepare(
+      `INSERT INTO backtest_option_contracts_fetch_log
+         (underlying, from_expiration, to_expiration, includes_expired, fetched_at) VALUES (?,?,?,0,?)`,
+    ).run('BTOPTLOG6', '2024-01-01', '2024-12-31', Date.now());
+    expect(isExpirationRangeFetched('BTOPTLOG6', '2024-01-01', '2024-12-31')).toBe(false);
+    // A fresh fetch through the fixed client counts.
+    logFetchedExpirationRange('BTOPTLOG6', '2024-01-01', '2024-12-31');
+    expect(isExpirationRangeFetched('BTOPTLOG6', '2024-01-01', '2024-12-31')).toBe(true);
+  });
 });

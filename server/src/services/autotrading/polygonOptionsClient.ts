@@ -71,6 +71,15 @@ function mapContract(c: PolygonContract): OptionContractRef | null {
  * [fromExpiration, toExpiration] (YYYY-MM-DD, inclusive), paginating via
  * `next_url` until exhausted. Throws PolygonError if POLYGON_API_KEY is unset
  * or the request fails — same convention as fetchPolygonBars.
+ *
+ * Two passes, `expired=true` then `expired=false`, merged by ticker: Polygon's
+ * contracts endpoint filters on `expired` and DEFAULTS to active-only, so a
+ * single default-parameter query over a historical backtest window returns
+ * none of the contracts that have already expired — which is nearly all of
+ * them. That default made every options backtest over a historical window
+ * silently simulate zero trades (no contract ever inside a simulated day's
+ * DTE window; "no contracts" is not an error). The active pass still matters
+ * for windows extending past today.
  */
 export async function fetchPolygonOptionContracts(
   underlying: string,
@@ -84,22 +93,24 @@ export async function fetchPolygonOptionContracts(
     );
   }
 
-  let url: string | undefined =
-    `${BASE_URL}/v3/reference/options/contracts?underlying_ticker=${encodeURIComponent(underlying.toUpperCase())}` +
-    `&expiration_date.gte=${fromExpiration}&expiration_date.lte=${toExpiration}&limit=1000`;
+  const byTicker = new Map<string, OptionContractRef>();
+  for (const expired of [true, false]) {
+    let url: string | undefined =
+      `${BASE_URL}/v3/reference/options/contracts?underlying_ticker=${encodeURIComponent(underlying.toUpperCase())}` +
+      `&expiration_date.gte=${fromExpiration}&expiration_date.lte=${toExpiration}&expired=${expired}&limit=1000`;
 
-  const contracts: OptionContractRef[] = [];
-  for (let page = 0; url && page < MAX_PAGES; page++) {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
-    const body = (await res.json()) as PolygonContractsResponse;
-    if (!res.ok) {
-      throw new PolygonError(body.error || body.message || `Polygon request failed (${res.status})`, res.status);
+    for (let page = 0; url && page < MAX_PAGES; page++) {
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+      const body = (await res.json()) as PolygonContractsResponse;
+      if (!res.ok) {
+        throw new PolygonError(body.error || body.message || `Polygon request failed (${res.status})`, res.status);
+      }
+      for (const c of body.results ?? []) {
+        const mapped = mapContract(c);
+        if (mapped) byTicker.set(mapped.ticker, mapped);
+      }
+      url = body.next_url || undefined;
     }
-    for (const c of body.results ?? []) {
-      const mapped = mapContract(c);
-      if (mapped) contracts.push(mapped);
-    }
-    url = body.next_url || undefined;
   }
-  return contracts;
+  return Array.from(byTicker.values());
 }
