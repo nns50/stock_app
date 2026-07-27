@@ -37,6 +37,8 @@ describe('fetchPolygonOptionContracts', () => {
       }),
     );
     const contracts = await fetchPolygonOptionContracts('aapl', '2024-01-01', '2024-03-31');
+    // The same response served to both the expired and active passes — the
+    // ticker-keyed merge must not duplicate the contract.
     expect(contracts).toEqual([
       {
         ticker: 'O:AAPL240315C00100000',
@@ -54,36 +56,62 @@ describe('fetchPolygonOptionContracts', () => {
     expect((opts as RequestInit).headers).toMatchObject({ Authorization: 'Bearer test-key' });
   });
 
+  it('queries BOTH expired and active contracts and merges them (Polygon defaults to active-only)', async () => {
+    Object.assign(config.polygon, { apiKey: 'k' });
+    const contract = (ticker: string, expiration: string) => ({
+      ticker,
+      underlying_ticker: 'AAPL',
+      contract_type: 'call',
+      strike_price: 100,
+      expiration_date: expiration,
+    });
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (url) =>
+        String(url).includes('expired=true')
+          ? jsonResponse({ results: [contract('O:AAPL240315C00100000', '2024-03-15')] })
+          : jsonResponse({ results: [contract('O:AAPL270115C00100000', '2027-01-15')] }),
+      );
+    const contracts = await fetchPolygonOptionContracts('AAPL', '2024-01-01', '2027-01-31');
+    expect(contracts.map((c) => c.ticker).sort()).toEqual(['O:AAPL240315C00100000', 'O:AAPL270115C00100000']);
+    const urls = spy.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes('expired=true'))).toBe(true);
+    expect(urls.some((u) => u.includes('expired=false'))).toBe(true);
+  });
+
   it('follows next_url pagination until exhausted', async () => {
     Object.assign(config.polygon, { apiKey: 'k' });
-    const page1 = jsonResponse({
-      results: [
-        {
-          ticker: 'O:AAPL240315C00100000',
-          underlying_ticker: 'AAPL',
-          contract_type: 'call',
-          strike_price: 100,
-          expiration_date: '2024-03-15',
-        },
-      ],
-      next_url: 'https://api.polygon.io/v3/reference/options/contracts?cursor=abc',
-    });
-    const page2 = jsonResponse({
-      results: [
-        {
-          ticker: 'O:AAPL240315C00105000',
-          underlying_ticker: 'AAPL',
-          contract_type: 'call',
-          strike_price: 105,
-          expiration_date: '2024-03-15',
-        },
-      ],
-    });
-    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(page1).mockResolvedValueOnce(page2);
+    // Keyed on URL, not call order — both the expired and active passes hit
+    // this mock, and each must follow its own next_url chain independently.
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) =>
+      String(url).includes('cursor=abc')
+        ? jsonResponse({
+            results: [
+              {
+                ticker: 'O:AAPL240315C00105000',
+                underlying_ticker: 'AAPL',
+                contract_type: 'call',
+                strike_price: 105,
+                expiration_date: '2024-03-15',
+              },
+            ],
+          })
+        : jsonResponse({
+            results: [
+              {
+                ticker: 'O:AAPL240315C00100000',
+                underlying_ticker: 'AAPL',
+                contract_type: 'call',
+                strike_price: 100,
+                expiration_date: '2024-03-15',
+              },
+            ],
+            next_url: 'https://api.polygon.io/v3/reference/options/contracts?cursor=abc',
+          }),
+    );
     const contracts = await fetchPolygonOptionContracts('AAPL', '2024-01-01', '2024-03-31');
     expect(contracts).toHaveLength(2);
-    expect(spy).toHaveBeenCalledTimes(2);
-    expect(String(spy.mock.calls[1][0])).toContain('cursor=abc');
+    expect(spy.mock.calls.some((c) => String(c[0]).includes('cursor=abc'))).toBe(true);
   });
 
   it('throws PolygonError with the response error message on a non-ok response', async () => {

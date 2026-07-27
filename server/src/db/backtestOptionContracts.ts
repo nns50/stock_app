@@ -58,12 +58,18 @@ export function saveContracts(underlying: string, contracts: OptionContractRef[]
 
 /** True if a PRIOR fetch already covered [fromExp, toExp] (YYYY-MM-DD) for
  *  this underlying — same lexicographic-string-range-containment check as
- *  backtestBars.ts's isRangeFetched. */
+ *  backtestBars.ts's isRangeFetched. Only fetches made AFTER the client
+ *  started including expired contracts count (includes_expired = 1,
+ *  2026-07-27): earlier fetches ran Polygon's default `expired=false` and
+ *  cached only still-active contracts, so honoring them would permanently
+ *  serve a cache that's missing nearly every historical contract. Legacy
+ *  rows stay (harmless) but no longer satisfy this check, so the next
+ *  request re-fetches and upserts the expired contracts in. */
 export function isExpirationRangeFetched(underlying: string, fromExp: string, toExp: string): boolean {
   const row = db
     .prepare(
       `SELECT 1 FROM backtest_option_contracts_fetch_log
-       WHERE underlying = ? AND from_expiration <= ? AND to_expiration >= ? LIMIT 1`,
+       WHERE underlying = ? AND from_expiration <= ? AND to_expiration >= ? AND includes_expired = 1 LIMIT 1`,
     )
     .get(underlying.toUpperCase(), fromExp, toExp);
   return !!row;
@@ -72,6 +78,7 @@ export function isExpirationRangeFetched(underlying: string, fromExp: string, to
 /** Record that [fromExp, toExp] was fetched for this underlying. */
 export function logFetchedExpirationRange(underlying: string, fromExp: string, toExp: string): void {
   db.prepare(
-    'INSERT INTO backtest_option_contracts_fetch_log (underlying, from_expiration, to_expiration, fetched_at) VALUES (?,?,?,?)',
+    `INSERT INTO backtest_option_contracts_fetch_log
+       (underlying, from_expiration, to_expiration, includes_expired, fetched_at) VALUES (?,?,?,1,?)`,
   ).run(underlying.toUpperCase(), fromExp, toExp, Date.now());
 }

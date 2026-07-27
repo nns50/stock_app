@@ -417,6 +417,11 @@ CREATE TABLE IF NOT EXISTS backtest_option_contracts_fetch_log (
   underlying    TEXT NOT NULL,
   from_expiration TEXT NOT NULL,
   to_expiration   TEXT NOT NULL,
+  -- 2026-07-27: 1 = fetched by the client that includes EXPIRED contracts
+  -- (Polygon's endpoint defaults to active-only, which cached a contract set
+  -- missing nearly every historical expiration). isExpirationRangeFetched()
+  -- only honors rows with 1, so legacy active-only fetches re-fetch.
+  includes_expired INTEGER NOT NULL DEFAULT 0,
   fetched_at    INTEGER NOT NULL
 );
 
@@ -1066,6 +1071,14 @@ function migrate(): void {
   rebuildAutotradeLiveOptionsPositionsTable(db);
 
   normalizeBacktestBarTimes(db);
+
+  // 2026-07-27: see the backtest_option_contracts_fetch_log DDL comment —
+  // legacy rows (pre-expired-contracts client) default to 0 and stop
+  // satisfying isExpirationRangeFetched, forcing a corrective re-fetch.
+  const bocflCols = db.prepare('PRAGMA table_info(backtest_option_contracts_fetch_log)').all() as { name: string }[];
+  if (!bocflCols.some((c) => c.name === 'includes_expired')) {
+    db.exec('ALTER TABLE backtest_option_contracts_fetch_log ADD COLUMN includes_expired INTEGER NOT NULL DEFAULT 0');
+  }
 
   // Reorder the three open-position "status" indexes to lead with status —
   // listOpenXxxPositions() queries WHERE status = 'open' with no symbol
