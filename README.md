@@ -263,14 +263,16 @@ npm run research -- \
   --from 2024-08-01 --to 2026-07-01 --split 2025-12-01
 ```
 
-`--experiments exits,minscore,direction,weights,ivrv` picks a subset; `--password`
-logs in first when `APP_PASSWORD` is set (add `--code <TOTP>` if MFA is enforced);
-`--out` names the JSON results file. The first
+`--experiments exits,minscore,direction,weights,ivrv,optexits` picks a subset;
+`--password` logs in first when `APP_PASSWORD` is set (add `--code <TOTP>` if MFA is
+enforced); `--out` names the JSON results file. The first
 variant pays the provider fetches, then the bar cache makes the rest local compute.
-`ivrv` — the options-engine IV/RV cheapness-gate ladder (off/1.5/1.2/1.0/0.8) — is
-**opt-in, not in the default set**: its first run fetches option contract references
-and per-contract price bars from Polygon, far heavier than equity daily bars, so run
-it explicitly over a handful of liquid names.
+`ivrv` — the options-engine IV/RV cheapness-gate ladder (off/1.5/1.2/1.0/0.8) — and
+`optexits` — options exit shapes (time-exit only / 50% stop / 50% stop + 100%
+take-profit / breakeven+trailing runner, in %-of-premium terms) — are **opt-in, not
+in the default set**: their first run fetches option contract references and
+per-contract price bars from Polygon, far heavier than equity daily bars, so run
+them explicitly over a handful of liquid names (they share one cache).
 Read `docs/STRATEGY_PLAYBOOK.md`'s backtest-reality sections before acting on a
 winner — the engine models zero slippage/commissions, and a sweep is many looks at
 one history.
