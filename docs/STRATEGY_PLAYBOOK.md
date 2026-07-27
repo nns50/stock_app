@@ -481,6 +481,37 @@ stop — not the shape that tested well. Second, the confirmation that neither b
 split can give is forward performance: judge the runner era against the bracket era in
 the Journal after a few weeks of paper trades.
 
+**A second worked example — the options book (2026-07), where the sweep correctly
+said no.** The other job of a pre-registered sweep is stopping a change, and the two
+opt-in options-engine ladders (5 liquid mega-caps, Aug 2024 → Jul 2026, split
+2025-12-01) did exactly that. The **entry** question first: the `ivrv` cheapness-gate
+ladder came back negative at every rung — gate off: −$211/trade OOS; 1.5: −$212;
+1.2: −$188; 1.0: −$176; 0.8: −$198 (all thin samples). Tightening to 1.0 trims the
+bleed, so the gate is real harm reduction, but there is no positive expectancy
+underneath it to protect. Then the **exit** question: the `optexits` ladder
+(n=23 OOS, past the reliability floor) found the 50% premium stop genuinely binds —
+time-exit-only baseline −$146/trade vs. −$110 with the stop, max drawdown down —
+but the stop+take-profit bracket and the breakeven+trailing runner produced results
+**byte-identical to the plain stop**, because across all 23 trades not one position
+ever closed a day at +50% unrealized gain: the upside-management rules had nothing
+to manage. That is the diagnosis, not a bug: at a 21.7% win rate with winners too
+small to ever reach half-premium gains, the automated book's problem is not exit
+engineering — it is that buying premium off momentum breakout signals pays the
+variance risk premium (see Playbook C's cheap-vs-reality note) and produces almost
+no winners at all.
+
+Three evidence lines now agree — the VRP literature, both ladders out-of-sample, and
+the live journal (the bot's options trades all bled out through time exits, while
+every dollar of realized options profit came from MANUAL, event-driven puts). The
+standing conclusion until something changes it: **don't arm automated options
+entries; keep options discretionary**, and let the equity runner do the automated
+work. If the paper options loop stays on for observation, set **Options stop-loss
+(%)** to 50 (the one rule that provably binds) and **Options max IV/RV ratio** to
+1.0 — harm reduction, not an edge. A change to this verdict should come the same way
+the verdict did: a new pre-registered hypothesis (different entry signal, spreads
+instead of long premium, an event-driven trigger) tested OOS first — not a re-tune
+of the shapes these ladders already priced.
+
 **Then make the score bite.** Ranking is only half the job: without a floor, the
 auto-trade loop will still take its 6 trades a day from whatever passed the raw
 filters, even when the best available score is a 12. Once the Edge Report shows your
