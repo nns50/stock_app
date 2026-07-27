@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
+  ALL_EXPERIMENT_NAMES,
   allZeroTrades,
   buildExperiments,
   completeFilters,
   completeWeights,
+  EQUITY_WALK_FORWARD_PATH,
   EXPERIMENT_NAMES,
   formatDataIssues,
+  OPTIONS_WALK_FORWARD_PATH,
   rankResults,
   SweepBase,
   SweepResult,
@@ -25,14 +28,14 @@ const base: SweepBase = {
 describe('buildExperiments — the shallow-merge trap', () => {
   it('every variant carries a COMPLETE weights object (a partial would silently zero the rest)', () => {
     const allKeys = Object.keys(defaultScreenerConfig().weights).sort();
-    for (const v of buildExperiments(base, EXPERIMENT_NAMES)) {
+    for (const v of buildExperiments(base, ALL_EXPERIMENT_NAMES)) {
       const weights = (v.body.screenerConfig as { weights: Record<string, number> }).weights;
       expect(Object.keys(weights).sort(), `${v.experiment}/${v.label}`).toEqual(allKeys);
     }
   });
 
   it("every variant's filters carry the autotrade minRelVol 1.5 base, not the manual screener's unset default", () => {
-    for (const v of buildExperiments(base, EXPERIMENT_NAMES)) {
+    for (const v of buildExperiments(base, ALL_EXPERIMENT_NAMES)) {
       const filters = (v.body.screenerConfig as { filters: Record<string, unknown> }).filters;
       expect(filters.minRelVol, `${v.experiment}/${v.label}`).toBe(1.5);
     }
@@ -84,6 +87,26 @@ describe('buildExperiments — one axis per experiment', () => {
   it('selecting a subset builds only that subset', () => {
     const variants = buildExperiments(base, ['direction']);
     expect(new Set(variants.map((v) => v.experiment))).toEqual(new Set(['direction']));
+  });
+
+  it('the DEFAULT experiment set excludes the opt-in ivrv (options data cost), and stays equity-endpoint only', () => {
+    const variants = buildExperiments(base, EXPERIMENT_NAMES);
+    expect(variants.some((v) => v.experiment === 'ivrv')).toBe(false);
+    for (const v of variants) expect(v.endpoint, `${v.experiment}/${v.label}`).toBe(EQUITY_WALK_FORWARD_PATH);
+  });
+
+  it('ivrv targets the OPTIONS walk-forward and varies ONLY optionsDecisionConfig.maxIvRvRatio', () => {
+    const variants = buildExperiments(base, ['ivrv']);
+    expect(variants.map((v) => v.endpoint)).toEqual(Array(5).fill(OPTIONS_WALK_FORWARD_PATH));
+    expect(
+      variants.map((v) => (v.body.optionsDecisionConfig as { maxIvRvRatio?: number } | undefined)?.maxIvRvRatio),
+    ).toEqual([undefined, 1.5, 1.2, 1.0, 0.8]);
+    for (const v of variants) {
+      // No equity bracket geometry on an options-engine body — the options
+      // engine's own shipped defaults are the thing under test.
+      expect(v.body.decisionConfig, `${v.experiment}/${v.label}`).toBeUndefined();
+      expect(v.body.directionMode).toBeUndefined();
+    }
   });
 });
 
