@@ -95,6 +95,28 @@ describe('buildExperiments — one axis per experiment', () => {
     for (const v of variants) expect(v.endpoint, `${v.experiment}/${v.label}`).toBe(EQUITY_WALK_FORWARD_PATH);
   });
 
+  it('optexits targets the OPTIONS walk-forward and varies ONLY the %-of-premium exit fields', () => {
+    const variants = buildExperiments(base, ['optexits']);
+    expect(variants.map((v) => v.endpoint)).toEqual(Array(4).fill(OPTIONS_WALK_FORWARD_PATH));
+    const exitFields = (b: Record<string, unknown>) => ({
+      stop: b.optionsStopLossPct,
+      tp: b.optionsTakeProfitPct,
+      be: b.optionsBreakevenTriggerPct,
+      trailStart: b.optionsTrailStartPct,
+      trailStop: b.optionsTrailStopPct,
+    });
+    expect(variants.map((v) => exitFields(v.body))).toEqual([
+      { stop: undefined, tp: undefined, be: undefined, trailStart: undefined, trailStop: undefined },
+      { stop: 50, tp: undefined, be: undefined, trailStart: undefined, trailStop: undefined },
+      { stop: 50, tp: 100, be: undefined, trailStart: undefined, trailStop: undefined },
+      { stop: 50, tp: undefined, be: 50, trailStart: 50, trailStop: 50 },
+    ]);
+    for (const v of variants) {
+      expect(v.body.optionsDecisionConfig, `${v.label}`).toBeUndefined(); // no IV/RV gate — one axis at a time
+      expect(v.body.decisionConfig, `${v.label}`).toBeUndefined();
+    }
+  });
+
   it('ivrv targets the OPTIONS walk-forward and varies ONLY optionsDecisionConfig.maxIvRvRatio', () => {
     const variants = buildExperiments(base, ['ivrv']);
     expect(variants.map((v) => v.endpoint)).toEqual(Array(5).fill(OPTIONS_WALK_FORWARD_PATH));

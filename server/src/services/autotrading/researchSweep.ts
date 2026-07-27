@@ -98,8 +98,10 @@ export const EXPERIMENT_NAMES = ['exits', 'minscore', 'direction', 'weights'] as
  *  OPTIONS walk-forward: the first run fetches option CONTRACT references and
  *  per-contract price bars from Polygon — far heavier than equity daily bars,
  *  and painful on a rate-limited key with a wide symbol list. Run explicitly
- *  via `--experiments ivrv`, ideally over a handful of liquid names. */
-export const OPTIN_EXPERIMENT_NAMES = ['ivrv'] as const;
+ *  via `--experiments ivrv` / `--experiments optexits`, ideally over a handful
+ *  of liquid names (they share one cache, so the second is cheap after the
+ *  first). */
+export const OPTIN_EXPERIMENT_NAMES = ['ivrv', 'optexits'] as const;
 export const ALL_EXPERIMENT_NAMES = [...EXPERIMENT_NAMES, ...OPTIN_EXPERIMENT_NAMES] as const;
 export type ExperimentName = (typeof ALL_EXPERIMENT_NAMES)[number];
 
@@ -123,6 +125,13 @@ export type ExperimentName = (typeof ALL_EXPERIMENT_NAMES)[number];
  *   premium pays the variance risk premium whenever implied outruns realized
  *   vol (the Goyal–Saretto direction), so the gate should earn its trade-count
  *   cut. Off / 1.5 / 1.2 / 1.0 / 0.8.
+ * - `optexits` (opt-in, options engine): exit geometry for the options book —
+ *   the same central question the equity `exits` set answered (there, the
+ *   trail beat the fixed target on both splits). The shipped options baseline
+ *   exits on TIME only, and both the live journal and the first ivrv ladder
+ *   show that shape bleeding; this varies ONE axis — the %-of-premium exit
+ *   rules — from no-rules through a hard stop, a stop+take-profit bracket,
+ *   and a breakeven+trailing runner.
  */
 export function buildExperiments(base: SweepBase, which: readonly ExperimentName[]): SweepVariant[] {
   const variants: SweepVariant[] = [];
@@ -227,6 +236,31 @@ export function buildExperiments(base: SweepBase, which: readonly ExperimentName
         { endpoint: OPTIONS_WALK_FORWARD_PATH, body: optionsBaseBody(base) },
       );
     }
+  }
+
+  // OPT-IN (see OPTIN_EXPERIMENT_NAMES): exit shapes for the options book, in
+  // %-of-premium terms (net debit for a spread — a long option has no
+  // ATR-based stop distance to measure R against). 50% stop / 100% take-profit
+  // are the manual exit-rules defaults, not new numbers; the runner mirrors
+  // the equity winner's shape: cut losers, protect breakeven once up 50%,
+  // then trail 50 points behind the best gain with NO fixed cap.
+  if (which.includes('optexits')) {
+    const addOpt = (label: string, patch: (b: Record<string, unknown>) => void) =>
+      add('optexits', label, patch, { endpoint: OPTIONS_WALK_FORWARD_PATH, body: optionsBaseBody(base) });
+    addOpt('time-exit only (baseline)', () => {});
+    addOpt('stop 50%', (b) => {
+      b.optionsStopLossPct = 50;
+    });
+    addOpt('stop 50% + TP 100%', (b) => {
+      b.optionsStopLossPct = 50;
+      b.optionsTakeProfitPct = 100;
+    });
+    addOpt('runner: stop 50, BE@50, trail 50', (b) => {
+      b.optionsStopLossPct = 50;
+      b.optionsBreakevenTriggerPct = 50;
+      b.optionsTrailStartPct = 50;
+      b.optionsTrailStopPct = 50;
+    });
   }
 
   return variants;
