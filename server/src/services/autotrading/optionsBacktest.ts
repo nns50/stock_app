@@ -445,10 +445,21 @@ export async function simulateOptionsBacktest(
   const tradingDays = Array.from(dateSet).sort();
 
   const barsMemo = new Map<string, Candle[]>();
+  // A failed contract-bar fetch (rate limit exhausted, plan not entitled to
+  // options aggregates, network) degrades to "this contract has no bars" —
+  // recorded ONCE per ticker here and surfaced through the report's errors
+  // channel — instead of throwing out of the simulation as a 500 with the
+  // whole run's work lost.
+  const barErrors = new Map<string, string>();
   const getContractBars = async (ticker: string): Promise<Candle[]> => {
     if (!barsMemo.has(ticker)) {
-      const bars = await getHistoricalBars(ticker, 'daily', addDays(cfg.from, -WARMUP_PADDING_DAYS), cfg.to);
-      barsMemo.set(ticker, bars);
+      try {
+        const bars = await getHistoricalBars(ticker, 'daily', addDays(cfg.from, -WARMUP_PADDING_DAYS), cfg.to);
+        barsMemo.set(ticker, bars);
+      } catch (err) {
+        barErrors.set(ticker, (err as Error).message);
+        barsMemo.set(ticker, []);
+      }
     }
     return barsMemo.get(ticker)!;
   };
@@ -1165,7 +1176,7 @@ export async function simulateOptionsBacktest(
     startingEquity: cfg.startingEquity,
     finalEquity: equity,
     excludedSymbols: [],
-    errors: [],
+    errors: Array.from(barErrors, ([symbol, message]) => ({ symbol, message })),
     skipped,
   };
 }
@@ -1191,8 +1202,16 @@ export async function runOptionsBacktest(cfg: OptionsBacktestConfig): Promise<Op
   const maxDte = defaultAutotradeEntryConfig('call').maxDaysToExpiration ?? 60;
   const contractsBySymbol = new Map<string, OptionContractRef[]>();
   for (const symbol of historyBySymbol.keys()) {
-    const contracts = await getHistoricalOptionContracts(symbol, cfg.from, addDays(cfg.to, maxDte));
-    contractsBySymbol.set(symbol, contracts);
+    // Per-symbol, not fatal — a rate-limited or failed contract fetch for one
+    // underlying reports as that symbol's error (same convention as
+    // loadBacktestHistory's own per-symbol bar errors) instead of 500ing the
+    // whole request after minutes of work.
+    try {
+      contractsBySymbol.set(symbol, await getHistoricalOptionContracts(symbol, cfg.from, addDays(cfg.to, maxDte)));
+    } catch (err) {
+      errors.push({ symbol, message: `option contracts fetch failed: ${(err as Error).message}` });
+      contractsBySymbol.set(symbol, []);
+    }
   }
   const report = await simulateOptionsBacktest(
     historyBySymbol,
@@ -1201,7 +1220,7 @@ export async function runOptionsBacktest(cfg: OptionsBacktestConfig): Promise<Op
     weeklyHistoryBySymbol,
     benchmarkCandles,
   );
-  return { ...report, excludedSymbols, errors };
+  return { ...report, excludedSymbols, errors: [...errors, ...report.errors] };
 }
 
 export interface OptionsWalkForwardConfig extends OptionsBacktestConfig {
@@ -1234,8 +1253,13 @@ export async function runOptionsWalkForwardBacktest(cfg: OptionsWalkForwardConfi
   const maxDte = defaultAutotradeEntryConfig('call').maxDaysToExpiration ?? 60;
   const contractsBySymbol = new Map<string, OptionContractRef[]>();
   for (const symbol of historyBySymbol.keys()) {
-    const contracts = await getHistoricalOptionContracts(symbol, cfg.from, addDays(cfg.to, maxDte));
-    contractsBySymbol.set(symbol, contracts);
+    // Per-symbol, not fatal — see runOptionsBacktest's identical guard.
+    try {
+      contractsBySymbol.set(symbol, await getHistoricalOptionContracts(symbol, cfg.from, addDays(cfg.to, maxDte)));
+    } catch (err) {
+      errors.push({ symbol, message: `option contracts fetch failed: ${(err as Error).message}` });
+      contractsBySymbol.set(symbol, []);
+    }
   }
   const outOfSampleFrom = addDays(cfg.splitDate, 1);
   const inSample = await simulateOptionsBacktest(
@@ -1252,5 +1276,15 @@ export async function runOptionsWalkForwardBacktest(cfg: OptionsWalkForwardConfi
     weeklyHistoryBySymbol,
     benchmarkCandles,
   );
+  // Both windows' own bar-fetch errors join the loader's — deduped, since the
+  // same ticker usually fails identically in both simulations.
+  const seen = new Set(errors.map((e) => `${e.symbol}|${e.message}`));
+  for (const e of [...inSample.errors, ...outOfSample.errors]) {
+    const key = `${e.symbol}|${e.message}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      errors.push(e);
+    }
+  }
   return { inSample, outOfSample, excludedSymbols, errors };
 }

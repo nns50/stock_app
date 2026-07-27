@@ -735,6 +735,26 @@ describe('simulateOptionsBacktest', () => {
     expect(report.skipped.some((s) => /realized volatility could not be computed/i.test(s.reason))).toBe(true);
   });
 
+  it('degrades a failed contract-bar fetch into report.errors instead of throwing the run away', async () => {
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const expiration = d(signalDay, DTE_DAYS);
+    mockGetHistoricalBars.mockRejectedValue(new Error('NOT_AUTHORIZED: plan not entitled to options aggregates'));
+    const historyBySymbol = new Map([['TEST', warmupThrough(signalDay)]]);
+    const contractsBySymbol = new Map([['TEST', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]]]);
+
+    const report = await simulateOptionsBacktest(
+      historyBySymbol,
+      contractsBySymbol,
+      baseConfig({ from: signalDay, to: entryDay }),
+    );
+    expect(report.trades).toEqual([]);
+    expect(report.errors).toEqual([{ symbol: CALL_TICKER, message: expect.stringContaining('NOT_AUTHORIZED') }]);
+    // The failing ticker degrades to "no bars", so the day skips with the
+    // existing no-price reason rather than crashing the simulation.
+    expect(report.skipped.some((s) => /No historical price/i.test(s.reason))).toBe(true);
+  });
+
   it('selects a PUT reference contract when direction is short', async () => {
     const signalDay = '2024-03-01';
     const entryDay = d(signalDay, 1);

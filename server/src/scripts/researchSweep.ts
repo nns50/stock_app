@@ -37,6 +37,7 @@
 // also written as JSON for your own slicing.
 
 import fs from 'node:fs';
+import { Agent, fetch as undiciFetch } from 'undici';
 import {
   ALL_EXPERIMENT_NAMES,
   allZeroTrades,
@@ -152,13 +153,22 @@ async function main(): Promise<void> {
 
   const results: SweepResult[] = [];
   let lastIssuesLine: string | null = null;
+  // Node's built-in fetch aborts after ~5 minutes of response silence (undici's
+  // default headersTimeout) — an options walk-forward warming its contract/bar
+  // cache at provider rate limits legitimately takes longer than that, and the
+  // abort left the server grinding on an abandoned request while the next
+  // variant piled on. No timeouts: the server always answers eventually.
+  const patientDispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
   for (const [i, v] of variants.entries()) {
     process.stdout.write(`[${i + 1}/${variants.length}] ${v.experiment} · ${v.label} … `);
+    const startedAt = Date.now();
+    const elapsed = () => `${Math.round((Date.now() - startedAt) / 1000)}s`;
     try {
-      const res = await fetch(`${base}${v.endpoint}`, {
+      const res = await undiciFetch(`${base}${v.endpoint}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
         body: JSON.stringify(v.body),
+        dispatcher: patientDispatcher,
       });
       if (!res.ok) {
         const text = (await res.text()).slice(0, 300);
@@ -169,7 +179,7 @@ async function main(): Promise<void> {
           inSample: null,
           error: `HTTP ${res.status}: ${text}`,
         });
-        console.log(`HTTP ${res.status}`);
+        console.log(`HTTP ${res.status} (${elapsed()}): ${text.slice(0, 160)}`);
         continue;
       }
       const json = (await res.json()) as {
@@ -190,7 +200,9 @@ async function main(): Promise<void> {
         dataIssues,
       });
       const oos = json.outOfSample;
-      console.log(`OOS expectancy $${oos.stats.expectancy.toFixed(2)}/trade over ${oos.stats.totalTrades} trades`);
+      console.log(
+        `OOS expectancy $${oos.stats.expectancy.toFixed(2)}/trade over ${oos.stats.totalTrades} trades (${elapsed()})`,
+      );
       // Data problems the response reports alongside the windows — printed
       // once per distinct set, not once per variant (a sweep's variants all
       // hit the same symbols/window, so the set virtually never changes).
@@ -205,7 +217,7 @@ async function main(): Promise<void> {
         inSample: null,
         error: (err as Error).message,
       });
-      console.log(`failed: ${(err as Error).message}`);
+      console.log(`failed after ${elapsed()}: ${(err as Error).message}`);
     }
   }
 
@@ -246,6 +258,8 @@ async function main(): Promise<void> {
       `as a hypothesis to CONFIRM (fresh split date, or forward via snapshots/the Edge Report), not a conclusion.\n` +
       `Backtests here model zero slippage/commissions — see docs/STRATEGY_PLAYBOOK.md's backtest-reality section.`,
   );
+  // Keep-alive sockets would otherwise hold the process open after the sweep.
+  await patientDispatcher.close();
 }
 
 main().catch((err) => {

@@ -102,6 +102,23 @@ describe('fetchPolygonBars', () => {
     await expect(fetchPolygonBars('AAPL', 'daily', '2024-01-01', '2024-01-31')).rejects.toThrow(/Unknown API Key/);
   });
 
+  it('retries a 429 (honoring Retry-After) instead of failing the whole fetch', async () => {
+    Object.assign(config.polygon, { apiKey: 'k' });
+    const rateLimited = {
+      ok: false,
+      status: 429,
+      headers: { get: (name: string) => (name.toLowerCase() === 'retry-after' ? '0' : null) },
+      json: async () => ({ error: 'rate limited' }),
+    } as unknown as Response;
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(rateLimited)
+      .mockResolvedValueOnce(jsonResponse({ results: [{ o: 1, h: 1, l: 1, c: 1, v: 1, t: 1704067200000 }] }));
+    const bars = await fetchPolygonBars('AAPL', 'daily', '2024-01-01', '2024-01-31');
+    expect(bars).toHaveLength(1);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
   it('treats a missing results array as zero bars, not an error', async () => {
     Object.assign(config.polygon, { apiKey: 'k' });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ status: 'OK' }));
