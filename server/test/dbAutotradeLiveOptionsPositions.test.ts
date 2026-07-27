@@ -145,3 +145,18 @@ describe('autotradeLiveOptionsPositions', () => {
     expect(rows[1].symbol).toBe('LOPIII');
   });
 });
+
+describe('price-based exit reasons (2026-07-26)', () => {
+  it("closes with 'stop_loss' / 'take_profit' — the widened CHECK the live price exits store through", () => {
+    const a = createLiveOptionsPosition(input());
+    expect(closeLiveOptionsPosition(a.id, { exitPrice: 1.7, exitReason: 'stop_loss' })).toMatchObject({
+      status: 'closed',
+      exitReason: 'stop_loss',
+    });
+    const b = createLiveOptionsPosition(input({ symbol: 'LOPBBB' }));
+    expect(closeLiveOptionsPosition(b.id, { exitPrice: 6.3, exitReason: 'take_profit' })).toMatchObject({
+      status: 'closed',
+      exitReason: 'take_profit',
+    });
+  });
+});

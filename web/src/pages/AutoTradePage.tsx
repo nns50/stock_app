@@ -914,7 +914,17 @@ const LiveOptionsPositionsTable = memo(
                   <td className="td text-right tabular-nums">{exitValue === null ? '—' : fmtUsd(exitValue)}</td>
                   <td className="td">
                     {p.exitReason ? (
-                      <Badge color={p.exitReason === 'time_exit' ? 'blue' : 'slate'}>
+                      <Badge
+                        color={
+                          p.exitReason === 'take_profit'
+                            ? 'green'
+                            : p.exitReason === 'stop_loss'
+                              ? 'red'
+                              : p.exitReason === 'time_exit'
+                                ? 'blue'
+                                : 'slate'
+                        }
+                      >
                         {p.exitReason.replace(/_/g, ' ')}
                       </Badge>
                     ) : (

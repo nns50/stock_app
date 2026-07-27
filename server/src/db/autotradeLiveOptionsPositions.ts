@@ -19,7 +19,12 @@ import { db } from './index';
 
 export type LiveOptionsSide = 'call' | 'put';
 export type LiveOptionsKind = 'single_leg' | 'debit_spread';
-export type LiveOptionsExitReason = 'time_exit' | 'manual';
+/** Why a live options position closed. 'stop_loss'/'take_profit' joined
+ *  2026-07-26 (live price-based exits — the same values the paper table
+ *  already used, so the two books' exit_reason vocabularies finally match);
+ *  'manual' covers both a human-triggered close and the broker-truth sync's
+ *  "gone at the broker" close (see syncLiveOptionsPositionsFromBroker). */
+export type LiveOptionsExitReason = 'time_exit' | 'stop_loss' | 'take_profit' | 'manual';
 
 export interface CreateLiveOptionsPositionInput {
   symbol: string;

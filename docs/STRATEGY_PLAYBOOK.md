@@ -376,6 +376,15 @@ pin risk). The engine flags which rule is live; the same logic feeds your exit a
 A simple, robust default: **take profit into strength, cut at your stop %, and never
 hold a long option into the last few days unless it's deep ITM.**
 
+**If auto-trading trades options for you, set its stop too.** Auto-Trade's **Options
+stop-loss (%)** / **Options take-profit (%)** now apply to **live** positions as well
+as paper (2026-07-26) — but they still default to **0/off**, which leaves the 7-DTE
+time exit as a live position's only automated brake. A long option can lose its entire
+premium long before expiry; a stop of 50% of premium (the manual exit-rules default)
+with a take-profit around 50–100% is a sane starting shape. Whatever numbers you pick,
+they're % of premium (net debit for a spread), and the Journal's exit-reason badges
+will show you which rule is actually doing the closing.
+
 **Considering a roll instead of closing outright? (Options → Strategy → Roll analyzer,
 2026-07-23.)** A time-exit trigger, or an ITM short leg risking assignment, doesn't have
 to mean flat — rolling to a later expiration (and often a different strike) keeps the

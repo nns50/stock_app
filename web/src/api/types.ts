@@ -2158,7 +2158,7 @@ export interface AutotradeProbationStatus {
   tradesRemaining: number;
 }
 
-export type LiveOptionsExitReason = 'time_exit' | 'manual';
+export type LiveOptionsExitReason = 'time_exit' | 'stop_loss' | 'take_profit' | 'manual';
 
 /** A REAL, live-money options position the autotrade loop itself placed
  *  (Task #70) — the options counterpart to AutotradeLivePosition, over its

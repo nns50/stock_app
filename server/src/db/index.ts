@@ -589,7 +589,10 @@ CREATE TABLE IF NOT EXISTS autotrade_live_options_positions (
   exit_price             REAL,                 -- filled premium per share at exit; long leg for a spread
   short_exit_price       REAL,                 -- short leg's filled premium at exit (debit spreads only)
   exit_at                INTEGER,
-  exit_reason            TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL),
+  -- 'stop_loss'/'take_profit' joined 2026-07-26 (live price-based exits, the
+  -- paper table's own value set) -- an older DB's narrower CHECK is widened by
+  -- rebuildAutotradeLiveOptionsPositionsTable in migrate().
+  exit_reason            TEXT CHECK(exit_reason IN ('time_exit','stop_loss','take_profit','manual') OR exit_reason IS NULL),
   account_id             TEXT,                 -- the Webull account this fill executed in; null for a legacy row from before this column existed
   -- At-entry context (2026-07-26), carried from the entry order's own row at
   -- materialization — same five fields as autotrade_options_paper_positions.
@@ -625,8 +628,10 @@ CREATE TABLE IF NOT EXISTS autotrade_live_options_orders (
   -- Exit rows only (2026-07-16): why this closing order was placed, carried
   -- through to closeLiveOptionsPosition() once the fill materializes so the
   -- position's own stored exit_reason isn't hardcoded to 'time_exit' for a
-  -- manually-triggered close. Null for entry rows.
-  exit_reason   TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL),
+  -- manually-triggered close. Null for entry rows. 'stop_loss'/'take_profit'
+  -- joined 2026-07-26 (live price-based exits); an older DB's narrower CHECK
+  -- is widened by rebuildAutotradeLiveOptionsOrdersTable in migrate().
+  exit_reason   TEXT CHECK(exit_reason IN ('time_exit','stop_loss','take_profit','manual') OR exit_reason IS NULL),
   account_id    TEXT,                 -- entry: the Webull account this order executed in, carried to autotrade_live_options_positions.account_id at materialization. null for exit rows and legacy rows.
   -- Entry rows only (2026-07-26): at-entry context carried to the same-named
   -- autotrade_live_options_positions columns at materialization, exactly like
@@ -1014,7 +1019,7 @@ function migrate(): void {
   // hardcode 'time_exit' for every close regardless of what actually triggered it.
   if (!hasAlo('exit_reason')) {
     db.exec(
-      "ALTER TABLE autotrade_live_options_orders ADD COLUMN exit_reason TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL)",
+      "ALTER TABLE autotrade_live_options_orders ADD COLUMN exit_reason TEXT CHECK(exit_reason IN ('time_exit','stop_loss','take_profit','manual') OR exit_reason IS NULL)",
     );
   }
   // Entry rows' at-entry context (2026-07-26) — see the table DDL comment.
@@ -1055,6 +1060,10 @@ function migrate(): void {
   // Must run AFTER the ADD COLUMNs above so the explicit-column copy finds them.
   rebuildAutotradeLiveOrdersTable(db);
   rebuildAutotradeLiveOptionsOrdersTable(db);
+  // Widens the live options positions exit_reason CHECK for 'stop_loss'/
+  // 'take_profit' (2026-07-26) — after the alop ALTERs above for the same
+  // copy-list reason.
+  rebuildAutotradeLiveOptionsPositionsTable(db);
 
   // Reorder the three open-position "status" indexes to lead with status —
   // listOpenXxxPositions() queries WHERE status = 'open' with no symbol
@@ -1390,14 +1399,21 @@ export function rebuildAutotradeLiveOrdersTable(database: Database.Database): vo
 }
 
 /**
- * Rebuild `autotrade_live_options_orders` for the same reason as
- * rebuildAutotradeLiveOrdersTable above -- see that function's header.
+ * Rebuild `autotrade_live_options_orders` when its FK predates ON DELETE
+ * CASCADE (same reason as rebuildAutotradeLiveOrdersTable above -- see that
+ * function's header) OR when its exit_reason CHECK predates
+ * 'stop_loss'/'take_profit' (live price-based exits, 2026-07-26 -- SQLite
+ * can't widen a CHECK in place, the same constraint that forced
+ * rebuildAutotradeOptionsPaperPositionsTable). One rebuild handles both:
+ * the recreated table always carries the current shape, so whichever
+ * deficiency triggered it, both are fixed and the guard below never fires
+ * again.
  */
 export function rebuildAutotradeLiveOptionsOrdersTable(database: Database.Database): void {
   const row = database
     .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='autotrade_live_options_orders'")
     .get() as { sql: string | null } | undefined;
-  if (!row?.sql || /ON DELETE CASCADE/i.test(row.sql)) return;
+  if (!row?.sql || (/ON DELETE CASCADE/i.test(row.sql) && /stop_loss/i.test(row.sql))) return;
 
   // The CREATE below MUST stay in sync with the canonical CREATE TABLE in
   // SCHEMA above; the INSERT intersects the canonical column list with what
@@ -1434,7 +1450,7 @@ export function rebuildAutotradeLiveOptionsOrdersTable(database: Database.Databa
       risk_amount   REAL,
       risk_profile  TEXT NOT NULL,
       position_id   INTEGER,
-      exit_reason   TEXT CHECK(exit_reason IN ('time_exit','manual') OR exit_reason IS NULL),
+      exit_reason   TEXT CHECK(exit_reason IN ('time_exit','stop_loss','take_profit','manual') OR exit_reason IS NULL),
       account_id    TEXT,
       grade         TEXT,
       entry_score   REAL,
@@ -1448,6 +1464,81 @@ export function rebuildAutotradeLiveOptionsOrdersTable(database: Database.Databa
       FROM autotrade_live_options_orders_old;
     DROP TABLE autotrade_live_options_orders_old;
     CREATE INDEX IF NOT EXISTS idx_autotrade_live_options_orders_symbol ON autotrade_live_options_orders(symbol);
+  `,
+  );
+}
+
+/**
+ * Rebuild `autotrade_live_options_positions` when its exit_reason CHECK
+ * predates 'stop_loss'/'take_profit' (live price-based exits, 2026-07-26).
+ * SQLite can't widen a CHECK in place, so this is the same rename/create/
+ * copy/drop dance as rebuildAutotradeOptionsPaperPositionsTable — guarded on
+ * 'stop_loss' already being in the stored table SQL, so it runs once and
+ * no-ops on a fresh DB. The copy list intersects the canonical column list
+ * with what the old table actually has (see rebuildAutotradeLiveOrdersTable
+ * for the reasoning), and the status index is recreated in its
+ * status-leading order.
+ */
+export function rebuildAutotradeLiveOptionsPositionsTable(database: Database.Database): void {
+  const row = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='autotrade_live_options_positions'")
+    .get() as { sql: string | null } | undefined;
+  if (!row?.sql || /stop_loss/i.test(row.sql)) return;
+
+  const present = new Set(
+    (database.prepare('PRAGMA table_info(autotrade_live_options_positions)').all() as { name: string }[]).map(
+      (c) => c.name,
+    ),
+  );
+  const cols = (
+    'id, symbol, side, kind, contract_symbol, strike, short_contract_symbol, short_strike, expiration, ' +
+    'quantity, entry_price, short_entry_price, entry_at, risk_amount, risk_profile, rationale, status, ' +
+    'exit_price, short_exit_price, exit_at, exit_reason, account_id, grade, entry_score, iv_rank, ' +
+    'market_regime, market_atr_pct, created_at, updated_at'
+  )
+    .split(', ')
+    .filter((c) => present.has(c))
+    .join(', ');
+  execAtomic(
+    database,
+    `
+    ALTER TABLE autotrade_live_options_positions RENAME TO autotrade_live_options_positions_old;
+    CREATE TABLE autotrade_live_options_positions (
+      id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol                 TEXT NOT NULL,
+      side                   TEXT NOT NULL CHECK(side IN ('call','put')),
+      kind                   TEXT NOT NULL DEFAULT 'single_leg',
+      contract_symbol        TEXT NOT NULL,
+      strike                 REAL NOT NULL,
+      short_contract_symbol  TEXT,
+      short_strike           REAL,
+      expiration             TEXT NOT NULL,
+      quantity               REAL NOT NULL,
+      entry_price            REAL NOT NULL,
+      short_entry_price      REAL,
+      entry_at               INTEGER NOT NULL,
+      risk_amount            REAL NOT NULL,
+      risk_profile           TEXT NOT NULL,
+      rationale              TEXT NOT NULL,
+      status                 TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+      exit_price             REAL,
+      short_exit_price       REAL,
+      exit_at                INTEGER,
+      exit_reason            TEXT CHECK(exit_reason IN ('time_exit','stop_loss','take_profit','manual') OR exit_reason IS NULL),
+      account_id             TEXT,
+      grade                  TEXT,
+      entry_score            REAL,
+      iv_rank                REAL,
+      market_regime          TEXT,
+      market_atr_pct         REAL,
+      created_at             INTEGER NOT NULL,
+      updated_at             INTEGER NOT NULL
+    );
+    INSERT INTO autotrade_live_options_positions (${cols})
+      SELECT ${cols}
+      FROM autotrade_live_options_positions_old;
+    DROP TABLE autotrade_live_options_positions_old;
+    CREATE INDEX IF NOT EXISTS idx_autotrade_live_options_positions_status ON autotrade_live_options_positions(status, symbol);
   `,
   );
 }

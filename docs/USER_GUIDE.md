@@ -1212,11 +1212,21 @@ shouldn't be a tab-switch away.
   nothing. It's an edge _amplifier_, not a signal — validate it in the backtester
   before trusting it. This is the one place the app _adds_ risk to a live-feeling
   paper position, which is exactly why it's capped and paper/backtest-only.
-  Seven more fields do the same for an already-open **paper or backtest options**
-  position (**live options positions are untouched — still time-exit only**, the
-  same scope boundary as the five equity fields above): **Options stop-loss (%)**
-  and **Options take-profit (%)** close the position once unrealized loss/gain
-  reaches that % of premium paid (net debit, for a spread). The remaining five
+  Seven more fields do the same for an already-open **options** position:
+  **Options stop-loss (%)** and **Options take-profit (%)** close the position
+  once unrealized loss/gain reaches that % of premium paid (net debit, for a
+  spread) — and since **2026-07-26 these two apply to LIVE options positions
+  too**, not just paper/backtest: when either fires on a live position, the
+  loop places a real closing order (the same separate sell-to-close it already
+  places for a time-exit — never a bracket leg), records the reason
+  (`stop_loss` / `take_profit`), and skips re-triggering while that close is
+  still working. Before this, a live long option's only automated exit was the
+  7-days-to-expiry time exit — it could ride to worthless with no brake. Live
+  evaluation fetches a fresh mark each cycle **only when a price rule is
+  actually set** (0 keeps the original no-quote, time-only behavior); a cycle
+  whose quote is unavailable or unusable skips the price rules that cycle
+  (never fabricating a trigger) and the time exit remains the backstop. The
+  remaining five stay **paper/backtest-only** and
   mirror the equity breakeven/trailing/partial-exit fields above, but in
   percentage-of-premium terms rather than R-multiples — a long option/spread has
   no ATR-based stop price to measure R against: **Options breakeven trigger (%)**
@@ -1372,10 +1382,14 @@ shouldn't be a tab-switch away.
   order; a debit spread places **one** combo order for both legs together, never two
   separate orders. Both **skip any contract with no live bid/ask** — where the only price
   available is an old last-trade print, an entry is declined rather than opened at a limit
-  derived from it (the skip is journaled with the reason). The automated exit is the same
-  close-only, time-based rule paper options trading already uses (no price-based
-  stop/target) — but here it places a **real** closing order (a single-leg sell, or both
-  spread legs together as one combo) instead of just recording a paper close. An exit
+  derived from it (the skip is journaled with the reason). The automated exits are the same
+  close-only rules paper options trading already uses — the always-on **time exit** near
+  expiry, plus (2026-07-26) the configured **Options stop-loss (%)** / **Options
+  take-profit (%)** — but here a trigger places a **real** closing order (a single-leg
+  sell, or both spread legs together as one combo) instead of just recording a paper
+  close, with the reason (`stop_loss` / `take_profit` / `time_exit`) recorded on the
+  exit and shown by the table's Reason badge. There's never a resting bracket: a live
+  options exit is always a fresh closing order the loop places when its rule fires. An exit
   makes the *opposite* call on a stale price: it still places (declining would just leave
   the position drifting to expiration, which is what the time exit exists to prevent) but
   journals that the close may rest unfilled, which feeds the unresolved-order alert below.
