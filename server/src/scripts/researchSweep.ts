@@ -33,11 +33,14 @@
 
 import fs from 'node:fs';
 import {
+  allZeroTrades,
   buildExperiments,
   EXPERIMENT_NAMES,
   ExperimentName,
+  formatDataIssues,
   formatResultRow,
   rankResults,
+  SweepDataIssues,
   SweepResult,
   SweepWindow,
 } from '../services/autotrading/researchSweep';
@@ -137,6 +140,7 @@ async function main(): Promise<void> {
   );
 
   const results: SweepResult[] = [];
+  let lastIssuesLine: string | null = null;
   for (const [i, v] of variants.entries()) {
     process.stdout.write(`[${i + 1}/${variants.length}] ${v.experiment} · ${v.label} … `);
     try {
@@ -157,15 +161,31 @@ async function main(): Promise<void> {
         console.log(`HTTP ${res.status}`);
         continue;
       }
-      const json = (await res.json()) as { inSample: SweepWindow; outOfSample: SweepWindow };
+      const json = (await res.json()) as {
+        inSample: SweepWindow;
+        outOfSample: SweepWindow;
+        excludedSymbols?: SweepDataIssues['excludedSymbols'];
+        errors?: SweepDataIssues['errors'];
+      };
+      const dataIssues: SweepDataIssues = {
+        excludedSymbols: json.excludedSymbols ?? [],
+        errors: json.errors ?? [],
+      };
       results.push({
         experiment: v.experiment,
         label: v.label,
         outOfSample: json.outOfSample,
         inSample: json.inSample,
+        dataIssues,
       });
       const oos = json.outOfSample;
       console.log(`OOS expectancy $${oos.stats.expectancy.toFixed(2)}/trade over ${oos.stats.totalTrades} trades`);
+      // Data problems the response reports alongside the windows — printed
+      // once per distinct set, not once per variant (a sweep's variants all
+      // hit the same symbols/window, so the set virtually never changes).
+      const issuesLine = formatDataIssues(dataIssues);
+      if (issuesLine && issuesLine !== lastIssuesLine) console.log(`    ⚠ ${issuesLine}`);
+      lastIssuesLine = issuesLine;
     } catch (err) {
       results.push({
         experiment: v.experiment,
@@ -183,6 +203,17 @@ async function main(): Promise<void> {
     for (const row of rankResults(results.filter((r) => r.experiment === experiment))) {
       console.log(formatResultRow(row));
     }
+  }
+
+  if (allZeroTrades(results)) {
+    console.log(
+      '\n⚠ Every variant simulated ZERO trades in BOTH windows. That means the engine never entered a single\n' +
+        '  position — almost always a data problem, not "no setup ever qualified" (13 variants spanning minScore 0\n' +
+        '  through 75 never all agree on zero). Check any fetch-error/excluded lines above first. If there were\n' +
+        '  none: server versions before 2026-07-27 cached Polygon daily bars with midnight-EASTERN timestamps the\n' +
+        '  simulator could never match against its midnight-UTC calendar — upgrading the server repairs the cached\n' +
+        '  bars automatically at startup; then re-run this sweep.',
+    );
   }
 
   fs.writeFileSync(

@@ -186,11 +186,22 @@ export interface SweepWindow {
   } | null;
 }
 
+/** Per-run data problems the walk-forward response reports at its top level
+ *  (loadBacktestHistory's own per-symbol fetch errors and the real-estate
+ *  pre-filter's exclusions). The sweep script used to drop these on the
+ *  floor, which made a data problem indistinguishable from "no setup ever
+ *  qualified" — a zero-trades sweep printed nothing but zeros. */
+export interface SweepDataIssues {
+  excludedSymbols: { symbol: string; reason: string }[];
+  errors: { symbol: string; message: string }[];
+}
+
 export interface SweepResult {
   experiment: string;
   label: string;
   outOfSample: SweepWindow | null;
   inSample: SweepWindow | null;
+  dataIssues?: SweepDataIssues;
   error?: string;
 }
 
@@ -208,6 +219,33 @@ export function rankResults(results: SweepResult[]): SweepResult[] {
     const eb = b.outOfSample?.stats.expectancy ?? Number.NEGATIVE_INFINITY;
     return eb - ea;
   });
+}
+
+/** One console-ready line describing a result's data issues, or null when
+ *  there are none — the script prints it right under the variant's own line
+ *  (deduped, since every variant of one sweep usually shares the same set). */
+export function formatDataIssues(issues: SweepDataIssues | undefined): string | null {
+  if (!issues) return null;
+  const parts: string[] = [];
+  if (issues.errors.length) {
+    parts.push(`fetch errors: ${issues.errors.map((e) => `${e.symbol} (${e.message})`).join('; ')}`);
+  }
+  if (issues.excludedSymbols.length) {
+    parts.push(`excluded: ${issues.excludedSymbols.map((e) => `${e.symbol} (${e.reason})`).join('; ')}`);
+  }
+  return parts.length ? parts.join(' | ') : null;
+}
+
+/** True when every variant that got a response simulated ZERO trades in BOTH
+ *  windows — the signature of the engine never seeing a tradable bar at all
+ *  (a data problem), as opposed to setups failing to qualify (which varies
+ *  by variant and window). The script prints a pointed warning on this. */
+export function allZeroTrades(results: SweepResult[]): boolean {
+  const answered = results.filter((r) => !r.error && (r.outOfSample || r.inSample));
+  return (
+    answered.length > 0 &&
+    answered.every((r) => (r.outOfSample?.stats.totalTrades ?? 0) === 0 && (r.inSample?.stats.totalTrades ?? 0) === 0)
+  );
 }
 
 const fmt = (v: number | null | undefined, digits = 2): string => (v == null ? '—' : v.toFixed(digits));

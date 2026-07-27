@@ -53,6 +53,35 @@ describe('fetchPolygonBars', () => {
     }
   });
 
+  it('normalizes daily/weekly bar times to UTC midnight (Polygon stamps them at midnight ET)', async () => {
+    Object.assign(config.polygon, { apiKey: 'k' });
+    // 2024-01-01 is EST: midnight ET = 05:00 UTC. 2024-07-01 is EDT: 04:00 UTC.
+    // The backtest engines match bars to simulated days by exact UTC-midnight
+    // equality, so leaving these raw made every simulation silently no-op.
+    const est = Date.parse('2024-01-01T05:00:00Z');
+    const edt = Date.parse('2024-07-01T04:00:00Z');
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse({
+        results: [
+          { o: 1, h: 1, l: 1, c: 1, v: 1, t: est },
+          { o: 2, h: 2, l: 2, c: 2, v: 2, t: edt },
+        ],
+      }),
+    );
+    for (const tf of ['daily', 'weekly'] as const) {
+      const bars = await fetchPolygonBars('AAPL', tf, '2024-01-01', '2024-12-31');
+      expect(bars.map((b) => b.time)).toEqual([Date.parse('2024-01-01T00:00:00Z'), Date.parse('2024-07-01T00:00:00Z')]);
+    }
+  });
+
+  it('leaves intraday bar times untouched', async () => {
+    Object.assign(config.polygon, { apiKey: 'k' });
+    const t = Date.parse('2024-01-02T14:35:00Z'); // a real 09:35 ET minute bar
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ results: [{ o: 1, h: 1, l: 1, c: 1, v: 1, t }] }));
+    const bars = await fetchPolygonBars('AAPL', '5min', '2024-01-02', '2024-01-02');
+    expect(bars[0].time).toBe(t);
+  });
+
   it('follows next_url pagination until exhausted', async () => {
     Object.assign(config.polygon, { apiKey: 'k' });
     const page1 = jsonResponse({

@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
+  allZeroTrades,
   buildExperiments,
   completeFilters,
   completeWeights,
   EXPERIMENT_NAMES,
+  formatDataIssues,
   rankResults,
   SweepBase,
   SweepResult,
@@ -116,5 +118,38 @@ describe('rankResults', () => {
       row('reliable-high', 20, true),
     ]);
     expect(ranked.map((r) => r.label)).toEqual(['reliable-high', 'reliable-low', 'thin-high', 'err']);
+  });
+});
+
+describe('data-issue surfacing', () => {
+  const windowWith = (totalTrades: number): SweepResult['outOfSample'] => ({
+    stats: { totalTrades, winRate: 0, expectancy: 0, profitFactor: null, returnPct: 0, maxDrawdown: 0, avgR: null },
+    significance: null,
+  });
+  const result = (oosTrades: number, isTrades: number, error?: string): SweepResult => ({
+    experiment: 'x',
+    label: 'v',
+    outOfSample: error ? null : windowWith(oosTrades),
+    inSample: error ? null : windowWith(isTrades),
+    error,
+  });
+
+  it('formatDataIssues renders fetch errors and exclusions, and null when clean', () => {
+    expect(formatDataIssues(undefined)).toBeNull();
+    expect(formatDataIssues({ excludedSymbols: [], errors: [] })).toBeNull();
+    expect(
+      formatDataIssues({
+        excludedSymbols: [{ symbol: 'SPG', reason: 'real estate' }],
+        errors: [{ symbol: 'AAPL', message: 'POLYGON_API_KEY is not set' }],
+      }),
+    ).toBe('fetch errors: AAPL (POLYGON_API_KEY is not set) | excluded: SPG (real estate)');
+  });
+
+  it('allZeroTrades is true only when every answered variant has zero trades in BOTH windows', () => {
+    expect(allZeroTrades([result(0, 0), result(0, 0)])).toBe(true);
+    expect(allZeroTrades([result(0, 0), result(0, 3)])).toBe(false); // in-sample trades count too
+    expect(allZeroTrades([result(0, 0), result(1, 0)])).toBe(false);
+    expect(allZeroTrades([result(0, 0, 'HTTP 500')])).toBe(false); // errors alone are not a zero-trades verdict
+    expect(allZeroTrades([])).toBe(false);
   });
 });

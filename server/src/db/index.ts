@@ -1065,6 +1065,8 @@ function migrate(): void {
   // copy-list reason.
   rebuildAutotradeLiveOptionsPositionsTable(db);
 
+  normalizeBacktestBarTimes(db);
+
   // Reorder the three open-position "status" indexes to lead with status —
   // listOpenXxxPositions() queries WHERE status = 'open' with no symbol
   // filter, on every autotrade loop tick, which a symbol-leading index can't
@@ -1540,6 +1542,26 @@ export function rebuildAutotradeLiveOptionsPositionsTable(database: Database.Dat
     DROP TABLE autotrade_live_options_positions_old;
     CREATE INDEX IF NOT EXISTS idx_autotrade_live_options_positions_status ON autotrade_live_options_positions(status, symbol);
   `,
+  );
+}
+
+/** 2026-07-27: repair cached Polygon daily/weekly bars stamped at midnight
+ *  EASTERN (04:00/05:00 UTC) instead of midnight UTC. The backtest engines
+ *  match bars to simulated days by exact UTC-midnight equality, so every
+ *  un-normalized cached bar made the simulation silently skip its own trading
+ *  day — a backtest over real Polygon data reported zero trades and zero
+ *  errors. polygonClient.ts now floors day-level timestamps at fetch time;
+ *  this floors the rows cached before that fix. UPDATE OR REPLACE: if a
+ *  normalized twin of a raw row already exists (a re-fetch after the client
+ *  fix), the (symbol, timeframe, time) primary-key conflict resolves by
+ *  replacing it instead of failing the migration. Idempotent — a floored row
+ *  can never match the WHERE clause again. Intraday timeframes keep their
+ *  real timestamps, exactly like the fetch-time fix. */
+export function normalizeBacktestBarTimes(database: Database.Database): void {
+  database.exec(
+    `UPDATE OR REPLACE backtest_bars
+     SET time = time - (time % 86400000)
+     WHERE timeframe IN ('daily', 'weekly') AND time % 86400000 != 0`,
   );
 }
 
