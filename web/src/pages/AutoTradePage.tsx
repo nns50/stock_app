@@ -2290,6 +2290,8 @@ export default function AutoTradePage() {
   const [optionsMinDteDraft, setOptionsMinDteDraft] = useState<number | undefined>();
   const [optionsMaxDteDraft, setOptionsMaxDteDraft] = useState<number | undefined>();
   const [optionsIvRankMaxDraft, setOptionsIvRankMaxDraft] = useState<number | undefined>();
+  const [optionsIvRankMinDraft, setOptionsIvRankMinDraft] = useState<number | undefined>();
+  const [optionsMaxIvRvRatioDraft, setOptionsMaxIvRvRatioDraft] = useState<number | undefined>();
   const [equityDraft, setEquityDraft] = useState<number | undefined>();
   const [maxPositionsDraft, setMaxPositionsDraft] = useState<number | undefined>();
   const [riskPerTradePctDraft, setRiskPerTradePctDraft] = useState<number | undefined>();
@@ -2411,6 +2413,8 @@ export default function AutoTradePage() {
     sync('optionsMinDte', setOptionsMinDteDraft);
     sync('optionsMaxDte', setOptionsMaxDteDraft);
     sync('optionsIvRankMax', setOptionsIvRankMaxDraft);
+    sync('optionsIvRankMin', setOptionsIvRankMinDraft);
+    sync('optionsMaxIvRvRatio', setOptionsMaxIvRvRatioDraft);
     sync('accountEquityUsd', (v) => setEquityDraft(v ?? undefined));
     sync('maxConcurrentPositions', setMaxPositionsDraft);
     sync('riskPerTradePct', setRiskPerTradePctDraft);
@@ -2582,6 +2586,8 @@ export default function AutoTradePage() {
     optionsMinDte?: number;
     optionsMaxDte?: number;
     optionsIvRankMax?: number;
+    optionsIvRankMin?: number;
+    optionsMaxIvRvRatio?: number;
     autoPromoteMoversEnabled?: boolean;
     autoPromoteThreshold?: number;
     autoPromoteWindowDays?: number;
@@ -3531,6 +3537,63 @@ export default function AutoTradePage() {
                           optionsIvRankMaxDraft < 0 ||
                           optionsIvRankMaxDraft > 100 ||
                           optionsIvRankMaxDraft === config.data?.optionsIvRankMax
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options IV rank floor"
+                    hint="Skip an underlying whose IV rank (0-100) is BELOW this — the other end of the same band as the ceiling above. 0 = no floor, the long-standing default."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsIvRankMinDraft}
+                        onChange={setOptionsIvRankMinDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options IV rank floor"
+                        onClick={() =>
+                          optionsIvRankMinDraft != null && saveConfig({ optionsIvRankMin: optionsIvRankMinDraft })
+                        }
+                        disabled={
+                          optionsIvRankMinDraft == null ||
+                          optionsIvRankMinDraft < 0 ||
+                          optionsIvRankMinDraft > 100 ||
+                          optionsIvRankMinDraft === config.data?.optionsIvRankMin
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Options max IV/RV ratio"
+                    hint="Cheapness gate: skip an options entry when the underlying's ATM implied vol exceeds this multiple of its 20-day realized vol — buy premium only when it's cheap relative to actual movement, not just low in its own range. ~1.0 means implied no richer than realized; 0 disables the gate."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={optionsMaxIvRvRatioDraft}
+                        onChange={setOptionsMaxIvRvRatioDraft}
+                        min={0}
+                        step={0.05}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save options max IV/RV ratio"
+                        onClick={() =>
+                          optionsMaxIvRvRatioDraft != null &&
+                          saveConfig({ optionsMaxIvRvRatio: optionsMaxIvRvRatioDraft })
+                        }
+                        disabled={
+                          optionsMaxIvRvRatioDraft == null ||
+                          optionsMaxIvRvRatioDraft < 0 ||
+                          optionsMaxIvRvRatioDraft === config.data?.optionsMaxIvRvRatio
                         }
                       >
                         Save

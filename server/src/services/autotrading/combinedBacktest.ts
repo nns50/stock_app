@@ -29,7 +29,7 @@ import { getHistoricalBars } from './historicalData';
 import { getHistoricalOptionContracts } from './optionsHistoricalData';
 import { OptionContractRef } from './polygonOptionsClient';
 import { impliedVol, bsGreeks, yearsToExpiration } from '../../options/blackScholes';
-import { computeIvContext } from '../ivRank';
+import { computeIvContext, realizedVolSeries } from '../ivRank';
 import { evaluateExit, unrealizedReturnPct } from '../../options/exitRules';
 import {
   addDays,
@@ -1057,6 +1057,37 @@ export async function simulateCombinedBacktest(
           reason: `IV rank ${ivContext.ivRank.toFixed(0)} above ivRankMax ${entryCfg.ivRankMax}`,
         });
         continue;
+      }
+      if (entryCfg.ivRankMin !== undefined && ivContext.ivRank < entryCfg.ivRankMin) {
+        optionsSkipped.push({
+          symbol: candidate.symbol,
+          date: day,
+          reason: `IV rank ${ivContext.ivRank.toFixed(0)} below ivRankMin ${entryCfg.ivRankMin}`,
+        });
+        continue;
+      }
+      // IV/RV cheapness gate — same signal and reasoning as optionsBacktest.ts's
+      // own copy of this block (and the live path's optionsDecide.ts maxIvRvRatio).
+      const maxIvRv = cfg.optionsDecisionConfig?.maxIvRvRatio ?? 0;
+      if (maxIvRv > 0) {
+        const rvSeries = realizedVolSeries(candidate.history);
+        const realizedVol = rvSeries.length ? rvSeries[rvSeries.length - 1] : undefined;
+        if (realizedVol === undefined || realizedVol <= 0) {
+          optionsSkipped.push({
+            symbol: candidate.symbol,
+            date: day,
+            reason: 'IV/RV cheapness gate is on but realized volatility could not be computed',
+          });
+          continue;
+        }
+        if (iv / realizedVol > maxIvRv) {
+          optionsSkipped.push({
+            symbol: candidate.symbol,
+            date: day,
+            reason: `IV/RV ${(iv / realizedVol).toFixed(2)} above max ${maxIvRv}`,
+          });
+          continue;
+        }
       }
 
       const delta = bsGreeks({

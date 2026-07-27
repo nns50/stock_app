@@ -104,6 +104,8 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     optionsMinDte: 7,
     optionsMaxDte: 60,
     optionsIvRankMax: 70,
+    optionsIvRankMin: 0,
+    optionsMaxIvRvRatio: 0,
     autoTuneExitTunedAt: null,
     optionsStopLossPct: 0,
     optionsTakeProfitPct: 0,

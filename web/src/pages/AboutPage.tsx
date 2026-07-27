@@ -283,6 +283,13 @@ export default function AboutPage() {
             Implied volatility (the market’s expected movement priced into options) and where today’s IV sits within its
             own recent range (0–100%).
           </Term>
+          <Term term="IV/RV ratio">
+            Today’s at-the-money implied volatility divided by the underlying’s 20-day realized volatility (annualized,
+            from daily log returns). Above 1, options price in more movement than the stock has actually delivered — the
+            variance risk premium a premium buyer pays. The auto-trade loop’s optional cheapness gate (
+            <strong className="text-slate-200">options max IV/RV ratio</strong>, 0 = off) skips options entries above
+            your configured ratio, and skips rather than guesses when realized volatility can’t be computed.
+          </Term>
           <Term term="Timing banner">
             The Options page’s IV-rank + earnings read, in priority order:{' '}
             <strong className="text-slate-200">Event risk</strong> if earnings fall on or before the expiry;{' '}

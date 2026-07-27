@@ -558,6 +558,8 @@ export const client = {
     optionsMinDte?: number;
     optionsMaxDte?: number;
     optionsIvRankMax?: number;
+    optionsIvRankMin?: number;
+    optionsMaxIvRvRatio?: number;
     optionsStopLossPct?: number;
     optionsTakeProfitPct?: number;
     optionsBreakevenTriggerPct?: number;

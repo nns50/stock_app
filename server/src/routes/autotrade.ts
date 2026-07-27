@@ -238,6 +238,9 @@ const configBody = z.object({
   optionsMinDte: z.number().int().nonnegative().optional(),
   optionsMaxDte: z.number().int().min(1).optional(),
   optionsIvRankMax: z.number().min(0).max(100).optional(),
+  optionsIvRankMin: z.number().min(0).max(100).optional(),
+  // --- Options IV/RV cheapness gate (0 disables) ------------------------------
+  optionsMaxIvRvRatio: z.number().min(0).optional(),
   // --- Options stop-loss / take-profit (paper + backtest only; 0 disables) ----
   optionsStopLossPct: z.number().min(0).max(100).optional(),
   optionsTakeProfitPct: z.number().min(0).max(100).optional(),
@@ -433,6 +436,8 @@ autotradeRouter.put(
     if (body.optionsMinDte !== undefined) patch.optionsMinDte = body.optionsMinDte;
     if (body.optionsMaxDte !== undefined) patch.optionsMaxDte = body.optionsMaxDte;
     if (body.optionsIvRankMax !== undefined) patch.optionsIvRankMax = body.optionsIvRankMax;
+    if (body.optionsIvRankMin !== undefined) patch.optionsIvRankMin = body.optionsIvRankMin;
+    if (body.optionsMaxIvRvRatio !== undefined) patch.optionsMaxIvRvRatio = body.optionsMaxIvRvRatio;
     if (body.optionsStopLossPct !== undefined) patch.optionsStopLossPct = body.optionsStopLossPct;
     if (body.optionsTakeProfitPct !== undefined) patch.optionsTakeProfitPct = body.optionsTakeProfitPct;
     if (body.optionsBreakevenTriggerPct !== undefined) {
@@ -776,6 +781,7 @@ autotradeRouter.post(
     );
     const optionsDecision = await runOptionsDecision(screen.candidates, {
       strategyType: config.optionsStrategyType,
+      maxIvRvRatio: config.optionsMaxIvRvRatio,
       entryConfig: {
         deltaMin: config.optionsDeltaMin,
         deltaMax: config.optionsDeltaMax,
@@ -785,6 +791,7 @@ autotradeRouter.post(
         minDaysToExpiration: config.optionsMinDte,
         maxDaysToExpiration: config.optionsMaxDte,
         ivRankMax: config.optionsIvRankMax,
+        ivRankMin: config.optionsIvRankMin,
       },
     });
     res.json({ screen, decision, optionsDecision });

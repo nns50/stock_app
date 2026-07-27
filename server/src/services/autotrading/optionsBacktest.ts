@@ -38,7 +38,7 @@ import { getHistoricalOptionContracts } from './optionsHistoricalData';
 import { getHistoricalBars } from './historicalData';
 import { OptionContractRef } from './polygonOptionsClient';
 import { impliedVol, bsGreeks, yearsToExpiration, daysToExpiration } from '../../options/blackScholes';
-import { computeIvContext } from '../ivRank';
+import { computeIvContext, realizedVolSeries } from '../ivRank';
 import { evaluateExit, unrealizedReturnPct } from '../../options/exitRules';
 
 // ---------------------------------------------------------------------------
@@ -905,6 +905,40 @@ export async function simulateOptionsBacktest(
           reason: `IV rank ${ivContext.ivRank.toFixed(0)} above ivRankMax ${entryCfg.ivRankMax}`,
         });
         continue;
+      }
+      if (entryCfg.ivRankMin !== undefined && ivContext.ivRank < entryCfg.ivRankMin) {
+        skipped.push({
+          symbol: candidate.symbol,
+          date: day,
+          reason: `IV rank ${ivContext.ivRank.toFixed(0)} below ivRankMin ${entryCfg.ivRankMin}`,
+        });
+        continue;
+      }
+      // IV/RV cheapness gate — same signal as the live path (optionsDecide.ts's
+      // maxIvRvRatio): this loop's `iv` is solved from the reference contract's
+      // real historical price (near-ATM by pickReferenceContract), and
+      // candidate.history is the underlying's own bars through today, so the
+      // ratio is the honest backtest analogue of ATM-IV / 20-day realized vol.
+      const maxIvRv = cfg.optionsDecisionConfig?.maxIvRvRatio ?? 0;
+      if (maxIvRv > 0) {
+        const rvSeries = realizedVolSeries(candidate.history);
+        const realizedVol = rvSeries.length ? rvSeries[rvSeries.length - 1] : undefined;
+        if (realizedVol === undefined || realizedVol <= 0) {
+          skipped.push({
+            symbol: candidate.symbol,
+            date: day,
+            reason: 'IV/RV cheapness gate is on but realized volatility could not be computed',
+          });
+          continue;
+        }
+        if (iv / realizedVol > maxIvRv) {
+          skipped.push({
+            symbol: candidate.symbol,
+            date: day,
+            reason: `IV/RV ${(iv / realizedVol).toFixed(2)} above max ${maxIvRv}`,
+          });
+          continue;
+        }
       }
 
       const delta = bsGreeks({

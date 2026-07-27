@@ -2,7 +2,7 @@ import { getProvider, getProviderStatus } from '../../providers';
 import { defaultEntryConfig, EntryStrategyConfig, scanEntries } from '../../options/entryRules';
 import { daysToExpiration } from '../../options/blackScholes';
 import { analyzeStrategy } from '../../options/optionStrategy';
-import { atmIvOfChain, computeIvContext } from '../ivRank';
+import { atmIvOfChain, computeIvContext, realizedVolSeries } from '../ivRank';
 import { getIvHistory, recordAtmIv } from '../../db/ivHistory';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { OptionsStrategyType } from '../../db/autotradeConfig';
@@ -70,6 +70,13 @@ export interface OptionsDecisionConfig {
    *  unless explicitly overridden here). Ignored when strategyType resolves
    *  to 'single_leg' (directly, or via 'auto'). */
   shortLegEntryConfig?: Partial<EntryStrategyConfig>;
+  /** Cheapness gate: max ATM-IV / 20-day-realized-vol ratio for an entry —
+   *  see AutotradeConfig.optionsMaxIvRvRatio (the field this is threaded
+   *  from). 0/undefined disables. Lives here rather than on
+   *  EntryStrategyConfig because it gates the UNDERLYING (one ratio per
+   *  candidate), not any individual contract — same altitude as
+   *  strategyType, one level above entryRules' per-contract rules. */
+  maxIvRvRatio?: number;
 }
 
 export function defaultOptionsDecisionConfig(): OptionsDecisionConfig {
@@ -177,9 +184,11 @@ export type OptionsSignalResult = { ok: true; signal: OptionsTradeSignal } | { o
  * Build an options-shaped signal for one already-screened candidate, or a
  * reason it was skipped. Fails closed at every stage — no expiration in the
  * configured DTE window, a chain fetch failure, an IV rank that's neither
- * real history nor a realized-vol estimate (both insufficient), no contract
- * passing entryRules.ts's rules, or a structural defined-risk failure all
- * skip the candidate rather than approximate an answer. IV rank itself DOES
+ * real history nor a realized-vol estimate (both insufficient), an IV/RV
+ * cheapness gate that's on but can't compute realized vol (or finds premium
+ * rich), no contract passing entryRules.ts's rules, or a structural
+ * defined-risk failure all skip the candidate rather than approximate an
+ * answer. IV rank itself DOES
  * accept the realized-vol estimate as a fallback (2026-07-09, by request —
  * see the comment above computeIvContext's call site) when real history is
  * still short; a signal built from that fallback says so in its rationale.
@@ -263,6 +272,41 @@ export async function generateOptionsSignal(
   }
   const ivRankNote = ivContext.method === 'hv-estimate' ? ' (estimated from realized volatility)' : '';
 
+  // Cheapness gate (2026-07-27): implied vs. REALIZED vol, the direction the
+  // variance-risk-premium evidence actually supports for a premium BUYER —
+  // IV rank only locates implied within its own range; this asks whether it
+  // overprices the underlying's actual recent movement. Fails closed, like
+  // every other stage here: gate on + no computable realized vol = skip.
+  const maxIvRv = cfg.maxIvRvRatio ?? 0;
+  let ivRvNote = '';
+  if (maxIvRv > 0) {
+    // The candles fetch above is lazy (only when real IV history is short) —
+    // the gate needs the daily series regardless, so top it up here.
+    if (!candles.length) {
+      candles = await provider.getCandles(symbol, 'daily', { limit: 260 }).catch(() => []);
+    }
+    const rvSeries = realizedVolSeries(candles);
+    const realizedVol = rvSeries.length ? rvSeries[rvSeries.length - 1] : undefined;
+    if (atmIv === undefined || realizedVol === undefined || realizedVol <= 0) {
+      return {
+        ok: false,
+        reason:
+          'IV/RV cheapness gate is on but the 20-day realized volatility could not be computed ' +
+          '(insufficient daily price history) — skipped rather than guessed',
+      };
+    }
+    const ratio = atmIv / realizedVol;
+    if (ratio > maxIvRv) {
+      return {
+        ok: false,
+        reason:
+          `IV/RV ${ratio.toFixed(2)} above max ${maxIvRv} — implied ${(atmIv * 100).toFixed(0)}% vs ` +
+          `20-day realized ${(realizedVol * 100).toFixed(0)}%: premium is rich relative to actual movement`,
+      };
+    }
+    ivRvNote = `, IV/RV ${ratio.toFixed(2)}`;
+  }
+
   // 'auto' resolves per-candidate here, now that ivContext.ivRank is known
   // (guaranteed non-null by the early return above) — see
   // AUTO_STRATEGY_IV_RANK_THRESHOLD's doc comment for the rationale.
@@ -311,7 +355,7 @@ export async function generateOptionsSignal(
       `${autoNote}Long ${side} on ${symbol}: strike ${best.contract.strike}, exp ${best.contract.expiration} ` +
       `(${best.metrics.dte.toFixed(0)}d), premium ${premium.toFixed(2)}, ` +
       `Δ ${best.metrics.delta === null ? 'n/a' : best.metrics.delta.toFixed(2)}, ` +
-      `IV rank ${ivContext.ivRank.toFixed(0)}${ivRankNote}`;
+      `IV rank ${ivContext.ivRank.toFixed(0)}${ivRankNote}${ivRvNote}`;
 
     return {
       ok: true,
@@ -399,7 +443,7 @@ export async function generateOptionsSignal(
   const rationale =
     `${autoNote}${side === 'call' ? 'Call' : 'Put'} debit spread on ${symbol}: long ${longStrike}/short ${bestShort.contract.strike}, ` +
     `exp ${best.contract.expiration} (${best.metrics.dte.toFixed(0)}d), net debit ${netDebit.toFixed(2)}, ` +
-    `width ${width}, IV rank ${ivContext.ivRank.toFixed(0)}${ivRankNote}`;
+    `width ${width}, IV rank ${ivContext.ivRank.toFixed(0)}${ivRankNote}${ivRvNote}`;
 
   return {
     ok: true,

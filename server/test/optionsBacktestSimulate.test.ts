@@ -672,6 +672,69 @@ describe('simulateOptionsBacktest', () => {
     expect(report.skipped.some((s) => s.reason.includes('IV rank'))).toBe(true);
   });
 
+  it('skips a candidate whose solved IV is rich relative to realized vol (maxIvRvRatio)', async () => {
+    // Same noisy-underlying fixture as the ivRankMax test above (a flat series
+    // has zero realized vol, which trips the gate's separate fail-closed
+    // branch instead), but with a MID sigma so the IV-rank ceiling passes and
+    // the IV/RV gate is what actually rejects: rank(0.09) lands mid-range,
+    // while 0.09 / (20-day realized ≈ 0.16) ≈ 0.57 — above a 0.1 gate.
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const expiration = d(signalDay, DTE_DAYS);
+    const T = yearsFor(DTE_DAYS);
+    const closes: number[] = [];
+    for (let i = 60; i >= 0; i--) {
+      const amplitude = i > 30 ? 0.05 : 0.5;
+      closes.push(100 + (i % 2 === 0 ? 1 : -1) * amplitude);
+    }
+    const underlyingCandles: Candle[] = closes.map((close, idx) => {
+      const day = d(signalDay, -(60 - idx));
+      return {
+        time: Date.parse(`${day}T00:00:00Z`),
+        open: close,
+        high: close + 0.1,
+        low: close - 0.1,
+        close,
+        volume: 500_000,
+      };
+    });
+    const lastClose = closes[closes.length - 1];
+    const midSigma = 0.09;
+    const premium = premiumFor('call', lastClose, STRIKE, T, midSigma);
+    mockContractBars({ [CALL_TICKER]: [optionBar(signalDay, premium), optionBar(entryDay, premium)] });
+    const historyBySymbol = new Map([['TEST', underlyingCandles]]);
+    const contractsBySymbol = new Map([['TEST', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]]]);
+
+    const report = await simulateOptionsBacktest(
+      historyBySymbol,
+      contractsBySymbol,
+      baseConfig({ from: signalDay, to: entryDay, optionsDecisionConfig: { maxIvRvRatio: 0.1 } }),
+    );
+    expect(report.trades).toEqual([]);
+    expect(report.skipped.some((s) => /IV\/RV \d+(\.\d+)? above max 0\.1/.test(s.reason))).toBe(true);
+  });
+
+  it('fails closed when the IV/RV gate is on but the underlying has no realized vol to measure', async () => {
+    // warmupThrough()'s flat closes have literally zero variance in every
+    // rolling window -> realized vol 0 -> the gate skips rather than divides.
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const expiration = d(signalDay, DTE_DAYS);
+    const T = yearsFor(DTE_DAYS);
+    const premium = premiumFor('call', 100, STRIKE, T);
+    mockContractBars({ [CALL_TICKER]: [optionBar(signalDay, premium), optionBar(entryDay, premium)] });
+    const historyBySymbol = new Map([['TEST', warmupThrough(signalDay)]]);
+    const contractsBySymbol = new Map([['TEST', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]]]);
+
+    const report = await simulateOptionsBacktest(
+      historyBySymbol,
+      contractsBySymbol,
+      baseConfig({ from: signalDay, to: entryDay, optionsDecisionConfig: { maxIvRvRatio: 1 } }),
+    );
+    expect(report.trades).toEqual([]);
+    expect(report.skipped.some((s) => /realized volatility could not be computed/i.test(s.reason))).toBe(true);
+  });
+
   it('selects a PUT reference contract when direction is short', async () => {
     const signalDay = '2024-03-01';
     const entryDay = d(signalDay, 1);

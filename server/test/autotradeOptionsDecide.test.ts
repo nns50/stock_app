@@ -331,6 +331,84 @@ describe('generateOptionsSignal', () => {
     if (result.ok) expect(result.signal.expiration).toBe(near);
   });
 
+  describe('IV/RV cheapness gate (maxIvRvRatio)', () => {
+    /** Calm candles: constant ±0.2% daily oscillation -> 20-day realized vol
+     *  ≈ 0.03 annualized, far below the fixture chain's fixed 0.4 IV — so a
+     *  1.0 gate reads the premium as rich (ratio ≈ 12). candlesFor()'s own
+     *  growing 0.6-5.1% swings land RV ≈ 0.6+, the cheap side of the same gate. */
+    function calmCandles(count: number, basePrice = 100): Candle[] {
+      const dayMs = 24 * 60 * 60 * 1000;
+      const out: Candle[] = [];
+      let price = basePrice;
+      for (let i = 0; i < count; i++) {
+        price *= 1 + 0.002 * (i % 2 === 0 ? 1 : -1);
+        out.push({
+          time: Date.now() - (count - i) * dayMs,
+          open: price,
+          high: price,
+          low: price,
+          close: price,
+          volume: 1_000_000,
+        });
+      }
+      return out;
+    }
+
+    it('skips when implied vol is rich relative to realized vol, fetching candles just for the gate', async () => {
+      fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 }); // rank ~50 — passes the ivRankMax ceiling
+      const expiration = expirationDaysOut(21);
+      const getCandles = vi.fn(async () => calmCandles(40));
+      mockGetProvider.mockReturnValue({
+        getOptionsExpirations: vi.fn(async () => [expiration]),
+        getOptionsChain: vi.fn(async () => chainFor(expiration, { mark: 3 })),
+        getCandles,
+      } as unknown as ReturnType<typeof getProvider>);
+
+      const result = await generateOptionsSignal(candidate(), {
+        ...defaultOptionsDecisionConfig(),
+        maxIvRvRatio: 1,
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toMatch(/IV\/RV \d+(\.\d+)? above max 1/);
+      // Real IV history was sufficient, so this fetch happened for the GATE, not the rank fallback.
+      expect(getCandles).toHaveBeenCalled();
+    });
+
+    it('passes a cheap-premium candidate and stamps the ratio into the rationale', async () => {
+      fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 });
+      const expiration = expirationDaysOut(21);
+      mockGetProvider.mockReturnValue({
+        getOptionsExpirations: vi.fn(async () => [expiration]),
+        getOptionsChain: vi.fn(async () => chainFor(expiration, { mark: 3 })),
+        getCandles: vi.fn(async () => candlesFor(40)), // volatile underlying -> RV above the 0.4 chain IV
+      } as unknown as ReturnType<typeof getProvider>);
+
+      const result = await generateOptionsSignal(candidate(), {
+        ...defaultOptionsDecisionConfig(),
+        maxIvRvRatio: 1,
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.signal.rationale).toMatch(/IV\/RV 0\.\d\d/);
+    });
+
+    it('fails closed when the gate is on but realized vol cannot be computed', async () => {
+      fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 });
+      const expiration = expirationDaysOut(21);
+      mockGetProvider.mockReturnValue({
+        getOptionsExpirations: vi.fn(async () => [expiration]),
+        getOptionsChain: vi.fn(async () => chainFor(expiration, { mark: 3 })),
+        getCandles: vi.fn(async () => []), // no daily history at all
+      } as unknown as ReturnType<typeof getProvider>);
+
+      const result = await generateOptionsSignal(candidate(), {
+        ...defaultOptionsDecisionConfig(),
+        maxIvRvRatio: 1,
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toMatch(/realized volatility could not be computed/i);
+    });
+  });
+
   describe('debit spread (strategyType: debit_spread)', () => {
     it('produces a call debit-spread signal with a short leg further OTM than the long leg', async () => {
       fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 });
