@@ -434,6 +434,33 @@ to confirm on a fresh split (or forward, via snapshots and the Edge Report), nev
 as a conclusion. Costs aren't modeled, so favor liquid symbol sets and haircut
 anything marginal.
 
+**A worked example — the exit-geometry finding (2026-07).** The first two real runs of
+that sweep (20 liquid large caps, Aug 2024 → Jul 2026, walk-forward split at
+2025-12-01 and then a fresh-split confirmation at 2025-06-01) produced this playbook's
+first recorded finding: **both breakeven+trailing "runner" shapes beat both
+fixed-target brackets, on both splits, and every runner out-of-sample window was
+positive.** Per-trade OOS expectancy across the two splits — runner trail 1R: +$212
+then +$545; runner trail 1.5R: +$313 then +$410; bracket-3R: +$22 then +$42; the
+shipped bracket-2R: −$94 then +$171. The stable signal is *trail beats fixed target*,
+not any single number: the two runners swapped first place between splits and so did
+the two brackets, so rankings _within_ each pair are noise, while the separation
+_between_ the pairs held both times — and it agrees with independent evidence from the
+live journal (zero 2R target hits across the bot's twelve decisive trades). Treat the
+dollar figures as optimistic: costs aren't modeled, two splits over one history are
+not independent confirmations, and the best p-value was 0.069.
+
+To trade the runner shape, set **Target R multiple** to 6, **Breakeven trigger
+(R-multiple)** to 1, **Trailing start (R-multiple)** to 1, and **Trailing distance
+(R-multiple)** to 1.5. The far target is deliberate — it stands in for "uncapped," and
+the trail, not the target, is meant to end the trade; risk per trade is unchanged,
+since the stop and sizing don't move. Two disciplines apply. First, keep equity
+execution **paper-only** while this validates: the paper engine applies
+breakeven/trailing on every tick, but a live equity entry places static bracket legs
+with no trail management, so live would ride a 6R target behind a never-tightening
+stop — not the shape that tested well. Second, the confirmation that neither backtest
+split can give is forward performance: judge the runner era against the bracket era in
+the Journal after a few weeks of paper trades.
+
 **Then make the score bite.** Ranking is only half the job: without a floor, the
 auto-trade loop will still take its 6 trades a day from whatever passed the raw
 filters, even when the best available score is a 12. Once the Edge Report shows your
