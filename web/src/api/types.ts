@@ -1371,6 +1371,17 @@ export interface AutotradeConfig {
   // --- Screening/decision thresholds ---
   tradeDirection: AutotradeTradeDirectionMode;
   minRelVol: number;
+  /** Liquidity floor (2026-07-27): minimum share price a candidate must
+   *  trade at to pass screening. 0 disables; default 1 (the engine's old
+   *  hardcoded constant). */
+  minPrice: number;
+  /** Liquidity floor (2026-07-27): minimum ~20-day average daily volume
+   *  (shares). 0 disables; default 200000 (the engine's old constant). */
+  minAvgVolume: number;
+  /** Whether screening discovery unions Webull's premarket movers into the
+   *  candidate set (2026-07-27). Off = universe-only trading without
+   *  unplugging Webull. Default true. */
+  moversDiscoveryEnabled: boolean;
   /** Conviction gate (2026-07-26): minimum weighted total screener score
    *  (0-100) a candidate must reach to pass screening at all. 0 disables —
    *  the score then only sorts candidates and stamps the A/B/C grade. */

@@ -35,6 +35,13 @@ vi.mock('yahoo-finance2', () => ({
 // through-the-library mock wouldn't (search() would need its own fixture
 // data threading).
 vi.mock('../src/services/news', () => ({ getNews: vi.fn().mockResolvedValue([]) }));
+// Movers discovery (AutotradeConfig.moversDiscoveryEnabled, 2026-07-27): mock
+// both the configured() gate and the fetch so the tests below can flip
+// discovery on/off without a real Webull credential in the environment.
+vi.mock('../src/providers/webull/account', () => ({ webullConfigured: vi.fn(() => false) }));
+vi.mock('../src/providers/webull/movers', () => ({
+  webullMovers: vi.fn(async () => ({ ok: true, movers: [] })),
+}));
 
 import { initDb, db } from '../src/db';
 import { addExclusion } from '../src/db/autotradeExclusions';
@@ -49,6 +56,12 @@ import { getProvider } from '../src/providers';
 import { getNews } from '../src/services/news';
 
 const mockGetNews = vi.mocked(getNews);
+// eslint-disable-next-line import/first
+import { webullConfigured } from '../src/providers/webull/account';
+// eslint-disable-next-line import/first
+import { webullMovers } from '../src/providers/webull/movers';
+const mockWebullConfigured = vi.mocked(webullConfigured);
+const mockWebullMovers = vi.mocked(webullMovers);
 
 beforeAll(() => initDb());
 
@@ -723,5 +736,28 @@ describe('runAutotradeScreen', () => {
       expect(candidate).toBeDefined();
       expect(candidate!.indicators.sentimentNetScore).toBe(0);
     });
+  });
+});
+
+describe('movers discovery gate (moversDiscoveryEnabled, 2026-07-27)', () => {
+  beforeEach(() => {
+    mockWebullConfigured.mockReset().mockReturnValue(true);
+    mockWebullMovers.mockReset().mockResolvedValue({ ok: true, movers: [] } as never);
+  });
+
+  it('fetches premarket movers by default when Webull is configured (unchanged behavior)', async () => {
+    await runAutotradeScreen({ config: { filters: { minRelVol: 0 } } });
+    expect(mockWebullMovers).toHaveBeenCalledWith('unusual', 20, 'premarket');
+    expect(mockWebullMovers).toHaveBeenCalledWith('gainers', 20, 'premarket');
+  });
+
+  it('skips the movers fetch entirely when moversEnabled is false — universe-only discovery', async () => {
+    await runAutotradeScreen({ config: { filters: { minRelVol: 0 } }, moversEnabled: false });
+    expect(mockWebullMovers).not.toHaveBeenCalled();
+  });
+
+  it('never fetches movers when explicit symbols bypass discovery, regardless of the flag', async () => {
+    await runAutotradeScreen({ symbols: ['AAPL'], config: { filters: { minRelVol: 0 } }, moversEnabled: true });
+    expect(mockWebullMovers).not.toHaveBeenCalled();
   });
 });

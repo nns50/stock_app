@@ -416,6 +416,26 @@ describe('autotrade config persistence', () => {
       expect(over.maxMarketAtrPct).toBe(100);
     });
 
+    it('liquidity floors + movers toggle (2026-07-27) default to the old hardcoded behavior and round-trip', () => {
+      const d = defaultAutotradeConfig();
+      expect(d.minPrice).toBe(1); // the engine's old constant
+      expect(d.minAvgVolume).toBe(200_000); // ditto
+      expect(d.moversDiscoveryEnabled).toBe(true); // movers were always unioned before
+      const cfg = setAutotradeConfig({ minPrice: 10, minAvgVolume: 500_000, moversDiscoveryEnabled: false });
+      expect(cfg).toMatchObject({ minPrice: 10, minAvgVolume: 500_000, moversDiscoveryEnabled: false });
+      expect(getAutotradeConfig()).toMatchObject({
+        minPrice: 10,
+        minAvgVolume: 500_000,
+        moversDiscoveryEnabled: false,
+      });
+      // 0 is a valid "disable this floor" reading; negative falls back to the default.
+      expect(setAutotradeConfig({ minPrice: 0, minAvgVolume: 0 })).toMatchObject({ minPrice: 0, minAvgVolume: 0 });
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+      const bad = setAutotradeConfig({ minPrice: -5, minAvgVolume: 'nope' });
+      expect(bad.minPrice).toBe(defaultAutotradeConfig().minPrice);
+      expect(bad.minAvgVolume).toBe(defaultAutotradeConfig().minAvgVolume);
+    });
+
     it('minSignalScore (2026-07-26) defaults to 0 (gate off) and clamps to the 0-100 score scale', () => {
       expect(defaultAutotradeConfig().minSignalScore).toBe(0);
       expect(setAutotradeConfig({ minSignalScore: 60 }).minSignalScore).toBe(60);

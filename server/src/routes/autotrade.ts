@@ -155,6 +155,9 @@ const configBody = z.object({
   // --- Screening/decision thresholds ------------------------------------------
   tradeDirection: z.enum(['long', 'short', 'both']).optional(),
   minRelVol: z.number().nonnegative().optional(),
+  minPrice: z.number().nonnegative().optional(),
+  minAvgVolume: z.number().nonnegative().optional(),
+  moversDiscoveryEnabled: z.boolean().optional(),
   minSignalScore: z.number().min(0).max(100).optional(),
   requireWeeklyTrendAlignment: z.boolean().optional(),
   relativeStrengthWeight: z.number().min(0).max(100).optional(),
@@ -351,6 +354,9 @@ autotradeRouter.put(
     if (body.expectancyMaxMultiplier !== undefined) patch.expectancyMaxMultiplier = body.expectancyMaxMultiplier;
     if (body.tradeDirection !== undefined) patch.tradeDirection = body.tradeDirection;
     if (body.minRelVol !== undefined) patch.minRelVol = body.minRelVol;
+    if (body.minPrice !== undefined) patch.minPrice = body.minPrice;
+    if (body.minAvgVolume !== undefined) patch.minAvgVolume = body.minAvgVolume;
+    if (body.moversDiscoveryEnabled !== undefined) patch.moversDiscoveryEnabled = body.moversDiscoveryEnabled;
     if (body.minSignalScore !== undefined) patch.minSignalScore = body.minSignalScore;
     if (body.requireWeeklyTrendAlignment !== undefined)
       patch.requireWeeklyTrendAlignment = body.requireWeeklyTrendAlignment;
@@ -680,6 +686,8 @@ function screenerConfigOverride(
     ...requested,
     filters: {
       minRelVol: config.minRelVol,
+      minPrice: config.minPrice,
+      minAvgVolume: config.minAvgVolume,
       minScore: config.minSignalScore,
       requireWeeklyTrendAlignment: config.requireWeeklyTrendAlignment,
       ...requested?.filters,
@@ -730,6 +738,7 @@ autotradeRouter.post(
       symbols: body.symbols,
       earningsBlackoutDays: config.earningsBlackoutDays,
       directionMode: body.directionMode ?? config.tradeDirection,
+      moversEnabled: config.moversDiscoveryEnabled,
     });
     res.json(result);
   }),
@@ -759,6 +768,7 @@ autotradeRouter.post(
       symbols: body.symbols,
       earningsBlackoutDays: config.earningsBlackoutDays,
       directionMode: body.directionMode ?? config.tradeDirection,
+      moversEnabled: config.moversDiscoveryEnabled,
     });
     const decision = runAutotradeDecision(
       screen.candidates,

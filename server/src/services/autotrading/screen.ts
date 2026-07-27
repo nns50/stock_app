@@ -76,12 +76,16 @@ export function resolveAutotradeScreenerConfig(patch?: Partial<ScreenerConfig>):
   };
 }
 
-/** Candidate symbols: the whole universe, plus (when Webull is configured) its
- *  pre-market unusual-volume and gainers movers — the only source in this app
- *  that can find gappers outside the ~124-symbol seeded universe. Movers are a
- *  discovery enhancement, not required; a failed/unconfigured fetch just falls
- *  back to universe-only, matching how the manual screener already works. */
-async function discoverSymbols(): Promise<{
+/** Candidate symbols: the whole universe, plus (when Webull is configured AND
+ *  movers discovery is enabled) its pre-market unusual-volume and gainers
+ *  movers — the only source in this app that can find gappers outside the
+ *  seeded universe. Movers are a discovery enhancement, not required; a
+ *  failed/unconfigured fetch just falls back to universe-only, matching how
+ *  the manual screener already works. `moversEnabled: false`
+ *  (AutotradeConfig.moversDiscoveryEnabled, 2026-07-27) skips the fetch
+ *  outright — the switch that lets a curated universe stay curated without
+ *  unplugging Webull, which live trading still needs. */
+async function discoverSymbols(moversEnabled: boolean): Promise<{
   symbols: string[];
   universeCount: number;
   moversCount: number;
@@ -90,7 +94,7 @@ async function discoverSymbols(): Promise<{
   const universeSymbols = listUniverseSymbols().map((s) => s.toUpperCase());
   const fromMovers = new Set<string>();
 
-  if (webullConfigured()) {
+  if (moversEnabled && webullConfigured()) {
     try {
       const [unusual, gainers] = await Promise.all([
         webullMovers('unusual', 20, 'premarket'),
@@ -128,6 +132,12 @@ export interface RunScreenOptions {
    *  config?.direction ?? 'long' — identical behavior to every caller that
    *  existed before this option did. */
   directionMode?: 'long' | 'short' | 'both';
+  /** Whether discovery unions Webull's premarket movers into the candidate
+   *  set (AutotradeConfig.moversDiscoveryEnabled, 2026-07-27). Defaults to
+   *  true — identical behavior to every caller that existed before this
+   *  option did. Irrelevant when `symbols` is supplied (explicit symbols
+   *  bypass discovery entirely). */
+  moversEnabled?: boolean;
 }
 
 /** Given both directions' scores for one symbol, pick which (if either)
@@ -265,7 +275,7 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
         moversCount: 0,
         fromMovers: new Set<string>(),
       }
-    : await discoverSymbols();
+    : await discoverSymbols(opts.moversEnabled ?? true);
 
   const candidates: ScreenCandidate[] = [];
   const excluded: { symbol: string; reason: string }[] = [];
