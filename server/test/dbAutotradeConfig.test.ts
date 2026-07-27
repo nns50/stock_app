@@ -590,6 +590,29 @@ describe('autotrade config persistence', () => {
     });
   });
 
+  describe('options IV-rank floor + IV/RV cheapness gate (2026-07-27)', () => {
+    it('both default to 0 (no floor, gate off) so an untouched config is unchanged', () => {
+      const d = defaultAutotradeConfig();
+      expect(d.optionsIvRankMin).toBe(0);
+      expect(d.optionsMaxIvRvRatio).toBe(0);
+    });
+
+    it('persists a patch and round-trips', () => {
+      const cfg = setAutotradeConfig({ optionsIvRankMin: 20, optionsMaxIvRvRatio: 1.1 });
+      expect(cfg).toMatchObject({ optionsIvRankMin: 20, optionsMaxIvRvRatio: 1.1 });
+      expect(getAutotradeConfig()).toMatchObject({ optionsIvRankMin: 20, optionsMaxIvRvRatio: 1.1 });
+    });
+
+    it('clamps the floor to [0, 100] and rejects a negative ratio back to the default (off)', () => {
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize clamp
+      expect(setAutotradeConfig({ optionsIvRankMin: 150 }).optionsIvRankMin).toBe(100);
+      setAutotradeConfig({ optionsMaxIvRvRatio: 1.2 });
+      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
+      expect(setAutotradeConfig({ optionsMaxIvRvRatio: -1 }).optionsMaxIvRvRatio).toBe(0);
+      expect(setAutotradeConfig({ optionsMaxIvRvRatio: 0.9 }).optionsMaxIvRvRatio).toBe(0.9); // fractional ratios survive
+    });
+  });
+
   describe('regime-aware sizing (live + paper only, 2026-07-16)', () => {
     it('defaults to a non-zero threshold but a disabled (0) size cut', () => {
       const d = defaultAutotradeConfig();

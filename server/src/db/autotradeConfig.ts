@@ -575,6 +575,22 @@ export interface AutotradeConfig {
    *  so guarding against a high-IV underlying is the one direction that
    *  matters here. */
   optionsIvRankMax: number;
+  /** Underlying IV-rank floor (0-100) — entryRules.ts's ivRankMin, which
+   *  existed in the engine but was unreachable from config until 2026-07-27.
+   *  0 (default) = no floor, byte-identical to the previous behavior. */
+  optionsIvRankMin: number;
+  /** Cheapness gate (2026-07-27): maximum ratio of the underlying's ATM
+   *  implied vol to its 20-day realized vol for an options entry. Long
+   *  premium pays a structural tax (the variance risk premium) whenever
+   *  implied runs above realized; the evidence-backed "buy when cheap"
+   *  signal is IV vs. REALIZED vol (Goyal–Saretto), not IV rank alone —
+   *  IV rank only says where implied sits in its own range, not whether it
+   *  overprices actual movement. ~1.0 means "implied no richer than
+   *  realized"; 0 (default) disables the gate entirely. Applies to the
+   *  paper/live decision stage AND (via optionsDecisionConfig.maxIvRvRatio)
+   *  the options/combined backtests, so the gate can be tested before it's
+   *  trusted. Fails closed: gate on + realized vol uncomputable = skip. */
+  optionsMaxIvRvRatio: number;
 
   // --- Options stop-loss / take-profit (docs/AUTOTRADING_SPEC.md — follow-up
   // to phase 12's own confirmed close-only, time-based exit design; added
@@ -829,6 +845,8 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     optionsMinDte: 7,
     optionsMaxDte: 60,
     optionsIvRankMax: 70,
+    optionsIvRankMin: 0,
+    optionsMaxIvRvRatio: 0,
     optionsStopLossPct: 0,
     optionsTakeProfitPct: 0,
     optionsBreakevenTriggerPct: 0,
@@ -1042,6 +1060,8 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     optionsMinDte: posInt(input.optionsMinDte, d.optionsMinDte),
     optionsMaxDte: posIntMin1(input.optionsMaxDte, d.optionsMaxDte),
     optionsIvRankMax: pct(input.optionsIvRankMax, d.optionsIvRankMax),
+    optionsIvRankMin: pct(input.optionsIvRankMin, d.optionsIvRankMin),
+    optionsMaxIvRvRatio: nonNeg(input.optionsMaxIvRvRatio, d.optionsMaxIvRvRatio),
     optionsStopLossPct: pct(input.optionsStopLossPct, d.optionsStopLossPct),
     optionsTakeProfitPct: pct(input.optionsTakeProfitPct, d.optionsTakeProfitPct),
     optionsBreakevenTriggerPct: pct(input.optionsBreakevenTriggerPct, d.optionsBreakevenTriggerPct),

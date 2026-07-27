@@ -805,6 +805,7 @@ describe('runAutotradeLoopTick', () => {
 
     expect(mockOptionsDecide).toHaveBeenCalledWith([candidate('AAPL', 2)], {
       strategyType: 'single_leg',
+      maxIvRvRatio: 0,
       entryConfig: {
         deltaMin: 0.3,
         deltaMax: 0.6,
@@ -814,6 +815,7 @@ describe('runAutotradeLoopTick', () => {
         minDaysToExpiration: 7,
         maxDaysToExpiration: 60,
         ivRankMax: 70,
+        ivRankMin: 0,
       },
     });
     expect(summary.optionsSignalsGenerated).toBe(1);
@@ -852,6 +854,7 @@ describe('runAutotradeLoopTick', () => {
     // Options decision sees ONLY the universe-sourced one.
     expect(mockOptionsDecide).toHaveBeenCalledWith([universeCandidate], {
       strategyType: 'single_leg',
+      maxIvRvRatio: 0,
       entryConfig: {
         deltaMin: 0.3,
         deltaMax: 0.6,
@@ -861,6 +864,7 @@ describe('runAutotradeLoopTick', () => {
         minDaysToExpiration: 7,
         maxDaysToExpiration: 60,
         ivRankMax: 70,
+        ivRankMin: 0,
       },
     });
     expect(summary.optionsCandidatesConsidered).toBe(1);

@@ -568,6 +568,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     summary.optionsCandidatesConsidered = universeOnly.length;
     const optionsDecision = await runOptionsDecision(universeOnly, {
       strategyType: config.optionsStrategyType,
+      maxIvRvRatio: config.optionsMaxIvRvRatio,
       entryConfig: {
         deltaMin: config.optionsDeltaMin,
         deltaMax: config.optionsDeltaMax,
@@ -577,6 +578,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         minDaysToExpiration: config.optionsMinDte,
         maxDaysToExpiration: config.optionsMaxDte,
         ivRankMax: config.optionsIvRankMax,
+        ivRankMin: config.optionsIvRankMin,
       },
     });
     summary.optionsSignalsGenerated = optionsDecision.signals.length;

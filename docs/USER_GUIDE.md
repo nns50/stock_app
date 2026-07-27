@@ -1265,14 +1265,25 @@ shouldn't be a tab-switch away.
   min/max days to expiration** bound the DTE window a contract's expiration must fall
   within; **options IV rank ceiling** skips an underlying whose IV rank (0-100)
   exceeds it — this loop only ever buys premium, so guarding against an
-  already-expensive underlying is the direction that matters. All eight default to
-  the values these checks always used before they were configurable (delta
-  0.30-0.60, max spread 10%, min open interest 100, min volume 10, DTE 7-60 days, IV
-  rank ceiling 70), so leaving them untouched changes nothing; the manual
+  already-expensive underlying is the direction that matters — and **options IV rank
+  floor** (2026-07-27) is the other end of that same band, 0 = no floor. **Options
+  max IV/RV ratio** (2026-07-27, 0 = off) is a cheapness gate on the underlying
+  rather than a per-contract rule: skip the options entry when today's at-the-money
+  implied volatility exceeds this multiple of the underlying's own 20-day realized
+  volatility — buy premium only when it's cheap relative to how the stock actually
+  moves, not merely low within its own range (~1.0 means "implied no richer than
+  realized"). When the gate is on but realized volatility can't be computed (too
+  little daily history), the candidate is skipped rather than guessed at; a passing
+  candidate's rationale records the ratio. All ten default to the values these
+  checks always used before they were configurable (delta 0.30-0.60, max spread
+  10%, min open interest 100, min volume 10, DTE 7-60 days, IV rank ceiling 70,
+  floor 0, IV/RV gate off), so leaving them untouched changes nothing; the manual
   Screen/Decision preview below defaults to these same saved values too. Backtesting
-  is unaffected — options backtests keep using these same original fixed constants
-  regardless of what's saved here, the same self-contained-hypothesis convention
-  every other screening/decision field in this section already follows.
+  is unaffected by what's SAVED here — options backtests keep using the original
+  fixed constants unless a request supplies its own values, the same
+  self-contained-hypothesis convention every other screening/decision field in this
+  section already follows (the backtest API accepts the IV rank floor and IV/RV
+  ratio too, so the gate can be tested before it's trusted).
   **Auto-promote recurring movers** (on by default) grows your universe automatically:
   a symbol Webull's premarket movers surface that also clears screening on **3 distinct
   days within a 10-day window** (both tunable, along with a **50-symbol lifetime cap** on

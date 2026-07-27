@@ -1495,6 +1495,11 @@ export interface AutotradeConfig {
   optionsMinDte: number;
   optionsMaxDte: number;
   optionsIvRankMax: number;
+  /** IV-rank floor (0-100); 0 = no floor. */
+  optionsIvRankMin: number;
+  /** Cheapness gate: max ATM-implied-vol / 20-day-realized-vol ratio for an
+   *  options entry (~1.0 = "implied no richer than realized"); 0 disables. */
+  optionsMaxIvRvRatio: number;
 
   // --- Options stop-loss / take-profit (PAPER + BACKTEST only; 0 disables) --
   optionsStopLossPct: number;

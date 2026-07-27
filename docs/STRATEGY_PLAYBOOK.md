@@ -363,6 +363,18 @@ premium), while respecting that **time and volatility work against long options.
   candidate, every cycle — debit spread once a candidate's IV rank reaches 50, single
   leg below that — instead of one structure locked in for every trade regardless of
   where premium actually sits that day.
+- **Cheap within its own range is not the same as cheap versus reality.** IV rank only
+  says where implied vol sits in its own recent history; the evidence-backed "buy
+  premium when it's cheap" signal compares **implied to realized** volatility
+  (Goyal–Saretto) — long premium pays the variance risk premium whenever implied runs
+  above what the stock actually moves. The auto-trade loop's **options max IV/RV
+  ratio** (Configuration, 2026-07-27, 0 = off) encodes exactly that: skip an options
+  entry when the underlying's ATM implied vol exceeds your ratio × its 20-day realized
+  vol, with **~1.0** meaning "implied no richer than realized". Expect it to cut trade
+  count — its whole job is skipping entries where the premium itself is the losing
+  bet — and like every gate here, **backtest it first**: the options/combined backtest
+  API accepts the same `maxIvRvRatio` (via `optionsDecisionConfig`), so you can
+  measure what the gate would have skipped before trusting it live.
 - Give yourself **enough DTE** that time decay isn't brutal for your hold (swing trades
   generally want weeks, not days).
 
