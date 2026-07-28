@@ -274,6 +274,37 @@ describe('PositionsPage — panels follow the book, not the price poll', () => {
   });
 });
 
+describe('PositionsPage — panels follow SERVER-side book changes too', () => {
+  it('re-checks the expired-options banner when a poll returns a changed book (e.g. the background sync closed a position)', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const open = rowFixture(positionFixture({ id: 1, symbol: 'AAPL', status: 'open' }));
+    const closedBySync = rowFixture(positionFixture({ id: 1, symbol: 'AAPL', status: 'closed', remainingQuantity: 0 }));
+    vi.spyOn(client, 'positionsWithPnl')
+      .mockResolvedValueOnce(payload([open]))
+      .mockResolvedValue(payload([closedBySync]));
+    vi.spyOn(client, 'events').mockResolvedValue({ events: [] });
+    const expired = vi.spyOn(client, 'expiredOptions').mockResolvedValue({ examined: 0, closed: [], needsReview: [] });
+    render(
+      <MemoryRouter>
+        <PositionsPage />
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('AAPL');
+    await waitFor(() => expect(expired).toHaveBeenCalled());
+    const before = expired.mock.calls.length;
+
+    // The next price poll hands back a book the background Webull sync has
+    // changed underneath the page. Keyed only on page-initiated changes, the
+    // banner (and the stress/correlation panels) kept describing the old book
+    // until the user touched something — the change must propagate with no
+    // user action beyond the refresh itself.
+    await userEvent.click(screen.getByRole('button', { name: /Refresh/ }));
+
+    await waitFor(() => expect(expired.mock.calls.length).toBeGreaterThan(before));
+  });
+});
+
 describe('PositionsPage — open dialogs track the live book', () => {
   it('follows a remaining-quantity change instead of acting on the size it opened with', async () => {
     const { default: userEvent } = await import('@testing-library/user-event');
