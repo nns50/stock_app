@@ -75,7 +75,7 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
   }, [toast]);
 
   useEffect(() => {
-    refreshCount();
+    void refreshCount(); // internally caught — badge refresh is best-effort
   }, [refreshCount]);
   usePolling(checkNow, intervalMs);
 

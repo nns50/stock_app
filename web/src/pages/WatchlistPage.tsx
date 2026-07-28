@@ -60,14 +60,19 @@ export default function WatchlistPage() {
     try {
       const r = await client.watchlist();
       setSymbols(r.symbols);
+      setErr(undefined);
       await loadQuotes(r.symbols);
+    } catch (e) {
+      // Without this, a failed load REJECTED out of the mount effect (an
+      // unhandled rejection) and the page just sat empty with no explanation.
+      setErr(e instanceof Error ? e.message : 'Could not load watchlist');
     } finally {
       setLoading(false);
     }
   }, [loadQuotes]);
 
   useEffect(() => {
-    reload();
+    void reload(); // errors surface via `err` above
   }, [reload]);
 
   const add = async () => {
