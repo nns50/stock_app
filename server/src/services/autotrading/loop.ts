@@ -701,8 +701,16 @@ async function loop(): Promise<void> {
   try {
     await runAutotradeLoopTick();
   } catch (e) {
-    console.error('[autotrade-loop]', (e as Error).message);
+    // `instanceof` guard (not a cast): a non-Error throw would make a bare
+    // `.message` access itself throw inside this catch, rejecting loop() —
+    // an unhandled rejection that kills the process, since loop() is invoked
+    // fire-and-forget from a timer.
+    console.error('[autotrade-loop]', e instanceof Error ? e.message : e);
   }
+  // stopAutotradeLoop() during an in-flight tick used to be undone right
+  // here: clearTimeout only cancels the PENDING timer, and this line then
+  // scheduled a fresh one. Shutdown/tests rely on stop meaning stopped.
+  if (!started) return;
   timer = setTimeout(() => void loop(), TICK_INTERVAL_SECONDS * 1000);
   timer.unref?.(); // don't keep the process alive on the timer alone
 }

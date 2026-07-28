@@ -125,6 +125,23 @@ heuristics you set — not buy signals.)
   ```
 - **Stop / restart:** `docker compose down` / `docker compose restart`.
 
+### Dependency audit
+
+Run `npm audit` occasionally (and after `git pull`). As of 2026-07-28 the tree is
+clean except one **accepted** advisory, plus one pinned override — both deliberate:
+
+- `react-router` GHSA-qwww-vcr4-c8h2 (RSC-mode CSRF): **not applicable** — this app is
+  a client-only SPA (`BrowserRouter`; no SSR, no React Server Components, no router
+  actions), so the vulnerable server-side code path never exists at runtime. No fixed
+  `react-router-dom` pairing is published; npm's only offer is a seven-release
+  _downgrade_. Re-check when react-router-dom moves past 7.18.x.
+- Root `package.json` `overrides` pins `@hono/node-server` ≥ 2.0.5 under
+  `@modelcontextprotocol/sdk` (a transitive of `yahoo-finance2`'s never-executed MCP
+  server; the advisory was Windows-only path traversal, doubly inert here).
+
+If a fresh audit flags something new, prefer `npm audit fix` (non-breaking) and re-run
+the full verify chain before deploying.
+
 ## Deploy to Fly.io
 
 The repo ships a ready `fly.toml` (always-on machine, persistent volume, health

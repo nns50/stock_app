@@ -181,16 +181,27 @@ let timer: NodeJS.Timeout | null = null;
 let started = false;
 
 async function loop(): Promise<void> {
-  const cfg = getWebullSyncConfig();
-  const active = cfg.enabled && cfg.accountIds.length > 0;
-  if (active) {
-    try {
-      await runSchedulerTick();
-    } catch (e) {
-      console.error('[webull-positions-scheduler]', (e as Error).message);
-    }
+  // NOTHING in this body may escape the try: loop() is invoked fire-and-forget
+  // from a timer, so a rejection here is an unhandled rejection — which kills
+  // the whole PROCESS on modern Node, not just this poller. That includes the
+  // config read (a DB access that can throw on a wedged disk), which used to
+  // sit outside the guard: one transient DB error crashed the server and, even
+  // if it hadn't, the loop would never have re-armed.
+  let delaySec = IDLE_POLL_SECONDS;
+  try {
+    const cfg = getWebullSyncConfig();
+    const active = cfg.enabled && cfg.accountIds.length > 0;
+    // Cadence decided before the tick runs, so a failed tick still re-polls on
+    // the configured interval instead of the idle fallback.
+    delaySec = active ? cfg.intervalSeconds : IDLE_POLL_SECONDS;
+    if (active) await runSchedulerTick();
+  } catch (e) {
+    console.error('[webull-positions-scheduler]', e instanceof Error ? e.message : e);
   }
-  const delaySec = active ? cfg.intervalSeconds : IDLE_POLL_SECONDS;
+  // stopWebullPositionsSync() during an in-flight sync used to be undone right
+  // here: clearTimeout only cancels the PENDING timer, and this line then
+  // scheduled a fresh one. Shutdown/tests rely on stop meaning stopped.
+  if (!started) return;
   timer = setTimeout(() => void loop(), delaySec * 1000);
   timer.unref?.(); // don't keep the process alive on the timer alone
 }

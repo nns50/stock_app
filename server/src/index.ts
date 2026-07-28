@@ -166,6 +166,18 @@ app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
     message = err.message;
   } else if (err instanceof Error) {
     message = err.message;
+    // http-errors convention: body-parser stamps client-fault errors with a
+    // 4xx `status` before they ever reach a route — malformed JSON, a non-
+    // object top level (strict mode), an over-limit payload (413), a bad
+    // charset. Honor it: every one of those used to surface as a fake 500
+    // (fuzzed 2026-07-28 — all 679 5xx responses across 2,644 malformed
+    // requests were exactly this), console.error-ing a stack for what is
+    // simply a bad request. Only 4xx is trusted from arbitrary errors; a
+    // 5xx stays a plain 500 so nothing can dress a server fault up.
+    const s =
+      (err as Partial<Record<'status' | 'statusCode', unknown>>).status ??
+      (err as Partial<Record<'status' | 'statusCode', unknown>>).statusCode;
+    if (typeof s === 'number' && Number.isInteger(s) && s >= 400 && s < 500) status = s;
   }
   if (status >= 500) {
     console.error(err);
@@ -226,4 +238,28 @@ if (require.main === module) {
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+
+  // Last-resort process nets. Every background loop and route handler is
+  // individually guarded (asyncHandler, the schedulers' own try/catch), so if
+  // either of these ever fires it is a BUG to find and fix — the handlers
+  // exist so the failure mode of that bug is proportionate:
+  //
+  // - A stray unhandled rejection (some rarely-hit path missing a .catch)
+  //   would otherwise kill the process outright — on a server that may be
+  //   holding live positions mid-session, losing in-memory state (login
+  //   lockout, alert de-dup) and interrupting in-flight work, when nothing
+  //   about the failed promise required any of that. Log it loudly and stay
+  //   up; the loops are all self-re-arming and unaffected.
+  // - An uncaught synchronous exception leaves the process in an undefined
+  //   state (per Node's own docs) — the only safe move is to exit non-zero
+  //   and let Fly/Docker restart clean. No cleanup attempts here: WAL mode
+  //   already makes an abrupt exit crash-safe for the DB, and a handler like
+  //   this must do as little as possible.
+  process.on('unhandledRejection', (reason) => {
+    console.error('[stock-app] UNHANDLED REJECTION (bug: a promise is missing its catch) —', reason);
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('[stock-app] UNCAUGHT EXCEPTION — exiting for a clean platform restart:', err);
+    process.exit(1);
+  });
 }
