@@ -1596,10 +1596,11 @@ export type TuneBasis = 'expected' | 'perfectDay';
 export type TuneBand = 'conservative' | 'moderate' | 'aggressive';
 
 /** The subset of AutotradeConfig fields the "tune from target" generator
- *  writes — the risk/aggressiveness axis, contract selection, and
- *  equity-scaled dollar caps. Everything else in AutotradeConfig is left
- *  untouched by the tuner (safety gates, methodology, exit-refinement,
- *  autotune, etc.). Shape mirrors targetTune.ts's TunablePatch. */
+ *  writes — the risk/aggressiveness axis, screening filters, contract
+ *  selection, and equity-scaled dollar caps. Everything else in
+ *  AutotradeConfig is left untouched by the tuner (safety gates, methodology,
+ *  exit-refinement, autotune, etc.). Shape mirrors targetTune.ts's
+ *  TunablePatch. */
 export type TunablePatch = Pick<
   AutotradeConfig,
   | 'riskProfile'
@@ -1613,6 +1614,9 @@ export type TunablePatch = Pick<
   | 'maxSectorExposurePct'
   | 'maxTradesPerDay'
   | 'minRelVol'
+  | 'minPrice'
+  | 'minAvgVolume'
+  | 'minSignalScore'
   | 'maxTickerAtrPct'
   | 'maxMarketAtrPct'
   | 'targetRMultiple'
@@ -1628,6 +1632,8 @@ export type TunablePatch = Pick<
   | 'optionsMinDte'
   | 'optionsMaxDte'
   | 'optionsIvRankMax'
+  | 'optionsIvRankMin'
+  | 'optionsMaxIvRvRatio'
   | 'optionsStopLossPct'
   | 'optionsTakeProfitPct'
 >;

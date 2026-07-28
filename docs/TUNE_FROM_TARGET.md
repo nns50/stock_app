@@ -122,17 +122,41 @@ A higher target loosens **everything**, not just position size. Each band sets:
 | Max correlated exposure    |           4% |       6% |        12% |
 | Max sector exposure        |          15% |      20% |        35% |
 | Min relative volume        |         2.0× |     1.5× |       1.2× |
+| Min share price            |           $5 |       $2 |         $1 |
+| Min avg volume (shares/day) |    1,000,000 |  500,000 |    200,000 |
+| Min signal score (conviction floor) | 60 |       50 |         40 |
 | Max ticker ATR%            |          10% |      15% |        20% |
 | Max market ATR%            |           4% |       5% |         7% |
 | Options delta band         |    0.25–0.50 | 0.30–0.60 |  0.40–0.70 |
 | Options max spread %        |           8% |      10% |        15% |
 | Options DTE window         |        14–60 |     7–60 |       3–45 |
 | Options IV-rank ceiling    |           60 |       70 |         85 |
+| Options max IV/RV ratio    |          1.0 |      1.2 |        off |
 | Options stop-loss / take-profit | 40% / 60% | 50% / 80% | 60% / 100% |
 | Risk-profile label         |     Moderate | Moderate | Aggressive |
 
-The **Moderate** band reproduces the app's default settings exactly, so **Reset to
-moderate** is a true baseline, not an approximation.
+A few notes on the rows:
+
+- **The liquidity floors never disable.** Cheap, thin names are where the bid-ask
+  spread eats the biggest bite out of a stop, so even the aggressive row keeps the
+  engine's old constants ($1 / 200k shares) as its floor.
+- **The conviction floor** is anchored on the conviction grades: the conservative row's
+  60 is the default B-grade threshold — "only trade B-grade or better."
+- **The IV/RV cheapness gate** (max ratio of implied to 20-day realized vol) is
+  tightest where the band is most patient, and **off** in the aggressive row — the
+  gate skips entries when realized vol can't be computed, and that band needs the
+  trade flow.
+- **The options IV-rank _floor_ is always reset to 0** (not in the table): the bands
+  select long-premium contracts, where cheap implied vol is the goal and the ceiling
+  is the active gate. Writing 0 clears any leftover experimental floor that would
+  contradict a fresh tune.
+
+The **Moderate** band is the published baseline **Reset to moderate** restores — close
+to, but deliberately not identical to, the shipped defaults. The moderate row turns on
+a few gates that ship disabled (options stop-loss/take-profit, the conviction floor,
+the IV/RV gate) and sets the liquidity floors a notch above the engine's old constants:
+an _untouched_ config keeps its old behavior, but a preset you explicitly ask for takes
+a stance. Every difference shows up in the preview before you apply.
 
 ### The per-trade risk (solved)
 
@@ -154,8 +178,8 @@ The options live caps mirror the equity ones.
 
 ## 6. What it changes — and what it never touches
 
-The tuner writes **only** the risk/aggressiveness settings, contract selection, and the
-equity-scaled dollar caps listed above.
+The tuner writes **only** the risk/aggressiveness settings, screening filters, contract
+selection, and the equity-scaled dollar caps listed above.
 
 It **never touches** — by design, so a "chase a daily %" preset can never do something
 dangerous or surprising:
@@ -166,9 +190,15 @@ dangerous or surprising:
 - The **live probation** ramps (the extra size cut for your first live trades)
 - The "allow naked short" flag, **trade direction**, or the scoring-factor opt-ins
   (relative strength, sentiment, benchmark)
+- **Movers discovery** — whether premarket movers feed the candidate set is a choice
+  about _where_ trades come from, not how aggressively to take them
 - Correlation methodology, the exit-refinement toolkits (trailing stops, break-even,
-  partial exits), the earnings/macro/session blackout windows, or **auto-tune from
-  realized edge**
+  partial exits), the regime/equity-curve/expectancy sizing overlays, the
+  earnings/macro/session blackout windows, or **auto-tune from realized edge**
+
+(In the code this is a machine-checked classification: every config field must be on
+the tuner's allowlist or its documented never-tuned list, so a newly added setting
+can't silently end up in neither.)
 
 If you want the tune to stick exactly, note that **auto-tune from realized edge** (if
 you have it on) will keep nudging your per-trade risk over time — the preview warns you

@@ -1008,8 +1008,10 @@ shouldn't be a tab-switch away.
   rate — more risk per trade), **Perfect day** sizes so it's your _best-case ceiling_
   (every trade wins — less risk per trade). Higher targets loosen everything, not just
   position size: the tool picks an aggressiveness band (conservative / moderate /
-  aggressive) from the target and sets exposure caps, screening filters, options
-  delta/DTE/IV selection, and the equity-scaled dollar caps to match. It shows a full
+  aggressive) from the target and sets exposure caps, screening filters (relative
+  volume, share price, average volume, and the conviction-score floor), options
+  delta/DTE/IV selection (including the IV/RV cheapness gate), and the equity-scaled
+  dollar caps to match. It shows a full
   **preview — every changed field, current → tuned — plus warnings** (e.g. when the
   target would need a dangerous per-trade risk, or when either auto-tuner is on and will
   later move what the tune set — the risk %, or the R multiple the risk % was solved
@@ -1019,8 +1021,9 @@ shouldn't be a tab-switch away.
   drive the preview; they aren't themselves a saved setting — Apply writes the derived
   risk config, not the target). A **Reset to moderate** button restores the standard moderate
   baseline, equity-scaled for your account. It deliberately **never touches your
-  live-enable switch, kill switch, account ID, or probation ramps** — only the
-  risk/aggressiveness settings and the dollar caps. Deliberately lets you push the target
+  live-enable switch, kill switch, account ID, probation ramps, or movers discovery** —
+  only the risk/aggressiveness settings, screening filters, options selection, and the
+  dollar caps. Deliberately lets you push the target
   high (it's your call), but higher targets mean bigger swings both ways — decision
   support, never a promise of the gain. Needs account equity set first. Full walkthrough,
   including the exact formula and the band table:
