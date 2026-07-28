@@ -93,7 +93,7 @@ function optionsBaseBody(base: SweepBase): Record<string, unknown> {
 
 /** The DEFAULT experiment set — every variant here hits the EQUITY walk-forward,
  *  whose data cost is daily bars only (cheap, and cached after run #1). */
-export const EXPERIMENT_NAMES = ['exits', 'minscore', 'direction', 'weights'] as const;
+export const EXPERIMENT_NAMES = ['exits', 'minscore', 'direction', 'weights', 'rshorizon'] as const;
 /** OPT-IN experiments, excluded from the default run because they hit the
  *  OPTIONS walk-forward: the first run fetches option CONTRACT references and
  *  per-contract price bars from Polygon — far heavier than equity daily bars,
@@ -121,6 +121,17 @@ export type ExperimentName = (typeof ALL_EXPERIMENT_NAMES)[number];
  * - `weights`: default vs a relative-strength tilt (cross-sectional momentum
  *   is the best-evidenced component and ships at weight 0) vs a trend/RS
  *   shape that also drops the "more ATR is better" volatility component.
+ * - `rshorizon`: relative strength at the horizon the evidence actually
+ *   supports. The `weights` RS-tilt above ran at the shipped 20-DAY lookback —
+ *   squarely inside the documented one-month REVERSAL zone — so its failure
+ *   never tested the cross-sectional momentum premium, which lives at ~3-12
+ *   months. This adds RS weight 15 ON TOP of the default mix (every other
+ *   component's relative weighting unchanged — one axis) and varies only the
+ *   lookback: off / 20d (the reversal-zone control) / 63d / 126d. Caveat: the
+ *   backtest's 100-day warmup padding can't reach 126 TRADING days back at
+ *   the window's start, so early IN-SAMPLE days score RS as 0 for every
+ *   candidate alike (ranking unaffected, totals uniformly lower) — the OOS
+ *   window, the only verdict column, is fully warmed.
  * - `ivrv` (opt-in, options engine): the IV/RV cheapness-gate ladder — long
  *   premium pays the variance risk premium whenever implied outruns realized
  *   vol (the Goyal–Saretto direction), so the gate should earn its trade-count
@@ -212,6 +223,19 @@ export function buildExperiments(base: SweepBase, which: readonly ExperimentName
         filters: completeFilters(),
       };
     });
+  }
+
+  if (which.includes('rshorizon')) {
+    add('rshorizon', 'RS off (baseline)', () => {});
+    for (const lookback of [20, 63, 126]) {
+      add('rshorizon', `RS15 @ ${lookback}d${lookback === 20 ? ' (reversal-zone control)' : ''}`, (b) => {
+        b.screenerConfig = {
+          weights: completeWeights({ relativeStrength: 15 }),
+          filters: completeFilters(),
+          relativeStrengthLookbackDays: lookback,
+        };
+      });
+    }
   }
 
   // OPT-IN (see OPTIN_EXPERIMENT_NAMES): the IV/RV cheapness-gate ladder, on

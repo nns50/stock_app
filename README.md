@@ -263,7 +263,7 @@ npm run research -- \
   --from 2024-08-01 --to 2026-07-01 --split 2025-12-01
 ```
 
-`--experiments exits,minscore,direction,weights,ivrv,optexits` picks a subset;
+`--experiments exits,minscore,direction,weights,rshorizon,ivrv,optexits` picks a subset;
 `--password` logs in first when `APP_PASSWORD` is set (add `--code <TOTP>` if MFA is
 enforced); `--out` names the JSON results file. The first
 variant pays the provider fetches, then the bar cache makes the rest local compute.

@@ -95,6 +95,23 @@ describe('buildExperiments — one axis per experiment', () => {
     for (const v of variants) expect(v.endpoint, `${v.experiment}/${v.label}`).toBe(EQUITY_WALK_FORWARD_PATH);
   });
 
+  it('rshorizon adds RS weight 15 on top of the default mix and varies ONLY the lookback', () => {
+    const variants = buildExperiments(base, ['rshorizon']);
+    const cfgOf = (v: (typeof variants)[number]) =>
+      v.body.screenerConfig as { weights: Record<string, number>; relativeStrengthLookbackDays?: number };
+    expect(variants.map((v) => cfgOf(v).weights.relativeStrength)).toEqual([0, 15, 15, 15]);
+    expect(variants.map((v) => cfgOf(v).relativeStrengthLookbackDays)).toEqual([undefined, 20, 63, 126]);
+    for (const v of variants) {
+      // Every other component keeps the shipped mix — the axis is the RS
+      // horizon, not a reweighting.
+      expect(cfgOf(v).weights.momentum, v.label).toBe(defaultScreenerConfig().weights.momentum);
+      expect(cfgOf(v).weights.trend, v.label).toBe(defaultScreenerConfig().weights.trend);
+      expect(v.body.decisionConfig).toEqual({ stopAtrMultiple: 1.5, targetRMultiple: 2 });
+      expect(v.body.endpoint).toBeUndefined();
+      expect(v.endpoint).toBe(EQUITY_WALK_FORWARD_PATH);
+    }
+  });
+
   it('optexits targets the OPTIONS walk-forward and varies ONLY the %-of-premium exit fields', () => {
     const variants = buildExperiments(base, ['optexits']);
     expect(variants.map((v) => v.endpoint)).toEqual(Array(4).fill(OPTIONS_WALK_FORWARD_PATH));
