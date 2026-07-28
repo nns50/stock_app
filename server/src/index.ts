@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { config } from './config';
 import { db, initDb } from './db';
+import { getLastTick } from './db/autotradeLastTick';
 import { getProvider, getProviderStatus } from './providers';
 import { ProviderError } from './providers/MarketDataProvider';
 import { HttpError } from './routes/_helpers';
@@ -43,20 +44,61 @@ app.use(express.json({ limit: '1mb' }));
 // SPA alike). Deliberately only the set that cannot break this app: nothing
 // legitimately embeds it in a frame, no cross-origin page needs referrers
 // from it, and no response should ever be MIME-sniffed into something else.
-// (A full CSP is NOT set here — the built SPA would need its inline chunks
-// audited first, and a wrong policy silently bricks the app.)
+//
+// The Content-Security-Policy is strict because the built SPA was audited to
+// need nothing looser (2026-07-28, re-verified in a real Chromium against the
+// production bundle): no inline scripts (the theme-init script is external —
+// web/public/theme-init.js — precisely so script-src can stay 'self'), no
+// inline <style> or url()/data:/blob: references in the emitted CSS, no
+// workers, no eval, and every request the browser makes is same-origin
+// (`/api/*`, hashed /assets, /icon.svg). React/Recharts set styles through
+// the CSSOM (element.style), which CSP does not restrict, so charts need no
+// 'unsafe-inline'. If a future dependency genuinely needs a looser policy,
+// loosen the ONE directive it needs — never the script ones.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "img-src 'self'",
+  "font-src 'self'",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
 app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Content-Security-Policy', CSP);
   next();
 });
 
-// Health stays open (used by container/Fly health checks) and so does the auth
+// Health stays open (used by container/Fly health checks and external uptime
+// pingers — see docs/DEPLOY.md's monitoring section) and so does the auth
 // router (login/status). Everything else under /api requires a session when
 // APP_PASSWORD is set; `requireAuth` is a no-op when auth is disabled.
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, time: Date.now(), provider: getProviderStatus() });
+  // A trivial read proves the DATABASE is actually usable, not just that the
+  // process accepts sockets — if this throws, the error handler's 500 fails
+  // the platform health check, which is exactly the point: a deploy whose
+  // volume didn't mount (or whose DB file is wedged) should read unhealthy,
+  // not "ok" because Express happens to be up.
+  db.prepare('SELECT 1').get();
+  // The autotrade loop persists a tick summary every ~60s once the server is
+  // up — even fully disabled it still runs its exit/reconcile pass — so a
+  // large age here means the loop (or the whole event loop) is wedged. Null
+  // before the first tick after boot, or on a fresh database. Informational
+  // (never fails the check itself): an external monitor can alert on it, but
+  // auto-restarting on it would loop on a deliberately stopped loop.
+  const lastTick = getLastTick();
+  res.json({
+    ok: true,
+    time: Date.now(),
+    provider: getProviderStatus(),
+    loopLastTickAgeMs: lastTick ? Date.now() - lastTick.ranAt : null,
+  });
 });
 app.use('/api/auth', authRouter);
 app.use('/api', requireAuth);
