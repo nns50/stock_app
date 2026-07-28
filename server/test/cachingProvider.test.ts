@@ -1,14 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { CachingProvider } from '../src/providers/CachingProvider';
-import {
-  Candle,
-  CandleQuery,
-  Fundamentals,
-  MarketDataProvider,
-  OptionsChain,
-  Quote,
-  Timeframe,
-} from '../src/providers/types';
+import { Candle, CandleQuery, Fundamentals, OptionsChain, Quote, Timeframe } from '../src/providers/types';
+import { MarketDataProvider } from '../src/providers/MarketDataProvider';
 
 function makeCandles(n: number): Candle[] {
   return Array.from({ length: n }, (_, i) => ({

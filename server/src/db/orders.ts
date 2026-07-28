@@ -30,6 +30,9 @@ export interface OrderIntentRecord {
   quantity: number;
   orderType: OrderType;
   limitPrice: number | null;
+  /** Trigger price for stop_loss / stop_loss_limit orders; null otherwise (and
+   *  null on rows created before 2026-07-28, when it wasn't persisted). */
+  stopPrice: number | null;
   optionType: OptionType | null;
   strike: number | null;
   expiration: string | null;
@@ -70,6 +73,7 @@ interface IntentRow {
   quantity: number;
   order_type: OrderType;
   limit_price: number | null;
+  stop_price: number | null;
   option_type: OptionType | null;
   strike: number | null;
   expiration: string | null;
@@ -94,6 +98,7 @@ function mapIntent(r: IntentRow): OrderIntentRecord {
     quantity: r.quantity,
     orderType: r.order_type,
     limitPrice: r.limit_price,
+    stopPrice: r.stop_price ?? null,
     optionType: r.option_type,
     strike: r.strike,
     expiration: r.expiration,
@@ -160,9 +165,9 @@ export function createIntent(input: OrderIntent, idempotencyKey: string): OrderI
   const info = db
     .prepare(
       `INSERT INTO order_intents
-        (idempotency_key, symbol, asset_kind, side, open_close, quantity, order_type, limit_price,
+        (idempotency_key, symbol, asset_kind, side, open_close, quantity, order_type, limit_price, stop_price,
          option_type, strike, expiration, option_strategy, is_bracket, state, broker_order_id, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       idempotencyKey,
@@ -173,6 +178,7 @@ export function createIntent(input: OrderIntent, idempotencyKey: string): OrderI
       input.quantity,
       input.orderType,
       input.limitPrice ?? null,
+      input.stopPrice ?? null,
       input.optionType ?? null,
       input.strike ?? null,
       input.expiration ?? null,
@@ -221,22 +227,21 @@ export function transitionIntent(
 }
 
 /**
- * Record a broker-accepted REPLACE: update the stored quantity / limit price to
- * the new values and append an audit event at the current state (a replace is
- * not a lifecycle transition). Stop price isn't a stored column, so it's only in
- * the event detail. Returns the refreshed record.
+ * Record a broker-accepted REPLACE: update the stored quantity / limit price /
+ * stop price to the new values and append an audit event at the current state
+ * (a replace is not a lifecycle transition). Returns the refreshed record.
  */
 export function recordReplace(
   id: number,
-  patch: { quantity?: number; limitPrice?: number },
+  patch: { quantity?: number; limitPrice?: number; stopPrice?: number },
   detail: string,
 ): OrderIntentRecord {
   const current = getIntent(id);
   if (!current) throw new Error(`No order intent ${id}`);
   const now = Date.now();
   db.prepare(
-    'UPDATE order_intents SET quantity = COALESCE(?, quantity), limit_price = COALESCE(?, limit_price), updated_at = ? WHERE id = ?',
-  ).run(patch.quantity ?? null, patch.limitPrice ?? null, now, id);
+    'UPDATE order_intents SET quantity = COALESCE(?, quantity), limit_price = COALESCE(?, limit_price), stop_price = COALESCE(?, stop_price), updated_at = ? WHERE id = ?',
+  ).run(patch.quantity ?? null, patch.limitPrice ?? null, patch.stopPrice ?? null, now, id);
   db.prepare('INSERT INTO order_events (intent_id, state, detail, created_at) VALUES (?,?,?,?)').run(
     id,
     current.state,

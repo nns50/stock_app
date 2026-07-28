@@ -96,7 +96,16 @@ describe('regime-conditional weights in simulateBacktest', () => {
         regimeWeightPresets: {
           riskOn: DEFAULTS,
           neutral: DEFAULTS,
-          riskOff: { momentum: 0, relativeVolume: 0, rsi: 0, volatility: 0, gap: 0, trend: 0 },
+          riskOff: {
+            momentum: 0,
+            relativeVolume: 0,
+            rsi: 0,
+            volatility: 0,
+            gap: 0,
+            trend: 0,
+            relativeStrength: 0,
+            sentiment: 0,
+          },
         },
       }),
       undefined,

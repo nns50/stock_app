@@ -1,0 +1,26 @@
+{
+  // Typecheck-only project covering src + test together — `npm run typecheck`
+  // runs the build config (src, node16) AND this, so test files and fixtures
+  // can't drift from the source types unnoticed (vitest strips types without
+  // checking them; CLAUDE.md's "typecheck covers test files too" was only true
+  // of web/, where tests live under src/). Never used for emit.
+  //
+  // module/moduleResolution are bundler-style here because that is how vitest
+  // actually loads test files (esbuild): extensionless relative imports are
+  // legal in tests, while src stays checked under the stricter node16 rules by
+  // the build config.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "outDir": null,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    // Tests run on Node ≥20 via vitest, so ES2022 built-ins (Array.at, …) are
+    // real there; the build config stays on ES2021 for emitted src.
+    "lib": ["ES2022"],
+    "types": ["node"]
+  },
+  "include": ["src/**/*", "test/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

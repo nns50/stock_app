@@ -44,6 +44,10 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
     sectorNotional: 0,
     maxSectorExposurePct: 20,
     candidateSector: null,
+    correlationThreshold: 0.7,
+    marketAtrPct: null,
+    regimeAtrThresholdPct: 3,
+    regimeSizeCutPct: 0,
     ...overrides,
   };
 }

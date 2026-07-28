@@ -47,7 +47,7 @@ describe('suggestLiveCaps agrees with targetTune (2026-07-25)', () => {
       equityUsd: 100_000,
       targetDailyGainPct: 12, // > 8 => aggressive band
       basis: 'expected',
-      config: { autoTuneEnabled: false },
+      config: { autoTuneEnabled: false, autoTuneExitsEnabled: false },
     });
     expect(tuned.patch.riskProfile).toBe('AGGRESSIVE');
     const suggested = suggestLiveCaps(

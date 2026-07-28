@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { initDb, db } from '../src/db';
-import { createIntent, transitionIntent, OrderIntent } from '../src/db/orders';
+import { createIntent, transitionIntent } from '../src/db/orders';
+import type { OrderIntent } from '../src/services/trading/guardrails';
 import {
   countLiveOptionsOrdersSince,
   getLiveOptionsOrder,

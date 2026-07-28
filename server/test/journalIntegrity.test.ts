@@ -18,6 +18,7 @@ function exitFixture(o: Partial<PositionExit> = {}): PositionExit {
     fees: 0,
     notes: null,
     sourceIntentId: null,
+    exitReason: null,
     createdAt: AGREEING,
     ...o,
   };
@@ -49,6 +50,9 @@ function positionFixture(o: Partial<Position> = {}): Position {
     targetPrice: null,
     sourceIntentId: null,
     accountId: null,
+    entryScore: null,
+    marketRegime: null,
+    marketAtrPct: null,
     createdAt: AGREEING,
     updatedAt: AGREEING,
     remainingQuantity: Math.max(0, quantity - exits.reduce((s, e) => s + e.quantity, 0)),

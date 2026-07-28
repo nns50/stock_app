@@ -77,14 +77,15 @@ function signal(overrides: Partial<TradeSignal> = {}): TradeSignal {
   };
 }
 
-function quoteReturning(prices: Record<string, number>) {
+function quoteReturning(prices: Record<string, number>): ReturnType<typeof getProvider> {
+  // Deliberately partial — only the members these tests exercise.
   return {
     getQuote: vi.fn(async (symbol: string) => {
       if (!(symbol in prices)) throw new Error(`no mock quote for ${symbol}`);
       return { symbol, last: prices[symbol], timestamp: Date.now() };
     }),
     getCandles: vi.fn(async () => []),
-  };
+  } as unknown as ReturnType<typeof getProvider>;
 }
 
 const okAccountState = {
@@ -224,6 +225,13 @@ describe('getProbationStatus', () => {
       maxAggregateOpenRiskPct: 2,
       maxCorrelatedExposurePct: 6,
       maxTradesPerDay: 6,
+      sectorNotional: 0,
+      maxSectorExposurePct: 20,
+      candidateSector: null,
+      correlationThreshold: 0.7,
+      marketAtrPct: null,
+      regimeAtrThresholdPct: 3,
+      regimeSizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
     const intentId = listIntents()[0].id;
@@ -319,6 +327,13 @@ describe('attemptLiveEntry', () => {
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
     maxTradesPerDay: 6,
+    sectorNotional: 0,
+    maxSectorExposurePct: 20,
+    candidateSector: null,
+    correlationThreshold: 0.7,
+    marketAtrPct: null,
+    regimeAtrThresholdPct: 3,
+    regimeSizeCutPct: 0,
   });
 
   it('refuses when TRADING_ENABLED is off — no intent, no broker call, regardless of every other gate passing', async () => {
@@ -652,6 +667,13 @@ describe('adoptOrphanedLivePositions', () => {
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
     maxTradesPerDay: 6,
+    sectorNotional: 0,
+    maxSectorExposurePct: 20,
+    candidateSector: null,
+    correlationThreshold: 0.7,
+    marketAtrPct: null,
+    regimeAtrThresholdPct: 3,
+    regimeSizeCutPct: 0,
   };
 
   /** A still-pending (not yet reconciled/materialized) autotrade entry order —
@@ -873,6 +895,13 @@ describe('reconcileLiveOrders', () => {
       maxAggregateOpenRiskPct: 2,
       maxCorrelatedExposurePct: 6,
       maxTradesPerDay: 6,
+      sectorNotional: 0,
+      maxSectorExposurePct: 20,
+      candidateSector: null,
+      correlationThreshold: 0.7,
+      marketAtrPct: null,
+      regimeAtrThresholdPct: 3,
+      regimeSizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg, 'risk-off', 2.5);
     const intentId = listIntents()[0].id;
@@ -929,6 +958,13 @@ describe('reconcileLiveOrders', () => {
       maxAggregateOpenRiskPct: 2,
       maxCorrelatedExposurePct: 6,
       maxTradesPerDay: 6,
+      sectorNotional: 0,
+      maxSectorExposurePct: 20,
+      candidateSector: null,
+      correlationThreshold: 0.7,
+      marketAtrPct: null,
+      regimeAtrThresholdPct: 3,
+      regimeSizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
 
@@ -981,6 +1017,13 @@ describe('reconcileLiveOrders', () => {
       maxAggregateOpenRiskPct: 2,
       maxCorrelatedExposurePct: 6,
       maxTradesPerDay: 6,
+      sectorNotional: 0,
+      maxSectorExposurePct: 20,
+      candidateSector: null,
+      correlationThreshold: 0.7,
+      marketAtrPct: null,
+      regimeAtrThresholdPct: 3,
+      regimeSizeCutPct: 0,
     });
 
   it('keeps an AMBIGUOUS placement pending instead of rejecting it, so it cannot be re-placed', async () => {
@@ -1126,7 +1169,7 @@ describe('reconcileLiveOrders', () => {
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SEED' });
 
     // Equity book is flat; the OPTIONS book is already past the 3% halt.
-    const outcomes = await runLiveExecution([{ signal: signal('AAPL') }], null, {
+    const outcomes = await runLiveExecution([{ signal: signal() }], null, {
       dailyPnl: -4_000,
       consecutiveLosses: 0,
       tradesToday: 0,
@@ -1137,7 +1180,7 @@ describe('reconcileLiveOrders', () => {
 
     // Causation: the SAME candidate with a neutral options book is allowed, so
     // the block above came from the seed and not from some unrelated gate.
-    const allowed = await runLiveExecution([{ signal: signal('AAPL') }], null, {
+    const allowed = await runLiveExecution([{ signal: signal() }], null, {
       dailyPnl: 0,
       consecutiveLosses: 0,
       tradesToday: 0,
@@ -1172,6 +1215,13 @@ describe('reconcileLiveOrders', () => {
       maxAggregateOpenRiskPct: 2,
       maxCorrelatedExposurePct: 6,
       maxTradesPerDay: 6,
+      sectorNotional: 0,
+      maxSectorExposurePct: 20,
+      candidateSector: null,
+      correlationThreshold: 0.7,
+      marketAtrPct: null,
+      regimeAtrThresholdPct: 3,
+      regimeSizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), res, 'MODERATE', liveConfig());
 
@@ -1227,6 +1277,13 @@ describe('reconcileLiveOrders', () => {
       maxAggregateOpenRiskPct: 2,
       maxCorrelatedExposurePct: 6,
       maxTradesPerDay: 6,
+      sectorNotional: 0,
+      maxSectorExposurePct: 20,
+      candidateSector: null,
+      correlationThreshold: 0.7,
+      marketAtrPct: null,
+      regimeAtrThresholdPct: 3,
+      regimeSizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
 
@@ -1281,6 +1338,13 @@ describe('reconcileLiveOrders', () => {
       maxAggregateOpenRiskPct: 2,
       maxCorrelatedExposurePct: 6,
       maxTradesPerDay: 6,
+      sectorNotional: 0,
+      maxSectorExposurePct: 20,
+      candidateSector: null,
+      correlationThreshold: 0.7,
+      marketAtrPct: null,
+      regimeAtrThresholdPct: 3,
+      regimeSizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
     const intentId = listIntents()[0].id;
@@ -1334,6 +1398,13 @@ describe('reconcileLiveOrders', () => {
       maxAggregateOpenRiskPct: 2,
       maxCorrelatedExposurePct: 6,
       maxTradesPerDay: 6,
+      sectorNotional: 0,
+      maxSectorExposurePct: 20,
+      candidateSector: null,
+      correlationThreshold: 0.7,
+      marketAtrPct: null,
+      regimeAtrThresholdPct: 3,
+      regimeSizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
 
@@ -1406,6 +1477,13 @@ describe('reconcileLiveOrders + adoptOrphanedLivePositions interaction', () => {
       maxAggregateOpenRiskPct: 2,
       maxCorrelatedExposurePct: 6,
       maxTradesPerDay: 6,
+      sectorNotional: 0,
+      maxSectorExposurePct: 20,
+      candidateSector: null,
+      correlationThreshold: 0.7,
+      marketAtrPct: null,
+      regimeAtrThresholdPct: 3,
+      regimeSizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
     const intentId = listIntents()[0].id;
@@ -1499,6 +1577,13 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
       maxAggregateOpenRiskPct: 2,
       maxCorrelatedExposurePct: 6,
       maxTradesPerDay: 6,
+      sectorNotional: 0,
+      maxSectorExposurePct: 20,
+      candidateSector: null,
+      correlationThreshold: 0.7,
+      marketAtrPct: null,
+      regimeAtrThresholdPct: 3,
+      regimeSizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
     expect(listPendingLiveOrders()).toHaveLength(1); // acknowledged — still working, not yet filled
@@ -1553,6 +1638,13 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
       maxAggregateOpenRiskPct: 2,
       maxCorrelatedExposurePct: 6,
       maxTradesPerDay: 6,
+      sectorNotional: 0,
+      maxSectorExposurePct: 20,
+      candidateSector: null,
+      correlationThreshold: 0.7,
+      marketAtrPct: null,
+      regimeAtrThresholdPct: 3,
+      regimeSizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
     expect(listIntents()).toHaveLength(1); // the rejected intent IS audited...
@@ -1594,6 +1686,13 @@ describe('checkLiveScaleIns', () => {
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
     maxTradesPerDay: 6,
+    sectorNotional: 0,
+    maxSectorExposurePct: 20,
+    candidateSector: null,
+    correlationThreshold: 0.7,
+    marketAtrPct: null,
+    regimeAtrThresholdPct: 3,
+    regimeSizeCutPct: 0,
   };
 
   // Open a real live position through the entry -> reconcile flow, then set the
@@ -1799,6 +1898,13 @@ describe('reconcileLiveOrders — partial fills', () => {
       maxAggregateOpenRiskPct: 2,
       maxCorrelatedExposurePct: 6,
       maxTradesPerDay: 6,
+      sectorNotional: 0,
+      maxSectorExposurePct: 20,
+      candidateSector: null,
+      correlationThreshold: 0.7,
+      marketAtrPct: null,
+      regimeAtrThresholdPct: 3,
+      regimeSizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
     const intentId = listIntents()[0].id;

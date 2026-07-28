@@ -20,6 +20,7 @@ beforeEach(() => {
 function candidate(symbol: string, discoverySource: DiscoverySource = 'movers'): ScreenCandidate {
   return {
     symbol,
+    direction: 'long' as const,
     price: 100,
     total: 70,
     passedFilters: true,
@@ -39,6 +40,10 @@ function candidate(symbol: string, discoverySource: DiscoverySource = 'movers'):
       avgVolume: null,
       volume: null,
       gapPct: null,
+      weeklyMaShort: null,
+      symbolLookbackReturnPct: null,
+      benchmarkLookbackReturnPct: null,
+      sentimentNetScore: null,
     },
     discoverySource,
   };

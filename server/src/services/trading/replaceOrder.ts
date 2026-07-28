@@ -43,10 +43,16 @@ export interface ReplaceResult {
 
 /** Rebuild an OrderIntent from the stored record + requested changes so the
  *  guardrails can re-evaluate the MODIFIED order. `referencePrice` is set to the
- *  effective price (the record doesn't persist a separate reference). */
+ *  effective price (the record doesn't persist a separate reference).
+ *  `stopPrice` falls back to the STORED trigger price: without that, a
+ *  quantity/limit-only modify of a stop order rebuilt the intent with no stop
+ *  at all and the guardrails' stop_price check falsely blocked it. (A row from
+ *  before stop_price was persisted has null there — such an order still needs
+ *  the patch to restate its stop, exactly as before.) */
 function modifiedIntent(rec: OrderIntentRecord, patch: ReplacePatch): OrderIntent {
   const limitPrice = patch.limitPrice ?? rec.limitPrice ?? undefined;
-  const effectivePrice = patch.limitPrice ?? patch.stopPrice ?? rec.limitPrice ?? undefined;
+  const stopPrice = patch.stopPrice ?? rec.stopPrice ?? undefined;
+  const effectivePrice = patch.limitPrice ?? patch.stopPrice ?? rec.limitPrice ?? rec.stopPrice ?? undefined;
   return {
     symbol: rec.symbol,
     assetKind: rec.assetKind,
@@ -55,7 +61,7 @@ function modifiedIntent(rec: OrderIntentRecord, patch: ReplacePatch): OrderInten
     quantity: patch.quantity ?? rec.quantity,
     orderType: rec.orderType,
     limitPrice,
-    stopPrice: patch.stopPrice,
+    stopPrice,
     referencePrice: effectivePrice,
     optionType: rec.optionType ?? undefined,
     strike: rec.strike ?? undefined,
@@ -204,7 +210,11 @@ export async function replaceIntent(id: number, accountId: string, patch: Replac
     ]
       .filter(Boolean)
       .join(', ');
-  const updated = recordReplace(id, { quantity: patch.quantity, limitPrice: patch.limitPrice }, detail);
+  const updated = recordReplace(
+    id,
+    { quantity: patch.quantity, limitPrice: patch.limitPrice, stopPrice: patch.stopPrice },
+    detail,
+  );
   const reconciled = await reconcileIntent(id, accountId);
   return {
     ok: true,

@@ -54,7 +54,8 @@ function openOrder(overrides: Partial<import('../src/providers/webull/orders').W
 }
 const noOpenOrders = { ok: true as const, orders: [] };
 
-function quoteReturning(prices: Record<string, number>) {
+function quoteReturning(prices: Record<string, number>): ReturnType<typeof getProvider> {
+  // Deliberately partial — only the members these tests exercise.
   return {
     getQuote: vi.fn(async (symbol: string) => {
       if (!(symbol in prices)) throw new Error(`no mock quote for ${symbol}`);
@@ -64,7 +65,7 @@ function quoteReturning(prices: Record<string, number>) {
       calls: [{ strike: 200, mark: 5, last: 5 }],
       puts: [{ strike: 200, mark: 4, last: 4 }],
     })),
-  };
+  } as unknown as ReturnType<typeof getProvider>;
 }
 
 function accountStateWith(currentPositionQty: number) {
@@ -78,7 +79,10 @@ function accountStateWith(currentPositionQty: number) {
 /** A chain with an arbitrary set of call/put marks, keyed by strike — unlike
  *  quoteReturning()'s single fixed strike, this lets a debit-spread test
  *  supply BOTH legs' marks from the SAME mocked getOptionsChain(). */
-function chainWith(entries: Array<{ strike: number; type: 'call' | 'put'; mark: number }>) {
+function chainWith(
+  entries: Array<{ strike: number; type: 'call' | 'put'; mark: number }>,
+): ReturnType<typeof getProvider> {
+  // Deliberately partial — only the members these tests exercise.
   return {
     getQuote: vi.fn(async () => {
       throw new Error('unexpected getQuote call — options closes price off the chain, not a stock quote');
@@ -87,7 +91,7 @@ function chainWith(entries: Array<{ strike: number; type: 'call' | 'put'; mark: 
       calls: entries.filter((e) => e.type === 'call').map((e) => ({ strike: e.strike, mark: e.mark, last: e.mark })),
       puts: entries.filter((e) => e.type === 'put').map((e) => ({ strike: e.strike, mark: e.mark, last: e.mark })),
     })),
-  };
+  } as unknown as ReturnType<typeof getProvider>;
 }
 
 function openLiveOptionsPos(

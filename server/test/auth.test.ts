@@ -1,6 +1,15 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { config } from '../src/config';
-import { authRequired, checkPassword, issueToken, verifyToken } from '../src/services/auth';
+import {
+  authRequired,
+  checkPassword,
+  issueToken,
+  loginLockedForMs,
+  recordLoginFailure,
+  recordLoginSuccess,
+  resetLoginThrottle,
+  verifyToken,
+} from '../src/services/auth';
 
 const orig = config.auth.password;
 afterEach(() => {
@@ -40,5 +49,30 @@ describe('auth service', () => {
     expect(verifyToken(t)).toBe(true);
     config.auth.password = 'second';
     expect(verifyToken(t)).toBe(false);
+  });
+});
+
+describe('login throttle', () => {
+  it('locks after the threshold, backs off exponentially, and clears on success', () => {
+    resetLoginThrottle();
+    const t0 = 1_000_000;
+    for (let i = 0; i < 4; i++) recordLoginFailure(t0);
+    expect(loginLockedForMs(t0)).toBe(0); // under the threshold: no lock
+
+    recordLoginFailure(t0); // 5th consecutive failure
+    expect(loginLockedForMs(t0)).toBe(30_000);
+    recordLoginFailure(t0); // 6th → doubles
+    expect(loginLockedForMs(t0)).toBe(60_000);
+    expect(loginLockedForMs(t0 + 60_001)).toBe(0); // window elapses
+
+    recordLoginSuccess();
+    recordLoginFailure(t0);
+    expect(loginLockedForMs(t0)).toBe(0); // streak reset — one failure is fine
+
+    // The window is capped, not unbounded.
+    resetLoginThrottle();
+    for (let i = 0; i < 40; i++) recordLoginFailure(t0);
+    expect(loginLockedForMs(t0)).toBeLessThanOrEqual(15 * 60_000);
+    resetLoginThrottle();
   });
 });

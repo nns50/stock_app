@@ -26,6 +26,10 @@ function makePosition(
     targetPrice: null,
     sourceIntentId: null,
     accountId: null,
+    entryTime: null,
+    entryScore: null,
+    marketRegime: null,
+    marketAtrPct: null,
     createdAt: 0,
     updatedAt: 0,
     exits,
@@ -34,7 +38,16 @@ function makePosition(
   };
 }
 function exit(over: Partial<PositionExit> & Pick<PositionExit, 'quantity' | 'exitPrice' | 'exitDate'>): PositionExit {
-  return { id: nextId++, positionId: 0, fees: 0, notes: null, sourceIntentId: null, createdAt: 0, ...over };
+  return {
+    id: nextId++,
+    positionId: 0,
+    fees: 0,
+    notes: null,
+    sourceIntentId: null,
+    exitReason: null,
+    createdAt: 0,
+    ...over,
+  };
 }
 
 describe('detectWashSale', () => {

@@ -703,6 +703,63 @@ function fetchError(path: string, r: CallResult): string {
   return j.msg || j.message || j.error_msg || `Webull ${path} failed (${r.status})`;
 }
 
+/** Page size requested from the order-list endpoints, and a hard ceiling on how
+ *  many pages one lookup will walk (20 × 100 envelopes is far beyond any real
+ *  account's 7-day order history; the cap only bounds a misbehaving server). */
+const ORDER_LIST_PAGE_SIZE = 100;
+const ORDER_LIST_MAX_PAGES = 20;
+
+interface OrderListFetch {
+  ok: boolean;
+  envelopes: OrderEnvelope[];
+  error?: string;
+}
+
+/**
+ * Fetch ONE order list (open or history) COMPLETELY, following pagination.
+ *
+ * Both endpoints are paginated (the API reference describes them as "query …
+ * by page", sorted by client_order_id, with a small default page size), but
+ * every caller here treats absence from the fetched list as meaningful — up to
+ * and including "positive evidence this order never landed", which retires
+ * intents and frees dedup slots. A single unparameterized fetch silently
+ * inherits the server's default page, so once the account carries more than a
+ * page of envelopes (a bracket alone is THREE), orders beyond it would read as
+ * missing. So: ask for big pages and follow the client_order_id cursor until a
+ * short page says the list is complete.
+ *
+ * Defensive on both cursor failure modes: a server that ignores `page_size`
+ * still terminates (the short-page test), and one that ignores
+ * `last_client_order_id` is detected by the page repeating itself (same first
+ * envelope) and stops with what the first page held — never worse than the
+ * unpaginated behavior this replaces. A mid-walk fetch failure fails the WHOLE
+ * fetch: a partial list must never masquerade as the complete one.
+ */
+async function fetchFullOrderList(accountId: string, path: string): Promise<OrderListFetch> {
+  const envelopes: OrderEnvelope[] = [];
+  let cursor: string | undefined;
+  let prevFirst: string | undefined;
+  for (let page = 0; page < ORDER_LIST_MAX_PAGES; page++) {
+    const query: Record<string, string> = { account_id: accountId, page_size: String(ORDER_LIST_PAGE_SIZE) };
+    if (cursor !== undefined) query.last_client_order_id = cursor;
+    const r = await webullClient().call('GET', path, { query, surface: 'trade' });
+    if (!r.ok) return { ok: false, envelopes: [], error: fetchError(path, r) };
+    const batch = Array.isArray(r.data) ? (r.data as OrderEnvelope[]) : [];
+    const first = batch[0]?.client_order_id;
+    // The server ignored the cursor and replayed the same page — stop before
+    // pushing duplicates (duplicate legs would break combo-leg counting).
+    if (page > 0 && first !== undefined && first === prevFirst) break;
+    prevFirst = first;
+    envelopes.push(...batch);
+    if (batch.length < ORDER_LIST_PAGE_SIZE) break;
+    const last = batch[batch.length - 1]?.client_order_id;
+    // No cursor to advance with — stop with what we have rather than loop.
+    if (typeof last !== 'string' || last.length === 0 || last === cursor) break;
+    cursor = last;
+  }
+  return { ok: true, envelopes };
+}
+
 /**
  * Look up the live status of one of OUR orders by its client_order_id, scanning
  * open orders then history (which covers filled/cancelled). READ-ONLY — places
@@ -714,9 +771,9 @@ function fetchError(path: string, r: CallResult): string {
 export async function webullOrderStatus(accountId: string, clientOrderId: string): Promise<WebullOrderStatus> {
   if (!webullConfigured()) return { ok: false, found: false, error: 'Webull is not configured.' };
   for (const path of ORDER_LIST_PATHS) {
-    const r = await webullClient().call('GET', path, { query: { account_id: accountId }, surface: 'trade' });
-    if (!r.ok) return { ok: false, found: false, error: fetchError(path, r) };
-    const hit = resolveFromList(r.data, clientOrderId);
+    const r = await fetchFullOrderList(accountId, path);
+    if (!r.ok) return { ok: false, found: false, error: r.error };
+    const hit = resolveFromList(r.envelopes, clientOrderId);
     if (hit) return hit;
   }
   return { ok: true, found: false };
@@ -756,17 +813,16 @@ export async function webullOrderStatusBatch(
   let pending = wanted;
   for (const path of ORDER_LIST_PATHS) {
     if (pending.length === 0) break;
-    const r = await webullClient().call('GET', path, { query: { account_id: accountId }, surface: 'trade' });
+    const r = await fetchFullOrderList(accountId, path);
     if (!r.ok) {
       // Couldn't read this list — say nothing about the orders it might have
       // answered for, rather than letting them fall through to "not found".
-      const error = fetchError(path, r);
-      for (const id of pending) out.set(id, { ok: false, found: false, error });
+      for (const id of pending) out.set(id, { ok: false, found: false, error: r.error });
       return out;
     }
     const rest: string[] = [];
     for (const id of pending) {
-      const hit = resolveFromList(r.data, id);
+      const hit = resolveFromList(r.envelopes, id);
       if (hit) out.set(id, hit);
       else rest.push(id);
     }
@@ -843,26 +899,14 @@ function mapOpenOrder(o: Record<string, unknown>): WebullOpenOrder {
  */
 export async function listWebullOpenOrders(accountId: string): Promise<WebullOpenOrdersResult> {
   if (!webullConfigured()) return { ok: false, orders: [], error: 'Webull is not configured.' };
-  const r = await webullClient().call('GET', '/openapi/trade/order/open', {
-    query: { account_id: accountId },
-    surface: 'trade',
-  });
-  if (!r.ok) {
-    const j = (r.data ?? {}) as { msg?: string; message?: string; error_msg?: string };
-    return {
-      ok: false,
-      orders: [],
-      raw: r.data,
-      error: j.msg || j.message || j.error_msg || `Webull open-orders failed (${r.status})`,
-    };
-  }
-  const envelopes = Array.isArray(r.data) ? (r.data as OrderEnvelope[]) : [];
+  const r = await fetchFullOrderList(accountId, '/openapi/trade/order/open');
+  if (!r.ok) return { ok: false, orders: [], error: r.error };
   const orders: WebullOpenOrder[] = [];
-  for (const env of envelopes) {
+  for (const env of r.envelopes) {
     const subs = Array.isArray(env.orders) && env.orders.length ? env.orders : [env as Record<string, unknown>];
     for (const o of subs) orders.push(mapOpenOrder(o as Record<string, unknown>));
   }
-  return { ok: true, orders, raw: r.data };
+  return { ok: true, orders, raw: r.envelopes };
 }
 
 export interface WebullCancelResult {

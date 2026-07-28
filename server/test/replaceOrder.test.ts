@@ -145,6 +145,43 @@ describe('replaceIntent', () => {
     expect(String(fetchSpy.mock.calls[2][0])).toContain('/openapi/trade/order/replace');
   });
 
+  it('modifies a stop order quantity-only using the STORED stop price (was falsely blocked)', async () => {
+    // Regression: stop_price wasn't persisted, so a quantity/limit-only modify
+    // rebuilt the intent with no stop at all and the guardrails' stop_price
+    // check blocked it ("stop orders need a positive stop price").
+    const id = workingIntentId(
+      { orderType: 'stop_loss', limitPrice: undefined, stopPrice: 1.2, referencePrice: 1.5 },
+      'stop-cid-qty',
+    );
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE)) // account state: balance
+      .mockResolvedValueOnce(okResp([])) // account state: positions
+      .mockResolvedValueOnce(okResp({ ok: true })) // /replace
+      .mockResolvedValueOnce(okResp([])) // reconcile: open
+      .mockResolvedValueOnce(okResp([])); // reconcile: history
+
+    const r = await replaceIntent(id, 'ACC1', { quantity: 2 });
+    expect(r).toMatchObject({ ok: true, replaced: true, reason: 'replaced' });
+    expect(getIntent(id)).toMatchObject({ quantity: 2, stopPrice: 1.2 });
+  });
+
+  it('persists a stop-price change', async () => {
+    const id = workingIntentId(
+      { orderType: 'stop_loss', limitPrice: undefined, stopPrice: 1.2, referencePrice: 1.5 },
+      'stop-cid-px',
+    );
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE))
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp({ ok: true }))
+      .mockResolvedValueOnce(okResp([]))
+      .mockResolvedValueOnce(okResp([]));
+
+    const r = await replaceIntent(id, 'ACC1', { stopPrice: 1.1 });
+    expect(r).toMatchObject({ ok: true, replaced: true, reason: 'replaced' });
+    expect(getIntent(id)?.stopPrice).toBe(1.1);
+  });
+
   it('reports a broker rejection without persisting the change', async () => {
     const id = workingIntentId();
     vi.spyOn(globalThis, 'fetch')

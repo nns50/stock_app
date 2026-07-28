@@ -129,6 +129,13 @@ describe('attemptOptionsPaperEntry', () => {
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
     maxTradesPerDay: 6,
+    sectorNotional: 0,
+    maxSectorExposurePct: 20,
+    candidateSector: null,
+    correlationThreshold: 0.7,
+    marketAtrPct: null,
+    regimeAtrThresholdPct: 3,
+    regimeSizeCutPct: 0,
   });
 
   it('fills at a freshly-fetched contract mark, not the signal premium', async () => {
@@ -213,6 +220,13 @@ describe('attemptOptionsPaperEntry', () => {
       maxAggregateOpenRiskPct: 2,
       maxCorrelatedExposurePct: 6,
       maxTradesPerDay: 6,
+      sectorNotional: 0,
+      maxSectorExposurePct: 20,
+      candidateSector: null,
+      correlationThreshold: 0.7,
+      marketAtrPct: null,
+      regimeAtrThresholdPct: 3,
+      regimeSizeCutPct: 0,
     });
 
     it('opens both legs at freshly-fetched marks, not the signal premiums', async () => {
