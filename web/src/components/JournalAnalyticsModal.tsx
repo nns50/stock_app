@@ -5,7 +5,7 @@ import { cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd, fmtUsd } from '../lib/format
 import { EmptyState, ErrorState, Field, Modal, NumberInput, Segmented, Spinner, StatTile } from './ui';
 import type { RuinResult } from '../api/types';
 
-type Tab = 'excursions' | 'slippage' | 'ruin';
+type Tab = 'excursions' | 'slippage' | 'overrun' | 'ruin';
 
 const r = (v: number | null) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${fmtNum(v, 2)}R`);
 const rClass = (v: number | null) => (v == null ? '' : v >= 0 ? 'text-bull' : 'text-bear');
@@ -31,12 +31,14 @@ export function JournalAnalyticsModal({ open, onClose }: { open: boolean; onClos
             options={[
               { value: 'excursions', label: 'Excursions' },
               { value: 'slippage', label: 'Execution quality' },
+              { value: 'overrun', label: 'Stop overrun' },
               { value: 'ruin', label: 'Risk of ruin' },
             ]}
           />
         </Field>
         {tab === 'excursions' && <ExcursionsPanel active={open && tab === 'excursions'} />}
         {tab === 'slippage' && <SlippagePanel active={open && tab === 'slippage'} />}
+        {tab === 'overrun' && <StopOverrunPanel active={open && tab === 'overrun'} />}
         {tab === 'ruin' && <RuinPanel active={open && tab === 'ruin'} />}
       </div>
     </Modal>
@@ -218,6 +220,143 @@ function SlippagePanel({ active }: { active: boolean }) {
       <p className="text-[11px] text-slate-500">
         Sorted worst-first. A consistent positive bias suggests marketable limits or wide spreads at entry/exit —
         tighter limits or more liquid strikes reduce it.
+      </p>
+    </div>
+  );
+}
+
+/** Stop overrun: for every stock stop EXECUTION, how far beyond the declared
+ *  stop the exit actually landed — the gap/spread cost the zero-cost backtests
+ *  can't model, broken down by entry price band. */
+function StopOverrunPanel({ active }: { active: boolean }) {
+  const data = useAsync(() => (active ? client.journalStopOverrun() : Promise.resolve(null)), [active]);
+
+  if (data.loading) return <Spinner label="Comparing stop executions to declared stops…" />;
+  if (data.error) return <ErrorState error={data.error} onRetry={data.reload} />;
+  if (!data.data || data.data.trades === 0) {
+    return (
+      <EmptyState
+        title="No stop executions to analyze yet"
+        hint="This measures each stock exit that was a stop execution against the position's declared stop price. It needs positions with a logged stop whose exits either carry the 'stop' exit reason (recorded automatically for auto-traded positions since 2026-07-26) or landed at/beyond the stop."
+      />
+    );
+  }
+  const d = data.data;
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-500">
+        For each stop execution, the realized exit vs. the stop you declared — positive means the exit landed beyond the
+        stop (gap-through or spread), costing more than the planned 1R. This is the cost backtests model as zero.
+      </p>
+      {d.inferred > 0 && (
+        <p className="text-[11px] text-amber-400/90">
+          {d.recorded} of {d.trades} stop execution(s) carry a recorded exit reason; {d.inferred} are inferred from a
+          reasonless exit at/beyond the declared stop (mostly rows that predate exit-reason tracking).
+        </p>
+      )}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <StatTile
+          label="Total overrun"
+          value={fmtSignedUsd(d.totalUsd)}
+          valueClass={costClass(d.totalUsd)}
+          sub={d.totalUsd > 0 ? 'beyond plan' : d.totalUsd < 0 ? 'better than plan' : undefined}
+        />
+        <StatTile
+          label="Beyond the stop"
+          value={d.beyondPct == null ? '—' : `${fmtNum(d.beyondPct, 0)}%`}
+          sub={`${d.beyondCount} of ${d.trades}`}
+        />
+        <StatTile
+          label="Avg extra loss"
+          value={r(d.avgOverrunR)}
+          valueClass={d.avgOverrunR != null && d.avgOverrunR > 0 ? 'text-bear' : 'text-bull'}
+          sub="per stop, in R"
+        />
+        <StatTile
+          label="Median overrun"
+          value={d.medianOverrunPct == null ? '—' : fmtPct(d.medianOverrunPct)}
+          valueClass={d.medianOverrunPct == null ? '' : costClass(d.medianOverrunPct)}
+        />
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-ink-600/60">
+              <th className="py-1 pr-2 font-medium">Entry price</th>
+              <th className="py-1 px-2 font-medium text-right">Stops</th>
+              <th className="py-1 px-2 font-medium text-right">Beyond %</th>
+              <th className="py-1 px-2 font-medium text-right">Avg extra R</th>
+              <th className="py-1 pl-2 font-medium text-right">Total $</th>
+            </tr>
+          </thead>
+          <tbody>
+            {d.bands
+              .filter((b) => b.trades > 0)
+              .map((b) => (
+                <tr key={b.label} className="border-b border-ink-700/40 last:border-0">
+                  <td className="py-1 pr-2 font-medium text-slate-200">{b.label}</td>
+                  <td className="py-1 px-2 text-right tabular-nums text-slate-400">{b.trades}</td>
+                  <td className="py-1 px-2 text-right tabular-nums text-slate-400">
+                    {b.beyondPct == null ? '—' : `${fmtNum(b.beyondPct, 0)}%`}
+                  </td>
+                  <td
+                    className={cx(
+                      'py-1 px-2 text-right tabular-nums',
+                      b.avgOverrunR != null && b.avgOverrunR > 0 ? 'text-bear' : 'text-bull',
+                    )}
+                  >
+                    {r(b.avgOverrunR)}
+                  </td>
+                  <td className={cx('py-1 pl-2 text-right tabular-nums', costClass(b.totalUsd))}>
+                    {fmtSignedUsd(b.totalUsd)}
+                  </td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-ink-600/60">
+              <th className="py-1 pr-2 font-medium">Symbol</th>
+              <th className="py-1 px-2 font-medium">Date</th>
+              <th className="py-1 px-2 font-medium text-right">Stop</th>
+              <th className="py-1 px-2 font-medium text-right">Exit</th>
+              <th className="py-1 px-2 font-medium text-right">Extra R</th>
+              <th className="py-1 pl-2 font-medium text-right">$</th>
+            </tr>
+          </thead>
+          <tbody>
+            {d.rows.map((row, i) => (
+              <tr key={`${row.positionId}-${i}`} className="border-b border-ink-700/40 last:border-0">
+                <td className="py-1 pr-2 font-medium text-slate-200">
+                  {row.symbol} <span className="text-[11px] text-slate-500">{row.side}</span>
+                  {row.basis === 'inferred' && <span className="text-[11px] text-amber-400/80"> · inferred</span>}
+                </td>
+                <td className="py-1 px-2 text-slate-400 text-xs">{row.date ? fmtDate(row.date) : '—'}</td>
+                <td className="py-1 px-2 text-right tabular-nums text-slate-400">{fmtUsd(row.stopPrice)}</td>
+                <td className="py-1 px-2 text-right tabular-nums text-slate-200">{fmtUsd(row.exitPrice)}</td>
+                <td
+                  className={cx(
+                    'py-1 px-2 text-right tabular-nums',
+                    row.overrunR != null && row.overrunR > 0 ? 'text-bear' : 'text-bull',
+                  )}
+                >
+                  {r(row.overrunR)}
+                </td>
+                <td className={cx('py-1 pl-2 text-right tabular-nums', costClass(row.totalUsd))}>
+                  {fmtSignedUsd(row.totalUsd)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-slate-500">
+        Sorted most costly first. A high beyond-% concentrated in cheap tickers is the micro-cap tax — gap-throughs and
+        wide spreads the price/volume floors exist to avoid. Add the avg extra R to your backtested per-trade edge to
+        sanity-check whether it survives real fills.
       </p>
     </div>
   );

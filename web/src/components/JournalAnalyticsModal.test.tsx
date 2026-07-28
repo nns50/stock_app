@@ -88,6 +88,59 @@ describe('JournalAnalyticsModal', () => {
     expect(slipSpy).toHaveBeenCalled();
   });
 
+  it('switches to Stop overrun and fetches the report', async () => {
+    vi.spyOn(client, 'journalExcursions').mockResolvedValue({
+      trades: 0,
+      avgMfeR: null,
+      avgMaeR: null,
+      avgRealizedR: null,
+      capturePct: null,
+      rows: [],
+      coverage: { closedStockTrades: 0, undated: 0, overCap: 0, unavailable: 0 },
+    });
+    const overrunSpy = vi.spyOn(client, 'journalStopOverrun').mockResolvedValue({
+      trades: 1,
+      recorded: 0,
+      inferred: 1,
+      beyondCount: 1,
+      beyondPct: 100,
+      avgOverrunPct: 2.22,
+      medianOverrunPct: 2.22,
+      totalUsd: 20,
+      avgOverrunR: 0.2,
+      bands: [
+        { label: '<$5', trades: 0, beyondPct: null, avgOverrunR: null, totalUsd: 0 },
+        { label: '$5–15', trades: 1, beyondPct: 100, avgOverrunR: 0.2, totalUsd: 20 },
+        { label: '$15–50', trades: 0, beyondPct: null, avgOverrunR: null, totalUsd: 0 },
+        { label: '≥$50', trades: 0, beyondPct: null, avgOverrunR: null, totalUsd: 0 },
+      ],
+      rows: [
+        {
+          positionId: 1,
+          symbol: 'GME',
+          side: 'long',
+          date: '2026-06-01',
+          entryPrice: 10,
+          stopPrice: 9,
+          exitPrice: 8.8,
+          quantity: 100,
+          basis: 'inferred',
+          overrunPerShare: 0.2,
+          overrunPct: 2.22,
+          overrunR: 0.2,
+          totalUsd: 20,
+        },
+      ],
+    });
+
+    render(<JournalAnalyticsModal open onClose={() => {}} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Stop overrun' }));
+
+    expect(await screen.findByText('GME')).toBeInTheDocument();
+    expect(await screen.findByText(/inferred from a\s+reasonless exit/i)).toBeInTheDocument();
+    expect(overrunSpy).toHaveBeenCalled();
+  });
+
   it('switches to Risk of ruin, seeds from journal stats, and runs a simulation', async () => {
     vi.spyOn(client, 'journalExcursions').mockResolvedValue({
       trades: 0,

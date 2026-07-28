@@ -667,6 +667,20 @@ stop-market fill has no reference price to compare against, and a manually logge
 imported trade was never a live order — neither shows up here, by design (there's
 nothing honest to compare them to).
 
+**The stop side of the same question — Stop overrun.** A limit-vs-fill report can't see
+the most expensive slippage of all: a stop that executes **beyond** the price you
+declared, because the stock gapped through it or the spread was wide when it triggered.
+**Journal → Analytics → Stop overrun** measures exactly that, for every stock exit that
+was a stop execution — including manual, imported, and paper-era trades, since the
+comparison is against your own declared stop, not a broker order. Read it in **R**: an
+average extra loss of +0.2R per stop means your real 1R is 1.2R, and any backtested
+edge should be haircut by that much before you believe it (the backtest engines fill
+stops exactly — see the backtest-reality notes above). The **entry price band**
+breakdown is the micro-cap tax made visible: overruns concentrating under $15 are the
+gap-throughs and wide spreads the loop's **min share price / min avg volume** floors
+exist to keep you out of. If the beyond-% is high even in liquid names, the problem is
+holding overnight through binary events — that's what the earnings blackout is for.
+
 The same **Auto-tune from realized edge** setting mentioned above also watches this
 per-symbol: once enabled, a symbol whose average live-fill slippage crosses a configurable
 threshold (with enough fills to trust the reading) is automatically added to the

@@ -7,6 +7,7 @@ import { computeJournalStats, realizedPnlOf } from '../services/pnl';
 import { computeDayStats } from '../services/dayGuard';
 import { aggregateExcursions, computeExcursion, TradeExcursion } from '../services/excursion';
 import { aggregateSlippage, computeSlippage, SlippageRow } from '../services/slippage';
+import { aggregateStopOverruns, classifyStopExit, computeStopOverrun, StopOverrunRow } from '../services/stopOverrun';
 import { computeBenchmark } from '../services/benchmark';
 import { computeAutoTuneRiskEfficacy } from '../services/autotrading/autoTuneEfficacy';
 import { getProvider } from '../providers';
@@ -256,5 +257,38 @@ journalRouter.get(
       }
     }
     res.json(aggregateSlippage(rows));
+  }),
+);
+
+// Stop overrun: for every stock exit that was a stop EXECUTION, how far beyond
+// the declared stop the exit actually landed — the cost the zero-cost backtests
+// can't see. Which exits count (and on what basis, recorded vs inferred) is
+// classifyStopExit()'s call — see its doc comment in services/stopOverrun.ts.
+journalRouter.get(
+  '/stop-overrun',
+  asyncHandler(async (_req, res) => {
+    const rows: StopOverrunRow[] = [];
+    for (const p of listPositions()) {
+      if (p.assetType !== 'stock' || p.stopPrice == null) continue;
+      const stopPrice = p.stopPrice;
+      for (const e of p.exits) {
+        const basis = classifyStopExit(p.side, stopPrice, e.exitPrice, e.exitReason);
+        if (!basis) continue;
+        rows.push(
+          computeStopOverrun({
+            positionId: p.id,
+            symbol: p.symbol,
+            side: p.side,
+            date: e.exitDate,
+            entryPrice: p.entryPrice,
+            stopPrice,
+            exitPrice: e.exitPrice,
+            quantity: e.quantity,
+            basis,
+          }),
+        );
+      }
+    }
+    res.json(aggregateStopOverruns(rows));
   }),
 );

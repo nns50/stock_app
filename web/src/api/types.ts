@@ -654,6 +654,51 @@ export interface SlippageReport {
   rows: SlippageRow[];
 }
 
+/** One stock stop EXECUTION's realized exit vs. the declared stop price —
+ *  positive overrun always means the exit landed beyond the stop (cost you
+ *  money). See server/src/services/stopOverrun.ts. */
+export interface StopOverrunRow {
+  positionId: number;
+  symbol: string;
+  side: 'long' | 'short';
+  date: string | null;
+  entryPrice: number;
+  stopPrice: number;
+  exitPrice: number;
+  quantity: number;
+  /** 'recorded' = exitReason said 'stop'; 'inferred' = legacy reasonless exit
+   *  at-or-beyond the declared stop. */
+  basis: 'recorded' | 'inferred';
+  overrunPerShare: number;
+  overrunPct: number;
+  /** Extra loss as a fraction of the trade's own 1R; null if risk distance 0. */
+  overrunR: number | null;
+  totalUsd: number;
+}
+
+export interface StopOverrunBand {
+  label: string;
+  trades: number;
+  beyondPct: number | null;
+  avgOverrunR: number | null;
+  totalUsd: number;
+}
+
+export interface StopOverrunReport {
+  trades: number;
+  recorded: number;
+  inferred: number;
+  beyondCount: number;
+  beyondPct: number | null;
+  avgOverrunPct: number | null;
+  medianOverrunPct: number | null;
+  totalUsd: number;
+  avgOverrunR: number | null;
+  bands: StopOverrunBand[];
+  /** Most costly first (by totalUsd, descending). */
+  rows: StopOverrunRow[];
+}
+
 export interface RuinParams {
   winRate: number;
   payoffRatio: number;
