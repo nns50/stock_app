@@ -121,7 +121,11 @@ export default function WatchlistPage() {
       <PageHeader
         title="Watchlist"
         subtitle="Symbols you're tracking, with live quotes."
-        actions={<RefreshBar onRefresh={() => loadQuotes(symbols)} lastUpdated={asOf} loading={loading} />}
+        // Full reload (list + quotes), not just re-quoting the symbols already
+        // in state: refreshing must also recover from a failed initial load
+        // (where `symbols` is empty and re-quoting would be a silent no-op)
+        // and pick up list changes made elsewhere.
+        actions={<RefreshBar onRefresh={() => void reload()} lastUpdated={asOf} loading={loading} />}
       />
 
       <Card className="p-3">
