@@ -188,3 +188,49 @@ describe('live preview pipeline', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('parity with the place step (2026-07-28)', () => {
+  it('counts the ORDER INSTRUMENT, not the per-underlying aggregate — long stock must not cover a short option', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    setTradingConfig({ enabled: true, allowNakedShort: false });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE))
+      // Broker holds 500 shares of NVDA STOCK — and no option contracts.
+      .mockResolvedValueOnce(okResp([{ symbol: 'NVDA', instrument_type: 'EQUITY', quantity: '500', cost_price: '1' }]));
+
+    const r = await livePreview(
+      intent({
+        symbol: 'NVDA',
+        assetKind: 'option',
+        side: 'sell',
+        optionType: 'call',
+        strike: 200,
+        expiration: '2026-12-19',
+        quantity: 1,
+        limitPrice: 0.1,
+        referencePrice: 0.1,
+      }),
+      'ACC1',
+    );
+
+    expect(r.ok).toBe(true);
+    // The unscoped lookup summed the stock into currentPositionQty (+500), so
+    // selling one call read as reducing a long — "would submit" for an order
+    // the instrument-scoped place step then blocked as a naked short.
+    expect(r.accountState?.currentPositionQty).toBe(0);
+    expect(r.wouldSubmit).toBe(false);
+    expect(r.guardrails?.checks.find((c) => c.rule === 'naked_short')?.passed).toBe(false);
+  });
+
+  it('fails closed when broker positions cannot be read, exactly like placeOrder', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    setTradingConfig({ enabled: true });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResp(BALANCE))
+      .mockResolvedValueOnce({ ok: false, status: 500, text: async () => JSON.stringify({ msg: 'down' }) } as Response);
+
+    const r = await livePreview(intent(), 'ACC1');
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/could not verify current positions/i);
+  });
+});
