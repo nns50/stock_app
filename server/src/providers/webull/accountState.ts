@@ -2,6 +2,7 @@ import { webullClient, webullConfigured } from './account';
 import { extractPositions, mapWebullPosition } from './positions';
 import type { ImportablePosition } from '../../db/positions';
 import type { AccountState } from '../../services/trading/guardrails';
+import { realizedTodayFromBook } from '../../services/trading/realizedToday';
 
 /** The specific instrument an order is for, so the position lookup can count the
  *  quantity of THAT instrument rather than a cross-asset per-underlying sum. */
@@ -44,9 +45,10 @@ function matchesInstrument(pos: ImportablePosition, instrument?: OrderInstrument
 
 // ---------------------------------------------------------------------------
 // Source the guardrails' AccountState from a live Webull account — READ-ONLY.
-// Buying power / market value / day P&L come from /openapi/assets/balance, and
-// the signed position in `symbol` from /openapi/assets/positions. Never places,
-// cancels, or modifies an order.
+// Buying power / market value / P&L fields come from /openapi/assets/balance,
+// and the signed position in `symbol` from /openapi/assets/positions. Never
+// places, cancels, or modifies an order. Realized-today is DERIVED, not read
+// off a field — see the realized-P&L block in webullAccountState below.
 //
 // Confirmed balance shape (all values are STRINGS):
 //   { total_market_value, total_cash_balance, total_day_profit_loss,
@@ -86,6 +88,19 @@ export interface WebullAccountStateResult {
    *  need it — long-only entries, or a close that supplies its own ledger
    *  quantity via an override — can ignore it. */
   positionsUnavailable?: boolean;
+  /** How state.realizedPnlTodayUsd was arrived at — for the dashboard, the
+   *  capture tool, and any post-mortem of a halt that surprised someone. */
+  realizedToday?: {
+    /** Raw `total_day_profit_loss` — confirmed 2026-07-28 to move 1:1 with
+     *  open-position marks, i.e. NOT realized-only. Kept for visibility. */
+    brokerDayPnlUsd: number;
+    /** `total_day_profit_loss − total_unrealized_profit_loss` — the broker-side
+     *  realized estimate. Absent when the payload had no unrealized field. */
+    brokerDerivedUsd?: number;
+    /** Sum of exits our own records date today (services/trading/realizedToday).
+     *  Absent when the book couldn't be read. */
+    bookRealizedUsd?: number;
+  };
   raw?: unknown;
   error?: string;
 }
@@ -124,9 +139,38 @@ export async function webullAccountState(
   const buyingPowerUsd = num(asset.buying_power ?? bal.total_cash_balance);
   const optionBuyingPowerUsd = num(asset.option_buying_power ?? asset.buying_power);
   const exposureUsd = num(bal.total_market_value);
-  const realizedPnlTodayUsd = num(bal.total_day_profit_loss);
   const netLiquidationUsd = num(bal.total_net_liquidation_value);
   const settledCashUsd = numOrUndefined(asset.settled_cash);
+
+  // --- realized P&L today, for the daily-loss halt -------------------------
+  // `total_day_profit_loss` is NOT realized-only: a live capture (2026-07-28,
+  // capture:broker --watch-day-pnl) showed it moving 1:1 with open-position
+  // marks while no orders were placed. Mapped straight to realizedPnlTodayUsd
+  // (as this used to do), an open GAIN masks a real realized loss and the
+  // daily-loss halt silently fails open on exactly the day it exists for.
+  //
+  // Two imperfect estimates, so the halt gets the WORSE of them (they cover
+  // each other's blind spots — the full reasoning lives in
+  // services/trading/realizedToday.ts):
+  //   day − unrealized   account-wide, but leaks prior days' unrealized P&L
+  //                      for positions held overnight
+  //   own book           exact for exits we recorded, blind to trades placed
+  //                      outside the app
+  const brokerDayPnlUsd = num(bal.total_day_profit_loss);
+  const unrealizedUsd = numOrUndefined(bal.total_unrealized_profit_loss);
+  const brokerDerivedUsd = unrealizedUsd !== undefined ? brokerDayPnlUsd - unrealizedUsd : undefined;
+  let bookRealizedUsd: number | undefined;
+  try {
+    bookRealizedUsd = realizedTodayFromBook(accountId).totalUsd;
+  } catch (e) {
+    // Book unreadable → fall back to the broker-side estimate alone rather
+    // than fabricating a 0 (which would read as "nothing lost today").
+    console.warn('[webull-account-state] own-book realized-today unavailable:', (e as Error).message);
+  }
+  const candidates = [brokerDerivedUsd, bookRealizedUsd].filter((v): v is number => v !== undefined);
+  // No unrealized field AND no readable book: the raw day figure is the only
+  // signal left — noisy, but better than declaring the day flat.
+  const realizedPnlTodayUsd = candidates.length ? Math.min(...candidates) : brokerDayPnlUsd;
 
   // Signed position in the order's symbol (long +, short −), if requested.
   let currentPositionQty = 0;
@@ -159,6 +203,7 @@ export async function webullAccountState(
     optionBuyingPowerUsd,
     netLiquidationUsd,
     positionsUnavailable,
+    realizedToday: { brokerDayPnlUsd, brokerDerivedUsd, bookRealizedUsd },
     raw: bal,
   };
 }

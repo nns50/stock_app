@@ -502,6 +502,17 @@ presence, a session/order-type check (extended & overnight sessions are limit-on
 options-have-no-market-order check, and the enabled/kill-switch gates — anything that can't be
 verified **fails closed**.
 
+> **What "daily loss" measures (2026-07-28).** Webull's day-P&L field turned out to
+> include unrealized marks (confirmed with a live watch: it moved 1:1 with open
+> positions while no orders were placed) — read naively, an open **gain** could mask a
+> real realized loss and the halt would never fire. On the live path the halt now
+> takes the **worse** of two realized estimates: the broker's day P&L **minus** its
+> unrealized component (account-wide, so it sees trades placed in the Webull app too),
+> and the app's **own exits booked today**. Open positions moving against you still
+> don't count as "lost" — but a real realized loss can no longer hide behind an open
+> winner. The two estimates cover each other's blind spots; when they disagree, the
+> halt believes the worse one.
+
 ---
 
 ## Positions & P&L

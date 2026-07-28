@@ -437,6 +437,10 @@ export function evaluateGuardrails(
   }
 
   // --- daily risk --------------------------------------------------------
+  // On the live path realizedPnlTodayUsd is the WORSE of (broker day−unrealized,
+  // own-book exits dated today) — see webullAccountState + realizedToday.ts.
+  // The broker's raw day figure includes unrealized marks and is NOT used here:
+  // an open gain would mask a real realized loss and fail this halt open.
   const dailyLoss = Math.max(0, -account.realizedPnlTodayUsd);
   block(
     'daily_loss_halt',

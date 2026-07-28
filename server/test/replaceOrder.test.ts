@@ -6,6 +6,20 @@ import { setTradingConfig } from '../src/db/trading';
 import { replaceIntent } from '../src/services/trading/replaceOrder';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
+// Pin the own-book side of the daily-loss halt flat: these tests share one
+// SQLite file with every other suite, and exits other files date today would
+// otherwise leak into webullAccountState's realized-today derivation here.
+// The derivation itself is covered in webullAccountState.test.ts.
+vi.mock('../src/services/trading/realizedToday', () => ({
+  realizedTodayFromBook: vi.fn(() => ({
+    totalUsd: 0,
+    journalUsd: 0,
+    liveOptionsUsd: 0,
+    journalExitCount: 0,
+    liveOptionsCloseCount: 0,
+  })),
+}));
+
 const origWebull = { ...config.webull };
 const origPlace = config.trading.placeEnabled;
 const CID = 'replace-cid-1';
