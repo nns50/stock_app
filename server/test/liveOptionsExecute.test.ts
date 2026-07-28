@@ -113,7 +113,8 @@ function spreadSignal(overrides: Partial<DebitSpreadOptionsSignal> = {}): DebitS
  *  with no bid/ask, where the only number available is an old trade print. */
 type ContractFixture = { side: 'call' | 'put'; strike: number; mark?: number; last?: number };
 
-function chainsFor(fixtures: Record<string, ContractFixture | ContractFixture[]>) {
+function chainsFor(fixtures: Record<string, ContractFixture | ContractFixture[]>): ReturnType<typeof getProvider> {
+  // Deliberately partial — only the members these tests exercise.
   return {
     getOptionsChain: vi.fn(async (symbol: string, expiration: string) => {
       const fx = fixtures[symbol];
@@ -137,7 +138,7 @@ function chainsFor(fixtures: Record<string, ContractFixture | ContractFixture[]>
       };
     }),
     getCandles: vi.fn(async () => []),
-  };
+  } as unknown as ReturnType<typeof getProvider>;
 }
 
 const okAccountState = {
@@ -188,6 +189,13 @@ const okResult = (signal: SingleLegOptionsSignal | DebitSpreadOptionsSignal): Op
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
     maxTradesPerDay: 6,
+    sectorNotional: 0,
+    maxSectorExposurePct: 20,
+    candidateSector: null,
+    correlationThreshold: 0.7,
+    marketAtrPct: null,
+    regimeAtrThresholdPct: 3,
+    regimeSizeCutPct: 0,
   });
 
 const origPlaceEnabled = config.trading.placeEnabled;
@@ -1278,6 +1286,9 @@ function previewOf(
       expiration: p.expiration,
     })),
     unmapped: 0,
+    unmappedOptions: 0,
+    unmappedSample: [],
+    unmappedSymbols: [],
   };
 }
 
@@ -1415,6 +1426,9 @@ describe('syncLiveOptionsPositionsFromBroker', () => {
       accountId: 'ACC1',
       positions: [],
       unmapped: 0,
+      unmappedOptions: 0,
+      unmappedSample: [],
+      unmappedSymbols: [],
       error: 'Webull is not configured.',
     });
 

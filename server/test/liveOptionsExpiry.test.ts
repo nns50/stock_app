@@ -22,13 +22,14 @@ const EXPIRY = '2026-03-20';
 const AFTER_EXPIRY = Date.parse('2026-03-25T15:00:00Z');
 
 /** Daily closes for the underlying around the expiry. */
-function candlesClosing(at: number) {
+function candlesClosing(at: number): ReturnType<typeof getProvider> {
+  // Deliberately partial — only the members these tests exercise.
   return {
     getCandles: vi.fn(async () => [
       { time: Date.parse(`${EXPIRY}T00:00:00Z`) - 86_400_000, open: at, high: at, low: at, close: at, volume: 1 },
       { time: Date.parse(`${EXPIRY}T00:00:00Z`), open: at, high: at, low: at, close: at, volume: 1 },
     ]),
-  };
+  } as unknown as ReturnType<typeof getProvider>;
 }
 
 function openPosition(over: Partial<Parameters<typeof createLiveOptionsPosition>[0]> = {}) {

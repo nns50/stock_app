@@ -60,7 +60,6 @@ describe('autotrade config persistence', () => {
 
   it('rejects a non-positive equity, failing closed to null', () => {
     setAutotradeConfig({ accountEquityUsd: 50_000 });
-    // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
     const cfg = setAutotradeConfig({ accountEquityUsd: -10 });
     expect(cfg.accountEquityUsd).toBeNull();
   });
@@ -127,16 +126,13 @@ describe('autotrade config persistence', () => {
       // non-positive equity, failing closed to null" above): invalid input
       // resets to the safe default rather than silently preserving whatever
       // was there before, which the caller may be actively trying to change.
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
       const cfg = setAutotradeConfig({ liveAccountId: '   ' });
       expect(cfg.liveAccountId).toBeNull();
     });
 
     it('rejects a probation multiplier outside (0, 1], failing closed to the default', () => {
-      // @ts-expect-error deliberately invalid input
       const tooHigh = setAutotradeConfig({ liveProbationSizeMultiplier: 1.5 });
       expect(tooHigh.liveProbationSizeMultiplier).toBe(defaultAutotradeConfig().liveProbationSizeMultiplier);
-      // @ts-expect-error deliberately invalid input
       const zero = setAutotradeConfig({ liveProbationSizeMultiplier: 0 });
       expect(zero.liveProbationSizeMultiplier).toBe(defaultAutotradeConfig().liveProbationSizeMultiplier);
     });
@@ -187,12 +183,10 @@ describe('autotrade config persistence', () => {
     });
 
     it('rejects a live options probation multiplier outside (0, 1], failing closed to the default', () => {
-      // @ts-expect-error deliberately invalid input
       const tooHigh = setAutotradeConfig({ liveOptionsProbationSizeMultiplier: 2 });
       expect(tooHigh.liveOptionsProbationSizeMultiplier).toBe(
         defaultAutotradeConfig().liveOptionsProbationSizeMultiplier,
       );
-      // @ts-expect-error deliberately invalid input
       const zero = setAutotradeConfig({ liveOptionsProbationSizeMultiplier: 0 });
       expect(zero.liveOptionsProbationSizeMultiplier).toBe(defaultAutotradeConfig().liveOptionsProbationSizeMultiplier);
     });
@@ -363,7 +357,6 @@ describe('autotrade config persistence', () => {
 
     it('rejects a negative stepDownAfterLosses/maxTradesPerDay, failing closed to the default', () => {
       setAutotradeConfig({ stepDownAfterLosses: 3, maxTradesPerDay: 10 });
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
       const cfg = setAutotradeConfig({ stepDownAfterLosses: -1, maxTradesPerDay: -1 });
       expect(cfg.stepDownAfterLosses).toBe(defaultAutotradeConfig().stepDownAfterLosses);
       expect(cfg.maxTradesPerDay).toBe(defaultAutotradeConfig().maxTradesPerDay);
@@ -404,7 +397,6 @@ describe('autotrade config persistence', () => {
     it('minRelVol allows exactly 0 (disables the relative-volume filter) but rejects negative to the default', () => {
       expect(setAutotradeConfig({ minRelVol: 0 }).minRelVol).toBe(0);
       setAutotradeConfig({ minRelVol: 3 });
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
       const cfg = setAutotradeConfig({ minRelVol: -1 });
       expect(cfg.minRelVol).toBe(defaultAutotradeConfig().minRelVol);
     });
@@ -446,11 +438,9 @@ describe('autotrade config persistence', () => {
 
     it('rejects a zero or negative stopAtrMultiple/targetRMultiple, failing closed to the default (a stop/target must be real)', () => {
       setAutotradeConfig({ stopAtrMultiple: 2, targetRMultiple: 3 });
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
       const zero = setAutotradeConfig({ stopAtrMultiple: 0, targetRMultiple: 0 });
       expect(zero.stopAtrMultiple).toBe(defaultAutotradeConfig().stopAtrMultiple);
       expect(zero.targetRMultiple).toBe(defaultAutotradeConfig().targetRMultiple);
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
       const negative = setAutotradeConfig({ stopAtrMultiple: -1, targetRMultiple: -1 });
       expect(negative.stopAtrMultiple).toBe(defaultAutotradeConfig().stopAtrMultiple);
       expect(negative.targetRMultiple).toBe(defaultAutotradeConfig().targetRMultiple);
@@ -465,7 +455,6 @@ describe('autotrade config persistence', () => {
     it('allows sessionBufferMinutes of exactly 0 (no buffer) but rejects negative to the default', () => {
       expect(setAutotradeConfig({ sessionBufferMinutes: 0 }).sessionBufferMinutes).toBe(0);
       setAutotradeConfig({ sessionBufferMinutes: 20 });
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
       const cfg = setAutotradeConfig({ sessionBufferMinutes: -5 });
       expect(cfg.sessionBufferMinutes).toBe(defaultAutotradeConfig().sessionBufferMinutes);
     });
@@ -485,7 +474,6 @@ describe('autotrade config persistence', () => {
     it('allows exactly 0 (disables the check) but rejects negative to the default', () => {
       expect(setAutotradeConfig({ maxHoldDays: 0 }).maxHoldDays).toBe(0);
       setAutotradeConfig({ maxHoldDays: 10 });
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
       const cfg = setAutotradeConfig({ maxHoldDays: -5 });
       expect(cfg.maxHoldDays).toBe(defaultAutotradeConfig().maxHoldDays);
     });
@@ -528,13 +516,9 @@ describe('autotrade config persistence', () => {
         partialExitRMultiple: 1,
       });
       const cfg = setAutotradeConfig({
-        // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
         breakevenTriggerRMultiple: -1,
-        // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
         trailStartRMultiple: -1,
-        // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
         trailStopRMultiple: -1,
-        // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
         partialExitRMultiple: -1,
       });
       const d = defaultAutotradeConfig();
@@ -545,9 +529,7 @@ describe('autotrade config persistence', () => {
     });
 
     it('clamps partialExitPct to [0, 100] rather than rejecting out-of-range values', () => {
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize clamp
       expect(setAutotradeConfig({ partialExitPct: 150 }).partialExitPct).toBe(100);
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize clamp
       expect(setAutotradeConfig({ partialExitPct: -10 }).partialExitPct).toBe(0);
       expect(setAutotradeConfig({ partialExitPct: 0 }).partialExitPct).toBe(0); // exactly 0 is valid, not a fallback trigger
     });
@@ -573,9 +555,7 @@ describe('autotrade config persistence', () => {
     });
 
     it('clamps to [0, 100] rather than rejecting out-of-range values', () => {
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize clamp
       expect(setAutotradeConfig({ optionsStopLossPct: 150 }).optionsStopLossPct).toBe(100);
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize clamp
       expect(setAutotradeConfig({ optionsTakeProfitPct: -10 }).optionsTakeProfitPct).toBe(0);
       expect(setAutotradeConfig({ optionsStopLossPct: 0 }).optionsStopLossPct).toBe(0); // exactly 0 is valid, not a fallback trigger
     });
@@ -604,10 +584,8 @@ describe('autotrade config persistence', () => {
     });
 
     it('clamps the floor to [0, 100] and rejects a negative ratio back to the default (off)', () => {
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize clamp
       expect(setAutotradeConfig({ optionsIvRankMin: 150 }).optionsIvRankMin).toBe(100);
       setAutotradeConfig({ optionsMaxIvRvRatio: 1.2 });
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
       expect(setAutotradeConfig({ optionsMaxIvRvRatio: -1 }).optionsMaxIvRvRatio).toBe(0);
       expect(setAutotradeConfig({ optionsMaxIvRvRatio: 0.9 }).optionsMaxIvRvRatio).toBe(0.9); // fractional ratios survive
     });
@@ -627,9 +605,7 @@ describe('autotrade config persistence', () => {
     });
 
     it('clamps to [0, 100] rather than rejecting out-of-range values', () => {
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize clamp
       expect(setAutotradeConfig({ regimeAtrThresholdPct: 150 }).regimeAtrThresholdPct).toBe(100);
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize clamp
       expect(setAutotradeConfig({ regimeSizeCutPct: -10 }).regimeSizeCutPct).toBe(0);
       expect(setAutotradeConfig({ regimeSizeCutPct: 0 }).regimeSizeCutPct).toBe(0); // exactly 0 is valid, not a fallback trigger
     });
@@ -658,7 +634,6 @@ describe('autotrade config persistence', () => {
     it('allows exactly 0 (disables the check) but rejects negative to the default', () => {
       expect(setAutotradeConfig({ earningsBlackoutDays: 0 }).earningsBlackoutDays).toBe(0);
       setAutotradeConfig({ earningsBlackoutDays: 3 });
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
       const cfg = setAutotradeConfig({ earningsBlackoutDays: -1 });
       expect(cfg.earningsBlackoutDays).toBe(defaultAutotradeConfig().earningsBlackoutDays);
     });
@@ -679,15 +654,12 @@ describe('autotrade config persistence', () => {
 
     it('rejects a correlationLookbackDays below 1, failing closed to the default', () => {
       setAutotradeConfig({ correlationLookbackDays: 20 });
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
       const cfg = setAutotradeConfig({ correlationLookbackDays: 0 });
       expect(cfg.correlationLookbackDays).toBe(defaultAutotradeConfig().correlationLookbackDays);
     });
 
     it('clamps correlationThreshold to [0, 1] rather than rejecting out-of-range values', () => {
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize clamp
       expect(setAutotradeConfig({ correlationThreshold: 1.5 }).correlationThreshold).toBe(1);
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize clamp
       expect(setAutotradeConfig({ correlationThreshold: -0.5 }).correlationThreshold).toBe(0);
       expect(setAutotradeConfig({ correlationThreshold: 0 }).correlationThreshold).toBe(0); // exactly 0 is valid, not a fallback trigger
     });
@@ -725,7 +697,6 @@ describe('autotrade config persistence', () => {
 
     it('rejects a threshold/window below 1, failing closed to the default (matches accountEquityUsd/riskProfile precedent above)', () => {
       setAutotradeConfig({ autoPromoteThreshold: 4, autoPromoteWindowDays: 15 });
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
       const cfg = setAutotradeConfig({ autoPromoteThreshold: 0, autoPromoteWindowDays: -1 });
       expect(cfg.autoPromoteThreshold).toBe(defaultAutotradeConfig().autoPromoteThreshold);
       expect(cfg.autoPromoteWindowDays).toBe(defaultAutotradeConfig().autoPromoteWindowDays);
@@ -738,7 +709,6 @@ describe('autotrade config persistence', () => {
 
     it('rejects a negative max-symbols cap, failing closed to the default', () => {
       setAutotradeConfig({ autoPromoteMaxSymbols: 25 });
-      // @ts-expect-error deliberately invalid input, to exercise the sanitize fallback
       const cfg = setAutotradeConfig({ autoPromoteMaxSymbols: -5 });
       expect(cfg.autoPromoteMaxSymbols).toBe(defaultAutotradeConfig().autoPromoteMaxSymbols);
     });

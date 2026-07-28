@@ -48,6 +48,10 @@ function candidate(symbol = 'AAPL', price = 100, direction: 'long' | 'short' = '
       avgVolume: null,
       volume: null,
       gapPct: null,
+      weeklyMaShort: null,
+      symbolLookbackReturnPct: null,
+      benchmarkLookbackReturnPct: null,
+      sentimentNetScore: null,
     },
     discoverySource: 'universe',
   };
@@ -296,6 +300,7 @@ describe('generateOptionsSignal', () => {
     if (!result.ok) return;
     expect(result.signal.side).toBe('call');
     expect(result.signal.symbol).toBe('AAPL');
+    if (result.signal.kind !== 'single_leg') throw new Error('expected a single-leg signal');
     expect(result.signal.strike).toBe(100);
     expect(result.signal.expiration).toBe(expiration);
     expect(result.signal.premium).toBe(3);

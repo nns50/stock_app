@@ -67,15 +67,25 @@ export function totp(secretBase32: string, time = Date.now()): string {
  * tolerate clock skew. Constant-time per-window compare.
  */
 export function verifyTotp(secretBase32: string, token: string, time = Date.now(), window = 1): boolean {
+  return matchTotpStep(secretBase32, token, time, window) !== undefined;
+}
+
+/**
+ * Like verifyTotp, but reports WHICH time-step the code matched (undefined =
+ * no match). The step is what one-time-use enforcement needs: RFC 6238 §5.2
+ * requires a verifier to reject a code it has already accepted, and "already
+ * accepted" is a fact about the step, not the string.
+ */
+export function matchTotpStep(secretBase32: string, token: string, time = Date.now(), window = 1): number | undefined {
   const code = (token || '').trim();
-  if (!/^\d{6}$/.test(code)) return false;
+  if (!/^\d{6}$/.test(code)) return undefined;
   const secret = base32Decode(secretBase32);
   const counter = Math.floor(time / 1000 / PERIOD);
   for (let w = -window; w <= window; w++) {
     const expected = hotp(secret, counter + w);
-    if (crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(code))) return true;
+    if (crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(code))) return counter + w;
   }
-  return false;
+  return undefined;
 }
 
 /** Build the `otpauth://` URI authenticator apps import (QR or manual key). */

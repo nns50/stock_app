@@ -46,6 +46,7 @@ function cfg(overrides: Partial<CombinedBacktestConfig> = {}): CombinedBacktestC
     to: '2024-01-02',
     riskProfile: 'MODERATE',
     startingEquity: 100_000,
+    maxConcurrentPositions: 2,
     screenerConfig: RELAXED,
     ...overrides,
   };
@@ -131,6 +132,7 @@ describe('runCombinedWalkForwardBacktest', () => {
       splitDate,
       riskProfile: 'MODERATE',
       startingEquity: 100_000,
+      maxConcurrentPositions: 2,
       screenerConfig: RELAXED,
     };
     const result = await runCombinedWalkForwardBacktest(wfCfg);

@@ -342,7 +342,14 @@ describe('computeCandleIndicators — cacheable, quote-independent piece of comp
   });
 
   it('computeIndicators given a matching cached result produces IDENTICAL output to computing fresh', () => {
-    const quote: Quote = { symbol: 'UP', last: 199, changePct: 1.2, volume: 5_000_000, avgVolume: 2_000_000 };
+    const quote: Quote = {
+      symbol: 'UP',
+      last: 199,
+      changePct: 1.2,
+      volume: 5_000_000,
+      avgVolume: 2_000_000,
+      timestamp: 0,
+    };
     const fresh = computeIndicators(uptrend, quote, cfg);
     const cached = computeCandleIndicators(uptrend, cfg)!;
     const viaCache = computeIndicators(uptrend, quote, cfg, cached);
@@ -350,7 +357,14 @@ describe('computeCandleIndicators — cacheable, quote-independent piece of comp
   });
 
   it('scoreSymbol given a matching cached result produces IDENTICAL output to computing fresh', () => {
-    const quote: Quote = { symbol: 'UP', last: 199, changePct: 1.2, volume: 5_000_000, avgVolume: 2_000_000 };
+    const quote: Quote = {
+      symbol: 'UP',
+      last: 199,
+      changePct: 1.2,
+      volume: 5_000_000,
+      avgVolume: 2_000_000,
+      timestamp: 0,
+    };
     const fresh = scoreSymbol('UP', uptrend, quote, cfg);
     const cached = computeCandleIndicators(uptrend, cfg)!;
     const viaCache = scoreSymbol('UP', uptrend, quote, cfg, cached);
@@ -358,7 +372,14 @@ describe('computeCandleIndicators — cacheable, quote-independent piece of comp
   });
 
   it('a stale/wrong cache would change the result — proving the cache genuinely feeds the computation, not silently ignored', () => {
-    const quote: Quote = { symbol: 'UP', last: 199, changePct: 1.2, volume: 5_000_000, avgVolume: 2_000_000 };
+    const quote: Quote = {
+      symbol: 'UP',
+      last: 199,
+      changePct: 1.2,
+      volume: 5_000_000,
+      avgVolume: 2_000_000,
+      timestamp: 0,
+    };
     const fresh = scoreSymbol('UP', uptrend, quote, cfg);
     const wrongCache = computeCandleIndicators(downtrend, cfg)!; // deliberately mismatched
     const viaWrongCache = scoreSymbol('UP', uptrend, quote, cfg, wrongCache);

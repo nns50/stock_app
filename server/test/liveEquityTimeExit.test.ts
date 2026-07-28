@@ -81,14 +81,14 @@ function signal(overrides: Partial<TradeSignal> = {}): TradeSignal {
   };
 }
 
-function quoteReturning(prices: Record<string, number>) {
+function quoteReturning(prices: Record<string, number>): ReturnType<typeof getProvider> {
   return {
     getQuote: vi.fn(async (symbol: string) => {
       if (!(symbol in prices)) throw new Error(`no mock quote for ${symbol}`);
       return { symbol, last: prices[symbol], timestamp: Date.now() };
     }),
     getCandles: vi.fn(async () => []),
-  };
+  } as unknown as ReturnType<typeof getProvider>;
 }
 
 function accountStateWith(currentPositionQty: number) {
@@ -142,6 +142,13 @@ async function openAgedLivePosition(ageDays: number) {
     maxAggregateOpenRiskPct: 2,
     maxCorrelatedExposurePct: 6,
     maxTradesPerDay: 6,
+    sectorNotional: 0,
+    maxSectorExposurePct: 20,
+    candidateSector: null,
+    correlationThreshold: 0.7,
+    marketAtrPct: null,
+    regimeAtrThresholdPct: 3,
+    regimeSizeCutPct: 0,
   });
   await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
   const entryIntentId = listIntents()[0].id;

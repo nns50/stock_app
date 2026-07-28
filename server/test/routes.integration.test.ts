@@ -4,6 +4,7 @@ import { app } from '../src/index';
 import { db } from '../src/db';
 import { config } from '../src/config';
 import { totp } from '../src/services/totp';
+import { resetLoginThrottle } from '../src/services/auth';
 import { setSetting } from '../src/db/settings';
 import { createIntent } from '../src/db/orders';
 import { addExit, createPosition } from '../src/db/positions';
@@ -452,6 +453,46 @@ describe('positions + journal routes (integration)', () => {
       // journal's time-of-day breakdown to "no entry time" for every row.
       expect(body.positions[0].accountId).toBe('ACC1_CASH');
       expect(body.positions[0].entryTime).toBe('09:45');
+    });
+
+    it('round-trips the at-entry context, exit reasons, and a null entry date (2026-07-26 columns)', async () => {
+      const res = await post('/api/export/import', {
+        mode: 'merge',
+        positions: [
+          {
+            assetType: 'stock',
+            symbol: 'CTX',
+            side: 'long',
+            quantity: 10,
+            entryPrice: 50,
+            // Null = "genuinely unknown" (a broker-imported lot). The schema
+            // used to REQUIRE a date, so a backup containing such a lot failed
+            // to restore at all — and the delete-Undo of one 400'd.
+            entryDate: null,
+            entryScore: 72.5,
+            marketRegime: 'risk-on',
+            marketAtrPct: 1.8,
+            tags: ['webull'],
+            exits: [{ quantity: 4, exitPrice: 55, exitDate: '2026-06-02', exitReason: 'target' }],
+          },
+        ],
+      });
+      expect(res.status).toBe(200);
+
+      const body = (await getJson('/api/positions?symbol=CTX')) as {
+        positions: {
+          entryDate: string | null;
+          entryScore: number | null;
+          marketRegime: string | null;
+          marketAtrPct: number | null;
+          exits: { exitReason: string | null }[];
+        }[];
+      };
+      expect(body.positions[0].entryDate).toBeNull();
+      expect(body.positions[0].entryScore).toBe(72.5);
+      expect(body.positions[0].marketRegime).toBe('risk-on');
+      expect(body.positions[0].marketAtrPct).toBe(1.8);
+      expect(body.positions[0].exits[0].exitReason).toBe('target');
     });
 
     it('holds the same line the create route does on dates and prices', async () => {
@@ -1014,6 +1055,7 @@ describe('trade (dry-run) routes (integration)', () => {
 describe('auth gate (integration)', () => {
   afterEach(() => {
     config.auth.password = '';
+    resetLoginThrottle();
   });
 
   it('allows all routes and reports not-required when no password is set', async () => {
@@ -1040,12 +1082,28 @@ describe('auth gate (integration)', () => {
 
     expect((await fetch(`${base}/api/positions`, { headers: { cookie } })).status).toBe(200);
   });
+
+  it('locks out after repeated failures (429), then a later window clears it', async () => {
+    config.auth.password = 'letmein';
+    resetLoginThrottle();
+    for (let i = 0; i < 5; i++) {
+      expect((await post('/api/auth/login', { password: 'nope' })).status).toBe(401);
+    }
+    // Even the CORRECT password is refused while locked — the throttle answers
+    // before the password is looked at, so it leaks nothing.
+    const locked = await post('/api/auth/login', { password: 'letmein' });
+    expect(locked.status).toBe(429);
+    const body = (await locked.json()) as { code: string; retryAfterMs: number };
+    expect(body.code).toBe('rate_limited');
+    expect(body.retryAfterMs).toBeGreaterThan(0);
+  });
 });
 
 describe('two-factor (integration)', () => {
   afterEach(() => {
     config.auth.password = '';
-    db.exec("DELETE FROM settings WHERE key IN ('mfa', 'mfaPending')");
+    db.exec("DELETE FROM settings WHERE key IN ('mfa', 'mfaPending', 'mfaLastAcceptedStep')");
+    resetLoginThrottle();
   });
 
   const loginCookie = async (body: object) => {
@@ -1072,11 +1130,23 @@ describe('two-factor (integration)', () => {
     // Password alone is no longer enough.
     expect((await loginCookie({ password: 'pw' })).status).toBe(401);
     const missing = await post('/api/auth/login', { password: 'pw' });
-    expect((await missing.json()).code).toBe('mfa_required');
+    expect(((await missing.json()) as { code?: string }).code).toBe('mfa_required');
     expect((await loginCookie({ password: 'pw', code: '000000' })).status).toBe(401);
 
     // Password + a valid code logs in.
     expect((await loginCookie({ password: 'pw', code: totp(secret) })).status).toBe(200);
+  });
+
+  it('rejects a replayed TOTP code inside its validity window (one-time use)', async () => {
+    config.auth.password = 'pw';
+    setSetting('mfa', { enabled: true, secret: 'JBSWY3DPEHPK3PXP' });
+    const code = totp('JBSWY3DPEHPK3PXP');
+
+    expect((await loginCookie({ password: 'pw', code })).status).toBe(200);
+    // The same code is still inside its ±1-step window — but it's been used.
+    const replay = await post('/api/auth/login', { password: 'pw', code });
+    expect(replay.status).toBe(401);
+    expect(((await replay.json()) as { code?: string }).code).toBe('invalid_code');
   });
 
   it('does not enforce MFA when DISABLE_MFA recovery is set', async () => {
@@ -1920,7 +1990,7 @@ describe('autotrade backtest routes (integration)', () => {
   it('rejects a backtest request spanning more than 3 years', async () => {
     const res = await post('/api/autotrade/backtest', { ...baseBody, from: '2020-01-01', to: '2024-01-01' });
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/cannot exceed/i);
+    expect(((await res.json()) as { error?: string }).error).toMatch(/cannot exceed/i);
   });
 
   it('accepts a backtest request spanning exactly 3 years', async () => {
@@ -1993,7 +2063,7 @@ describe('autotrade backtest routes (integration)', () => {
     // toISO()'s `new Date(NaN).toISOString()`, an uncaught RangeError -> 500.
     const res = await post('/api/autotrade/backtest', { ...baseBody, from: '2024-00-00' });
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/valid calendar date/i);
+    expect(((await res.json()) as { error?: string }).error).toMatch(/valid calendar date/i);
   });
 
   it('rejects a calendar-overflow date (Feb 30) with 400 instead of silently rolling to March 1', async () => {
@@ -2042,7 +2112,7 @@ describe('autotrade options backtest routes (integration)', () => {
   it('rejects an options backtest request spanning more than 3 years', async () => {
     const res = await post('/api/autotrade/backtest-options', { ...baseBody, from: '2020-01-01', to: '2024-01-01' });
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/cannot exceed/i);
+    expect(((await res.json()) as { error?: string }).error).toMatch(/cannot exceed/i);
   });
 
   it('rejects an options backtest request with an empty symbols list', async () => {
@@ -2089,7 +2159,7 @@ describe('autotrade options backtest routes (integration)', () => {
   it('rejects a structurally-invalid calendar date with 400, not a 500 crash', async () => {
     const res = await post('/api/autotrade/backtest-options', { ...baseBody, from: '2024-00-00' });
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/valid calendar date/i);
+    expect(((await res.json()) as { error?: string }).error).toMatch(/valid calendar date/i);
   });
 
   it('rejects more than 50 symbols', async () => {
@@ -2144,7 +2214,7 @@ describe('autotrade combined backtest routes (integration)', () => {
   it('rejects a combined backtest request spanning more than 3 years', async () => {
     const res = await post('/api/autotrade/backtest-combined', { ...baseBody, from: '2020-01-01', to: '2024-01-01' });
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/cannot exceed/i);
+    expect(((await res.json()) as { error?: string }).error).toMatch(/cannot exceed/i);
   });
 
   it('rejects a combined backtest request with an empty symbols list', async () => {
@@ -2191,7 +2261,7 @@ describe('autotrade combined backtest routes (integration)', () => {
   it('rejects a structurally-invalid calendar date with 400, not a 500 crash', async () => {
     const res = await post('/api/autotrade/backtest-combined', { ...baseBody, from: '2024-00-00' });
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/valid calendar date/i);
+    expect(((await res.json()) as { error?: string }).error).toMatch(/valid calendar date/i);
   });
 
   it('rejects more than 50 symbols', async () => {

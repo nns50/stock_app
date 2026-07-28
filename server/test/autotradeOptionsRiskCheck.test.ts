@@ -91,12 +91,22 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
     sectorNotional: 0,
     maxSectorExposurePct: 20,
     candidateSector: null,
+    correlationThreshold: 0.7,
+    marketAtrPct: null,
+    regimeAtrThresholdPct: 3,
+    regimeSizeCutPct: 0,
     ...overrides,
   };
 }
 
 const findCheck = (result: ReturnType<typeof evaluateOptionsRiskCheck>, rule: string) =>
   result.checks.find((c) => c.rule === rule)!;
+
+/** Narrow the sizing union to the single-leg shape these assertions exercise. */
+const sz = (result: ReturnType<typeof evaluateOptionsRiskCheck>) => {
+  if (!('suggestedQuantity' in result.sizing)) throw new Error('expected single-leg sizing');
+  return result.sizing;
+};
 
 describe('evaluateOptionsRiskCheck — pure evaluator', () => {
   it('passes a clean signal with no competing exposure', () => {
@@ -107,8 +117,8 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
 
   it('sizes by full premium paid (stopPrice: 0): 1% of $100k = $1000 budget / ($3 premium x 100) = 3 contracts', () => {
     const result = evaluateOptionsRiskCheck(optionSignal({ premium: 3 }), baseCtx());
-    expect(result.sizing.suggestedQuantity).toBe(3);
-    expect(result.sizing.riskOfPosition).toBe(900); // 3 contracts x $300 risk/contract
+    expect(sz(result).suggestedQuantity).toBe(3);
+    expect(sz(result).riskOfPosition).toBe(900); // 3 contracts x $300 risk/contract
     expect(result.approvedRiskAmount).toBe(900);
     // A long option's notional IS its premium paid — no separate "position value"
     // beyond what was risked, unlike a stock where notional usually exceeds risk.
@@ -117,14 +127,14 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
 
   it('sizes identically for a long put (side is directional only, not a sizing input)', () => {
     const result = evaluateOptionsRiskCheck(optionSignal({ side: 'put', premium: 3 }), baseCtx());
-    expect(result.sizing.suggestedQuantity).toBe(3);
+    expect(sz(result).suggestedQuantity).toBe(3);
   });
 
   it('blocks everything when equity is not configured', () => {
     const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ equity: 0 }));
     expect(result.ok).toBe(false);
     expect(findCheck(result, 'equity_configured').passed).toBe(false);
-    expect(result.sizing.suggestedQuantity).toBe(0);
+    expect(sz(result).suggestedQuantity).toBe(0);
   });
 
   it('blocks when the risk budget cannot size even one contract', () => {
@@ -139,7 +149,7 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
       const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ consecutiveLosses: 2 }));
       expect(result.stepDownActive).toBe(true);
       // 0.5% of 100,000 = $500 budget / $300 per contract = 1 contract
-      expect(result.sizing.suggestedQuantity).toBe(1);
+      expect(sz(result).suggestedQuantity).toBe(1);
     });
   });
 
@@ -150,7 +160,7 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
         baseCtx({ marketAtrPct: null, regimeAtrThresholdPct: 3, regimeSizeCutPct: 30 }),
       );
       expect(result.regimeActive).toBe(false);
-      expect(result.sizing.suggestedQuantity).toBe(3); // full 1% sizing
+      expect(sz(result).suggestedQuantity).toBe(3); // full 1% sizing
     });
 
     it('is inactive at a threshold of 0 — "0 disables", matching the equity path', () => {
@@ -162,7 +172,7 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
         baseCtx({ marketAtrPct: 6, regimeAtrThresholdPct: 0, regimeSizeCutPct: 30 }),
       );
       expect(result.regimeActive).toBe(false);
-      expect(result.sizing.suggestedQuantity).toBe(3); // full 1% sizing, uncut
+      expect(sz(result).suggestedQuantity).toBe(3); // full 1% sizing, uncut
     });
 
     it('cuts size by regimeSizeCutPct once marketAtrPct exceeds the threshold', () => {
@@ -172,7 +182,7 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
       );
       expect(result.regimeActive).toBe(true);
       // 1% * (1 - 30%) = 0.7% of 100,000 = $700 budget / $300 per contract = 2 contracts
-      expect(result.sizing.suggestedQuantity).toBe(2);
+      expect(sz(result).suggestedQuantity).toBe(2);
     });
 
     it('stacks multiplicatively with step-down sizing when both are active', () => {
@@ -183,7 +193,7 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
       expect(result.stepDownActive).toBe(true);
       expect(result.regimeActive).toBe(true);
       // 1% * (1 - 50%) * (1 - 30%) = 0.35% of 100,000 = $350 budget / $300 per contract = 1 contract
-      expect(result.sizing.suggestedQuantity).toBe(1);
+      expect(sz(result).suggestedQuantity).toBe(1);
     });
 
     it('cuts a debit spread exactly like a single leg', () => {

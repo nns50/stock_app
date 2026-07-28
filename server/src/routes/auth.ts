@@ -2,11 +2,20 @@ import { NextFunction, Request, Response, Router } from 'express';
 import { z } from 'zod';
 import { config } from '../config';
 import { asyncHandler, HttpError, parseBody } from './_helpers';
-import { authRequired, checkPassword, isAuthenticated, issueToken, SESSION_COOKIE } from '../services/auth';
 import {
+  authRequired,
+  checkPassword,
+  isAuthenticated,
+  issueToken,
+  loginLockedForMs,
+  recordLoginFailure,
+  recordLoginSuccess,
+  SESSION_COOKIE,
+} from '../services/auth';
+import {
+  consumeTotp,
   disableMfa,
   enableMfa,
-  getMfa,
   getPendingSecret,
   mfaEnabled,
   mfaEnforced,
@@ -42,8 +51,20 @@ authRouter.post(
       res.json({ ok: true }); // nothing to log into
       return;
     }
+    // Consecutive-failure lockout — the 400ms delay below bounds one request,
+    // not a concurrent brute force (see services/auth.ts).
+    const lockedMs = loginLockedForMs();
+    if (lockedMs > 0) {
+      res.status(429).json({
+        error: `Too many failed attempts — try again in ${Math.ceil(lockedMs / 1000)}s.`,
+        code: 'rate_limited',
+        retryAfterMs: lockedMs,
+      });
+      return;
+    }
     const { password, code } = parseBody(loginBody, req);
     if (!checkPassword(password)) {
+      recordLoginFailure();
       await delay(400);
       res.status(401).json({ error: 'Incorrect password', code: 'invalid_credentials' });
       return;
@@ -55,12 +76,15 @@ authRouter.post(
         res.status(401).json({ error: 'Two-factor code required', code: 'mfa_required' });
         return;
       }
-      if (!verifyTotp(getMfa().secret, code)) {
+      // One-time use: a replayed code fails even inside its validity window.
+      if (!consumeTotp(code)) {
+        recordLoginFailure();
         await delay(400);
         res.status(401).json({ error: 'Invalid two-factor code', code: 'invalid_code' });
         return;
       }
     }
+    recordLoginSuccess();
     res.cookie(SESSION_COOKIE, issueToken(), cookieOpts());
     res.json({ ok: true });
   }),
@@ -109,7 +133,9 @@ authRouter.post(
   }),
 );
 
-// Turn MFA off — requires a current code so a hijacked session can't disable it.
+// Turn MFA off — requires a current code so a hijacked session can't disable
+// it. One-time use (consumeTotp): a code observed at login can't be replayed
+// here to strip the second factor inside its window.
 authRouter.post(
   '/mfa/disable',
   requireAuth,
@@ -119,7 +145,7 @@ authRouter.post(
       return;
     }
     const { code } = parseBody(codeBody, req);
-    if (!verifyTotp(getMfa().secret, code)) {
+    if (!consumeTotp(code)) {
       res.status(400).json({ error: 'That code did not match.', code: 'invalid_code' });
       return;
     }

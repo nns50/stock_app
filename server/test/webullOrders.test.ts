@@ -1032,3 +1032,79 @@ describe('webullOrderStatusBatch', () => {
     expect(out.get('CID-M')!.legs).toHaveLength(2);
   });
 });
+
+describe('order-list pagination', () => {
+  const cfg = () => Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+  const env = (cid: string, status: string) => ({
+    client_order_id: cid,
+    combo_order_id: `WB-${cid}`,
+    orders: [{ client_order_id: cid, status, order_id: `WB-${cid}`, total_quantity: '1' }],
+  });
+  const page = (envs: unknown[]) => ({ ok: true, status: 200, text: async () => JSON.stringify(envs) }) as Response;
+
+  it('requests big pages (page_size) so a default-sized page cannot hide orders', async () => {
+    cfg();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(page([env('A', 'PENDING')]));
+    await webullOrderStatus('ACC1', 'A');
+    const url = String(fetchSpy.mock.calls[0][0]);
+    expect(url).toContain('page_size=100');
+  });
+
+  it('follows the client_order_id cursor across full pages until a short page', async () => {
+    cfg();
+    // Page 1: exactly page_size envelopes (full page → keep walking). The order
+    // being asked about is only on page 2.
+    const fullPage = Array.from({ length: 100 }, (_, i) => env(`OPEN-${i}`, 'PENDING'));
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(page(fullPage))
+      .mockResolvedValueOnce(page([env('DEEP', 'FILLED')]));
+
+    const r = await webullOrderStatus('ACC1', 'DEEP');
+
+    expect(r).toMatchObject({ ok: true, found: true, status: 'FILLED' });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const url2 = String(fetchSpy.mock.calls[1][0]);
+    expect(url2).toContain('last_client_order_id=OPEN-99');
+  });
+
+  it('stops (with page-1 data) when the server ignores the cursor and replays the same page', async () => {
+    cfg();
+    const fullPage = Array.from({ length: 100 }, (_, i) => env(`OPEN-${i}`, 'PENDING'));
+    // Same first envelope on every call — a server that ignores the cursor.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(page(fullPage));
+
+    const r = await webullOrderStatus('ACC1', 'OPEN-3');
+
+    expect(r).toMatchObject({ ok: true, found: true });
+    // 2 calls for open (page 1 + the replayed page that stops the walk) — never
+    // the 20-page ceiling.
+    expect(fetchSpy.mock.calls.length).toBeLessThanOrEqual(4);
+  });
+
+  it('fails the WHOLE lookup when a later page cannot be read (partial list must not mean "not found")', async () => {
+    cfg();
+    const fullPage = Array.from({ length: 100 }, (_, i) => env(`OPEN-${i}`, 'PENDING'));
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(page(fullPage))
+      .mockResolvedValue({ ok: false, status: 500, text: async () => JSON.stringify({ msg: 'boom' }) } as Response);
+
+    const r = await webullOrderStatus('ACC1', 'NOT-ON-PAGE-1');
+    expect(r.ok).toBe(false);
+    expect(r.found).toBe(false);
+    expect(r.error).toMatch(/boom/);
+  });
+
+  it('listWebullOpenOrders walks pages too, so a resting exit leg beyond page 1 is still seen', async () => {
+    cfg();
+    const fullPage = Array.from({ length: 100 }, (_, i) => env(`OPEN-${i}`, 'PENDING'));
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(page(fullPage))
+      .mockResolvedValueOnce(page([env('LAST', 'PENDING')]));
+
+    const r = await listWebullOpenOrders('ACC1');
+    expect(r.ok).toBe(true);
+    expect(r.orders).toHaveLength(101);
+    expect(r.orders.some((o) => o.clientOrderId === 'LAST')).toBe(true);
+  });
+});

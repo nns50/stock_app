@@ -20,7 +20,7 @@ function trade(overrides: Partial<SimulatedTrade> = {}): SimulatedTrade {
 
 function reportOf(trades: SimulatedTrade[], startingEquity = 10_000): BacktestReport {
   const finalEquity = startingEquity + trades.reduce((s, t) => s + t.pnl, 0);
-  return { trades, equityCurve: [], startingEquity, finalEquity, excludedSymbols: [] };
+  return { trades, equityCurve: [], startingEquity, finalEquity, excludedSymbols: [], errors: [] };
 }
 
 describe('computeBacktestStats', () => {

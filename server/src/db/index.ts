@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS ${name} (
   quantity        REAL NOT NULL,
   order_type      TEXT NOT NULL,         -- market|limit|stop_loss|stop_loss_limit (validated at the route)
   limit_price     REAL,
+  stop_price      REAL,                  -- trigger price (stop_loss / stop_loss_limit); NULL otherwise
   option_type     TEXT CHECK(option_type IN ('call','put') OR option_type IS NULL),
   strike          REAL,
   expiration      TEXT,
@@ -130,7 +131,7 @@ CREATE TABLE IF NOT EXISTS ${name} (
 /** The order_intents columns, in DDL order — used for the explicit-column copy in
  *  the rebuild (so it's robust to ALTER-appended columns in an older table). */
 const ORDER_INTENTS_COLS =
-  'id, idempotency_key, symbol, asset_kind, side, open_close, quantity, order_type, limit_price, ' +
+  'id, idempotency_key, symbol, asset_kind, side, open_close, quantity, order_type, limit_price, stop_price, ' +
   'option_type, strike, expiration, option_strategy, is_bracket, state, broker_order_id, ' +
   'materialized_qty, materialized_notional, created_at, updated_at';
 
@@ -869,6 +870,13 @@ function migrate(): void {
   const hasOi = (c: string) => oiCols.some((col) => col.name === c);
   if (!hasOi('option_strategy')) db.exec('ALTER TABLE order_intents ADD COLUMN option_strategy TEXT');
   if (!hasOi('is_bracket')) db.exec('ALTER TABLE order_intents ADD COLUMN is_bracket INTEGER NOT NULL DEFAULT 0');
+  // order_intents gained a persisted stop price (2026-07-28). It was never
+  // stored before, so a replace of a stop order had to rebuild the intent
+  // WITHOUT its trigger price — the guardrails' stop_price check then failed
+  // and every quantity/limit-only modify of a stop order was falsely blocked.
+  // Nullable; a legacy stop order's row simply has no stored stop (its replace
+  // keeps requiring an explicit stopPrice in the patch, same as before).
+  if (!hasOi('stop_price')) db.exec('ALTER TABLE order_intents ADD COLUMN stop_price REAL');
   // order_intents gained incremental-materialization tracking so partial fills
   // can be mirrored into Positions as they happen (reconcile.ts) instead of only
   // at the terminal `filled` state.

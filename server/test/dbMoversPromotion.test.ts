@@ -18,46 +18,46 @@ beforeEach(() => {
 describe('movers occurrence tracking', () => {
   it('records an occurrence and is case-insensitive on symbol', () => {
     recordMoverOccurrence('aapl', '2026-07-01');
-    expect(countRecentMoverOccurrences('AAPL', 10, new Date('2026-07-01T00:00:00Z'))).toBe(1);
+    expect(countRecentMoverOccurrences('AAPL', 10, new Date('2026-07-01T15:00:00Z'))).toBe(1);
   });
 
   it('is idempotent within the same calendar day (many ticks, one occurrence)', () => {
     recordMoverOccurrence('AAPL', '2026-07-01');
     recordMoverOccurrence('AAPL', '2026-07-01');
     recordMoverOccurrence('AAPL', '2026-07-01');
-    expect(countRecentMoverOccurrences('AAPL', 10, new Date('2026-07-01T00:00:00Z'))).toBe(1);
+    expect(countRecentMoverOccurrences('AAPL', 10, new Date('2026-07-01T15:00:00Z'))).toBe(1);
   });
 
   it('counts a distinct occurrence for each distinct calendar day', () => {
     recordMoverOccurrence('AAPL', '2026-07-01');
     recordMoverOccurrence('AAPL', '2026-07-02');
     recordMoverOccurrence('AAPL', '2026-07-03');
-    expect(countRecentMoverOccurrences('AAPL', 10, new Date('2026-07-03T00:00:00Z'))).toBe(3);
+    expect(countRecentMoverOccurrences('AAPL', 10, new Date('2026-07-03T15:00:00Z'))).toBe(3);
   });
 
   it('does not count occurrences outside the rolling window', () => {
     recordMoverOccurrence('AAPL', '2026-06-01'); // well outside a 10-day window from 07-10
     recordMoverOccurrence('AAPL', '2026-07-05');
     recordMoverOccurrence('AAPL', '2026-07-10');
-    expect(countRecentMoverOccurrences('AAPL', 10, new Date('2026-07-10T00:00:00Z'))).toBe(2);
+    expect(countRecentMoverOccurrences('AAPL', 10, new Date('2026-07-10T15:00:00Z'))).toBe(2);
   });
 
   it('is inclusive of exactly windowDays ago (a 3-day window from day 3 includes day 1)', () => {
     recordMoverOccurrence('AAPL', '2026-07-01');
-    expect(countRecentMoverOccurrences('AAPL', 3, new Date('2026-07-03T00:00:00Z'))).toBe(1);
+    expect(countRecentMoverOccurrences('AAPL', 3, new Date('2026-07-03T15:00:00Z'))).toBe(1);
   });
 
   it('excludes an occurrence one day older than the window', () => {
     recordMoverOccurrence('AAPL', '2026-06-30');
-    expect(countRecentMoverOccurrences('AAPL', 3, new Date('2026-07-03T00:00:00Z'))).toBe(0);
+    expect(countRecentMoverOccurrences('AAPL', 3, new Date('2026-07-03T15:00:00Z'))).toBe(0);
   });
 
   it('tracks different symbols independently', () => {
     recordMoverOccurrence('AAPL', '2026-07-01');
     recordMoverOccurrence('MSFT', '2026-07-01');
     recordMoverOccurrence('MSFT', '2026-07-02');
-    expect(countRecentMoverOccurrences('AAPL', 10, new Date('2026-07-02T00:00:00Z'))).toBe(1);
-    expect(countRecentMoverOccurrences('MSFT', 10, new Date('2026-07-02T00:00:00Z'))).toBe(2);
+    expect(countRecentMoverOccurrences('AAPL', 10, new Date('2026-07-02T15:00:00Z'))).toBe(1);
+    expect(countRecentMoverOccurrences('MSFT', 10, new Date('2026-07-02T15:00:00Z'))).toBe(2);
   });
 
   it('defaults to zero occurrences for a symbol never recorded', () => {

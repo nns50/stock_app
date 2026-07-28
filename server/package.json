@@ -10,7 +10,7 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "check:provider": "tsx src/scripts/checkProvider.ts",
     "capture:broker": "tsx src/scripts/captureBrokerFields.ts",
     "backfill:exits": "tsx src/scripts/backfillExitPrices.ts",

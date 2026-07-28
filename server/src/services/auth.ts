@@ -78,3 +78,51 @@ export function isAuthenticated(req: Request): boolean {
   if (!authRequired()) return true;
   return verifyToken(readCookie(req, SESSION_COOKIE));
 }
+
+// ---------------------------------------------------------------------------
+// Failed-login throttle. The 400ms delay on a wrong password/code bounds one
+// REQUEST, not the attack: requests run concurrently, so a scripted attacker
+// could try passwords (or worse, 6-digit TOTP codes — a 10^6 space with 3
+// valid values per attempt at ±1 window) at whatever rate the box serves.
+// After LOCKOUT_THRESHOLD consecutive failures, further login attempts are
+// refused outright for an exponentially growing window.
+//
+// Deliberately GLOBAL, not per-IP: this is a single-password app, per-IP
+// state is spoofable behind the proxies it deploys behind (Fly), and the
+// deliberate-lockout DoS this admits only blocks NEW logins — an existing
+// session cookie keeps working, and the window is capped. In-memory on
+// purpose (a restart clears it): persistence would add a DB write per failed
+// attempt for little gain against this threat model.
+// ---------------------------------------------------------------------------
+
+const LOCKOUT_THRESHOLD = 5;
+const LOCKOUT_BASE_MS = 30_000;
+const LOCKOUT_MAX_MS = 15 * 60_000;
+
+let consecutiveFailures = 0;
+let lockedUntil = 0;
+
+/** How much longer new login attempts are refused (0 = not locked). */
+export function loginLockedForMs(now = Date.now()): number {
+  return Math.max(0, lockedUntil - now);
+}
+
+/** Record a failed password/code attempt; arms the lockout past the threshold. */
+export function recordLoginFailure(now = Date.now()): void {
+  consecutiveFailures++;
+  if (consecutiveFailures >= LOCKOUT_THRESHOLD) {
+    const ms = Math.min(LOCKOUT_BASE_MS * 2 ** (consecutiveFailures - LOCKOUT_THRESHOLD), LOCKOUT_MAX_MS);
+    lockedUntil = now + ms;
+  }
+}
+
+/** A successful login clears the failure streak and any active lockout. */
+export function recordLoginSuccess(): void {
+  consecutiveFailures = 0;
+  lockedUntil = 0;
+}
+
+/** Test hook: reset the throttle's module state. */
+export function resetLoginThrottle(): void {
+  recordLoginSuccess();
+}

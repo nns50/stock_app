@@ -82,7 +82,7 @@ describe('computeSignificanceStats', () => {
     // 10) are unbalanced enough that plenty of random sign reassignments
     // land a permuted mean at least as extreme as 20.
     const weak = computeSignificanceStats(oscillating(30, 20, 30), { rng: mulberry32(4) });
-    expect(weak.pValue).toBeGreaterThan(strong.pValue);
+    expect(weak.pValue!).toBeGreaterThan(strong.pValue!);
   });
 
   it('keeps the point estimate inside its own bootstrap CI', () => {

@@ -28,6 +28,10 @@ function ind(overrides: Partial<IndicatorSnapshot> = {}): IndicatorSnapshot {
     avgVolume: 1_000_000,
     volume: 1_800_000,
     gapPct: 3.5,
+    weeklyMaShort: null,
+    symbolLookbackReturnPct: null,
+    benchmarkLookbackReturnPct: null,
+    sentimentNetScore: null,
     ...overrides,
   };
 }
@@ -98,6 +102,13 @@ describe('generateSignal', () => {
   it('returns null when the computed stop would be at or below zero', () => {
     // price 2, atr 3, stopAtrMultiple 1.5 -> stop = 2 - 4.5 = negative
     const c = candidate({ price: 2, direction: 'long', indicators: ind({ price: 2, atr: 3 }) });
+    expect(generateSignal(c, { stopAtrMultiple: 1.5, targetRMultiple: 2 })).toBeNull();
+  });
+
+  it("returns null when a SHORT's target would land at or below zero (unplaceable bracket leg)", () => {
+    // price 20, atr 7 -> stop 30.5 (fine), but target = 20 - 10.5*2 = -1:
+    // no bracket leg can carry a non-positive price, so no signal.
+    const c = candidate({ price: 20, direction: 'short', indicators: ind({ price: 20, atr: 7 }) });
     expect(generateSignal(c, { stopAtrMultiple: 1.5, targetRMultiple: 2 })).toBeNull();
   });
 

@@ -46,6 +46,7 @@ function cfg(overrides: Partial<OptionsBacktestConfig> = {}): OptionsBacktestCon
     to: '2024-01-02',
     riskProfile: 'MODERATE',
     startingEquity: 100_000,
+    maxConcurrentPositions: 2,
     screenerConfig: RELAXED,
     ...overrides,
   };
@@ -144,6 +145,7 @@ describe('runOptionsWalkForwardBacktest', () => {
       splitDate,
       riskProfile: 'MODERATE',
       startingEquity: 100_000,
+      maxConcurrentPositions: 2,
       screenerConfig: RELAXED,
     };
     const result = await runOptionsWalkForwardBacktest(wfCfg);
