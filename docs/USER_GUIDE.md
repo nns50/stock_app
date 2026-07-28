@@ -767,8 +767,8 @@ trades.
 ### Curves & risk
 
 Equity curve, edge over time, and drawdown & streaks are shown directly on the page.
-**Risk of ruin**, **Excursions**, and **Execution quality** are three tabs of one
-**Analytics** button (top right) — pick a tab, the report loads on demand.
+**Risk of ruin**, **Excursions**, **Execution quality**, and **Stop overrun** are four
+tabs of one **Analytics** button (top right) — pick a tab, the report loads on demand.
 
 - **Equity curve** of cumulative realized P&L.
 - **Edge over time** — a rolling 20-trade expectancy ($/trade). Rising means your edge
@@ -797,6 +797,18 @@ Equity curve, edge over time, and drawdown & streaks are shown directly on the p
   against, and a manually logged or imported trade was never a live order at all, so
   neither is included. A consistent positive bias points at marketable limits or wide
   spreads at entry/exit.
+- **Stop overrun** (2026-07-28) — for every *stock* exit that was a **stop execution**,
+  compares the realized exit price to the position's **declared stop**. Positive overrun
+  means the exit landed **beyond** the stop (a gap-through or a wide spread), costing
+  more than the planned 1R — reported in **$**, **%**, and as **extra R** per stop, with
+  a breakdown by **entry price band** (<$5, $5–15, $15–50, ≥$50), where the cheap-ticker
+  cost concentrates. An exit counts when its recorded exit reason is `stop` (stamped
+  automatically for auto-traded positions since 2026-07-26), or — for older rows without
+  a reason — when it landed at/beyond the declared stop, flagged as *inferred* so the
+  report says how much of itself rests on inference. An exit with a *different* recorded
+  reason never counts, even below the stop: a deliberate sale isn't a stop execution.
+  Unlike Execution quality above, manual, imported, and paper-era trades all count —
+  the comparison is against your own declared stop, not a broker order.
 
 ### Benchmark
 
