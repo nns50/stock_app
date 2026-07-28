@@ -440,8 +440,11 @@ single highest-leverage thing the app enables.
 **Sweep it, don't eyeball it.** `npm run research` (see the README's script list)
 runs a pre-registered set of walk-forward experiments against a running instance —
 exit geometry (the shipped 2R bracket vs. breakeven+trailing "runner" shapes),
-min-signal-score at 0/40/60/75, long-only vs. both directions, and two
-relative-strength-tilted weight presets, plus two **opt-in** options-engine sets
+min-signal-score at 0/40/60/75, long-only vs. both directions, two
+relative-strength-tilted weight presets, and relative strength at the horizon the
+evidence supports (off vs. RS added at 20/63/126-day lookbacks — the 20-day rung is
+the reversal-zone control the earlier weights experiment unknowingly tested), plus
+two **opt-in** options-engine sets
 (`--experiments ivrv` / `--experiments optexits`): the IV/RV cheapness-gate ladder
 at off/1.5/1.2/1.0/0.8, and options exit shapes (time-exit only vs. a 50% stop vs.
 a 50%/100% stop+take-profit bracket vs. a breakeven+trailing runner, in

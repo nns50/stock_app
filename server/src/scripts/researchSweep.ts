@@ -17,8 +17,8 @@
 //   --symbols  a,b,c        comma-separated (required; the API caps at 50)
 //   --from/--to YYYY-MM-DD  backtest window (required; span capped at 1095 days)
 //   --split    YYYY-MM-DD   walk-forward split (required; from <= split < to)
-//   --experiments list      subset of: exits,minscore,direction,weights,ivrv,optexits
-//                           (default: the four equity sets; `ivrv` and
+//   --experiments list      subset of: exits,minscore,direction,weights,rshorizon,ivrv,optexits
+//                           (default: the five equity sets; `ivrv` and
 //                           `optexits` are OPT-IN — they run the OPTIONS
 //                           walk-forward, whose first run fetches option
 //                           contract references and per-contract bars from
@@ -69,12 +69,12 @@ function requireArg(name: string): string {
 }
 
 const USAGE = `npm run research -- --symbols A,B,C --from YYYY-MM-DD --to YYYY-MM-DD --split YYYY-MM-DD
-  [--experiments exits,minscore,direction,weights,ivrv,optexits] [--equity 100000] [--risk MODERATE]
+  [--experiments exits,minscore,direction,weights,rshorizon,ivrv,optexits] [--equity 100000] [--risk MODERATE]
   [--max-concurrent 3] [--base http://localhost:3001] [--password APP_PASSWORD] [--code TOTP]
   [--out research-results.json]
 
 Requires a RUNNING server (npm run dev). Symbols cap at 50, window span at 1095 days,
-and from <= split < to. The default experiment set is the four equity ones; 'ivrv'
+and from <= split < to. The default experiment set is the five equity ones; 'ivrv'
 (IV/RV cheapness-gate ladder) and 'optexits' (options exit shapes) are opt-in because
 they run the options engine, whose first run fetches option contract data from
 Polygon — run them over a few liquid names. See this file's header comment.`;
