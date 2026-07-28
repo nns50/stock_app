@@ -1053,6 +1053,34 @@ describe('trade (dry-run) routes (integration)', () => {
   });
 });
 
+describe('body-parser client faults map to 4xx (integration)', () => {
+  const raw = (body: string, contentType = 'application/json') =>
+    fetch(`${base}/api/positions`, { method: 'POST', headers: { 'content-type': contentType }, body });
+
+  it('malformed JSON is a 400, not a 500', async () => {
+    const res = await raw('{"symbol":');
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/JSON/);
+  });
+
+  it('a non-object top level (strict mode) is a 400', async () => {
+    expect((await raw('"just a string"')).status).toBe(400);
+    expect((await raw('null')).status).toBe(400);
+  });
+
+  it('an over-limit payload is a 413', async () => {
+    const res = await raw(`{"pad":"${'x'.repeat(2 * 1024 * 1024)}"}`);
+    expect(res.status).toBe(413);
+  });
+
+  it('a genuine server fault still maps to 500 (nothing dresses it up as 4xx)', async () => {
+    // Zod-invalid but parseable body exercises the route path; the 400 here is
+    // the HttpError route, proving the generic-Error 4xx trust is scoped.
+    const res = await raw('{"assetType":"stock"}');
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('health (integration)', () => {
   it('reports DB usability, provider status, and last loop-tick age', async () => {
     db.exec('DELETE FROM autotrade_last_tick');

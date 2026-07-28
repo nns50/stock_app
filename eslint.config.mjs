@@ -31,6 +31,20 @@ export default tseslint.config(
     },
   },
   {
+    // Server source only: a floating promise is PROCESS-FATAL on modern Node
+    // (an unhandled rejection kills the server), so every async call must be
+    // awaited, returned, `.catch`ed, or explicitly `void`ed with a guarded
+    // body. Type-aware and scoped to server/src — the browser doesn't die
+    // from one, and tests run under vitest's own rejection tracking.
+    files: ['server/src/**/*.ts'],
+    languageOptions: {
+      parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname + '/server' },
+    },
+    rules: {
+      '@typescript-eslint/no-floating-promises': 'error',
+    },
+  },
+  {
     // Plain browser scripts served verbatim from web/public (no bundler, no
     // TS — e.g. theme-init.js): declare the DOM globals that TS files get
     // from lib.dom, since js.configs.recommended's no-undef knows none.
