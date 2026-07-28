@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { client } from '../api/client';
 import { useAsync, useSort } from '../lib/hooks';
@@ -155,10 +155,38 @@ export default function PositionsPage() {
   // already changed.
   const reload = data.reload;
   const [bookVersion, setBookVersion] = useState(0);
+  // The book's COMPOSITION (which lots exist, their status, how much of each
+  // is still open) as one comparable string. bookVersion only moves on changes
+  // made FROM this page — but the book also changes underneath it server-side:
+  // the background Webull sync closes sold/expired positions, and live order
+  // fills materialize new ones. Those arrive via the ordinary price poll,
+  // which the panels deliberately don't follow — so a position the sync had
+  // closed stayed in the expired-options banner and the stress/correlation
+  // panels until you touched something. serverBookChanges counts polls whose
+  // composition actually differs from the last one seen, so the panels follow
+  // those too while a poll that moved nothing but prices still leaves them
+  // alone. The first load only records the baseline, and reloadBook() resets
+  // it so a page-initiated change (already covered by its bookVersion bump)
+  // isn't double-counted when the refreshed book lands.
+  const bookCompositionKey = useMemo(
+    () => allRows.map((r) => `${r.position.id}:${r.position.status}:${r.position.remainingQuantity}`).join('|'),
+    [allRows],
+  );
+  const lastComposition = useRef<string | null>(null);
+  const [serverBookChanges, setServerBookChanges] = useState(0);
+  useEffect(() => {
+    if (!data.data) return;
+    if (lastComposition.current !== null && lastComposition.current !== bookCompositionKey) {
+      setServerBookChanges((c) => c + 1);
+    }
+    lastComposition.current = bookCompositionKey;
+  }, [data.data, bookCompositionKey]);
   const reloadBook = useCallback(() => {
+    lastComposition.current = null;
     setBookVersion((v) => v + 1);
     reload();
   }, [reload]);
+  const panelsKey = `${bookVersion}|${serverBookChanges}`;
 
   // Refresh when a trade is logged from the global modal (header / `n` / palette).
   useEffect(() => {
@@ -248,11 +276,11 @@ export default function PositionsPage() {
         <SkeletonStats count={6} />
       ) : null}
 
-      <ExpiredOptionsBanner onChanged={reloadBook} reloadKey={bookVersion} />
+      <ExpiredOptionsBanner onChanged={reloadBook} reloadKey={panelsKey} />
 
       {data.data?.exposure && data.data.exposure.gross > 0 && <ExposurePanel exposure={data.data.exposure} />}
-      <PortfolioStressPanel reloadKey={bookVersion} />
-      <CorrelationHeatmapPanel reloadKey={bookVersion} />
+      <PortfolioStressPanel reloadKey={panelsKey} />
+      <CorrelationHeatmapPanel reloadKey={panelsKey} />
 
       <Segmented
         options={[

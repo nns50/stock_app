@@ -14,7 +14,7 @@ import { CollapsibleCard, EmptyState, ErrorState, Spinner } from './ui';
  * Collapsed by default and fetched only once expanded: like the stress test
  * below it, this needs its own per-symbol candle history.
  */
-export function CorrelationHeatmapPanel({ reloadKey = 0 }: { reloadKey?: number }) {
+export function CorrelationHeatmapPanel({ reloadKey = 0 }: { reloadKey?: number | string }) {
   return (
     <CollapsibleCard id="positions.correlation" title="Correlation heatmap" defaultCollapsed>
       <CorrelationBody reloadKey={reloadKey} />
@@ -35,7 +35,7 @@ function cellStyle(r: number | null): CSSProperties {
 /** `reloadKey` changes when the BOOK changes, not on the page's price poll —
  *  see PortfolioStressPanel for why. This one fetches daily candles per
  *  underlying, so the same reasoning applies with more weight. */
-function CorrelationBody({ reloadKey }: { reloadKey: number }) {
+function CorrelationBody({ reloadKey }: { reloadKey: number | string }) {
   const data = useAsync(() => client.portfolioCorrelation(), [reloadKey]);
 
   if (data.loading) return <Spinner label="Correlating your open positions…" />;

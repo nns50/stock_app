@@ -619,6 +619,22 @@ nudge, not a blocker — you can still save with items unchecked.
     **exit** (or delete the row if the trade never happened). Guessing here would write a
     realized P&L number that never occurred, which is worse than a row you can see is stale.
   Positions on their own expiration day are left alone — they're still tradeable all session.
+  An expired-but-open option shows `—` in the Price column: an expired contract has no live
+  mark, and the app no longer asks a provider for one (2026-07-28 — the provider would
+  silently substitute the *nearest live* chain, where the same strike usually still matches,
+  so the dead contract used to show a fabricated "current price").
+  > **The background sync closes broker-dropped worthless expiries itself (2026-07-28).**
+  > While Webull still *lists* an expired contract (settlement lag), closing it is the
+  > banner's manual button, as above. But once the broker **drops** it from your holdings,
+  > the position sync treats that like any other broker-confirmed close — except an expired
+  > contract can't be priced from a live quote (that's what left these **stuck open
+  > forever**, retrying a price that would never exist, which is exactly how "my expired
+  > positions never leave the page" happened). It now reuses the sweep's classification:
+  > unambiguously **worthless** → closed automatically at **$0 dated on the expiry**, logged
+  > on **Recent activity** like every other broker-truth close; **in the money / too close
+  > to call / unpriceable** → left open for you, with a one-time Recent-activity entry
+  > pointing at this banner. Same conservative split, just no longer requiring a button
+  > press for the case with only one honest answer.
   > **Why an expired contract used to keep coming back.** Webull keeps an expired option in
   > your holdings until settlement clears — over a weekend, that's all of Saturday and
   > Sunday. The sweep would close it at $0, and the next position sync (every 5 minutes)
@@ -649,7 +665,11 @@ nudge, not a blocker — you can still save with items unchecked.
   options — recompute when the **book itself** changes (an exit, a close, a delete, a
   logged trade), because each costs a per-symbol data lookup and none of them move just
   because prices did. Before 2026-07-26 they were wired to nothing and simply never
-  refreshed, so they kept describing a book you had already changed.
+  refreshed, so they kept describing a book you had already changed. Since 2026-07-28 that
+  includes changes made **server-side**: when a poll comes back with a different book —
+  the background Webull sync closed a sold or expired position, a live order filled — the
+  panels notice and recompute too, instead of waiting for you to touch something on the
+  page. A poll that moved nothing but prices still leaves them alone.
 - **When a refresh fails** (the page auto-polls every minute by default), the table keeps
   showing the numbers that last loaded and flags it with an amber banner — the last-known
   P&L is exactly what you still want on screen. The **Updated** clock only advances on a
@@ -1966,6 +1986,26 @@ One home (⚙ or `⌘K → Settings`) for everything:
   >   account ID** than the one you now sync (e.g. you re-entered the ID), that stays deliberately
   >   untouched — run **Compare against broker** to confirm, then close it from its **journal** dialog
   >   (or re-import under the current account to re-stamp it) rather than have the app guess.
+  >
+  > **A sync that stops working now says so, and bad payloads can't fabricate closes (2026-07-28).**
+  > Fixes for ways the journal could silently drift from (or be corrupted against) the broker:
+  > - The **background scheduler logs its own failures**: when an account's sync starts
+  >   failing (an expired token, Webull down), a one-time **`webull_sync_failed`** entry
+  >   appears on the Auto-Trade page's **Recent activity** — and a **`webull_sync_recovered`**
+  >   entry when it works again. Before, a dead background sync looked exactly like "nothing
+  >   to sync": no closes, no imports, and the only trace on a server console nobody reads.
+  > - A positions payload in a **shape the app doesn't recognize** is reported as an error
+  >   (check the raw payload via **Preview**) instead of being read as an *empty account* —
+  >   which the close-detector would otherwise treat as "everything here has been sold" and,
+  >   after the two-sync debounce, close the whole journal at fabricated prices.
+  > - A payload **row that fails to parse** (e.g. a multi-leg spread container, which the
+  >   importer deliberately skips) still proves the broker holds *something* in that symbol —
+  >   so that symbol's positions are exempt from close-detection for that sync, rather than
+  >   counting as "missing" and getting auto-closed while still held. The concrete case: a
+  >   tracked single-leg option you later leg into a spread.
+  > - The **expired-option case** — the sync could never price a broker-dropped expired
+  >   contract and left it open forever — is fixed too; see the expired-options section of
+  >   [Positions](#positions--pl) above.
 - **Quotes may be delayed** (commonly ~15 min on free tiers). The provider chip shows
   live vs demo. Responses are cached briefly and pages with a **Refresh** control
   auto-poll every **1 minute** by default (adjustable, including off).

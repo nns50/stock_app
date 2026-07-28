@@ -7,10 +7,12 @@ import {
   getWebullSyncConfig,
   setWebullSyncConfig,
   runSchedulerTick,
+  resetWebullSyncFailureTracking,
   stopWebullPositionsSync,
   MIN_SYNC_INTERVAL_SECONDS,
 } from '../src/services/webullPositionsScheduler';
 import { setSetting } from '../src/db/settings';
+import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { priceMap } from '../src/services/quotes';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
@@ -26,9 +28,10 @@ beforeEach(() => {
   db.exec(
     'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; DELETE FROM order_events; ' +
       'DELETE FROM order_intents; DELETE FROM position_exits; DELETE FROM positions; ' +
-      'DELETE FROM webull_miss_streak;',
+      'DELETE FROM webull_miss_streak; DELETE FROM autotrade_events;',
   );
   vi.mocked(priceMap).mockReset();
+  resetWebullSyncFailureTracking();
 });
 afterEach(() => {
   Object.assign(config.webull, origWebull);
@@ -217,5 +220,44 @@ describe('runSchedulerTick', () => {
     const closed = listPositions().find((x) => x.id === pos.id)!;
     expect(closed.status).toBe('closed');
     expect(closed.exits[0]).toMatchObject({ exitPrice: 1.75 });
+  });
+});
+
+// A background sync that quietly stops working is indistinguishable from
+// "nothing to sync" on the Positions page — the journal just drifts stale
+// against the broker (positions sold or expired at the broker keep showing
+// open) with the only trace on a server console nobody reads. The scheduler
+// now logs the failure/recovery TRANSITIONS to the Recent Activity feed.
+describe('background sync failure visibility', () => {
+  it('logs webull_sync_failed once when the sync starts failing, and webull_sync_recovered when it works again', async () => {
+    setWebullSyncConfig({ enabled: true, accountIds: ['ACC1'] });
+
+    // Webull is not configured in this test -> every account sync reports ok:false.
+    const r1 = await runSchedulerTick();
+    expect(r1![0].ok).toBe(false);
+    const failed = listAutotradeEvents({ actions: ['webull_sync_failed'] });
+    expect(failed).toHaveLength(1);
+    expect(JSON.parse(failed[0].detail!)).toMatchObject({ accountId: 'ACC1', via: 'broker_sync_scheduler' });
+    expect(JSON.parse(failed[0].detail!).error).toBeTruthy();
+
+    await runSchedulerTick(); // still failing — one event per episode, not per tick
+    expect(listAutotradeEvents({ actions: ['webull_sync_failed'] })).toHaveLength(1);
+
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp([]));
+    await runSchedulerTick();
+    expect(listAutotradeEvents({ actions: ['webull_sync_recovered'] })).toHaveLength(1);
+
+    await runSchedulerTick(); // keeps working — no repeat recovery events
+    expect(listAutotradeEvents({ actions: ['webull_sync_recovered'] })).toHaveLength(1);
+  });
+
+  it('a sync that works from the start logs nothing', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp([]));
+    setWebullSyncConfig({ enabled: true, accountIds: ['ACC1'] });
+
+    await runSchedulerTick();
+    expect(listAutotradeEvents({ actions: ['webull_sync_failed', 'webull_sync_recovered'] })).toHaveLength(0);
   });
 });

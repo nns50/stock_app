@@ -4,6 +4,7 @@ import { listPositions, createPosition, getPosition, addExit } from '../src/db/p
 import { config } from '../src/config';
 import {
   extractPositions,
+  isRecognizedPositionsPayload,
   mapWebullPosition,
   looksLikeOption,
   previewWebullPositions,
@@ -18,6 +19,14 @@ import { etToday } from '../src/util/marketDate';
 
 vi.mock('../src/services/quotes', () => ({ priceMap: vi.fn() }));
 
+// Daily candles for the expired-option classification the close-sync now
+// reuses (resolveExpiryCloses → getProvider().getCandles) — same mock shape
+// expiredOptionsSweep.test.ts uses.
+const mockGetCandles = vi.fn();
+vi.mock('../src/providers', () => ({
+  getProvider: () => ({ getCandles: mockGetCandles }),
+}));
+
 beforeAll(() => initDb());
 beforeEach(() => {
   db.exec(
@@ -28,6 +37,7 @@ beforeEach(() => {
   vi.mocked(priceMap).mockImplementation(
     async (positions) => new Map(positions.map((p) => [p.id, { price: 10, stale: false, asOf: 0 }])),
   );
+  mockGetCandles.mockReset();
 });
 
 const orig = { ...config.webull };
@@ -1026,5 +1036,198 @@ describe('importWebullPositions — an expired contract the broker still lists',
     mockPositions([{ symbol: 'AAPL', asset_type: 'STOCK', quantity: '10', cost_price: '100' }]);
     const r = await importWebullPositions('ACC1');
     expect(r).toMatchObject({ imported: 1, expiredSkipped: 0 });
+  });
+});
+
+const yesterdayEt = () => {
+  const d = new Date(`${etToday()}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+};
+
+/** Daily bars ending on `date` at `close` — resolveExpiryCloses' input shape. */
+const barsEndingAt = (date: string, close: number) => [
+  { time: Date.parse(`${date}T00:00:00Z`), open: close, high: close, low: close, close, volume: 1 },
+];
+
+// The close-detector's own expired-option handling. An expired contract has no
+// live mark (resolveOptionMarks refuses to invent one off the nearest chain),
+// so the old "price it like any sold position" path could NEVER close it: every
+// sync confirmed it gone, found no price, and 'retried next sync' forever —
+// the exact "my expired positions never leave the page" report. Confirmed-gone
+// expired contracts now reuse the expired-option sweep's classification.
+describe('syncClosedWebullPositions — an EXPIRED option the broker has dropped', () => {
+  function expiredOpenCall(expiration: string) {
+    return createPosition({
+      assetType: 'option',
+      symbol: 'QS',
+      side: 'long',
+      quantity: 17,
+      entryPrice: 0.19,
+      entryDate: '2026-07-01',
+      optionType: 'call',
+      strike: 6.5,
+      expiration,
+      multiplier: 100,
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+  }
+
+  it('closes a worthless one at $0, dated on the expiry — it used to stay open forever', async () => {
+    const expiration = yesterdayEt();
+    const p = expiredOpenCall(expiration);
+    mockGetCandles.mockResolvedValue(barsEndingAt(expiration, 5)); // closed 5 vs 6.5 strike → worthless
+    mockPositions([]); // broker no longer lists it
+
+    await syncClosedWebullPositions('ACC1'); // miss #1 — debounce
+    const r = await syncClosedWebullPositions('ACC1');
+    expect(r).toMatchObject({ ok: true, closed: 1, closedSymbols: ['QS'] });
+
+    const after = getPosition(p.id)!;
+    expect(after.status).toBe('closed');
+    // $0 on the expiry itself — the sweep's own bookkeeping, NOT the default
+    // $10 live-quote mock, which proves the live-price path was never used.
+    expect(after.exits[0]).toMatchObject({ exitPrice: 0, exitDate: expiration });
+    expect(after.exits[0].notes).toMatch(/expir/i);
+    const events = listAutotradeEvents({ actions: ['position_reconciled_from_broker'] });
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0].detail!)).toMatchObject({ exitPrice: 0, pricedBy: 'expired_worthless' });
+  });
+
+  it('leaves an in-the-money one OPEN (exercise/assignment is not a cash exit) and says so once', async () => {
+    const expiration = yesterdayEt();
+    const p = expiredOpenCall(expiration);
+    mockGetCandles.mockResolvedValue(barsEndingAt(expiration, 9)); // deep ITM vs 6.5
+    mockPositions([]);
+
+    await syncClosedWebullPositions('ACC1');
+    await syncClosedWebullPositions('ACC1'); // confirmed → one skip event
+    await syncClosedWebullPositions('ACC1'); // still skipped — must not spam
+    expect(getPosition(p.id)!.status).toBe('open');
+    const events = listAutotradeEvents({ actions: ['position_reconcile_skipped'] });
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0].detail!)).toMatchObject({ reason: 'expired_in_the_money' });
+  });
+
+  it('leaves one with no resolvable expiry price OPEN and flags it — never guesses $0', async () => {
+    const expiration = yesterdayEt();
+    const p = expiredOpenCall(expiration);
+    mockGetCandles.mockResolvedValue([]); // no candles at all
+    mockPositions([]);
+
+    await syncClosedWebullPositions('ACC1');
+    const r = await syncClosedWebullPositions('ACC1');
+    expect(r).toMatchObject({ ok: true, closed: 0, closedSymbols: [] });
+    expect(getPosition(p.id)!.status).toBe('open');
+    const events = listAutotradeEvents({ actions: ['position_reconcile_skipped'] });
+    expect(JSON.parse(events[0].detail!)).toMatchObject({ reason: 'expired_unknown' });
+  });
+});
+
+// A raw row the mapper can't parse still proves the broker holds SOMETHING in
+// that symbol — so its absence from the MAPPED rows must not read as "sold".
+// The concrete case: a tracked single-leg option whose broker row turns into a
+// multi-leg strategy container (the user legs into a spread), which the mapper
+// deliberately leaves unmapped. Without the freeze, two such syncs "confirmed"
+// the leg missing and auto-closed it while it was still held.
+describe('close-detection freeze for symbols with unparseable broker rows', () => {
+  const spyLeg = () =>
+    createPosition({
+      assetType: 'option',
+      symbol: 'SPY',
+      side: 'long',
+      quantity: 1,
+      entryPrice: 3,
+      entryDate: '2026-07-01',
+      optionType: 'call',
+      strike: 500,
+      expiration: '2030-09-18',
+      multiplier: 100,
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+  const verticalContainer = {
+    quantity: '1',
+    symbol: 'SPY',
+    option_strategy: 'VERTICAL',
+    instrument_type: 'OPTION',
+    cost_price: '1.20',
+    legs: [
+      { symbol: 'SPY', option_type: 'CALL', option_expire_date: '2030-09-18', option_exercise_price: '500' },
+      { symbol: 'SPY', option_type: 'CALL', option_expire_date: '2030-09-18', option_exercise_price: '510' },
+    ],
+  };
+
+  it('does NOT close a tracked leg whose broker row became an unmapped multi-leg container', async () => {
+    const p = spyLeg();
+    mockPositions([verticalContainer]);
+
+    await syncClosedWebullPositions('ACC1');
+    const r = await syncClosedWebullPositions('ACC1');
+    expect(r).toMatchObject({ ok: true, closed: 0, closedSymbols: [] });
+    expect(getPosition(p.id)!.status).toBe('open');
+  });
+
+  it('still closes a DIFFERENT symbol genuinely missing from the same previews', async () => {
+    const leg = spyLeg();
+    const sold = createPosition({
+      assetType: 'stock',
+      symbol: 'VRAX',
+      side: 'long',
+      quantity: 50,
+      entryPrice: 20,
+      entryDate: '2026-01-02',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+    mockPositions([verticalContainer]); // SPY unparseable; VRAX truly absent
+
+    await syncClosedWebullPositions('ACC1');
+    const r = await syncClosedWebullPositions('ACC1');
+    expect(r).toMatchObject({ ok: true, closed: 1, closedSymbols: ['VRAX'] });
+    expect(getPosition(sold.id)!.status).toBe('closed');
+    expect(getPosition(leg.id)!.status).toBe('open');
+  });
+});
+
+// Zero rows out of an unrecognized payload shape is NOT an empty account — and
+// an "empty account" is exactly what the close-detector mass-closes against
+// (after the debounce). A shape change must surface as an error, not as sells.
+describe('unrecognized positions payload shape', () => {
+  it('extracts a list nested one wrapper level deep', () => {
+    expect(extractPositions({ code: 200, data: { items: [{ symbol: 'AAPL' }] } })).toHaveLength(1);
+    expect(isRecognizedPositionsPayload({ code: 200, data: { items: [] } })).toBe(true);
+    expect(isRecognizedPositionsPayload([])).toBe(true);
+    expect(isRecognizedPositionsPayload({ totally: 'foreign' })).toBe(false);
+  });
+
+  it('preview reports an error instead of reading a foreign shape as an empty account', async () => {
+    mockPositions({ totally: { unexpected: true } });
+    const preview = await previewWebullPositions('ACC1');
+    expect(preview.ok).toBe(false);
+    expect(preview.error).toMatch(/recognize/i);
+    expect(preview.raw).toBeTruthy(); // kept so the shape can be diagnosed from the UI
+  });
+
+  it('the close-sync surfaces the error and never fabricates closes from it', async () => {
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'VRAX',
+      side: 'long',
+      quantity: 50,
+      entryPrice: 20,
+      entryDate: '2026-01-02',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+    mockPositions({ nope: 1 });
+
+    const r1 = await syncClosedWebullPositions('ACC1');
+    const r2 = await syncClosedWebullPositions('ACC1'); // even "confirmed" twice
+    expect(r1.ok).toBe(false);
+    expect(r2.ok).toBe(false);
+    expect(getPosition(p.id)!.status).toBe('open');
+    expect(getPosition(p.id)!.remainingQuantity).toBe(50);
   });
 });

@@ -903,6 +903,10 @@ export interface WebullPositionsPreview {
   /** Top-level keys of the first few unmapped rows (option-looking first), to
    *  diagnose an unrecognized payload shape without dumping the whole payload. */
   unmappedSample?: { keys: string[]; looksLikeOption: boolean }[];
+  /** Distinct symbols carried by the unmapped rows — the server's close
+   *  detector freezes its miss streaks for these (an unparseable row still
+   *  proves the broker holds SOMETHING in that symbol). */
+  unmappedSymbols?: string[];
   error?: string;
 }
 

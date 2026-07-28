@@ -313,6 +313,10 @@ describe('positions + journal routes (integration)', () => {
   });
 
   describe('withPnl pricing', () => {
+    // A far-future expiration on purpose: an already-EXPIRED contract is never
+    // priced off a live chain at all (resolveOptionMarks refuses — Yahoo would
+    // silently substitute the nearest live chain), so these fixtures must stay
+    // live for "an open lot gets priced" to be the thing under test.
     const openOption = async (symbol: string, strike: number) => {
       const res = await post('/api/positions', {
         assetType: 'option',
@@ -323,7 +327,7 @@ describe('positions + journal routes (integration)', () => {
         entryDate: '2026-05-01',
         optionType: 'call',
         strike,
-        expiration: '2026-05-16',
+        expiration: '2030-05-17',
       });
       return (await res.json()) as { id: number };
     };

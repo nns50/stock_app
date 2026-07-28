@@ -16,6 +16,8 @@ import { etToday } from '../../util/marketDate';
 import { webullClient, webullConfigured } from './account';
 import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../db/webullMissStreak';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
+import { classifyExpiredOptions, ExpiredOptionFinding } from '../../services/expiredOptions';
+import { resolveExpiryCloses } from '../../services/expiredOptionsSweep';
 
 // ---------------------------------------------------------------------------
 // Sync open brokerage positions from Webull into the trade journal.
@@ -42,16 +44,53 @@ function pick(o: Record<string, unknown>, keys: string[]): unknown {
   return undefined;
 }
 
-/** Pull the position list out of whatever wrapper Webull returns. */
+const LIST_WRAPPER_KEYS = ['positions', 'holdings', 'items', 'data', 'list'];
+
+/** Pull the position list out of whatever wrapper Webull returns. Looks one
+ *  level deep too (`{ code, data: { items: [...] } }` is a common envelope),
+ *  so an extra wrapper layer doesn't read a full account as empty. */
 export function extractPositions(raw: unknown): Record<string, unknown>[] {
   if (Array.isArray(raw)) return raw as Record<string, unknown>[];
   if (raw && typeof raw === 'object') {
-    for (const key of ['positions', 'holdings', 'items', 'data', 'list']) {
+    for (const key of LIST_WRAPPER_KEYS) {
       const v = (raw as Record<string, unknown>)[key];
       if (Array.isArray(v)) return v as Record<string, unknown>[];
+      if (v && typeof v === 'object') {
+        for (const inner of LIST_WRAPPER_KEYS) {
+          const nested = (v as Record<string, unknown>)[inner];
+          if (Array.isArray(nested)) return nested as Record<string, unknown>[];
+        }
+      }
     }
   }
   return [];
+}
+
+/** True when `raw` is a shape extractPositions can actually read a list from —
+ *  a recognized-but-EMPTY list included. This distinction matters because a
+ *  zero-row extraction has two very different meanings: "the account holds
+ *  nothing" (a real empty list) versus "we couldn't find the list in this
+ *  payload" (a shape these wrappers don't cover). The close-detector treats
+ *  "holds nothing" as "every open journal position here has been sold" — so
+ *  conflating the two would let a silent Webull response-shape change
+ *  mass-close the whole journal at fabricated prices after the miss-streak
+ *  debounce. An unrecognized payload is surfaced as an ERROR instead. */
+export function isRecognizedPositionsPayload(raw: unknown): boolean {
+  if (Array.isArray(raw)) return true;
+  if (raw && typeof raw === 'object') {
+    for (const key of LIST_WRAPPER_KEYS) {
+      const v = (raw as Record<string, unknown>)[key];
+      if (Array.isArray(v)) return true;
+      if (
+        v &&
+        typeof v === 'object' &&
+        LIST_WRAPPER_KEYS.some((k) => Array.isArray((v as Record<string, unknown>)[k]))
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function toIsoDate(v: unknown): string | undefined {
@@ -231,6 +270,15 @@ export interface PositionsPreview {
    *  first), so an unrecognized payload shape can be diagnosed from the UI
    *  without dumping the whole raw payload. */
   unmappedSample: { keys: string[]; looksLikeOption: boolean }[];
+  /** Distinct symbols carried by the unmapped rows (top level or any leg).
+   *  The close-detector freezes its miss streaks for these symbols: a row the
+   *  mapper couldn't parse still proves the broker holds SOMETHING in that
+   *  symbol, so "missing from the mapped rows" is not evidence of a sale. The
+   *  concrete case: a journal-tracked single-leg option whose broker row turns
+   *  into a MULTI-leg strategy container (the user legs into a spread) — the
+   *  container is deliberately unmapped, and without this the leg would be
+   *  "missing" two syncs running and get auto-closed while still held. */
+  unmappedSymbols: string[];
   error?: string;
 }
 
@@ -242,7 +290,31 @@ async function fetchPositions(accountId: string): Promise<{ ok: boolean; url: st
   return { ok: r.ok, url: r.url, status: r.status, raw: r.data };
 }
 
-const EMPTY_UNMAPPED = { unmappedOptions: 0, unmappedSample: [] as { keys: string[]; looksLikeOption: boolean }[] };
+const EMPTY_UNMAPPED = {
+  unmappedOptions: 0,
+  unmappedSample: [] as { keys: string[]; looksLikeOption: boolean }[],
+  unmappedSymbols: [] as string[],
+};
+
+const SYMBOL_KEYS = ['symbol', 'ticker', 'instrument_symbol', 'underlying_symbol'];
+
+/** Every symbol a raw row mentions — top level plus any legs. Used only for
+ *  the unmappedSymbols freeze list, so being generous is safe: an extra symbol
+ *  here can only make the close-detector MORE conservative this sync. */
+function symbolsOf(row: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  const top = pick(row, SYMBOL_KEYS);
+  if (top) out.push(String(top).toUpperCase());
+  if (Array.isArray(row.legs)) {
+    for (const leg of row.legs) {
+      if (leg && typeof leg === 'object') {
+        const s = pick(leg as Record<string, unknown>, SYMBOL_KEYS);
+        if (s) out.push(String(s).toUpperCase());
+      }
+    }
+  }
+  return out;
+}
 
 /** Fetch + map live Webull positions for an account, writing nothing. */
 export async function previewWebullPositions(accountId: string): Promise<PositionsPreview> {
@@ -264,6 +336,25 @@ export async function previewWebullPositions(accountId: string): Promise<Positio
     };
   }
   const rows = extractPositions(r.raw);
+  // Zero rows out of a payload whose shape isn't recognized is NOT an empty
+  // account — it's a list we failed to find (see isRecognizedPositionsPayload).
+  // Reported as an error so the sync skips this cycle and the failure is
+  // visible (Sync-now toast, scheduler failure event), instead of the
+  // close-detector reading it as "everything here has been sold".
+  if (rows.length === 0 && !isRecognizedPositionsPayload(r.raw)) {
+    return {
+      ok: false,
+      url: r.url,
+      accountId,
+      positions: [],
+      unmapped: 0,
+      ...EMPTY_UNMAPPED,
+      raw: r.raw,
+      error:
+        'Webull returned a positions payload in a shape this app does not recognize — refusing to treat it as an ' +
+        'empty account. Check the raw payload via Settings → Webull → Preview.',
+    };
+  }
   const positions: ImportablePosition[] = [];
   const unmappedRows: Record<string, unknown>[] = [];
   for (const row of rows) {
@@ -278,6 +369,7 @@ export async function previewWebullPositions(accountId: string): Promise<Positio
     .sort((a, b) => Number(looksLikeOption(b)) - Number(looksLikeOption(a)))
     .slice(0, 5)
     .map((row) => ({ keys: Object.keys(row), looksLikeOption: looksLikeOption(row) }));
+  const unmappedSymbols = [...new Set(unmappedRows.flatMap(symbolsOf))];
   return {
     ok: true,
     url: r.url,
@@ -287,6 +379,7 @@ export async function previewWebullPositions(accountId: string): Promise<Positio
     unmapped: unmappedRows.length,
     unmappedOptions,
     unmappedSample,
+    unmappedSymbols,
   };
 }
 
@@ -443,6 +536,11 @@ const NOTE_AUTO_CLOSED =
   'Auto-closed via Webull sync — no longer held at the broker. Exit price is an ESTIMATE from the ' +
   'latest quote (not a confirmed fill); edit it if you have your broker confirmation.';
 
+const NOTE_EXPIRED_AUTO_CLOSED =
+  'Auto-closed via Webull sync — no longer listed at the broker, and the contract finished clearly out of ' +
+  'the money at expiry, so a $0 exit dated on the expiry is recorded (the same disposition the expired-option ' +
+  'sweep applies). Edit it if your broker statement says otherwise.';
+
 /**
  * Close the gap between what the journal thinks is open (for Webull-tracked
  * positions only) and what Webull's live position list actually shows,
@@ -491,6 +589,14 @@ async function closePositionsFromPreview(
     (lotsByKey.get(key) ?? lotsByKey.set(key, []).get(key)!).push(p);
   }
 
+  // Symbols whose broker rows (partly) failed to parse THIS preview. A row we
+  // couldn't map still proves the broker holds SOMETHING in that symbol, so a
+  // gap against only the mapped rows is not evidence of a sale — the streak is
+  // frozen (neither bumped nor cleared) rather than fed unreliable data. The
+  // concrete case is a tracked single leg whose broker row becomes a multi-leg
+  // strategy container the mapper deliberately leaves unmapped.
+  const unmappedSymbols = new Set(preview.unmappedSymbols ?? []);
+
   const toClose = new Map<
     string,
     { lots: Position[]; qty: number; journalQtyBefore: number; brokerQty: number; justConfirmed: boolean }
@@ -504,6 +610,7 @@ async function closePositionsFromPreview(
     const brokerQty = liveQtyByKey.get(key) ?? 0;
     const gap = journalQty - brokerQty;
     if (gap > 1e-9) {
+      if (unmappedSymbols.has(lots[0].symbol.toUpperCase())) continue;
       // Missing (fully or partially) from THIS preview — require it to stay
       // missing on MISS_CONFIRM_THRESHOLD consecutive syncs, with no
       // fully-confirmed observation in between, before trusting it enough to
@@ -528,36 +635,94 @@ async function closePositionsFromPreview(
   }
   if (toClose.size === 0) return { closed: 0, closedSymbols: [] };
 
-  // Price once per contract (any lot of the same contract shares one live price).
-  const prices = await priceMap(Array.from(toClose.values(), ({ lots }) => lots[0]));
+  // A confirmed-gone contract is priced one of two ways. A LIVE contract gets
+  // the same quote/mark the Positions page shows (an estimate, flagged as such
+  // in the exit note). An option whose expiration has already PASSED has no
+  // live mark to get — resolveOptionMarks correctly refuses to invent one —
+  // and pricing it that way left the position stuck open FOREVER: every sync
+  // confirmed it gone, found no price, and "retried next sync" against a
+  // contract that will never quote again. The value such a contract actually
+  // ended at is the expired-option sweep's question, so its classification is
+  // reused here: unambiguously worthless → a $0 exit dated on the expiry
+  // (exactly what the sweep's own button would book); in-the-money / pin-risk
+  // / unpriceable → left open for the human, same as the sweep, since a
+  // fabricated cash exit would misstate an exercise or assignment.
+  const todayEt = today();
+  const isExpiredOption = (p: Position) => p.assetType === 'option' && !!p.expiration && p.expiration < todayEt;
+  const liveLots: Position[] = [];
+  const expiredLots: Position[] = [];
+  for (const { lots } of toClose.values()) (isExpiredOption(lots[0]) ? expiredLots : liveLots).push(lots[0]);
 
-  const exitDate = today();
+  // Price once per contract (any lot of the same contract shares one live price).
+  const prices = await priceMap(liveLots);
+  const expiredFindings = new Map<number, ExpiredOptionFinding>();
+  if (expiredLots.length) {
+    const closeAtExpiry = await resolveExpiryCloses(expiredLots);
+    for (const f of classifyExpiredOptions(expiredLots, closeAtExpiry)) expiredFindings.set(f.positionId, f);
+  }
+
   const closedSymbols = new Set<string>();
   let closed = 0;
   for (const [key, { lots, qty, journalQtyBefore, brokerQty, justConfirmed }] of toClose) {
-    const exitPrice = prices.get(lots[0].id)?.price;
-    if (exitPrice == null) {
-      // Confirmed gone at the broker but there's no price to record the exit at
-      // (e.g. an illiquid contract the quote resolver can't reach right now).
-      // Left open to retry next sync — but log it ONCE so a position that stays
-      // stuck this way is visible on Recent Activity instead of silently never
-      // closing. Only on the confirming sync, to avoid one event per tick.
-      if (justConfirmed) {
-        logAutotradeEvent({
-          symbol: lots[0].symbol,
-          stage: 'execution',
-          action: 'position_reconcile_skipped',
-          detail: {
-            via: 'broker_sync',
-            accountId: preview.accountId,
-            reason: 'no_price',
-            journalQty: journalQtyBefore,
-            brokerQty,
-            note: 'Confirmed sold at the broker but no live price was available to record the exit — will retry on the next sync. Close it manually from Positions if it stays stuck.',
-          },
-        });
+    const expired = expiredFindings.get(lots[0].id);
+    let exitPrice: number;
+    let exitDate: string;
+    let notes: string;
+    if (expired) {
+      if (expired.disposition !== 'worthless') {
+        // Needs a human — same split the expired-option sweep applies. Logged
+        // once (on the confirming sync) so it's visible on Recent Activity;
+        // the Positions page's expired-options banner explains what to do.
+        if (justConfirmed) {
+          logAutotradeEvent({
+            symbol: lots[0].symbol,
+            stage: 'execution',
+            action: 'position_reconcile_skipped',
+            detail: {
+              via: 'broker_sync',
+              accountId: preview.accountId,
+              reason: `expired_${expired.disposition}`,
+              journalQty: journalQtyBefore,
+              brokerQty,
+              note: `The broker no longer lists this expired contract, but it is not safe to close automatically: ${expired.reason}. Record the real outcome from the Positions page's expired-options banner.`,
+            },
+          });
+        }
+        continue; // leave open for the human / the banner
       }
-      continue; // can't price it — leave open, retry next sync
+      exitPrice = 0;
+      // Dated on the expiry itself, not today — that is when the position
+      // ceased to exist, matching the expired-option sweep's own bookkeeping.
+      exitDate = lots[0].expiration!;
+      notes = NOTE_EXPIRED_AUTO_CLOSED;
+    } else {
+      const livePrice = prices.get(lots[0].id)?.price;
+      if (livePrice == null) {
+        // Confirmed gone at the broker but there's no price to record the exit at
+        // (e.g. an illiquid contract the quote resolver can't reach right now).
+        // Left open to retry next sync — but log it ONCE so a position that stays
+        // stuck this way is visible on Recent Activity instead of silently never
+        // closing. Only on the confirming sync, to avoid one event per tick.
+        if (justConfirmed) {
+          logAutotradeEvent({
+            symbol: lots[0].symbol,
+            stage: 'execution',
+            action: 'position_reconcile_skipped',
+            detail: {
+              via: 'broker_sync',
+              accountId: preview.accountId,
+              reason: 'no_price',
+              journalQty: journalQtyBefore,
+              brokerQty,
+              note: 'Confirmed sold at the broker but no live price was available to record the exit — will retry on the next sync. Close it manually from Positions if it stays stuck.',
+            },
+          });
+        }
+        continue; // can't price it — leave open, retry next sync
+      }
+      exitPrice = livePrice;
+      exitDate = todayEt;
+      notes = NOTE_AUTO_CLOSED;
     }
     let remaining = qty;
     let reconciled = 0;
@@ -566,7 +731,7 @@ async function closePositionsFromPreview(
       if (remaining <= 1e-9) break;
       const take = Math.min(remaining, p.remainingQuantity);
       if (take <= 1e-9) continue;
-      const result = addExit(p.id, { quantity: take, exitPrice, exitDate, notes: NOTE_AUTO_CLOSED });
+      const result = addExit(p.id, { quantity: take, exitPrice, exitDate, notes });
       if (result) {
         closed++;
         reconciled += take;
@@ -602,6 +767,10 @@ async function closePositionsFromPreview(
           brokerQty,
           gapClosed: reconciled,
           exitPrice,
+          // How the exit price was arrived at, so the event reads honestly:
+          // a live-quote ESTIMATE vs the $0 an expired-worthless contract
+          // factually ended at (dated on the expiry, not today).
+          pricedBy: expired ? 'expired_worthless' : 'live_quote',
           fullyClosed: journalQtyBefore - reconciled <= 1e-9,
           // Flags the self-heal path (a legacy unassigned row closed + claimed
           // in a single-account setup) so it's auditable as distinct from a

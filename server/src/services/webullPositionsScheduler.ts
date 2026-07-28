@@ -1,4 +1,5 @@
 import { getSetting, setSetting } from '../db/settings';
+import { logAutotradeEvent } from '../db/autotradeEvents';
 import { runWebullPositionsSync, WebullSyncResult } from '../providers/webull/positions';
 import { reconcileAllWorking } from './trading/reconcile';
 
@@ -110,6 +111,48 @@ export async function syncWebullAccount(accountId: string): Promise<WebullFullSy
   return { ...posResult, ordersReconciled: orderResult.reconciled, ordersChanged: orderResult.changed };
 }
 
+/** Last outcome per account: undefined = never observed, null = last run
+ *  succeeded, a string = last run's failure message. In-memory on purpose —
+ *  it only gates the failure/recovery TRANSITION events below, and after a
+ *  restart re-reporting one transition is harmless. */
+const lastSyncError = new Map<string, string | null>();
+
+/** Tests only: forget prior outcomes so transition events fire predictably. */
+export function resetWebullSyncFailureTracking(): void {
+  lastSyncError.clear();
+}
+
+/** Log the failure/recovery TRANSITIONS of the background sync to the Recent
+ *  Activity feed. A background sync that quietly stops working (an expired
+ *  token, a changed payload shape) is indistinguishable from "nothing to sync"
+ *  from the Positions page — the journal just drifts stale against the broker,
+ *  with the only trace on the server console nobody reads. Transition-only so
+ *  a persistent failure is one event, not one per tick. */
+function noteSyncOutcome(accountId: string, error: string | null): void {
+  const prev = lastSyncError.get(accountId);
+  lastSyncError.set(accountId, error);
+  if (error && !prev) {
+    logAutotradeEvent({
+      stage: 'execution',
+      action: 'webull_sync_failed',
+      detail: {
+        via: 'broker_sync_scheduler',
+        accountId,
+        error,
+        note:
+          'The background Webull position sync is failing — no closes or imports happen until it recovers, so ' +
+          'the journal will drift from the broker. Check Settings → Webull.',
+      },
+    });
+  } else if (!error && prev) {
+    logAutotradeEvent({
+      stage: 'execution',
+      action: 'webull_sync_recovered',
+      detail: { via: 'broker_sync_scheduler', accountId, note: 'Background Webull position sync is working again.' },
+    });
+  }
+}
+
 /** One sync pass over EVERY configured account — exposed for tests/manual
  *  triggering. Returns null (a no-op, not an error) while disabled or before
  *  any account id is set; otherwise one result per account. Accounts sync
@@ -123,9 +166,12 @@ export async function runSchedulerTick(): Promise<WebullFullSyncResult[] | null>
   const results: WebullFullSyncResult[] = [];
   for (const accountId of cfg.accountIds) {
     try {
-      results.push(await syncWebullAccount(accountId));
+      const r = await syncWebullAccount(accountId);
+      results.push(r);
+      noteSyncOutcome(accountId, r.ok ? null : r.error || 'sync failed');
     } catch (e) {
       console.error(`[webull-positions-scheduler] account ${accountId} sync failed:`, (e as Error).message);
+      noteSyncOutcome(accountId, (e as Error).message || 'sync failed');
     }
   }
   return results;

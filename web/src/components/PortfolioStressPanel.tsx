@@ -16,7 +16,7 @@ const REASON_LABEL: Record<string, string> = {
  * expanded: unlike the exposure panel above it (derived from data the page
  * already loaded), this needs its own per-symbol fundamentals lookups.
  */
-export function PortfolioStressPanel({ reloadKey = 0 }: { reloadKey?: number }) {
+export function PortfolioStressPanel({ reloadKey = 0 }: { reloadKey?: number | string }) {
   return (
     <CollapsibleCard id="positions.stressTest" title="Market stress test" defaultCollapsed>
       <StressBody reloadKey={reloadKey} />
@@ -29,7 +29,7 @@ export function PortfolioStressPanel({ reloadKey = 0 }: { reloadKey?: number }) 
  *  per symbol, so recomputing it on every tick would be a real provider cost
  *  for numbers that only move when a position does. Collapsed, this body is
  *  unmounted, so a key change costs nothing at all. */
-function StressBody({ reloadKey }: { reloadKey: number }) {
+function StressBody({ reloadKey }: { reloadKey: number | string }) {
   const data = useAsync(() => client.portfolioStress(), [reloadKey]);
 
   if (data.loading) return <Spinner label="Beta-weighting your open positions…" />;

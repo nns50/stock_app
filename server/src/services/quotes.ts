@@ -3,6 +3,7 @@ import { Position } from '../db/positions';
 import { getProvider } from '../providers';
 import { Quote } from '../providers/types';
 import { chunk } from '../util/async';
+import { etToday } from '../util/marketDate';
 
 // ---------------------------------------------------------------------------
 // Quote helpers with a durable SQLite fallback. Live quotes are persisted to
@@ -90,8 +91,23 @@ export async function resolveOptionMarks(
 
   // Group positions by symbol + expiration to minimize chain fetches.
   const groups = new Map<string, Position[]>();
+  const today = etToday();
   for (const p of positions) {
     if (!p.expiration) {
+      out.set(p.id, { mark: null, delta: null });
+      continue;
+    }
+    // An already-expired contract has NO live mark, and asking a provider for
+    // its chain doesn't return "expired": Yahoo silently falls back to the
+    // NEAREST live expiration when the requested date no longer exists, where
+    // the same strike usually still matches — so the dead contract got priced
+    // with a live contract's mark. That fed a fabricated "current price" (and
+    // unrealized P&L) to the Positions page, and worse, gave the Webull
+    // close-sync a fabricated exit price to book. Null is the honest answer;
+    // what an expired contract was worth AT expiry is the expired-option
+    // sweep's job (services/expiredOptions.ts), priced from the underlying's
+    // close on that date. Same-day expiries still price — they trade all session.
+    if (p.expiration < today) {
       out.set(p.id, { mark: null, delta: null });
       continue;
     }
