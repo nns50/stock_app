@@ -515,6 +515,36 @@ the verdict did: a new pre-registered hypothesis (different entry signal, spread
 instead of long premium, an event-driven trigger) tested OOS first — not a re-tune
 of the shapes these ladders already priced.
 
+**A third worked example — relative strength at the right horizon (2026-07), one
+adoption and one honest kill.** The original weights experiment's RS tilt lost — but
+it ran at the shipped **20-day** lookback, squarely inside the documented one-month
+*reversal* zone, so it never tested the cross-sectional momentum premium (which
+lives at ~3-12 months). The `rshorizon` ladder registered the real claim: RS weight
+15 added on top of the shipped mix, varying ONLY the lookback — off / 20d (the
+reversal-zone control) / 63d / 126d — across the same two splits as the exits
+finding. What survived both splits is **narrower than the hypothesis**: the joint
+"longer is always better" claim FAILED (126d beat the baseline on one split and
+lost to it on the other — parked), but **63d beat both the baseline and the 20d
+control on both splits** (−$94 → +$14, then +$171 → +$280 per trade OOS, with the
+win rate and max drawdown improving both times — p 0.086 on the confirmation
+split), and the 20d control finished **last or near-last both times**. The control
+is what makes this credible: horizon moves the result in the predicted direction on
+both ends, so the mechanism — quarterly relative strength selects, monthly relative
+strength mean-reverts — is doing the work, not a lucky rung. Adopted 2026-07-28:
+**Relative strength weight 15, RS lookback 63 days**, benchmark SPY. Two caveats
+stand: the ladder ran under the old 2R-bracket exits, so the RS-63 + runner-exits
+COMBINATION is validated only forward, by the Journal; and the dollar figures are
+pre-cost — the **Stop overrun** report above is the haircut to apply as real fills
+accumulate.
+
+The same confirmation pass killed a hypothesis, which is the discipline working:
+**direction 'both'** beat long-only on the first split (+$49 vs −$94) and then lost
+badly on the fresh one (+$43 vs +$171, with a deeper drawdown) — the shorts bled
+into a friendly tape. A winner that doesn't survive the fresh split was noise:
+**the loop stays long-only.** If shorting ever comes back, it comes back as a NEW
+pre-registered, regime-conditional hypothesis (short only in risk-off tape), not as
+a standing setting.
+
 **Then make the score bite.** Ranking is only half the job: without a floor, the
 auto-trade loop will still take its 6 trades a day from whatever passed the raw
 filters, even when the best available score is a 12. Once the Edge Report shows your
