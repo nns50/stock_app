@@ -455,6 +455,46 @@ describe('positions + journal routes (integration)', () => {
       expect(body.positions[0].entryTime).toBe('09:45');
     });
 
+    it('round-trips the at-entry context, exit reasons, and a null entry date (2026-07-26 columns)', async () => {
+      const res = await post('/api/export/import', {
+        mode: 'merge',
+        positions: [
+          {
+            assetType: 'stock',
+            symbol: 'CTX',
+            side: 'long',
+            quantity: 10,
+            entryPrice: 50,
+            // Null = "genuinely unknown" (a broker-imported lot). The schema
+            // used to REQUIRE a date, so a backup containing such a lot failed
+            // to restore at all — and the delete-Undo of one 400'd.
+            entryDate: null,
+            entryScore: 72.5,
+            marketRegime: 'risk-on',
+            marketAtrPct: 1.8,
+            tags: ['webull'],
+            exits: [{ quantity: 4, exitPrice: 55, exitDate: '2026-06-02', exitReason: 'target' }],
+          },
+        ],
+      });
+      expect(res.status).toBe(200);
+
+      const body = (await getJson('/api/positions?symbol=CTX')) as {
+        positions: {
+          entryDate: string | null;
+          entryScore: number | null;
+          marketRegime: string | null;
+          marketAtrPct: number | null;
+          exits: { exitReason: string | null }[];
+        }[];
+      };
+      expect(body.positions[0].entryDate).toBeNull();
+      expect(body.positions[0].entryScore).toBe(72.5);
+      expect(body.positions[0].marketRegime).toBe('risk-on');
+      expect(body.positions[0].marketAtrPct).toBe(1.8);
+      expect(body.positions[0].exits[0].exitReason).toBe('target');
+    });
+
     it('holds the same line the create route does on dates and prices', async () => {
       const base = {
         assetType: 'stock',

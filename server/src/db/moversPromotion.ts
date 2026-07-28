@@ -1,4 +1,5 @@
 import { db } from './index';
+import { etToday } from '../util/marketDate';
 
 // ---------------------------------------------------------------------------
 // Movers auto-promotion (docs/AUTOTRADING_SPEC.md — the 2026-07-10
@@ -9,17 +10,20 @@ import { db } from './index';
 // genuinely active name every day.
 // ---------------------------------------------------------------------------
 
+/** `n` days before `from` (a Date, read as its ET calendar day) as YYYY-MM-DD
+ *  — anchored to the US-market day so the window compares against the same
+ *  calendar recordMoverOccurrence() now stamps. */
 function daysAgo(n: number, from = new Date()): string {
-  const d = new Date(from);
+  const d = new Date(`${etToday(from.getTime())}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() - n);
   return d.toISOString().slice(0, 10);
 }
 
-/** Record today's (UTC calendar day) occurrence for a symbol. Once per day
- *  regardless of how many loop ticks see it — mirrors ivHistory.ts's
+/** Record today's (US-market ET calendar day) occurrence for a symbol. Once
+ *  per day regardless of how many loop ticks see it — mirrors ivHistory.ts's
  *  recordAtmIv() upsert-by-day shape, but IGNORE instead of UPDATE since
  *  there's nothing to overwrite for a plain occurrence marker. */
-export function recordMoverOccurrence(symbol: string, date = new Date().toISOString().slice(0, 10)): void {
+export function recordMoverOccurrence(symbol: string, date = etToday()): void {
   db.prepare('INSERT OR IGNORE INTO movers_occurrences(symbol, date, created_at) VALUES (?, ?, ?)').run(
     symbol.toUpperCase(),
     date,

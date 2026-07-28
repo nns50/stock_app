@@ -104,6 +104,13 @@ export function generateSignal(
 
   const targetDistance = stopDistance * cfg.targetRMultiple;
   const target = round2(long ? entry + targetDistance : entry - targetDistance);
+  // A SHORT's target sits below entry, and target distance is a multiple of
+  // the (ATR-based) stop distance — on a volatile low-priced name it can land
+  // at or below zero, which is not a price any bracket leg can carry (the
+  // broker rejects the whole order, same class as the sub-penny rejection
+  // documented above). No sound plan exists for it — fail the signal like the
+  // impossible-stop case rather than emit an unplaceable one.
+  if (target <= 0) return null;
 
   const { gapPct, relVolume, rsi } = candidate.indicators;
   const rationale =
@@ -142,7 +149,7 @@ export function runAutotradeDecision(
   for (const candidate of candidates) {
     const signal = generateSignal(candidate, cfg);
     if (!signal) {
-      const reason = 'insufficient volatility history (ATR) to set a sound stop-loss';
+      const reason = 'no sound stop/target from ATR (insufficient history, or a level would land at/below $0)';
       skipped.push({ symbol: candidate.symbol, reason });
       logAutotradeEvent({ symbol: candidate.symbol, stage: 'decision', action: 'no_signal', detail: { reason } });
       continue;

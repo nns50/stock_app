@@ -42,11 +42,15 @@ Guidelines:
   `build-test` CI job is green.
 - Tests: server Vitest (pure services) + web Vitest/jsdom (glob `src/**/*.test.{ts,tsx}`;
   jsdom render smokes need a `ResizeObserver` shim for Recharts).
-- **`npm run typecheck` covers test files too.** `web/tsconfig.json` used to exclude
-  them, which let mocks and fixtures drift from `api/types.ts` unnoticed — a fixture
-  could omit required fields, so the test asserted against a shape the API never
-  returns. If you add a fixture, give it every field; reach for `as never` only when
-  you genuinely mean "this call is not what's under test".
+- **`npm run typecheck` covers test files too — in BOTH workspaces.**
+  `web/tsconfig.json` used to exclude them, which let mocks and fixtures drift from
+  `api/types.ts` unnoticed — a fixture could omit required fields, so the test asserted
+  against a shape the API never returns. The server had the same gap until 2026-07-28
+  (its `test/` sat outside `tsconfig.json`'s include); its typecheck now also runs
+  `tsconfig.test.json` (src + test, bundler resolution to match how vitest loads
+  tests — the build config alone still owns src's stricter node16 rules). If you add a
+  fixture, give it every field; reach for `as never` only when you genuinely mean
+  "this call is not what's under test".
 - Demo data: `npm run seed` (idempotent; `--force` to add anyway).
 - Run locally: `npm run dev` → API `:3001` + web `:5173`.
 

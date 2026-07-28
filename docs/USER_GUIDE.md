@@ -1861,7 +1861,11 @@ One home (⚙ or `⌘K → Settings`) for everything:
 > **login** before any data loads — use this when hosting on a public URL. It's one shared
 > password (no usernames). You can add **two-factor** (an authenticator-app code) from
 > **Settings → Account**; if you lose your authenticator, set `DISABLE_MFA=true` on the
-> server to recover. See the README and the [Deployment guide](DEPLOY.md).
+> server to recover. Repeated failed logins lock new attempts out briefly (30s, doubling
+> with continued failures — an existing session keeps working), and each authenticator
+> code works **once**: two protected actions inside the same 30-second code window (e.g.
+> logging in and then disabling two-factor) each need their own code, so wait for the
+> next one. See the README and the [Deployment guide](DEPLOY.md).
 
 ---
 

@@ -1,7 +1,11 @@
 import { db } from './index';
+import { etToday } from '../util/marketDate';
 
-/** Record (upsert) today's ATM implied vol for a symbol. */
-export function recordAtmIv(symbol: string, atmIv: number, date = new Date().toISOString().slice(0, 10)): void {
+/** Record (upsert) today's ATM implied vol for a symbol. "Today" is the US
+ *  market's calendar day (ET), not the box's UTC date — a chain viewed from
+ *  the Options page after 20:00 ET would otherwise accrue its once-per-day
+ *  IV sample under TOMORROW's date (see util/marketDate.ts). */
+export function recordAtmIv(symbol: string, atmIv: number, date = etToday()): void {
   db.prepare(
     `INSERT INTO iv_history(symbol, date, atm_iv, updated_at) VALUES (?, ?, ?, ?)
      ON CONFLICT(symbol, date) DO UPDATE SET atm_iv = excluded.atm_iv, updated_at = excluded.updated_at`,

@@ -105,6 +105,13 @@ describe('generateSignal', () => {
     expect(generateSignal(c, { stopAtrMultiple: 1.5, targetRMultiple: 2 })).toBeNull();
   });
 
+  it("returns null when a SHORT's target would land at or below zero (unplaceable bracket leg)", () => {
+    // price 20, atr 7 -> stop 30.5 (fine), but target = 20 - 10.5*2 = -1:
+    // no bracket leg can carry a non-positive price, so no signal.
+    const c = candidate({ price: 20, direction: 'short', indicators: ind({ price: 20, atr: 7 }) });
+    expect(generateSignal(c, { stopAtrMultiple: 1.5, targetRMultiple: 2 })).toBeNull();
+  });
+
   it('includes a human-readable rationale', () => {
     const signal = generateSignal(candidate({ direction: 'long' }));
     expect(signal!.rationale).toMatch(/Long breakout/);

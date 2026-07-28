@@ -73,6 +73,10 @@ const importedExit = z.object({
   fees: z.number().nonnegative().optional(),
   notes: z.string().nullable().optional(),
   sourceIntentId: z.number().nullable().optional(),
+  /** Why the exit happened. Absent here until 2026-07-28, so every restore
+   *  (and the Positions page's delete-Undo, which round-trips through this
+   *  route) silently flattened it to null. */
+  exitReason: z.enum(['stop', 'target', 'time_exit', 'manual']).nullable().optional(),
   createdAt: z.number().optional(),
 });
 
@@ -84,7 +88,13 @@ const importedPosition = z.object({
   // Positive for the same reason POST /positions demands it: a 0 entry makes
   // costBasis 0, so the entire market value books as unrealized "gain".
   entryPrice: z.number().positive(),
-  entryDate: isoDate,
+  // Nullable, unlike POST /positions' required date: entry_date went nullable
+  // 2026-07-26 ("we genuinely do not know when this broker-imported lot was
+  // opened"), and positionsToJson() emits exactly that null — a required date
+  // here made every backup containing such a lot FAIL to restore (and the
+  // delete-Undo of one 400), which is worse than the lax check this schema's
+  // own header warns about.
+  entryDate: isoDate.nullable(),
   /** Restores the time-of-day breakdown. Absent here until 2026-07-26, so
    *  every restore silently flattened it to null. */
   entryTime: z
@@ -110,6 +120,12 @@ const importedPosition = z.object({
    *  through this route) handed every position back unassigned — re-creating
    *  exactly the account-blind state that column exists to prevent. */
   accountId: z.string().nullable().optional(),
+  /** At-entry context (autotrade-stamped; see the positions DDL). Absent here
+   *  until 2026-07-28, so every restore silently flattened all three to null —
+   *  the exact data-loss trap this schema's own header comment documents. */
+  entryScore: z.number().nullable().optional(),
+  marketRegime: z.string().nullable().optional(),
+  marketAtrPct: z.number().nullable().optional(),
   createdAt: z.number().optional(),
   updatedAt: z.number().optional(),
   exits: z.array(importedExit).optional(),

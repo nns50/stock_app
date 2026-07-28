@@ -242,9 +242,10 @@ npm run research       # scripted walk-forward sweep over the backtest API (need
 ```
 
 CI runs lint, format-check, typecheck, tests, and build on every PR. Typecheck
-covers **test files as well as source** — test fixtures are checked against
-`web/src/api/types.ts`, so a mock can't quietly describe a response shape the API
-never returns.
+covers **test files as well as source** in both workspaces — web fixtures are
+checked against `web/src/api/types.ts`, and server tests against the real service
+types (`server/tsconfig.test.json`), so a mock can't quietly describe a shape the
+code never returns.
 
 ### `research` — scripted walk-forward sweeps
 
