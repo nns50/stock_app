@@ -31,6 +31,15 @@ export default tseslint.config(
     },
   },
   {
+    // Plain browser scripts served verbatim from web/public (no bundler, no
+    // TS — e.g. theme-init.js): declare the DOM globals that TS files get
+    // from lib.dom, since js.configs.recommended's no-undef knows none.
+    files: ['web/public/**/*.js'],
+    languageOptions: {
+      globals: { window: 'readonly', document: 'readonly', localStorage: 'readonly' },
+    },
+  },
+  {
     // React hooks correctness for the frontend.
     files: ['web/**/*.{ts,tsx}'],
     plugins: { 'react-hooks': reactHooks },

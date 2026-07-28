@@ -12,6 +12,7 @@ import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { openPaperPosition } from '../src/db/autotradePaperPositions';
 import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
 import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
+import { saveLastTick } from '../src/db/autotradeLastTick';
 import { getProvider } from '../src/providers';
 
 // End-to-end tests through the real Express app → routers → services → SQLite
@@ -1052,6 +1053,49 @@ describe('trade (dry-run) routes (integration)', () => {
   });
 });
 
+describe('health (integration)', () => {
+  it('reports DB usability, provider status, and last loop-tick age', async () => {
+    db.exec('DELETE FROM autotrade_last_tick');
+    const before = (await getJson('/api/health')) as {
+      ok: boolean;
+      provider: { name: string };
+      loopLastTickAgeMs: number | null;
+    };
+    expect(before.ok).toBe(true);
+    expect(before.provider.name).toBeTruthy();
+    // Null, not 0: the loop has never ticked (fresh DB / just booted).
+    expect(before.loopLastTickAgeMs).toBeNull();
+
+    saveLastTick({
+      ranEntries: true,
+      exitsChecked: 0,
+      exitsClosed: 0,
+      optionsExitsChecked: 0,
+      optionsExitsClosed: 0,
+      liveOrdersReconciled: 0,
+      livePositionsClosed: 0,
+      liveOptionsOrdersReconciled: 0,
+      liveOptionsPositionsClosed: 0,
+      liveOptionsExitsRequested: 0,
+      liveTimeExitsRequested: 0,
+      liveScaleInsRequested: 0,
+      candidatesScreened: 0,
+      candidatesPassedVolatility: 0,
+      signalsGenerated: 0,
+      optionsSignalsGenerated: 0,
+      optionsCandidatesConsidered: 0,
+      entriesOpened: 0,
+      optionsEntriesOpened: 0,
+      liveEntriesOpened: 0,
+      liveOptionsEntriesOpened: 0,
+      moversAutoPromoted: 0,
+    });
+    const after = (await getJson('/api/health')) as { loopLastTickAgeMs: number | null };
+    expect(after.loopLastTickAgeMs).toBeGreaterThanOrEqual(0);
+    expect(after.loopLastTickAgeMs).toBeLessThan(60_000);
+  });
+});
+
 describe('auth gate (integration)', () => {
   afterEach(() => {
     config.auth.password = '';
@@ -1070,6 +1114,14 @@ describe('auth gate (integration)', () => {
     expect(res.headers.get('x-frame-options')).toBe('DENY');
     expect(res.headers.get('referrer-policy')).toBe('no-referrer');
     expect(res.headers.get('x-powered-by')).toBeNull();
+    // The CSP is strict by audit (see the constant in src/index.ts) — these
+    // three directives are the ones that must never silently loosen.
+    const csp = res.headers.get('content-security-policy') ?? '';
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).toContain("script-src 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).not.toContain('unsafe-inline');
+    expect(csp).not.toContain('unsafe-eval');
   });
 
   it('gates data routes when a password is set — but not /health or /auth', async () => {
