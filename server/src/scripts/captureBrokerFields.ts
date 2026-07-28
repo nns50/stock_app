@@ -28,12 +28,12 @@ import {
 // read-only webullOrderStatus(). It places nothing, cancels nothing, and writes
 // nothing back to the broker or to the app's own database.
 //
-//   Q1 — does `total_day_profit_loss` include UNREALIZED P&L? accountState.ts
-//        maps it to AccountState.realizedPnlTodayUsd, which guardrails.ts
-//        documents as "Today's realized P&L" and halts the trading day on. If
-//        the broker's number is actually total, the halt trips on paper
-//        drawdown that was never lost, AND an unrealized gain can mask a real
-//        realized loss so it never trips.
+//   Q1 — does `total_day_profit_loss` include UNREALIZED P&L? ANSWERED
+//        2026-07-28 (a live watch: it moved 1:1 with open marks, no orders in
+//        between) — it does. accountState.ts now derives realizedPnlTodayUsd
+//        as the worse of (day − unrealized) and the app's own exits dated
+//        today, so the daily-loss halt no longer consumes the raw figure. The
+//        watch stays useful as a regression check on the broker's semantics.
 //
 //   Q2 — is `filled_quantity` CUMULATIVE across executions? reconcile.ts only
 //        materializes a Position at terminal `filled`, so a partial fill that
@@ -284,11 +284,12 @@ async function main(): Promise<void> {
     mode,
     questions: {
       q1_dailyPnlSemantics: {
-        appReads: 'bal.total_day_profit_loss → AccountState.realizedPnlTodayUsd (providers/webull/accountState.ts)',
-        treatedAs: 'realized-only, per the AccountState docs + the daily_loss_halt rule in guardrails.ts',
+        appReads:
+          'bal.total_day_profit_loss (visibility only) — realizedPnlTodayUsd is now the worse of day−unrealized and own-book exits dated today (providers/webull/accountState.ts + services/trading/realizedToday.ts)',
+        treatedAs: 'includes-unrealized (confirmed 2026-07-28); the daily_loss_halt no longer consumes the raw figure',
         pnlLikeFields: mode === 'shapes-only' ? pnlFields.map((f) => f.field) : pnlFields,
         howToAnswer:
-          'Run with --watch-day-pnl while holding an open position and placing no orders: if the day figure moves with the mark, it includes unrealized and the halt is mis-specified.',
+          'Run with --watch-day-pnl while holding an open position and placing no orders: if the day figure moves with the mark, it includes unrealized (the confirmed semantics the halt now accounts for).',
         watch: dayPnlWatch
           ? { samples: dayPnlWatch.samples, verdict: dayPnlWatch.verdict }
           : 'not run — pass --watch-day-pnl',

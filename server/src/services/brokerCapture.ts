@@ -253,7 +253,7 @@ export function classifyDayPnlSemantics(samples: BalanceSample[]): DayPnlVerdict
     return {
       semantics: 'includes-unrealized',
       detail:
-        'unrealized P&L moved and total_day_profit_loss moved with it, with no orders placed in between — so it is NOT realized-only. The daily-loss halt currently treats it as realized, meaning it can trip on open-position drawdown that was never actually lost, and an open gain can mask a real realized loss.',
+        'unrealized P&L moved and total_day_profit_loss moved with it, with no orders placed in between — so it is NOT realized-only. This is the CONFIRMED semantics for this broker (settled by a live watch on 2026-07-28) and it is handled: the daily-loss halt no longer reads the raw figure — webullAccountState feeds it the worse of (day − unrealized) and the app’s own exits dated today (services/trading/realizedToday.ts). Seeing this verdict is normal; a raw day figure that did NOT move with the marks would be the surprise now.',
     };
   }
 

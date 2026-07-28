@@ -1,8 +1,27 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+
+// The own-book side of the realized-today derivation reads the DB; mock it so
+// these provider tests stay hermetic (no initDb, no shared-file ordering).
+vi.mock('../src/services/trading/realizedToday', () => ({ realizedTodayFromBook: vi.fn() }));
+
 import { config } from '../src/config';
 import { webullAccountState } from '../src/providers/webull/accountState';
+import { realizedTodayFromBook } from '../src/services/trading/realizedToday';
+
+const mockBook = vi.mocked(realizedTodayFromBook);
+const book = (totalUsd: number) => ({
+  totalUsd,
+  journalUsd: totalUsd,
+  liveOptionsUsd: 0,
+  journalExitCount: 1,
+  liveOptionsCloseCount: 0,
+});
 
 const orig = { ...config.webull };
+beforeEach(() => {
+  // A quiet book by default; individual tests override.
+  mockBook.mockReturnValue(book(0));
+});
 afterEach(() => {
   Object.assign(config.webull, orig);
   vi.restoreAllMocks();
@@ -45,6 +64,8 @@ describe('webull account state', () => {
     expect(r.state).toMatchObject({
       buyingPowerUsd: 10.81,
       exposureUsd: 4.5,
+      // min(day − unrealized = 0 − (−130.5) = +130.5, book = 0) — the raw day
+      // figure (0.00) is NOT what lands here; see the realized-today tests.
       realizedPnlTodayUsd: 0,
       ordersToday: 0,
       currentPositionQty: 0,
@@ -181,5 +202,82 @@ describe('webull account state', () => {
     const r = await webullAccountState('ACC1');
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/no permission/i);
+  });
+});
+
+describe('realized-today derivation (the daily-loss halt input)', () => {
+  const arm = () => Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+  const balance = (day: string, unrealized?: string) => {
+    const b: Record<string, unknown> = { ...BALANCE, total_day_profit_loss: day };
+    if (unrealized === undefined) delete b.total_unrealized_profit_loss;
+    else b.total_unrealized_profit_loss = unrealized;
+    return b;
+  };
+
+  it('an open GAIN cannot mask a realized loss (the fail-open case, with the captured numbers)', async () => {
+    // The exact 2026-07-28 capture: day −45.68 while unrealized +362.50 — the
+    // raw day figure hid a ~$408 realized loss behind an open gain. The halt
+    // input must be the derived realized, not the raw −45.68.
+    arm();
+    mockBook.mockReturnValue(book(0)); // trades placed in the Webull app: our book is blind
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp(balance('-45.68', '362.50')));
+    const r = await webullAccountState('ACC1');
+    expect(r.state?.realizedPnlTodayUsd).toBeCloseTo(-408.18);
+    expect(r.realizedToday).toMatchObject({ brokerDayPnlUsd: -45.68, brokerDerivedUsd: -408.18, bookRealizedUsd: 0 });
+  });
+
+  it('pure open drawdown does not read as a realized loss (the false-trip case)', async () => {
+    // Positions down $500 on the day, nothing sold: day −500, unrealized −500.
+    // Derived = 0, book = 0 — the halt sees no realized loss.
+    arm();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp(balance('-500.00', '-500.00')));
+    const r = await webullAccountState('ACC1');
+    expect(r.state?.realizedPnlTodayUsd).toBe(0);
+  });
+
+  it('takes the OWN BOOK number when it is worse than the broker-derived one', async () => {
+    arm();
+    mockBook.mockReturnValue(book(-250));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp(balance('-45.68', '362.50')));
+    const r = await webullAccountState('ACC1');
+    // min(−408.18, −250) is still the derived side; flip the balance so the
+    // book side is the worse of the two.
+    expect(r.state?.realizedPnlTodayUsd).toBeCloseTo(-408.18);
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp(balance('0.00', '0.00')));
+    const r2 = await webullAccountState('ACC1');
+    expect(r2.state?.realizedPnlTodayUsd).toBe(-250);
+  });
+
+  it('falls back to the book alone when the payload has no unrealized field', async () => {
+    arm();
+    mockBook.mockReturnValue(book(-77.5));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp(balance('12.00', undefined)));
+    const r = await webullAccountState('ACC1');
+    expect(r.state?.realizedPnlTodayUsd).toBe(-77.5);
+    expect(r.realizedToday?.brokerDerivedUsd).toBeUndefined();
+  });
+
+  it('falls back to the broker-derived side alone when the book is unreadable', async () => {
+    arm();
+    mockBook.mockImplementation(() => {
+      throw new Error('no such table');
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp(balance('-45.68', '362.50')));
+    const r = await webullAccountState('ACC1');
+    expect(r.state?.realizedPnlTodayUsd).toBeCloseTo(-408.18);
+    expect(r.realizedToday?.bookRealizedUsd).toBeUndefined();
+  });
+
+  it('uses the raw day figure only when nothing better exists', async () => {
+    // No unrealized field AND no readable book — noisy, but "the day is flat"
+    // would be a fabrication.
+    arm();
+    mockBook.mockImplementation(() => {
+      throw new Error('no such table');
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp(balance('-99.00', undefined)));
+    const r = await webullAccountState('ACC1');
+    expect(r.state?.realizedPnlTodayUsd).toBe(-99);
   });
 });

@@ -8,6 +8,21 @@ import type { OrderIntent } from '../src/services/trading/guardrails';
 import * as providersModule from '../src/providers';
 import { resolveStockPrices } from '../src/services/quotes';
 
+// webullAccountState folds the app's OWN realized-today book into the
+// daily-loss halt. These tests share one SQLite file with every other test
+// file (vitest.config.ts), so exits other suites happen to date today would
+// leak in here and trip the halt. Pin the book flat — the halt's own logic is
+// covered in tradingGuardrails.test.ts and webullAccountState.test.ts.
+vi.mock('../src/services/trading/realizedToday', () => ({
+  realizedTodayFromBook: vi.fn(() => ({
+    totalUsd: 0,
+    journalUsd: 0,
+    liveOptionsUsd: 0,
+    journalExitCount: 0,
+    liveOptionsCloseCount: 0,
+  })),
+}));
+
 // placeOrder re-derives the fat-finger reference from a fresh stock quote
 // (never the client's). Mock that source so it's deterministic and doesn't
 // touch the Webull fetch mocks: every symbol resolves to $7 (matching the
