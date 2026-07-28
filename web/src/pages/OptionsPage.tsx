@@ -141,8 +141,22 @@ export default function OptionsPage() {
         ))}
       </div>
 
-      {tab === 'chain' && <ChainView symbol={activeSymbol} expiration={expiration} />}
-      {tab === 'entry' && <EntryScanView symbol={activeSymbol} expiration={expiration} />}
+      {/* Both views fetch with `expiration` in their deps, so mounting them
+          before the expirations list has resolved fires a guaranteed-400
+          request with expiration='' (and flashes its error state) on every
+          visit. Hold them behind a spinner until a real expiration is set. */}
+      {tab === 'chain' &&
+        (expiration ? (
+          <ChainView symbol={activeSymbol} expiration={expiration} />
+        ) : (
+          <Spinner label="Loading expirations…" />
+        ))}
+      {tab === 'entry' &&
+        (expiration ? (
+          <EntryScanView symbol={activeSymbol} expiration={expiration} />
+        ) : (
+          <Spinner label="Loading expirations…" />
+        ))}
       {tab === 'exit' && <ExitRulesView />}
       {tab === 'strategy' && (
         <Suspense fallback={<Spinner label="Loading strategy tools…" />}>

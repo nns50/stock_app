@@ -192,6 +192,27 @@ fire 24/7 with nothing open.
   placing anything new), drains in-flight requests, then closes the database.
 - **Back up** from the UI (**Settings → Data → export**) — simplest for a single volume.
 
+### Uptime monitoring
+
+`/api/health` is deliberately unauthenticated (it serves the container/Fly health
+checks) and is the endpoint to point any external pinger at — Fly's own checks,
+UptimeRobot, Healthchecks.io, or a plain cron `curl`. It answers 200 only when the
+**database is actually usable** (it performs a real read — a deploy whose volume
+didn't mount reads unhealthy, not "ok because Express is up"), and includes:
+
+- `provider` — which market-data provider is active and whether it's configured.
+- `loopLastTickAgeMs` — milliseconds since the autotrade loop last completed a
+  tick. The loop runs (and persists this) every ~60s whenever the server is
+  healthy, even with auto-trading fully disabled, so an age of more than a few
+  minutes means the loop — or the whole process — is wedged and worth a restart.
+  `null` right after boot or on a fresh database. Informational: the endpoint
+  never fails on it, so platform auto-restarts can't loop on a deliberately
+  stopped loop; alert on it from your monitor instead.
+
+Fly (`fly.toml`), the Dockerfile, and docker-compose already run this check every
+30s; an external pinger adds the half that platform checks can't see — the whole
+box, DNS, or TLS being down.
+
 ### Running the maintenance scripts on Fly
 
 **`npm run check:journal` (and the other `npm run` scripts) do not work on Fly.** They
