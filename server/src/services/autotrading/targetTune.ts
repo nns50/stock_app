@@ -65,6 +65,18 @@ interface BandShape {
   maxCorrelatedExposurePct: number;
   maxSectorExposurePct: number;
   minRelVol: number;
+  /** Liquidity floors — the spread-vs-stop friction tax concentrates in cheap,
+   *  thin names (the reason minPrice/minAvgVolume exist), so caution raises
+   *  both. The aggressive row keeps the engine's old constants ($1 / 200k):
+   *  the floors loosen with ambition but never disable — the biggest sizing is
+   *  exactly where a bad fill hurts most. */
+  minPrice: number;
+  minAvgVolume: number;
+  /** Conviction floor (total screener score, 0–100), anchored on the
+   *  conviction grades (B = 60 by default): the conservative band trades only
+   *  B-grade-or-better setups; looser bands admit lower scores but never 0 —
+   *  more ambition needs more trade flow, not scoreless junk at full size. */
+  minSignalScore: number;
   maxTickerAtrPct: number;
   maxMarketAtrPct: number;
   optionsDeltaMin: number;
@@ -73,6 +85,11 @@ interface BandShape {
   optionsMinDte: number;
   optionsMaxDte: number;
   optionsIvRankMax: number;
+  /** IV/RV cheapness ceiling — how rich an implied vol (vs 20-day realized)
+   *  the band will pay for long premium. Tightest where the band is most
+   *  patient; 0 in the aggressive row = gate off (the gate fails closed when
+   *  realized vol is uncomputable, and that band needs the flow). */
+  optionsMaxIvRvRatio: number;
   optionsStopLossPct: number;
   optionsTakeProfitPct: number;
   /** 'MODERATE' or 'AGGRESSIVE' — the config only has these two labels; the
@@ -91,12 +108,17 @@ const BANDS: Record<TuneBand, BandShape> = {
   // moderate" means the moderate row of it.
   //
   // It is NOT the same thing as defaultAutotradeConfig(), which this comment
-  // used to claim. Three fields legitimately differ, and all three are the band
-  // table and the derivations doing their job:
+  // used to claim. The moderate row legitimately differs from the shipped
+  // defaults where the band table and the derivations are doing their job:
   //   - maxDailyDrawdownPct  — derived (6 trades x 1% x 0.75 = 4.5), not the
   //     hand-picked default of 3; see shapeToPatch.
   //   - optionsStopLossPct / optionsTakeProfitPct — 50 / 80 per the published
   //     moderate row; both ship defaulted to 0 (disabled).
+  //   - minSignalScore / optionsMaxIvRvRatio — 50 / 1.2 per the published row;
+  //     both ship at 0 (disabled) so an untouched config's behavior doesn't
+  //     change, but a preset the user explicitly asks for takes a stance.
+  //   - minPrice / minAvgVolume — 2 / 500k, a notch above the shipped engine
+  //     constants (1 / 200k), which the aggressive row keeps as its floor.
   // Every one of them shows up in the preview's current -> tuned table before
   // anything is applied, so none of it lands silently.
   conservative: {
@@ -108,6 +130,9 @@ const BANDS: Record<TuneBand, BandShape> = {
     maxCorrelatedExposurePct: 4,
     maxSectorExposurePct: 15,
     minRelVol: 2,
+    minPrice: 5,
+    minAvgVolume: 1_000_000,
+    minSignalScore: 60,
     maxTickerAtrPct: 10,
     maxMarketAtrPct: 4,
     optionsDeltaMin: 0.25,
@@ -116,6 +141,7 @@ const BANDS: Record<TuneBand, BandShape> = {
     optionsMinDte: 14,
     optionsMaxDte: 60,
     optionsIvRankMax: 60,
+    optionsMaxIvRvRatio: 1,
     optionsStopLossPct: 40,
     optionsTakeProfitPct: 60,
     riskProfile: 'MODERATE',
@@ -130,6 +156,9 @@ const BANDS: Record<TuneBand, BandShape> = {
     maxCorrelatedExposurePct: 6,
     maxSectorExposurePct: 20,
     minRelVol: 1.5,
+    minPrice: 2,
+    minAvgVolume: 500_000,
+    minSignalScore: 50,
     maxTickerAtrPct: 15,
     maxMarketAtrPct: 5,
     optionsDeltaMin: 0.3,
@@ -138,6 +167,7 @@ const BANDS: Record<TuneBand, BandShape> = {
     optionsMinDte: 7,
     optionsMaxDte: 60,
     optionsIvRankMax: 70,
+    optionsMaxIvRvRatio: 1.2,
     optionsStopLossPct: 50,
     optionsTakeProfitPct: 80,
     riskProfile: 'MODERATE',
@@ -152,6 +182,9 @@ const BANDS: Record<TuneBand, BandShape> = {
     maxCorrelatedExposurePct: 12,
     maxSectorExposurePct: 35,
     minRelVol: 1.2,
+    minPrice: 1,
+    minAvgVolume: 200_000,
+    minSignalScore: 40,
     maxTickerAtrPct: 20,
     maxMarketAtrPct: 7,
     optionsDeltaMin: 0.4,
@@ -160,6 +193,7 @@ const BANDS: Record<TuneBand, BandShape> = {
     optionsMinDte: 3,
     optionsMaxDte: 45,
     optionsIvRankMax: 85,
+    optionsMaxIvRvRatio: 0,
     optionsStopLossPct: 60,
     optionsTakeProfitPct: 100,
     riskProfile: 'AGGRESSIVE',
@@ -201,17 +235,25 @@ const round2 = (n: number): number => Math.round(n * 100) / 100;
 const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, n));
 
 /** The exact set of AutotradeConfig keys this tuner is allowed to write —
- *  the risk/aggressiveness axis, contract selection, and equity-scaled caps.
- *  Everything NOT listed is deliberately left untouched: the live-enable gates
- *  (liveTradingEnabled/liveOptionsEnabled/…At), killSwitch, enabled,
- *  liveAccountId, both probation ramps, liveAllowNakedShort, accountEquityUsd
- *  (the input), tradeDirection, the scoring-factor opt-ins (relativeStrength/
- *  sentiment/benchmark), correlation methodology, the entry/exit-refinement
+ *  the risk/aggressiveness axis, screening filters, contract selection, and
+ *  equity-scaled caps. Everything NOT listed is deliberately left untouched:
+ *  the live-enable gates (liveTradingEnabled/liveOptionsEnabled/…At),
+ *  killSwitch, enabled, liveAccountId, both probation ramps,
+ *  liveAllowNakedShort, accountEquityUsd (the input), tradeDirection, the
+ *  scoring-factor opt-ins (relativeStrength/sentiment/benchmark), correlation
+ *  methodology, moversDiscoveryEnabled (WHERE candidates come from is a
+ *  universe choice, not an aggressiveness dial), the entry/exit-refinement
  *  toolkits (regime sizing, maxHoldDays, equity + options breakeven/trail/
  *  partial), earnings/macro/session windows, optionsStrategyType, autoPromote*,
  *  and autoTune* — safety, identity, methodology, and independent strategy
  *  choices, none of which "how aggressively do I chase a daily % gain" should
- *  silently move. */
+ *  silently move.
+ *
+ *  Every AutotradeConfig key must appear either here or in NEVER_TUNED_KEYS
+ *  below — the compile-time assertion after that list fails the build when a
+ *  new config field is added without deciding which side it belongs on (which
+ *  is exactly how minPrice/minSignalScore/optionsIvRankMin & co. once slipped
+ *  past the tuner unnoticed). */
 export type TunablePatch = Pick<
   AutotradeConfig,
   | 'riskProfile'
@@ -225,6 +267,9 @@ export type TunablePatch = Pick<
   | 'maxSectorExposurePct'
   | 'maxTradesPerDay'
   | 'minRelVol'
+  | 'minPrice'
+  | 'minAvgVolume'
+  | 'minSignalScore'
   | 'maxTickerAtrPct'
   | 'maxMarketAtrPct'
   | 'targetRMultiple'
@@ -240,9 +285,111 @@ export type TunablePatch = Pick<
   | 'optionsMinDte'
   | 'optionsMaxDte'
   | 'optionsIvRankMax'
+  | 'optionsIvRankMin'
+  | 'optionsMaxIvRvRatio'
   | 'optionsStopLossPct'
   | 'optionsTakeProfitPct'
 >;
+
+/** The AutotradeConfig keys the tuner deliberately never writes — the other
+ *  half of the classification TunablePatch starts. Grouped by the reason each
+ *  is excluded; a key belongs here only with a reason, not by omission. */
+export const NEVER_TUNED_KEYS = [
+  // Safety gates & identity — a preset must never arm anything or change whose
+  // account it is.
+  'enabled',
+  'killSwitch',
+  'liveTradingEnabled',
+  'liveEnabledAt',
+  'liveOptionsEnabled',
+  'liveOptionsEnabledAt',
+  'liveAccountId',
+  'liveAllowNakedShort',
+  'liveFatFingerPct',
+  'liveOptionsFatFingerPct',
+  'liveProbationTrades',
+  'liveProbationSizeMultiplier',
+  'liveOptionsProbationTrades',
+  'liveOptionsProbationSizeMultiplier',
+  // The tune's own input.
+  'accountEquityUsd',
+  // Methodology / strategy identity — independent choices about HOW and WHERE
+  // to trade, orthogonal to how aggressively.
+  'tradeDirection',
+  'moversDiscoveryEnabled',
+  'requireWeeklyTrendAlignment',
+  'relativeStrengthWeight',
+  'benchmarkSymbol',
+  'relativeStrengthLookbackDays',
+  'sentimentWeight',
+  'correlationLookbackDays',
+  'correlationThreshold',
+  'correlationAwareSelectionEnabled',
+  'regimeAdaptiveWeightsEnabled',
+  'regimeWeightPresets',
+  'optionsStrategyType',
+  'optionsMinOpenInterest',
+  'optionsMinVolume',
+  // Entry/exit-refinement toolkits & sizing overlays — tuned by their own
+  // tools (or by hand), keyed to trade geometry rather than daily ambition.
+  'stopAtrMultiple',
+  'maxHoldDays',
+  'breakevenTriggerRMultiple',
+  'trailStartRMultiple',
+  'trailStopRMultiple',
+  'partialExitRMultiple',
+  'partialExitPct',
+  'addOnTriggerRMultiple',
+  'addOnSizePct',
+  'maxAddOns',
+  'liveScaleInEnabled',
+  'liveMaxAddOns',
+  'optionsBreakevenTriggerPct',
+  'optionsTrailStartPct',
+  'optionsTrailStopPct',
+  'optionsPartialExitTriggerPct',
+  'optionsPartialExitPct',
+  'regimeAtrThresholdPct',
+  'regimeSizeCutPct',
+  'equityCurveDeriskEnabled',
+  'equityCurveLookbackDays',
+  'equityCurveDeriskCutPct',
+  'maxAdvParticipationPct',
+  'convictionGradeAMinScore',
+  'convictionGradeBMinScore',
+  'expectancyWeightingEnabled',
+  'expectancyMinTrades',
+  'expectancyMinMultiplier',
+  'expectancyMaxMultiplier',
+  // Session/event windows — calendar policy, not aggressiveness.
+  'sessionBufferMinutes',
+  'earningsBlackoutDays',
+  'macroEventBlackoutHours',
+  // The continuous tuners and movers auto-promotion — separate machinery this
+  // one-shot preset only warns about, never reconfigures.
+  'autoPromoteMoversEnabled',
+  'autoPromoteThreshold',
+  'autoPromoteWindowDays',
+  'autoPromoteMaxSymbols',
+  'autoTuneEnabled',
+  'autoTuneMinTrades',
+  'autoTuneMaxStepPct',
+  'autoTuneSlippageExcludePct',
+  'autoTuneExitsEnabled',
+  'autoTuneExitMaxStep',
+  'autoTuneExitTunedAt',
+  'autoTuneRequireOosConfirmation',
+] as const satisfies readonly (keyof AutotradeConfig)[];
+
+type NeverTunedKey = (typeof NEVER_TUNED_KEYS)[number];
+type AssertNever<T extends never> = T;
+/** Compile-time exhaustiveness: a config key on neither list makes this alias
+ *  non-never and the build fails, forcing the classification decision. */
+export type UnclassifiedAutotradeConfigKey = AssertNever<
+  Exclude<keyof AutotradeConfig, keyof TunablePatch | NeverTunedKey>
+>;
+/** …and a key on BOTH lists fails here. */
+export type MisclassifiedAutotradeConfigKey = AssertNever<Extract<keyof TunablePatch, NeverTunedKey>>;
 
 export interface TargetTuneResult {
   band: TuneBand;
@@ -284,6 +431,9 @@ function shapeToPatch(shape: BandShape, equityUsd: number, riskPerTradePct: numb
     maxSectorExposurePct: shape.maxSectorExposurePct,
     maxTradesPerDay: shape.maxTradesPerDay,
     minRelVol: shape.minRelVol,
+    minPrice: shape.minPrice,
+    minAvgVolume: shape.minAvgVolume,
+    minSignalScore: shape.minSignalScore,
     maxTickerAtrPct: shape.maxTickerAtrPct,
     maxMarketAtrPct: shape.maxMarketAtrPct,
     targetRMultiple: shape.targetRMultiple,
@@ -299,6 +449,12 @@ function shapeToPatch(shape: BandShape, equityUsd: number, riskPerTradePct: numb
     optionsMinDte: shape.optionsMinDte,
     optionsMaxDte: shape.optionsMaxDte,
     optionsIvRankMax: shape.optionsIvRankMax,
+    // The IV-rank floor stays OFF in every band: the bands select long-premium
+    // contracts, where cheap implied vol is the goal and the ceiling above is
+    // the active gate. Still written (as 0) so a leftover experimental floor
+    // can't sit contradicting a fresh tune's ceiling.
+    optionsIvRankMin: 0,
+    optionsMaxIvRvRatio: shape.optionsMaxIvRvRatio,
     optionsStopLossPct: shape.optionsStopLossPct,
     optionsTakeProfitPct: shape.optionsTakeProfitPct,
   };

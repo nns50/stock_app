@@ -1950,6 +1950,9 @@ const TUNE_FIELD_LABELS: Record<keyof TunablePatch, string> = {
   maxSectorExposurePct: 'Max sector exposure',
   maxTradesPerDay: 'Max trades/day',
   minRelVol: 'Min relative volume',
+  minPrice: 'Min share price',
+  minAvgVolume: 'Min avg volume (shares)',
+  minSignalScore: 'Min signal score',
   maxTickerAtrPct: 'Max ticker ATR%',
   maxMarketAtrPct: 'Max market ATR%',
   targetRMultiple: 'Target R multiple',
@@ -1965,6 +1968,8 @@ const TUNE_FIELD_LABELS: Record<keyof TunablePatch, string> = {
   optionsMinDte: 'Options min DTE',
   optionsMaxDte: 'Options max DTE',
   optionsIvRankMax: 'Options IV-rank max',
+  optionsIvRankMin: 'Options IV-rank min',
+  optionsMaxIvRvRatio: 'Options max IV/RV ratio',
   optionsStopLossPct: 'Options stop-loss%',
   optionsTakeProfitPct: 'Options take-profit%',
 };
@@ -1974,6 +1979,7 @@ const USD_TUNE_KEYS = new Set<keyof TunablePatch>([
   'liveMaxDailyLossUsd',
   'liveOptionsMaxOrderUsd',
   'liveOptionsMaxDailyLossUsd',
+  'minPrice',
 ]);
 const PCT_TUNE_KEYS = new Set<keyof TunablePatch>([
   'riskPerTradePct',
@@ -1986,6 +1992,7 @@ const PCT_TUNE_KEYS = new Set<keyof TunablePatch>([
   'maxMarketAtrPct',
   'optionsMaxSpreadPct',
   'optionsIvRankMax',
+  'optionsIvRankMin',
   'optionsStopLossPct',
   'optionsTakeProfitPct',
 ]);

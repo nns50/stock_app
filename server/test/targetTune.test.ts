@@ -5,6 +5,7 @@ import {
   bandForTarget,
   ASSUMED_WIN_RATE,
   MAX_SUGGESTED_RISK_PER_TRADE_PCT,
+  NEVER_TUNED_KEYS,
   TuneBasis,
 } from '../src/services/autotrading/targetTune';
 import { defaultAutotradeConfig } from '../src/db/autotradeConfig';
@@ -84,6 +85,13 @@ describe('computeTargetTune — band shapes', () => {
     expect(r.patch.minRelVol).toBe(2);
     expect(r.patch.maxConcurrentPositions).toBe(2);
     expect(r.patch.optionsDeltaMax).toBe(0.5);
+    // screening floors are at their strictest: B-grade-or-better conviction
+    // (convictionGradeBMinScore's default), no sub-$5 names, 1M shares/day
+    expect(r.patch.minSignalScore).toBe(60);
+    expect(r.patch.minPrice).toBe(5);
+    expect(r.patch.minAvgVolume).toBe(1_000_000);
+    // options cheapness gate at its tightest: implied no richer than realized
+    expect(r.patch.optionsMaxIvRvRatio).toBe(1);
   });
 
   it('an aggressive target loosens everything and sets the AGGRESSIVE label', () => {
@@ -95,6 +103,18 @@ describe('computeTargetTune — band shapes', () => {
     expect(r.patch.maxSectorExposurePct).toBe(35);
     expect(r.patch.optionsDeltaMax).toBe(0.7);
     expect(r.patch.optionsIvRankMax).toBe(85);
+    // screening floors loosen to the engine's old constants but never disable
+    expect(r.patch.minSignalScore).toBe(40);
+    expect(r.patch.minPrice).toBe(1);
+    expect(r.patch.minAvgVolume).toBe(200_000);
+    // the fail-closed IV/RV cheapness gate goes OFF — this band needs the flow
+    expect(r.patch.optionsMaxIvRvRatio).toBe(0);
+  });
+
+  it('keeps the options IV-rank floor OFF in every band (long-premium selection)', () => {
+    for (const target of [2, 5, 20]) {
+      expect(base({ targetDailyGainPct: target }).patch.optionsIvRankMin).toBe(0);
+    }
   });
 });
 
@@ -142,17 +162,29 @@ describe('computeTargetTune — clamps and warnings', () => {
 describe('resetToModerate', () => {
   it('matches the published moderate band row, which is NOT defaultAutotradeConfig()', () => {
     // "Reset to moderate" means the moderate row of the band table in
-    // docs/TUNE_FROM_TARGET.md §5 — not the shipped defaults. These three fields
-    // are where the two legitimately differ, so pin them: the daily-loss halt is
-    // DERIVED from the sizing (6 trades x 1% x 0.75), and the options exits come
-    // from the band (both ship at 0 = disabled).
+    // docs/TUNE_FROM_TARGET.md §5 — not the shipped defaults. These fields are
+    // where the two legitimately differ, so pin them: the daily-loss halt is
+    // DERIVED from the sizing (6 trades x 1% x 0.75); the options exits, the
+    // conviction floor, and the IV/RV gate come from the band (all ship at 0 =
+    // disabled so untouched configs don't change behavior, but a preset the
+    // user asks for takes a stance); the liquidity floors sit a notch above
+    // the shipped engine constants.
     const p = resetToModerate(10000);
     expect(p.maxDailyDrawdownPct).toBe(4.5);
     expect(p.optionsStopLossPct).toBe(50);
     expect(p.optionsTakeProfitPct).toBe(80);
-    expect(defaultAutotradeConfig().maxDailyDrawdownPct).toBe(3);
-    expect(defaultAutotradeConfig().optionsStopLossPct).toBe(0);
-    expect(defaultAutotradeConfig().optionsTakeProfitPct).toBe(0);
+    expect(p.minSignalScore).toBe(50);
+    expect(p.optionsMaxIvRvRatio).toBe(1.2);
+    expect(p.minPrice).toBe(2);
+    expect(p.minAvgVolume).toBe(500_000);
+    const d = defaultAutotradeConfig();
+    expect(d.maxDailyDrawdownPct).toBe(3);
+    expect(d.optionsStopLossPct).toBe(0);
+    expect(d.optionsTakeProfitPct).toBe(0);
+    expect(d.minSignalScore).toBe(0);
+    expect(d.optionsMaxIvRvRatio).toBe(0);
+    expect(d.minPrice).toBe(1);
+    expect(d.minAvgVolume).toBe(200_000);
   });
 
   it('reproduces the default MODERATE shape at 1% risk, equity-scaled', () => {
@@ -181,8 +213,37 @@ describe('resetToModerate', () => {
       'liveProbationTrades',
       'autoTuneEnabled',
       'tradeDirection',
+      'moversDiscoveryEnabled',
     ]) {
       expect(p[forbidden]).toBeUndefined();
     }
+  });
+});
+
+describe('tunable/never-tuned classification', () => {
+  // The positive direction the old allowlist test lacked: EVERY config field
+  // must be either written by the tuner or deliberately listed in
+  // NEVER_TUNED_KEYS. This is how minPrice/minAvgVolume/minSignalScore/
+  // moversDiscoveryEnabled/optionsIvRankMin/optionsMaxIvRvRatio slipped past
+  // the tuner unnoticed when they were added — nothing failed. Now adding a
+  // config field without classifying it fails here (and fails typecheck via
+  // targetTune.ts's UnclassifiedAutotradeConfigKey assertion).
+  it('classifies every AutotradeConfig field as tuned or deliberately untouched', () => {
+    const tuned = new Set(Object.keys(resetToModerate(1000)));
+    const excluded = new Set<string>(NEVER_TUNED_KEYS);
+    for (const key of Object.keys(defaultAutotradeConfig())) {
+      const classified = tuned.has(key) || excluded.has(key);
+      expect(classified, `config field "${key}" is neither tuned nor in NEVER_TUNED_KEYS`).toBe(true);
+      const both = tuned.has(key) && excluded.has(key);
+      expect(both, `config field "${key}" is on BOTH lists`).toBe(false);
+    }
+  });
+
+  it('emits every allowlisted key, so a tune fully overwrites a stale shape', () => {
+    // If a key is in TunablePatch but shapeToPatch forgets to write it, the
+    // patch silently leaves that field at whatever it was — the classification
+    // above can't see it (it reads the emitted patch), so pin the count too.
+    const emitted = Object.keys(resetToModerate(1000)).length;
+    expect(emitted + NEVER_TUNED_KEYS.length).toBe(Object.keys(defaultAutotradeConfig()).length);
   });
 });

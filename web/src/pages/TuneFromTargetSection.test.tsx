@@ -39,6 +39,9 @@ function previewFixture(overrides: Partial<TargetTuneResult> = {}): TargetTuneRe
     maxSectorExposurePct: 20,
     maxTradesPerDay: 6,
     minRelVol: 1.5,
+    minPrice: 2,
+    minAvgVolume: 500_000,
+    minSignalScore: 50,
     maxTickerAtrPct: 15,
     maxMarketAtrPct: 5,
     targetRMultiple: 2,
@@ -54,6 +57,8 @@ function previewFixture(overrides: Partial<TargetTuneResult> = {}): TargetTuneRe
     optionsMinDte: 7,
     optionsMaxDte: 60,
     optionsIvRankMax: 70,
+    optionsIvRankMin: 0,
+    optionsMaxIvRvRatio: 1.2,
     optionsStopLossPct: 50,
     optionsTakeProfitPct: 80,
   };
