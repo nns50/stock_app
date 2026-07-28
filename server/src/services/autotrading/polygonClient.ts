@@ -64,7 +64,13 @@ export async function fetchPolygonPage<T extends { error?: string; message?: str
   apiKey: string,
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+    // Bounded per request: without a signal, fetch waits on undici's ~5-minute
+    // defaults, so one hung Polygon response could stall a whole multi-page
+    // research fetch far longer than simply failing and retrying would.
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(30_000),
+    });
     if (res.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
       const retryAfter = Number(res.headers?.get?.('retry-after'));
       const waitS = Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter : DEFAULT_RATE_LIMIT_WAIT_S;
