@@ -402,6 +402,28 @@ function exitReasonFor(activeRule: string): 'stop_loss' | 'take_profit' | 'time_
 }
 
 /**
+ * Per-share intrinsic value of a `side` leg AT its expiration, priced from the
+ * underlying's last close on/before the expiry date — the value the contract
+ * factually ended at, the same underlying-close settlement the live expired-
+ * option sweep applies (services/expiredOptions.ts). Exported so
+ * combinedBacktest.ts's options sleeve settles identically. 0 when the
+ * underlying series can't answer (no bars at/before expiry) — the conservative
+ * floor for the always-long positions these engines model.
+ */
+export function intrinsicAtExpiry(
+  underlying: Candle[] | undefined,
+  expiration: string,
+  side: 'call' | 'put',
+  strike: number,
+): number {
+  if (!underlying?.length) return 0;
+  const idx = indexAsOf(underlying, Date.parse(`${expiration}T00:00:00Z`));
+  if (idx < 0) return 0;
+  const S = underlying[idx].close;
+  return side === 'call' ? Math.max(0, S - strike) : Math.max(0, strike - S);
+}
+
+/**
  * Run the options simulation over already-loaded equity history and
  * pre-fetched contract reference data. Unlike backtest.ts's simulateBacktest
  * (100% pure/sync — everything it needs is pre-loaded), this is ASYNC: which
@@ -537,6 +559,10 @@ export async function simulateOptionsBacktest(
     let filledToday = 0;
     const stillPending: PendingOptionEntry[] = [];
     for (const p of pendingEntries) {
+      // A pending entry whose contract has already expired can never fill —
+      // drop it, or it lingers in pendingEntries (and openSymbols) for the
+      // rest of the run, blocking every later signal on its symbol.
+      if (p.expiration < day) continue;
       const bars = await getContractBars(p.contractTicker);
       const idx = indexAsOf(bars, dayMs);
       const longBar = idx >= 0 && bars[idx].time === dayMs ? bars[idx] : null;
@@ -590,6 +616,58 @@ export async function simulateOptionsBacktest(
     for (const pos of openPositions) {
       if (pos.entryDate === day) {
         stillOpen.push(pos);
+        continue;
+      }
+      // Settle a contract the calendar has carried PAST its expiration. The
+      // bar-based exit below only runs on a day the contract actually traded,
+      // and an illiquid contract's bars routinely dry up before its final
+      // days — the position then sat here untouchable until end_of_period
+      // force-closed it at a STALE last-traded premium (a fabricated value
+      // for a contract that finished worthless), while blocking its symbol
+      // and a concurrency slot for the rest of the run. Same failure mode the
+      // live loop's sweepExpiredLiveOptions() exists for. Settled at per-leg
+      // intrinsic from the underlying's close on the expiry date, dated on
+      // the expiry — the value the contract factually ended at.
+      if (pos.expiration < day) {
+        const underlying = historyBySymbol.get(pos.symbol);
+        const exitPremium = intrinsicAtExpiry(underlying, pos.expiration, pos.side, pos.strike);
+        const shortExitPremium =
+          pos.kind === 'debit_spread'
+            ? intrinsicAtExpiry(underlying, pos.expiration, pos.side, pos.shortStrike!)
+            : undefined;
+        const pnl = simulatedOptionsPnl(
+          pos.kind,
+          pos.entryPremium,
+          exitPremium,
+          pos.shortEntryPremium,
+          shortExitPremium,
+          pos.contracts,
+        );
+        trades.push({
+          symbol: pos.symbol,
+          side: pos.side,
+          kind: pos.kind,
+          contractTicker: pos.contractTicker,
+          strike: pos.strike,
+          shortContractTicker: pos.shortContractTicker,
+          shortStrike: pos.shortStrike,
+          expiration: pos.expiration,
+          signalDate: pos.signalDate,
+          entryDate: pos.entryDate,
+          entryPremium: pos.entryPremium,
+          shortEntryPremium: pos.shortEntryPremium,
+          exitDate: pos.expiration,
+          exitPremium,
+          shortExitPremium,
+          exitReason: 'expiration',
+          contracts: pos.contracts,
+          pnl,
+          rMultiple: pos.riskAmount > 0 ? pnl / pos.riskAmount : 0,
+        });
+        closedPnls.push(pnl);
+        recordStreak(pnl);
+        dailyPnl += pnl;
+        equity += pnl;
         continue;
       }
       const bars = await getContractBars(pos.contractTicker);
