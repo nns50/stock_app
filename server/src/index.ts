@@ -3,7 +3,7 @@ import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 import { config } from './config';
-import { initDb } from './db';
+import { db, initDb } from './db';
 import { getProvider, getProviderStatus } from './providers';
 import { ProviderError } from './providers/MarketDataProvider';
 import { HttpError } from './routes/_helpers';
@@ -27,15 +27,30 @@ import { analystRouter } from './routes/analyst';
 import { tradeRouter } from './routes/trade';
 import { autotradeRouter } from './routes/autotrade';
 import { authRouter, requireAuth } from './routes/auth';
-import { startAlertScheduler } from './services/alertScheduler';
-import { startWebullPositionsSync } from './services/webullPositionsScheduler';
-import { startAutotradeLoop } from './services/autotrading/loop';
+import { startAlertScheduler, stopAlertScheduler } from './services/alertScheduler';
+import { startWebullPositionsSync, stopWebullPositionsSync } from './services/webullPositionsScheduler';
+import { startAutotradeLoop, stopAutotradeLoop } from './services/autotrading/loop';
 
 initDb();
 
 export const app = express();
+// No Express fingerprint header; the version disclosure serves nobody here.
+app.disable('x-powered-by');
 app.use(cors({ origin: config.corsOrigins, credentials: true }));
 app.use(express.json({ limit: '1mb' }));
+
+// Baseline security headers, applied to every response (API and the served
+// SPA alike). Deliberately only the set that cannot break this app: nothing
+// legitimately embeds it in a frame, no cross-origin page needs referrers
+// from it, and no response should ever be MIME-sniffed into something else.
+// (A full CSP is NOT set here — the built SPA would need its inline chunks
+// audited first, and a wrong policy silently bricks the app.)
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
 
 // Health stays open (used by container/Fly health checks) and so does the auth
 // router (login/status). Everything else under /api requires a session when
@@ -118,7 +133,7 @@ app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
 
 // Only listen when run directly (tests import `app` without binding a port).
 if (require.main === module) {
-  app.listen(config.port, () => {
+  const server = app.listen(config.port, () => {
     const status = getProviderStatus();
 
     console.log(
@@ -138,4 +153,35 @@ if (require.main === module) {
     // Auto-Trade page — see docs/AUTOTRADING_SPEC.md, Phase 6).
     startAutotradeLoop();
   });
+
+  // Graceful shutdown — Fly (and Docker) deliver SIGTERM on every deploy/stop,
+  // and the default handler kills the process mid-whatever-it-was-doing. The
+  // order here is deliberate: stop the background loops FIRST so nothing new
+  // is placed or evaluated during the drain (stopAutotradeLoop() also aborts a
+  // genuinely in-flight tick at its own pre-execution checkpoint), then let
+  // in-flight HTTP requests finish, then close the DB. WAL mode makes an
+  // abrupt kill crash-safe for the data either way — this narrows the window
+  // where a deploy lands between a live order placement and its journaling.
+  let shuttingDown = false;
+  const shutdown = (signal: string): void => {
+    if (shuttingDown) return; // a second signal while draining: let the backstop finish it
+    shuttingDown = true;
+    console.log(`[stock-app] ${signal} received — draining requests, stopping background loops`);
+    stopAutotradeLoop();
+    stopAlertScheduler();
+    stopWebullPositionsSync();
+    server.close(() => {
+      try {
+        db.close();
+      } catch {
+        /* already closed / mid-statement — the exit below is the point */
+      }
+      process.exit(0);
+    });
+    // Backstop: if a request (or a hung broker call behind one) won't drain,
+    // exit before the platform escalates to SIGKILL mid-write anyway.
+    setTimeout(() => process.exit(0), 8000).unref();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }

@@ -1064,6 +1064,14 @@ describe('auth gate (integration)', () => {
     expect(await getJson('/api/auth/status')).toMatchObject({ required: false, authenticated: true });
   });
 
+  it('sends baseline security headers and no Express fingerprint on every response', async () => {
+    const res = await fetch(`${base}/api/health`);
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('x-frame-options')).toBe('DENY');
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+    expect(res.headers.get('x-powered-by')).toBeNull();
+  });
+
   it('gates data routes when a password is set — but not /health or /auth', async () => {
     config.auth.password = 'letmein';
     expect((await fetch(`${base}/api/positions`)).status).toBe(401);

@@ -187,7 +187,9 @@ fire 24/7 with nothing open.
   sleeps.
 - **Resize** if needed: `fly scale memory 512` (or `1024`), `fly scale vm shared-cpu-1x`.
 - **Logs / status:** `fly logs`, `fly status`. **Update:** `git pull && fly deploy`
-  (the volume, and your data, persist).
+  (the volume, and your data, persist). Deploys/stops are graceful: on SIGTERM the
+  server stops the background loops first (an in-flight autotrade tick aborts before
+  placing anything new), drains in-flight requests, then closes the database.
 - **Back up** from the UI (**Settings → Data → export**) — simplest for a single volume.
 
 ### Running the maintenance scripts on Fly
