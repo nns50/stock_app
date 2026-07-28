@@ -542,6 +542,42 @@ describe('simulateOptionsBacktest', () => {
     expect(t.exitPremium).toBe(lastPremium);
   });
 
+  it('settles a contract whose bars dried up before expiry at INTRINSIC on the expiry date, not a stale premium at period end', async () => {
+    // Regression: the bar-based exit check only runs on days the contract
+    // actually traded. An illiquid contract whose bars stop right after entry
+    // used to sit open past its own expiration until end_of_period force-closed
+    // it at the last traded premium — a fabricated value for a contract that
+    // finished worthless — while blocking its symbol for the rest of the run.
+    const signalDay = '2024-03-01';
+    const entryDay = d(signalDay, 1);
+    const expiration = d(signalDay, 10); // inside the [7, 60] DTE window at signal
+    const T = yearsFor(10);
+    const entryPremium = premiumFor('call', 100, STRIKE, T);
+    // The contract trades on the signal + entry days only, then never again.
+    mockContractBars({
+      [CALL_TICKER]: [optionBar(signalDay, entryPremium), optionBar(entryDay, entryPremium, { open: entryPremium })],
+    });
+    // The underlying keeps trading well past the expiry, pinned at 100 —
+    // below the 102 call strike, so the contract expires WORTHLESS.
+    const equityDays = [...warmupThrough(signalDay)];
+    for (let i = 1; i <= 13; i++) equityDays.push(equityBar(d(signalDay, i)));
+    const historyBySymbol = new Map([['TEST', equityDays]]);
+    const contractsBySymbol = new Map([['TEST', [contractRef(CALL_TICKER, 'call', STRIKE, expiration)]]]);
+
+    const report = await simulateOptionsBacktest(
+      historyBySymbol,
+      contractsBySymbol,
+      baseConfig({ from: signalDay, to: d(signalDay, 13) }),
+    );
+
+    expect(report.trades).toHaveLength(1);
+    const t = report.trades[0];
+    expect(t.exitReason).toBe('expiration');
+    expect(t.exitDate).toBe(expiration); // when the contract ceased to exist
+    expect(t.exitPremium).toBe(0); // OTM at expiry: intrinsic, not the stale last trade
+    expect(t.pnl).toBeLessThan(0); // the full premium was really lost
+  });
+
   it('does not open a second options position while one is already open in the same underlying', async () => {
     const signalDay = '2024-03-01';
     const entryDay = d(signalDay, 1);

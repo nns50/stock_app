@@ -48,6 +48,7 @@ import {
   WARMUP_PADDING_DAYS,
 } from './backtest';
 import {
+  intrinsicAtExpiry,
   pickReferenceContract,
   pickShortLegReferenceContract,
   simulatedOptionsPnl,
@@ -574,6 +575,11 @@ export async function simulateCombinedBacktest(
     let optionsFilledToday = 0;
     const stillPendingOptions: PendingOptionEntry[] = [];
     for (const p of pendingOptions) {
+      // A pending entry whose contract has already expired can never fill —
+      // drop it, or it lingers in pendingOptions (and the options
+      // open-symbols set) for the rest of the run, blocking every later
+      // signal on its symbol (mirrors optionsBacktest.ts's identical drop).
+      if (p.expiration < day) continue;
       const bars = await getContractBars(p.contractTicker);
       const idx = indexAsOf(bars, dayMs);
       const longBar = idx >= 0 && bars[idx].time === dayMs ? bars[idx] : null;
@@ -626,6 +632,54 @@ export async function simulateCombinedBacktest(
     for (const pos of openOptions) {
       if (pos.entryDate === day) {
         stillOpenOptions.push(pos);
+        continue;
+      }
+      // Settle a contract the calendar has carried PAST its expiration at
+      // per-leg intrinsic from the underlying's close on the expiry date —
+      // see optionsBacktest.ts's identical branch for the full reasoning
+      // (illiquid contracts' bars dry up before expiry, so the bar-based
+      // exit below never fires and the position sat stuck until
+      // end_of_period force-closed it at a stale premium).
+      if (pos.expiration < day) {
+        const underlying = historyBySymbol.get(pos.symbol);
+        const exitPremium = intrinsicAtExpiry(underlying, pos.expiration, pos.side, pos.strike);
+        const shortExitPremium =
+          pos.kind === 'debit_spread'
+            ? intrinsicAtExpiry(underlying, pos.expiration, pos.side, pos.shortStrike!)
+            : undefined;
+        const pnl = simulatedOptionsPnl(
+          pos.kind,
+          pos.entryPremium,
+          exitPremium,
+          pos.shortEntryPremium,
+          shortExitPremium,
+          pos.contracts,
+        );
+        optionsTrades.push({
+          symbol: pos.symbol,
+          side: pos.side,
+          kind: pos.kind,
+          contractTicker: pos.contractTicker,
+          strike: pos.strike,
+          shortContractTicker: pos.shortContractTicker,
+          shortStrike: pos.shortStrike,
+          expiration: pos.expiration,
+          signalDate: pos.signalDate,
+          entryDate: pos.entryDate,
+          entryPremium: pos.entryPremium,
+          shortEntryPremium: pos.shortEntryPremium,
+          exitDate: pos.expiration,
+          exitPremium,
+          shortExitPremium,
+          exitReason: 'expiration',
+          contracts: pos.contracts,
+          pnl,
+          rMultiple: pos.riskAmount > 0 ? pnl / pos.riskAmount : 0,
+        });
+        optionsClosedPnls.push(pnl);
+        recordStreak(optionsStreak, pnl);
+        dailyOptionsPnl += pnl;
+        equity += pnl;
         continue;
       }
       const bars = await getContractBars(pos.contractTicker);
