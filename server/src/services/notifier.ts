@@ -70,12 +70,20 @@ export function notificationStatus(): NotificationStatus {
   return { channels, configured: channels.length > 0 };
 }
 
+/** Hard ceiling per webhook POST. Without one, fetch waits on undici's
+ *  ~5-minute defaults — and dispatchNotifications() is awaited inside the
+ *  autotrade loop's tick (attemptLiveEntry, the post-tick alert hooks), so one
+ *  hung endpoint would stall live execution for minutes per event batch. A
+ *  notification is worthless late; fail it fast and let the journal carry it. */
+const WEBHOOK_TIMEOUT_MS = 10_000;
+
 async function postOne(channel: WebhookChannel, events: NotifyEvent[]): Promise<ChannelResult> {
   try {
     const res = await fetch(channel.url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(buildWebhookPayload(events, channel.format)),
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
     });
     return res.ok
       ? { label: channel.label, delivered: true }
