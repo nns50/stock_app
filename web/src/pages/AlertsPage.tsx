@@ -126,7 +126,7 @@ export default function AlertsPage() {
       setLastChecked(r.checkedAt);
       setNewly(r.newlyTriggered.map((t) => t.message || `${t.symbol} triggered`));
       data.reload();
-      refreshCount();
+      void refreshCount();
     } finally {
       setBusy(false);
     }
@@ -163,7 +163,7 @@ export default function AlertsPage() {
     setPlanEntry('');
     setPlanExit('');
     data.reload();
-    refreshCount();
+    void refreshCount();
   };
 
   const alerts = data.data?.alerts ?? [];
@@ -421,7 +421,7 @@ export default function AlertsPage() {
                               onClick={async () => {
                                 await client.updateAlert(a.id, { triggered: false });
                                 data.reload();
-                                refreshCount();
+                                void refreshCount();
                               }}
                             >
                               ack
@@ -441,7 +441,7 @@ export default function AlertsPage() {
                             onClick={async () => {
                               await client.deleteAlert(a.id);
                               data.reload();
-                              refreshCount();
+                              void refreshCount();
                             }}
                           >
                             del

@@ -62,5 +62,19 @@ export default tseslint.config(
       'react-hooks/exhaustive-deps': 'warn',
     },
   },
+  {
+    // Web source gets the same floating-promise discipline as the server —
+    // the browser doesn't crash, but every unawaited rejection is a silently
+    // broken UI state (a page that just sits empty) plus a console error
+    // nobody is watching for. Excludes tests: vitest tracks rejections.
+    files: ['web/src/**/*.{ts,tsx}'],
+    ignores: ['web/src/**/*.test.{ts,tsx}', 'web/src/test/**'],
+    languageOptions: {
+      parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname + '/web' },
+    },
+    rules: {
+      '@typescript-eslint/no-floating-promises': 'error',
+    },
+  },
   prettier,
 );

@@ -57,7 +57,7 @@ export function KeyboardShortcuts() {
         const dest = NAV.find((n) => n.key === e.key.toLowerCase());
         if (dest) {
           e.preventDefault();
-          navigate(dest.to);
+          void navigate(dest.to);
         }
         return;
       }

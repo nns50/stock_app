@@ -55,7 +55,7 @@ export function CommandPalette() {
   useEffect(() => {
     if (!open || symbols.length) return;
     let active = true;
-    Promise.all([
+    void Promise.all([
       client.universe().catch(() => ({ symbols: [] as { symbol: string; name: string | null }[] })),
       client.watchlist().catch(() => ({ symbols: [] as string[] })),
     ]).then(([u, w]) => {

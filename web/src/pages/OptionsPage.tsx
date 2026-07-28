@@ -411,7 +411,7 @@ function ChainView({ symbol, expiration }: { symbol: string; expiration: string 
                         title="Prefill the Trade builder with this contract"
                         onClick={(e) => {
                           e.stopPropagation();
-                          navigate('/trade', { state: { prefill: contractToOrder(c) } });
+                          void navigate('/trade', { state: { prefill: contractToOrder(c) } });
                         }}
                       >
                         Trade
@@ -565,7 +565,7 @@ function EntryScanView({ symbol, expiration }: { symbol: string; expiration: str
       threshold: result?.underlyingPrice ?? undefined,
       entryPlan: note,
     };
-    navigate('/alerts', { state: { presetAlert: preset } });
+    void navigate('/alerts', { state: { presetAlert: preset } });
   };
 
   const set = <K extends keyof EntryStrategyConfig>(k: K, v: EntryStrategyConfig[K]) =>

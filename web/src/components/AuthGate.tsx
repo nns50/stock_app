@@ -37,7 +37,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    check();
+    void check(); // internally caught — falls open on network failure
   }, [check]);
 
   // A protected request 401'd (session expired / never logged in) → show login.
