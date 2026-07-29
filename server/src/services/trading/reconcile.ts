@@ -10,6 +10,7 @@ import {
   transitionIntent,
 } from '../../db/orders';
 import { Position, addExit, createPosition, listPositions } from '../../db/positions';
+import { db } from '../../db';
 import { OrderState, canTransition, isTerminal } from './orderLifecycle';
 import { WebullOrderStatus, isExitLeg, webullOrderStatus } from '../../providers/webull/orders';
 import { isAutotradeIntent } from '../../db/autotradeLiveOrders';
@@ -240,10 +241,20 @@ function materializeFill(intent: OrderIntentRecord, observedQty: number, observe
   const { qty, price, warning } = computeFillDelta(intent, observedQty, observedAvgPrice);
   if (qty <= 0) return { booked: 0, warning };
 
-  if (intent.openClose === 'open') recordFillAsPosition(intent, qty, price);
-  else recordCloseAsExit(intent, qty, price);
+  // The booking and the materialization mark that says "this part is booked"
+  // are ONE fact — commit them together or not at all. As two bare
+  // auto-committing writes, a crash (or a throw from the second) landing
+  // between them left the position/exit recorded with materialized_qty still
+  // behind it, and the next reconcile — keyed on exactly that high-water mark
+  // (computeFillDelta) — would book the SAME fill again: a duplicated lot, or
+  // a duplicated exit against real P&L. Synchronous throughout, so a
+  // better-sqlite3 transaction is sufficient and safe here.
+  db.transaction(() => {
+    if (intent.openClose === 'open') recordFillAsPosition(intent, qty, price);
+    else recordCloseAsExit(intent, qty, price);
 
-  advanceMaterialized(intent.id, qty, qty * price);
+    advanceMaterialized(intent.id, qty, qty * price);
+  })();
   return { booked: qty, warning };
 }
 
@@ -378,13 +389,12 @@ export async function reconcileIntent(id: number, accountId: string): Promise<Re
 
   const fill = broker.filledQty !== undefined ? ` ${broker.filledQty}/${broker.totalQty ?? current.quantity}` : '';
   const at = broker.filledPrice !== undefined ? ` @ ${broker.filledPrice}` : '';
+  // Computed before the transaction closure below: `broker.status`/`target`
+  // are narrowed non-null/defined HERE, and TS property narrowing doesn't
+  // survive into a closure.
+  const transitionDetail = `broker ${broker.status.toLowerCase()}${fill}${at}`;
+  const moveTarget = canMove ? target : undefined;
   let updated = current;
-  if (canMove) {
-    updated = transitionIntent(id, target, {
-      detail: `broker ${broker.status.toLowerCase()}${fill}${at}`,
-      brokerOrderId: broker.brokerOrderId,
-    });
-  }
 
   // A live single-leg/stock fill is mirrored into the Positions ledger so live
   // trades show on Positions / Journal like a manually-logged trade: an OPEN fill
@@ -413,9 +423,27 @@ export async function reconcileIntent(id: number, accountId: string): Promise<Re
   const singleName = current.assetKind === 'stock' || current.optionType !== null;
   const observedQty = broker.filledQty ?? (target === 'filled' ? current.quantity : 0);
   let outcome: MaterializeOutcome = { booked: 0 };
-  if (singleName && observedQty > 0) {
-    outcome = materializeFill(updated, observedQty, broker.filledPrice ?? updated.limitPrice ?? 0);
-  }
+  // ONE transaction across the state transition AND the fill booking. 'filled'
+  // is terminal, and (bracket exit-legs aside) this reconcile refuses to touch
+  // a terminal intent again — so a crash landing after the transition
+  // committed but before the booking did left real observed shares
+  // permanently unbookable: state says filled, the ledger says nothing, and
+  // no later call can get back in. (The autotrade paths don't have this
+  // window: listPendingLiveOrders / listPendingLiveOptionsOrders deliberately
+  // re-select filled-but-unmaterialized orders. This generic path's only
+  // guard is atomicity.) Everything here is synchronous; materializeFill's
+  // own inner transaction nests as a savepoint.
+  db.transaction(() => {
+    if (moveTarget) {
+      updated = transitionIntent(id, moveTarget, {
+        detail: transitionDetail,
+        brokerOrderId: broker.brokerOrderId,
+      });
+    }
+    if (singleName && observedQty > 0) {
+      outcome = materializeFill(updated, observedQty, broker.filledPrice ?? updated.limitPrice ?? 0);
+    }
+  })();
 
   // A fully-filled order whose booked quantity doesn't match what was ordered is
   // a real discrepancy — the ledger is now out of step with the account. Say so

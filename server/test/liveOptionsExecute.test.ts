@@ -1804,3 +1804,53 @@ describe('checkLiveOptionsExits — price-based exits (2026-07-26)', () => {
     });
   });
 });
+
+describe('reconcileLiveOptionsOrders — booking and the materialization mark are atomic', () => {
+  // Same invariant as the equity path's own atomicity test: if the position
+  // commit survived a crash but the materialization mark's did not, the next
+  // tick's blend guard (`materializedQty > 0`) would read "first instalment"
+  // and book a SECOND live options position for the SAME broker fill. A temp
+  // trigger ABORTs exactly where advanceMaterialized writes; the transaction
+  // must roll the position back with it, and the retry books exactly once.
+  it('rolls the position back when the mark update fails, then books exactly once on retry', async () => {
+    const cfg = liveConfig({ liveOptionsProbationTrades: 0 });
+    setAutotradeConfig(cfg);
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-ATOM-OPT' });
+    const sig = optionSignal();
+    await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', cfg);
+    const intentId = listIntents()[0].id;
+    const orderedQty = listIntents()[0].quantity;
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: orderedQty,
+      filledPrice: 4.1,
+    } as WebullOrderStatus);
+
+    db.exec(
+      `CREATE TEMP TRIGGER fail_advance BEFORE UPDATE OF materialized_qty ON order_intents
+       BEGIN SELECT RAISE(ABORT, 'simulated crash before mark commit'); END`,
+    );
+    try {
+      const outcomes = await reconcileLiveOptionsOrders();
+      expect(outcomes[0].error).toMatch(/failed to materialize.*simulated crash/);
+    } finally {
+      db.exec('DROP TRIGGER IF EXISTS fail_advance');
+    }
+    // Nothing half-committed: no live options position, mark unbooked,
+    // metadata row unlinked.
+    expect(listOpenLiveOptionsPositions()).toHaveLength(0);
+    expect(listIntents()[0].materializedQty).toBe(0);
+    expect(getLiveOptionsOrder(intentId)?.positionId ?? null).toBeNull();
+
+    // Next tick (trigger gone = process restarted): the stranded terminal
+    // 'filled' intent is re-admitted (strandedFilled) and books exactly once.
+    const retry = await reconcileLiveOptionsOrders();
+    expect(retry[0]).toMatchObject({ changed: true, action: 'entry_filled' });
+    expect(listOpenLiveOptionsPositions()).toHaveLength(1);
+    expect(listIntents()[0].materializedQty).toBe(orderedQty);
+  });
+});

@@ -1,4 +1,5 @@
 import { config } from '../../config';
+import { db } from '../../db';
 import { AutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../../db/autotradeConfig';
 import { getTradingConfig } from '../../db/trading';
 import {
@@ -1025,7 +1026,18 @@ function reconcileOneLiveOrder(
       });
     }
   }
-  if (canMove || restingPartial || unrecognizedFill) {
+  // A crash on an earlier tick (or a materialization failure before booking
+  // and its mark were transactional) can leave a terminal 'filled' intent
+  // whose booking never landed. listPendingLiveOrders keeps re-selecting
+  // exactly that shape (entry with position_id NULL) — but this gate used to
+  // turn each re-selection into a no-op: canMove is false once the state is
+  // terminal, so the stranded fill was re-polled forever and booked never
+  // (the try/catch's own comment below called it permanent; it no longer is).
+  // Let the fill delta decide instead: computeFillDelta books only what's
+  // missing, so a fully-booked filled intent still no-ops while a stranded
+  // one finally lands (within one tick of the crash).
+  const strandedFilled = current.state === 'filled' && current.materializedQty < current.quantity;
+  if (canMove || restingPartial || unrecognizedFill || strandedFilled) {
     if (canMove) {
       transitionIntent(current.id, masterTarget!, {
         detail: `broker ${broker.status?.toLowerCase()}`,
@@ -1049,17 +1061,15 @@ function reconcileOneLiveOrder(
     if (observedQty > 0) {
       // The intent transition above has ALREADY committed by this point — if
       // materializing the position throws, the intent is left at terminal
-      // 'filled' with no positions row and, since listPendingLiveOrders()
-      // only keeps polling a 'filled' intent while its linked position is
-      // open, NOTHING would ever retry this. An adversarial review flagged
-      // this as a real, permanent-data-loss gap (no try/catch existed at
-      // all). This can't be prevented outright (the write already
-      // happened), but it must not crash the rest of this reconcile cycle's
-      // other pending orders, and it must be LOUD — there's no human
-      // watching this path in real time the way the Trade page assumes, so
-      // silently swallowing it (as the human path's own equivalent,
-      // reconcile.ts's recordFillAsPosition, deliberately does) would leave
-      // a real fill permanently invisible with no trace anywhere.
+      // 'filled' with no positions row. That used to be PERMANENT data loss
+      // (an adversarial review's finding; no try/catch existed at all). It
+      // now self-heals: listPendingLiveOrders() re-selects a filled entry
+      // with no linked position, and the strandedFilled admission above lets
+      // it back into this block on the next tick, where computeFillDelta
+      // books exactly the missing part. The catch below still matters — a
+      // failure must not crash the rest of this cycle's other pending
+      // orders, and it must be LOUD (there's no human watching this path in
+      // real time the way the Trade page assumes).
       try {
         // Book only the part of the broker's running fill total we haven't
         // recorded yet, under the shared guards the human path uses too (see
@@ -1084,12 +1094,23 @@ function reconcileOneLiveOrder(
         // earlier tick, or the guards refused it.
         if (qty <= 0) return { changed: acked || canMove, error: warning };
 
+        // Every branch below commits its booking and the materialization mark
+        // in ONE transaction. The mark is the only thing telling a later tick
+        // "this part is already booked" (computeFillDelta keys on it, and the
+        // blend-vs-create discriminator below reads it directly) — as two bare
+        // auto-committing writes, a crash landing between them replayed the
+        // SAME fill on the next tick: a doubled position, add-on, or exit
+        // against real live capital. All materialize paths are synchronous, so
+        // a better-sqlite3 transaction is safe.
         if (meta.role === 'exit') {
           // A time-exit closing order — meta.positionId is known upfront
           // (recordLiveExitOrder), unlike an entry's positionId which is
           // null until THIS materialization sets it.
-          const recorded = materializeTimeExitFill(meta.positionId!, intent, price, riskProfile, qty);
-          if (recorded) advanceMaterialized(intent.id, qty, qty * price);
+          let recorded = false;
+          db.transaction(() => {
+            recorded = materializeTimeExitFill(meta.positionId!, intent, price, riskProfile, qty);
+            if (recorded) advanceMaterialized(intent.id, qty, qty * price);
+          })();
           return recorded ? { changed: true, action: 'exit_filled' } : { changed: acked || canMove };
         }
         if (meta.addonOfPositionId !== null) {
@@ -1098,8 +1119,10 @@ function reconcileOneLiveOrder(
           // position row. Its own protective bracket (raised stop + the
           // position's target) rests separately, watched via the bracket-leg
           // block below on later ticks once position_id is linked here.
-          materializeAddOnFill(meta.addonOfPositionId, intent, qty, price, riskProfile);
-          advanceMaterialized(intent.id, qty, qty * price);
+          db.transaction(() => {
+            materializeAddOnFill(meta.addonOfPositionId!, intent, qty, price, riskProfile);
+            advanceMaterialized(intent.id, qty, qty * price);
+          })();
           return { changed: true, action: 'entry_filled' };
         }
 
@@ -1117,31 +1140,35 @@ function reconcileOneLiveOrder(
         // ever advanced by this function, so it means exactly what's needed here.
         const linkedId = getLiveOrder(intent.id)?.positionId ?? null;
         if (intent.materializedQty > 0 && linkedId !== null) {
-          materializeAddOnFill(linkedId, intent, qty, price, riskProfile);
-          advanceMaterialized(intent.id, qty, qty * price);
+          db.transaction(() => {
+            materializeAddOnFill(linkedId, intent, qty, price, riskProfile);
+            advanceMaterialized(intent.id, qty, qty * price);
+          })();
           return { changed: true, action: 'entry_filled' };
         }
 
-        const outcome = materializeEntryFill(
-          intent,
-          stopPrice,
-          targetPrice,
-          riskAmount,
-          riskProfile,
-          accountId,
-          qty,
-          price,
-        );
-        // An ADOPTED position was imported from the broker whole, so it already
-        // reflects every instalment of this order — including ones we never
-        // observed. Mark the intent fully booked so a later partial can't blend
-        // quantity into it a second time.
-        if (outcome === 'linked_adopted') {
-          const remaining = intent.quantity - intent.materializedQty;
-          if (remaining > 0) advanceMaterialized(intent.id, remaining, remaining * price);
-        } else {
-          advanceMaterialized(intent.id, qty, qty * price);
-        }
+        db.transaction(() => {
+          const outcome = materializeEntryFill(
+            intent,
+            stopPrice,
+            targetPrice,
+            riskAmount,
+            riskProfile,
+            accountId,
+            qty,
+            price,
+          );
+          // An ADOPTED position was imported from the broker whole, so it
+          // already reflects every instalment of this order — including ones
+          // we never observed. Mark the intent fully booked so a later partial
+          // can't blend quantity into it a second time.
+          if (outcome === 'linked_adopted') {
+            const remaining = intent.quantity - intent.materializedQty;
+            if (remaining > 0) advanceMaterialized(intent.id, remaining, remaining * price);
+          } else {
+            advanceMaterialized(intent.id, qty, qty * price);
+          }
+        })();
         return { changed: true, action: 'entry_filled' };
       } catch (err) {
         const message = (err as Error).message;
