@@ -391,8 +391,13 @@ export function updatePosition(id: number, patch: PositionPatch): Position | und
   if (fields.length === 0) return existing;
   set('updated_at', Date.now());
   params.push(id);
-  db.prepare(`UPDATE positions SET ${fields.join(', ')} WHERE id = ?`).run(...params);
-  recomputeStatus(id);
+  // Atomic with its own derived status: editing quantity changes remaining
+  // size, so the row update and the recomputeStatus it implies must commit
+  // together or not at all (see addExit for the full reasoning).
+  db.transaction(() => {
+    db.prepare(`UPDATE positions SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+    recomputeStatus(id);
+  })();
   return getPosition(id);
 }
 
@@ -417,21 +422,31 @@ export function addExit(positionId: number, input: ExitInput): Position | undefi
   const pos = getPosition(positionId);
   if (!pos) return undefined;
   const now = Date.now();
-  db.prepare(
-    `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, source_intent_id, exit_reason, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?)`,
-  ).run(
-    positionId,
-    input.quantity,
-    input.exitPrice,
-    input.exitDate,
-    input.fees ?? 0,
-    input.notes ?? null,
-    input.sourceIntentId ?? null,
-    input.exitReason ?? null,
-    now,
-  );
-  recomputeStatus(positionId);
+  // Atomic: the exit row and the position status/remaining-quantity it derives
+  // are ONE fact and must commit together. As two bare auto-committing
+  // statements, a process kill (OOM, `fly apps restart`, power loss) or a
+  // throw from the status update landing between them would leave a recorded
+  // exit against a position whose status never caught up — a fully-sold
+  // position still reading "open", or a wrong closed quantity, i.e. corrupted
+  // realized P&L. WAL makes each statement crash-safe on its own; only a
+  // transaction makes the INVARIANT ACROSS the two rows crash-safe.
+  db.transaction(() => {
+    db.prepare(
+      `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, source_intent_id, exit_reason, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      positionId,
+      input.quantity,
+      input.exitPrice,
+      input.exitDate,
+      input.fees ?? 0,
+      input.notes ?? null,
+      input.sourceIntentId ?? null,
+      input.exitReason ?? null,
+      now,
+    );
+    recomputeStatus(positionId);
+  })();
   return getPosition(positionId);
 }
 
@@ -452,18 +467,28 @@ export function correctExitPrice(exitId: number, exitPrice: number, notes: strin
   const row = db.prepare('SELECT position_id FROM position_exits WHERE id = ?').get(exitId) as
     { position_id: number } | undefined;
   if (!row) return undefined;
-  db.prepare('UPDATE position_exits SET exit_price = ?, notes = ? WHERE id = ?').run(exitPrice, notes, exitId);
   // Status is a function of QUANTITY, not price, so it cannot change here —
-  // recomputed anyway so this can never silently leave a stale derived value.
-  recomputeStatus(row.position_id);
+  // recomputed anyway so this can never silently leave a stale derived value,
+  // and kept in one transaction with the price update for the same
+  // all-or-nothing reason as addExit.
+  db.transaction(() => {
+    db.prepare('UPDATE position_exits SET exit_price = ?, notes = ? WHERE id = ?').run(exitPrice, notes, exitId);
+    recomputeStatus(row.position_id);
+  })();
   return getPosition(row.position_id);
 }
 
 export function deleteExit(exitId: number): boolean {
   const row = db.prepare('SELECT position_id FROM position_exits WHERE id = ?').get(exitId) as
     { position_id: number } | undefined;
-  const changed = db.prepare('DELETE FROM position_exits WHERE id = ?').run(exitId).changes > 0;
-  if (changed && row) recomputeStatus(row.position_id);
+  // Removing an exit gives the position back its quantity, which can reopen a
+  // closed position — so the DELETE and the status it derives commit together
+  // (see addExit). `changes` is captured inside the tx and returned after it.
+  let changed = false;
+  db.transaction(() => {
+    changed = db.prepare('DELETE FROM position_exits WHERE id = ?').run(exitId).changes > 0;
+    if (changed && row) recomputeStatus(row.position_id);
+  })();
   return changed;
 }
 
