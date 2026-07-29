@@ -2017,3 +2017,79 @@ describe('reconcileLiveOrders — partial fills', () => {
     expect(getIntent(intentId)!.materializedQty).toBe(orderedQty);
   });
 });
+
+describe('reconcileLiveOrders — booking and the materialization mark are atomic', () => {
+  // The blend-vs-create discriminator for a later instalment is materializedQty
+  // ("only ever advanced by this function"). If the Position commit survived a
+  // crash but the mark's did not, the next tick would read materializedQty 0,
+  // take the create branch, and book a SECOND real position for the SAME
+  // broker fill. A temp trigger ABORTs exactly where advanceMaterialized
+  // writes — a faithful mid-sequence crash — and the transaction must roll the
+  // Position back with it; the retry then books exactly once.
+  it('rolls the Position back when the mark update fails, then books exactly once on retry', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-ATOM' });
+    const okResult = evaluateRiskCheck(signal(), {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      maxConcurrentPositions: 2,
+      correlatedNotional: 0,
+      riskPerTradePct: 1,
+      maxDailyDrawdownPct: 3,
+      stepDownAfterLosses: 2,
+      stepDownSizeCutPct: 50,
+      maxAggregateOpenRiskPct: 2,
+      maxCorrelatedExposurePct: 6,
+      maxTradesPerDay: 6,
+      sectorNotional: 0,
+      maxSectorExposurePct: 20,
+      candidateSector: null,
+      correlationThreshold: 0.7,
+      marketAtrPct: null,
+      regimeAtrThresholdPct: 3,
+      regimeSizeCutPct: 0,
+    });
+    await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig(), null, null);
+    const intentId = listIntents()[0].id;
+    // Mock the share count actually ORDERED (probation sizing may have cut the
+    // suggested size) — reconcile refuses to book more than was ordered.
+    const orderedQty = listIntents()[0].quantity;
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: orderedQty,
+      filledPrice: 100.5,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+
+    db.exec(
+      `CREATE TEMP TRIGGER fail_advance BEFORE UPDATE OF materialized_qty ON order_intents
+       BEGIN SELECT RAISE(ABORT, 'simulated crash before mark commit'); END`,
+    );
+    try {
+      const outcomes = await reconcileLiveOrders();
+      // The path's own catch converts the abort into an error outcome (and
+      // journals it) rather than letting a reconcile throw kill the loop tick.
+      expect(outcomes[0].error).toMatch(/failed to materialize a Position.*simulated crash/);
+    } finally {
+      db.exec('DROP TRIGGER IF EXISTS fail_advance');
+    }
+    // Nothing half-committed: no Position, mark unbooked, metadata unlinked.
+    expect(listPositions()).toHaveLength(0);
+    expect(getIntent(intentId)!.materializedQty).toBe(0);
+    expect(getLiveOrder(intentId)?.positionId ?? null).toBeNull();
+
+    // Next tick (trigger gone = process restarted): the SAME fill books once.
+    const retry = await reconcileLiveOrders();
+    expect(retry[0]).toMatchObject({ changed: true, action: 'entry_filled' });
+    expect(listPositions()).toHaveLength(1);
+    expect(getIntent(intentId)!.materializedQty).toBe(orderedQty);
+  });
+});

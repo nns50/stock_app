@@ -1,4 +1,5 @@
 import { config } from '../../config';
+import { db } from '../../db';
 import { AutotradeConfig, getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
 import { getTradingConfig } from '../../db/trading';
 import {
@@ -1328,7 +1329,17 @@ export async function reconcileLiveOptionsOrders(): Promise<LiveOptionsReconcile
         });
       }
     }
-    if (canMove || restingPartial || unrecognizedFill) {
+    // A crash on an earlier tick (or a materialization failure before booking
+    // and its mark were transactional) can leave a terminal 'filled' intent
+    // whose booking never landed. listPendingLiveOptionsOrders keeps
+    // re-selecting exactly that shape — but this gate used to turn each
+    // re-selection into a no-op: canMove is false once the state is terminal,
+    // so the stranded fill was re-polled forever and booked never. Let the
+    // fill delta decide instead: computeFillDelta books only what's missing,
+    // so a fully-booked filled intent still no-ops while a stranded one
+    // finally lands (within one tick of the crash).
+    const strandedFilled = current.state === 'filled' && current.materializedQty < current.quantity;
+    if (canMove || restingPartial || unrecognizedFill || strandedFilled) {
       if (canMove) {
         transitionIntent(current.id, target!, {
           detail: `broker ${broker.status?.toLowerCase()}`,
@@ -1404,11 +1415,24 @@ function materializeLiveOptionsFill(
   if (qty <= 0) return { intentId: intent.id, symbol: meta.symbol, changed: true, error: warning };
 
   try {
-    const action =
-      meta.role === 'entry'
-        ? materializeOptionsEntryFill(intent, meta, qty, price)
-        : materializeOptionsExitFill(intent, meta, price, qty);
-    advanceMaterialized(intent.id, qty, qty * price);
+    // Booking + the materialization mark commit atomically: a crash between
+    // them left the position created with materialized_qty still 0, and the
+    // NEXT reconcile's blend guard (`materializedQty > 0`) would then see a
+    // first-instalment entry and book a SECOND position for the same real
+    // fill — the exact double-booking every guard here exists to prevent.
+    // Everything inside is synchronous (verified: no awaits in either
+    // materialize path), so a better-sqlite3 transaction is safe.
+    // Definite-assignment assertion: the transaction callback runs
+    // synchronously before the return below (better-sqlite3), which TS's
+    // flow analysis can't see through the closure.
+    let action!: ReturnType<typeof materializeOptionsEntryFill> | ReturnType<typeof materializeOptionsExitFill>;
+    db.transaction(() => {
+      action =
+        meta.role === 'entry'
+          ? materializeOptionsEntryFill(intent, meta, qty, price)
+          : materializeOptionsExitFill(intent, meta, price, qty);
+      advanceMaterialized(intent.id, qty, qty * price);
+    })();
     return { intentId: intent.id, symbol: meta.symbol, changed: true, action };
   } catch (err) {
     const message = (err as Error).message;

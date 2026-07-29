@@ -912,3 +912,48 @@ describe('reconcileIntent — partial fills', () => {
     expect(listPositions()).toHaveLength(0);
   });
 });
+
+describe('reconcileIntent — transition, booking, and the materialization mark are atomic', () => {
+  // Three writes, one fact: the intent's state moving to (terminal) 'filled',
+  // the Position the fill books, and the materialized_qty mark that says "this
+  // part is booked" (computeFillDelta keys on it). A crash between any two of
+  // them was one of two corruptions: transition-committed-but-unbooked strands
+  // the shares forever (terminal state → this reconcile refuses to look
+  // again), and booked-but-unmarked double-books the same fill on the next
+  // look. The failure here is injected with a temp trigger that ABORTs inside
+  // SQLite exactly where advanceMaterialized writes — a faithful stand-in for
+  // a crash mid-sequence.
+  const armAdvanceFailure = () =>
+    db.exec(
+      `CREATE TEMP TRIGGER fail_advance BEFORE UPDATE OF materialized_qty ON order_intents
+       BEGIN SELECT RAISE(ABORT, 'simulated crash before mark commit'); END`,
+    );
+  const disarm = () => db.exec('DROP TRIGGER IF EXISTS fail_advance');
+
+  it('rolls the transition AND the booked Position back together, then books exactly once on retry', async () => {
+    const id = placedFor(1);
+    mockPull(filledEnvelope);
+
+    armAdvanceFailure();
+    try {
+      await expect(reconcileIntent(id, 'ACC1')).rejects.toThrow(/simulated crash/);
+    } finally {
+      disarm();
+    }
+    // Nothing half-committed: no Position, mark still unbooked, and CRUCIALLY
+    // the state did NOT reach terminal 'filled' — the retry below can get in.
+    expect(listPositions()).toHaveLength(0);
+    expect(getIntent(id)?.materializedQty).toBe(0);
+    expect(getIntent(id)?.state).toBe('acknowledged');
+
+    // The next reconcile (trigger gone = the process restarted) books the SAME
+    // broker fill exactly once — nothing lost, nothing duplicated.
+    vi.restoreAllMocks();
+    mockPull(filledEnvelope);
+    const r = await reconcileIntent(id, 'ACC1');
+    expect(r.materialized).toBe(1);
+    expect(getIntent(id)?.state).toBe('filled');
+    expect(listPositions()).toHaveLength(1);
+    expect(getIntent(id)?.materializedQty).toBe(1);
+  });
+});
