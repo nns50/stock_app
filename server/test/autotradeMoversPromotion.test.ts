@@ -7,6 +7,7 @@ import { listUniverseSymbols, addSymbols, removeSymbol } from '../src/db/univers
 import { addExclusion } from '../src/db/autotradeExclusions';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { AutotradeConfig } from '../src/db/autotradeConfig';
+import { etToday } from '../src/util/marketDate';
 
 beforeAll(() => initDb());
 beforeEach(() => {
@@ -56,12 +57,15 @@ function candidate(symbol: string, discoverySource: DiscoverySource = 'movers'):
  *  the threshold, rather than backdating so far that the rolling window
  *  itself would silently exclude it. */
 function seedPriorOccurrences(symbol: string, count: number): void {
-  const today = new Date();
   const insert = db.prepare('INSERT INTO movers_occurrences(symbol, date, created_at) VALUES (?, ?, ?)');
+  const DAY = 24 * 60 * 60 * 1000;
   for (let i = 1; i < count; i++) {
-    const d = new Date(today);
-    d.setUTCDate(d.getUTCDate() - i);
-    insert.run(symbol.toUpperCase(), d.toISOString().slice(0, 10), Date.now());
+    // ET calendar date i days back — must be built the SAME way production keys
+    // today's occurrence (etToday), NOT a raw UTC date. From ~20:00 ET to
+    // UTC-midnight the UTC date is already tomorrow, so a UTC-dated "yesterday"
+    // equals today's ET date: the seeded prior day collides with today's on the
+    // (symbol,date) unique key and the distinct-day count silently falls short.
+    insert.run(symbol.toUpperCase(), etToday(Date.now() - i * DAY), Date.now());
   }
 }
 

@@ -6,6 +6,7 @@ import { getProvider, getProviderStatus } from '../src/providers';
 import { initDb, db } from '../src/db';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { getIvHistory, recordAtmIv } from '../src/db/ivHistory';
+import { etToday } from '../src/util/marketDate';
 import { ScreenCandidate } from '../src/services/autotrading/screen';
 import {
   defaultAutotradeEntryConfig,
@@ -177,7 +178,12 @@ function candlesFor(count: number, basePrice = 100): Candle[] {
 function fillIvHistory(symbol: string, samples: number, opts: { min?: number; max?: number } = {}): void {
   const { min = 0.2, max = 0.6 } = opts;
   for (let i = 0; i < samples; i++) {
-    const date = new Date(Date.now() - (samples - i) * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    // ET calendar date, matching how generateOptionsSignal keys TODAY's sample
+    // (etToday). A raw UTC date here collides with today's ET date during the
+    // ~20:00-ET-to-UTC-midnight window (UTC is already tomorrow), so the newest
+    // backfilled day and today's sample land on the same (symbol,date) key and
+    // getIvHistory returns one row fewer than seeded.
+    const date = etToday(Date.now() - (samples - i) * 24 * 60 * 60 * 1000);
     const value = samples === 1 ? min : min + ((max - min) * i) / (samples - 1);
     recordAtmIv(symbol, value, date);
   }
