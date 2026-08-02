@@ -276,6 +276,7 @@ export type TunablePatch = Pick<
   | 'liveMaxOrderUsd'
   | 'liveMaxDailyLossUsd'
   | 'liveMaxOrdersPerDay'
+  | 'liveCapsAnchorEquityUsd'
   | 'liveOptionsMaxOrderUsd'
   | 'liveOptionsMaxDailyLossUsd'
   | 'liveOptionsMaxOrdersPerDay'
@@ -440,6 +441,11 @@ function shapeToPatch(shape: BandShape, equityUsd: number, riskPerTradePct: numb
     liveMaxOrderUsd: orderUsd,
     liveMaxDailyLossUsd: dailyLossUsd,
     liveMaxOrdersPerDay: shape.maxTradesPerDay,
+    // Records the equity the dollar caps above were derived from, ARMING the
+    // automatic re-anchor (liveCapsReanchor.ts): when synced equity later
+    // drifts ≥15% from this, the caps are re-derived so they keep meaning what
+    // this tune meant by them.
+    liveCapsAnchorEquityUsd: equityUsd,
     liveOptionsMaxOrderUsd: orderUsd,
     liveOptionsMaxDailyLossUsd: dailyLossUsd,
     liveOptionsMaxOrdersPerDay: shape.maxTradesPerDay,

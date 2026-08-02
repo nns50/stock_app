@@ -33,6 +33,7 @@ import {
   liveOptionsSeedForEquity,
 } from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures, maybeAlertLiveAmbiguity } from './liveFailureAlert';
+import { reanchorLiveCapsIfDrifted } from './liveCapsReanchor';
 import { hasExpiredLiveOptions, sweepExpiredLiveOptions } from './liveOptionsExpiry';
 import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
 import { maybeAutoTune } from './autoTune';
@@ -411,6 +412,18 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       await syncAccountEquityFromBroker({ log: false });
     } catch (e) {
       console.error('[autotrade-loop] equity sync failed:', (e as Error).message);
+    }
+    // Right after the sync so it sees this tick's equity: re-derive the four
+    // equity-scaled DOLLAR caps once equity has drifted ≥15% from the equity
+    // they were tuned at — the percent caps re-scale themselves, but a stored
+    // dollar cap silently loosens (relative to intent) as the account shrinks.
+    // No-op until a tune has armed the anchor; hand-edited caps are never
+    // touched. Pure math + at most one config write; caught so nothing here
+    // can take down the tick.
+    try {
+      reanchorLiveCapsIfDrifted();
+    } catch (e) {
+      console.error('[autotrade-loop] live-caps re-anchor failed:', (e as Error).message);
     }
     // Detection only (never adjusts a position's own quantity/price) — see
     // splitCheck.ts's own header comment. Self-gated to once per ET day, so

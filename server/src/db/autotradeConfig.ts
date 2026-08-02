@@ -528,6 +528,20 @@ export interface AutotradeConfig {
   liveOptionsMaxOrderUsd: number;
   liveOptionsMaxDailyLossUsd: number;
   liveOptionsMaxOrdersPerDay: number;
+  /** The equity the four equity-scaled DOLLAR caps (liveMaxOrderUsd /
+   *  liveMaxDailyLossUsd and their options twins) were last derived from.
+   *  Written by a "tune from target" apply (targetTune.ts stamps it into the
+   *  patch) and by each automatic re-anchor; null = re-anchoring disarmed.
+   *
+   *  Why it exists: the percent caps re-scale themselves (accountEquityUsd is
+   *  synced from the broker every loop tick), but a stored dollar figure is
+   *  frozen at whatever equity it was computed from — as the account grows it
+   *  quietly tightens, and as the account shrinks it quietly LOOSENS, relative
+   *  to the tune's intent. liveCapsReanchor.ts re-derives the four dollar caps
+   *  from current equity when it has drifted ≥15% from this anchor, touching
+   *  only caps that still match their anchor-derived value (a hand-edited cap
+   *  is the user's, and stays theirs). */
+  liveCapsAnchorEquityUsd: number | null;
   liveOptionsFatFingerPct: number;
   /** Mirrors liveProbationTrades/liveProbationSizeMultiplier, counted from
    *  liveOptionsEnabledAt via countLiveOptionsOrdersSince() — a fully
@@ -833,6 +847,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveOptionsMaxOrderUsd: 500,
     liveOptionsMaxDailyLossUsd: 250,
     liveOptionsMaxOrdersPerDay: DEFAULT_LIVE_MAX_ORDERS_PER_DAY,
+    liveCapsAnchorEquityUsd: null,
     liveOptionsFatFingerPct: 10,
     liveOptionsProbationTrades: 20,
     liveOptionsProbationSizeMultiplier: 0.5,
@@ -1040,6 +1055,13 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     liveOptionsMaxOrderUsd: nonNeg(input.liveOptionsMaxOrderUsd, d.liveOptionsMaxOrderUsd),
     liveOptionsMaxDailyLossUsd: nonNeg(input.liveOptionsMaxDailyLossUsd, d.liveOptionsMaxDailyLossUsd),
     liveOptionsMaxOrdersPerDay: posInt(input.liveOptionsMaxOrdersPerDay, d.liveOptionsMaxOrdersPerDay),
+    // Same null-or-positive shape as accountEquityUsd (it is a snapshot of it).
+    liveCapsAnchorEquityUsd:
+      input.liveCapsAnchorEquityUsd === null
+        ? null
+        : typeof input.liveCapsAnchorEquityUsd === 'number' && input.liveCapsAnchorEquityUsd > 0
+          ? input.liveCapsAnchorEquityUsd
+          : d.liveCapsAnchorEquityUsd,
     liveOptionsFatFingerPct: pct(input.liveOptionsFatFingerPct, d.liveOptionsFatFingerPct),
     liveOptionsProbationTrades: posInt(input.liveOptionsProbationTrades, d.liveOptionsProbationTrades),
     liveOptionsProbationSizeMultiplier: (() => {

@@ -1527,6 +1527,9 @@ export interface AutotradeConfig {
   liveOptionsMaxOrderUsd: number;
   liveOptionsMaxDailyLossUsd: number;
   liveOptionsMaxOrdersPerDay: number;
+  /** Equity the four equity-scaled $ caps were last derived from; arms the
+   *  loop's automatic re-anchoring (null = disarmed). Stamped by tune applies. */
+  liveCapsAnchorEquityUsd: number | null;
   liveOptionsFatFingerPct: number;
   liveOptionsProbationTrades: number;
   liveOptionsProbationSizeMultiplier: number;
@@ -1627,6 +1630,7 @@ export type TunablePatch = Pick<
   | 'liveMaxOrderUsd'
   | 'liveMaxDailyLossUsd'
   | 'liveMaxOrdersPerDay'
+  | 'liveCapsAnchorEquityUsd'
   | 'liveOptionsMaxOrderUsd'
   | 'liveOptionsMaxDailyLossUsd'
   | 'liveOptionsMaxOrdersPerDay'

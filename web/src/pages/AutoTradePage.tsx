@@ -1962,6 +1962,7 @@ const TUNE_FIELD_LABELS: Record<keyof TunablePatch, string> = {
   liveOptionsMaxOrderUsd: 'Live options max order',
   liveOptionsMaxDailyLossUsd: 'Live options max daily loss',
   liveOptionsMaxOrdersPerDay: 'Live options max orders/day',
+  liveCapsAnchorEquityUsd: 'Dollar-caps anchor equity (arms auto re-anchor)',
   optionsDeltaMin: 'Options delta min',
   optionsDeltaMax: 'Options delta max',
   optionsMaxSpreadPct: 'Options max spread%',
