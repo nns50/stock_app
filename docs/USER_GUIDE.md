@@ -1056,8 +1056,15 @@ shouldn't be a tab-switch away.
   only the risk/aggressiveness settings, screening filters, options selection, and the
   dollar caps. Deliberately lets you push the target
   high (it's your call), but higher targets mean bigger swings both ways — decision
-  support, never a promise of the gain. Needs account equity set first. Full walkthrough,
-  including the exact formula and the band table:
+  support, never a promise of the gain. Needs account equity set first. Applying a tune
+  also **arms automatic re-anchoring of the four dollar caps** (max order $ and max
+  daily loss $, equity and options): equity syncs from the broker every minute, and once
+  it has drifted **15%+** from the equity the tune derived those caps at, the loop
+  re-derives them with the same formulas and journals a `live_caps_reanchored` entry to
+  Recent activity — so a shrinking account's daily-loss cap tightens with it instead of
+  quietly becoming a bigger share of what's left. Caps you've since edited by hand are
+  never touched (the event names any it skipped). Full walkthrough,
+  including the exact formula, the band table, and the re-anchoring rules:
   [Tune from target daily gain](TUNE_FROM_TARGET.md).
   Every guardrail the risk engine actually enforces is its own directly-editable field
   below account equity, independent of the risk-profile label above — switching

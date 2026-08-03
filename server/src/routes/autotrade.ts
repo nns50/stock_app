@@ -223,6 +223,10 @@ const configBody = z.object({
   liveOptionsMaxOrderUsd: z.number().nonnegative().optional(),
   liveOptionsMaxDailyLossUsd: z.number().nonnegative().optional(),
   liveOptionsMaxOrdersPerDay: z.number().int().nonnegative().optional(),
+  /** Equity the four $ caps were last derived from — stamped by a tune apply
+   *  (the /tune patches carry it) to arm automatic re-anchoring; null disarms.
+   *  See services/autotrading/liveCapsReanchor.ts. */
+  liveCapsAnchorEquityUsd: z.number().positive().nullable().optional(),
   liveOptionsFatFingerPct: z.number().min(0).max(100).optional(),
   liveOptionsProbationTrades: z.number().int().nonnegative().optional(),
   liveOptionsProbationSizeMultiplier: z.number().positive().max(1).optional(),
@@ -420,6 +424,7 @@ autotradeRouter.put(
     if (body.liveOptionsMaxOrdersPerDay !== undefined) {
       patch.liveOptionsMaxOrdersPerDay = body.liveOptionsMaxOrdersPerDay;
     }
+    if (body.liveCapsAnchorEquityUsd !== undefined) patch.liveCapsAnchorEquityUsd = body.liveCapsAnchorEquityUsd;
     if (body.liveOptionsFatFingerPct !== undefined) patch.liveOptionsFatFingerPct = body.liveOptionsFatFingerPct;
     if (body.liveOptionsProbationTrades !== undefined) {
       patch.liveOptionsProbationTrades = body.liveOptionsProbationTrades;

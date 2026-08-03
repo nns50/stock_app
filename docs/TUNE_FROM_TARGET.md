@@ -176,6 +176,30 @@ multiple, then **clamped to a maximum suggestion of 10%** — see
 
 The options live caps mirror the equity ones.
 
+### The dollar caps stay anchored to your equity
+
+The percent-based settings re-scale themselves — account equity is synced from the
+broker every loop tick, and a percent is applied to it at decision time. The **dollar**
+caps above, though, are stored as literal dollars, frozen at the equity they were
+derived from. Left alone, they drift from the tune's intent in both directions: as the
+account grows they quietly tighten, and as it shrinks they quietly **loosen** — a $903
+daily-loss cap on a book that has fallen from $6.9k to $4k is a 22% halt wearing a 13%
+label, exactly when losses are compounding.
+
+So applying a tune also records the equity it derived those caps from (the _anchor_),
+and the loop **re-derives the four dollar caps automatically** whenever synced equity
+has moved **15% or more** (either direction) from that anchor, using the same formulas
+in the table above — then moves the anchor to the new equity, so mark-to-market noise
+can never make it churn. Each re-anchor appears in **Recent activity** as a
+`live_caps_reanchored` config event showing the old → new value of every cap it moved.
+
+Hand-edits stay yours: a cap is only re-derived while it still equals the value the
+anchor implies. One you've changed by hand is skipped (and named in the event), and
+editing the drawdown-halt percent by hand likewise takes the daily-loss caps out of
+the automation's reach from the next re-anchor on. Re-applying a tune re-arms
+everything. Configs from before this feature have no anchor recorded, so nothing
+re-anchors until a tune is applied once.
+
 ## 6. What it changes — and what it never touches
 
 The tuner writes **only** the risk/aggressiveness settings, screening filters, contract

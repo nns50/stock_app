@@ -141,6 +141,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     liveOptionsMaxOrderUsd: 2_000,
     liveOptionsMaxDailyLossUsd: 500,
     liveOptionsMaxOrdersPerDay: 6,
+    liveCapsAnchorEquityUsd: null,
     liveOptionsFatFingerPct: 10,
     liveOptionsProbationTrades: 20,
     liveOptionsProbationSizeMultiplier: 0.5,
