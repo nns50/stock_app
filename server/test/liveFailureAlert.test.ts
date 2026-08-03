@@ -3,10 +3,18 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 vi.mock('../src/services/notifier', () => ({
   dispatchNotifications: vi.fn().mockResolvedValue({ delivered: true, count: 1, results: [] }),
 }));
+// Pin the market OPEN by default: these tests run at whatever wall-clock CI
+// happens to be at, and the re-alert path is now gated on market hours. The
+// closed-market cases flip this mock explicitly.
+vi.mock('../src/services/trading/marketHours', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/trading/marketHours')>()),
+  isUsEquityMarketOpen: vi.fn(() => true),
+}));
 
 import { initDb, db } from '../src/db';
 import { logAutotradeEvent, listAutotradeEvents } from '../src/db/autotradeEvents';
 import { dispatchNotifications } from '../src/services/notifier';
+import { isUsEquityMarketOpen } from '../src/services/trading/marketHours';
 import {
   maybeAlertLiveOrderFailures,
   maybeAlertLiveAmbiguity,
@@ -18,11 +26,13 @@ import {
 } from '../src/services/autotrading/liveFailureAlert';
 
 const mockDispatch = vi.mocked(dispatchNotifications);
+const mockMarketOpen = vi.mocked(isUsEquityMarketOpen);
 
 beforeAll(() => initDb());
 beforeEach(() => {
   db.exec('DELETE FROM autotrade_events');
   mockDispatch.mockClear();
+  mockMarketOpen.mockReturnValue(true);
 });
 
 function fail(symbol = 'KC', reason = 'Price increment should be 0.01 when price is equal to or greater than 0.9999') {
@@ -95,6 +105,45 @@ describe('maybeAlertLiveOrderFailures', () => {
     const afterCooldown = marker.createdAt + LIVE_FAILURE_REALERT_COOLDOWN_MS + 1000;
     expect(await maybeAlertLiveOrderFailures(afterCooldown)).toBe(true);
     expect(mockDispatch).toHaveBeenCalledTimes(1);
+    expect(alertMarkers()).toHaveLength(2);
+  });
+
+  it('suppresses RE-alerts while the market is closed — a stale streak cannot change out of session', async () => {
+    // Observed in practice: a Friday streak re-alerted hourly all weekend (~40
+    // identical pages) although nothing could place, grow, or resolve it.
+    failN(LIVE_FAILURE_ALERT_THRESHOLD);
+    await maybeAlertLiveOrderFailures();
+    const marker = alertMarkers()[0];
+    mockDispatch.mockClear();
+
+    mockMarketOpen.mockReturnValue(false);
+    const afterCooldown = marker.createdAt + LIVE_FAILURE_REALERT_COOLDOWN_MS + 1000;
+    expect(await maybeAlertLiveOrderFailures(afterCooldown)).toBe(false);
+    expect(mockDispatch).not.toHaveBeenCalled();
+    expect(alertMarkers()).toHaveLength(1); // no marker either — nothing happened
+  });
+
+  it('still fires the FIRST alert of a streak while the market is closed', async () => {
+    // An out-of-session failure (e.g. a time-exit close attempt) is NEW
+    // information — only repetition is gated, never the first report.
+    mockMarketOpen.mockReturnValue(false);
+    failN(LIVE_FAILURE_ALERT_THRESHOLD);
+    expect(await maybeAlertLiveOrderFailures()).toBe(true);
+    expect(mockDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('delivers the held-back reminder once the market reopens', async () => {
+    failN(LIVE_FAILURE_ALERT_THRESHOLD);
+    await maybeAlertLiveOrderFailures();
+    const marker = alertMarkers()[0];
+    mockDispatch.mockClear();
+
+    const afterCooldown = marker.createdAt + LIVE_FAILURE_REALERT_COOLDOWN_MS + 1000;
+    mockMarketOpen.mockReturnValue(false);
+    expect(await maybeAlertLiveOrderFailures(afterCooldown)).toBe(false); // weekend: quiet
+
+    mockMarketOpen.mockReturnValue(true);
+    expect(await maybeAlertLiveOrderFailures(afterCooldown + 60_000)).toBe(true); // open: reminds once
     expect(alertMarkers()).toHaveLength(2);
   });
 
