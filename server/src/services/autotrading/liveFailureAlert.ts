@@ -1,4 +1,5 @@
 import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
+import { isUsEquityMarketOpen } from '../trading/marketHours';
 import { dispatchNotifications } from '../notifier';
 
 // ---------------------------------------------------------------------------
@@ -198,6 +199,16 @@ export async function maybeAlertLiveOrderFailures(now: number = Date.now()): Pro
   if (consecutiveFailures < LIVE_FAILURE_ALERT_THRESHOLD) return false;
   // Already alerted for this (post-success) streak and still within the cooldown.
   if (lastAlertAt !== null && now - lastAlertAt < LIVE_FAILURE_REALERT_COOLDOWN_MS) return false;
+  // A RE-alert while the market is closed is pure noise: entries are
+  // session-gated, so out of session the streak can neither grow nor resolve —
+  // hourly reminders would repeat all weekend saying nothing new (observed in
+  // practice: ~40 identical alerts across one weekend for a single Friday
+  // streak). The FIRST alert of a streak is deliberately NOT gated — a failure
+  // that does happen out of session (a time-exit's close attempt, say) is new
+  // information and should page regardless of the clock. The streak still
+  // resolves the normal way at the next open: one reminder may fire at the
+  // open, then the first successful placement clears it.
+  if (lastAlertAt !== null && !isUsEquityMarketOpen(new Date(now))) return false;
 
   const symbol = latest?.symbol ?? 'unknown';
   const reason = latest?.reason ?? 'no reason reported';

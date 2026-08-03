@@ -1193,7 +1193,12 @@ starts.
      (`live_order_placed` / `live_options_order_placed`), and when that count reaches the
      threshold (3) fires ONE alert naming the count and the latest symbol/reason, then
      re-reminds at most hourly while the streak persists, resetting the moment an order
-     gets through. Scoped to the broker-REJECTION class only, NOT guardrail `*_blocked`
+     gets through. Re-reminders are additionally suppressed while the market is closed:
+     entries are session-gated, so out of session the streak can neither grow nor
+     resolve, and a Friday streak once re-paged hourly all weekend saying nothing new.
+     The FIRST alert of a streak is deliberately not gated — an out-of-session failure
+     (a time-exit's close attempt, say) is new information and pages regardless of the
+     clock; at the next open one reminder may fire, then the first success clears it. Scoped to the broker-REJECTION class only, NOT guardrail `*_blocked`
      events (a kill switch or a cap is the system correctly refusing — expected, and the
      kill-switch engage already alerts). A `live_failure_alerted` marker event is
      journaled so the throttle survives a restart. Best-effort like the rest, through the
