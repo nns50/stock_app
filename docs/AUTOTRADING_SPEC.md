@@ -1018,9 +1018,22 @@ starts.
      lower, non-human-specific layers of the existing live pipeline (guardrail
      evaluation via `evaluateGuardrails()` against the new live-cap config,
      `webullPlaceOrder()`, the order lifecycle/audit trail with `created_by: 'autotrade'`)
-     without going through `placeOrder()`'s confirmation parameter. `checkLiveExits()`
-     mirrors `checkPaperExits()` and always runs regardless of either kill switch, per
-     the exits-are-risk-reducing decision above. Probation and step-down multipliers
+     without going through `placeOrder()`'s confirmation parameter.
+     > **Corrected 2026-08-21 — what actually shipped:** live exit **placement** does
+     > NOT bypass the kill switch, and that is the behavior we keep. The exit sweeps
+     > (`checkLiveOptionsExits()`, `checkLiveEquityTimeExits()`) run every tick, but
+     > each close they place routes through `evaluateGuardrails()` with the combined
+     > kill switch, so an engaged switch blocks automated exits exactly like entries
+     > (journaled per attempt as `*_exit_blocked`). Confirmed as the intended
+     > semantic in real use: the kill switch's job includes "hands off — I'm trading
+     > this account manually in Webull," and an app that keeps firing its own closes
+     > into a session the human is actively managing is interference, not safety.
+     > The risk-reduction concern is covered elsewhere: broker-side bracket legs
+     > rest at Webull and fire regardless of anything this app does, and the
+     > read-only reconcile/sync paths (which genuinely do run regardless of the
+     > kill switch) book whatever the broker or the human executes. Only PAPER
+     > exits close positions during a halt — they touch no broker.
+     Probation and step-down multipliers
      compose on top of the risk profile's normal sizing.
    - **Step C — wire into the loop.** `runAutotradeLoopTick()` gates live entries behind
      `liveTradingEnabled` **and** `TRADING_ENABLED` (env) **and** both kill switches

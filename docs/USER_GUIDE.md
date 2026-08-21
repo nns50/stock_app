@@ -1413,6 +1413,15 @@ shouldn't be a tab-switch away.
   are enforced by the broker directly. Live trading is blocked if *either* kill switch is
   engaged — this page's own, or the **Trade** page's — since both places orders through
   the same real account; either one's "Halt trading" is a genuine, shared emergency stop.
+  An engaged kill switch freezes **all** automated live order placement — exits included,
+  not just entries — which makes it the right tool for "hands off, I'm trading this
+  account manually in Webull": the app won't fire its own closes into your session.
+  Three things keep working through a halt: your **broker-side bracket legs** still rest
+  at Webull and fire on their own; the background **sync keeps booking** whatever fills
+  or manual closes happen at the broker (each blocked automated exit attempt is also
+  journaled to Recent activity, so the halt is visible, not silent); and **paper**
+  positions keep exiting normally, since they touch no broker. Releasing the switch
+  resumes automated exit management immediately.
   A live order that fills only **partly** is recorded as soon as the loop sees it, rather
   than waiting for the order to complete — and later instalments of the same order are
   blended into that one position (bigger size, averaged entry), not opened as a second row.
