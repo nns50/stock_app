@@ -1056,7 +1056,16 @@ shouldn't be a tab-switch away.
   only the risk/aggressiveness settings, screening filters, options selection, and the
   dollar caps. Deliberately lets you push the target
   high (it's your call), but higher targets mean bigger swings both ways — decision
-  support, never a promise of the gain. Needs account equity set first. Applying a tune
+  support, never a promise of the gain. Needs account equity set first. Since
+  2026-08-21, applying a tune also **stores the target as a live daily goal**: each ET
+  day the loop snapshots the account's starting value, and once synced equity reaches
+  `dayStart × (1 + target%)` it **banks the day** — one `daily_target_reached` entry in
+  Recent activity, new live entries and scale-ins halted until the next trading day
+  (sticky even if equity slips back), while exits, reconcile, the broker sync, and
+  paper all keep running. The Monitoring card shows the goal line and progress. It
+  never sizes UP to chase a shortfall — behind the target, sizing stays exactly what
+  the tune calibrated. **Reset to moderate** (or clearing the field) disarms it.
+  Applying a tune
   also **arms automatic re-anchoring of the four dollar caps** (max order $ and max
   daily loss $, equity and options): equity syncs from the broker every minute, and once
   it has drifted **15%+** from the equity the tune derived those caps at, the loop

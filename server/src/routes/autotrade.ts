@@ -227,6 +227,9 @@ const configBody = z.object({
    *  (the /tune patches carry it) to arm automatic re-anchoring; null disarms.
    *  See services/autotrading/liveCapsReanchor.ts. */
   liveCapsAnchorEquityUsd: z.number().positive().nullable().optional(),
+  /** The live daily-gain goal (% of the day's starting account value) —
+   *  stamped by tune applies; null disarms the tracker. */
+  targetDailyGainPct: z.number().positive().max(1000).nullable().optional(),
   liveOptionsFatFingerPct: z.number().min(0).max(100).optional(),
   liveOptionsProbationTrades: z.number().int().nonnegative().optional(),
   liveOptionsProbationSizeMultiplier: z.number().positive().max(1).optional(),
@@ -425,6 +428,7 @@ autotradeRouter.put(
       patch.liveOptionsMaxOrdersPerDay = body.liveOptionsMaxOrdersPerDay;
     }
     if (body.liveCapsAnchorEquityUsd !== undefined) patch.liveCapsAnchorEquityUsd = body.liveCapsAnchorEquityUsd;
+    if (body.targetDailyGainPct !== undefined) patch.targetDailyGainPct = body.targetDailyGainPct;
     if (body.liveOptionsFatFingerPct !== undefined) patch.liveOptionsFatFingerPct = body.liveOptionsFatFingerPct;
     if (body.liveOptionsProbationTrades !== undefined) {
       patch.liveOptionsProbationTrades = body.liveOptionsProbationTrades;

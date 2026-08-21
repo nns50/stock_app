@@ -277,6 +277,7 @@ export type TunablePatch = Pick<
   | 'liveMaxDailyLossUsd'
   | 'liveMaxOrdersPerDay'
   | 'liveCapsAnchorEquityUsd'
+  | 'targetDailyGainPct'
   | 'liveOptionsMaxOrderUsd'
   | 'liveOptionsMaxDailyLossUsd'
   | 'liveOptionsMaxOrdersPerDay'
@@ -406,7 +407,12 @@ export interface TargetTuneResult {
   warnings: string[];
 }
 
-function shapeToPatch(shape: BandShape, equityUsd: number, riskPerTradePct: number): TunablePatch {
+function shapeToPatch(
+  shape: BandShape,
+  equityUsd: number,
+  riskPerTradePct: number,
+  targetDailyGainPct: number | null,
+): TunablePatch {
   // Daily-loss halt sized to a bad day at THIS sizing (~75% of the day's trades
   // losing), floored at 2% and capped at 40% so it never trips before the
   // target is reachable, and never disables itself.
@@ -446,6 +452,12 @@ function shapeToPatch(shape: BandShape, equityUsd: number, riskPerTradePct: numb
     // drifts ≥15% from this, the caps are re-derived so they keep meaning what
     // this tune meant by them.
     liveCapsAnchorEquityUsd: equityUsd,
+    // Applying a tune both CALIBRATES sizing to the goal and ARMS the live
+    // daily-goal tracker (services/autotrading/dailyTarget.ts): the loop halts
+    // new live entries for the rest of the ET day once the day's account value
+    // has grown by this %. Null (reset-to-moderate) declares no goal, which
+    // disarms the tracker.
+    targetDailyGainPct,
     liveOptionsMaxOrderUsd: orderUsd,
     liveOptionsMaxDailyLossUsd: dailyLossUsd,
     liveOptionsMaxOrdersPerDay: shape.maxTradesPerDay,
@@ -487,7 +499,7 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
   const rawRiskPerTradePct = round2(targetDailyGainPct / (shape.maxTradesPerDay * edgeR));
   const riskPerTradePct = clamp(rawRiskPerTradePct, 0.1, MAX_SUGGESTED_RISK_PER_TRADE_PCT);
 
-  const patch = shapeToPatch(shape, equityUsd, riskPerTradePct);
+  const patch = shapeToPatch(shape, equityUsd, riskPerTradePct, targetDailyGainPct);
 
   const warnings: string[] = [];
   if (rawRiskPerTradePct > MAX_SUGGESTED_RISK_PER_TRADE_PCT) {
@@ -526,5 +538,7 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
  *  BANDS above for the three fields that differ and why. "Moderate" here means
  *  the band, not the shipped defaults. */
 export function resetToModerate(equityUsd: number): TunablePatch {
-  return shapeToPatch(BANDS.moderate, equityUsd, 1);
+  // No declared goal — the moderate baseline is a risk shape, not a promise;
+  // writing null here also DISARMS the daily-goal tracker until the next tune.
+  return shapeToPatch(BANDS.moderate, equityUsd, 1, null);
 }

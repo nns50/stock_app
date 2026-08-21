@@ -1,3 +1,5 @@
+import { getDailyBaseline } from '../../db/dailyBaseline';
+import { DailyTargetStatus, evaluateDailyTarget } from './dailyTarget';
 import { getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
 import { PaperPosition } from '../../db/autotradePaperPositions';
 import { OptionsPaperPosition } from '../../db/autotradeOptionsPaperPositions';
@@ -75,6 +77,12 @@ export interface AutotradeDashboard {
    *  0 in that case, mirroring how the risk engine itself fails closed until
    *  equity is set (see riskCheck.ts's equity_configured check). */
   equity: number | null;
+
+  /** Progress toward the daily-gain GOAL (services/autotrading/dailyTarget.ts):
+   *  the day's starting account value, the % target on it, how far along the
+   *  day is, and whether the day is already banked (new live entries halted).
+   *  `active: false` when no target is set or nothing is measurable yet. */
+  dailyTarget: DailyTargetStatus;
 
   /** The automated loop's most recently completed cycle — candidates
    *  screened, entries opened, exactly why it skipped, etc. Null before the
@@ -262,6 +270,7 @@ export function getAutotradeDashboard(): AutotradeDashboard {
     killSwitch: config.killSwitch,
     riskProfile: config.riskProfile,
     equity: config.accountEquityUsd,
+    dailyTarget: evaluateDailyTarget(config, getDailyBaseline()),
     lastTick: getLastTick(),
 
     openPositions: snapshot.openPositions,

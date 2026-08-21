@@ -1516,8 +1516,27 @@ function MonitoringDashboard({
   const liveOptStepDownActive = dash.liveOptionsConsecutiveLosses >= dash.stepDownAfterLosses;
   const liveOptHaltActive = dash.dailyDrawdownHaltLevel < 0 && dash.liveOptionsDailyPnl <= dash.dailyDrawdownHaltLevel;
 
+  const dt = dash.dailyTarget;
+
   return (
     <div className="space-y-4">
+      {dt.active && (
+        <div
+          className={`rounded-lg border p-3 ${dt.reached ? 'border-bull/50 bg-bull/5' : 'border-ink-600 bg-ink-800/40'}`}
+        >
+          <div className="flex items-center justify-between mb-1">
+            <h4 className="text-xs uppercase tracking-wide text-slate-400">Daily gain goal</h4>
+            {dt.reached && <span className="text-[11px] font-medium text-bull">✓ banked for the day</span>}
+          </div>
+          <p className="text-xs text-slate-300">
+            {fmtPct(dt.gainPct ?? 0, 2)} of the {fmtPct(dt.targetPct ?? 0, 1, false)} goal — day started at{' '}
+            {fmtUsd(dt.baselineEquityUsd ?? 0)}, banks at {fmtUsd(dt.targetEquityUsd ?? 0)}
+            {dt.reached
+              ? '. New live entries are halted until the next trading day; exits and paper keep running.'
+              : '.'}
+          </p>
+        </div>
+      )}
       <div className="rounded-lg border border-ink-600 bg-ink-800/40 p-3">
         <div className="flex items-center justify-between mb-1">
           <h4 className="text-xs uppercase tracking-wide text-slate-400">Last cycle</h4>
@@ -1963,6 +1982,7 @@ const TUNE_FIELD_LABELS: Record<keyof TunablePatch, string> = {
   liveOptionsMaxDailyLossUsd: 'Live options max daily loss',
   liveOptionsMaxOrdersPerDay: 'Live options max orders/day',
   liveCapsAnchorEquityUsd: 'Dollar-caps anchor equity (arms auto re-anchor)',
+  targetDailyGainPct: 'Daily gain goal % (halts new live entries once reached)',
   optionsDeltaMin: 'Options delta min',
   optionsDeltaMax: 'Options delta max',
   optionsMaxSpreadPct: 'Options max spread%',

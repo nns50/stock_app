@@ -34,6 +34,7 @@ import {
 } from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures, maybeAlertLiveAmbiguity } from './liveFailureAlert';
 import { reanchorLiveCapsIfDrifted } from './liveCapsReanchor';
+import { DailyTargetStatus, updateDailyTarget } from './dailyTarget';
 import { hasExpiredLiveOptions, sweepExpiredLiveOptions } from './liveOptionsExpiry';
 import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
 import { maybeAutoTune } from './autoTune';
@@ -354,7 +355,18 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // inside checkLiveScaleIns where it cannot be bypassed by ordering. Unlike the time-exit above (which must fire even when entries are
     // halted, to close), a scale-in must NOT fire while entries are halted.
     // Fail-closed inside — one position's broker hiccup never crashes the loop.
-    const liveScaleInOutcomes = isLiveEntryActive(getAutotradeConfig()) ? await checkLiveScaleIns() : [];
+    // First daily-target measurement of the tick — BEFORE scale-ins, which add
+    // real risk and must respect a banked day. Reads the PREVIOUS tick's synced
+    // equity (this tick's sync runs later); one tick of staleness is harmless
+    // because the reach is sticky and re-measured below after the sync.
+    let dailyTarget: DailyTargetStatus = { active: false, reached: false };
+    try {
+      dailyTarget = updateDailyTarget();
+    } catch (e) {
+      console.error('[autotrade-loop] daily-target check failed:', (e as Error).message);
+    }
+    const liveScaleInOutcomes =
+      isLiveEntryActive(getAutotradeConfig()) && !dailyTarget.reached ? await checkLiveScaleIns() : [];
     // Reconcile before checking for NEW triggers: catches up on anything an
     // earlier cycle already placed (an entry that filled, an exit that
     // filled) so a position closed by reconcile this same tick is already
@@ -425,6 +437,18 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     } catch (e) {
       console.error('[autotrade-loop] live-caps re-anchor failed:', (e as Error).message);
     }
+    // Re-measure the daily-gain goal with THIS tick's just-synced equity, so
+    // the entry gates below see the freshest number (the first measurement
+    // above ran before the sync, for the scale-in gate). Second call is safe:
+    // the baseline rolls at most once per ET day and the reached event is
+    // guarded by the persisted reached_at, so it can never double-journal.
+    // Fails toward the earlier status — an error here must never halt entries
+    // on a goal nobody could measure.
+    try {
+      dailyTarget = updateDailyTarget();
+    } catch (e) {
+      console.error('[autotrade-loop] daily-target refresh failed:', (e as Error).message);
+    }
     // Detection only (never adjusts a position's own quantity/price) — see
     // splitCheck.ts's own header comment. Self-gated to once per ET day, so
     // this is a no-op (no network call) on every other tick; caught so a
@@ -451,11 +475,16 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
 
     const config = getAutotradeConfig();
     const paperActive = isPaperEntryActive(config);
-    const liveActive = isLiveEntryActive(config);
+    // A banked day halts LIVE entries only: the daily-gain goal is a % of the
+    // real account's value, so paper (which has no real account) keeps
+    // trading — it stays the always-on sanity track either way.
+    const liveActive = isLiveEntryActive(config) && !dailyTarget.reached;
     if (!paperActive && !liveActive) {
       summary.skippedReason = config.killSwitch
         ? 'Kill switch is engaged — new entries halted'
-        : 'Neither paper nor live auto-trading is active';
+        : dailyTarget.reached && isLiveEntryActive(config)
+          ? `Daily gain target reached (+${dailyTarget.gainPct}% ≥ ${dailyTarget.targetPct}%) — live entries banked for the day`
+          : 'Neither paper nor live auto-trading is active';
       return summary;
     }
 
@@ -617,7 +646,10 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     }
     const recheck = getAutotradeConfig();
     const paperStillActive = isPaperEntryActive(recheck);
-    const liveStillActive = isLiveEntryActive(recheck);
+    // Same banked-day gate as `liveActive` above. dailyTarget is this tick's
+    // pre-screen status — good enough for a mid-cycle recheck (the next tick
+    // re-measures), and the reach is sticky so it can't flap back on mid-cycle.
+    const liveStillActive = isLiveEntryActive(recheck) && !dailyTarget.reached;
     const liveOptionsStillActive = isLiveOptionsEntryActive(recheck);
     if (!paperStillActive && !liveStillActive) {
       summary.skippedReason = recheck.killSwitch
