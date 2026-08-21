@@ -10,6 +10,14 @@ It's a **preview-then-apply** tool: it shows you exactly what every field would 
 before anything changes, and every field stays editable afterward. It never places a
 trade and never turns live trading on.
 
+Since 2026-08-21 the target is also a **live daily goal**, not just a one-time
+calibration: applying a tune stores the target %, and each ET day the loop snapshots
+the account's starting value, tracks progress toward
+`dayStart × (1 + target%)` during the session, and — once reached — **banks the day**:
+new live entries and scale-ins halt until the next trading day, while exits,
+reconcile, the broker sync, and paper trading all keep running. See
+[§6a](#6a-the-live-daily-goal-bank-the-day) for exactly how it behaves.
+
 > This is decision-support, **not financial advice or a promise of any gain**. The tool
 > will happily size up to chase a number your system may not actually produce. Read the
 > [Caveats](#8-caveats-read-this) before you lean on it.
@@ -30,6 +38,7 @@ trade and never turns live trading on.
 4. [Choosing a sizing basis](#4-choosing-a-sizing-basis)
 5. [How your target maps to every setting](#5-how-your-target-maps-to-every-setting)
 6. [What it changes — and what it never touches](#6-what-it-changes--and-what-it-never-touches)
+   - [6a. The live daily goal — bank the day](#6a-the-live-daily-goal--bank-the-day)
 7. [Reading the preview and warnings](#7-reading-the-preview-and-warnings)
 8. [Caveats — read this](#8-caveats-read-this)
 9. [A full worked example](#9-a-full-worked-example)
@@ -66,9 +75,10 @@ To undo, click **Reset to moderate** — it restores the standard moderate basel
 scaled to your equity.
 
 The **target %** and **sizing basis** you pick are remembered in your browser, so the
-card comes back to your last choice after a reload or after switching views — they're a
-preview control, not a saved Auto-Trade setting (what **Apply** writes is the derived
-risk config below, not the target itself).
+card comes back to your last choice after a reload or after switching views. Since
+2026-08-21, **Apply also stores the target % itself** (`targetDailyGainPct`) — that's
+what arms the live daily goal in [§6a](#6a-the-live-daily-goal--bank-the-day). The
+basis stays a preview-side control (it shapes the sizing, not the goal).
 
 ## 4. Choosing a sizing basis
 
@@ -227,6 +237,42 @@ can't silently end up in neither.)
 If you want the tune to stick exactly, note that **auto-tune from realized edge** (if
 you have it on) will keep nudging your per-trade risk over time — the preview warns you
 when that's the case.
+
+## 6a. The live daily goal — bank the day
+
+Before 2026-08-21, the target % was **calibration only**: it solved a static
+risk-per-trade once and was then forgotten — nothing in the loop knew a day had a
+goal, so nothing stopped when it was reached and nothing reported progress. If your
+day quietly gave back a green morning, the tune had no opinion about it.
+
+Now the target is stored (`targetDailyGainPct`, stamped by every Apply) and tracked
+live:
+
+- **Each ET day starts a fresh base.** At the day's first loop tick, the synced
+  account value is snapshotted as the day's baseline — effectively the prior
+  session's close. The goal is the set % **of that day's value**, so a growing
+  account compounds the goal daily and a shrinking one scales it down honestly.
+- **Progress is measured on the whole account** — synced net liquidation, including
+  unrealized P&L and anything you do manually in the same account. The goal is on
+  the account's value, not on the loop's own fills.
+- **Reaching the goal banks the day.** One `daily_target_reached` entry lands in
+  Recent activity, and new **live** entries and scale-ins halt for the rest of the
+  ET day. The halt is **sticky**: if equity later slips back under the line, the
+  day stays banked — the goal is "make X% and stop", not "hover at X%". Exits,
+  reconcile, the broker position sync, and paper trading are all unaffected.
+- **The Monitoring card shows the goal** — day-start value, the bank line, and
+  progress so far, with a "banked for the day" state once it's reached.
+- **Behind the target, nothing presses.** Sizing stays exactly what the tune
+  calibrated — the tracker never scales risk up to chase a shortfall, because
+  escalating into a losing day is how accounts die. If days chronically fall short,
+  the honest levers are a lower target or a band with more trade flow.
+- **Reset to moderate disarms it** (it declares no goal, writing `null`), and so
+  does clearing the field by hand. Configs from before this feature have no stored
+  target, so nothing changes until a tune is applied once.
+
+> Same framing as everywhere else in this app: the goal is a **discipline
+> mechanism**, not a prediction. No gain is guaranteed — the tracker decides when to
+> *stop*, never whether the market will get you there.
 
 ## 7. Reading the preview and warnings
 

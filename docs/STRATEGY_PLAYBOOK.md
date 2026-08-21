@@ -74,6 +74,14 @@ you hold. From **Options → Entry scan**, the **＋ Alert** button turns a rank
 into that entry alert in one click, with a strategy note pre-filled. The discipline win
 isn't the entry — it's that *you never enter without a written exit.*
 
+> **Quitting while ahead is an exit rule too.** Auto-Trade's *Tune from target daily
+> gain* stores your target % as a live daily goal (2026-08-21): once the account is up
+> the set % on the day's starting value, the loop **banks the day** — no new live
+> entries or scale-ins until the next session, while every exit keeps working. That's
+> the same discipline as a stop, pointed the other way: a green day given back in the
+> afternoon is a loss you chose. It never sizes up to chase a shortfall — if days
+> chronically miss the target, lower the target or widen trade flow; don't raise risk.
+
 ### 5. Review on a cadence
 
 Edge decays and habits drift. The **Edge Report**, **by-tag/by-grade/by-discipline**

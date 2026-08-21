@@ -326,6 +326,17 @@ CREATE TABLE IF NOT EXISTS autotrade_last_tick (
   updated_at  INTEGER NOT NULL
 );
 
+-- The account's equity at the START of the current ET day, and whether the
+-- daily-gain target has been reached today (services/autotrading/dailyTarget.ts).
+-- Singleton: only "today" matters — the journal already records each day's
+-- daily_target_reached event, so no history is kept here.
+CREATE TABLE IF NOT EXISTS autotrade_daily_baseline (
+  id          INTEGER PRIMARY KEY CHECK(id = 1),   -- singleton row
+  et_date     TEXT NOT NULL,           -- YYYY-MM-DD in America/New_York
+  equity_usd  REAL NOT NULL,           -- synced equity at the day's first tick
+  reached_at  INTEGER                  -- epoch ms the target was first reached today, or NULL
+);
+
 CREATE TABLE IF NOT EXISTS autotrade_exclusions (
   symbol      TEXT PRIMARY KEY,
   reason      TEXT,

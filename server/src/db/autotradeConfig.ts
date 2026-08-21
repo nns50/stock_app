@@ -542,6 +542,15 @@ export interface AutotradeConfig {
    *  only caps that still match their anchor-derived value (a hand-edited cap
    *  is the user's, and stays theirs). */
   liveCapsAnchorEquityUsd: number | null;
+  /** The DAILY GAIN GOAL, as a % of the day's starting account value — the
+   *  live half of "tune from target" (targetTune.ts calibrates sizing from it;
+   *  dailyTarget.ts tracks it during the session). Stamped by every tune
+   *  apply. While set, the loop halts NEW live entries and scale-ins for the
+   *  rest of the ET day once synced equity reaches
+   *  dayStartEquity × (1 + this/100) — bank the day, then start fresh on the
+   *  next day's value (daily compounding of the goal, not of the risk).
+   *  Null = no goal tracking (the tune is calibration only, pre-2026-08 behavior). */
+  targetDailyGainPct: number | null;
   liveOptionsFatFingerPct: number;
   /** Mirrors liveProbationTrades/liveProbationSizeMultiplier, counted from
    *  liveOptionsEnabledAt via countLiveOptionsOrdersSince() — a fully
@@ -848,6 +857,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveOptionsMaxDailyLossUsd: 250,
     liveOptionsMaxOrdersPerDay: DEFAULT_LIVE_MAX_ORDERS_PER_DAY,
     liveCapsAnchorEquityUsd: null,
+    targetDailyGainPct: null,
     liveOptionsFatFingerPct: 10,
     liveOptionsProbationTrades: 20,
     liveOptionsProbationSizeMultiplier: 0.5,
@@ -1062,6 +1072,14 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
         : typeof input.liveCapsAnchorEquityUsd === 'number' && input.liveCapsAnchorEquityUsd > 0
           ? input.liveCapsAnchorEquityUsd
           : d.liveCapsAnchorEquityUsd,
+    targetDailyGainPct:
+      input.targetDailyGainPct === null
+        ? null
+        : typeof input.targetDailyGainPct === 'number' &&
+            input.targetDailyGainPct > 0 &&
+            input.targetDailyGainPct <= 1000
+          ? input.targetDailyGainPct
+          : d.targetDailyGainPct,
     liveOptionsFatFingerPct: pct(input.liveOptionsFatFingerPct, d.liveOptionsFatFingerPct),
     liveOptionsProbationTrades: posInt(input.liveOptionsProbationTrades, d.liveOptionsProbationTrades),
     liveOptionsProbationSizeMultiplier: (() => {

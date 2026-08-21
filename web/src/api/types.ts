@@ -1530,6 +1530,9 @@ export interface AutotradeConfig {
   /** Equity the four equity-scaled $ caps were last derived from; arms the
    *  loop's automatic re-anchoring (null = disarmed). Stamped by tune applies. */
   liveCapsAnchorEquityUsd: number | null;
+  /** The live daily-gain goal (% of the day's starting account value); null =
+   *  goal tracking off. Stamped by tune applies. */
+  targetDailyGainPct: number | null;
   liveOptionsFatFingerPct: number;
   liveOptionsProbationTrades: number;
   liveOptionsProbationSizeMultiplier: number;
@@ -1631,6 +1634,7 @@ export type TunablePatch = Pick<
   | 'liveMaxDailyLossUsd'
   | 'liveMaxOrdersPerDay'
   | 'liveCapsAnchorEquityUsd'
+  | 'targetDailyGainPct'
   | 'liveOptionsMaxOrderUsd'
   | 'liveOptionsMaxDailyLossUsd'
   | 'liveOptionsMaxOrdersPerDay'
@@ -2292,6 +2296,18 @@ export interface PortfolioGreeks {
   netVega: number;
 }
 
+export interface DailyTargetStatus {
+  active: boolean;
+  inactiveReason?: string;
+  targetPct?: number;
+  baselineEquityUsd?: number;
+  targetEquityUsd?: number;
+  currentEquityUsd?: number;
+  gainPct?: number;
+  reached: boolean;
+  reachedAt?: number | null;
+}
+
 export interface AutotradeDashboard {
   enabled: boolean;
   killSwitch: boolean;
@@ -2299,6 +2315,9 @@ export interface AutotradeDashboard {
   equity: number | null;
   /** The automated loop's most recently completed cycle, or null before the
    *  loop has ever run. */
+  /** Progress toward the daily-gain goal — day-start account value, the %
+   *  target on it, gain so far, and whether the day is banked. */
+  dailyTarget: DailyTargetStatus;
   lastTick: LastTickRecord | null;
   /** Equity paper positions only — see openOptionsPositions below for the
    *  options side of this SAME combined pool. */
