@@ -1,4 +1,6 @@
 import { getDailyBaseline } from '../../db/dailyBaseline';
+import { MethodStats, computeMethodPerformance } from './methodSizing';
+import { listPositions } from '../../db/positions';
 import { DailyTargetStatus, evaluateDailyTarget } from './dailyTarget';
 import { getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
 import { PaperPosition } from '../../db/autotradePaperPositions';
@@ -83,6 +85,12 @@ export interface AutotradeDashboard {
    *  day is, and whether the day is already banked (new live entries halted).
    *  `active: false` when no target is set or nothing is measurable yet. */
   dailyTarget: DailyTargetStatus;
+
+  /** Per-method recent realized performance and the sizing multiplier each
+   *  method currently carries (methodSizing.ts) — the "which methods are
+   *  working" ledger. Present (with multiplier 1) even when method weighting
+   *  is off, so the evidence is visible before anyone acts on it. */
+  methodPerformance: MethodStats[];
 
   /** The automated loop's most recently completed cycle — candidates
    *  screened, entries opened, exactly why it skipped, etc. Null before the
@@ -271,6 +279,10 @@ export function getAutotradeDashboard(): AutotradeDashboard {
     riskProfile: config.riskProfile,
     equity: config.accountEquityUsd,
     dailyTarget: evaluateDailyTarget(config, getDailyBaseline()),
+    methodPerformance: computeMethodPerformance(
+      listPositions({ status: 'closed' }).filter((p) => p.tags.includes('autotrade')),
+      config,
+    ),
     lastTick: getLastTick(),
 
     openPositions: snapshot.openPositions,

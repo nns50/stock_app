@@ -56,6 +56,7 @@ import { defaultExitConfig, evaluateExit } from '../../options/exitRules';
 import { convictionGrade } from './decide';
 import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskCheck';
+import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
 import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { dispatchNotifications } from '../notifier';
@@ -694,6 +695,9 @@ export async function runLiveOptionsExecution(
 ): Promise<LiveOptionsExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
   const equity = cfg.accountEquityUsd ?? 0;
+  // One journal read per batch — the same recent-window per-method lean the
+  // equity paths get from their snapshots (methodSizing.ts).
+  const methodMultipliers = journalMethodMultipliers(cfg);
 
   const optSnapshot = getLiveOptionsPortfolioSnapshot();
   const eqSnapshot = getLivePortfolioSnapshot();
@@ -779,6 +783,7 @@ export async function runLiveOptionsExecution(
       marketAtrPct,
       regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
       regimeSizeCutPct: cfg.regimeSizeCutPct,
+      methodMultiplier: methodMultipliers[methodOfOptionsSignal(signal.side)] ?? 1,
     };
     const result = evaluateOptionsRiskCheck(signal, ctx);
     if (!result.ok) {

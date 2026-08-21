@@ -188,6 +188,15 @@ export interface AutotradeConfig {
   expectancyMinTrades: number;
   expectancyMinMultiplier: number;
   expectancyMaxMultiplier: number;
+  /** Method-weighted sizing (2026-08-21) — the same realized-edge lean as
+   *  expectancy weighting, sliced by METHOD (long stock / short stock / calls
+   *  / puts) instead of conviction grade, over each method's most recent
+   *  closed trades. Shares the expectancyMinTrades sample floor and the
+   *  expectancyMin/MaxMultiplier clamps (one lean dial, two axes). Leans,
+   *  never switches: every method keeps trading — an unproven one at 1×, a
+   *  bleeding one down toward the min clamp. See
+   *  services/autotrading/methodSizing.ts. Off by default. */
+  methodWeightingEnabled: boolean;
 
   // --- Screening/decision thresholds (docs/AUTOTRADING_SPEC.md — RESEARCH &
   // SCREEN / DECISION). Same treatment, extraction, and reasoning as the
@@ -800,6 +809,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     convictionGradeAMinScore: 75,
     convictionGradeBMinScore: 60,
     expectancyWeightingEnabled: false,
+    methodWeightingEnabled: false,
     expectancyMinTrades: 10,
     expectancyMinMultiplier: 0.5,
     expectancyMaxMultiplier: 1.5,
@@ -989,6 +999,8 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       typeof input.expectancyWeightingEnabled === 'boolean'
         ? input.expectancyWeightingEnabled
         : d.expectancyWeightingEnabled,
+    methodWeightingEnabled:
+      typeof input.methodWeightingEnabled === 'boolean' ? input.methodWeightingEnabled : d.methodWeightingEnabled,
     expectancyMinTrades: posIntMin1(input.expectancyMinTrades, d.expectancyMinTrades),
     expectancyMinMultiplier: posDecimal(input.expectancyMinMultiplier, d.expectancyMinMultiplier),
     expectancyMaxMultiplier: posDecimal(input.expectancyMaxMultiplier, d.expectancyMaxMultiplier),

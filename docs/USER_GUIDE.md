@@ -1143,7 +1143,20 @@ shouldn't be a tab-switch away.
   anything. Each book tunes itself from its own history (paper and live are scored separately),
   the multiplier recomputes every tick from realized results, and it stacks multiplicatively
   with step-down, regime, and equity-curve sizing — the aggregate-risk cap still binds on top.
-  Live + paper only, no backtest equivalent (same as the other sizing multipliers). Every field here
+  Live + paper only, no backtest equivalent (same as the other sizing multipliers).
+  **Method-weighted sizing** (2026-08-21, off by default) is the same realized-edge lean
+  sliced along a different axis: instead of conviction grades, it scores the four
+  **methods** — long stock, short stock, calls, puts — each on its **most recent** closed
+  trades (a rolling window, so an old config era can't outvote the current one), and
+  applies the identical formula (1 + average R, same expectancy clamps and min-sample
+  floor). It **leans, never switches**: every method keeps trading — an unproven one at
+  1×, a bleeding one sized down toward the min clamp, an earning one sized up — so
+  sizing drifts toward whatever is currently working toward the daily-gain goal while
+  every method keeps generating the evidence that could change its standing. It never
+  presses: multipliers come from realized results, never from distance to the target.
+  The Monitoring card's **Method performance** table shows each method's recent record
+  and the multiplier currently in force (visible even with the lean off, so you can see
+  the evidence before acting on it). Every field here
   applies to paper and live trading alike, and each has its own **Save** button, so
   you can change one without touching the rest. For a plain-English walkthrough of each of these — with worked
   examples and guidance on what to change when nothing's trading — see

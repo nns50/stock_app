@@ -360,6 +360,7 @@ export const NEVER_TUNED_KEYS = [
   'convictionGradeAMinScore',
   'convictionGradeBMinScore',
   'expectancyWeightingEnabled',
+  'methodWeightingEnabled',
   'expectancyMinTrades',
   'expectancyMinMultiplier',
   'expectancyMaxMultiplier',

@@ -144,6 +144,7 @@ const configBody = z.object({
   convictionGradeAMinScore: z.number().min(0).max(100).optional(),
   convictionGradeBMinScore: z.number().min(0).max(100).optional(),
   expectancyWeightingEnabled: z.boolean().optional(),
+  methodWeightingEnabled: z.boolean().optional(),
   expectancyMinTrades: z.number().int().min(1).optional(),
   // Bounded, unlike every other risk multiplier in this config, these are the
   // only ones that can size a trade UP (riskCheck.ts multiplies effectiveRiskPct
@@ -359,6 +360,7 @@ autotradeRouter.put(
     if (body.convictionGradeBMinScore !== undefined) patch.convictionGradeBMinScore = body.convictionGradeBMinScore;
     if (body.expectancyWeightingEnabled !== undefined)
       patch.expectancyWeightingEnabled = body.expectancyWeightingEnabled;
+    if (body.methodWeightingEnabled !== undefined) patch.methodWeightingEnabled = body.methodWeightingEnabled;
     if (body.expectancyMinTrades !== undefined) patch.expectancyMinTrades = body.expectancyMinTrades;
     if (body.expectancyMinMultiplier !== undefined) patch.expectancyMinMultiplier = body.expectancyMinMultiplier;
     if (body.expectancyMaxMultiplier !== undefined) patch.expectancyMaxMultiplier = body.expectancyMaxMultiplier;

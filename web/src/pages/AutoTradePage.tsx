@@ -1537,6 +1537,37 @@ function MonitoringDashboard({
           </p>
         </div>
       )}
+      {dash.methodPerformance.length > 0 && (
+        <div className="rounded-lg border border-ink-600 bg-ink-800/40 p-3">
+          <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-1">Method performance (recent trades)</h4>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="border-b border-ink-600/60">
+                <tr>
+                  <th className="th">Method</th>
+                  <th className="th text-right">Trades</th>
+                  <th className="th text-right">Wins</th>
+                  <th className="th text-right">Avg R</th>
+                  <th className="th text-right">Size ×</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dash.methodPerformance.map((m) => (
+                  <tr key={m.method}>
+                    <td className="td">{METHOD_LABELS[m.method] ?? m.method}</td>
+                    <td className="td text-right">{m.n}</td>
+                    <td className="td text-right">{m.wins}</td>
+                    <td className={cx('td text-right', m.avgR > 0 ? 'text-bull' : m.avgR < 0 ? 'text-bear' : '')}>
+                      {fmtNum(m.avgR)}
+                    </td>
+                    <td className="td text-right">{fmtNum(m.multiplier)}×</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
       <div className="rounded-lg border border-ink-600 bg-ink-800/40 p-3">
         <div className="flex items-center justify-between mb-1">
           <h4 className="text-xs uppercase tracking-wide text-slate-400">Last cycle</h4>
@@ -1957,6 +1988,13 @@ function ParameterSweepTable({ rows, baseValue }: { rows: SweepRow[]; baseValue:
 // Human labels + formatting for the tunable-patch keys the "Tune from target"
 // preview shows before -> after. Only these keys are ever in a tune patch (see
 // TunablePatch / targetTune.ts's allowlist).
+const METHOD_LABELS: Record<string, string> = {
+  stock_long: 'Long stock',
+  stock_short: 'Short stock',
+  option_call: 'Calls',
+  option_put: 'Puts',
+};
+
 const TUNE_FIELD_LABELS: Record<keyof TunablePatch, string> = {
   riskProfile: 'Risk profile (label)',
   maxConcurrentPositions: 'Max concurrent positions',
@@ -2339,6 +2377,7 @@ export default function AutoTradePage() {
   const [convictionGradeAMinScoreDraft, setConvictionGradeAMinScoreDraft] = useState<number | undefined>();
   const [convictionGradeBMinScoreDraft, setConvictionGradeBMinScoreDraft] = useState<number | undefined>();
   const [expectancyWeightingEnabled, setExpectancyWeightingEnabled] = useState(false);
+  const [methodWeightingEnabled, setMethodWeightingEnabled] = useState(false);
   const [expectancyMinTradesDraft, setExpectancyMinTradesDraft] = useState<number | undefined>();
   const [expectancyMinMultiplierDraft, setExpectancyMinMultiplierDraft] = useState<number | undefined>();
   const [expectancyMaxMultiplierDraft, setExpectancyMaxMultiplierDraft] = useState<number | undefined>();
@@ -2462,6 +2501,7 @@ export default function AutoTradePage() {
     sync('convictionGradeAMinScore', setConvictionGradeAMinScoreDraft);
     sync('convictionGradeBMinScore', setConvictionGradeBMinScoreDraft);
     sync('expectancyWeightingEnabled', setExpectancyWeightingEnabled);
+    sync('methodWeightingEnabled', setMethodWeightingEnabled);
     sync('expectancyMinTrades', setExpectancyMinTradesDraft);
     sync('expectancyMinMultiplier', setExpectancyMinMultiplierDraft);
     sync('expectancyMaxMultiplier', setExpectancyMaxMultiplierDraft);
@@ -2559,6 +2599,7 @@ export default function AutoTradePage() {
     convictionGradeAMinScore?: number;
     convictionGradeBMinScore?: number;
     expectancyWeightingEnabled?: boolean;
+    methodWeightingEnabled?: boolean;
     expectancyMinTrades?: number;
     expectancyMinMultiplier?: number;
     expectancyMaxMultiplier?: number;
@@ -4236,6 +4277,25 @@ export default function AutoTradePage() {
                         flat (multiplier = 1 + avg R, clamped to the bounds below). A grade with fewer than the
                         min-sample closed trades stays neutral. Stacks with the other sizing multipliers; the
                         aggregate-risk cap still binds. Live + paper only, each on its own book.
+                      </span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={methodWeightingEnabled}
+                      onChange={(e) => saveConfig({ methodWeightingEnabled: e.target.checked })}
+                    />
+                    <span>
+                      Method-weighted sizing
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default. The same realized-edge lean, sliced by METHOD — long stock, short stock, calls,
+                        puts — over each method&apos;s most recent closed trades, so sizing drifts toward whatever is
+                        currently earning toward the daily goal. Leans, never switches: every method keeps trading (an
+                        unproven one at 1×, a bleeding one down toward the min clamp). Shares the expectancy min-sample
+                        and multiplier bounds. The Monitoring card shows each method&apos;s record and current
+                        multiplier.
                       </span>
                     </span>
                   </label>

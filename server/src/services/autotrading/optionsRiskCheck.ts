@@ -137,16 +137,25 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
   // full risk %. The equity copy was fixed; this one was missed.
   const regimeActive =
     ctx.regimeAtrThresholdPct > 0 && ctx.marketAtrPct != null && ctx.marketAtrPct > ctx.regimeAtrThresholdPct;
+  const methodMultiplier = ctx.methodMultiplier ?? 1;
   const effectiveRiskPct =
     ctx.riskPerTradePct *
     (stepDownActive ? 1 - ctx.stepDownSizeCutPct / 100 : 1) *
-    (regimeActive ? 1 - ctx.regimeSizeCutPct / 100 : 1);
+    (regimeActive ? 1 - ctx.regimeSizeCutPct / 100 : 1) *
+    methodMultiplier;
   check(
     'step_down_sizing',
     true,
     stepDownActive
       ? `active — ${ctx.consecutiveLosses} consecutive losses, sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}% (${ctx.stepDownSizeCutPct}% cut)`
       : `inactive — ${ctx.consecutiveLosses} consecutive losses (triggers at ${ctx.stepDownAfterLosses})`,
+  );
+  check(
+    'method_sizing',
+    true,
+    methodMultiplier !== 1
+      ? `active — this method's recent realized edge applies a ${methodMultiplier}× size multiplier`
+      : 'inactive — method weighting off, or this method has no proven recent edge yet',
   );
   check(
     'regime_sizing',
