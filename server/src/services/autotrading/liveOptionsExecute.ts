@@ -1136,6 +1136,13 @@ function liveExitReasonFor(activeRule: string): LiveOptionsExitReason {
  * change within the same day, so without this guard every tick would submit
  * ANOTHER closing order for the same still-open (fill pending) position.
  */
+/** Positions whose triggered exit has already been journaled as held by the
+ *  CURRENT kill-switch halt — cleared whenever the switch is observed off, so
+ *  the next halt journals afresh. In-memory deliberately: this throttles feed
+ *  NOISE, not an alert (live_options_exit_blocked is not in FAILURE_ACTIONS),
+ *  so a restart re-journaling one extra line per held position is harmless. */
+const killSwitchHeldPositions = new Set<number>();
+
 export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutcome[]> {
   // The deploy-level master gate, checked FIRST -- mirrors attemptLiveOptionsEntry()'s
   // own ordering exactly. Unlike equity (whose exits are 100% broker-bracket-driven --
@@ -1203,6 +1210,48 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
       },
     );
     if (!ev.triggered) continue;
+
+    // Kill-switch short-circuit, BEFORE the broker round-trips. Previously a
+    // triggered exit during a halt went all the way through placeLiveOptionsExit
+    // -- a quote fetch, a broker positions preview, and the account-state fetch
+    // (~4 rate-limited HTTP calls) -- only for the kill_switch guardrail to
+    // refuse it at the very end, and journaled that refusal EVERY tick
+    // (observed: 28 identical events in one ~30-minute halt, crowding the
+    // Recent-activity window's fixed size). The switch means "hands off -- the
+    // human is trading this account manually" (see the 2026-08-21 note in
+    // docs/AUTOTRADING_SPEC.md), so during a halt: spend nothing at the broker,
+    // journal the hold ONCE per position per halt, and keep re-evaluating every
+    // tick so the close places the moment the switch is released. The reasons
+    // string matches what the guardrail path journaled, so feed greps and any
+    // downstream readers see a continuous vocabulary.
+    const gateCfg = buildLiveOptionsTradingConfig(freshCfg);
+    if (!gateCfg.killSwitch) {
+      killSwitchHeldPositions.clear(); // halt over (or none) -- next halt journals afresh
+    } else {
+      if (!killSwitchHeldPositions.has(pos.id)) {
+        killSwitchHeldPositions.add(pos.id);
+        logAutotradeEvent({
+          symbol: pos.symbol,
+          stage: 'execution',
+          action: 'live_options_exit_blocked',
+          detail: {
+            reasons: 'kill_switch: kill switch is engaged — trading halted',
+            positionId: pos.id,
+            heldOncePerHalt:
+              'journaled once for this halt — the exit keeps re-evaluating every tick and places as soon as the switch is released',
+          },
+          riskProfile: pos.riskProfile,
+        });
+      }
+      // Same rule-prefixed vocabulary the guardrail path used, so outcome
+      // consumers (and an existing mid-loop-engage test) match unchanged.
+      outcomes.push({
+        symbol: pos.symbol,
+        requested: false,
+        reason: 'kill_switch: kill switch is engaged — exit held until released',
+      });
+      continue;
+    }
 
     const accountId = freshCfg.liveAccountId;
     if (!accountId) continue; // account cleared mid-loop -- don't use a stale id

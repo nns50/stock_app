@@ -1023,8 +1023,12 @@ starts.
      > NOT bypass the kill switch, and that is the behavior we keep. The exit sweeps
      > (`checkLiveOptionsExits()`, `checkLiveEquityTimeExits()`) run every tick, but
      > each close they place routes through `evaluateGuardrails()` with the combined
-     > kill switch, so an engaged switch blocks automated exits exactly like entries
-     > (journaled per attempt as `*_exit_blocked`). Confirmed as the intended
+     > kill switch, so an engaged switch blocks automated exits exactly like entries.
+     > A held OPTIONS exit short-circuits before any broker call and journals
+     > `live_options_exit_blocked` once per position per halt (it used to journal
+     > per tick and spend ~4 rate-limited broker calls per attempt first); equity
+     > time-exit blocks journal per attempt, deliberately, since
+     > `live_time_exit_blocked` feeds the failure-streak alert. Confirmed as the intended
      > semantic in real use: the kill switch's job includes "hands off — I'm trading
      > this account manually in Webull," and an app that keeps firing its own closes
      > into a session the human is actively managing is interference, not safety.
