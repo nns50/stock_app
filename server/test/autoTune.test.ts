@@ -53,13 +53,31 @@ function nextIdempotencyKey(): string {
   return `autotune-test-${intentSeq}`;
 }
 
-/** A closed trade with a real P&L (no source order — never contributes to
- *  the slippage pool, so risk-tuning tests can use these without also
- *  tripping the slippage-exclusion side). */
+/** A closed LOOP trade with a real P&L (no source order — never contributes
+ *  to the slippage pool, so risk-tuning tests can use these without also
+ *  tripping the slippage-exclusion side). Tagged 'autotrade' because since
+ *  2026-08-21 the risk tuner only reads the loop's own trades — an untagged
+ *  (manual) trade is invisible to it, which manual-trade tests below assert. */
 function closedTrade(pnl: number, day: string) {
   const p = createPosition({
     assetType: 'stock',
     symbol: 'AAPL',
+    side: 'long',
+    quantity: 1,
+    entryPrice: 100,
+    entryDate: day,
+    tags: ['autotrade'],
+  });
+  addExit(p.id, { quantity: 1, exitPrice: 100 + pnl, exitDate: day });
+  return p;
+}
+
+/** A closed MANUAL trade — no autotrade tag. The human's trading, which the
+ *  risk tuner must never be judged by. */
+function closedManualTrade(pnl: number, day: string) {
+  const p = createPosition({
+    assetType: 'stock',
+    symbol: 'MSFT',
     side: 'long',
     quantity: 1,
     entryPrice: 100,
@@ -125,6 +143,19 @@ describe('maybeAutoTune', () => {
   });
 
   describe('risk-% tuning', () => {
+    it("is judged by the LOOP's trades only — manual trades are invisible to it", async () => {
+      // The operator's own diagnosis (2026-08-21): manual winners held past
+      // their targets out of psychology were dragging the loop's Kelly and the
+      // OOS guard's verdict. A pile of losing MANUAL trades must neither meet
+      // the sample-size bar nor move the loop's risk %.
+      setAutotradeConfig({ autoTuneEnabled: true, autoTuneMinTrades: 5, riskPerTradePct: 1 });
+      for (let i = 0; i < 8; i++) closedManualTrade(-60, '2026-08-0' + ((i % 4) + 1));
+      await maybeAutoTune(ET_DAY_1);
+      // 8 closed manual trades, 0 autotrade ones: below the loop's OWN sample
+      // bar, so nothing adjusts — a pre-filter tuner would have cut risk hard.
+      expect(getAutotradeConfig().riskPerTradePct).toBe(1);
+    });
+
     it('does not adjust below the configured minimum sample size', async () => {
       setAutotradeConfig({ autoTuneEnabled: true, autoTuneMinTrades: 5, riskPerTradePct: 1 });
       closedTrade(100, '2026-08-01');

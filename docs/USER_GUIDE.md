@@ -1357,14 +1357,18 @@ shouldn't be a tab-switch away.
   mechanism.
   **Auto-tune from realized edge** (2026-07-18, off by default) closes the loop between
   the Journal's own analytics and what the loop actually does: once a day, it nudges
-  **risk-per-trade** toward the Journal's Kelly suggestion (same quarter-Kelly, 3%-capped
-  math shown there), and auto-excludes any symbol whose average live-fill slippage
+  **risk-per-trade** toward a Kelly suggestion computed over the **loop's own
+  (autotrade-tagged) closed trades only** — since 2026-08-21 your manual trades are
+  invisible to it, because rule-based exits produce a different return shape than
+  discretionary ones and the loop must be sized on its own discipline, not yours
+  (same quarter-Kelly, 3%-capped math the Journal shows, just on the narrower
+  population), and auto-excludes any symbol whose average live-fill slippage
   crosses a threshold — both gated on a configurable minimum sample size so a handful of
   trades can't move things, and the risk change is capped per day so one noisy reading
   can't swing live sizing. On top of that, a **walk-forward guard** — **Require
   out-of-sample confirmation before raising risk** (2026-07-24, **on by default**) — only
   lets it _raise_ risk-per-trade if the edge still holds out-of-sample: the most recent
-  half of your closed trades must be a large-enough sample whose expectancy confidence
+  half of the loop's own closed trades must be a large-enough sample whose expectancy confidence
   interval sits entirely above zero (the same bootstrap the backtest's significance panel
   uses). A _cut_ is always applied — down is the safe direction — but an in-sample edge
   that hasn't held up on recent trades won't talk the loop into sizing up; a blocked

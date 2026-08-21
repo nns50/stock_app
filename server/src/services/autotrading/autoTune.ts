@@ -218,7 +218,17 @@ export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneR
   logAutotradeEvent({ stage: 'config', action: RAN_ACTION, detail: { date: today } satisfies RanMarkerDetail });
 
   let riskAdjusted = false;
-  const closedPositions = listPositions({ status: 'closed' });
+  // The LOOP's own trades only — same predicate the excursion tuner below has
+  // always used. This read ALL closed journal positions until 2026-08-21,
+  // which let MANUAL trades (a different trader with a different exit
+  // discipline — the operator's own diagnosis: winners held past their
+  // targets out of psychology) drive the loop's Kelly suggestion and the
+  // walk-forward guard's confirmed/unconfirmed verdict. Auto-tune sizes the
+  // loop, so it must be judged on the loop's discipline, not the human's:
+  // rule-based exits produce a different (low-win-rate, big-winner) return
+  // shape than discretionary ones, and mixing the two biased both the target
+  // and the confidence interval toward whichever trader traded more.
+  const closedPositions = listPositions({ status: 'closed' }).filter(isAutotradePosition);
   const stats = computeJournalStats(closedPositions);
   if (stats.kelly && stats.kelly.sampleSize >= config.autoTuneMinTrades) {
     const target = stats.kelly.suggestedRiskPct;
