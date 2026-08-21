@@ -818,6 +818,64 @@ describe('checkLiveOptionsExits', () => {
     expect(events.some((e) => e.action === 'live_options_exit_placed')).toBe(true);
   });
 
+  it('holds a triggered exit during a kill-switch halt: one journal entry, zero broker calls', async () => {
+    // Observed live (2026-08-21): a ~30-minute halt journaled 28 identical
+    // blocked-exit events for one position — one per tick — and each attempt
+    // first spent a quote fetch, a broker positions preview, and an
+    // account-state fetch, only for the kill_switch guardrail to refuse at the
+    // end. The switch means "hands off — trading manually at the broker", so a
+    // halt should cost nothing and say it once.
+    setAutotradeConfig(liveConfig({ killSwitch: true }));
+    openLivePosition({ expiration: '2024-06-05' }); // long past — triggers regardless of "today"
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 5 } }) as never);
+    mockPreviewPositions.mockClear();
+    mockAccountState.mockClear();
+    mockPlaceOrder.mockClear();
+
+    // Three consecutive ticks of the same halt.
+    for (let tick = 0; tick < 3; tick++) {
+      const outcomes = await checkLiveOptionsExits();
+      expect(outcomes[0]).toMatchObject({
+        symbol: 'AAPL',
+        requested: false,
+        reason: expect.stringMatching(/kill switch/),
+      });
+    }
+
+    expect(mockPreviewPositions).not.toHaveBeenCalled();
+    expect(mockAccountState).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    const held = listAutotradeEvents({}).filter((e) => e.action === 'live_options_exit_blocked');
+    expect(held).toHaveLength(1); // once per halt, not once per tick
+    expect(held[0].detail).toMatch(/kill_switch/);
+  });
+
+  it('journals afresh on a NEW halt, and places immediately once the switch is released', async () => {
+    setAutotradeConfig(liveConfig({ killSwitch: true }));
+    const pos = openLivePosition({ expiration: '2024-06-05' });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 5 } }) as never);
+    await checkLiveOptionsExits(); // halt #1 — journals
+
+    // Switch released: the exit goes straight through, same tick cadence.
+    setAutotradeConfig({ killSwitch: false });
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-EXIT-RELEASED' });
+    const released = await checkLiveOptionsExits();
+    expect(released[0]).toMatchObject({ symbol: 'AAPL', requested: true });
+
+    // The placed exit is now pending, so simulate it never filling and being
+    // cancelled — then a SECOND halt with the position still open must journal
+    // its own entry rather than being swallowed by halt #1's throttle.
+    db.exec('DELETE FROM autotrade_live_options_orders');
+    setAutotradeConfig({ killSwitch: true });
+    await checkLiveOptionsExits(); // halt #2 — journals again
+
+    const held = listAutotradeEvents({}).filter((e) => e.action === 'live_options_exit_blocked');
+    expect(held).toHaveLength(2); // one per halt
+  });
+
   it('caps the exit quantity to the broker-held size (no naked short after an unbooked partial fill)', async () => {
     setAutotradeConfig(liveConfig());
     openLivePosition({ expiration: '2024-06-05', quantity: 10 });

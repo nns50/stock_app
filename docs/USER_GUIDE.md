@@ -1418,8 +1418,9 @@ shouldn't be a tab-switch away.
   account manually in Webull": the app won't fire its own closes into your session.
   Three things keep working through a halt: your **broker-side bracket legs** still rest
   at Webull and fire on their own; the background **sync keeps booking** whatever fills
-  or manual closes happen at the broker (each blocked automated exit attempt is also
-  journaled to Recent activity, so the halt is visible, not silent); and **paper**
+  or manual closes happen at the broker (a held options exit is journaled to Recent
+  activity **once per halt** — visible without repeating every tick; equity time-exit
+  blocks still journal per attempt, since those feed the failure alert); and **paper**
   positions keep exiting normally, since they touch no broker. Releasing the switch
   resumes automated exit management immediately.
   A live order that fills only **partly** is recorded as soon as the loop sees it, rather
