@@ -2423,6 +2423,8 @@ export default function AutoTradePage() {
   const [symbolCooldownDaysDraft, setSymbolCooldownDaysDraft] = useState<number | undefined>();
   const [finishLineSizingEnabled, setFinishLineSizingEnabled] = useState(false);
   const [finishLineMinSignalScoreDraft, setFinishLineMinSignalScoreDraft] = useState<number | undefined>();
+  const [stagnationExitMinutesDraft, setStagnationExitMinutesDraft] = useState<number | undefined>();
+  const [stagnationExitMinRDraft, setStagnationExitMinRDraft] = useState<number | undefined>();
   const [expectancyMinTradesDraft, setExpectancyMinTradesDraft] = useState<number | undefined>();
   const [expectancyMinMultiplierDraft, setExpectancyMinMultiplierDraft] = useState<number | undefined>();
   const [expectancyMaxMultiplierDraft, setExpectancyMaxMultiplierDraft] = useState<number | undefined>();
@@ -2552,6 +2554,8 @@ export default function AutoTradePage() {
     sync('symbolCooldownDays', setSymbolCooldownDaysDraft);
     sync('finishLineSizingEnabled', setFinishLineSizingEnabled);
     sync('finishLineMinSignalScore', setFinishLineMinSignalScoreDraft);
+    sync('stagnationExitMinutes', setStagnationExitMinutesDraft);
+    sync('stagnationExitMinR', setStagnationExitMinRDraft);
     sync('expectancyMinTrades', setExpectancyMinTradesDraft);
     sync('expectancyMinMultiplier', setExpectancyMinMultiplierDraft);
     sync('expectancyMaxMultiplier', setExpectancyMaxMultiplierDraft);
@@ -2655,6 +2659,8 @@ export default function AutoTradePage() {
     symbolCooldownDays?: number;
     finishLineSizingEnabled?: boolean;
     finishLineMinSignalScore?: number;
+    stagnationExitMinutes?: number;
+    stagnationExitMinR?: number;
     expectancyMinTrades?: number;
     expectancyMinMultiplier?: number;
     expectancyMaxMultiplier?: number;
@@ -4964,6 +4970,47 @@ export default function AutoTradePage() {
                           maxHoldDaysDraft == null ||
                           maxHoldDaysDraft < 0 ||
                           maxHoldDaysDraft === config.data?.maxHoldDays
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Stagnation exit (minutes / min R progress)"
+                    hint="LIVE equity only: a position that has made less than the R-progress bar after this many minutes (during the regular session) is scratched at market, freeing its position slot and open-risk budget for fresh signals. 0 minutes disables it. Positions with no stop are never scratched. Each scratch journals its held time and R so you can audit whether it's cutting losers or winners."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={stagnationExitMinutesDraft}
+                        onChange={setStagnationExitMinutesDraft}
+                        min={0}
+                        step={15}
+                      />
+                      <NumberInput
+                        value={stagnationExitMinRDraft}
+                        onChange={setStagnationExitMinRDraft}
+                        min={0}
+                        step={0.1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save stagnation exit"
+                        onClick={() =>
+                          stagnationExitMinutesDraft != null &&
+                          stagnationExitMinRDraft != null &&
+                          saveConfig({
+                            stagnationExitMinutes: stagnationExitMinutesDraft,
+                            stagnationExitMinR: stagnationExitMinRDraft,
+                          })
+                        }
+                        disabled={
+                          stagnationExitMinutesDraft == null ||
+                          stagnationExitMinutesDraft < 0 ||
+                          stagnationExitMinRDraft == null ||
+                          stagnationExitMinRDraft < 0 ||
+                          (stagnationExitMinutesDraft === config.data?.stagnationExitMinutes &&
+                            stagnationExitMinRDraft === config.data?.stagnationExitMinR)
                         }
                       >
                         Save

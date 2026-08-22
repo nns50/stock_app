@@ -88,7 +88,10 @@ isn't the entry — it's that *you never enter without a written exit.*
 > closing trade to just what banks the day (never sizes up — pressing a shortfall is
 > how accounts die), an **armed-day score bar** holds late entries to the highest
 > conviction standard, and the **symbol loss cooldown** stops re-entering a name that
-> just stopped you out twice — the "revenge trade" rule, automated.
+> just stopped you out twice — the "revenge trade" rule, automated. The **stagnation
+> exit** completes the set from the capital side: a live position going nowhere after
+> its deadline is scratched so the slot and risk budget go back to work — for a
+> within-the-day goal, capital velocity is a lever, and dead positions are its tax.
 
 ### 5. Review on a cadence
 

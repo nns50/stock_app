@@ -243,6 +243,8 @@ const configBody = z.object({
   symbolCooldownDays: z.number().int().min(1).optional(),
   finishLineSizingEnabled: z.boolean().optional(),
   finishLineMinSignalScore: z.number().min(0).max(100).optional(),
+  stagnationExitMinutes: z.number().int().nonnegative().optional(),
+  stagnationExitMinR: z.number().min(0).optional(),
   liveOptionsFatFingerPct: z.number().min(0).max(100).optional(),
   liveOptionsProbationTrades: z.number().int().nonnegative().optional(),
   liveOptionsProbationSizeMultiplier: z.number().positive().max(1).optional(),
@@ -450,6 +452,8 @@ autotradeRouter.put(
     if (body.symbolCooldownDays !== undefined) patch.symbolCooldownDays = body.symbolCooldownDays;
     if (body.finishLineSizingEnabled !== undefined) patch.finishLineSizingEnabled = body.finishLineSizingEnabled;
     if (body.finishLineMinSignalScore !== undefined) patch.finishLineMinSignalScore = body.finishLineMinSignalScore;
+    if (body.stagnationExitMinutes !== undefined) patch.stagnationExitMinutes = body.stagnationExitMinutes;
+    if (body.stagnationExitMinR !== undefined) patch.stagnationExitMinR = body.stagnationExitMinR;
     if (body.liveOptionsFatFingerPct !== undefined) patch.liveOptionsFatFingerPct = body.liveOptionsFatFingerPct;
     if (body.liveOptionsProbationTrades !== undefined) {
       patch.liveOptionsProbationTrades = body.liveOptionsProbationTrades;

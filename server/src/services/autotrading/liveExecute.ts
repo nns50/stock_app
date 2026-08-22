@@ -54,6 +54,7 @@ import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
+import { evaluateStagnation } from './stagnationExit';
 import { evaluateDailyTarget } from './dailyTarget';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 // DB-layer reads only (NOT the options execution service) -- so the combined
@@ -1959,11 +1960,25 @@ function timeExitFailure(
   return { symbol, positionId: pos.id, requested: false, reason };
 }
 
+/** WHY this close is happening — threaded into the placement journal entry
+ *  and the push notification so a maxHoldDays force-close and a stagnation
+ *  scratch stay distinguishable for auditing (the position's own exitReason
+ *  stays 'time_exit' for both at materialization: one fill path, one
+ *  vocabulary). `journal` carries the trigger's numbers (heldMinutes,
+ *  progressR) into the event detail. */
+export interface TimeExitTrigger {
+  kind: 'max_hold_days' | 'stagnation';
+  journal: Record<string, unknown>;
+  /** Human phrasing for the notification, e.g. "max hold time reached". */
+  notice: string;
+}
+
 async function placeLiveEquityTimeExitClose(
   pos: Position,
   accountId: string,
   riskProfile: string,
   entryIntent: OrderIntentRecord,
+  trigger: TimeExitTrigger,
 ): Promise<LiveEquityTimeExitOutcome> {
   const symbol = pos.symbol.toUpperCase();
   let last: number;
@@ -2105,13 +2120,20 @@ async function placeLiveEquityTimeExitClose(
     symbol,
     stage: 'execution',
     action: 'live_time_exit_placed',
-    detail: { quantity: intent.quantity, limitPrice, orderId: broker.orderId, positionId: pos.id },
+    detail: {
+      quantity: intent.quantity,
+      limitPrice,
+      orderId: broker.orderId,
+      positionId: pos.id,
+      trigger: trigger.kind,
+      ...trigger.journal,
+    },
     riskProfile,
   });
   await dispatchNotifications([
     {
       title: symbol,
-      message: `Autotrade LIVE closing ${symbol} (max hold time reached): ${intent.quantity} @ ~$${limitPrice.toFixed(2)}`,
+      message: `Autotrade LIVE closing ${symbol} (${trigger.notice}): ${intent.quantity} @ ~$${limitPrice.toFixed(2)}`,
     },
   ]);
   return { symbol, positionId: pos.id, requested: true, intentId: intentRec.id };
@@ -2119,15 +2141,18 @@ async function placeLiveEquityTimeExitClose(
 
 /**
  * Check every open live equity position against maxHoldDays (0 = disabled)
- * and force-close whichever has overstayed: cancel its resting bracket exit
- * legs, verify they're actually clear, then place a fresh closing order. See
- * the module-level comment above for why this is fundamentally riskier than
- * every other exit path in this file, and what specifically is unconfirmed.
+ * AND the intraday stagnation exit (stagnationExitMinutes, 0 = disabled —
+ * see stagnationExit.ts's header for the evidence and the rule), and
+ * force-close whichever has overstayed or stalled: cancel its resting
+ * bracket exit legs, verify they're actually clear, then place a fresh
+ * closing order. See the module-level comment above for why this is
+ * fundamentally riskier than every other exit path in this file, and what
+ * specifically is unconfirmed.
  *
  * A position with an exit order ALREADY in flight (pending, per
- * listPendingLiveOrders()'s role='exit' rows) is skipped — maxHoldDays
- * doesn't un-trigger within the same day, so without this guard every tick
- * would attempt ANOTHER cancel+close for the same still-closing position
+ * listPendingLiveOrders()'s role='exit' rows) is skipped — neither trigger
+ * un-fires within the same day, so without this guard every tick would
+ * attempt ANOTHER cancel+close for the same still-closing position
  * (mirrors checkLiveOptionsExits' identical guard).
  */
 export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutcome[]> {
@@ -2137,10 +2162,19 @@ export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutc
   if (!config.trading.placeEnabled) return [];
   const cfg = getAutotradeConfig();
   if (!cfg.liveAccountId) return [];
-  if (cfg.maxHoldDays <= 0) return [];
+  const stagnationConfigured = cfg.stagnationExitMinutes > 0;
+  if (cfg.maxHoldDays <= 0 && !stagnationConfigured) return [];
 
   const open = listAutotradeLivePositions({ status: 'open' });
   if (open.length === 0) return [];
+
+  // Stagnation is evaluated only while the REGULAR session is open: wall-clock
+  // minutes would otherwise mark a Friday-afternoon entry "stagnant" at
+  // Monday's opening bell purely from the weekend, and a scratch should never
+  // be attempted into pre/after-market liquidity. maxHoldDays keeps its
+  // original anytime behavior (the placement guardrails' market-open check
+  // still gates the actual order either way).
+  const sessionOpen = stagnationConfigured && checkSessionWindow(0).ok;
 
   const pendingExitPositionIds = new Set(
     listPendingLiveOrders()
@@ -2151,7 +2185,29 @@ export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutc
   const outcomes: LiveEquityTimeExitOutcome[] = [];
   for (const pos of open) {
     if (pendingExitPositionIds.has(pos.id)) continue;
-    if (Date.now() - pos.createdAt < cfg.maxHoldDays * MS_PER_DAY) continue;
+    let trigger: TimeExitTrigger | null = null;
+    if (cfg.maxHoldDays > 0 && Date.now() - pos.createdAt >= cfg.maxHoldDays * MS_PER_DAY) {
+      trigger = { kind: 'max_hold_days', journal: { maxHoldDays: cfg.maxHoldDays }, notice: 'max hold time reached' };
+    } else if (sessionOpen && Date.now() - pos.createdAt >= cfg.stagnationExitMinutes * 60_000) {
+      // Progress needs a quote. A transient quote failure just skips this
+      // position until the next tick (stagnation is opportunistic — nothing
+      // is left unprotected, the bracket is still resting) rather than
+      // journaling a failure per tick.
+      let last: number;
+      try {
+        last = (await getProvider().getQuote(pos.symbol.toUpperCase())).last;
+      } catch {
+        continue;
+      }
+      const decision = evaluateStagnation(pos, last, cfg, Date.now());
+      if (!decision.triggered) continue;
+      trigger = {
+        kind: 'stagnation',
+        journal: { heldMinutes: decision.heldMinutes, progressR: decision.progress, reason: decision.detail },
+        notice: `stagnant: ${decision.progress}R after ${decision.heldMinutes}m`,
+      };
+    }
+    if (!trigger) continue;
 
     // Both of these leave a position sitting past its hold limit with no close
     // attempted, every tick, so they are journaled like any other failed close
@@ -2192,7 +2248,7 @@ export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutc
     // The bracket cancel now happens INSIDE placeLiveEquityTimeExitClose, after
     // its guardrails pass — cancelling here meant a blocked close stripped the
     // position's only stop. See that function's own comment.
-    outcomes.push(await placeLiveEquityTimeExitClose(pos, freshAccountId, riskProfile, entryIntent));
+    outcomes.push(await placeLiveEquityTimeExitClose(pos, freshAccountId, riskProfile, entryIntent, trigger));
   }
   return outcomes;
 }

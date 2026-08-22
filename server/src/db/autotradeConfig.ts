@@ -591,6 +591,17 @@ export interface AutotradeConfig {
    *  almost-banked day back are held to a higher conviction bar. 0 = off;
    *  needs the guard levels set (it rides the guard's arm flag). */
   finishLineMinSignalScore: number;
+  /** INTRADAY STAGNATION EXIT (services/autotrading/stagnationExit.ts): a
+   *  live equity position that has made less than stagnationExitMinR of R
+   *  progress after this many wall-clock minutes (evaluated only while the
+   *  regular session is open) is scratched via the time-exit path, freeing
+   *  its concurrent-position slot and open-risk budget for fresh signals.
+   *  0 = off. Positions with no stop are never scratched (no R to measure). */
+  stagnationExitMinutes: number;
+  /** The R-progress bar for the stagnation exit above: below this after the
+   *  deadline = recycled. May be 0 ("scratch only if not even at breakeven
+   *  progress"); a slow bleeder below 0R is recycled too. */
+  stagnationExitMinR: number;
   liveOptionsFatFingerPct: number;
   /** Mirrors liveProbationTrades/liveProbationSizeMultiplier, counted from
    *  liveOptionsEnabledAt via countLiveOptionsOrdersSince() — a fully
@@ -906,6 +917,8 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     symbolCooldownDays: 3,
     finishLineSizingEnabled: false,
     finishLineMinSignalScore: 0,
+    stagnationExitMinutes: 0,
+    stagnationExitMinR: 0.5,
     liveOptionsFatFingerPct: 10,
     liveOptionsProbationTrades: 20,
     liveOptionsProbationSizeMultiplier: 0.5,
@@ -1155,6 +1168,8 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     finishLineSizingEnabled:
       typeof input.finishLineSizingEnabled === 'boolean' ? input.finishLineSizingEnabled : d.finishLineSizingEnabled,
     finishLineMinSignalScore: pct(input.finishLineMinSignalScore, d.finishLineMinSignalScore),
+    stagnationExitMinutes: posInt(input.stagnationExitMinutes, d.stagnationExitMinutes),
+    stagnationExitMinR: nonNeg(input.stagnationExitMinR, d.stagnationExitMinR),
     liveOptionsFatFingerPct: pct(input.liveOptionsFatFingerPct, d.liveOptionsFatFingerPct),
     liveOptionsProbationTrades: posInt(input.liveOptionsProbationTrades, d.liveOptionsProbationTrades),
     liveOptionsProbationSizeMultiplier: (() => {
