@@ -51,6 +51,7 @@ import { computeScaleIn } from './scaleIn';
 import { checkSessionWindow } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
 import { computeGradeExpectancyMultipliers } from './expectancySizing';
+import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 // DB-layer reads only (NOT the options execution service) -- so the combined
 // live budget can fold in the options book without a liveExecute <-> options
 // service import cycle.
@@ -212,6 +213,9 @@ export interface LivePortfolioSnapshot {
   /** grade → sizing multiplier from the live book's realized per-grade edge
    *  (2026-07-24); empty when expectancy weighting is off. */
   gradeExpectancyMultipliers: Record<string, number>;
+  /** method → sizing multiplier from recent per-method realized edge
+   *  (methodSizing.ts); empty when method weighting is off. */
+  methodMultipliers: Record<string, number>;
 }
 
 /** The real-money counterpart to execute.ts's getPaperPortfolioSnapshot() —
@@ -284,6 +288,7 @@ export function getLivePortfolioSnapshot(): LivePortfolioSnapshot {
     tradesToday,
     equityCurveDeriskActive,
     gradeExpectancyMultipliers,
+    methodMultipliers: computeMethodMultipliers(closedAutotrade, config),
   };
 }
 
@@ -827,6 +832,7 @@ export async function runLiveExecution(
             bMinScore: cfg.convictionGradeBMinScore,
           })
         ] ?? 1,
+      methodMultiplier: snapshot.methodMultipliers[methodOfEquitySignal(signal.side)] ?? 1,
     };
     const result = evaluateRiskCheck(signal, ctx);
     if (!result.ok) {

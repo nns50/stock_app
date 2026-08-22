@@ -585,7 +585,7 @@ export function computeJournalStats(closed: Position[]): JournalStats {
   };
 }
 
-function lastExitDate(p: Position): string | null {
+export function lastExitDate(p: Position): string | null {
   if (p.exits.length === 0) return null;
   return p.exits
     .map((e) => e.exitDate)

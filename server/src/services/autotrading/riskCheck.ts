@@ -9,6 +9,7 @@ import { listUniverse } from '../../db/universe';
 import { getMarketAtrPct } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
 import { computeGradeExpectancyMultipliers } from './expectancySizing';
+import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { TradeSignal, convictionGrade } from './decide';
 
 // ---------------------------------------------------------------------------
@@ -126,6 +127,9 @@ export interface PortfolioSnapshot {
   /** grade → sizing multiplier from this book's realized per-grade edge
    *  (2026-07-24); empty when expectancy weighting is off. */
   gradeExpectancyMultipliers: Record<string, number>;
+  /** method → sizing multiplier from this book's recent per-method edge
+   *  (2026-08-21); empty when method weighting is off. */
+  methodMultipliers: Record<string, number>;
   openPositions: OpenRiskItem[];
 }
 
@@ -165,6 +169,8 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
     },
   );
 
+  const methodMultipliers = computeMethodMultipliers(closedPositions, cfg);
+
   const tradesToday = listAutotradeEvents({ stage: 'execution', limit: 1000 }).filter(
     (e) => e.action === 'order_placed' && etDateStr(e.createdAt) === todayStr,
   ).length;
@@ -184,6 +190,7 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
     consecutiveLosses,
     equityCurveDeriskActive,
     gradeExpectancyMultipliers,
+    methodMultipliers,
     openPositions,
   };
 }
@@ -369,6 +376,9 @@ export interface RiskCheckContext {
    *  per-grade edge (services/autotrading/expectancySizing.ts). Optional — only
    *  the equity live/paper/preview paths set it; 1 or undefined = neutral. */
   expectancyMultiplier?: number;
+  /** Per-METHOD sizing lean (methodSizing.ts) — 1 when method weighting is off
+   *  or this signal's method has no proven recent edge. */
+  methodMultiplier?: number;
 }
 
 export interface RiskCheckRule {
@@ -439,12 +449,14 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   const equityCurveDeriskActive = ctx.equityCurveDeriskActive === true;
   const equityCurveCutPct = ctx.equityCurveDeriskCutPct ?? 0;
   const expectancyMultiplier = ctx.expectancyMultiplier ?? 1;
+  const methodMultiplier = ctx.methodMultiplier ?? 1;
   const effectiveRiskPct =
     ctx.riskPerTradePct *
     (stepDownActive ? 1 - ctx.stepDownSizeCutPct / 100 : 1) *
     (regimeActive ? 1 - ctx.regimeSizeCutPct / 100 : 1) *
     (equityCurveDeriskActive ? 1 - equityCurveCutPct / 100 : 1) *
-    expectancyMultiplier;
+    expectancyMultiplier *
+    methodMultiplier;
   check(
     'step_down_sizing',
     true,
@@ -472,6 +484,13 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     expectancyMultiplier !== 1
       ? `active — this grade's realized edge applies a ${expectancyMultiplier}× size multiplier`
       : 'inactive — expectancy weighting off, or this grade has no proven edge yet',
+  );
+  check(
+    'method_sizing',
+    true,
+    methodMultiplier !== 1
+      ? `active — this method's recent realized edge applies a ${methodMultiplier}× size multiplier`
+      : 'inactive — method weighting off, or this method has no proven recent edge yet',
   );
 
   // ADV participation cap (optional): never take more than maxAdvParticipationPct%
@@ -677,6 +696,7 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
             bMinScore: config.convictionGradeBMinScore,
           })
         ] ?? 1,
+      methodMultiplier: snapshot.methodMultipliers[methodOfEquitySignal(signal.side)] ?? 1,
     };
     const result = evaluateRiskCheck(signal, ctx);
     results.push(result);

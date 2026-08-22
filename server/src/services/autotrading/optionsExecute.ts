@@ -2,6 +2,7 @@ import { getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
 import { convictionGrade } from './decide';
 import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskCheck';
+import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
 import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
 import { getPaperPortfolioSnapshot, PaperPortfolioSeed } from './execute';
 import { computeStreaksAndDrawdown } from '../pnl';
@@ -420,6 +421,9 @@ export async function runOptionsPaperExecution(
 ): Promise<OptionsExecutionOutcome[]> {
   const config = getAutotradeConfig();
   const equity = config.accountEquityUsd ?? 0;
+  // One journal read per batch, not per signal — the same recent-window
+  // per-method lean the equity paths get from their snapshots (methodSizing.ts).
+  const methodMultipliers = journalMethodMultipliers(config);
 
   const optSnapshot = getOptionsPaperPortfolioSnapshot();
   const eqSnapshot = getPaperPortfolioSnapshot();
@@ -489,6 +493,7 @@ export async function runOptionsPaperExecution(
       marketAtrPct,
       regimeAtrThresholdPct: config.regimeAtrThresholdPct,
       regimeSizeCutPct: config.regimeSizeCutPct,
+      methodMultiplier: methodMultipliers[methodOfOptionsSignal(signal.side)] ?? 1,
     };
     const result = evaluateOptionsRiskCheck(signal, ctx);
     const contracts =

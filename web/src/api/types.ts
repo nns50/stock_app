@@ -1413,6 +1413,9 @@ export interface AutotradeConfig {
   convictionGradeAMinScore: number;
   convictionGradeBMinScore: number;
   expectancyWeightingEnabled: boolean;
+  /** Per-method sizing lean (long stock / short stock / calls / puts) over
+   *  each method's recent realized R — shares expectancy's floor and clamps. */
+  methodWeightingEnabled: boolean;
   expectancyMinTrades: number;
   expectancyMinMultiplier: number;
   expectancyMaxMultiplier: number;
@@ -2296,6 +2299,14 @@ export interface PortfolioGreeks {
   netVega: number;
 }
 
+export interface MethodStats {
+  method: 'stock_long' | 'stock_short' | 'option_call' | 'option_put';
+  n: number;
+  wins: number;
+  avgR: number;
+  multiplier: number;
+}
+
 export interface DailyTargetStatus {
   active: boolean;
   inactiveReason?: string;
@@ -2318,6 +2329,8 @@ export interface AutotradeDashboard {
   /** Progress toward the daily-gain goal — day-start account value, the %
    *  target on it, gain so far, and whether the day is banked. */
   dailyTarget: DailyTargetStatus;
+  /** Per-method recent realized performance + current sizing multiplier. */
+  methodPerformance: MethodStats[];
   lastTick: LastTickRecord | null;
   /** Equity paper positions only — see openOptionsPositions below for the
    *  options side of this SAME combined pool. */
