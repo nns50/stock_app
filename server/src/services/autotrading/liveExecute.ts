@@ -55,6 +55,7 @@ import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
 import { evaluateStagnation } from './stagnationExit';
+import { fetchTodayVwap } from './vwap';
 import { evaluateDailyTarget } from './dailyTarget';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 // DB-layer reads only (NOT the options execution service) -- so the combined
@@ -624,6 +625,11 @@ export async function attemptLiveEntry(
   transitionIntent(intentRec.id, 'submitted', { detail: `submitting (cid ${clientOrderId})` });
 
   const broker = await webullPlaceOrder(accountId, intent, clientOrderId, isShort);
+  // VWAP observer (vwap.ts): at-entry context only, never a gate — measured
+  // AFTER the placement call so it cannot delay or fail a real order (VWAP is
+  // cumulative; a few hundred ms later is the same number), and null on any
+  // failure rather than a guess.
+  const entryVwap = await fetchTodayVwap(symbol);
   const orderRow = {
     intentId: intentRec.id,
     symbol,
@@ -639,6 +645,7 @@ export async function attemptLiveEntry(
     entryScore: signal.score,
     marketRegime,
     marketAtrPct,
+    entryVwap,
   };
   if (!broker.ok && broker.ambiguous) {
     // We do NOT know whether this order reached the broker, so it must not be
@@ -693,6 +700,7 @@ export async function attemptLiveEntry(
       stop: signal.stop,
       target: signal.target,
       orderId: broker.orderId,
+      entryVwap,
     },
     riskProfile,
   });
@@ -1358,6 +1366,7 @@ function materializeEntryFill(
     entryScore: orderMeta?.entryScore ?? null,
     marketRegime: orderMeta?.marketRegime ?? null,
     marketAtrPct: orderMeta?.marketAtrPct ?? null,
+    entryVwap: orderMeta?.entryVwap ?? null,
     sourceIntentId: intent.id,
     accountId,
   });

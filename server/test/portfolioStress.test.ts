@@ -39,6 +39,7 @@ function makePosition(
     entryScore: null,
     marketRegime: null,
     marketAtrPct: null,
+    entryVwap: null,
     createdAt: 0,
     updatedAt: 0,
     exits: [],

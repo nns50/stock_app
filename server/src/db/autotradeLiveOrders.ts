@@ -48,6 +48,10 @@ export interface LiveOrderMeta {
   entryScore: number | null;
   marketRegime: string | null;
   marketAtrPct: number | null;
+  /** Session VWAP at placement (2026-08-22 observer), carried to
+   *  positions.entry_vwap at materialization. Null: exit rows, legacy rows,
+   *  or an unmeasurable fetch. */
+  entryVwap: number | null;
   createdAt: number;
 }
 
@@ -66,6 +70,7 @@ interface Row {
   entry_score: number | null;
   market_regime: string | null;
   market_atr_pct: number | null;
+  entry_vwap: number | null;
   created_at: number;
 }
 
@@ -85,6 +90,7 @@ function mapRow(r: Row): LiveOrderMeta {
     entryScore: r.entry_score ?? null,
     marketRegime: r.market_regime ?? null,
     marketAtrPct: r.market_atr_pct ?? null,
+    entryVwap: r.entry_vwap ?? null,
     createdAt: r.created_at,
   };
 }
@@ -108,11 +114,12 @@ export function recordLiveOrder(input: {
   entryScore?: number | null;
   marketRegime?: string | null;
   marketAtrPct?: number | null;
+  entryVwap?: number | null;
 }): LiveOrderMeta {
   const now = Date.now();
   db.prepare(
-    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, grade, entry_score, market_regime, market_atr_pct, created_at)
-     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, grade, entry_score, market_regime, market_atr_pct, entry_vwap, created_at)
+     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.intentId,
     input.symbol.toUpperCase(),
@@ -125,6 +132,7 @@ export function recordLiveOrder(input: {
     input.entryScore ?? null,
     input.marketRegime ?? null,
     input.marketAtrPct ?? null,
+    input.entryVwap ?? null,
     now,
   );
   return getLiveOrder(input.intentId)!;

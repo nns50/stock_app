@@ -34,6 +34,7 @@ function positionFixture(overrides: Partial<Position> = {}): Position {
     entryScore: null,
     marketRegime: null,
     marketAtrPct: null,
+    entryVwap: null,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     exits: [],
