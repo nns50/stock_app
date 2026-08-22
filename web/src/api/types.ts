@@ -1542,6 +1542,18 @@ export interface AutotradeConfig {
    *  guard runs only when both are set and arm > floor ≥ 0. */
   giveBackArmPct: number | null;
   giveBackFloorPct: number | null;
+  /** Symbol loss cooldown: after this many LOSING closed live trades within
+   *  symbolCooldownWindowDays calendar days, a symbol's new live entries are
+   *  skipped until symbolCooldownDays after the last loss. 0 or 1 = off. */
+  symbolCooldownLosses: number;
+  symbolCooldownWindowDays: number;
+  symbolCooldownDays: number;
+  /** Finish-line sizing: trim the closing trade's risk to just what banks the
+   *  day (floored at quarter size; never sizes up). */
+  finishLineSizingEnabled: boolean;
+  /** Min signal score for new live entries while the give-back guard is
+   *  armed. 0 = off. */
+  finishLineMinSignalScore: number;
   liveOptionsFatFingerPct: number;
   liveOptionsProbationTrades: number;
   liveOptionsProbationSizeMultiplier: number;
@@ -2336,6 +2348,13 @@ export interface DailyTargetStatus {
   entriesHalted: boolean;
 }
 
+export interface SymbolCooldownState {
+  symbol: string;
+  losses: number;
+  lastLossDate: string;
+  until: string;
+}
+
 export interface AutotradeDashboard {
   enabled: boolean;
   killSwitch: boolean;
@@ -2348,6 +2367,9 @@ export interface AutotradeDashboard {
   dailyTarget: DailyTargetStatus;
   /** Per-method recent realized performance + current sizing multiplier. */
   methodPerformance: MethodStats[];
+  /** Symbols currently in a loss cooldown — live entries skipped until each
+   *  `until` date. Empty when the feature is off or nothing is cooling. */
+  symbolCooldowns: SymbolCooldownState[];
   lastTick: LastTickRecord | null;
   /** Equity paper positions only — see openOptionsPositions below for the
    *  options side of this SAME combined pool. */

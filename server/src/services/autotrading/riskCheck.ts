@@ -384,6 +384,12 @@ export interface RiskCheckContext {
   /** Per-METHOD sizing lean (methodSizing.ts) — 1 when method weighting is off
    *  or this signal's method has no proven recent edge. */
   methodMultiplier?: number;
+  /** Finish-line sizing trim (finishLine.ts, 2026-08-22) — ≤ 1, pre-computed
+   *  by the LIVE callers from the day's remaining gap to the bank line; 1 or
+   *  undefined = no trim (paper, backtests, previews, or feature off). */
+  finishLineFactor?: number;
+  /** finishLine.ts's own explanation string for the check line below. */
+  finishLineDetail?: string;
 }
 
 export interface RiskCheckRule {
@@ -455,13 +461,15 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   const equityCurveCutPct = ctx.equityCurveDeriskCutPct ?? 0;
   const expectancyMultiplier = ctx.expectancyMultiplier ?? 1;
   const methodMultiplier = ctx.methodMultiplier ?? 1;
+  const finishLineFactor = ctx.finishLineFactor ?? 1;
   const effectiveRiskPct =
     ctx.riskPerTradePct *
     (stepDownActive ? 1 - ctx.stepDownSizeCutPct / 100 : 1) *
     (regimeActive ? 1 - ctx.regimeSizeCutPct / 100 : 1) *
     (equityCurveDeriskActive ? 1 - equityCurveCutPct / 100 : 1) *
     expectancyMultiplier *
-    methodMultiplier;
+    methodMultiplier *
+    finishLineFactor;
   check(
     'step_down_sizing',
     true,
@@ -496,6 +504,14 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     methodMultiplier !== 1
       ? `active — this method's recent realized edge applies a ${methodMultiplier}× size multiplier`
       : 'inactive — method weighting off, or this method has no proven recent edge yet',
+  );
+  check(
+    'finish_line_sizing',
+    true,
+    ctx.finishLineDetail ??
+      (finishLineFactor !== 1
+        ? `active — near the daily bank line, risk trimmed to ${Math.round(finishLineFactor * 100)}%`
+        : 'inactive — finish-line sizing off, or the day is not near the bank line'),
   );
 
   // ADV participation cap (optional): never take more than maxAdvParticipationPct%

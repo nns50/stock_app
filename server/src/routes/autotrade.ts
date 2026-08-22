@@ -236,6 +236,13 @@ const configBody = z.object({
    *  set and arm > floor ≥ 0 (services/autotrading/dailyTarget.ts). */
   giveBackArmPct: z.number().positive().max(1000).nullable().optional(),
   giveBackFloorPct: z.number().min(0).max(1000).nullable().optional(),
+  /** Symbol loss cooldown + finish-line discipline (2026-08-22) — see the
+   *  AutotradeConfig doc comments; 0 disables each of the 0-able fields. */
+  symbolCooldownLosses: z.number().int().nonnegative().optional(),
+  symbolCooldownWindowDays: z.number().int().min(1).optional(),
+  symbolCooldownDays: z.number().int().min(1).optional(),
+  finishLineSizingEnabled: z.boolean().optional(),
+  finishLineMinSignalScore: z.number().min(0).max(100).optional(),
   liveOptionsFatFingerPct: z.number().min(0).max(100).optional(),
   liveOptionsProbationTrades: z.number().int().nonnegative().optional(),
   liveOptionsProbationSizeMultiplier: z.number().positive().max(1).optional(),
@@ -438,6 +445,11 @@ autotradeRouter.put(
     if (body.targetDailyGainPct !== undefined) patch.targetDailyGainPct = body.targetDailyGainPct;
     if (body.giveBackArmPct !== undefined) patch.giveBackArmPct = body.giveBackArmPct;
     if (body.giveBackFloorPct !== undefined) patch.giveBackFloorPct = body.giveBackFloorPct;
+    if (body.symbolCooldownLosses !== undefined) patch.symbolCooldownLosses = body.symbolCooldownLosses;
+    if (body.symbolCooldownWindowDays !== undefined) patch.symbolCooldownWindowDays = body.symbolCooldownWindowDays;
+    if (body.symbolCooldownDays !== undefined) patch.symbolCooldownDays = body.symbolCooldownDays;
+    if (body.finishLineSizingEnabled !== undefined) patch.finishLineSizingEnabled = body.finishLineSizingEnabled;
+    if (body.finishLineMinSignalScore !== undefined) patch.finishLineMinSignalScore = body.finishLineMinSignalScore;
     if (body.liveOptionsFatFingerPct !== undefined) patch.liveOptionsFatFingerPct = body.liveOptionsFatFingerPct;
     if (body.liveOptionsProbationTrades !== undefined) {
       patch.liveOptionsProbationTrades = body.liveOptionsProbationTrades;

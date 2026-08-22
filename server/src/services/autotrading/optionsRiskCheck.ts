@@ -138,11 +138,13 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
   const regimeActive =
     ctx.regimeAtrThresholdPct > 0 && ctx.marketAtrPct != null && ctx.marketAtrPct > ctx.regimeAtrThresholdPct;
   const methodMultiplier = ctx.methodMultiplier ?? 1;
+  const finishLineFactor = ctx.finishLineFactor ?? 1;
   const effectiveRiskPct =
     ctx.riskPerTradePct *
     (stepDownActive ? 1 - ctx.stepDownSizeCutPct / 100 : 1) *
     (regimeActive ? 1 - ctx.regimeSizeCutPct / 100 : 1) *
-    methodMultiplier;
+    methodMultiplier *
+    finishLineFactor;
   check(
     'step_down_sizing',
     true,
@@ -156,6 +158,14 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
     methodMultiplier !== 1
       ? `active — this method's recent realized edge applies a ${methodMultiplier}× size multiplier`
       : 'inactive — method weighting off, or this method has no proven recent edge yet',
+  );
+  check(
+    'finish_line_sizing',
+    true,
+    ctx.finishLineDetail ??
+      (finishLineFactor !== 1
+        ? `active — near the daily bank line, risk trimmed to ${Math.round(finishLineFactor * 100)}%`
+        : 'inactive — finish-line sizing off, or the day is not near the bank line'),
   );
   check(
     'regime_sizing',

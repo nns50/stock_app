@@ -52,6 +52,10 @@ import { checkSessionWindow } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
 import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
+import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
+import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
+import { evaluateDailyTarget } from './dailyTarget';
+import { getDailyBaseline } from '../../db/dailyBaseline';
 // DB-layer reads only (NOT the options execution service) -- so the combined
 // live budget can fold in the options book without a liveExecute <-> options
 // service import cycle.
@@ -783,11 +787,38 @@ export async function runLiveExecution(
   ]);
   const sectorOf = buildSectorOf();
 
+  // Finish-line discipline + symbol cooldown (2026-08-22) — LIVE-only, both
+  // computed once per batch. The daily-target status is re-evaluated from the
+  // persisted baseline (not threaded from loop.ts) so a direct caller gets
+  // the same protection the loop does.
+  const dailyTarget = evaluateDailyTarget(cfg, getDailyBaseline());
+  const cooldowns = activeSymbolCooldowns(cfg);
+  const finishLine = computeFinishLineFactor({
+    enabled: cfg.finishLineSizingEnabled,
+    dailyTarget,
+    equity,
+    riskPerTradePct: cfg.riskPerTradePct,
+    rewardMultiple: cfg.targetRMultiple,
+  });
+
   const outcomes: LiveExecutionOutcome[] = [];
   for (const { signal } of candidates) {
     const symbol = signal.symbol.toUpperCase();
     if (skipSymbols.has(symbol)) {
       outcomes.push({ symbol, ok: false, reason: 'Already has an open live position' });
+      continue;
+    }
+    const cooldown = cooldowns.get(symbol);
+    if (cooldown) {
+      const reason = `Symbol cooling down after ${cooldown.losses} losses since ${cooldown.lastLossDate} — resumes ${cooldown.until}`;
+      journalEntrySkipOncePerDay(symbol, 'symbol_cooldown_skipped', { ...cooldown, reason });
+      outcomes.push({ symbol, ok: false, reason });
+      continue;
+    }
+    const scoreGate = finishLineScoreGate(signal.score, dailyTarget, cfg);
+    if (scoreGate.skip) {
+      journalEntrySkipOncePerDay(symbol, 'finish_line_skipped', { score: signal.score, reason: scoreGate.detail });
+      outcomes.push({ symbol, ok: false, reason: `Armed-day selectivity: ${scoreGate.detail}` });
       continue;
     }
     const { amount: correlated } = await correlatedNotional(
@@ -837,6 +868,8 @@ export async function runLiveExecution(
           })
         ] ?? 1,
       methodMultiplier: snapshot.methodMultipliers[methodOfEquitySignal(signal.side)] ?? 1,
+      finishLineFactor: finishLine.factor,
+      finishLineDetail: finishLine.detail,
     };
     const result = evaluateRiskCheck(signal, ctx);
     if (!result.ok) {

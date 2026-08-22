@@ -1561,6 +1561,20 @@ function MonitoringDashboard({
           </p>
         </div>
       )}
+      {dash.symbolCooldowns.length > 0 && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+          <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-1">Symbol cooldowns</h4>
+          <p className="text-xs text-slate-300">
+            {dash.symbolCooldowns.map((c, i) => (
+              <span key={c.symbol}>
+                {i > 0 && ', '}
+                <span className="font-medium">{c.symbol}</span> ({c.losses} losses, resumes {c.until})
+              </span>
+            ))}
+            {' — live entries skipped; paper keeps trading them as the evidence track.'}
+          </p>
+        </div>
+      )}
       {dash.methodPerformance.length > 0 && (
         <div className="rounded-lg border border-ink-600 bg-ink-800/40 p-3">
           <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-1">Method performance (recent trades)</h4>
@@ -2404,6 +2418,11 @@ export default function AutoTradePage() {
   const [convictionGradeBMinScoreDraft, setConvictionGradeBMinScoreDraft] = useState<number | undefined>();
   const [expectancyWeightingEnabled, setExpectancyWeightingEnabled] = useState(false);
   const [methodWeightingEnabled, setMethodWeightingEnabled] = useState(false);
+  const [symbolCooldownLossesDraft, setSymbolCooldownLossesDraft] = useState<number | undefined>();
+  const [symbolCooldownWindowDaysDraft, setSymbolCooldownWindowDaysDraft] = useState<number | undefined>();
+  const [symbolCooldownDaysDraft, setSymbolCooldownDaysDraft] = useState<number | undefined>();
+  const [finishLineSizingEnabled, setFinishLineSizingEnabled] = useState(false);
+  const [finishLineMinSignalScoreDraft, setFinishLineMinSignalScoreDraft] = useState<number | undefined>();
   const [expectancyMinTradesDraft, setExpectancyMinTradesDraft] = useState<number | undefined>();
   const [expectancyMinMultiplierDraft, setExpectancyMinMultiplierDraft] = useState<number | undefined>();
   const [expectancyMaxMultiplierDraft, setExpectancyMaxMultiplierDraft] = useState<number | undefined>();
@@ -2528,6 +2547,11 @@ export default function AutoTradePage() {
     sync('convictionGradeBMinScore', setConvictionGradeBMinScoreDraft);
     sync('expectancyWeightingEnabled', setExpectancyWeightingEnabled);
     sync('methodWeightingEnabled', setMethodWeightingEnabled);
+    sync('symbolCooldownLosses', setSymbolCooldownLossesDraft);
+    sync('symbolCooldownWindowDays', setSymbolCooldownWindowDaysDraft);
+    sync('symbolCooldownDays', setSymbolCooldownDaysDraft);
+    sync('finishLineSizingEnabled', setFinishLineSizingEnabled);
+    sync('finishLineMinSignalScore', setFinishLineMinSignalScoreDraft);
     sync('expectancyMinTrades', setExpectancyMinTradesDraft);
     sync('expectancyMinMultiplier', setExpectancyMinMultiplierDraft);
     sync('expectancyMaxMultiplier', setExpectancyMaxMultiplierDraft);
@@ -2626,6 +2650,11 @@ export default function AutoTradePage() {
     convictionGradeBMinScore?: number;
     expectancyWeightingEnabled?: boolean;
     methodWeightingEnabled?: boolean;
+    symbolCooldownLosses?: number;
+    symbolCooldownWindowDays?: number;
+    symbolCooldownDays?: number;
+    finishLineSizingEnabled?: boolean;
+    finishLineMinSignalScore?: number;
     expectancyMinTrades?: number;
     expectancyMinMultiplier?: number;
     expectancyMaxMultiplier?: number;
@@ -4399,6 +4428,102 @@ export default function AutoTradePage() {
                         }
                       >
                         Save max
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Symbol cooldown (losses / window days / cooldown days)"
+                    hint="Once a symbol takes the trigger count of LOSING live trades within the window (calendar days), its new live entries are skipped for the cooldown period after the last loss. 0 or 1 losses = off — single-loss re-entries have won before; this exists for repeated losses. Paper keeps trading the name as the evidence track."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={symbolCooldownLossesDraft}
+                        onChange={setSymbolCooldownLossesDraft}
+                        min={0}
+                        step={1}
+                      />
+                      <NumberInput
+                        value={symbolCooldownWindowDaysDraft}
+                        onChange={setSymbolCooldownWindowDaysDraft}
+                        min={1}
+                        step={1}
+                      />
+                      <NumberInput
+                        value={symbolCooldownDaysDraft}
+                        onChange={setSymbolCooldownDaysDraft}
+                        min={1}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save symbol cooldown"
+                        onClick={() =>
+                          symbolCooldownLossesDraft != null &&
+                          symbolCooldownWindowDaysDraft != null &&
+                          symbolCooldownDaysDraft != null &&
+                          saveConfig({
+                            symbolCooldownLosses: symbolCooldownLossesDraft,
+                            symbolCooldownWindowDays: symbolCooldownWindowDaysDraft,
+                            symbolCooldownDays: symbolCooldownDaysDraft,
+                          })
+                        }
+                        disabled={
+                          symbolCooldownLossesDraft == null ||
+                          symbolCooldownWindowDaysDraft == null ||
+                          symbolCooldownWindowDaysDraft < 1 ||
+                          symbolCooldownDaysDraft == null ||
+                          symbolCooldownDaysDraft < 1 ||
+                          (symbolCooldownLossesDraft === config.data?.symbolCooldownLosses &&
+                            symbolCooldownWindowDaysDraft === config.data?.symbolCooldownWindowDays &&
+                            symbolCooldownDaysDraft === config.data?.symbolCooldownDays)
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={finishLineSizingEnabled}
+                      onChange={(e) => saveConfig({ finishLineSizingEnabled: e.target.checked })}
+                    />
+                    <span>
+                      Finish-line sizing
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default. When the remaining gap to the daily bank line is smaller than a full-size
+                        winner&apos;s expected payoff, the next live entry&apos;s risk is trimmed so its win lands the
+                        day at the goal (floored at quarter size). Never sizes up — behind the target, the tune&apos;s
+                        calibration stands. Live only; needs the daily gain goal set.
+                      </span>
+                    </span>
+                  </label>
+                  <Field
+                    label="Armed-day min signal score"
+                    hint="While the give-back guard is ARMED (the day has been up past its arm level), new live entries must clear this score instead of the everyday minimum — the trades most likely to give an almost-banked day back are held to the highest bar. 0 = off; needs the guard levels set."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={finishLineMinSignalScoreDraft}
+                        onChange={setFinishLineMinSignalScoreDraft}
+                        min={0}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save armed-day min signal score"
+                        onClick={() =>
+                          finishLineMinSignalScoreDraft != null &&
+                          saveConfig({ finishLineMinSignalScore: finishLineMinSignalScoreDraft })
+                        }
+                        disabled={
+                          finishLineMinSignalScoreDraft == null ||
+                          finishLineMinSignalScoreDraft < 0 ||
+                          finishLineMinSignalScoreDraft === config.data?.finishLineMinSignalScore
+                        }
+                      >
+                        Save
                       </button>
                     </div>
                   </Field>

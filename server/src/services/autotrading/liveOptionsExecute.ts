@@ -58,6 +58,10 @@ import { convictionGrade } from './decide';
 import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskCheck';
 import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
+import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
+import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
+import { evaluateDailyTarget } from './dailyTarget';
+import { getDailyBaseline } from '../../db/dailyBaseline';
 import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { dispatchNotifications } from '../notifier';
@@ -729,11 +733,38 @@ export async function runLiveOptionsExecution(
   ]);
   const sectorOf = buildSectorOf();
 
+  // Finish-line discipline + symbol cooldown (2026-08-22) — same batch-level
+  // computation as runLiveExecution's (see its comment). The options reward
+  // multiple is what a winner pays per $1 of premium risked: the take-profit
+  // % of premium, in R terms.
+  const dailyTarget = evaluateDailyTarget(cfg, getDailyBaseline());
+  const cooldowns = activeSymbolCooldowns(cfg);
+  const finishLine = computeFinishLineFactor({
+    enabled: cfg.finishLineSizingEnabled,
+    dailyTarget,
+    equity,
+    riskPerTradePct: cfg.riskPerTradePct,
+    rewardMultiple: cfg.optionsTakeProfitPct / 100,
+  });
+
   const outcomes: LiveOptionsExecutionOutcome[] = [];
   for (const { signal } of candidates) {
     const symbol = signal.symbol.toUpperCase();
     if (skipSymbols.has(symbol)) {
       outcomes.push({ symbol, ok: false, reason: 'Already has an open live options position' });
+      continue;
+    }
+    const cooldown = cooldowns.get(symbol);
+    if (cooldown) {
+      const reason = `Symbol cooling down after ${cooldown.losses} losses since ${cooldown.lastLossDate} — resumes ${cooldown.until}`;
+      journalEntrySkipOncePerDay(symbol, 'symbol_cooldown_skipped', { ...cooldown, reason });
+      outcomes.push({ symbol, ok: false, reason });
+      continue;
+    }
+    const scoreGate = finishLineScoreGate(signal.score, dailyTarget, cfg);
+    if (scoreGate.skip) {
+      journalEntrySkipOncePerDay(symbol, 'finish_line_skipped', { score: signal.score, reason: scoreGate.detail });
+      outcomes.push({ symbol, ok: false, reason: `Armed-day selectivity: ${scoreGate.detail}` });
       continue;
     }
     const { amount: correlated } = await correlatedNotional(
@@ -773,6 +804,8 @@ export async function runLiveOptionsExecution(
       regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
       regimeSizeCutPct: cfg.regimeSizeCutPct,
       methodMultiplier: methodMultipliers[methodOfOptionsSignal(signal.side)] ?? 1,
+      finishLineFactor: finishLine.factor,
+      finishLineDetail: finishLine.detail,
     };
     const result = evaluateOptionsRiskCheck(signal, ctx);
     if (!result.ok) {
