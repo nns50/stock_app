@@ -178,7 +178,7 @@ export function Layout({ children }: { children: ReactNode }) {
             <span className="grid place-items-center h-8 w-8 rounded-lg bg-gradient-to-br from-accent to-accent-muted text-white shadow-glow">
               <CandlestickChart className="h-[18px] w-[18px]" />
             </span>
-            <span className="font-semibold tracking-tight hidden sm:inline">stock-app</span>
+            <span className="font-semibold tracking-tight hidden sm:inline">Stock Trader</span>
           </Link>
           <nav className="flex items-center gap-0.5 overflow-x-auto">
             {TABS.map((t) => (

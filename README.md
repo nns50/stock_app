@@ -1,4 +1,4 @@
-# stock-app — personal day-trading & options assistant
+# Stock Trader — personal day-trading & options assistant
 
 A local-first **decision-support and tracking** tool for day trading and options
 trading. It screens a configurable universe with transparent, rule-based

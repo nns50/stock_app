@@ -1,6 +1,6 @@
 # User Guide
 
-A practical, page-by-page guide to using **stock-app** — your personal day-trading
+A practical, page-by-page guide to using **Stock Trader** — your personal day-trading
 & options-trading assistant. This is a **decision-support and tracking** tool: it
 screens, scores, sizes, and journals so *you* can make better, more consistent
 decisions. It is **not** a signal service, it makes no predictions, and it never

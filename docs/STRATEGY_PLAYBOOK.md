@@ -1,6 +1,6 @@
 # Strategy Playbook
 
-How to use **stock-app** to trade more profitably.
+How to use **Stock Trader** to trade more profitably.
 
 A blunt truth first: **no app predicts the market, and this one explicitly doesn't
 try.** What separates traders who keep their money from those who don't is rarely a
