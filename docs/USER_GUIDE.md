@@ -1074,7 +1074,20 @@ shouldn't be a tab-switch away.
   `daily_give_back_halted` entry in Recent activity, sticky until the next ET day,
   everything else unaffected — so a green morning can't be traded all the way back to
   flat. Chop that never reaches the arm level never triggers it, and the guard runs
-  only while both levels are set with arm above floor (≥ 0). Applying a tune
+  only while both levels are set with arm above floor (≥ 0). Two optional companions
+  (2026-08-22, both off by default, live-only) reduce the chance of the fade in the
+  first place: **finish-line sizing** trims the closing trade's risk to just what
+  banks the day once the remaining gap is smaller than a full-size winner's expected
+  payoff (floored at quarter size, never sizes up — visible as the
+  `finish_line_sizing` risk-check line), and an **armed-day min signal score** holds
+  new live entries to a higher conviction bar while the guard is armed (0 = off).
+  Separately, a **symbol loss cooldown** (also 2026-08-22, off by default) gives the
+  loop a memory of losing on a name: once a symbol takes the configured number of
+  losing live trades (2+) within a rolling window of calendar days, its new live
+  entries — stock and options alike — are skipped for the cooldown period after the
+  last loss, journaled once per day (`symbol_cooldown_skipped`) and listed on the
+  Monitoring card; paper keeps trading the name as the evidence track, and exits are
+  never touched. Applying a tune
   also **arms automatic re-anchoring of the four dollar caps** (max order $ and max
   daily loss $, equity and options): equity syncs from the broker every minute, and once
   it has drifted **15%+** from the equity the tune derived those caps at, the loop

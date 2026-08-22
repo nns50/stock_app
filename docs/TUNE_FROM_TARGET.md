@@ -294,6 +294,28 @@ The floor cannot be negative — below water, the daily-loss halts already own t
 The guard runs only when **both** levels are set and coherent (`arm > floor ≥ 0`);
 clearing either turns it off, and reset-to-moderate clears both along with the goal.
 
+### Finish-line discipline — reduce the chance of the fade
+
+The guard above reacts _after_ an almost-banked day fades; two optional companion
+rules (2026-08-22, both off by default, both live-only) reduce the chance of the fade
+in the first place:
+
+- **Finish-line sizing** (`finishLineSizingEnabled`) — at +2.5% of a 3% goal, the next
+  entry doesn't need full risk: a full-size winner would overshoot the target while a
+  full-size loser gives back a third of the day. When the remaining gap to the bank
+  line is smaller than a full-size winner's expected payoff (risk × the trade's reward
+  multiple — the equity target R, or the options take-profit %), the entry's risk is
+  trimmed so its win lands the day roughly at the goal. Floored at **quarter size** so
+  the closing trade stays viable, and it **never sizes up** — behind the target the
+  tune's calibration stands, because pressing into a shortfall is the classic path to
+  ruin. The trim shows as the `finish_line_sizing` line in each entry's risk-check.
+- **Armed-day selectivity** (`finishLineMinSignalScore`) — while the give-back guard
+  is **armed**, new live entries must clear this signal score instead of the everyday
+  `minSignalScore`: the trades most likely to give an almost-banked day back are held
+  to the highest conviction bar. 0 disables; it rides the guard's arm flag, so it
+  needs the guard levels set. Skips journal once per symbol per day
+  (`finish_line_skipped`).
+
 > Same framing as everywhere else in this app: the goal is a **discipline
 > mechanism**, not a prediction. No gain is guaranteed — the tracker decides when to
 > *stop*, never whether the market will get you there.

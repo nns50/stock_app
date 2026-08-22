@@ -572,6 +572,25 @@ export interface AutotradeConfig {
    *  flat. Stamped by a tune at ~1/3 of targetDailyGainPct; must sit below
    *  giveBackArmPct or the guard stays off. */
   giveBackFloorPct: number | null;
+  /** SYMBOL LOSS COOLDOWN (services/autotrading/symbolCooldown.ts): once a
+   *  symbol has taken this many LOSING closed live trades within the trailing
+   *  symbolCooldownWindowDays calendar days, its new LIVE entries (stock and
+   *  options) are skipped until symbolCooldownDays after the last loss. 0 or
+   *  1 = off (single-loss re-entries have won — the feature exists for
+   *  REPEATED losses). Paper keeps trading the name as the evidence track. */
+  symbolCooldownLosses: number;
+  symbolCooldownWindowDays: number;
+  symbolCooldownDays: number;
+  /** FINISH-LINE SIZING (services/autotrading/finishLine.ts): when the
+   *  remaining gap to the daily bank line is smaller than a full-size
+   *  winner's expected payoff, trim the next live entry's risk so its win
+   *  lands the day at the goal (floored at quarter size; never sizes up). */
+  finishLineSizingEnabled: boolean;
+  /** SELECTIVITY RAMP: minimum signal score for new live entries while the
+   *  give-back guard is ARMED — the trades most likely to give an
+   *  almost-banked day back are held to a higher conviction bar. 0 = off;
+   *  needs the guard levels set (it rides the guard's arm flag). */
+  finishLineMinSignalScore: number;
   liveOptionsFatFingerPct: number;
   /** Mirrors liveProbationTrades/liveProbationSizeMultiplier, counted from
    *  liveOptionsEnabledAt via countLiveOptionsOrdersSince() — a fully
@@ -882,6 +901,11 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     targetDailyGainPct: null,
     giveBackArmPct: null,
     giveBackFloorPct: null,
+    symbolCooldownLosses: 0,
+    symbolCooldownWindowDays: 5,
+    symbolCooldownDays: 3,
+    finishLineSizingEnabled: false,
+    finishLineMinSignalScore: 0,
     liveOptionsFatFingerPct: 10,
     liveOptionsProbationTrades: 20,
     liveOptionsProbationSizeMultiplier: 0.5,
@@ -1124,6 +1148,13 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
         : typeof input.giveBackFloorPct === 'number' && input.giveBackFloorPct >= 0 && input.giveBackFloorPct <= 1000
           ? input.giveBackFloorPct
           : d.giveBackFloorPct,
+    // 0 (and 1 — see the field's doc comment) reads as off downstream.
+    symbolCooldownLosses: posInt(input.symbolCooldownLosses, d.symbolCooldownLosses),
+    symbolCooldownWindowDays: posIntMin1(input.symbolCooldownWindowDays, d.symbolCooldownWindowDays),
+    symbolCooldownDays: posIntMin1(input.symbolCooldownDays, d.symbolCooldownDays),
+    finishLineSizingEnabled:
+      typeof input.finishLineSizingEnabled === 'boolean' ? input.finishLineSizingEnabled : d.finishLineSizingEnabled,
+    finishLineMinSignalScore: pct(input.finishLineMinSignalScore, d.finishLineMinSignalScore),
     liveOptionsFatFingerPct: pct(input.liveOptionsFatFingerPct, d.liveOptionsFatFingerPct),
     liveOptionsProbationTrades: posInt(input.liveOptionsProbationTrades, d.liveOptionsProbationTrades),
     liveOptionsProbationSizeMultiplier: (() => {

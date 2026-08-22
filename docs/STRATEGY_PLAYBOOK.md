@@ -83,7 +83,12 @@ isn't the entry — it's that *you never enter without a written exit.*
 > chronically miss the target, lower the target or widen trade flow; don't raise risk.
 > The **give-back guard** (2026-08-22) extends the same rule to the day that *almost*
 > makes it: once the day has been up 2/3 of the goal, a fade back to 1/3 halts new
-> live entries too — keep most of a good day instead of round-tripping it.
+> live entries too — keep most of a good day instead of round-tripping it. Its
+> companions attack the fade before it happens: **finish-line sizing** trims the
+> closing trade to just what banks the day (never sizes up — pressing a shortfall is
+> how accounts die), an **armed-day score bar** holds late entries to the highest
+> conviction standard, and the **symbol loss cooldown** stops re-entering a name that
+> just stopped you out twice — the "revenge trade" rule, automated.
 
 ### 5. Review on a cadence
 

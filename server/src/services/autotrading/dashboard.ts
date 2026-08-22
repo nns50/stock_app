@@ -1,5 +1,6 @@
 import { getDailyBaseline } from '../../db/dailyBaseline';
 import { MethodStats, computeMethodPerformance } from './methodSizing';
+import { SymbolCooldownState, activeSymbolCooldowns } from './symbolCooldown';
 import { listPositions } from '../../db/positions';
 import { DailyTargetStatus, evaluateDailyTarget } from './dailyTarget';
 import { getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
@@ -91,6 +92,11 @@ export interface AutotradeDashboard {
    *  working" ledger. Present (with multiplier 1) even when method weighting
    *  is off, so the evidence is visible before anyone acts on it. */
   methodPerformance: MethodStats[];
+
+  /** Symbols currently in a loss cooldown (symbolCooldown.ts) — live entries
+   *  skipped until each `until` date. Empty when the feature is off or
+   *  nothing is cooling. */
+  symbolCooldowns: SymbolCooldownState[];
 
   /** The automated loop's most recently completed cycle — candidates
    *  screened, entries opened, exactly why it skipped, etc. Null before the
@@ -284,6 +290,7 @@ export function getAutotradeDashboard(): AutotradeDashboard {
       config,
       listLiveOptionsPositions({ status: 'closed' }),
     ),
+    symbolCooldowns: [...activeSymbolCooldowns(config).values()].sort((a, b) => a.symbol.localeCompare(b.symbol)),
     lastTick: getLastTick(),
 
     openPositions: snapshot.openPositions,
