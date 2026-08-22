@@ -359,14 +359,20 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // real risk and must respect a banked day. Reads the PREVIOUS tick's synced
     // equity (this tick's sync runs later); one tick of staleness is harmless
     // because the reach is sticky and re-measured below after the sync.
-    let dailyTarget: DailyTargetStatus = { active: false, reached: false };
+    let dailyTarget: DailyTargetStatus = {
+      active: false,
+      reached: false,
+      giveBackArmed: false,
+      giveBackHalted: false,
+      entriesHalted: false,
+    };
     try {
       dailyTarget = updateDailyTarget();
     } catch (e) {
       console.error('[autotrade-loop] daily-target check failed:', (e as Error).message);
     }
     const liveScaleInOutcomes =
-      isLiveEntryActive(getAutotradeConfig()) && !dailyTarget.reached ? await checkLiveScaleIns() : [];
+      isLiveEntryActive(getAutotradeConfig()) && !dailyTarget.entriesHalted ? await checkLiveScaleIns() : [];
     // Reconcile before checking for NEW triggers: catches up on anything an
     // earlier cycle already placed (an entry that filled, an exit that
     // filled) so a position closed by reconcile this same tick is already
@@ -475,15 +481,18 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
 
     const config = getAutotradeConfig();
     const paperActive = isPaperEntryActive(config);
-    // A banked day halts LIVE entries only: the daily-gain goal is a % of the
-    // real account's value, so paper (which has no real account) keeps
-    // trading — it stays the always-on sanity track either way.
-    const liveActive = isLiveEntryActive(config) && !dailyTarget.reached;
+    // A banked (or give-back-protected) day halts LIVE entries only: the
+    // daily-gain goal is a % of the real account's value, so paper (which has
+    // no real account) keeps trading — it stays the always-on sanity track
+    // either way.
+    const liveActive = isLiveEntryActive(config) && !dailyTarget.entriesHalted;
     if (!paperActive && !liveActive) {
       summary.skippedReason = config.killSwitch
         ? 'Kill switch is engaged — new entries halted'
-        : dailyTarget.reached && isLiveEntryActive(config)
-          ? `Daily gain target reached (+${dailyTarget.gainPct}% ≥ ${dailyTarget.targetPct}%) — live entries banked for the day`
+        : dailyTarget.entriesHalted && isLiveEntryActive(config)
+          ? dailyTarget.reached
+            ? `Daily gain target reached (+${dailyTarget.gainPct}% ≥ ${dailyTarget.targetPct}%) — live entries banked for the day`
+            : `Give-back guard fired (day gain fell back to ${dailyTarget.giveBackFloorPct}% after arming at ${dailyTarget.giveBackArmPct}%) — live entries protected for the day`
           : 'Neither paper nor live auto-trading is active';
       return summary;
     }
@@ -648,8 +657,9 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     const paperStillActive = isPaperEntryActive(recheck);
     // Same banked-day gate as `liveActive` above. dailyTarget is this tick's
     // pre-screen status — good enough for a mid-cycle recheck (the next tick
-    // re-measures), and the reach is sticky so it can't flap back on mid-cycle.
-    const liveStillActive = isLiveEntryActive(recheck) && !dailyTarget.reached;
+    // re-measures), and both halts are sticky so neither can flap back on
+    // mid-cycle.
+    const liveStillActive = isLiveEntryActive(recheck) && !dailyTarget.entriesHalted;
     const liveOptionsStillActive = isLiveOptionsEntryActive(recheck);
     if (!paperStillActive && !liveStillActive) {
       summary.skippedReason = recheck.killSwitch

@@ -1065,7 +1065,16 @@ shouldn't be a tab-switch away.
   paper all keep running. The Monitoring card shows the goal line and progress. It
   never sizes UP to chase a shortfall — behind the target, sizing stays exactly what
   the tune calibrated. **Reset to moderate** (or clearing the field) disarms it.
-  Applying a tune
+  Since 2026-08-22 a **give-back guard** protects the day that _almost_ banks: applying
+  a tune also stamps an **arm** level at 2/3 of the target and a **floor** at 1/3
+  (`giveBackArmPct` / `giveBackFloorPct` — a 3% goal arms at +2%, floors at +1%). Once
+  the day's gain has touched the arm level the guard arms (the Monitoring card shows
+  "guard armed"); if the gain then falls back to the floor, new live entries and
+  scale-ins halt for the rest of the day exactly like a banked day — one
+  `daily_give_back_halted` entry in Recent activity, sticky until the next ET day,
+  everything else unaffected — so a green morning can't be traded all the way back to
+  flat. Chop that never reaches the arm level never triggers it, and the guard runs
+  only while both levels are set with arm above floor (≥ 0). Applying a tune
   also **arms automatic re-anchoring of the four dollar caps** (max order $ and max
   daily loss $, equity and options): equity syncs from the broker every minute, and once
   it has drifted **15%+** from the equity the tune derived those caps at, the loop

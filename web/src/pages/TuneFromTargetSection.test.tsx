@@ -53,6 +53,8 @@ function previewFixture(overrides: Partial<TargetTuneResult> = {}): TargetTuneRe
     liveOptionsMaxOrdersPerDay: 6,
     liveCapsAnchorEquityUsd: 10000,
     targetDailyGainPct: 5,
+    giveBackArmPct: 3.33,
+    giveBackFloorPct: 1.67,
     optionsDeltaMin: 0.3,
     optionsDeltaMax: 0.6,
     optionsMaxSpreadPct: 10,
