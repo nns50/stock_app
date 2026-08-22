@@ -47,6 +47,8 @@ export interface PositionInput {
   marketRegime?: string | null;
   /** Market (SPY) ATR% the loop read the cycle this entry was placed. */
   marketAtrPct?: number | null;
+  /** Session VWAP at placement (2026-08-22 observer) — see the DDL comment. */
+  entryVwap?: number | null;
 }
 
 /** Why an exit happened. Stamped by autotrade's live exit materialization —
@@ -101,6 +103,7 @@ export interface Position {
   entryScore: number | null;
   marketRegime: string | null;
   marketAtrPct: number | null;
+  entryVwap: number | null;
   createdAt: number;
   updatedAt: number;
   exits: PositionExit[];
@@ -134,6 +137,7 @@ interface PositionRow {
   entry_score: number | null;
   market_regime: string | null;
   market_atr_pct: number | null;
+  entry_vwap: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -224,6 +228,7 @@ function mapPosition(row: PositionRow, exits?: PositionExit[]): Position {
     entryScore: row.entry_score ?? null,
     marketRegime: row.market_regime ?? null,
     marketAtrPct: row.market_atr_pct ?? null,
+    entryVwap: row.entry_vwap ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     exits: resolvedExits,
@@ -319,8 +324,8 @@ export function createPosition(input: PositionInput): Position {
         (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
          option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
          stop_price, target_price, source_intent_id, account_id,
-         entry_score, market_regime, market_atr_pct, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         entry_score, market_regime, market_atr_pct, entry_vwap, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       input.assetType,
@@ -346,6 +351,7 @@ export function createPosition(input: PositionInput): Position {
       input.entryScore ?? null,
       input.marketRegime ?? null,
       input.marketAtrPct ?? null,
+      input.entryVwap ?? null,
       now,
       now,
     );
@@ -528,6 +534,7 @@ export interface ImportablePosition {
   entryScore?: number | null;
   marketRegime?: string | null;
   marketAtrPct?: number | null;
+  entryVwap?: number | null;
   createdAt?: number;
   updatedAt?: number;
   exits?: ImportableExit[];
@@ -549,8 +556,8 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
        (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
         option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
         stop_price, target_price, source_intent_id, account_id,
-        entry_score, market_regime, market_atr_pct, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        entry_score, market_regime, market_atr_pct, entry_vwap, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   );
   const insertExit = db.prepare(
     `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, source_intent_id, exit_reason, created_at)
@@ -587,6 +594,7 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
         p.entryScore ?? null,
         p.marketRegime ?? null,
         p.marketAtrPct ?? null,
+        p.entryVwap ?? null,
         p.createdAt ?? now,
         p.updatedAt ?? now,
       );

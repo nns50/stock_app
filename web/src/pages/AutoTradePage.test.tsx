@@ -3424,6 +3424,7 @@ describe('AutoTradePage', () => {
         entryScore: null,
         marketRegime: null,
         marketAtrPct: null,
+        entryVwap: null,
         createdAt: Date.now(),
         updatedAt: Date.now(),
         exits: [],

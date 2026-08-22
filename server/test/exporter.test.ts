@@ -29,6 +29,7 @@ function pos(overrides: Partial<Position> = {}): Position {
     entryScore: null,
     marketRegime: null,
     marketAtrPct: null,
+    entryVwap: null,
     createdAt: 1,
     updatedAt: 1,
     exits: [
@@ -136,7 +137,7 @@ describe('positionsToCsv', () => {
       }),
     ]);
     const [header, row] = csv.split('\r\n');
-    for (const col of ['entryTime', 'entryScore', 'marketRegime', 'marketAtrPct', 'lastExitReason']) {
+    for (const col of ['entryTime', 'entryScore', 'marketRegime', 'marketAtrPct', 'entryVwap', 'lastExitReason']) {
       expect(header).toContain(col);
     }
     expect(row).toContain('09:47');

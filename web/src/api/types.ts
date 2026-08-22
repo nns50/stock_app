@@ -343,6 +343,9 @@ export interface Position {
   entryScore: number | null;
   marketRegime: string | null;
   marketAtrPct: number | null;
+  /** Session VWAP at entry (2026-08-22 observer) — evidence for a possible
+   *  future VWAP-alignment filter; null when unmeasured. */
+  entryVwap: number | null;
   createdAt: number;
   updatedAt: number;
   exits: PositionExit[];

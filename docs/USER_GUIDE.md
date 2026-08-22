@@ -767,7 +767,12 @@ trades.
   nothing about entries, sizing, or exits changes — and it flows through the CSV/JSON
   export (new `entryTime`, `entryScore`, `marketRegime`, `marketAtrPct`, and
   `lastExitReason` columns) so a month of trades can be sliced by score band, regime,
-  and session offline.
+  and session offline. Since 2026-08-22 live equity entries also stamp the day's
+  **session VWAP at entry** (`entryVwap`, in the export too) — capture-only, like the
+  rest: it exists so the journal itself can answer whether VWAP-aligned entries (longs
+  above VWAP, shorts below) actually win more *here*, before any alignment filter is
+  ever allowed to cost trade flow. Null when the intraday-bar fetch fails — never a
+  guessed number.
 
 ### Wash-sale awareness
 

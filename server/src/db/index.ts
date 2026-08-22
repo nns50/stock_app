@@ -184,6 +184,11 @@ CREATE TABLE IF NOT EXISTS ${name} (
   entry_score REAL,
   market_regime TEXT,                  -- 'risk-on' | 'neutral' | 'risk-off'
   market_atr_pct REAL,
+  -- Session VWAP at entry (2026-08-22) — an OBSERVER, stamped like the trio
+  -- above so realized outcomes can later be split by VWAP alignment BEFORE
+  -- any filter acts on it (services/autotrading/vwap.ts). Null: manual/
+  -- imported rows, rows predating the column, or a failed/unmeasurable fetch.
+  entry_vwap REAL,
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );`;
@@ -195,7 +200,7 @@ CREATE TABLE IF NOT EXISTS ${name} (
 const POSITIONS_COLS =
   'id, asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees, option_type, ' +
   'strike, expiration, multiplier, status, tags, grade, notes, checklist, stop_price, target_price, ' +
-  'source_intent_id, account_id, entry_score, market_regime, market_atr_pct, created_at, updated_at';
+  'source_intent_id, account_id, entry_score, market_regime, market_atr_pct, entry_vwap, created_at, updated_at';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS universe (
@@ -577,6 +582,7 @@ CREATE TABLE IF NOT EXISTS autotrade_live_orders (
   entry_score   REAL,
   market_regime TEXT,                 -- 'risk-on' | 'neutral' | 'risk-off'
   market_atr_pct REAL,
+  entry_vwap    REAL,                 -- session VWAP at placement (2026-08-22 observer) — see positions.entry_vwap
   created_at    INTEGER NOT NULL
 );
 
@@ -1115,6 +1121,20 @@ function migrate(): void {
   reorderStatusLeadingIndex(db, 'idx_autotrade_live_options_positions_status', 'autotrade_live_options_positions');
   reorderAutotradeEventsStageIndex(db);
 
+  // 2026-08-22: the VWAP observer's at-entry stamp (see the positions DDL
+  // comment) — on the order row at placement, carried to the position at
+  // materialization like the 2026-07-26 context trio. Runs AFTER the table
+  // rebuilds above so a rebuilt table gets the column too. Nullable: a
+  // pre-existing row simply has no VWAP context rather than an invented one.
+  const posVwapCols = db.prepare('PRAGMA table_info(positions)').all() as { name: string }[];
+  if (!posVwapCols.some((c) => c.name === 'entry_vwap')) {
+    db.exec('ALTER TABLE positions ADD COLUMN entry_vwap REAL');
+  }
+  const aloVwapCols = db.prepare('PRAGMA table_info(autotrade_live_orders)').all() as { name: string }[];
+  if (!aloVwapCols.some((c) => c.name === 'entry_vwap')) {
+    db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN entry_vwap REAL');
+  }
+
   // 2026-08-22: the daily baseline singleton gained the give-back guard's two
   // sticky timestamps (see the DDL comment). Nullable, so a pre-existing row
   // simply reads as "guard not armed/fired today".
@@ -1413,7 +1433,7 @@ export function rebuildAutotradeLiveOrdersTable(database: Database.Database): vo
   );
   const cols = (
     'intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, ' +
-    'account_id, addon_of_position_id, grade, entry_score, market_regime, market_atr_pct, created_at'
+    'account_id, addon_of_position_id, grade, entry_score, market_regime, market_atr_pct, entry_vwap, created_at'
   )
     .split(', ')
     .filter((c) => present.has(c))
@@ -1437,6 +1457,7 @@ export function rebuildAutotradeLiveOrdersTable(database: Database.Database): vo
       entry_score   REAL,
       market_regime TEXT,
       market_atr_pct REAL,
+      entry_vwap    REAL,
       created_at    INTEGER NOT NULL
     );
     INSERT INTO autotrade_live_orders (${cols})
