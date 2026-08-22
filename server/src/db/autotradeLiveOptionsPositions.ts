@@ -337,6 +337,23 @@ export function setLiveOptionsPositionAccount(id: number, accountId: string | nu
   return getLiveOptionsPosition(id);
 }
 
+/** Realized P&L of a live options position at `exitPrice` (and, for a debit
+ *  spread, `shortExitPrice`) — per-contract premium × quantity × the standard
+ *  US option multiplier of 100. Lives here (pure math on the row) so both the
+ *  execution paths and the method-performance ledger use one formula. */
+export function liveOptionsPnl(
+  p: Pick<LiveOptionsPosition, 'kind' | 'entryPrice' | 'shortEntryPrice' | 'quantity' | 'shortExitPrice'>,
+  exitPrice: number,
+  shortExitPrice: number | null = p.shortExitPrice,
+): number {
+  if (p.kind === 'debit_spread') {
+    const netDebitAtEntry = p.entryPrice - (p.shortEntryPrice ?? 0);
+    const netCreditAtExit = exitPrice - (shortExitPrice ?? 0);
+    return (netCreditAtExit - netDebitAtEntry) * p.quantity * 100;
+  }
+  return (exitPrice - p.entryPrice) * p.quantity * 100;
+}
+
 /** True if `symbol` (the underlying) already has an open live options
  *  position — mirrors autotradeOptionsPaperPositions.ts's own idempotency
  *  check, per-underlying not per-contract. */

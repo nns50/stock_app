@@ -56,7 +56,7 @@ import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 // live budget can fold in the options book without a liveExecute <-> options
 // service import cycle.
 import { pendingLiveOptionsOrdersRisk } from '../../db/autotradeLiveOptionsOrders';
-import { listOpenLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
+import { listLiveOptionsPositions, listOpenLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
 import type { LiveOptionsRiskSeed } from './liveOptionsExecute';
 import {
   createPosition,
@@ -288,7 +288,11 @@ export function getLivePortfolioSnapshot(): LivePortfolioSnapshot {
     tradesToday,
     equityCurveDeriskActive,
     gradeExpectancyMultipliers,
-    methodMultipliers: computeMethodMultipliers(closedAutotrade, config),
+    methodMultipliers: computeMethodMultipliers(
+      closedAutotrade,
+      config,
+      listLiveOptionsPositions({ status: 'closed' }),
+    ),
   };
 }
 

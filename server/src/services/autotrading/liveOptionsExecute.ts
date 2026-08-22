@@ -40,6 +40,7 @@ import {
   LiveOptionsOrderMeta,
 } from '../../db/autotradeLiveOptionsOrders';
 import {
+  liveOptionsPnl,
   hasOpenLiveOptionsPosition,
   listOpenLiveOptionsPositions,
   listLiveOptionsPositions,
@@ -184,18 +185,6 @@ function etDateStr(ms: number = Date.now()): string {
  *  optionsExecute.ts's own optionsPnl(), duplicated rather than imported
  *  since it's keyed off LiveOptionsPosition, a distinct (if structurally
  *  similar) type from OptionsPaperPosition. */
-function liveOptionsPnl(
-  p: LiveOptionsPosition,
-  exitPrice: number,
-  shortExitPrice: number | null = p.shortExitPrice,
-): number {
-  if (p.kind === 'debit_spread') {
-    const netDebitAtEntry = p.entryPrice - (p.shortEntryPrice ?? 0);
-    const netCreditAtExit = exitPrice - (shortExitPrice ?? 0);
-    return (netCreditAtExit - netDebitAtEntry) * p.quantity * 100;
-  }
-  return (exitPrice - p.entryPrice) * p.quantity * 100;
-}
 
 export interface LiveOptionsPortfolioSnapshot {
   today: string;

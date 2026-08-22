@@ -1,7 +1,9 @@
 import { Position, listPositions } from '../../db/positions';
+import { LiveOptionsPosition, listLiveOptionsPositions, liveOptionsPnl } from '../../db/autotradeLiveOptionsPositions';
 import { AutotradeConfig } from '../../db/autotradeConfig';
 import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { initialRiskOf, realizedPnlOf, lastExitDate } from '../pnl';
+import { etToday } from '../../util/marketDate';
 
 // ---------------------------------------------------------------------------
 // Method-weighted sizing (2026-08-21). The operator's directive, verbatim in
@@ -28,10 +30,17 @@ import { initialRiskOf, realizedPnlOf, lastExitDate } from '../pnl';
 // that shouldn't outvote the current one forever.
 //
 // Methods are the four the journal can classify unambiguously: stock_long,
-// stock_short, option_call, option_put. A debit spread's journal record rides
-// with its long leg's side (option_call/option_put) — its per-leg structure
-// isn't recoverable from the journal row, and for lean purposes "bullish
-// premium" vs "bearish premium" is the axis that matters.
+// stock_short, option_call, option_put. A debit spread rides with its long
+// leg's side (option_call/option_put) — for lean purposes "bullish premium"
+// vs "bearish premium" is the axis that matters.
+//
+// TWO sources, because the loop's books split (found live 2026-08-22: the
+// SRAD live options trade journaled as an untagged sync import, so a
+// journal-only ledger would have left the calls/puts buckets empty forever):
+//   - journal positions tagged 'autotrade' — the loop's STOCK trades, R from
+//     entry-vs-stop distance (initialRiskOf);
+//   - the LIVE OPTIONS book's own closed rows — the loop's calls/puts, R from
+//     riskAmount (the premium paid IS the defined-risk 1R of a long option).
 // ---------------------------------------------------------------------------
 
 export type TradeMethod = 'stock_long' | 'stock_short' | 'option_call' | 'option_put';
@@ -71,18 +80,33 @@ export interface MethodStats {
 /** {method, realizedR} rows for the recent window, newest first per method.
  *  Undated or risk-less trades are dropped, mirroring every other realized-R
  *  consumer (a trade with no initial risk has no R to learn from). */
-function recentMethodTrades(closed: Position[]): { method: TradeMethod; realizedR: number }[] {
+function recentMethodTrades(
+  closed: Position[],
+  liveOptionsClosed: LiveOptionsPosition[] = [],
+): { method: TradeMethod; realizedR: number }[] {
   const byMethod = new Map<TradeMethod, { date: string; realizedR: number }[]>();
+  const push = (method: TradeMethod, row: { date: string; realizedR: number }) => {
+    const arr = byMethod.get(method);
+    if (arr) arr.push(row);
+    else byMethod.set(method, [row]);
+  };
   for (const p of closed) {
     const method = methodOf(p);
     if (!method) continue;
     const risk = initialRiskOf(p);
     const date = lastExitDate(p);
     if (!risk || risk <= 0 || !date) continue;
-    const row = { date, realizedR: realizedPnlOf(p) / risk };
-    const arr = byMethod.get(method);
-    if (arr) arr.push(row);
-    else byMethod.set(method, [row]);
+    push(method, { date, realizedR: realizedPnlOf(p) / risk });
+  }
+  for (const p of liveOptionsClosed) {
+    // riskAmount is the premium paid — the defined-risk 1R of a long option
+    // (or net debit of a spread). A row with no usable exit or risk is
+    // dropped, same discipline as above.
+    if (p.status !== 'closed' || p.exitPrice === null || p.exitAt === null || !(p.riskAmount > 0)) continue;
+    push(p.side === 'call' ? 'option_call' : 'option_put', {
+      date: etToday(p.exitAt),
+      realizedR: liveOptionsPnl(p, p.exitPrice) / p.riskAmount,
+    });
   }
   const out: { method: TradeMethod; realizedR: number }[] = [];
   for (const [method, rows] of byMethod) {
@@ -104,9 +128,10 @@ export function computeMethodMultipliers(
     AutotradeConfig,
     'methodWeightingEnabled' | 'expectancyMinTrades' | 'expectancyMinMultiplier' | 'expectancyMaxMultiplier'
   >,
+  liveOptionsClosed: LiveOptionsPosition[] = [],
 ): Record<string, number> {
   return computeGradeExpectancyMultipliers(
-    recentMethodTrades(closed).map((t) => ({ grade: t.method, realizedR: t.realizedR })),
+    recentMethodTrades(closed, liveOptionsClosed).map((t) => ({ grade: t.method, realizedR: t.realizedR })),
     {
       enabled: cfg.methodWeightingEnabled,
       minTrades: cfg.expectancyMinTrades,
@@ -127,14 +152,18 @@ export function journalMethodMultipliers(
 ): Record<string, number> {
   if (!cfg.methodWeightingEnabled) return {};
   const closed = listPositions({ status: 'closed' }).filter((p) => p.tags.includes('autotrade'));
-  return computeMethodMultipliers(closed, cfg);
+  return computeMethodMultipliers(closed, cfg, listLiveOptionsPositions({ status: 'closed' }));
 }
 
 /** Per-method performance for the dashboard — every bucket that has ANY
  *  recent trades, with the multiplier currently in force. */
-export function computeMethodPerformance(closed: Position[], cfg: AutotradeConfig): MethodStats[] {
-  const trades = recentMethodTrades(closed);
-  const multipliers = computeMethodMultipliers(closed, cfg);
+export function computeMethodPerformance(
+  closed: Position[],
+  cfg: AutotradeConfig,
+  liveOptionsClosed: LiveOptionsPosition[] = [],
+): MethodStats[] {
+  const trades = recentMethodTrades(closed, liveOptionsClosed);
+  const multipliers = computeMethodMultipliers(closed, cfg, liveOptionsClosed);
   const byMethod = new Map<TradeMethod, number[]>();
   for (const t of trades) {
     const arr = byMethod.get(t.method);
