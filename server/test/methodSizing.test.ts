@@ -113,6 +113,65 @@ describe('computeMethodMultipliers', () => {
   });
 });
 
+describe('live options book as a ledger source', () => {
+  // Found live (2026-08-22): live options trades never journal with the
+  // autotrade tag — the SRAD put journaled as an untagged sync import — so a
+  // journal-only ledger left calls/puts empty forever. The live options
+  // book's own closed rows carry everything needed: riskAmount is the premium
+  // paid, the defined-risk 1R of a long option.
+  const closedLiveOption = (
+    over: Partial<import('../src/db/autotradeLiveOptionsPositions').LiveOptionsPosition> = {},
+  ) =>
+    ({
+      id: ++idSeq,
+      symbol: 'SRAD',
+      side: 'put',
+      kind: 'single_leg',
+      contractSymbol: 'SRAD-fixture',
+      strike: 20,
+      shortStrike: null,
+      expiration: '2026-09-18',
+      quantity: 1,
+      entryPrice: 1,
+      shortEntryPrice: null,
+      riskAmount: 100,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+      status: 'closed',
+      exitPrice: 0.5,
+      shortExitPrice: null,
+      exitAt: Date.parse('2026-08-21T14:00:00Z'),
+      exitReason: 'stop',
+      openedAt: 0,
+      updatedAt: 0,
+      ...over,
+    }) as import('../src/db/autotradeLiveOptionsPositions').LiveOptionsPosition;
+
+  it('feeds calls/puts from the live options book — premium paid is 1R', () => {
+    // exit 0.5 from entry 1 on 1 contract = -\$50 on \$100 risk = -0.5R, x3.
+    const opts = [closedLiveOption(), closedLiveOption(), closedLiveOption()];
+    const m = computeMethodMultipliers([], cfgOn, opts);
+    expect(m.option_put).toBe(0.5); // clamp(1 - 0.5, 0.5, 1.5)
+    const perf = computeMethodPerformance([], cfgOn as never, opts);
+    expect(perf[0]).toMatchObject({ method: 'option_put', n: 3, wins: 0, avgR: -0.5, multiplier: 0.5 });
+  });
+
+  it('drops unusable rows (open, exitless, or risk-free) rather than guessing', () => {
+    const bad = [
+      closedLiveOption({ status: 'open' }),
+      closedLiveOption({ exitPrice: null }),
+      closedLiveOption({ riskAmount: 0 }),
+    ];
+    expect(computeMethodPerformance([], cfgOn as never, bad)).toEqual([]);
+  });
+
+  it('merges both sources into one ledger', () => {
+    const perf = computeMethodPerformance([closed(), closed(), closed()], cfgOn as never, [closedLiveOption()]);
+    const methods = perf.map((p) => p.method).sort();
+    expect(methods).toEqual(['option_put', 'stock_long']);
+  });
+});
+
 describe('computeMethodPerformance (dashboard)', () => {
   it('reports every traded bucket with its record and the multiplier in force', () => {
     const trades = [closed(), closed(), closed(), closed({ assetType: 'option', optionType: 'call', exitPrice: 95 })];

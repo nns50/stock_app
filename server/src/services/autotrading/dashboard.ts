@@ -9,7 +9,7 @@ import { Position } from '../../db/positions';
 import { getPaperPortfolioSnapshot } from './execute';
 import { getOptionsPaperPortfolioSnapshot } from './optionsExecute';
 import { getLivePortfolioSnapshot, getProbationStatus, ProbationStatus } from './liveExecute';
-import { LiveOptionsPosition } from '../../db/autotradeLiveOptionsPositions';
+import { listLiveOptionsPositions, LiveOptionsPosition } from '../../db/autotradeLiveOptionsPositions';
 import { getLiveOptionsPortfolioSnapshot, getOptionsProbationStatus } from './liveOptionsExecute';
 import { buildSectorOf } from './riskCheck';
 import { computeExposure, ExposureSlice, ExposureInput } from '../exposure';
@@ -282,6 +282,7 @@ export function getAutotradeDashboard(): AutotradeDashboard {
     methodPerformance: computeMethodPerformance(
       listPositions({ status: 'closed' }).filter((p) => p.tags.includes('autotrade')),
       config,
+      listLiveOptionsPositions({ status: 'closed' }),
     ),
     lastTick: getLastTick(),
 

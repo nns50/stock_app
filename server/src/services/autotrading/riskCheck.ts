@@ -10,6 +10,7 @@ import { getMarketAtrPct } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
 import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
+import { listLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
 import { TradeSignal, convictionGrade } from './decide';
 
 // ---------------------------------------------------------------------------
@@ -169,7 +170,11 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
     },
   );
 
-  const methodMultipliers = computeMethodMultipliers(closedPositions, cfg);
+  const methodMultipliers = computeMethodMultipliers(
+    closedPositions,
+    cfg,
+    listLiveOptionsPositions({ status: 'closed' }),
+  );
 
   const tradesToday = listAutotradeEvents({ stage: 'execution', limit: 1000 }).filter(
     (e) => e.action === 'order_placed' && etDateStr(e.createdAt) === todayStr,
