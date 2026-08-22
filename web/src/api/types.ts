@@ -1554,6 +1554,11 @@ export interface AutotradeConfig {
   /** Min signal score for new live entries while the give-back guard is
    *  armed. 0 = off. */
   finishLineMinSignalScore: number;
+  /** Intraday stagnation exit: a live equity position under the R-progress
+   *  bar after this many minutes (regular session only) is scratched to free
+   *  its slot. 0 = off. */
+  stagnationExitMinutes: number;
+  stagnationExitMinR: number;
   liveOptionsFatFingerPct: number;
   liveOptionsProbationTrades: number;
   liveOptionsProbationSizeMultiplier: number;

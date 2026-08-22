@@ -1291,7 +1291,18 @@ shouldn't be a tab-switch away.
   position keeps its stop and the close is retried next cycle (and journaled, so it
   reaches the [unresolved-order alert](#auto-trade)). This is deliberately the safe
   direction: a close placed alongside a stop that's still working can fill twice,
-  which for a long leaves you **short**. Five more fields manage an
+  which for a long leaves you **short**. Its intraday sibling is the **stagnation
+  exit** (2026-08-22, live equity only, default off): a position that has made less
+  than the configured **R progress** after the configured **minutes** — evaluated only
+  while the regular session is open — is scratched at market through the same
+  careful cancel-bracket-then-close path, freeing its concurrent-position slot and
+  its share of the open-risk budget for fresh signals (the journal showed two
+  stalled positions once blocking ~1,000 candidate checks in two hours). Progress is
+  measured against the trade's own stop distance, a slow *bleeder* below the bar is
+  recycled too, and a position with no stop is never scratched on a guess. Every
+  scratch journals its held time and R (`live_time_exit_placed` with
+  `trigger: "stagnation"`), so you can audit whether it's cutting losers or
+  winners. Five more fields manage an
   already-open **paper or backtest** equity position the same way a discretionary
   trader might (**live positions are untouched — still a fixed stop/target for
   life**): **breakeven trigger** (once unrealized gain reaches this many R, move the

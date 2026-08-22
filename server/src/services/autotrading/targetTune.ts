@@ -363,6 +363,8 @@ export const NEVER_TUNED_KEYS = [
   'symbolCooldownDays',
   'finishLineSizingEnabled',
   'finishLineMinSignalScore',
+  'stagnationExitMinutes',
+  'stagnationExitMinR',
   'maxAdvParticipationPct',
   'convictionGradeAMinScore',
   'convictionGradeBMinScore',
