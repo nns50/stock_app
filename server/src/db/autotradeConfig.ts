@@ -560,6 +560,18 @@ export interface AutotradeConfig {
    *  next day's value (daily compounding of the goal, not of the risk).
    *  Null = no goal tracking (the tune is calibration only, pre-2026-08 behavior). */
   targetDailyGainPct: number | null;
+  /** GIVE-BACK GUARD arm level, as a day-gain % of the day-start value: once
+   *  the day has been up at least this much, the guard arms — protect the
+   *  almost-banked day (services/autotrading/dailyTarget.ts). Stamped by a
+   *  tune at ~2/3 of targetDailyGainPct. Null (or no floor below) = guard off. */
+  giveBackArmPct: number | null;
+  /** GIVE-BACK GUARD floor: after arming, if the day's gain falls back to
+   *  this % or lower, NEW live entries and scale-ins halt for the rest of the
+   *  ET day (sticky, same as a reached target — exits/paper keep running).
+   *  Keeps most of a good day instead of letting the loop trade it back to
+   *  flat. Stamped by a tune at ~1/3 of targetDailyGainPct; must sit below
+   *  giveBackArmPct or the guard stays off. */
+  giveBackFloorPct: number | null;
   liveOptionsFatFingerPct: number;
   /** Mirrors liveProbationTrades/liveProbationSizeMultiplier, counted from
    *  liveOptionsEnabledAt via countLiveOptionsOrdersSince() — a fully
@@ -868,6 +880,8 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveOptionsMaxOrdersPerDay: DEFAULT_LIVE_MAX_ORDERS_PER_DAY,
     liveCapsAnchorEquityUsd: null,
     targetDailyGainPct: null,
+    giveBackArmPct: null,
+    giveBackFloorPct: null,
     liveOptionsFatFingerPct: 10,
     liveOptionsProbationTrades: 20,
     liveOptionsProbationSizeMultiplier: 0.5,
@@ -1092,6 +1106,24 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
             input.targetDailyGainPct <= 1000
           ? input.targetDailyGainPct
           : d.targetDailyGainPct,
+    // Same null-or-bounded shape as targetDailyGainPct (they are levels on the
+    // same day-gain axis). The floor additionally allows 0 — "halt if an armed
+    // day falls all the way back to flat" is a legitimate floor. The arm>floor
+    // ordering is enforced where the guard is EVALUATED (dailyTarget.ts), not
+    // here: sanitize sees one field at a time and a partial update must not
+    // silently rewrite the other one.
+    giveBackArmPct:
+      input.giveBackArmPct === null
+        ? null
+        : typeof input.giveBackArmPct === 'number' && input.giveBackArmPct > 0 && input.giveBackArmPct <= 1000
+          ? input.giveBackArmPct
+          : d.giveBackArmPct,
+    giveBackFloorPct:
+      input.giveBackFloorPct === null
+        ? null
+        : typeof input.giveBackFloorPct === 'number' && input.giveBackFloorPct >= 0 && input.giveBackFloorPct <= 1000
+          ? input.giveBackFloorPct
+          : d.giveBackFloorPct,
     liveOptionsFatFingerPct: pct(input.liveOptionsFatFingerPct, d.liveOptionsFatFingerPct),
     liveOptionsProbationTrades: posInt(input.liveOptionsProbationTrades, d.liveOptionsProbationTrades),
     liveOptionsProbationSizeMultiplier: (() => {

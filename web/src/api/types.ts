@@ -1536,6 +1536,12 @@ export interface AutotradeConfig {
   /** The live daily-gain goal (% of the day's starting account value); null =
    *  goal tracking off. Stamped by tune applies. */
   targetDailyGainPct: number | null;
+  /** Give-back guard levels on the same day-gain axis: once the day has been
+   *  up ≥ arm %, a fade back to ≤ floor % halts new live entries for the rest
+   *  of the day. Stamped by tune applies at 2/3 and 1/3 of the target; the
+   *  guard runs only when both are set and arm > floor ≥ 0. */
+  giveBackArmPct: number | null;
+  giveBackFloorPct: number | null;
   liveOptionsFatFingerPct: number;
   liveOptionsProbationTrades: number;
   liveOptionsProbationSizeMultiplier: number;
@@ -1638,6 +1644,8 @@ export type TunablePatch = Pick<
   | 'liveMaxOrdersPerDay'
   | 'liveCapsAnchorEquityUsd'
   | 'targetDailyGainPct'
+  | 'giveBackArmPct'
+  | 'giveBackFloorPct'
   | 'liveOptionsMaxOrderUsd'
   | 'liveOptionsMaxDailyLossUsd'
   | 'liveOptionsMaxOrdersPerDay'
@@ -2317,6 +2325,15 @@ export interface DailyTargetStatus {
   gainPct?: number;
   reached: boolean;
   reachedAt?: number | null;
+  /** Give-back guard: armed once the day's gain touches the arm level, halted
+   *  (sticky, like reached) if it then fades back to the floor. */
+  giveBackArmed: boolean;
+  giveBackHalted: boolean;
+  giveBackArmPct?: number;
+  giveBackFloorPct?: number;
+  giveBackHaltedAt?: number | null;
+  /** reached || giveBackHalted — the flag that halts new live entries. */
+  entriesHalted: boolean;
 }
 
 export interface AutotradeDashboard {

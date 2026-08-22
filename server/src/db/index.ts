@@ -334,7 +334,12 @@ CREATE TABLE IF NOT EXISTS autotrade_daily_baseline (
   id          INTEGER PRIMARY KEY CHECK(id = 1),   -- singleton row
   et_date     TEXT NOT NULL,           -- YYYY-MM-DD in America/New_York
   equity_usd  REAL NOT NULL,           -- synced equity at the day's first tick
-  reached_at  INTEGER                  -- epoch ms the target was first reached today, or NULL
+  reached_at  INTEGER,                 -- epoch ms the target was first reached today, or NULL
+  -- Give-back guard (dailyTarget.ts): armed when the day's gain first touches
+  -- the arm level, fired (= live entries halted, sticky like reached_at) if an
+  -- ARMED day then falls back to the floor. Both clear on the day roll.
+  give_back_armed_at   INTEGER,        -- epoch ms the guard armed today, or NULL
+  give_back_halted_at  INTEGER         -- epoch ms the guard fired today, or NULL
 );
 
 CREATE TABLE IF NOT EXISTS autotrade_exclusions (
@@ -1109,6 +1114,17 @@ function migrate(): void {
   reorderStatusLeadingIndex(db, 'idx_autotrade_options_paper_positions_status', 'autotrade_options_paper_positions');
   reorderStatusLeadingIndex(db, 'idx_autotrade_live_options_positions_status', 'autotrade_live_options_positions');
   reorderAutotradeEventsStageIndex(db);
+
+  // 2026-08-22: the daily baseline singleton gained the give-back guard's two
+  // sticky timestamps (see the DDL comment). Nullable, so a pre-existing row
+  // simply reads as "guard not armed/fired today".
+  const adbCols = db.prepare('PRAGMA table_info(autotrade_daily_baseline)').all() as { name: string }[];
+  if (!adbCols.some((c) => c.name === 'give_back_armed_at')) {
+    db.exec('ALTER TABLE autotrade_daily_baseline ADD COLUMN give_back_armed_at INTEGER');
+  }
+  if (!adbCols.some((c) => c.name === 'give_back_halted_at')) {
+    db.exec('ALTER TABLE autotrade_daily_baseline ADD COLUMN give_back_halted_at INTEGER');
+  }
 }
 
 /**

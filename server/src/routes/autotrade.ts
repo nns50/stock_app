@@ -231,6 +231,11 @@ const configBody = z.object({
   /** The live daily-gain goal (% of the day's starting account value) —
    *  stamped by tune applies; null disarms the tracker. */
   targetDailyGainPct: z.number().positive().max(1000).nullable().optional(),
+  /** Give-back guard levels on the same day-gain axis — stamped by tune
+   *  applies at 2/3 and 1/3 of the target; the guard runs only when both are
+   *  set and arm > floor ≥ 0 (services/autotrading/dailyTarget.ts). */
+  giveBackArmPct: z.number().positive().max(1000).nullable().optional(),
+  giveBackFloorPct: z.number().min(0).max(1000).nullable().optional(),
   liveOptionsFatFingerPct: z.number().min(0).max(100).optional(),
   liveOptionsProbationTrades: z.number().int().nonnegative().optional(),
   liveOptionsProbationSizeMultiplier: z.number().positive().max(1).optional(),
@@ -431,6 +436,8 @@ autotradeRouter.put(
     }
     if (body.liveCapsAnchorEquityUsd !== undefined) patch.liveCapsAnchorEquityUsd = body.liveCapsAnchorEquityUsd;
     if (body.targetDailyGainPct !== undefined) patch.targetDailyGainPct = body.targetDailyGainPct;
+    if (body.giveBackArmPct !== undefined) patch.giveBackArmPct = body.giveBackArmPct;
+    if (body.giveBackFloorPct !== undefined) patch.giveBackFloorPct = body.giveBackFloorPct;
     if (body.liveOptionsFatFingerPct !== undefined) patch.liveOptionsFatFingerPct = body.liveOptionsFatFingerPct;
     if (body.liveOptionsProbationTrades !== undefined) {
       patch.liveOptionsProbationTrades = body.liveOptionsProbationTrades;

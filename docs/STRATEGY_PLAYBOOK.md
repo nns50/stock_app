@@ -81,6 +81,9 @@ isn't the entry — it's that *you never enter without a written exit.*
 > the same discipline as a stop, pointed the other way: a green day given back in the
 > afternoon is a loss you chose. It never sizes up to chase a shortfall — if days
 > chronically miss the target, lower the target or widen trade flow; don't raise risk.
+> The **give-back guard** (2026-08-22) extends the same rule to the day that *almost*
+> makes it: once the day has been up 2/3 of the goal, a fade back to 1/3 halts new
+> live entries too — keep most of a good day instead of round-tripping it.
 
 ### 5. Review on a cadence
 

@@ -1,5 +1,12 @@
 import { AutotradeConfig, getAutotradeConfig } from '../../db/autotradeConfig';
-import { DailyBaseline, getDailyBaseline, markDailyTargetReached, saveDailyBaseline } from '../../db/dailyBaseline';
+import {
+  DailyBaseline,
+  getDailyBaseline,
+  markDailyTargetReached,
+  markGiveBackArmed,
+  markGiveBackHalted,
+  saveDailyBaseline,
+} from '../../db/dailyBaseline';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { etToday } from '../../util/marketDate';
 
@@ -28,6 +35,23 @@ import { etToday } from '../../util/marketDate';
 // re-opening entries on a dip would spend the banked day chasing it back, and
 // a flapping gate would churn entries around the threshold.
 //
+// THE GIVE-BACK GUARD (2026-08-22) covers the day the target protects least:
+// the one that ALMOST made it. Without it, a day that runs to +2.9% of a 3%
+// goal has no floor at all — the loop keeps opening entries on the way back
+// down and can round-trip the whole gain (the halts that do exist all key off
+// LOSSES from zero, not give-back from a high). Two config levels, both on
+// the same day-gain axis as the target and stamped by the tune at 2/3 and 1/3
+// of it: once the day's gain touches giveBackArmPct the guard ARMS (sticky —
+// a fade doesn't disarm); if an armed day's gain then falls back to
+// giveBackFloorPct or below, new live entries and scale-ins halt for the rest
+// of the day, exactly like a reached target (journaled once as
+// daily_give_back_halted; exits and paper keep running; the next ET day
+// starts clean). Arm-then-floor rather than a plain trailing stop on equity
+// so an ordinary morning chop below +1% can't lock the day out before it ever
+// had a gain worth protecting. The guard only halts ABOVE water — the floor
+// can't be negative — because below water the daily-loss halts already own
+// the day.
+//
 // Equity-based, including unrealized, and including anything the human does
 // manually in the same account — deliberately. The goal is on the ACCOUNT'S
 // value ("take the account value of the day and get the set percentage return
@@ -42,8 +66,10 @@ import { etToday } from '../../util/marketDate';
 // which the tune's bands already control.
 //
 // Null targetDailyGainPct = tracking off entirely (calibration-only tune, the
-// pre-2026-08 behavior). The baseline is still maintained — it costs one row
-// write per day and the dashboard can show "today so far" regardless.
+// pre-2026-08 behavior), and the guard rides the same switch — with no goal
+// there is no day-gain axis to put its levels on. The baseline is still
+// maintained — it costs one row write per day and the dashboard can show
+// "today so far" regardless.
 // ---------------------------------------------------------------------------
 
 export interface DailyTargetStatus {
@@ -60,33 +86,76 @@ export interface DailyTargetStatus {
   /** Day gain so far as a % of the baseline (can be negative). */
   gainPct?: number;
   /** True once the target has been reached TODAY — sticky for the rest of the
-   *  ET day; this is what halts new live entries. */
+   *  ET day. */
   reached: boolean;
   /** Epoch ms of the first reach today, from the persisted baseline row. */
   reachedAt?: number | null;
+  /** True once the give-back guard has ARMED today (day gain touched
+   *  giveBackArmPct) — sticky; always false while the guard is unconfigured. */
+  giveBackArmed: boolean;
+  /** True once the guard has FIRED today (an armed day's gain fell back to
+   *  giveBackFloorPct) — sticky, and one of the two entriesHalted reasons. */
+  giveBackHalted: boolean;
+  /** The configured levels, echoed only when the guard is configured and
+   *  coherent (arm > floor ≥ 0). */
+  giveBackArmPct?: number;
+  giveBackFloorPct?: number;
+  /** Epoch ms the guard fired today, from the persisted baseline row. */
+  giveBackHaltedAt?: number | null;
+  /** THE flag the loop's live entry/scale-in gates read: the day is done for
+   *  new real risk, either banked (reached) or protected (giveBackHalted). */
+  entriesHalted: boolean;
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
+/** The guard needs BOTH levels, coherent: arm above floor, floor at or above
+ *  water (see the header for why negative floors belong to the loss halts). */
+function giveBackLevels(
+  cfg: Pick<AutotradeConfig, 'giveBackArmPct' | 'giveBackFloorPct'>,
+): { armPct: number; floorPct: number } | null {
+  const { giveBackArmPct: arm, giveBackFloorPct: floor } = cfg;
+  if (arm === null || floor === null || !(arm > 0) || !(floor >= 0) || !(floor < arm)) return null;
+  return { armPct: arm, floorPct: floor };
+}
+
 /** Pure evaluation — all I/O stays in updateDailyTarget. */
 export function evaluateDailyTarget(
-  cfg: Pick<AutotradeConfig, 'targetDailyGainPct' | 'accountEquityUsd'>,
+  cfg: Pick<AutotradeConfig, 'targetDailyGainPct' | 'accountEquityUsd' | 'giveBackArmPct' | 'giveBackFloorPct'>,
   baseline: DailyBaseline | null,
 ): DailyTargetStatus {
+  const inactive = (reason: string): DailyTargetStatus => ({
+    active: false,
+    reached: false,
+    giveBackArmed: false,
+    giveBackHalted: false,
+    entriesHalted: false,
+    inactiveReason: reason,
+  });
   if (cfg.targetDailyGainPct === null || !(cfg.targetDailyGainPct > 0)) {
-    return { active: false, reached: false, inactiveReason: 'no daily-gain target set (apply a tune to set one)' };
+    return inactive('no daily-gain target set (apply a tune to set one)');
   }
   const equity = cfg.accountEquityUsd;
   if (equity === null || !(equity > 0)) {
-    return { active: false, reached: false, inactiveReason: 'no usable account equity to measure against' };
+    return inactive('no usable account equity to measure against');
   }
   if (!baseline || !(baseline.equityUsd > 0)) {
-    return { active: false, reached: false, inactiveReason: 'no day-start baseline captured yet' };
+    return inactive('no day-start baseline captured yet');
   }
   const targetEquityUsd = round2(baseline.equityUsd * (1 + cfg.targetDailyGainPct / 100));
-  const gainPct = round2(((equity - baseline.equityUsd) / baseline.equityUsd) * 100);
+  // Unrounded for the threshold comparisons; rounded only for display.
+  const rawGainPct = ((equity - baseline.equityUsd) / baseline.equityUsd) * 100;
+  const gainPct = round2(rawGainPct);
   // Sticky: a recorded reach holds for the day even if equity slips back.
   const reached = baseline.reachedAt !== null || equity >= targetEquityUsd;
+  const levels = giveBackLevels(cfg);
+  const giveBackArmed = baseline.giveBackArmedAt !== null || (levels !== null && rawGainPct >= levels.armPct);
+  // Fires only on an armed, not-yet-banked day — once reached, entries are
+  // already halted and a second halt would just double-journal the same day.
+  // Sticky via the persisted timestamp, same as the reach.
+  const giveBackHalted =
+    baseline.giveBackHaltedAt !== null ||
+    (levels !== null && giveBackArmed && !reached && rawGainPct <= levels.floorPct);
   return {
     active: true,
     targetPct: cfg.targetDailyGainPct,
@@ -96,15 +165,21 @@ export function evaluateDailyTarget(
     gainPct,
     reached,
     reachedAt: baseline.reachedAt,
+    giveBackArmed,
+    giveBackHalted,
+    ...(levels !== null ? { giveBackArmPct: levels.armPct, giveBackFloorPct: levels.floorPct } : {}),
+    giveBackHaltedAt: baseline.giveBackHaltedAt,
+    entriesHalted: reached || giveBackHalted,
   };
 }
 
 /**
  * Per-tick entry point (loop.ts, right after the equity sync so it sees this
  * tick's number): roll the baseline on a new ET day, evaluate the goal, and on
- * the FIRST reach of the day persist the flag and journal one event. Returns
- * the status the tick's entry gates read. Never throws to the caller beyond
- * what the DB itself throws — the loop wraps it like every other stage.
+ * the FIRST reach (or give-back fire) of the day persist the flag and journal
+ * one event. Returns the status the tick's entry gates read. Never throws to
+ * the caller beyond what the DB itself throws — the loop wraps it like every
+ * other stage.
  */
 export function updateDailyTarget(now: number = Date.now()): DailyTargetStatus {
   const cfg = getAutotradeConfig();
@@ -138,6 +213,30 @@ export function updateDailyTarget(now: number = Date.now()): DailyTargetStatus {
         currentEquityUsd: status.currentEquityUsd,
         gainPct: status.gainPct,
         note: 'day banked — new live entries and scale-ins halted until the next ET day',
+      },
+      riskProfile: cfg.riskProfile,
+    });
+  }
+  // Persist the guard's arming silently (the dashboard shows it; an event per
+  // arm would be noise on every decent morning) …
+  if (status.active && status.giveBackArmed && baseline && baseline.giveBackArmedAt === null) {
+    markGiveBackArmed(now);
+  }
+  // … but a FIRE is a halt, and halts journal — once, guarded by the
+  // persisted timestamp exactly like the reach above.
+  if (status.active && status.giveBackHalted && baseline && baseline.giveBackHaltedAt === null) {
+    markGiveBackHalted(now);
+    status.giveBackHaltedAt = now;
+    logAutotradeEvent({
+      stage: 'execution',
+      action: 'daily_give_back_halted',
+      detail: {
+        giveBackArmPct: status.giveBackArmPct,
+        giveBackFloorPct: status.giveBackFloorPct,
+        baselineEquityUsd: status.baselineEquityUsd,
+        currentEquityUsd: status.currentEquityUsd,
+        gainPct: status.gainPct,
+        note: 'day gain fell back to the give-back floor after arming — new live entries and scale-ins halted until the next ET day',
       },
       riskProfile: cfg.riskProfile,
     });

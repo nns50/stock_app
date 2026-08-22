@@ -278,6 +278,8 @@ export type TunablePatch = Pick<
   | 'liveMaxOrdersPerDay'
   | 'liveCapsAnchorEquityUsd'
   | 'targetDailyGainPct'
+  | 'giveBackArmPct'
+  | 'giveBackFloorPct'
   | 'liveOptionsMaxOrderUsd'
   | 'liveOptionsMaxDailyLossUsd'
   | 'liveOptionsMaxOrdersPerDay'
@@ -459,6 +461,12 @@ function shapeToPatch(
     // has grown by this %. Null (reset-to-moderate) declares no goal, which
     // disarms the tracker.
     targetDailyGainPct,
+    // The give-back guard rides the same dial: arm once the day is 2/3 of the
+    // way to the goal, halt new entries if it then fades back to 1/3 — keep
+    // most of an almost-banked day (dailyTarget.ts). Null target = guard off
+    // too; there is no day-gain axis to put the levels on.
+    giveBackArmPct: targetDailyGainPct === null ? null : round2((targetDailyGainPct * 2) / 3),
+    giveBackFloorPct: targetDailyGainPct === null ? null : round2(targetDailyGainPct / 3),
     liveOptionsMaxOrderUsd: orderUsd,
     liveOptionsMaxDailyLossUsd: dailyLossUsd,
     liveOptionsMaxOrdersPerDay: shape.maxTradesPerDay,

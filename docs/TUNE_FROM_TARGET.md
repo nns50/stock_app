@@ -270,6 +270,30 @@ live:
   does clearing the field by hand. Configs from before this feature have no stored
   target, so nothing changes until a tune is applied once.
 
+### The give-back guard — keep most of an almost-banked day
+
+The banked-day halt only protects days that actually **reach** the target. The day it
+protects least is the one that _almost_ made it: up +2.9% of a 3% goal, the loop keeps
+opening entries on the way back down, and nothing stops the whole gain from
+round-tripping (the drawdown halts all measure **losses from zero**, not give-back
+from a high). Two config levels close that gap, both on the same day-gain axis as the
+target and stamped by every Apply at **2/3** and **1/3** of it (a 3% target stamps arm
+2% / floor 1%):
+
+- **Arm** (`giveBackArmPct`) — once the day's gain has touched this level, the guard
+  arms. Arming is sticky and silent (the Monitoring card shows "guard armed"; no
+  journal entry).
+- **Floor** (`giveBackFloorPct`) — if an **armed** day's gain then falls back to this
+  level or below, new live entries and scale-ins halt for the rest of the ET day,
+  exactly like a reached target: one `daily_give_back_halted` entry in Recent
+  activity, sticky until the next ET day, exits/reconcile/sync/paper unaffected.
+
+Arm-then-floor rather than a plain equity trailing stop, so ordinary morning chop
+below the arm level can never lock the day out before it had a gain worth protecting.
+The floor cannot be negative — below water, the daily-loss halts already own the day.
+The guard runs only when **both** levels are set and coherent (`arm > floor ≥ 0`);
+clearing either turns it off, and reset-to-moderate clears both along with the goal.
+
 > Same framing as everywhere else in this app: the goal is a **discipline
 > mechanism**, not a prediction. No gain is guaranteed — the tracker decides when to
 > *stop*, never whether the market will get you there.
