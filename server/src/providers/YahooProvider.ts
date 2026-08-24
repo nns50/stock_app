@@ -109,22 +109,77 @@ export class YahooProvider implements MarketDataProvider {
   // Yahoo's free endpoints occasionally blip (especially the first chart call).
   // Retry transient failures with backoff so they self-heal; don't retry
   // deterministic ones (not-found / schema-validation).
+  //
+  // RATE LIMITING (2026-08-24) gets its own treatment, because it is a
+  // fundamentally different failure from a blip. Found live: a 560-symbol
+  // autotrade screen at concurrency 6 lost ~7% of the universe every tick to
+  // "Too many requests" — those symbols were simply never scored, silently,
+  // so a name that would have qualified could vanish from a whole session
+  // without a trace. Two reasons the old handling couldn't cope:
+  //   1. Backoff of 250ms/500ms is far too short. A rate limit is a
+  //      time-window budget, not a transient glitch — it clears in seconds,
+  //      not milliseconds. Rate-limit attempts now get their own longer,
+  //      fully-jittered backoff and a larger retry budget.
+  //   2. A retry ALONE can't fix it. With a concurrency pool, one worker
+  //      backing off while five others keep hammering just burns the budget
+  //      that the sleeping worker is waiting for — a stampede that keeps the
+  //      limiter permanently tripped. So a rate limit now opens a SHARED
+  //      cooldown (rateLimitedUntil, static across every instance): each call
+  //      waits out the current cooldown BEFORE issuing its request, so the
+  //      whole pool backs off together and the window actually gets a chance
+  //      to refill.
+  // Deliberately no permanent concurrency reduction: the pool is only a
+  // problem while the limiter is tripped, and paying that cost on every clean
+  // scan would slow the loop for nothing.
   private async call<T>(label: string, fn: () => Promise<T>, retries = 2): Promise<T> {
     const deterministic = /not found|no data|404|validation/i;
+    const rateLimited = /too many requests|rate limit|429/i;
     let lastErr: unknown;
-    for (let attempt = 0; attempt <= retries; attempt++) {
+    const maxAttempts = retries + YahooProvider.RATE_LIMIT_EXTRA_RETRIES;
+    for (let attempt = 0; attempt <= maxAttempts; attempt++) {
+      // Serve out any cooldown a sibling call already opened, so the whole
+      // pool pauses together rather than stampeding a tripped limiter.
+      await YahooProvider.awaitRateLimitCooldown();
       try {
         return await withTimeout(fn(), YAHOO_TIMEOUT_MS, label);
       } catch (err) {
         lastErr = err;
         const message = (err as Error).message || String(err);
-        if (deterministic.test(message) || attempt === retries) break;
-        await sleep(250 * 2 ** attempt + Math.random() * 150);
+        if (deterministic.test(message)) break;
+        const isRateLimit = rateLimited.test(message);
+        // A non-rate-limit blip keeps its original small retry budget; only
+        // rate limits get the extended one (they need seconds, not ms).
+        if (attempt >= (isRateLimit ? maxAttempts : retries)) break;
+        if (isRateLimit) {
+          const waitMs = YahooProvider.RATE_LIMIT_BASE_MS * 2 ** attempt + Math.random() * 500;
+          YahooProvider.openRateLimitCooldown(waitMs);
+          await sleep(waitMs);
+        } else {
+          await sleep(250 * 2 ** attempt + Math.random() * 150);
+        }
       }
     }
     const message = (lastErr as Error)?.message || String(lastErr);
-    const status = /not found|no data|404/i.test(message) ? 404 : 502;
+    const status = /not found|no data|404/i.test(message) ? 404 : rateLimited.test(message) ? 429 : 502;
     throw new ProviderError(`Yahoo ${label} failed: ${message}`, status, lastErr);
+  }
+
+  /** First backoff step for a rate limit; doubles per attempt (+jitter). */
+  private static readonly RATE_LIMIT_BASE_MS = 1_500;
+  /** Extra attempts a rate-limited call gets beyond the ordinary retry budget. */
+  private static readonly RATE_LIMIT_EXTRA_RETRIES = 3;
+  /** Epoch ms until which EVERY Yahoo call holds off — see call()'s comment. */
+  private static rateLimitedUntil = 0;
+
+  private static openRateLimitCooldown(ms: number): void {
+    const until = Date.now() + ms;
+    if (until > YahooProvider.rateLimitedUntil) YahooProvider.rateLimitedUntil = until;
+  }
+
+  private static async awaitRateLimitCooldown(): Promise<void> {
+    const remaining = YahooProvider.rateLimitedUntil - Date.now();
+    // Cap a single wait so a wildly-future cooldown can never wedge a caller.
+    if (remaining > 0) await sleep(Math.min(remaining, 10_000));
   }
 
   private mapQuote(q: any): Quote {

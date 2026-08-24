@@ -549,6 +549,30 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       moversEnabled: config.moversDiscoveryEnabled,
     });
     summary.candidatesScreened = screenResult.candidates.length;
+    // Symbols the screen could not score at all this tick (provider errors —
+    // in practice almost always rate limiting). Until 2026-08-24 this array
+    // was collected by the screen and then DROPPED here: ~7% of a 560-symbol
+    // universe was vanishing from every scan with nothing recorded, so a name
+    // that would have qualified could be missed all session and leave no
+    // trace. It is not treated as a failure (the tick's surviving candidates
+    // are still perfectly valid) — but it IS recorded, once per tick, with the
+    // symbols named, so incomplete coverage can never again look identical to
+    // "nothing qualified". Sampled rather than dumped whole: the point is
+    // visibility, not a 40-symbol wall in Recent Activity.
+    if (screenResult.errors.length > 0) {
+      logAutotradeEvent({
+        stage: 'screen',
+        action: 'screen_data_incomplete',
+        detail: {
+          unscored: screenResult.errors.length,
+          scanned: screenResult.discovery.scannedCount,
+          symbols: screenResult.errors.slice(0, 12).map((e) => e.symbol),
+          sampleMessage: screenResult.errors[0]?.message,
+          note: 'these symbols were not scored this tick — provider errors, usually rate limiting',
+        },
+        riskProfile: config.riskProfile,
+      });
+    }
 
     // Movers auto-promotion: runs against the full screened set (before the
     // volatility pre-filter below), since a symbol's own recurrence in movers
