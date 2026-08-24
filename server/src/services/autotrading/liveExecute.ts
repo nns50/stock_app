@@ -56,6 +56,8 @@ import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCoold
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
 import { evaluateStagnation } from './stagnationExit';
 import { fetchTodayVwap } from './vwap';
+import { detectLevels } from '../../indicators/levels';
+import { planAroundLevels } from './levelPlan';
 import { evaluateDailyTarget } from './dailyTarget';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 // DB-layer reads only (NOT the options execution service) -- so the combined
@@ -811,8 +813,8 @@ export async function runLiveExecution(
   });
 
   const outcomes: LiveExecutionOutcome[] = [];
-  for (const { signal } of candidates) {
-    const symbol = signal.symbol.toUpperCase();
+  for (const { signal: candidateSignal } of candidates) {
+    const symbol = candidateSignal.symbol.toUpperCase();
     if (skipSymbols.has(symbol)) {
       outcomes.push({ symbol, ok: false, reason: 'Already has an open live position' });
       continue;
@@ -824,12 +826,90 @@ export async function runLiveExecution(
       outcomes.push({ symbol, ok: false, reason });
       continue;
     }
-    const scoreGate = finishLineScoreGate(signal.score, dailyTarget, cfg);
+    const scoreGate = finishLineScoreGate(candidateSignal.score, dailyTarget, cfg);
     if (scoreGate.skip) {
-      journalEntrySkipOncePerDay(symbol, 'finish_line_skipped', { score: signal.score, reason: scoreGate.detail });
+      journalEntrySkipOncePerDay(symbol, 'finish_line_skipped', {
+        score: candidateSignal.score,
+        reason: scoreGate.detail,
+      });
       outcomes.push({ symbol, ok: false, reason: `Armed-day selectivity: ${scoreGate.detail}` });
       continue;
     }
+    // Level-aware exits (levelPlan.ts): re-place this signal's ATR stop and R
+    // target against real swing structure BEFORE anything downstream sizes or
+    // prices from them. Runs here rather than in decide.ts deliberately — it
+    // is live-equity only, which leaves the paper book running the unmodified
+    // ATR plan as a control group to judge this against.
+    //
+    // One daily-bar fetch per candidate actually reaching execution (a handful
+    // a day, never per screened name). A fetch failure yields no levels, which
+    // the planner treats as "no structure" and hands the ATR plan straight
+    // back — a data blip must never silently re-price a real order.
+    let signal = candidateSignal;
+    if (cfg.levelExitsEnabled) {
+      const bars = await getProvider()
+        .getCandles(symbol, 'daily', { limit: 120 })
+        .catch(() => []);
+      const plan = planAroundLevels({
+        side: signal.side === 'buy' ? 'long' : 'short',
+        entry: signal.entry,
+        stop: signal.stop,
+        target: signal.target,
+        levels: detectLevels(bars, { pivotWindow: 3, tolerancePct: 0.75, lookbackBars: 120 }),
+        cfg: {
+          enabled: true,
+          minStrength: cfg.levelMinStrength,
+          bufferPct: cfg.levelBufferPct,
+          maxStopWidenPct: cfg.levelMaxStopWidenPct,
+          minRewardR: cfg.levelMinRewardR,
+        },
+      });
+      if (plan.veto) {
+        // Journaled every time, not once per day like the cheap skips: a
+        // rejection here is a trade the loop WANTED and structure refused, and
+        // that is exactly the population to audit before trusting the veto.
+        logAutotradeEvent({
+          symbol,
+          stage: 'execution',
+          action: 'level_veto',
+          detail: {
+            entry: signal.entry,
+            atrStop: signal.stop,
+            atrTarget: signal.target,
+            cappedTarget: plan.target,
+            rewardR: plan.rewardR,
+            minRewardR: cfg.levelMinRewardR,
+            resistance: plan.resistancePrice,
+            support: plan.supportPrice,
+            reason: plan.detail,
+          },
+          riskProfile: cfg.riskProfile,
+        });
+        outcomes.push({ symbol, ok: false, reason: `Level veto: ${plan.detail}` });
+        continue;
+      }
+      if (plan.stopAdjusted || plan.targetAdjusted) {
+        signal = { ...signal, stop: plan.stop, target: plan.target };
+        logAutotradeEvent({
+          symbol,
+          stage: 'execution',
+          action: 'level_exits_applied',
+          detail: {
+            entry: signal.entry,
+            stop: plan.stop,
+            target: plan.target,
+            stopAdjusted: plan.stopAdjusted,
+            targetAdjusted: plan.targetAdjusted,
+            rewardR: plan.rewardR,
+            support: plan.supportPrice,
+            resistance: plan.resistancePrice,
+            reason: plan.detail,
+          },
+          riskProfile: cfg.riskProfile,
+        });
+      }
+    }
+
     const { amount: correlated } = await correlatedNotional(
       signal.symbol,
       signal.side === 'buy' ? 'long' : 'short',

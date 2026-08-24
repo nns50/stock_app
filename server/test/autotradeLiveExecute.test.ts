@@ -88,6 +88,21 @@ function quoteReturning(prices: Record<string, number>): ReturnType<typeof getPr
   } as unknown as ReturnType<typeof getProvider>;
 }
 
+/** A provider whose daily bars carry a confirmed swing high at `wall`, so the
+ *  level detector finds one piece of real overhead structure. Flat filler
+ *  either side confirms the pivot; the last bars keep price near the entry. */
+function providerWithWall(prices: Record<string, number>, wall: number): ReturnType<typeof getProvider> {
+  const flat = (n: number) => Array.from({ length: n }, () => ({ high: 99, low: 98, close: 98.5, volume: 1_000 }));
+  const bars = [...flat(6), { high: wall, low: wall - 1, close: wall - 0.5, volume: 5_000 }, ...flat(6)];
+  return {
+    getQuote: vi.fn(async (symbol: string) => {
+      if (!(symbol in prices)) throw new Error(`no mock quote for ${symbol}`);
+      return { symbol, last: prices[symbol], timestamp: Date.now() };
+    }),
+    getCandles: vi.fn(async () => bars),
+  } as unknown as ReturnType<typeof getProvider>;
+}
+
 const okAccountState = {
   ok: true,
   accountId: 'ACC1',
@@ -569,6 +584,93 @@ describe('attemptLiveEntry', () => {
     const full = mockPlaceOrder.mock.calls[0][1].quantity;
 
     expect(halved).toBe(Math.floor(full * 0.5));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Level-aware exits (levelPlan.ts) wired into the live path. The operator's
+// case, confirmed on real trades the same day: VALE was given a 2R target of
+// 16.27 with resistance at 15.375 — 0.33R of actual headroom — and the stock
+// topped at 15.22, never reaching even the capped target.
+// ---------------------------------------------------------------------------
+describe('runLiveExecution — level-aware exits', () => {
+  const liveCfgFields = {
+    accountEquityUsd: 100_000,
+    riskProfile: 'MODERATE' as const,
+    liveAccountId: 'ACC1',
+    liveTradingEnabled: true,
+    liveEnabledAt: Date.now(),
+    liveMaxOrderUsd: 50_000,
+    liveMaxDailyLossUsd: 5_000,
+    liveMaxOrdersPerDay: 20,
+    killSwitch: false,
+  };
+
+  it('REJECTS a setup whose wall leaves less than the minimum reward — the VALE shape', async () => {
+    setAutotradeConfig({ ...liveCfgFields, levelExitsEnabled: true, levelMinRewardR: 1 });
+    // Resistance at 103 against a 100 entry on a $5 risk: ~0.57R of headroom.
+    mockGetProvider.mockReturnValue(providerWithWall({ AAPL: 100 }, 103));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-VETO' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', ok: false });
+    expect(outcomes[0].reason).toMatch(/Level veto/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled(); // never reached the broker
+    const vetoes = listAutotradeEvents({ actions: ['level_veto'] });
+    expect(vetoes).toHaveLength(1);
+    expect(JSON.parse(vetoes[0].detail!)).toMatchObject({ atrTarget: 110, minRewardR: 1 });
+  });
+
+  it('caps the target short of the wall and places the order with the HONEST target', async () => {
+    setAutotradeConfig({ ...liveCfgFields, levelExitsEnabled: true, levelMinRewardR: 1 });
+    // Resistance at 108: the 2R target of 110 is priced through it, but ~1.57R
+    // of real headroom remains, so the trade is worth taking at a true target.
+    mockGetProvider.mockReturnValue(providerWithWall({ AAPL: 100 }, 108));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CAP' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+    expect(outcomes[0]).toMatchObject({ ok: true });
+
+    // The order that actually went to the broker carries the capped target.
+    const placed = mockPlaceOrder.mock.calls[0][1] as { bracket?: { takeProfitPrice: number } };
+    expect(placed.bracket!.takeProfitPrice).toBeLessThan(108);
+    expect(placed.bracket!.takeProfitPrice).toBeLessThan(110); // not the ATR target
+    const applied = listAutotradeEvents({ actions: ['level_exits_applied'] });
+    expect(applied).toHaveLength(1);
+    expect(JSON.parse(applied[0].detail!)).toMatchObject({ targetAdjusted: true });
+  });
+
+  it('leaves the ATR plan completely alone when the feature is off', async () => {
+    setAutotradeConfig({ ...liveCfgFields, levelExitsEnabled: false });
+    mockGetProvider.mockReturnValue(providerWithWall({ AAPL: 100 }, 103)); // same close wall
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OFF' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+    expect(outcomes[0]).toMatchObject({ ok: true }); // would have been vetoed if on
+    const placed = mockPlaceOrder.mock.calls[0][1] as { bracket?: { takeProfitPrice: number } };
+    expect(placed.bracket!.takeProfitPrice).toBe(110); // untouched ATR target
+    expect(listAutotradeEvents({ actions: ['level_veto', 'level_exits_applied'] })).toHaveLength(0);
+  });
+
+  it('a candle fetch failure hands back the ATR plan rather than re-pricing on no data', async () => {
+    setAutotradeConfig({ ...liveCfgFields, levelExitsEnabled: true, levelMinRewardR: 1 });
+    mockGetProvider.mockReturnValue({
+      getQuote: vi.fn(async (symbol: string) => ({ symbol, last: 100, timestamp: Date.now() })),
+      getCandles: vi.fn(async () => {
+        throw new Error('provider down');
+      }),
+    } as unknown as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NODATA' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+    expect(outcomes[0]).toMatchObject({ ok: true });
+    const placed = mockPlaceOrder.mock.calls[0][1] as { bracket?: { takeProfitPrice: number } };
+    expect(placed.bracket!.takeProfitPrice).toBe(110); // untouched
   });
 });
 

@@ -602,6 +602,24 @@ export interface AutotradeConfig {
    *  deadline = recycled. May be 0 ("scratch only if not even at breakeven
    *  progress"); a slow bleeder below 0R is recycled too. */
   stagnationExitMinR: number;
+  /** LEVEL-AWARE EXITS (services/autotrading/levelPlan.ts). When on, a LIVE
+   *  equity signal's ATR stop and R target are re-placed against real swing
+   *  structure before the risk check sees them: the stop widens to clear the
+   *  nearest support/resistance instead of resting inside it, the target is
+   *  capped short of the opposing wall instead of being priced through it,
+   *  and a setup whose reachable reward falls under levelMinRewardR is
+   *  rejected outright. Off = the ATR plan stands, exactly as before. */
+  levelExitsEnabled: boolean;
+  /** Minimum level strength (0..1) before structure may move an exit or block
+   *  a trade — a lone stale touch is not a wall. */
+  levelMinStrength: number;
+  /** Clearance beyond a level, as a % of price, for both stop and target. */
+  levelBufferPct: number;
+  /** Cap on stop widening, as a % of the original ATR stop distance. */
+  levelMaxStopWidenPct: number;
+  /** Reject a setup whose capped target is worth less than this in R. 0 caps
+   *  targets but never refuses a trade. */
+  levelMinRewardR: number;
   liveOptionsFatFingerPct: number;
   /** Mirrors liveProbationTrades/liveProbationSizeMultiplier, counted from
    *  liveOptionsEnabledAt via countLiveOptionsOrdersSince() — a fully
@@ -919,6 +937,11 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     finishLineMinSignalScore: 0,
     stagnationExitMinutes: 0,
     stagnationExitMinR: 0.5,
+    levelExitsEnabled: false,
+    levelMinStrength: 0.35,
+    levelBufferPct: 0.15,
+    levelMaxStopWidenPct: 60,
+    levelMinRewardR: 1,
     liveOptionsFatFingerPct: 10,
     liveOptionsProbationTrades: 20,
     liveOptionsProbationSizeMultiplier: 0.5,
@@ -1170,6 +1193,16 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     finishLineMinSignalScore: pct(input.finishLineMinSignalScore, d.finishLineMinSignalScore),
     stagnationExitMinutes: posInt(input.stagnationExitMinutes, d.stagnationExitMinutes),
     stagnationExitMinR: nonNeg(input.stagnationExitMinR, d.stagnationExitMinR),
+    levelExitsEnabled: typeof input.levelExitsEnabled === 'boolean' ? input.levelExitsEnabled : d.levelExitsEnabled,
+    // 0..1 — a strength outside that range can only be a mistake, so it falls
+    // back rather than silently disabling (0) or blocking everything (>1).
+    levelMinStrength: (() => {
+      const n = Number(input.levelMinStrength);
+      return Number.isFinite(n) && n >= 0 && n <= 1 ? n : d.levelMinStrength;
+    })(),
+    levelBufferPct: nonNeg(input.levelBufferPct, d.levelBufferPct),
+    levelMaxStopWidenPct: nonNeg(input.levelMaxStopWidenPct, d.levelMaxStopWidenPct),
+    levelMinRewardR: nonNeg(input.levelMinRewardR, d.levelMinRewardR),
     liveOptionsFatFingerPct: pct(input.liveOptionsFatFingerPct, d.liveOptionsFatFingerPct),
     liveOptionsProbationTrades: posInt(input.liveOptionsProbationTrades, d.liveOptionsProbationTrades),
     liveOptionsProbationSizeMultiplier: (() => {
