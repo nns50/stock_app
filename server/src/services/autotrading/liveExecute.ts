@@ -1327,16 +1327,58 @@ function materializeEntryFill(
   // quantity by auto-closing the older (adopted) one with a FABRICATED
   // estimated exit price, corrupting the journal with a trade that never
   // happened. Link, don't duplicate.
-  const adopted = listPositions({ status: 'open', symbol: intent.symbol }).find(
-    (p) => isAutotradePosition(p) && p.sourceIntentId === null,
+  //
+  // WIDENED 2026-08-24 after this raced in production. The check below used to
+  // require the orphan to be ALREADY autotrade-tagged — i.e. it only caught
+  // orphans adoptOrphanedLivePositions() had gotten to first. But the import
+  // can land BETWEEN the broker's fill and this reconcile, with no adoption
+  // pass in between: VALE filled, the position-sync imported it as a plain
+  // ['webull'] row, and moments later this function looked for an
+  // autotrade-tagged orphan, found none, and created a SECOND row for the same
+  // 81 real shares. The journal then read 162 shares against a broker holding
+  // of 81, and the sync's close-detection half "fixed" it by closing the
+  // excess at an estimated price — exactly the corruption the original comment
+  // warned about, reached through the one door it left open. So an untagged
+  // broker-imported orphan now counts too, and is adopted here (retagged,
+  // stop/target backfilled) instead of duplicated.
+  //
+  // Safe against stealing a human's holding: runLiveExecution() refuses to
+  // place an entry for a symbol that has ANY open position, so at placement
+  // time there was none — an orphan for this symbol appearing before the fill
+  // reconciles can only be this fill. Account agreement is still required
+  // where both sides know it, mirroring adoptOrphanedLivePositions().
+  const orphanCandidates = listPositions({ status: 'open', symbol: intent.symbol }).filter(
+    (p) => p.sourceIntentId === null,
   );
+  const adopted =
+    orphanCandidates.find((p) => isAutotradePosition(p)) ??
+    orphanCandidates.find(
+      (p) =>
+        (p.tags.includes('webull') || p.tags.includes('live')) &&
+        (accountId == null || p.accountId == null || p.accountId === accountId),
+    );
   if (adopted) {
+    // An untagged orphan needs the same healing adoptOrphanedLivePositions()
+    // would have applied: without the tag it stays invisible to every
+    // autotrade-scoped figure (open risk, daily P&L, the method ledger).
+    if (!isAutotradePosition(adopted)) {
+      updatePosition(adopted.id, {
+        tags: Array.from(new Set([...adopted.tags, ...AUTOTRADE_TAGS])),
+        stopPrice: adopted.stopPrice ?? stopPrice,
+        targetPrice: adopted.targetPrice ?? targetPrice,
+      });
+    }
     setLiveOrderPositionId(intent.id, adopted.id);
     logAutotradeEvent({
       symbol: intent.symbol,
       stage: 'execution',
       action: 'live_position_linked_to_adopted',
-      detail: { positionId: adopted.id, quantity: filledQty, entryPrice: filledPrice },
+      detail: {
+        positionId: adopted.id,
+        quantity: filledQty,
+        entryPrice: filledPrice,
+        wasUntagged: !isAutotradePosition(adopted),
+      },
       riskProfile,
     });
     return 'linked_adopted';
