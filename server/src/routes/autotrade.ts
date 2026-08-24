@@ -245,6 +245,12 @@ const configBody = z.object({
   finishLineMinSignalScore: z.number().min(0).max(100).optional(),
   stagnationExitMinutes: z.number().int().nonnegative().optional(),
   stagnationExitMinR: z.number().min(0).optional(),
+  /** Level-aware exits (services/autotrading/levelPlan.ts). */
+  levelExitsEnabled: z.boolean().optional(),
+  levelMinStrength: z.number().min(0).max(1).optional(),
+  levelBufferPct: z.number().min(0).optional(),
+  levelMaxStopWidenPct: z.number().min(0).optional(),
+  levelMinRewardR: z.number().min(0).optional(),
   liveOptionsFatFingerPct: z.number().min(0).max(100).optional(),
   liveOptionsProbationTrades: z.number().int().nonnegative().optional(),
   liveOptionsProbationSizeMultiplier: z.number().positive().max(1).optional(),
@@ -454,6 +460,11 @@ autotradeRouter.put(
     if (body.finishLineMinSignalScore !== undefined) patch.finishLineMinSignalScore = body.finishLineMinSignalScore;
     if (body.stagnationExitMinutes !== undefined) patch.stagnationExitMinutes = body.stagnationExitMinutes;
     if (body.stagnationExitMinR !== undefined) patch.stagnationExitMinR = body.stagnationExitMinR;
+    if (body.levelExitsEnabled !== undefined) patch.levelExitsEnabled = body.levelExitsEnabled;
+    if (body.levelMinStrength !== undefined) patch.levelMinStrength = body.levelMinStrength;
+    if (body.levelBufferPct !== undefined) patch.levelBufferPct = body.levelBufferPct;
+    if (body.levelMaxStopWidenPct !== undefined) patch.levelMaxStopWidenPct = body.levelMaxStopWidenPct;
+    if (body.levelMinRewardR !== undefined) patch.levelMinRewardR = body.levelMinRewardR;
     if (body.liveOptionsFatFingerPct !== undefined) patch.liveOptionsFatFingerPct = body.liveOptionsFatFingerPct;
     if (body.liveOptionsProbationTrades !== undefined) {
       patch.liveOptionsProbationTrades = body.liveOptionsProbationTrades;
