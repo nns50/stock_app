@@ -16,6 +16,7 @@ import { etToday } from '../../util/marketDate';
 import { webullClient, webullConfigured } from './account';
 import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../db/webullMissStreak';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
+import { listPendingLiveOrders } from '../../db/autotradeLiveOrders';
 import { classifyExpiredOptions, ExpiredOptionFinding } from '../../services/expiredOptions';
 import { resolveExpiryCloses } from '../../services/expiredOptionsSweep';
 
@@ -661,9 +662,44 @@ async function closePositionsFromPreview(
     for (const f of classifyExpiredOptions(expiredLots, closeAtExpiry)) expiredFindings.set(f.positionId, f);
   }
 
+  // Positions whose close the autotrade loop has ALREADY placed an order for.
+  // Found live 2026-08-24: the loop's stagnation exit closed VALE, the broker
+  // filled it, and this sync saw brokerQty 0 first — booking the exit at a
+  // *quoted* estimate with no exitReason, seconds before the loop's own
+  // reconcile could book the REAL fill price and tag it 'time_exit'. Two
+  // things were lost: price fidelity (an estimate replacing an actual fill)
+  // and provenance (the exit reason that makes "which exit mechanism earns"
+  // answerable at all). Whoever placed the order should book its fill, so
+  // these are left alone here; reconcileLiveOrders() closes them properly on
+  // its own next pass. The miss streak is deliberately NOT cleared for them,
+  // so if that reconcile never happens the gap is still pending here.
+  const loopClosingPositionIds = new Set(
+    listPendingLiveOrders()
+      .filter((o) => o.role === 'exit' && o.positionId !== null)
+      .map((o) => o.positionId as number),
+  );
+
   const closedSymbols = new Set<string>();
   let closed = 0;
   for (const [key, { lots, qty, journalQtyBefore, brokerQty, justConfirmed }] of toClose) {
+    if (lots.some((l) => loopClosingPositionIds.has(l.id))) {
+      if (justConfirmed) {
+        logAutotradeEvent({
+          symbol: lots[0].symbol,
+          stage: 'execution',
+          action: 'position_reconcile_skipped',
+          detail: {
+            via: 'broker_sync',
+            accountId: preview.accountId,
+            reason: 'autotrade_exit_in_flight',
+            journalQty: journalQtyBefore,
+            brokerQty,
+            note: "Auto-trading already placed this position's closing order — leaving it for that order's own reconcile, which books the real fill price and exit reason.",
+          },
+        });
+      }
+      continue;
+    }
     const expired = expiredFindings.get(lots[0].id);
     let exitPrice: number;
     let exitDate: string;
@@ -731,7 +767,11 @@ async function closePositionsFromPreview(
       if (remaining <= 1e-9) break;
       const take = Math.min(remaining, p.remainingQuantity);
       if (take <= 1e-9) continue;
-      const result = addExit(p.id, { quantity: take, exitPrice, exitDate, notes });
+      // 'manual': everything still reaching this point closed outside the
+      // loop's own order flow (a human sold it, or the broker retired it).
+      // An autotrade-placed close never lands here — it is skipped above so
+      // its own reconcile can record the true reason.
+      const result = addExit(p.id, { quantity: take, exitPrice, exitDate, notes, exitReason: 'manual' });
       if (result) {
         closed++;
         reconciled += take;

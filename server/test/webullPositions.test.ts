@@ -15,6 +15,8 @@ import {
 } from '../src/providers/webull/positions';
 import { priceMap } from '../src/services/quotes';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
+import { createIntent } from '../src/db/orders';
+import { recordLiveExitOrder } from '../src/db/autotradeLiveOrders';
 import { etToday } from '../src/util/marketDate';
 
 vi.mock('../src/services/quotes', () => ({ priceMap: vi.fn() }));
@@ -1229,5 +1231,77 @@ describe('unrecognized positions payload shape', () => {
     expect(r2.ok).toBe(false);
     expect(getPosition(p.id)!.status).toBe('open');
     expect(getPosition(p.id)!.remainingQuantity).toBe(50);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Found live 2026-08-24 (VALE). The autotrade loop's stagnation exit placed a
+// closing order, the broker filled it, and THIS sync observed brokerQty 0
+// first — booking the exit at a live-quote ESTIMATE with no exitReason,
+// seconds before the loop's own reconcile could record the real fill and tag
+// it 'time_exit'. Price fidelity and exit provenance were both lost, and the
+// provenance is exactly what makes "which exit mechanism earns money"
+// answerable. Whoever placed the order books its fill.
+// ---------------------------------------------------------------------------
+describe('syncClosedWebullPositions vs an autotrade close already in flight', () => {
+  it('leaves a position alone while auto-trading has its own closing order pending', async () => {
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'VALE',
+      side: 'long',
+      quantity: 81,
+      entryPrice: 15.14,
+      entryDate: etToday(),
+      tags: ['live', 'autotrade'],
+      accountId: 'ACC1',
+    });
+    // Auto-trading placed the close; the broker has already filled it, so the
+    // holding is gone from the broker's list before our own reconcile ran.
+    const intent = createIntent(
+      {
+        symbol: 'VALE',
+        assetKind: 'stock',
+        side: 'sell',
+        openClose: 'close',
+        quantity: 81,
+        orderType: 'limit',
+        limitPrice: 15.06,
+      },
+      'cid-vale-exit',
+    );
+    recordLiveExitOrder({ intentId: intent.id, symbol: 'VALE', riskProfile: 'MODERATE', positionId: p.id });
+    mockPositions([]);
+
+    await syncClosedWebullPositions('ACC1'); // first miss
+    await syncClosedWebullPositions('ACC1'); // would normally close here
+
+    expect(getPosition(p.id)!.status).toBe('open'); // left for the loop's own reconcile
+    const skipped = listAutotradeEvents({ actions: ['position_reconcile_skipped'] });
+    expect(skipped).toHaveLength(1);
+    expect(JSON.parse(skipped[0].detail!)).toMatchObject({ reason: 'autotrade_exit_in_flight' });
+    // And it must NOT have been booked at a fabricated price.
+    expect(listAutotradeEvents({ actions: ['position_reconciled_from_broker'] })).toHaveLength(0);
+  });
+
+  it('still closes a position with no autotrade order behind it, and labels the exit manual', async () => {
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'VRAX',
+      side: 'long',
+      quantity: 50,
+      entryPrice: 20,
+      entryDate: '2026-01-02',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+    mockPositions([]);
+    await syncClosedWebullPositions('ACC1');
+    await syncClosedWebullPositions('ACC1');
+
+    const closed = getPosition(p.id)!;
+    expect(closed.status).toBe('closed');
+    // Previously null — an exit with no recorded reason is invisible to any
+    // by-exit-mechanism breakdown.
+    expect(closed.exits[0].exitReason).toBe('manual');
   });
 });

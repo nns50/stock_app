@@ -36,7 +36,7 @@ import {
 } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
-import { listPositions } from '../src/db/positions';
+import { listPositions, createPosition } from '../src/db/positions';
 import * as positionsDb from '../src/db/positions';
 import { getLiveOrder, listPendingLiveOrders, countLiveAddOns } from '../src/db/autotradeLiveOrders';
 import { getIntent, listIntents, transitionIntent } from '../src/db/orders';
@@ -93,6 +93,35 @@ const okAccountState = {
   accountId: 'ACC1',
   state: { buyingPowerUsd: 1_000_000, exposureUsd: 0, realizedPnlTodayUsd: 0, ordersToday: 0, currentPositionQty: 0 },
 };
+
+/** The plain, everything-passes risk context the reconcile tests size against
+ *  — same numbers the original inline fixture used. */
+function baseRiskCtx() {
+  return {
+    equity: 100_000,
+    dailyPnl: 0,
+    tradesToday: 0,
+    consecutiveLosses: 0,
+    openRisk: 0,
+    openPositionsCount: 0,
+    maxConcurrentPositions: 2,
+    correlatedNotional: 0,
+    riskPerTradePct: 1,
+    maxDailyDrawdownPct: 3,
+    stepDownAfterLosses: 2,
+    stepDownSizeCutPct: 50,
+    maxAggregateOpenRiskPct: 2,
+    maxCorrelatedExposurePct: 6,
+    maxTradesPerDay: 6,
+    sectorNotional: 0,
+    maxSectorExposurePct: 20,
+    candidateSector: null,
+    correlationThreshold: 0.7,
+    marketAtrPct: null,
+    regimeAtrThresholdPct: 3,
+    regimeSizeCutPct: 0,
+  };
+}
 
 function liveConfig(overrides: Partial<AutotradeConfig> = {}): AutotradeConfig {
   return {
@@ -863,6 +892,96 @@ describe('listAutotradeLivePositions', () => {
   it('returns an empty array when nothing is tagged autotrade', () => {
     insertPosition('AAPL', ['live']);
     expect(listAutotradeLivePositions()).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Found live 2026-08-24 (VALE). The broker position-sync can land BETWEEN the
+// broker's fill and this reconcile, importing the real holding as a plain
+// ['webull'] row. materializeEntryFill's duplicate guard only recognised
+// orphans that adoptOrphanedLivePositions() had ALREADY retagged, so it saw no
+// match and created a SECOND row for the same 81 real shares. The journal then
+// read 162 against a broker holding of 81, and the sync's close-detection half
+// "fixed" the excess by closing it at an estimated price — a trade that never
+// happened, in the journal.
+// ---------------------------------------------------------------------------
+describe('reconcileLiveOrders vs a position-sync row for the same fill', () => {
+  it('adopts an untagged broker-imported row instead of creating a duplicate position', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-DUP' });
+    const okResult = evaluateRiskCheck(signal(), baseRiskCtx());
+    await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
+    const intentId = listIntents()[0].id;
+
+    // The position-sync beats our reconcile and imports the real holding
+    // untagged — no sourceIntentId, since it came from the broker, not us.
+    const imported = createPosition({
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: okResult.sizing.suggestedQuantity,
+      entryPrice: 100.5,
+      entryDate: '2026-08-24',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: okResult.sizing.suggestedQuantity,
+      filledPrice: 100.5,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+
+    // ONE position for one real fill — not two.
+    const open = listPositions({ status: 'open', symbol: 'AAPL' });
+    expect(open).toHaveLength(1);
+    expect(open[0].id).toBe(imported.id);
+    // ...healed: tagged so autotrade-scoped risk/P&L can see it, bracket
+    // levels backfilled from the order, and linked to the order metadata.
+    expect(open[0].tags).toEqual(expect.arrayContaining(['live', 'autotrade']));
+    expect(open[0].stopPrice).toBe(95);
+    expect(open[0].targetPrice).toBe(110);
+    expect(getLiveOrder(intentId)?.positionId).toBe(imported.id);
+  });
+
+  it('does not adopt a row belonging to a different account', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OTHER' });
+    const okResult = evaluateRiskCheck(signal(), baseRiskCtx());
+    await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
+
+    createPosition({
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100.5,
+      entryDate: '2026-08-24',
+      tags: ['webull'],
+      accountId: 'OTHER-ACCOUNT',
+    });
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: okResult.sizing.suggestedQuantity,
+      filledPrice: 100.5,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+
+    // The other account's holding is untouched; our fill gets its own row.
+    const open = listPositions({ status: 'open', symbol: 'AAPL' });
+    expect(open).toHaveLength(2);
+    expect(open.find((p) => p.accountId === 'OTHER-ACCOUNT')!.tags).not.toContain('autotrade');
   });
 });
 
