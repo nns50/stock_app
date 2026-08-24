@@ -21,10 +21,20 @@ import { AutotradeConfig } from '../../db/autotradeConfig';
 // drifting NEGATIVE: a slow bleeder is recycled too, before it finds the stop.
 //
 // Deliberately conservative edges:
-//   - Wall-clock minutes, evaluated ONLY while the regular session is open
-//     (the caller gates on checkSessionWindow) — so a position entered late
-//     Friday isn't "stagnant" at Monday's open bell purely from the weekend,
-//     and no scratch is ever attempted into pre/after-market liquidity.
+//   - SESSION minutes, not wall-clock. Corrected 2026-08-24 after the operator
+//     asked what happens to a position held overnight: the original counted
+//     raw elapsed time, so a 15:50 entry got ten real minutes of market before
+//     judgement, and ANY overnight hold arrived at the next open reading ~1,230
+//     minutes — instantly past the bar and scratched on the opening print. The
+//     surrounding comment claimed session-gating prevented exactly that; it did
+//     not. Gating only stopped EVALUATION while the market was shut, never the
+//     clock. Now only minutes the market was actually open count, so "90
+//     minutes" means 90 minutes of real trading wherever the entry falls, and
+//     an overnight position resumes its deadline where it left off instead of
+//     starting the day already condemned.
+//   - Still evaluated only while the session is open (the caller gates on
+//     checkSessionWindow), so no scratch is ever attempted into pre/after-hours
+//     liquidity.
 //   - A position with no stop (or a degenerate zero risk distance) has no R
 //     to measure — never triggered, same "no guessed R" discipline as every
 //     other realized-R consumer.
@@ -52,8 +62,67 @@ export function progressR(pos: Pick<Position, 'side' | 'entryPrice' | 'stopPrice
   return Math.round((move / risk) * 100) / 100;
 }
 
+const SESSION_OPEN_MIN = 9 * 60 + 30;
+const SESSION_CLOSE_MIN = 16 * 60;
+const SESSION_MINUTES_PER_DAY = SESSION_CLOSE_MIN - SESSION_OPEN_MIN; // 390
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+const etParts = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  weekday: 'short',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+/** Minutes since ET midnight, plus whether that ET day is a weekday. */
+function etDayInfo(ms: number): { minutes: number; weekday: boolean } {
+  const parts = etParts.formatToParts(ms);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  const day = get('weekday');
+  return {
+    minutes: (Number(get('hour')) % 24) * 60 + Number(get('minute')),
+    weekday: day !== 'Sat' && day !== 'Sun',
+  };
+}
+
+/**
+ * Minutes the REGULAR SESSION was open between `from` and `to` — the honest
+ * measure of how long a position has had to prove itself. Walks ET day by day
+ * and intersects each weekday's 9:30–16:00 with the interval, so overnight
+ * gaps, weekends and after-hours contribute nothing.
+ *
+ * Holidays are NOT known here (the same documented heuristic limit
+ * isUsEquityMarketOpen carries): a market holiday inside the span is counted
+ * as a full session, which can only ever make a position look STALER than it
+ * is. That errs toward scratching a dead trade slightly early rather than
+ * holding a genuinely stagnant one longer, and the cost is bounded at one
+ * session per holiday.
+ */
+export function sessionMinutesBetween(from: number, to: number): number {
+  if (!(to > from)) return 0;
+  // Bounded walk: a position older than a few weeks contributes its full
+  // sessions anyway, and maxHoldDays retires it long before this matters.
+  let total = 0;
+  for (let cursor = from; cursor < to;) {
+    const { minutes: startMin, weekday } = etDayInfo(cursor);
+    // Where this ET day's session ends, in ms from `cursor`.
+    const endOfDayMs = cursor + (24 * 60 - startMin) * 60_000;
+    const dayEnd = Math.min(to, endOfDayMs);
+    if (weekday) {
+      const spanEndMin = startMin + Math.round((dayEnd - cursor) / 60_000);
+      const overlap = Math.min(spanEndMin, SESSION_CLOSE_MIN) - Math.max(startMin, SESSION_OPEN_MIN);
+      if (overlap > 0) total += Math.min(overlap, SESSION_MINUTES_PER_DAY);
+    }
+    cursor = dayEnd === to ? to : endOfDayMs;
+    // Defensive: a pathological clock must not spin this loop forever.
+    if (to - from > 400 * MS_PER_DAY) break;
+  }
+  return Math.floor(total);
+}
+
 export interface StagnationDecision {
   triggered: boolean;
+  /** Minutes the market was OPEN since entry — not raw elapsed time. */
   heldMinutes: number;
   /** Progress in R at the supplied price — null when unmeasurable. */
   progress: number | null;
@@ -70,7 +139,7 @@ export function evaluateStagnation(
   cfg: StagnationConfig,
   now: number,
 ): StagnationDecision {
-  const heldMinutes = Math.floor((now - pos.createdAt) / 60_000);
+  const heldMinutes = sessionMinutesBetween(pos.createdAt, now);
   if (!(cfg.stagnationExitMinutes > 0)) {
     return { triggered: false, heldMinutes, progress: null, detail: 'stagnation exit off' };
   }
