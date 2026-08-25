@@ -449,11 +449,21 @@ export function evaluateGuardrails(
       ? `${usd(dailyLoss)} loss vs ${usd(config.maxDailyLossUsd)} limit`
       : `daily loss ${usd(dailyLoss)} hit the ${usd(config.maxDailyLossUsd)} limit — halted`,
   );
-  block(
-    'max_orders_per_day',
-    account.ordersToday < config.maxOrdersPerDay,
-    `${account.ordersToday} placed vs ${config.maxOrdersPerDay}/day`,
-  );
+  // A CLOSE is never blocked by the daily order cap. The cap is a runaway-loop
+  // backstop, and a runaway loop places entries; refusing an exit does not limit
+  // risk, it strands you in a position. Live evidence two days running: GRMN
+  // carried overnight after 44 refusals (2026-08-24) and IT held 86 minutes past
+  // its exit while sliding from -$11.41 to -$23.94 (2026-08-25). Same principle
+  // routes/trade.ts states for cancels — risk-reducing actions are not gated
+  // like risk-adding ones. countTodaysOrders() no longer counts closes either,
+  // so an exit neither consumes the budget nor is refused by it.
+  if (intent.openClose === 'open') {
+    block(
+      'max_orders_per_day',
+      account.ordersToday < config.maxOrdersPerDay,
+      `${account.ordersToday} placed vs ${config.maxOrdersPerDay}/day`,
+    );
+  }
 
   // --- fat-finger --------------------------------------------------------
   // A plain LIMIT is sanity-checked against the market reference (re-derived

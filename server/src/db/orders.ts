@@ -364,13 +364,40 @@ function etDayStart(now: number): number {
  * Working/acknowledged/filled/cancelled/expired orders all still count — they hit
  * the market.
  */
+/**
+ * Orders submitted today that COUNT against the daily order cap — opening
+ * orders only.
+ *
+ * It used to count every submitted intent, closes included, which turned a
+ * risk-LIMITING guardrail into one that traps you in positions. Two days
+ * running, on the live book:
+ *   - 2026-08-24: GRMN's stagnation exit was refused 44 times on
+ *     "4 placed vs 4/day" and the position was carried overnight.
+ *   - 2026-08-25: IT's exit was refused 36 times between 13:57 and 15:23,
+ *     while the position slid from -$11.41 to -$23.94. Two of that day's eight
+ *     slots had gone to a SINGLE exit — a stale order and its replacement.
+ *
+ * Every risk this cap is nominally about is already held by a guardrail aimed
+ * at it: entries by maxTradesPerDay, exposure by maxConcurrentPositions and the
+ * aggregate-risk and buying-power checks, a bad day by the drawdown halt. What
+ * remains, and is worth keeping, is a runaway-loop backstop — and a runaway
+ * loop places ENTRIES. Closing orders are risk-REDUCING and are never counted
+ * nor capped, the same principle routes/trade.ts already applies to cancels
+ * ("Risk-reducing, so NOT gated by TRADING_ENABLED").
+ *
+ * A cancelled OPEN still counts, deliberately: a place/cancel loop is exactly
+ * the runaway this backstop exists to catch. A cancelled CLOSE now costs
+ * nothing, which is what the GRMN cancel-and-replace above should always have
+ * been.
+ */
 export function countTodaysOrders(now = Date.now()): number {
   const row = db
     .prepare(
       `SELECT COUNT(DISTINCT e.intent_id) AS n
          FROM order_events e
          JOIN order_intents i ON i.id = e.intent_id
-        WHERE e.state = 'submitted' AND e.created_at >= ? AND i.state != 'rejected'`,
+        WHERE e.state = 'submitted' AND e.created_at >= ? AND i.state != 'rejected'
+          AND i.open_close = 'open'`,
     )
     .get(etDayStart(now)) as { n: number };
   return row.n;
