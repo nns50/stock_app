@@ -248,6 +248,9 @@ const configBody = z.object({
   finishLineMinSignalScore: z.number().min(0).max(100).optional(),
   stagnationExitMinutes: z.number().int().nonnegative().optional(),
   stagnationExitMinR: z.number().min(0).optional(),
+  // Capped at one session (390 minutes): a longer window would mean "always
+  // flattening", which is a way of saying "never hold a position".
+  endOfDayFlattenMinutes: z.number().int().nonnegative().max(390).optional(),
   /** Level-aware exits (services/autotrading/levelPlan.ts). */
   levelExitsEnabled: z.boolean().optional(),
   levelMinStrength: z.number().min(0).max(1).optional(),
@@ -463,6 +466,7 @@ autotradeRouter.put(
     if (body.finishLineMinSignalScore !== undefined) patch.finishLineMinSignalScore = body.finishLineMinSignalScore;
     if (body.stagnationExitMinutes !== undefined) patch.stagnationExitMinutes = body.stagnationExitMinutes;
     if (body.stagnationExitMinR !== undefined) patch.stagnationExitMinR = body.stagnationExitMinR;
+    if (body.endOfDayFlattenMinutes !== undefined) patch.endOfDayFlattenMinutes = body.endOfDayFlattenMinutes;
     if (body.levelExitsEnabled !== undefined) patch.levelExitsEnabled = body.levelExitsEnabled;
     if (body.levelMinStrength !== undefined) patch.levelMinStrength = body.levelMinStrength;
     if (body.levelBufferPct !== undefined) patch.levelBufferPct = body.levelBufferPct;
