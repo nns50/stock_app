@@ -1229,6 +1229,17 @@ shouldn't be a tab-switch away.
   `excluded_rel_vol_pace` with the pace, the floor and the median it was divided
   by, so any figure can be checked rather than taken on faith; when too few
   symbols are scored to estimate a median it fails **open**),
+  **min move today (%)** (2026-08-25 — a candidate must have moved at least this far
+  in the trade's own direction *today*: a long needs +this, a short −this. 0 = off. The
+  rest of the screener is largely positional — momentum averages today's change with the
+  distance from both moving averages, and *trend* scores that same MA relationship again —
+  so a stock can be **falling today** and still score as strong momentum off an earlier
+  run. That is not theoretical: one was bought long while down 3.45%, and on the same day
+  17 of the 50 symbols clearing the score bar were down on the day),
+  **momentum: today's move only** (2026-08-25 — scores the momentum component from
+  today's change alone, leaving price-vs-MA to the *trend* component that already measures
+  it. Removes the double-count above; intended for an intraday loop, where where a stock
+  sits relative to last month's average is not the question),
   **min share price ($)** and **min avg volume (shares)** (2026-07-27 — the liquidity floors, previously stuck at the
   engine's hardcoded $1 / 200,000. Sub-$3 movers carry a bid-ask/slippage tax the
   zero-cost backtester can't show — measured on the live book, roughly a fifth of all

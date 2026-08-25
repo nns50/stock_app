@@ -9,7 +9,31 @@ import {
   resolveScreenerConfig,
   scoreSymbol,
   scoreSymbolBothDirections,
+  scoreFromIndicators,
+  type IndicatorSnapshot,
 } from '../src/indicators/screener';
+
+/** A neutral indicator snapshot; each test overrides only what it exercises. */
+const ind = (over: Partial<IndicatorSnapshot> = {}): IndicatorSnapshot => ({
+  price: 100,
+  changePct: 0,
+  maShort: null,
+  maLong: null,
+  distShortPct: null,
+  distLongPct: null,
+  rsi: 50,
+  atr: 2,
+  atrPct: 2,
+  relVolume: 1,
+  avgVolume: 1_000_000,
+  volume: 1_000_000,
+  gapPct: 0,
+  weeklyMaShort: null,
+  symbolLookbackReturnPct: null,
+  benchmarkLookbackReturnPct: null,
+  sentimentNetScore: null,
+  ...over,
+});
 import { Quote } from '../src/providers/types';
 
 function candlesFromCloses(closes: number[], volume = 1_000_000): Candle[] {
@@ -474,5 +498,105 @@ describe('filters.minScore — the conviction gate (2026-07-26)', () => {
       resolveScreenerConfig({ direction: 'long', filters: { minScore: 0 } }),
     );
     expect(off.filterReasons.some((x) => x.startsWith('score <'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Intraday-first scoring (2026-08-25). The screener is largely POSITIONAL:
+// scoreMomentum averages today's change with the distance from BOTH moving
+// averages, and scoreTrend then scores the same price-vs-MA relationship again.
+// The positional dimension therefore carries ~35 of the 100 weight across two
+// components while today's direction carries ~10 — the same fact, twice.
+//
+// What that cost on the live book: IT was DOWN 3.45% on the day, scored 71.8
+// for momentum off its +9%/+28% MA distances, was bought long as a "breakout"
+// and closed at -$23.94. Across that day's four entries the pre-entry run-up
+// predicted the post-entry move almost monotonically — MRNA +7.5% before /
+// +4.65% after, SMCI +5.8%/+0.99%, RMD +1.8%/-0.07%, IT +0.1%/-2.58% at worst.
+// ---------------------------------------------------------------------------
+describe('momentumIntradayOnly', () => {
+  /** IT as it actually was: falling today, still well above both MAs. */
+  const fallingButElevated = {
+    price: 200,
+    changePct: -3.45,
+    maShort: 183,
+    maLong: 156,
+    distShortPct: 9.07,
+    distLongPct: 27.78,
+  };
+
+  it('scores a falling stock as strong momentum by default — the defect', () => {
+    const cfg = { ...defaultScreenerConfig(), direction: 'long' as const };
+    const r = scoreFromIndicators('IT', ind(fallingButElevated), cfg, 200);
+    const mom = r.components.find((c) => c.key === 'momentum')!;
+    expect(mom.score).toBeGreaterThan(60); // the +9%/+28% MA distances carry it
+  });
+
+  it('scores the same stock on TODAY when intraday-only', () => {
+    const cfg = { ...defaultScreenerConfig(), direction: 'long' as const, momentumIntradayOnly: true };
+    const r = scoreFromIndicators('IT', ind(fallingButElevated), cfg, 200);
+    const mom = r.components.find((c) => c.key === 'momentum')!;
+    expect(mom.score).toBeLessThan(30); // down on the day is not momentum
+    expect(mom.note).toMatch(/intraday momentum/);
+  });
+
+  it('still rewards a stock that IS moving today', () => {
+    const cfg = { ...defaultScreenerConfig(), direction: 'long' as const, momentumIntradayOnly: true };
+    const r = scoreFromIndicators('MRNA', ind({ price: 154, changePct: 14.36 }), cfg, 154);
+    expect(r.components.find((c) => c.key === 'momentum')!.score).toBe(100);
+  });
+
+  it('mirrors for a short — falling today IS momentum on that side', () => {
+    const cfg = { ...defaultScreenerConfig(), direction: 'short' as const, momentumIntradayOnly: true };
+    const r = scoreFromIndicators('IT', ind(fallingButElevated), cfg, 200);
+    expect(r.components.find((c) => c.key === 'momentum')!.score).toBeGreaterThan(60);
+  });
+
+  it('leaves the trend component alone — it still owns the MA relationship', () => {
+    const plain = scoreFromIndicators('IT', ind(fallingButElevated), { ...defaultScreenerConfig() }, 200);
+    const intraday = scoreFromIndicators(
+      'IT',
+      ind(fallingButElevated),
+      { ...defaultScreenerConfig(), momentumIntradayOnly: true },
+      200,
+    );
+    const trendOf = (r: typeof plain) => r.components.find((c) => c.key === 'trend')!.score;
+    expect(trendOf(intraday)).toBe(trendOf(plain));
+  });
+});
+
+describe('minChangePct filter', () => {
+  const cfgWith = (minChangePct: number, direction: 'long' | 'short' = 'long') => ({
+    ...defaultScreenerConfig(),
+    direction,
+    filters: { ...defaultScreenerConfig().filters, minChangePct, minScore: undefined },
+  });
+
+  it('rejects a LONG on a stock that is down today', () => {
+    const r = scoreFromIndicators('IT', ind({ price: 200, changePct: -3.45 }), cfgWith(0.5), 200);
+    expect(r.passedFilters).toBe(false);
+    expect(r.filterReasons.join(' ')).toMatch(/today/);
+  });
+
+  it('accepts a LONG that is moving up enough', () => {
+    const r = scoreFromIndicators('MRNA', ind({ price: 154, changePct: 14.36 }), cfgWith(0.5), 154);
+    expect(r.passedFilters).toBe(true);
+  });
+
+  it('mirrors for a SHORT — down today is what qualifies', () => {
+    const down = scoreFromIndicators('IT', ind({ price: 200, changePct: -3.45 }), cfgWith(0.5, 'short'), 200);
+    expect(down.passedFilters).toBe(true);
+    const up = scoreFromIndicators('MRNA', ind({ price: 154, changePct: 14.36 }), cfgWith(0.5, 'short'), 154);
+    expect(up.passedFilters).toBe(false);
+  });
+
+  it('is off at 0 — a down day passes, as it did before', () => {
+    const r = scoreFromIndicators('IT', ind({ price: 200, changePct: -3.45 }), cfgWith(0), 200);
+    expect(r.passedFilters).toBe(true);
+  });
+
+  it("does not reject on a guess when today's move is unmeasurable", () => {
+    const r = scoreFromIndicators('X', ind({ price: 100, changePct: null }), cfgWith(0.5), 100);
+    expect(r.filterReasons.join(' ')).not.toMatch(/today/);
   });
 });

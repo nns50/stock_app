@@ -33,6 +33,11 @@ export interface ScreenerFilters {
   maxPrice?: number;
   minAvgVolume?: number;
   minRelVol?: number;
+  /** Minimum move TODAY, in the direction of the trade (a long needs +this, a
+   *  short needs -this). 0/undefined = off. The screener's other measures are
+   *  largely positional — where a stock sits after weeks of trend — which is the
+   *  wrong question for a position held for minutes. */
+  minChangePct?: number;
   rsiMin?: number;
   rsiMax?: number;
   /** Require price to align with the chosen direction relative to its MAs. */
@@ -67,6 +72,10 @@ export interface ScreenerConfig {
   atrPeriod: number;
   /** % move that maps to a full momentum sub-score. */
   momentumScale: number;
+  /** Score momentum from TODAY'S move alone, leaving the price-vs-MA
+   *  relationship to the `trend` component that already owns it. See
+   *  scoreMomentum for the double-count this removes. */
+  momentumIntradayOnly?: boolean;
   /** Relative volume that maps to a full rel-vol sub-score. */
   relVolTarget: number;
   /** RSI value that scores best for a LONG; mirrored for SHORT. */
@@ -178,6 +187,7 @@ export function defaultScreenerConfig(): ScreenerConfig {
     rsiPeriod: 14,
     atrPeriod: 14,
     momentumScale: 5,
+    momentumIntradayOnly: false,
     relVolTarget: 2,
     rsiSweetSpot: 60,
     rsiWidth: 25,
@@ -403,6 +413,31 @@ export function computeIndicators(
 
 // --- per-component scoring (direction-aware) -------------------------------
 
+/**
+ * Momentum. By default this averages today's change with the distance from both
+ * moving averages, which makes today's move only ONE THIRD of the component.
+ *
+ * `momentumIntradayOnly` scores today's move alone, for two reasons:
+ *
+ *  1. The price-vs-MA relationship is ALREADY the `trend` component ("price vs
+ *     20MA, price vs 50MA, MA alignment"). Counting it here too gives the
+ *     positional dimension roughly 35 of the 100 weight across two components
+ *     while today's direction gets about 10 — the same fact, scored twice.
+ *  2. Those positional inputs SATURATE. scale01 clamps at momentumScale, so a
+ *     stock 107% above its 20MA scores identically to one 20% above; the term
+ *     that dominates stops discriminating exactly where it matters.
+ *
+ * What that cost, on 2026-08-25: IT was DOWN 3.45% on the day and still scored
+ * 71.8 for momentum — because it sat +9% over its 20MA and +28% over its 50MA
+ * from an earlier run. It was bought long, journaled as a "Long breakout", and
+ * closed at -$23.94. Of the day's four entries, the pre-entry run-up predicted
+ * the post-entry move almost monotonically: MRNA +7.5% before / +4.65% after,
+ * SMCI +5.8% / +0.99%, RMD +1.8% / -0.07%, IT +0.1% / -2.58% at its worst.
+ *
+ * For a loop that scratches at 90 minutes and is flat by the close, where a
+ * stock sits relative to last month's average is not the question. Whether it
+ * is moving TODAY is.
+ */
 function scoreMomentum(ind: IndicatorSnapshot, cfg: ScreenerConfig): { score: number; note: string } {
   const sign = cfg.direction === 'long' ? 1 : -1;
   const parts: number[] = [];
@@ -410,6 +445,10 @@ function scoreMomentum(ind: IndicatorSnapshot, cfg: ScreenerConfig): { score: nu
   if (ind.changePct !== null) {
     parts.push(scale01(sign * ind.changePct, -cfg.momentumScale, cfg.momentumScale));
     descr.push(`Δ ${fmtPct(ind.changePct)}`);
+  }
+  if (cfg.momentumIntradayOnly) {
+    const score = parts.length ? parts.reduce((x, y) => x + y, 0) / parts.length : 0;
+    return { score, note: `${cfg.direction} intraday momentum from ${descr.join(', ') || 'n/a'}` };
   }
   if (ind.distShortPct !== null) {
     parts.push(scale01(sign * ind.distShortPct, -cfg.momentumScale, cfg.momentumScale));
@@ -586,7 +625,10 @@ export function scoreSymbolBothDirections(
   };
 }
 
-function scoreFromIndicators(
+/** The pure scoring core: indicators in, score + components + filter verdict
+ *  out. Exported so scoring and filter behaviour can be tested directly from a
+ *  snapshot rather than reverse-engineered through synthetic candles. */
+export function scoreFromIndicators(
   symbol: string,
   ind: IndicatorSnapshot | null,
   cfg: ScreenerConfig,
@@ -700,6 +742,20 @@ function applyFilters(
     const aligned =
       ind.weeklyMaShort !== null && (long ? ind.price > ind.weeklyMaShort : ind.price < ind.weeklyMaShort);
     if (!aligned) reasons.push(`not ${cfg.direction}-aligned vs weekly ${cfg.maShort}MA`);
+  }
+  // Today's move must be in the direction of the trade. A LONG on a stock that
+  // is down on the day is not a breakout however good its multi-week position
+  // looks — IT was bought long at -3.45% on 2026-08-25 and closed at -$23.94.
+  // Direction-aware, so a short needs the mirror. Null changePct is unmeasurable
+  // and is not rejected on a guess.
+  if (f.minChangePct !== undefined && f.minChangePct > 0) {
+    const sign = cfg.direction === 'long' ? 1 : -1;
+    const move = ind.changePct === null ? null : sign * ind.changePct;
+    if (move !== null && move < f.minChangePct) {
+      reasons.push(
+        `${cfg.direction === 'long' ? 'up' : 'down'} only ${fmtPct(Math.abs(ind.changePct ?? 0))} today (needs ${f.minChangePct}%)`,
+      );
+    }
   }
   if (f.minScore !== undefined && total < f.minScore) reasons.push(`score < ${f.minScore}`);
   return { passed: reasons.length === 0, reasons };
