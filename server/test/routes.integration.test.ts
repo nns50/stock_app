@@ -1279,6 +1279,62 @@ describe('autotrade config routes (integration)', () => {
     expect(final.accountEquityUsd).toBe(100_000);
   });
 
+  // -------------------------------------------------------------------------
+  // A config field is only real if it can be SET (2026-08-25). endOfDayFlatten
+  // Minutes shipped in AutotradeConfig, in the sanitizer, and in the tune
+  // classification — every compile-time check passed — but was missing from the
+  // route's own zod body, which strips unknown keys. PUTting it returned 200
+  // and changed nothing: the feature was live, configured, and unreachable.
+  // -------------------------------------------------------------------------
+  it('round-trips endOfDayFlattenMinutes through the config PUT', async () => {
+    const res = await put('/api/autotrade/config', { endOfDayFlattenMinutes: 5 });
+    expect(res.status).toBe(200);
+    const final = (await getJson('/api/autotrade/config')) as { endOfDayFlattenMinutes: number };
+    expect(final.endOfDayFlattenMinutes).toBe(5);
+  });
+
+  it('rejects a flatten window longer than the session instead of silently clamping', async () => {
+    // "Always flattening" is a way of saying "never hold a position", and a 200
+    // that quietly stored something else is what this whole test exists for.
+    const res = await put('/api/autotrade/config', { endOfDayFlattenMinutes: 500 });
+    expect(res.status).toBe(400);
+  });
+
+  it('every numeric field the schema accepts is actually applied by the handler', async () => {
+    // The other half of the same failure: a key present in the zod body but
+    // missing its `if (body.x !== undefined) patch.x = body.x` line also
+    // returns 200 and changes nothing. Rather than trusting that every future
+    // field gets both halves, drive them all through the real route.
+    const before = (await getJson('/api/autotrade/config')) as Record<string, unknown>;
+    const skip = new Set([
+      // Guarded/secondary fields with their own dedicated tests above: setting
+      // these needs a confirmation phrase or a companion field.
+      'liveTradingEnabled',
+      'liveOptionsEnabled',
+      'riskProfile',
+      'enabled',
+      'killSwitch',
+    ]);
+    const numericKeys = Object.entries(before)
+      .filter(([k, v]) => typeof v === 'number' && !skip.has(k))
+      .map(([k]) => k);
+    expect(numericKeys.length).toBeGreaterThan(20); // sanity: we are really covering the surface
+
+    const unreachable: string[] = [];
+    for (const key of numericKeys) {
+      const current = before[key] as number;
+      // A value that is different but plausible for every numeric field here:
+      // small positive integers pass the nonnegative/percent/int constraints.
+      const next = current === 1 ? 2 : 1;
+      const res = await put('/api/autotrade/config', { [key]: next });
+      if (res.status !== 200) continue; // a stricter per-field rule rejected it — fine
+      const after = (await getJson('/api/autotrade/config')) as Record<string, unknown>;
+      if (after[key] === current && current !== next) unreachable.push(key);
+      await put('/api/autotrade/config', { [key]: current }); // restore
+    }
+    expect(unreachable).toEqual([]);
+  });
+
   it('a whitespace-only liveAccountId cannot stand in for a real one', async () => {
     // sanitize() trims and stores whitespace as null, so a truthy "   " that
     // passed the guard would land in the live-enabled-with-no-account state the
