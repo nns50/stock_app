@@ -1,6 +1,16 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
+// checkLiveEquityScaleOuts refuses to trade outside the regular session (it is
+// opportunistic profit-taking, not a protective exit). These tests run at
+// whatever wall clock CI happens to be at, so pin the window OPEN — otherwise
+// the scale-out suite passes during market hours and fails every evening, which
+// is exactly what it did on the afternoon it was written. The closed case has
+// its own test below that overrides this.
+vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/autotrading/executionGuards')>()),
+  checkSessionWindow: vi.fn(() => ({ ok: true })),
+}));
 vi.mock('../src/providers/webull/accountState', () => ({ webullAccountState: vi.fn() }));
 vi.mock('../src/providers/webull/orders', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/providers/webull/orders')>();
@@ -35,6 +45,7 @@ import { createPosition, listPositions } from '../src/db/positions';
 import { createIntent, getIntent, listIntents, type OrderIntentRecord } from '../src/db/orders';
 import { listPendingLiveOrders, getLiveOrder, recordLiveExitOrder } from '../src/db/autotradeLiveOrders';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
+import { checkSessionWindow } from '../src/services/autotrading/executionGuards';
 import { evaluateRiskCheck } from '../src/services/autotrading/riskCheck';
 import { TradeSignal } from '../src/services/autotrading/decide';
 import {
@@ -1036,6 +1047,17 @@ describe('checkLiveEquityScaleOuts', () => {
     const { position } = await armed(200);
     exitInFlightFor(position.id);
     expect(await checkLiveEquityScaleOuts()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('never scales out with the regular session closed', async () => {
+    // Profit-taking into pre/after-hours liquidity pays a wide spread to bank
+    // something that is not going anywhere until the open.
+    await armed(200);
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1')] });
+    vi.mocked(checkSessionWindow).mockReturnValueOnce({ ok: false, reason: 'outside the regular session' });
+    expect(await checkLiveEquityScaleOuts()).toEqual([]);
+    expect(mockReplaceOrder).not.toHaveBeenCalled();
     expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 
