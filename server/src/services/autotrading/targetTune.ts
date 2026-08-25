@@ -145,7 +145,16 @@ const BANDS: Record<TuneBand, BandShape> = {
     optionsStopLossPct: 40,
     optionsTakeProfitPct: 60,
     riskProfile: 'MODERATE',
-    maxOrderEquityFraction: 0.2,
+    // 0.25, not a tighter conservative number of its own: the config stores
+    // only MODERATE/AGGRESSIVE, so a conservative tune journals as MODERATE and
+    // is READ BACK as the moderate fraction by maxOrderEquityFractionFor —
+    // which deriveDollarCaps and liveCapsReanchor both use. A different value
+    // here would mean a freshly-applied conservative tune instantly looked
+    // hand-edited, freezing its per-order cap out of re-anchoring forever
+    // (2026-08-25). The cap is a fat-finger backstop, not primary sizing, so
+    // agreeing with the value the rest of the system can actually recover
+    // matters more than a marginally tighter one it cannot.
+    maxOrderEquityFraction: 0.25,
   },
   moderate: {
     maxConcurrentPositions: 2,
@@ -239,6 +248,67 @@ const ORDERS_PER_TRADE = 2;
  */
 export function liveOrderCapForTrades(maxTradesPerDay: number): number {
   return maxTradesPerDay * ORDERS_PER_TRADE;
+}
+
+/** The dollar caps a tune derives, and the only ones liveCapsReanchor moves.
+ *  Kept here, beside the formulas that produce them, so the tuner and the
+ *  re-anchor can never derive a cap two different ways. */
+export const DOLLAR_CAP_KEYS = [
+  'liveMaxOrderUsd',
+  'liveMaxDailyLossUsd',
+  'liveOptionsMaxOrderUsd',
+  'liveOptionsMaxDailyLossUsd',
+] as const;
+export type DollarCapKey = (typeof DOLLAR_CAP_KEYS)[number];
+export type DollarCaps = Record<DollarCapKey, number>;
+
+/** The dollar caps THIS config's percentages imply at `equityUsd`. Derived
+ *  from the CURRENT config rather than by replaying a tune, so it stays correct
+ *  after auto-tune or a hand edit moves the percentages. */
+export function deriveDollarCaps(
+  cfg: Pick<AutotradeConfig, 'maxDailyDrawdownPct' | 'riskProfile'>,
+  equityUsd: number,
+): DollarCaps {
+  const dailyLossUsd = Math.round(equityUsd * (cfg.maxDailyDrawdownPct / 100));
+  const orderUsd = Math.round(equityUsd * maxOrderEquityFractionFor(cfg.riskProfile));
+  return {
+    liveMaxOrderUsd: orderUsd,
+    liveMaxDailyLossUsd: dailyLossUsd,
+    liveOptionsMaxOrderUsd: orderUsd,
+    liveOptionsMaxDailyLossUsd: dailyLossUsd,
+  };
+}
+
+/** The config a hand-edit check needs: the caps themselves, the percentages
+ *  they were derived from, and the equity they were derived AT. */
+export type DollarCapConfig = Pick<
+  AutotradeConfig,
+  DollarCapKey | 'maxDailyDrawdownPct' | 'riskProfile' | 'liveCapsAnchorEquityUsd'
+>;
+
+/**
+ * Dollar caps a human set deliberately — those that no longer equal what the
+ * anchor equity derives. "Only move what you own."
+ *
+ * liveCapsReanchor has enforced this since it was written, and its header
+ * described it as "the same rule that keeps the tune itself from stomping
+ * deliberate config" — but the tune never actually implemented it, so applying
+ * a tune silently reverted a hand-raised cap while the re-anchor carefully
+ * preserved it. That is not academic: liveMaxOrderUsd was raised from the
+ * derived $439 to $1,600 on 2026-08-24 because the derived value was BELOW
+ * what correct position sizing produces on a small account and was blocking
+ * every entry (`order_notional: $1,236.06 vs cap $439.00`). A retune would
+ * have put the account straight back into that state.
+ *
+ * No anchor = not armed: nothing is treated as hand-edited, because without
+ * the equity the caps were derived at there is no way to tell a deliberate
+ * value from a derived one. Same posture as the re-anchor's own no-op.
+ */
+export function handEditedDollarCaps(cfg: DollarCapConfig): DollarCapKey[] {
+  const anchor = cfg.liveCapsAnchorEquityUsd;
+  if (anchor === null || !(anchor > 0)) return [];
+  const atAnchor = deriveDollarCaps(cfg, anchor);
+  return DOLLAR_CAP_KEYS.filter((key) => cfg[key] !== atAnchor[key]);
 }
 
 export function maxOrderEquityFractionFor(riskProfile: 'MODERATE' | 'AGGRESSIVE'): number {
@@ -468,7 +538,10 @@ function shapeToPatch(
   // drawdown % in dollars so the guardrail layer agrees exactly with the risk
   // engine's own % halt rather than being a conflicting second number.
   const dailyLossUsd = Math.round(equityUsd * (maxDailyDrawdownPct / 100));
-  const orderUsd = Math.round(equityUsd * shape.maxOrderEquityFraction);
+  // Through maxOrderEquityFractionFor, NOT shape.maxOrderEquityFraction
+  // directly: that function is what deriveDollarCaps and liveCapsReanchor read,
+  // and the two must agree by construction or a fresh tune reads as drifted.
+  const orderUsd = Math.round(equityUsd * maxOrderEquityFractionFor(shape.riskProfile));
   return {
     riskProfile: shape.riskProfile,
     maxConcurrentPositions: shape.maxConcurrentPositions,
@@ -533,9 +606,10 @@ export interface ComputeTargetTuneInput {
   equityUsd: number;
   targetDailyGainPct: number;
   basis: TuneBasis;
-  /** Current config — read only to warn about interactions (the auto-tuners);
-   *  never mutated. */
-  config: Pick<AutotradeConfig, 'autoTuneEnabled' | 'autoTuneExitsEnabled'>;
+  /** Current config — read only, never mutated: to warn about interactions
+   *  (the auto-tuners), and to spot dollar caps a human set deliberately so
+   *  this tune preserves them instead of reverting them. */
+  config: Pick<AutotradeConfig, 'autoTuneEnabled' | 'autoTuneExitsEnabled'> & DollarCapConfig;
 }
 
 /** Derive a full tunable patch from equity + a target daily gain % under the
@@ -553,6 +627,20 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
   const patch = shapeToPatch(shape, equityUsd, riskPerTradePct, targetDailyGainPct);
 
   const warnings: string[] = [];
+
+  // Only move what you own. A dollar cap that no longer matches its
+  // anchor-derived value was set by a human; carry it through unchanged rather
+  // than reverting it — the rule liveCapsReanchor already enforces, and which
+  // its header wrongly assumed the tune enforced too. The keys stay in the
+  // patch (set to their current values) so it remains a complete TunablePatch;
+  // applying it is simply a no-op for them.
+  const preserved = handEditedDollarCaps(input.config);
+  for (const key of preserved) patch[key] = input.config[key];
+  if (preserved.length > 0) {
+    warnings.push(
+      `Kept your own ${preserved.join(', ')} instead of the equity-derived value — these were set by hand, so this tune leaves them alone. Clear them back to the suggested figures if you want the tune to size them again.`,
+    );
+  }
   if (rawRiskPerTradePct > MAX_SUGGESTED_RISK_PER_TRADE_PCT) {
     warnings.push(
       `Reaching ${targetDailyGainPct}%/day under this basis would need ~${rawRiskPerTradePct}% risk per trade — well past a survivable level. Capped the suggestion at ${MAX_SUGGESTED_RISK_PER_TRADE_PCT}%; lower the target or accept a smaller expected day. (You can still hand-enter a higher risk %, but a few losers in a row would be account-ending.)`,

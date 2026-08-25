@@ -804,6 +804,23 @@ position the broker shows **no resting stop** for is reported, never silently re
 a replacement placed on a check that merely failed to *see* the original would leave two
 stops on one position and sell it twice.
 
+**Caps you set by hand stay yours.** The dollar guardrails — per-order
+notional and the daily-loss limit — are normally derived from account equity,
+and they re-derive themselves as the account grows or shrinks (a loss cap that
+does not shrink with the account is a 22% halt wearing a 13% label). But a cap
+you set deliberately is left alone: both the target tune and the automatic
+re-anchor only move a cap that still matches its derived value. The trade-off
+is the honest one — a hand-set cap no longer tracks equity, so if the account
+changes size materially, revisit it yourself. Clear it back to the suggested
+figure and the app resumes sizing it for you.
+
+This matters most on a small account, where the derived per-order cap can land
+*below* what correct position sizing produces. A 2% risk budget with a 3% stop
+implies a position worth roughly two-thirds of the account; a backstop set at a
+quarter of equity then blocks every legitimate entry rather than catching the
+absurd ones it exists for. If entries are being refused on order notional, the
+cap is the thing that is wrong, not the sizing.
+
 **A cap that counts exits is not a cap on trades.** Autotrade carries two
 separate daily limits and they are deliberately different numbers.
 **Max trades per day** counts *entries* — it is your trade budget. The live

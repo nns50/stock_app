@@ -1,6 +1,6 @@
 import { AutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../../db/autotradeConfig';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
-import { maxOrderEquityFractionFor } from './targetTune';
+import { DOLLAR_CAP_KEYS, deriveDollarCaps, DollarCapKey } from './targetTune';
 
 // ---------------------------------------------------------------------------
 // Automatic re-anchoring of the equity-derived DOLLAR caps.
@@ -38,37 +38,12 @@ import { maxOrderEquityFractionFor } from './targetTune';
  *  enough that the caps never drift meaningfully out of proportion. */
 export const REANCHOR_THRESHOLD_PCT = 15;
 
-const DOLLAR_CAP_KEYS = [
-  'liveMaxOrderUsd',
-  'liveMaxDailyLossUsd',
-  'liveOptionsMaxOrderUsd',
-  'liveOptionsMaxDailyLossUsd',
-] as const;
-export type DollarCapKey = (typeof DOLLAR_CAP_KEYS)[number];
-
-export type DollarCaps = Record<DollarCapKey, number>;
-
-/**
- * The four dollar caps at a given equity — the same arithmetic as
- * targetTune.ts's shapeToPatch (daily loss = the tuned drawdown % in dollars;
- * per-order = the profile's equity fraction), reading both inputs from the
- * CURRENT config rather than replaying the tune. That keeps this correct even
- * after auto-tune or a hand edit moves the percentages: the caps track what
- * the config says now, at what the account is worth now.
- */
-export function deriveDollarCaps(
-  cfg: Pick<AutotradeConfig, 'maxDailyDrawdownPct' | 'riskProfile'>,
-  equityUsd: number,
-): DollarCaps {
-  const dailyLossUsd = Math.round(equityUsd * (cfg.maxDailyDrawdownPct / 100));
-  const orderUsd = Math.round(equityUsd * maxOrderEquityFractionFor(cfg.riskProfile));
-  return {
-    liveMaxOrderUsd: orderUsd,
-    liveMaxDailyLossUsd: dailyLossUsd,
-    liveOptionsMaxOrderUsd: orderUsd,
-    liveOptionsMaxDailyLossUsd: dailyLossUsd,
-  };
-}
+// The cap list, their arithmetic, and the hand-edit test all live in
+// targetTune.ts now, beside the formulas that produce them — this file and the
+// tuner MUST agree on all three or a freshly-applied tune would immediately
+// look drifted. Re-exported so this module's own surface is unchanged.
+export { DOLLAR_CAP_KEYS, deriveDollarCaps, handEditedDollarCaps } from './targetTune';
+export type { DollarCapKey, DollarCaps } from './targetTune';
 
 export type ReanchorDecision =
   | { action: 'skip'; reason: string }

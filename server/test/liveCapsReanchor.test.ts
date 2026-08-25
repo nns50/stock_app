@@ -13,6 +13,7 @@ import {
   REANCHOR_THRESHOLD_PCT,
   decideLiveCapsReanchor,
   deriveDollarCaps,
+  handEditedDollarCaps,
   reanchorLiveCapsIfDrifted,
 } from '../src/services/autotrading/liveCapsReanchor';
 
@@ -25,27 +26,50 @@ function tunedConfig(equity: number, over: Partial<AutotradeConfig> = {}): Autot
 }
 
 describe('deriveDollarCaps', () => {
-  it('matches the tune generator exactly — one formula, not two', () => {
-    // If shapeToPatch and deriveDollarCaps ever disagree, a freshly-applied
-    // tune would immediately look "hand-edited" and re-anchoring would never
-    // run. Tie them together on a real tune result.
-    const equity = 6917.07;
-    const tune = computeTargetTune({
-      equityUsd: equity,
-      targetDailyGainPct: 10,
-      basis: 'expected',
-      config: { autoTuneEnabled: false, autoTuneExitsEnabled: false },
-    });
-    const derived = deriveDollarCaps(
-      { maxDailyDrawdownPct: tune.patch.maxDailyDrawdownPct, riskProfile: tune.patch.riskProfile },
-      equity,
-    );
-    expect(tune.patch.liveMaxOrderUsd).toBe(derived.liveMaxOrderUsd);
-    expect(tune.patch.liveMaxDailyLossUsd).toBe(derived.liveMaxDailyLossUsd);
-    expect(tune.patch.liveOptionsMaxOrderUsd).toBe(derived.liveOptionsMaxOrderUsd);
-    expect(tune.patch.liveOptionsMaxDailyLossUsd).toBe(derived.liveOptionsMaxDailyLossUsd);
-    // …and the tune arms the anchor with the same equity it derived from.
-    expect(tune.patch.liveCapsAnchorEquityUsd).toBe(equity);
+  // If shapeToPatch and deriveDollarCaps ever disagree, a freshly-applied tune
+  // immediately looks "hand-edited": re-anchoring never runs on that cap, and
+  // (since 2026-08-25) the next tune preserves a value it wrote itself.
+  //
+  // This used to be checked on ONE band, and the CONSERVATIVE band was quietly
+  // failing it the whole time — it derived 0.2 × equity while everything that
+  // reads the cap back derived 0.25, because the config stores only
+  // MODERATE/AGGRESSIVE and a conservative tune journals as MODERATE. Every
+  // band is checked now, which is what caught it.
+  it.each([1, 3, 5, 8, 10, 12])(
+    'matches the tune generator exactly at a %i pct/day target — one formula, not two',
+    (target) => {
+      const equity = 6917.07;
+      const tune = computeTargetTune({
+        equityUsd: equity,
+        targetDailyGainPct: target,
+        basis: 'expected',
+        config: { ...defaultAutotradeConfig(), autoTuneEnabled: false, autoTuneExitsEnabled: false },
+      });
+      const derived = deriveDollarCaps(
+        { maxDailyDrawdownPct: tune.patch.maxDailyDrawdownPct, riskProfile: tune.patch.riskProfile },
+        equity,
+      );
+      expect(tune.patch.liveMaxOrderUsd).toBe(derived.liveMaxOrderUsd);
+      expect(tune.patch.liveMaxDailyLossUsd).toBe(derived.liveMaxDailyLossUsd);
+      expect(tune.patch.liveOptionsMaxOrderUsd).toBe(derived.liveOptionsMaxOrderUsd);
+      expect(tune.patch.liveOptionsMaxDailyLossUsd).toBe(derived.liveOptionsMaxDailyLossUsd);
+      // …and the tune arms the anchor with the same equity it derived from.
+      expect(tune.patch.liveCapsAnchorEquityUsd).toBe(equity);
+    },
+  );
+
+  it('leaves a fresh tune with NOTHING looking hand-edited, on any band', () => {
+    for (const target of [1, 3, 5, 8, 10, 12]) {
+      const equity = 6917.07;
+      const tune = computeTargetTune({
+        equityUsd: equity,
+        targetDailyGainPct: target,
+        basis: 'expected',
+        config: { ...defaultAutotradeConfig(), autoTuneEnabled: false, autoTuneExitsEnabled: false },
+      });
+      const applied = { ...defaultAutotradeConfig(), ...tune.patch } as AutotradeConfig;
+      expect(handEditedDollarCaps(applied)).toEqual([]);
+    }
   });
 });
 
