@@ -553,12 +553,14 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       config: {
         filters: {
           minRelVol: config.minRelVol,
+          minChangePct: config.minChangePct,
           minPrice: config.minPrice,
           minAvgVolume: config.minAvgVolume,
           minScore: config.minSignalScore,
           requireWeeklyTrendAlignment: config.requireWeeklyTrendAlignment,
         },
         weights: resolveScoringWeights(config, regimeLabel),
+        momentumIntradayOnly: config.momentumIntradayOnly,
         benchmarkSymbol: config.benchmarkSymbol,
         relativeStrengthLookbackDays: config.relativeStrengthLookbackDays,
       },

@@ -360,6 +360,19 @@ export interface AutotradeConfig {
    *  mean the same thing at any hour, and cancels market-wide quiet/busy days.
    *  0 = off (raw minRelVol alone). */
   minRelVolPace: number;
+  /** Minimum move TODAY in the trade's direction, % (a long needs +this, a
+   *  short -this). 0 = off. The screener is largely POSITIONAL — momentum
+   *  averages today's change with distance from both MAs, and `trend` scores
+   *  the same MA relationship again, so where a stock sits after weeks of trend
+   *  outweighs whether it is moving now by roughly 35 to 10. On 2026-08-25 IT
+   *  was DOWN 3.45% on the day, scored 71.8 for momentum off its +9%/+28% MA
+   *  distances, was bought long as a "breakout" and closed at -$23.94. */
+  minChangePct: number;
+  /** Score momentum from TODAY'S move alone, leaving price-vs-MA to the `trend`
+   *  component that already measures it (indicators/screener.ts's
+   *  scoreMomentum). Intended for an intraday loop, where last month's average
+   *  is not the question. */
+  momentumIntradayOnly: boolean;
 
   /** Scheduled macro-event blackout (2026-07-18): hard-block new entries,
    *  paper AND live, within this many hours (either side) of any date-time on
@@ -929,6 +942,8 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
     minRelVolPace: 0,
+    minChangePct: 0,
+    momentumIntradayOnly: false,
     macroEventBlackoutHours: 0,
     maxHoldDays: 0,
     breakevenTriggerRMultiple: 0,
@@ -1149,6 +1164,9 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
     earningsBlackoutDays: posInt(input.earningsBlackoutDays, d.earningsBlackoutDays),
     minRelVolPace: nonNeg(input.minRelVolPace, d.minRelVolPace),
+    minChangePct: nonNeg(input.minChangePct, d.minChangePct),
+    momentumIntradayOnly:
+      typeof input.momentumIntradayOnly === 'boolean' ? input.momentumIntradayOnly : d.momentumIntradayOnly,
     macroEventBlackoutHours: nonNeg(input.macroEventBlackoutHours, d.macroEventBlackoutHours),
     maxHoldDays: posInt(input.maxHoldDays, d.maxHoldDays),
     breakevenTriggerRMultiple: nonNeg(input.breakevenTriggerRMultiple, d.breakevenTriggerRMultiple),

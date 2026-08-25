@@ -911,6 +911,28 @@ because a limit priced off a stale quote can sit unfilled while the market walks
 it — which is how a position gets carried overnight by an exit that already decided to
 leave.
 
+**Score the thing you are actually trading.** A screener assembled from
+"momentum, trend, RSI, volatility" sounds like it measures movement, but check what each
+component *reads*. If momentum averages today's change with the distance from two moving
+averages, and a separate trend component scores that same price-vs-MA relationship again,
+then the positional dimension — where a stock sits after weeks of trend — is being counted
+twice while today's direction is a tenth of the total. That is a fine way to pick a
+multi-week swing. It is the wrong question entirely for a position you will close before
+the bell.
+
+The failure looks reasonable from the outside, which is what makes it durable: a stock
+down 3.45% on the day scored 71.8 for "momentum" because it still sat 9% over its 20-day
+and 28% over its 50-day from an earlier run. It was bought long, journaled as a breakout,
+and lost money. On that same day **a third of everything clearing the score threshold was
+falling** — seventeen of fifty.
+
+Two habits protect against it. First, **filter on direction, not just on score**: a long
+needs the stock to be up today, whatever its position looks like. It is a blunt rule and
+it removes an entire category of wrong trade. Second, when you weight a scoring system,
+write down which components are about *now* and which are about *the past few weeks*, and
+check the split matches your holding period. If you hold for minutes and your score is
+60% positional, the score is answering someone else's question.
+
 **Never let a safety limit block the exit.** A daily order cap is worth having — it is
 the backstop against a bug that places the same order over and over. But a runaway loop
 places *entries*, and refusing an *exit* does not reduce risk, it strands you in a

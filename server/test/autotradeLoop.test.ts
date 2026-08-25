@@ -673,7 +673,14 @@ describe('runAutotradeLoopTick', () => {
     expect(mockSessionWindow).toHaveBeenCalledWith(30);
     expect(mockScreen).toHaveBeenCalledWith({
       config: {
-        filters: { minRelVol: 3, minPrice: 5, minAvgVolume: 500_000, minScore: 55, requireWeeklyTrendAlignment: true },
+        filters: {
+          minRelVol: 3,
+          minChangePct: 0,
+          minPrice: 5,
+          minAvgVolume: 500_000,
+          minScore: 55,
+          requireWeeklyTrendAlignment: true,
+        },
         weights: {
           momentum: 30,
           relativeVolume: 20,
@@ -684,6 +691,7 @@ describe('runAutotradeLoopTick', () => {
           relativeStrength: 0,
           sentiment: 0,
         },
+        momentumIntradayOnly: false,
         benchmarkSymbol: 'SPY',
         relativeStrengthLookbackDays: 20,
       },

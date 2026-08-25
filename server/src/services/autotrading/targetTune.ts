@@ -464,6 +464,8 @@ export const NEVER_TUNED_KEYS = [
   'finishLineSizingEnabled',
   'finishLineMinSignalScore',
   'minRelVolPace',
+  'minChangePct',
+  'momentumIntradayOnly',
   'maxStopDistancePct',
   'liveScaleOutEnabled',
   'stagnationExitMinutes',

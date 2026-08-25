@@ -177,6 +177,8 @@ const configBody = z.object({
   sessionBufferMinutes: z.number().int().nonnegative().optional(),
   earningsBlackoutDays: z.number().int().nonnegative().optional(),
   minRelVolPace: z.number().min(0).max(50).optional(),
+  minChangePct: z.number().min(0).max(100).optional(),
+  momentumIntradayOnly: z.boolean().optional(),
   macroEventBlackoutHours: z.number().nonnegative().optional(),
   // --- Max hold time (0 disables) --------------------------------------------
   maxHoldDays: z.number().int().nonnegative().optional(),
@@ -415,6 +417,8 @@ autotradeRouter.put(
     if (body.sessionBufferMinutes !== undefined) patch.sessionBufferMinutes = body.sessionBufferMinutes;
     if (body.earningsBlackoutDays !== undefined) patch.earningsBlackoutDays = body.earningsBlackoutDays;
     if (body.minRelVolPace !== undefined) patch.minRelVolPace = body.minRelVolPace;
+    if (body.minChangePct !== undefined) patch.minChangePct = body.minChangePct;
+    if (body.momentumIntradayOnly !== undefined) patch.momentumIntradayOnly = body.momentumIntradayOnly;
     if (body.macroEventBlackoutHours !== undefined) patch.macroEventBlackoutHours = body.macroEventBlackoutHours;
     if (body.maxHoldDays !== undefined) patch.maxHoldDays = body.maxHoldDays;
     if (body.breakevenTriggerRMultiple !== undefined) {
