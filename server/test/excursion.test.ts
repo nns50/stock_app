@@ -1,8 +1,26 @@
 import { describe, it, expect } from 'vitest';
-import { aggregateExcursions, computeExcursion, ExcursionInput } from '../src/services/excursion';
+import {
+  aggregateExcursions,
+  computeExcursion,
+  barsWithinHoldingPeriod,
+  ExcursionInput,
+} from '../src/services/excursion';
 import type { Candle } from '../src/providers/types';
 
-const candle = (high: number, low: number): Candle => ({ time: 0, open: low, high, low, close: high, volume: 0 });
+/** A bar on a given ET date. These carried `time: 0` (1970) until 2026-08-25 —
+ *  harmless only because computeExcursion ignored timestamps entirely, which is
+ *  the very bug the holding-period filter now fixes. A dated bar is the honest
+ *  fixture. Noon ET keeps the date unambiguous either side of a DST change. */
+const barOn = (date: string, high: number, low: number): Candle => ({
+  time: Date.parse(`${date}T16:00:00Z`),
+  open: low,
+  high,
+  low,
+  close: high,
+  volume: 0,
+});
+/** Default in-window bar for the fixtures below (entry 01-01, exit 01-05). */
+const candle = (high: number, low: number): Candle => barOn('2026-01-02', high, low);
 
 const longTrade: ExcursionInput = {
   positionId: 1,
@@ -14,6 +32,7 @@ const longTrade: ExcursionInput = {
   stopPrice: 90, // risk = 10*10 = 100
   realizedPnl: 50, // closed at +0.5R
   entryDate: '2026-01-01',
+  exitDate: '2026-01-05',
 };
 
 describe('computeExcursion', () => {
@@ -84,5 +103,76 @@ describe('aggregateExcursions', () => {
     // numbers checkable rather than decorative.
     const c = rep.coverage;
     expect(rep.trades + c.undated + c.overCap + c.unavailable).toBe(c.closedStockTrades);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Holding-period window (2026-08-25). computeExcursion used to scan EVERY bar
+// it was handed. Both callers ask their provider for {start: entryDate, end:
+// exitDate} and assumed that bounded the fetch — but the live provider (Webull)
+// has no date-range parameter at all, so the range was dropped and the last 120
+// daily bars came back instead. MAE/MFE was therefore the symbol's ~6-month
+// high/low, reporting +20.95R average MFE and -4.28R average MAE across the
+// book: an average adverse excursion four times the stop, on trades that would
+// have been stopped out at 1R.
+// ---------------------------------------------------------------------------
+describe('holding-period window', () => {
+  it('ignores bars from before the entry and after the exit', () => {
+    const ex = computeExcursion(longTrade, [
+      barOn('2025-06-01', 175, 40), // months BEFORE the trade — the real defect
+      barOn('2026-01-02', 130, 94), // the only bar actually held through
+      barOn('2026-03-01', 260, 20), // months AFTER the exit
+    ])!;
+    // Exactly the single-bar answer, as if the out-of-window bars were absent.
+    expect(ex.mfeR).toBe(3);
+    expect(ex.maeR).toBe(-0.6);
+  });
+
+  it('reproduces the VALE day trade: 6-month range vs the day actually held', () => {
+    // Position 537, 2026-08-24: 81sh @ 15.14, stop 14.56 (risk 0.58/sh).
+    // Its own daily bar was H 15.22 / L 14.62. The six months of bars around it
+    // ranged to 17.45 — which is where the reported "+15.26% MFE" came from.
+    const vale: ExcursionInput = {
+      positionId: 537,
+      symbol: 'VALE',
+      side: 'long',
+      entryPrice: 15.14,
+      quantity: 81,
+      multiplier: 1,
+      stopPrice: 14.56,
+      realizedPnl: -1.62,
+      entryDate: '2026-08-24',
+      exitDate: '2026-08-24',
+    };
+    const bars = [barOn('2026-05-12', 17.45, 13.56), barOn('2026-08-24', 15.22, 14.62)];
+    const ex = computeExcursion(vale, bars)!;
+    expect(ex.mfeR).toBeCloseTo(0.14, 2); // was +3.98R
+    expect(ex.maeR).toBeCloseTo(-0.9, 2); // was -2.72R
+    expect(ex.mfePct).toBeCloseTo(0.53, 2); // was 15.26%
+  });
+
+  it('is unmeasurable — not silently widened — when no bar falls in the window', () => {
+    // The failure mode this whole filter exists to prevent is a SILENT widening,
+    // so an empty window must report nothing rather than fall back to the full set.
+    expect(computeExcursion(longTrade, [barOn('2025-06-01', 175, 40)])).toBeNull();
+  });
+
+  it('runs open-ended forward when the trade has no dated exit', () => {
+    const noExit = { ...longTrade, exitDate: null };
+    const ex = computeExcursion(noExit, [barOn('2025-12-31', 999, 1), barOn('2026-04-01', 130, 94)])!;
+    expect(ex.mfeR).toBe(3); // the pre-entry bar is still excluded
+  });
+
+  it('passes through a set a range-supporting provider already bounded', () => {
+    const inWindow = [barOn('2026-01-01', 110, 99), barOn('2026-01-05', 130, 94)];
+    expect(barsWithinHoldingPeriod(inWindow, '2026-01-01', '2026-01-05')).toEqual(inWindow);
+  });
+
+  it('includes the boundary days themselves', () => {
+    // A day trade entered and exited the same session has exactly one bar, and
+    // an inclusive window is the difference between measuring it and measuring
+    // nothing at all.
+    const oneDay = barsWithinHoldingPeriod([barOn('2026-01-01', 110, 99)], '2026-01-01', '2026-01-01');
+    expect(oneDay).toHaveLength(1);
   });
 });

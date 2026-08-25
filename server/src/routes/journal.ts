@@ -171,6 +171,7 @@ journalRouter.get(
               stopPrice: p.stopPrice,
               realizedPnl: realizedPnlOf(p),
               entryDate: p.entryDate,
+              exitDate: lastExitDate(p),
             },
             candles,
           );

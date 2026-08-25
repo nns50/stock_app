@@ -120,6 +120,69 @@ describe('WebullProvider', () => {
     expect(url).toContain('timespan=D');
   });
 
+  // -------------------------------------------------------------------------
+  // Date ranges (2026-08-25). Webull's bars endpoint has no range parameter —
+  // it takes a `count` and nothing else — and start/end used to be dropped here
+  // WITHOUT a trace. A caller asking for one specific day got the last 120 bars
+  // and could not tell. That is how the MAE/MFE report came to measure the
+  // symbol's six-month high/low instead of each trade's excursion, reporting an
+  // average adverse excursion four times the stop distance.
+  // -------------------------------------------------------------------------
+  const barAt = (day: string, close: string) => ({
+    symbol: 'AAPL',
+    time: `${day}T19:59:00.000+0000`,
+    open: close,
+    high: close,
+    low: close,
+    close,
+    volume: '1',
+  });
+
+  it('filters returned bars to a requested start/end window', async () => {
+    mockFetch([barAt('2026-06-16', '1'), barAt('2026-06-17', '2'), barAt('2026-06-18', '3')]);
+    const p = new WebullProvider(client(), fakeAux());
+    const candles = await p.getCandles('AAPL', 'daily', { start: '2026-06-17', end: '2026-06-17' });
+    expect(candles).toHaveLength(1);
+    expect(candles[0].close).toBe(2);
+  });
+
+  it('includes both boundary days — a same-day trade has exactly one bar', async () => {
+    mockFetch([barAt('2026-06-16', '1'), barAt('2026-06-17', '2'), barAt('2026-06-18', '3')]);
+    const p = new WebullProvider(client(), fakeAux());
+    const candles = await p.getCandles('AAPL', 'daily', { start: '2026-06-16', end: '2026-06-18' });
+    expect(candles.map((c) => c.close)).toEqual([1, 2, 3]);
+  });
+
+  it('asks for enough bars to reach a far-back start, not just the default 120', async () => {
+    const fetchSpy = mockFetch([barAt('2026-06-18', '3')]);
+    const p = new WebullProvider(client(), fakeAux());
+    // A start ~2 years back needs far more than the 120-bar default.
+    await p.getCandles('AAPL', 'daily', { start: '2024-08-25', end: '2026-06-18' }).catch(() => []);
+    const url = String(fetchSpy.mock.calls[0][0]);
+    const count = Number(new URL(url).searchParams.get('count'));
+    expect(count).toBeGreaterThan(400);
+  });
+
+  it('falls back to the aux provider when the window starts before the oldest bar available', async () => {
+    // Returning a truncated window the caller would read as complete is the
+    // failure this whole change is about — hand it to a provider with real
+    // range support instead.
+    mockFetch([barAt('2026-06-17', '2'), barAt('2026-06-18', '3')]);
+    const aux = fakeAux();
+    const p = new WebullProvider(client(), aux);
+    const q = { start: '2020-01-01', end: '2026-06-18' };
+    const candles = await p.getCandles('AAPL', 'daily', q);
+    expect(aux.getCandles).toHaveBeenCalledWith('AAPL', 'daily', q);
+    expect(candles).toEqual([{ time: 1, open: 9, high: 9, low: 9, close: 9, volume: 9 }]);
+  });
+
+  it('leaves plain limit-only queries alone (the hot path)', async () => {
+    mockFetch([barAt('2026-06-16', '1'), barAt('2026-06-17', '2'), barAt('2026-06-18', '3')]);
+    const p = new WebullProvider(client(), fakeAux());
+    const candles = await p.getCandles('AAPL', 'daily', { limit: 2 });
+    expect(candles.map((c) => c.close)).toEqual([2, 3]);
+  });
+
   it('also handles a nested bars array with epoch-seconds timestamps (defensive)', async () => {
     mockFetch([
       {

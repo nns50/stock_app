@@ -64,6 +64,16 @@ function isSymbolError(err: unknown): boolean {
  * bars return an ISO-8601 string ("2026-06-18T19:59:00.000+0000"), while other
  * surfaces use an epoch number (seconds or ms) or its string form.
  */
+/** ET calendar date of a bar timestamp — the same basis entry/exit dates and
+ *  every other date-shaped field in this app use. */
+const etDateFmt = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/New_York',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+const etDateOf = (ms: number): string => etDateFmt.format(ms);
+
 function parseTime(v: unknown): number | undefined {
   if (v === null || v === undefined || v === '') return undefined;
   if (typeof v === 'number') return v < 1e12 ? v * 1000 : v;
@@ -183,15 +193,39 @@ export class WebullProvider implements MarketDataProvider {
     return arr;
   }
 
+  /**
+   * Webull's bars endpoint has no date-range parameter — it takes a `count` of
+   * most-recent bars and nothing else. `start`/`end` used to be dropped here
+   * WITHOUT a trace, so a caller asking for one specific day got the last 120
+   * bars back and had no way to know. That is exactly how the MAE/MFE report
+   * came to measure six-month highs instead of trade excursions (see
+   * excursion.ts's barsWithinHoldingPeriod).
+   *
+   * A range is now honored the only way this API allows: ask for enough recent
+   * bars to reach back past `start`, then filter to the window. What cannot be
+   * served is history OLDER than `count` bars — for that the request falls
+   * through to the aux provider, which does support real range queries, rather
+   * than quietly returning the wrong window.
+   */
+  private static barsToCover(timeframe: Timeframe, start: string): number {
+    const days = Math.max(0, (Date.now() - Date.parse(`${start}T00:00:00Z`)) / 86_400_000);
+    // Trading days ≈ 5/7 of calendar days; a generous margin beats a short read.
+    if (timeframe === 'weekly') return Math.ceil(days / 7) + 10;
+    if (timeframe === 'daily') return Math.ceil((days * 5) / 7) + 10;
+    return Math.ceil(days * 400); // intraday: bounded by the 1200 cap below
+  }
+
   async getCandles(symbol: string, timeframe: Timeframe, query?: CandleQuery): Promise<Candle[]> {
     const limit = query?.limit ?? 120;
+    // Enough bars to reach `start`, when one was asked for.
+    const needed = query?.start ? Math.max(limit, WebullProvider.barsToCover(timeframe, query.start)) : limit;
     let resp: unknown;
     try {
       resp = await this.marketGet('/openapi/market-data/stock/bars', {
         symbol: symbol.toUpperCase(),
         category: 'US_STOCK',
         timespan: TIMESPAN[timeframe],
-        count: String(Math.min(Math.max(limit, 1), 1200)),
+        count: String(Math.min(Math.max(needed, 1), 1200)),
       });
     } catch (err) {
       // A symbol Webull doesn't carry (BRK.B → 417) falls back to the aux
@@ -210,7 +244,22 @@ export class WebullProvider implements MarketDataProvider {
       }))
       .filter((c) => c.time > 0);
     candles.sort((a, b) => a.time - b.time);
-    return candles.slice(-limit);
+    if (query?.start == null && query?.end == null) return candles.slice(-limit);
+
+    const windowed = candles.filter((c) => {
+      const day = etDateOf(c.time);
+      if (query.start != null && day < query.start) return false;
+      if (query.end != null && day > query.end) return false;
+      return true;
+    });
+    // The requested window starts before the oldest bar this endpoint can
+    // return, so the range genuinely cannot be served from here. Hand it to the
+    // aux provider (real range support) instead of returning a truncated window
+    // the caller would read as complete.
+    if (query.start != null && candles.length > 0 && etDateOf(candles[0].time) > query.start) {
+      return this.aux.getCandles(symbol, timeframe, query);
+    }
+    return windowed.slice(-limit);
   }
 
   // --- Delegated to the auxiliary provider (Webull can't enumerate chains) ---

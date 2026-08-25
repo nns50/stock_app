@@ -17,6 +17,9 @@ export interface ExcursionInput {
   stopPrice: number | null;
   realizedPnl: number;
   entryDate: string;
+  /** Last exit date (ET, YYYY-MM-DD). Null for a trade with no dated exit —
+   *  the window is then open-ended forward from the entry. */
+  exitDate?: string | null;
 }
 
 export interface TradeExcursion {
@@ -33,6 +36,47 @@ export interface TradeExcursion {
   capturedPct: number | null;
 }
 
+/** ET calendar date of a bar, matching how entry/exit dates are stored. */
+const etDateOf = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/New_York',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+/**
+ * The bars that fall inside `[entryDate, exitDate]`, inclusive.
+ *
+ * This function used to take the caller's word for it and scan EVERY bar it was
+ * handed. Both callers ask their provider for `{start: entryDate, end:
+ * exitDate}` and reasonably assumed that bounded the fetch — but the live
+ * provider (Webull) has no date-range parameter at all: its bars endpoint takes
+ * only a `count`, and `start`/`end` were dropped on the floor. So the fetch
+ * returned the most recent 120 daily bars (the default limit) and this walked
+ * all of them, making MAE/MFE the symbol's ~6-MONTH high/low rather than the
+ * trade's excursion.
+ *
+ * The numbers that produced were not subtly wrong, they were impossible:
+ * +20.95R average MFE and -4.28R average MAE across the book on 2026-08-25 — an
+ * average adverse excursion four times the stop distance, on trades that would
+ * have been stopped out at 1R. A single VALE day trade reported +3.98R / -2.72R
+ * against an actual daily-bar excursion of +0.14R / -0.90R; its "15.26% MFE"
+ * was VALE's six-month high, months before the position existed.
+ *
+ * So the window is enforced HERE, where the requirement actually lives, rather
+ * than trusted to a provider that may not support ranges. Providers that do
+ * honor start/end simply hand over a set this filter passes through untouched.
+ */
+export function barsWithinHoldingPeriod(candles: Candle[], entryDate: string, exitDate?: string | null): Candle[] {
+  return candles.filter((c) => {
+    if (!(c.time > 0)) return false;
+    const day = etDateOf.format(c.time);
+    if (day < entryDate) return false;
+    if (exitDate != null && day > exitDate) return false;
+    return true;
+  });
+}
+
 export function computeExcursion(p: ExcursionInput, candles: Candle[]): TradeExcursion | null {
   if (!candles.length || !p.entryPrice) return null;
   const sign = p.side === 'long' ? 1 : -1;
@@ -40,9 +84,16 @@ export function computeExcursion(p: ExcursionInput, candles: Candle[]): TradeExc
   const initialRisk =
     p.stopPrice != null ? Math.abs(p.entryPrice - p.stopPrice) * p.quantity * p.multiplier || null : null;
 
+  // Bars outside the holding period are not this trade's excursion. A window
+  // that lands on no bars at all measures nothing, and is reported as
+  // unmeasurable (null) rather than silently falling back to the full set —
+  // the whole defect this filter exists to fix was a silent widening.
+  const held = barsWithinHoldingPeriod(candles, p.entryDate, p.exitDate);
+  if (!held.length) return null;
+
   let maxHigh = -Infinity;
   let minLow = Infinity;
-  for (const c of candles) {
+  for (const c of held) {
     if (c.high > maxHigh) maxHigh = c.high;
     if (c.low < minLow) minLow = c.low;
   }
