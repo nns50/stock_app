@@ -55,7 +55,11 @@ export interface PositionInput {
  *  'stop'/'target' from which bracket leg filled, 'time_exit' from the
  *  maxHoldDays close, 'manual' from a human-triggered close. Null (absent) for
  *  hand-logged exits and rows that predate the column. */
-export type PositionExitReason = 'stop' | 'target' | 'time_exit' | 'manual';
+/** Why an exit happened. 'partial' (2026-08-25) is a live SCALE-OUT — part of a
+ *  winner banked at an R trigger, leaving the rest running; the position stays
+ *  open. The column has no CHECK constraint precisely so this union can widen
+ *  without a table rebuild (see db/index.ts on position_exits.exit_reason). */
+export type PositionExitReason = 'stop' | 'target' | 'time_exit' | 'manual' | 'partial';
 
 export interface PositionExit {
   id: number;

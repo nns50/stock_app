@@ -12,6 +12,7 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
     webullOrderStatus,
     webullOrderStatusBatch: batchFromSingle(webullOrderStatus),
     webullCancelOrder: vi.fn(),
+    webullReplaceOrder: vi.fn(),
     listWebullOpenOrders: vi.fn(),
   };
 });
@@ -23,6 +24,7 @@ import {
   webullPlaceOrder,
   webullOrderStatus,
   webullCancelOrder,
+  webullReplaceOrder,
   listWebullOpenOrders,
   WebullOrderStatus,
 } from '../src/providers/webull/orders';
@@ -36,6 +38,7 @@ import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { evaluateRiskCheck } from '../src/services/autotrading/riskCheck';
 import { TradeSignal } from '../src/services/autotrading/decide';
 import {
+  checkLiveEquityScaleOuts,
   attemptLiveEntry,
   reconcileLiveOrders,
   checkLiveEquityTimeExits,
@@ -48,6 +51,7 @@ const mockAccountState = vi.mocked(webullAccountState);
 const mockPlaceOrder = vi.mocked(webullPlaceOrder);
 const mockOrderStatus = vi.mocked(webullOrderStatus);
 const mockCancelOrder = vi.mocked(webullCancelOrder);
+const mockReplaceOrder = vi.mocked(webullReplaceOrder);
 const mockOpenOrders = vi.mocked(listWebullOpenOrders);
 
 /** A resting broker open order (defaults to a working SELL on AAPL — a long's
@@ -194,6 +198,7 @@ beforeEach(() => {
   mockPlaceOrder.mockReset();
   mockOrderStatus.mockReset();
   mockCancelOrder.mockReset();
+  mockReplaceOrder.mockReset();
   mockOpenOrders.mockReset();
   // Default: no resting orders at the broker, so a triggered force-close finds
   // nothing to cancel and proceeds. Tests exercising the cancel path override.
@@ -911,5 +916,133 @@ describe('checkLiveEquityTimeExits — end-of-day flatten', () => {
     await readyToClose(quantity);
     atClock(INSIDE_WINDOW);
     expect(await checkLiveEquityTimeExits()).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live scale-out (2026-08-25). A live position otherwise exits on its stop, its
+// 2R target, or a timer — and since the target is rarely reached in a session,
+// most exit on the timer at whatever R they happen to be. This banks part of a
+// winner at the R trigger.
+//
+// The ordering rule is the whole safety story: REDUCE the resting bracket legs
+// to the remainder FIRST, then sell the difference. Selling first would leave a
+// full-size bracket against a half-size holding, and a later stop fill would
+// sell shares no longer owned — for a long, a SHORT nobody opened.
+// ---------------------------------------------------------------------------
+describe('checkLiveEquityScaleOuts', () => {
+  const restingLeg = (cid: string) => openOrder({ clientOrderId: cid });
+
+  /** A working exit order on its own intent, as a real close-in-flight looks. */
+  function exitInFlightFor(positionId: number) {
+    const rec = createIntent(
+      {
+        symbol: 'AAPL',
+        assetKind: 'stock',
+        side: 'sell',
+        openClose: 'close',
+        quantity: 1,
+        orderType: 'limit',
+        limitPrice: 999,
+      },
+      `scaleout-inflight-${positionId}`,
+    );
+    recordLiveExitOrder({ intentId: rec.id, symbol: 'AAPL', riskProfile: 'MODERATE', positionId });
+  }
+
+  async function armed(atPrice: number) {
+    const { position, quantity } = await openAgedLivePosition(0);
+    setAutotradeConfig({ liveScaleOutEnabled: true, partialExitRMultiple: 1.5, partialExitPct: 50 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: atPrice }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(quantity) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SCALEOUT' });
+    return { position, quantity };
+  }
+
+  it('does nothing while the flag is off, even at the trigger', async () => {
+    await armed(200);
+    setAutotradeConfig({ liveScaleOutEnabled: false });
+    expect(await checkLiveEquityScaleOuts()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(mockReplaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('reduces the resting legs BEFORE selling, never the other way round', async () => {
+    const { position, quantity } = await armed(200); // well past 1.5R
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1'), restingLeg('TGT-1')] });
+    mockReplaceOrder.mockResolvedValue({ ok: true });
+
+    const out = await checkLiveEquityScaleOuts();
+
+    expect(out[0]).toMatchObject({ positionId: position.id, requested: true });
+    // Both legs resized to the KEPT quantity...
+    const keep = quantity - Math.floor(quantity / 2);
+    expect(mockReplaceOrder).toHaveBeenCalledWith('ACC1', 'STOP-1', { quantity: keep });
+    expect(mockReplaceOrder).toHaveBeenCalledWith('ACC1', 'TGT-1', { quantity: keep });
+    // ...and the sell happened AFTER both of them. This ordering is the
+    // difference between a scale-out and an accidental short.
+    const lastReplace = Math.max(...mockReplaceOrder.mock.invocationCallOrder);
+    expect(mockPlaceOrder.mock.invocationCallOrder[0]).toBeGreaterThan(lastReplace);
+  });
+
+  it('sells only the scale-out slice, leaving the rest running', async () => {
+    const { quantity } = await armed(200);
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1')] });
+    mockReplaceOrder.mockResolvedValue({ ok: true });
+
+    await checkLiveEquityScaleOuts();
+
+    const placed = mockPlaceOrder.mock.calls[0][1];
+    expect(placed).toMatchObject({ symbol: 'AAPL', side: 'sell', openClose: 'close' });
+    expect(placed.quantity).toBe(Math.floor(quantity / 2));
+    expect(placed.quantity).toBeLessThan(quantity);
+  });
+
+  it('ABANDONS the scale-out — selling nothing — when a leg cannot be reduced', async () => {
+    // The position stays fully protected. This is the branch that must never
+    // fall through to a sell.
+    await armed(200);
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1')] });
+    mockReplaceOrder.mockResolvedValue({ ok: false, error: 'broker refused the modify' });
+
+    const out = await checkLiveEquityScaleOuts();
+
+    expect(out[0]).toMatchObject({ requested: false });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    const ev = listAutotradeEvents({ limit: 50 }).find((e) => e.action === 'live_scale_out_blocked');
+    expect(JSON.parse(ev!.detail as string).reason).toMatch(/Could not reduce the resting bracket/);
+  });
+
+  it('refuses when no resting leg can be read — an unknown bracket is not safe to resize', async () => {
+    await armed(200);
+    mockOpenOrders.mockResolvedValue(noOpenOrders);
+    const out = await checkLiveEquityScaleOuts();
+    expect(out[0]).toMatchObject({ requested: false });
+    expect(out[0].reason).toMatch(/No readable resting exit leg/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the open-order list cannot be read at all', async () => {
+    await armed(200);
+    mockOpenOrders.mockResolvedValue({ ok: false, orders: [], error: 'broker unreachable' });
+    const out = await checkLiveEquityScaleOuts();
+    expect(out[0]).toMatchObject({ requested: false });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('skips a position that already has an exit order working', async () => {
+    // Scaling out of a position on its way out would race that close for the
+    // same shares.
+    const { position } = await armed(200);
+    exitInFlightFor(position.id);
+    expect(await checkLiveEquityScaleOuts()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('does not fire below the R trigger', async () => {
+    await armed(100.5); // entry was 100.5 — 0R
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1')] });
+    expect(await checkLiveEquityScaleOuts()).toEqual([]);
+    expect(mockReplaceOrder).not.toHaveBeenCalled();
   });
 });

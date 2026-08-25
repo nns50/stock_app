@@ -20,6 +20,7 @@ function summary(overrides: Partial<LoopTickSummary> = {}): LoopTickSummary {
     liveOptionsExitsRequested: 0,
     liveTimeExitsRequested: 0,
     liveScaleInsRequested: 0,
+    liveScaleOutsRequested: 0,
     candidatesScreened: 0,
     candidatesPassedVolatility: 0,
     signalsGenerated: 0,

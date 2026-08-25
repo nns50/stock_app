@@ -841,6 +841,19 @@ quarter of equity then blocks every legitimate entry rather than catching the
 absurd ones it exists for. If entries are being refused on order notional, the
 cap is the thing that is wrong, not the sizing.
 
+**Bank something before the clock does it for you.** A position with a stop, a target
+and a time limit has three ways out, and if the target is far enough away that a session
+rarely reaches it, the *timer* becomes your real exit — closing trades at whatever they
+happen to be worth when it fires, which averages out near break-even however good the
+entries were. Taking part of the position off at a fixed R turns some of that into
+realised profit while leaving the rest to run.
+
+The mechanical warning, if you automate it: **shrink the resting stop to the remainder
+before you sell the slice, never after.** Sell first and your stop still covers the
+original size — when it fills, it sells shares you no longer own, and a long quietly
+becomes a short. Doing it in the safe order means the worst case is a few shares briefly
+unprotected, which is recoverable; the unsafe order creates a position nobody chose.
+
 **Size your stop to your holding period, not to the daily range.** An ATR-based stop —
 "1.5x the average daily range" — is calibrated for a trade you intend to hold for days.
 Put the same stop on a position you will scratch in ninety minutes and it is not a stop at

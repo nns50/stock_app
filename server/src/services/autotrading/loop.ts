@@ -21,6 +21,7 @@ import {
   reconcileLiveOrders,
   syncAccountEquityFromBroker,
   checkLiveEquityTimeExits,
+  checkLiveEquityScaleOuts,
   checkLiveScaleIns,
   adoptOrphanedLivePositions,
   checkLiveBracketProtection,
@@ -119,6 +120,9 @@ export interface LoopTickSummary {
   /** Live scale-in add-ons actually placed at the broker this tick (0 unless
    *  liveScaleInEnabled and a position hit its add-on trigger). */
   liveScaleInsRequested: number;
+  /** Live equity scale-out orders newly PLACED this tick (0 unless
+   *  liveScaleOutEnabled and a position reached the R trigger). */
+  liveScaleOutsRequested: number;
   candidatesScreened: number;
   candidatesPassedVolatility: number;
   signalsGenerated: number;
@@ -196,6 +200,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     liveOptionsExitsRequested: 0,
     liveTimeExitsRequested: 0,
     liveScaleInsRequested: 0,
+    liveScaleOutsRequested: 0,
     candidatesScreened: 0,
     candidatesPassedVolatility: 0,
     signalsGenerated: 0,
@@ -345,6 +350,18 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     } catch (e) {
       console.error('[autotrade-loop] bracket protection check failed:', (e as Error).message);
     }
+    // Scale out of a live winner BEFORE the time exits below. Order matters:
+    // a scale-out is skipped entirely once an exit order is working, so running
+    // the exits first would mean a position that qualified for both never banks
+    // anything — the timer would take the whole thing at whatever R it happened
+    // to be. Reducing risk, so it needs no entry gate; it has its own
+    // liveScaleOutEnabled flag and session check.
+    let liveScaleOutOutcomes: Awaited<ReturnType<typeof checkLiveEquityScaleOuts>> = [];
+    try {
+      liveScaleOutOutcomes = await checkLiveEquityScaleOuts();
+    } catch (e) {
+      console.error('[autotrade-loop] live scale-out check failed:', (e as Error).message);
+    }
     const liveEquityTimeExitOutcomes = await checkLiveEquityTimeExits();
     // Scale into winners on LIVE positions — gated like an ENTRY (it ADDS risk
     // to real money), so behind isLiveEntryActive (kill switch + master gates)
@@ -477,6 +494,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       liveOptionsExitsRequested: liveOptionsExitOutcomes.filter((o) => o.requested).length,
       liveTimeExitsRequested: liveEquityTimeExitOutcomes.filter((o) => o.requested).length,
       liveScaleInsRequested: liveScaleInOutcomes.filter((o) => o.requested).length,
+      liveScaleOutsRequested: liveScaleOutOutcomes.filter((o) => o.requested).length,
     };
 
     const config = getAutotradeConfig();

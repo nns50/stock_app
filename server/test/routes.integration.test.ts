@@ -1107,6 +1107,7 @@ describe('health (integration)', () => {
       liveOptionsExitsRequested: 0,
       liveTimeExitsRequested: 0,
       liveScaleInsRequested: 0,
+      liveScaleOutsRequested: 0,
       candidatesScreened: 0,
       candidatesPassedVolatility: 0,
       signalsGenerated: 0,
