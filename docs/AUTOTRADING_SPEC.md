@@ -2781,14 +2781,32 @@ Fixed both, deliberately kept separate in scope:
   order (`role: 'entry'`, `positionId: null`) for the same symbol, then
   retags it (`'live'`, `'autotrade'` added) and backfills `stopPrice`/
   `targetPrice` from that order's intended levels if the position doesn't
-  already have its own. It deliberately does **not** try to set
-  `sourceIntentId` — `PositionPatch` doesn't support patching it after
-  creation, and it isn't needed for correctness: an adopted position still
-  closes correctly through the same generic sync backstop that adopted it
-  (`closePositionsFromPreview`'s `isWebullTracked()` already accepts the
-  `'live'` tag on its own). Runs unconditionally each tick, so it also heals
+  already have its own, along with the at-entry context the create path
+  records (`grade`, `entryScore`, `marketRegime`, `marketAtrPct`,
+  `entryVwap`) — those live on the order, not the fill, and nothing else ever
+  backfills them, so an un-backfilled adopted position silently shrinks the
+  datasets they exist to build. It deliberately does **not** try to set
+  `sourceIntentId`: the order → position link is recorded on the order side
+  instead (`autotrade_live_orders.position_id`, via
+  `setLiveOrderPositionId`). Runs unconditionally each tick, so it also heals
   any position already orphaned before this fix existed, not just new ones
-  going forward. `getPortfolioSnapshot()`'s own risk/P&L accounting is
+  going forward.
+
+  **Anything that needs "which bracket owns this position" must therefore
+  accept BOTH links** — `positions.source_intent_id` OR
+  `getLiveEntryOrderForPosition(positionId)` — or an adopted position is
+  invisible to it forever. This paragraph used to claim the missing
+  `sourceIntentId` "isn't needed for correctness", on the grounds that the
+  generic sync backstop closes an adopted position anyway. That was true
+  while the sync was the only closing path, and stopped being true when the
+  loop grew closing paths of its OWN that need the bracket. On 2026-08-24 an
+  adopted CTVA position triggered the intraday stagnation exit and failed to
+  close on every subsequent tick — 21 identical `live_time_exit_failed`
+  events ("No source intent on this position — cannot locate its bracket to
+  cancel") between 15:22 and 15:59 ET — because `checkLiveEquityTimeExits`
+  looked up the bracket only through `source_intent_id`. `checkLiveScaleIns`
+  had the same blind spot, failing silently rather than loudly. Both now fall
+  back to the order-side link. `getPortfolioSnapshot()`'s own risk/P&L accounting is
   deliberately left as-is (tag-scoped) — once adopted, a position is tagged
   and counts normally; nothing needed to change there.
 
