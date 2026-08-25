@@ -1016,7 +1016,24 @@ starts.
      spent the budget and GRMN's own stagnation exit was blocked 44 times
      ("4 placed vs 4/day") and carried overnight. Both now derive it through
      the shared `liveOrderCapForTrades()` (entries + one close each), so the
-     entry budget is untouched and exits can no longer eat it. Setting
+     entry budget is untouched and exits can no longer eat it.
+     **Hand-edited dollar caps survive a tune** (2026-08-25): `computeTargetTune`
+     now applies the same "only move what you own" rule `liveCapsReanchor` has
+     always enforced — a cap that no longer equals its anchor-derived value was
+     set by a human and is carried through unchanged, with a warning naming it.
+     The re-anchor's header had described that rule as already covering the
+     tune; it did not, so a tune silently reverted a hand-raised cap while the
+     re-anchor carefully preserved it. `DOLLAR_CAP_KEYS`, `deriveDollarCaps` and
+     `handEditedDollarCaps` moved to `targetTune.ts` (re-exported from
+     `liveCapsReanchor`) so both paths share one definition.
+     While wiring that up, a latent disagreement surfaced: `shapeToPatch` sized
+     the per-order cap from `shape.maxOrderEquityFraction` (conservative = 0.2)
+     while everything that reads it back used
+     `maxOrderEquityFractionFor(riskProfile)` (MODERATE = 0.25) — and a
+     conservative tune journals as MODERATE. So a freshly-applied CONSERVATIVE
+     tune already read as hand-edited, permanently excluding its per-order cap
+     from re-anchoring. `shapeToPatch` now derives through the same function,
+     and the agreement test runs over every band instead of one. Setting
      `liveTradingEnabled: true` requires an explicit typed-phrase confirmation at the
      route (a new, stronger analog of `confirmAggressive`'s boolean, given the stakes
      categorically exceed a risk-profile change) — a one-time gesture, not per-order

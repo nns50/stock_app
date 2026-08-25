@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { suggestLiveCaps } from '../src/services/autotrading/liveCaps';
 import { computeTargetTune, liveOrderCapForTrades } from '../src/services/autotrading/targetTune';
+import { defaultAutotradeConfig } from '../src/db/autotradeConfig';
 
 describe('suggestLiveCaps', () => {
   it('sizes liveMaxOrderUsd at 25% of equity', () => {
@@ -51,7 +52,7 @@ describe('suggestLiveCaps agrees with targetTune (2026-07-25)', () => {
       equityUsd: 100_000,
       targetDailyGainPct: 12, // > 8 => aggressive band
       basis: 'expected',
-      config: { autoTuneEnabled: false, autoTuneExitsEnabled: false },
+      config: { ...defaultAutotradeConfig(), autoTuneEnabled: false, autoTuneExitsEnabled: false },
     });
     expect(tuned.patch.riskProfile).toBe('AGGRESSIVE');
     const suggested = suggestLiveCaps(
@@ -92,7 +93,7 @@ describe('liveMaxOrdersPerDay vs maxTradesPerDay', () => {
         equityUsd: 100_000,
         targetDailyGainPct: target,
         basis: 'expected',
-        config: { autoTuneEnabled: false, autoTuneExitsEnabled: false },
+        config: { ...defaultAutotradeConfig(), autoTuneEnabled: false, autoTuneExitsEnabled: false },
       });
       const entries = tuned.patch.maxTradesPerDay;
       // Spend the whole entry budget, then close every one of them.

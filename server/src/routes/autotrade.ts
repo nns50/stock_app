@@ -98,7 +98,10 @@ autotradeRouter.post('/tune/preview', (req, res) => {
       equityUsd: config.accountEquityUsd,
       targetDailyGainPct: body.targetDailyGainPct,
       basis: body.basis,
-      config: { autoTuneEnabled: config.autoTuneEnabled, autoTuneExitsEnabled: config.autoTuneExitsEnabled },
+      // The whole config: the tuner reads the auto-tune flags to warn about
+      // interactions, and the dollar caps + their anchor to tell a hand-set cap
+      // from a derived one so it preserves the former.
+      config,
     }),
   );
 });

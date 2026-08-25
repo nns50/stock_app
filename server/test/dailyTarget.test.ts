@@ -237,7 +237,7 @@ describe('tune integration', () => {
       equityUsd: 10_000,
       targetDailyGainPct: 3,
       basis: 'expected',
-      config: { autoTuneEnabled: false, autoTuneExitsEnabled: false },
+      config: { ...defaultAutotradeConfig(), autoTuneEnabled: false, autoTuneExitsEnabled: false },
     });
     expect(t.patch.targetDailyGainPct).toBe(3);
     // …and stamps the give-back guard at 2/3 and 1/3 of the goal.

@@ -7,8 +7,10 @@ import {
   MAX_SUGGESTED_RISK_PER_TRADE_PCT,
   NEVER_TUNED_KEYS,
   TuneBasis,
+  deriveDollarCaps,
+  handEditedDollarCaps,
 } from '../src/services/autotrading/targetTune';
-import { defaultAutotradeConfig } from '../src/db/autotradeConfig';
+import { defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
 
 const base = (over: {
   targetDailyGainPct: number;
@@ -16,14 +18,19 @@ const base = (over: {
   equityUsd?: number;
   autoTuneEnabled?: boolean;
   autoTuneExitsEnabled?: boolean;
+  /** Dollar caps / anchor, for the hand-edit preservation cases. Defaults leave
+   *  the anchor null — not armed, so nothing is treated as hand-edited. */
+  config?: Partial<AutotradeConfig>;
 }) =>
   computeTargetTune({
     equityUsd: over.equityUsd ?? 1000,
     targetDailyGainPct: over.targetDailyGainPct,
     basis: over.basis ?? 'expected',
     config: {
+      ...defaultAutotradeConfig(),
       autoTuneEnabled: over.autoTuneEnabled ?? false,
       autoTuneExitsEnabled: over.autoTuneExitsEnabled ?? false,
+      ...over.config,
     },
   });
 
@@ -246,5 +253,78 @@ describe('tunable/never-tuned classification', () => {
     // above can't see it (it reads the emitted patch), so pin the count too.
     const emitted = Object.keys(resetToModerate(1000)).length;
     expect(emitted + NEVER_TUNED_KEYS.length).toBe(Object.keys(defaultAutotradeConfig()).length);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hand-edited dollar caps (2026-08-25). liveCapsReanchor has always refused to
+// move a cap a human set — and its header called that "the same rule that keeps
+// the tune itself from stomping deliberate config". The tune did not actually
+// enforce it, so applying one silently reverted a hand-raised cap while the
+// re-anchor carefully preserved it. Live consequence: liveMaxOrderUsd had been
+// raised from the derived $439 to $1,600 because the derived value sat BELOW
+// what correct sizing produces on a small account and blocked every entry
+// ("order_notional: $1,236.06 vs cap $439.00"); a retune would have restored
+// exactly that state.
+// ---------------------------------------------------------------------------
+describe('computeTargetTune — hand-edited dollar caps', () => {
+  /** A config whose caps match what `anchor` derives — i.e. nothing hand-set. */
+  const derivedAt = (anchor: number, over: Partial<AutotradeConfig> = {}): Partial<AutotradeConfig> => {
+    const cfg = { ...defaultAutotradeConfig(), ...over };
+    return { ...cfg, ...deriveDollarCaps(cfg, anchor), liveCapsAnchorEquityUsd: anchor };
+  };
+
+  it('keeps a hand-raised per-order cap instead of reverting it', () => {
+    const r = base({
+      targetDailyGainPct: 3,
+      equityUsd: 2137,
+      config: { ...derivedAt(2137), liveMaxOrderUsd: 1600 },
+    });
+    expect(r.patch.liveMaxOrderUsd).toBe(1600);
+    expect(r.warnings.join(' ')).toMatch(/liveMaxOrderUsd/);
+    // Untouched caps are still sized by the tune.
+    expect(r.patch.liveMaxDailyLossUsd).not.toBe(1600);
+  });
+
+  it('still sizes every cap the human did NOT touch', () => {
+    const r = base({ targetDailyGainPct: 3, equityUsd: 2137, config: derivedAt(2137) });
+    const expected = deriveDollarCaps(
+      { maxDailyDrawdownPct: r.patch.maxDailyDrawdownPct, riskProfile: r.patch.riskProfile },
+      2137,
+    );
+    expect(r.patch.liveMaxOrderUsd).toBe(expected.liveMaxOrderUsd);
+    expect(r.warnings.join(' ')).not.toMatch(/set by hand/);
+  });
+
+  it('preserves each cap independently, naming them all', () => {
+    const r = base({
+      targetDailyGainPct: 3,
+      equityUsd: 2137,
+      config: { ...derivedAt(2137), liveMaxOrderUsd: 1600, liveOptionsMaxDailyLossUsd: 77 },
+    });
+    expect(r.patch.liveMaxOrderUsd).toBe(1600);
+    expect(r.patch.liveOptionsMaxDailyLossUsd).toBe(77);
+    expect(r.warnings.join(' ')).toMatch(/liveMaxOrderUsd/);
+    expect(r.warnings.join(' ')).toMatch(/liveOptionsMaxDailyLossUsd/);
+  });
+
+  it('is NOT armed without an anchor — a first tune sizes everything', () => {
+    // No anchor equity means there is no way to tell a deliberate value from a
+    // derived one, so nothing is preserved. Same posture as the re-anchor's no-op.
+    const r = base({
+      targetDailyGainPct: 3,
+      equityUsd: 2137,
+      config: { liveMaxOrderUsd: 1600, liveCapsAnchorEquityUsd: null },
+    });
+    expect(r.patch.liveMaxOrderUsd).not.toBe(1600);
+    expect(r.warnings.join(' ')).not.toMatch(/set by hand/);
+  });
+
+  it('agrees with liveCapsReanchor on what counts as hand-edited', () => {
+    // The two must use the SAME test, or a tune and a re-anchor would disagree
+    // about which caps are the user's.
+    const cfg = { ...defaultAutotradeConfig(), ...derivedAt(2137), liveMaxOrderUsd: 1600 } as AutotradeConfig;
+    expect(handEditedDollarCaps(cfg)).toEqual(['liveMaxOrderUsd']);
+    expect(handEditedDollarCaps({ ...cfg, liveMaxOrderUsd: deriveDollarCaps(cfg, 2137).liveMaxOrderUsd })).toEqual([]);
   });
 });
