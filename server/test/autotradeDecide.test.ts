@@ -124,7 +124,7 @@ describe('generateSignal', () => {
   });
 
   it('defaults to a 1.5x ATR stop, 2R target', () => {
-    expect(defaultDecisionConfig()).toEqual({ stopAtrMultiple: 1.5, targetRMultiple: 2 });
+    expect(defaultDecisionConfig()).toEqual({ stopAtrMultiple: 1.5, targetRMultiple: 2, maxStopDistancePct: 0 });
   });
 });
 
@@ -185,5 +185,81 @@ describe('convictionGrade', () => {
     const c = candidate({ total: 82 });
     const sig = generateSignal(c, defaultDecisionConfig())!;
     expect(convictionGrade(sig.score, cfg)).toBe('A');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stop-distance cap (2026-08-25). stopAtrMultiple x ATR uses the DAILY ATR, so
+// a 1.5x stop sits one and a half typical DAYS from entry — right for a swing,
+// wrong for a loop that scratches at 90 minutes and is flat by the close.
+//
+// MRNA that day: entry 154.20, ATR ~15, stop 131.65 — 14.6% away, $22.55 of
+// risk PER SHARE against a $45.67 budget, so ONE share, with a target 14.4% out
+// that a session cannot reach. It actually traded -1.15% / +3.42% after entry.
+// A 2% stop survives it and buys 14 shares on the same risk.
+// ---------------------------------------------------------------------------
+describe('stop-distance cap', () => {
+  const mrna = () =>
+    candidate({
+      symbol: 'MRNA',
+      price: 154.2,
+      direction: 'long',
+      indicators: ind({ price: 154.2, atr: 15.03, atrPct: 9.75 }),
+    });
+
+  it('is off by default — the ATR stop stands', () => {
+    const sig = generateSignal(mrna(), defaultDecisionConfig())!;
+    expect(sig.stop).toBeCloseTo(154.2 - 1.5 * 15.03, 1);
+    expect((154.2 - sig.stop) / 154.2).toBeGreaterThan(0.14); // the 14.6% that caused this
+  });
+
+  it('caps a runaway ATR stop at the configured % of entry', () => {
+    const sig = generateSignal(mrna(), { stopAtrMultiple: 1.5, targetRMultiple: 2, maxStopDistancePct: 2 })!;
+    expect(sig.stop).toBeCloseTo(154.2 * 0.98, 2);
+    expect((154.2 - sig.stop) / 154.2).toBeCloseTo(0.02, 4);
+  });
+
+  it('fixes the target for free — it is a multiple of the stop distance', () => {
+    const sig = generateSignal(mrna(), { stopAtrMultiple: 1.5, targetRMultiple: 2, maxStopDistancePct: 2 })!;
+    // 2R on a 2% stop is +4%, not the +29% a 14.6% stop implied.
+    expect(sig.target).toBeCloseTo(154.2 * 1.04, 1);
+    expect(sig.rMultiple).toBe(2); // still exactly the configured reward:risk
+  });
+
+  it('shrinks risk-per-share, which is the whole point', () => {
+    const uncapped = generateSignal(mrna(), defaultDecisionConfig())!;
+    const capped = generateSignal(mrna(), { stopAtrMultiple: 1.5, targetRMultiple: 2, maxStopDistancePct: 2 })!;
+    const budget = 45.67; // 2.14% of ~$2,134 equity
+    // Raw sizing: 2 shares uncapped (production got 1 — the 2-consecutive-loss
+    // step-down halved it), against 14 with the cap, at the SAME dollar risk.
+    expect(Math.floor(budget / (uncapped.entry - uncapped.stop))).toBe(2);
+    expect(Math.floor(budget / (capped.entry - capped.stop))).toBe(14);
+  });
+
+  it('is a CEILING, never a floor — a tighter ATR stop is left alone', () => {
+    // A calm stock whose 1.5x ATR stop is already inside the cap must not be
+    // widened to it; the cap only ever removes distance.
+    const calm = candidate({ price: 100, indicators: ind({ price: 100, atr: 0.5, atrPct: 0.5 }) });
+    const sig = generateSignal(calm, { stopAtrMultiple: 1.5, targetRMultiple: 2, maxStopDistancePct: 5 })!;
+    expect(sig.stop).toBeCloseTo(100 - 0.75, 2); // 0.75%, its own ATR stop
+  });
+
+  it('mirrors correctly for a short', () => {
+    const short = candidate({
+      symbol: 'MRNA',
+      price: 154.2,
+      direction: 'short',
+      indicators: ind({ price: 154.2, atr: 15.03, atrPct: 9.75 }),
+    });
+    const sig = generateSignal(short, { stopAtrMultiple: 1.5, targetRMultiple: 2, maxStopDistancePct: 2 })!;
+    expect(sig.stop).toBeCloseTo(154.2 * 1.02, 2); // stop ABOVE entry
+    expect(sig.target).toBeCloseTo(154.2 * 0.96, 1); // target BELOW
+  });
+
+  it('says in the rationale when the cap bit, not just that it was an ATR stop', () => {
+    const sig = generateSignal(mrna(), { stopAtrMultiple: 1.5, targetRMultiple: 2, maxStopDistancePct: 2 })!;
+    expect(sig.rationale).toMatch(/capped at 2% of entry/);
+    const uncapped = generateSignal(mrna(), defaultDecisionConfig())!;
+    expect(uncapped.rationale).toMatch(/1\.5× ATR/);
   });
 });

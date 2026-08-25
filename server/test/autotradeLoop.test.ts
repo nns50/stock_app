@@ -607,7 +607,11 @@ describe('runAutotradeLoopTick', () => {
     const summary = await runAutotradeLoopTick();
 
     expect(mockScreen).toHaveBeenCalledTimes(1);
-    expect(mockDecide).toHaveBeenCalledWith([candidate('AAPL', 2)], { stopAtrMultiple: 1.5, targetRMultiple: 2 });
+    expect(mockDecide).toHaveBeenCalledWith([candidate('AAPL', 2)], {
+      stopAtrMultiple: 1.5,
+      targetRMultiple: 2,
+      maxStopDistancePct: 0,
+    });
     expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral');
     expect(summary.ranEntries).toBe(true);
     expect(summary.candidatesScreened).toBe(1);
@@ -688,7 +692,11 @@ describe('runAutotradeLoopTick', () => {
       directionMode: 'long',
       moversEnabled: false,
     });
-    expect(mockDecide).toHaveBeenCalledWith([candidate('AAPL', 2)], { stopAtrMultiple: 2.5, targetRMultiple: 3 });
+    expect(mockDecide).toHaveBeenCalledWith([candidate('AAPL', 2)], {
+      stopAtrMultiple: 2.5,
+      targetRMultiple: 3,
+      maxStopDistancePct: 0,
+    });
   });
 
   it("threads tradeDirection through to runAutotradeScreen's directionMode", async () => {
@@ -874,6 +882,7 @@ describe('runAutotradeLoopTick', () => {
     expect(mockDecide).toHaveBeenCalledWith([universeCandidate, moverCandidate], {
       stopAtrMultiple: 1.5,
       targetRMultiple: 2,
+      maxStopDistancePct: 0,
     });
     // Options decision sees ONLY the universe-sourced one.
     expect(mockOptionsDecide).toHaveBeenCalledWith([universeCandidate], {
@@ -911,7 +920,7 @@ describe('runAutotradeLoopTick', () => {
 
     expect(mockDecide).toHaveBeenCalledWith(
       [candidate('CALM', 2)], // WILD excluded
-      { stopAtrMultiple: 1.5, targetRMultiple: 2 },
+      { stopAtrMultiple: 1.5, targetRMultiple: 2, maxStopDistancePct: 0 },
     );
     expect(summary.candidatesScreened).toBe(2);
     expect(summary.candidatesPassedVolatility).toBe(1);
@@ -955,7 +964,7 @@ describe('runAutotradeLoopTick', () => {
 
     const summary = await runAutotradeLoopTick();
     expect(summary.candidatesPassedVolatility).toBe(0);
-    expect(mockDecide).toHaveBeenCalledWith([], { stopAtrMultiple: 1.5, targetRMultiple: 2 });
+    expect(mockDecide).toHaveBeenCalledWith([], { stopAtrMultiple: 1.5, targetRMultiple: 2, maxStopDistancePct: 0 });
   });
 
   it('does not throw when a candidate has no computable ATR — it is excluded, not crashed on', async () => {

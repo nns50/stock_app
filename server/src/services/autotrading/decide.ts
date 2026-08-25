@@ -37,10 +37,53 @@ export interface DecisionConfig {
   stopAtrMultiple: number;
   /** Target distance = this many multiples of the stop distance (reward:risk). */
   targetRMultiple: number;
+  /** Hard ceiling on stop distance as a % of entry price. 0 = off.
+   *  See clampStopDistance() below for why this exists. */
+  maxStopDistancePct?: number;
 }
 
 export function defaultDecisionConfig(): DecisionConfig {
-  return { stopAtrMultiple: 1.5, targetRMultiple: 2 };
+  return { stopAtrMultiple: 1.5, targetRMultiple: 2, maxStopDistancePct: 0 };
+}
+
+/**
+ * Cap the ATR stop at a fixed % of entry price (2026-08-25).
+ *
+ * `stopAtrMultiple × ATR` uses the DAILY ATR — a full-day expected range — so a
+ * 1.5x stop sits one and a half typical DAYS away from entry. That is the right
+ * distance for a multi-day swing. This loop is intraday: a 90-minute stagnation
+ * exit, maxHoldDays 1, and flat before the close. The two were never
+ * reconciled, and the mismatch is the single root cause behind four separate
+ * symptoms:
+ *
+ *   - Positions were tiny. Size = risk budget / stop distance, so a stop 14.6%
+ *     away spends the whole budget on one share. MRNA on 2026-08-25: entry
+ *     154.20, stop 131.65, $22.55 of risk PER SHARE against a $45.67 budget →
+ *     1 share.
+ *   - Targets were never reached. The target is targetRMultiple × the stop
+ *     distance, so a 14.6% stop implies a 29% target — capped by structure to
+ *     176.43, still +14.4% and unreachable inside a session.
+ *   - Stops were never reached either, so exits came from the stagnation timer
+ *     at ~0.1R rather than from either bracket leg.
+ *   - Which makes a 3%/day goal arithmetically out of reach: 0.1R on 2.14% risk
+ *     is 0.2% of equity per trade.
+ *
+ * What the trades actually do, measured on 5-minute bars over the minutes each
+ * position was really held (the five loop trades with a recorded entry time):
+ * adverse excursion 0.21%-1.50%, favorable 0.00%-1.55%. An order of magnitude
+ * inside where the brackets sat.
+ *
+ * MRNA the same day, after its 10:36 entry: low -1.15%, high +3.42%. A 2% stop
+ * survives; a 3% target is hit; and the SAME $45.67 of risk buys 14 shares
+ * instead of 1 — 99% of the day's target from one trade, at no extra risk.
+ *
+ * Capping the stop therefore fixes the target for free, since the target is a
+ * multiple of the stop distance. Note this is a CEILING, never a floor: a stock
+ * whose ATR stop is already tighter keeps it.
+ */
+export function clampStopDistance(entry: number, stopDistance: number, maxStopDistancePct?: number): number {
+  if (!maxStopDistancePct || !(maxStopDistancePct > 0) || !(entry > 0)) return stopDistance;
+  return Math.min(stopDistance, entry * (maxStopDistancePct / 100));
 }
 
 export interface TradeSignal {
@@ -97,7 +140,7 @@ export function generateSignal(
   // (Webull's own "Price increment should be 0.01" rejection, blocking every
   // single live entry attempt, not just an occasional one).
   const entry = round2(candidate.price);
-  const stopDistance = cfg.stopAtrMultiple * atr;
+  const stopDistance = clampStopDistance(entry, cfg.stopAtrMultiple * atr, cfg.maxStopDistancePct);
   const long = candidate.direction === 'long';
   const stop = round2(long ? entry - stopDistance : entry + stopDistance);
   if (stop <= 0) return null;
@@ -116,7 +159,11 @@ export function generateSignal(
   const rationale =
     `${long ? 'Long' : 'Short'} breakout: score ${candidate.total.toFixed(1)}, gap ${fmtPct(gapPct)}, ` +
     `rel vol ${relVolume === null ? 'n/a' : `${relVolume.toFixed(2)}×`}, RSI ${rsi === null ? 'n/a' : rsi.toFixed(1)} — ` +
-    `entry ${entry.toFixed(2)}, stop ${stop.toFixed(2)} (${cfg.stopAtrMultiple}× ATR), ` +
+    `entry ${entry.toFixed(2)}, stop ${stop.toFixed(2)} (${
+      stopDistance < cfg.stopAtrMultiple * atr
+        ? `capped at ${cfg.maxStopDistancePct}% of entry, under ${cfg.stopAtrMultiple}× ATR`
+        : `${cfg.stopAtrMultiple}× ATR`
+    }), ` +
     `target ${target.toFixed(2)} (${cfg.targetRMultiple}R)`;
 
   return {

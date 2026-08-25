@@ -841,6 +841,31 @@ quarter of equity then blocks every legitimate entry rather than catching the
 absurd ones it exists for. If entries are being refused on order notional, the
 cap is the thing that is wrong, not the sizing.
 
+**Size your stop to your holding period, not to the daily range.** An ATR-based stop —
+"1.5x the average daily range" — is calibrated for a trade you intend to hold for days.
+Put the same stop on a position you will scratch in ninety minutes and it is not a stop at
+all: it sits further away than the stock can plausibly travel while you own it, so it is
+never hit, and every consequence follows from that.
+
+Position size is the first casualty, because size is *risk budget divided by stop
+distance*. A stop 14.6% away spends the entire budget on a single share. The second is the
+target, which is usually a multiple of the stop distance: a 14.6% stop implies a ~29%
+target, so neither bracket ever resolves and the trade exits on a timer instead — at
+roughly break-even, every time. A daily goal is then arithmetically out of reach, not
+because the setups were bad but because each one was sized to return a rounding error.
+
+Measure what your trades actually do before choosing a number. On five real intraday
+trades the adverse excursion was 0.21%-1.50% and the favorable 0.00%-1.55%, against
+brackets an order of magnitude further out. On a genuine 14% mover the same day, the
+stock went -1.15% / +3.42% after entry: a 2% stop survived, a 3% target was hit, and the
+*same dollar risk* bought fourteen shares instead of one.
+
+The counter-intuitive part is worth stating outright: **a tighter stop is not more risk.**
+The dollars at risk are identical — you have simply put the stop where the trade is wrong
+instead of where a week of trading might take it, and bought a position that can pay you
+for being right. What you accept is a higher chance of being stopped, which is a real cost
+and the reason to measure your own excursions rather than copy a number.
+
 **Relative volume lies about the time of day.** The usual definition — today's volume
 divided by the average daily volume — compares a partial day against a whole one, so it
 climbs mechanically from near zero at the open toward 1.0 at the close no matter how a

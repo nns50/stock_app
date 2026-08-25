@@ -312,6 +312,17 @@ export interface AutotradeConfig {
   maxMarketAtrPct: number;
   /** Stop distance = this × the candidate's own ATR. */
   stopAtrMultiple: number;
+  /** Hard ceiling on stop distance as a % of entry price. 0 = off.
+   *  stopAtrMultiple x ATR uses the DAILY ATR, so a 1.5x stop sits one and a
+   *  half typical DAYS from entry — right for a swing, wrong for a loop that
+   *  scratches at 90 minutes and is flat by the close. On 2026-08-25 MRNA's
+   *  stop landed 14.6% away, costing $22.55 of risk PER SHARE against a $45.67
+   *  budget (1 share), with a target 14.4% out that a session could not reach;
+   *  it actually traded -1.15% / +3.42% after entry. Capping the stop shrinks
+   *  risk-per-share, so the same risk budget buys a real position, AND fixes
+   *  the target for free — the target is a multiple of the stop distance.
+   *  See services/autotrading/decide.ts's clampStopDistance(). */
+  maxStopDistancePct: number;
   /** Target distance = stop distance × this (a reward:risk multiple). */
   targetRMultiple: number;
   /** No new entries within this many minutes of the session open or close —
@@ -905,6 +916,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     maxTickerAtrPct: 15,
     maxMarketAtrPct: 5,
     stopAtrMultiple: 1.5,
+    maxStopDistancePct: 0,
     targetRMultiple: 2,
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
@@ -1122,6 +1134,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     maxTickerAtrPct: pct(input.maxTickerAtrPct, d.maxTickerAtrPct),
     maxMarketAtrPct: pct(input.maxMarketAtrPct, d.maxMarketAtrPct),
     stopAtrMultiple: posDecimal(input.stopAtrMultiple, d.stopAtrMultiple),
+    maxStopDistancePct: nonNeg(input.maxStopDistancePct, d.maxStopDistancePct),
     targetRMultiple: posDecimal(input.targetRMultiple, d.targetRMultiple),
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
     earningsBlackoutDays: posInt(input.earningsBlackoutDays, d.earningsBlackoutDays),
