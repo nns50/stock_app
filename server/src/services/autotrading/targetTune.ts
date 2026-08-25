@@ -211,6 +211,36 @@ const BANDS: Record<TuneBand, BandShape> = {
  *  which journals as MODERATE — reads back as the moderate fraction here. That
  *  is the closest recoverable answer, and still agrees with the tune for both
  *  labels the config can actually represent. */
+/** Orders a single trade can need in a day: the ENTRY, plus one loop-placed
+ *  CLOSE for it. Bracket stop/target legs ride along with the entry order and
+ *  cost nothing extra here; a scale-in add-on is deliberately NOT multiplied
+ *  in — when the budget runs out, blocking an optional add-on is the right
+ *  thing to lose, and closing a position is not. */
+const ORDERS_PER_TRADE = 2;
+
+/**
+ * `liveMaxOrdersPerDay` for a given entry budget.
+ *
+ * This used to be `maxTradesPerDay` exactly, which quietly made the two caps
+ * fight: maxTradesPerDay counts ENTRIES, while the guardrail this feeds
+ * (countTodaysOrders, guardrails.ts's max_orders_per_day) counts every
+ * submitted intent — entries AND exits. So "4 trades a day" really bought
+ * 4 orders total, and every exit the loop placed cost an entry.
+ *
+ * That is not theoretical. On 2026-08-24, with both caps at 4, the day spent
+ * its budget on three entries plus one stagnation scratch; GRMN's own
+ * stagnation exit was then blocked 44 times on `max_orders_per_day: 4 placed
+ * vs 4/day` and the position was carried overnight against the loop's own
+ * judgement. The intraday stagnation exit exists to recycle a slot, so having
+ * each scratch cost a fresh entry defeated the feature that placed it.
+ *
+ * The entry budget is unchanged — maxTradesPerDay still caps entries, and
+ * riskCheck still enforces it. This only stops exits from eating that budget.
+ */
+export function liveOrderCapForTrades(maxTradesPerDay: number): number {
+  return maxTradesPerDay * ORDERS_PER_TRADE;
+}
+
 export function maxOrderEquityFractionFor(riskProfile: 'MODERATE' | 'AGGRESSIVE'): number {
   return riskProfile === 'AGGRESSIVE' ? BANDS.aggressive.maxOrderEquityFraction : BANDS.moderate.maxOrderEquityFraction;
 }
@@ -461,7 +491,7 @@ function shapeToPatch(
     targetRMultiple: shape.targetRMultiple,
     liveMaxOrderUsd: orderUsd,
     liveMaxDailyLossUsd: dailyLossUsd,
-    liveMaxOrdersPerDay: shape.maxTradesPerDay,
+    liveMaxOrdersPerDay: liveOrderCapForTrades(shape.maxTradesPerDay),
     // Records the equity the dollar caps above were derived from, ARMING the
     // automatic re-anchor (liveCapsReanchor.ts): when synced equity later
     // drifts ≥15% from this, the caps are re-derived so they keep meaning what

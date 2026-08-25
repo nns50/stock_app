@@ -65,7 +65,8 @@ describe('computeTargetTune — sizing solve', () => {
     // dollar caps scale with equity
     expect(r.patch.liveMaxOrderUsd).toBe(250); // 1000 * 0.25 moderate fraction
     expect(r.patch.liveMaxDailyLossUsd).toBe(Math.round(1000 * (r.patch.maxDailyDrawdownPct / 100)));
-    expect(r.patch.liveMaxOrdersPerDay).toBe(6);
+    // entries (6) + one exit each — NOT maxTradesPerDay itself; see liveOrderCapForTrades
+    expect(r.patch.liveMaxOrdersPerDay).toBe(12);
     // options dollar caps mirror the equity ones
     expect(r.patch.liveOptionsMaxOrderUsd).toBe(r.patch.liveMaxOrderUsd);
     expect(r.patch.liveOptionsMaxDailyLossUsd).toBe(r.patch.liveMaxDailyLossUsd);

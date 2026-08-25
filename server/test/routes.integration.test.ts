@@ -1904,7 +1904,8 @@ describe('autotrade config routes (integration)', () => {
       liveMaxDailyLossUsd: number;
       liveMaxOrdersPerDay: number;
     };
-    expect(body).toEqual({ liveMaxOrderUsd: 25_000, liveMaxDailyLossUsd: 5_000, liveMaxOrdersPerDay: 10 });
+    // orders cap = maxTradesPerDay(10) entries + one exit each
+    expect(body).toEqual({ liveMaxOrderUsd: 25_000, liveMaxDailyLossUsd: 5_000, liveMaxOrdersPerDay: 20 });
   });
 });
 

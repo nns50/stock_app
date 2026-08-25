@@ -804,6 +804,22 @@ position the broker shows **no resting stop** for is reported, never silently re
 a replacement placed on a check that merely failed to *see* the original would leave two
 stops on one position and sell it twice.
 
+**A cap that counts exits is not a cap on trades.** Autotrade carries two
+separate daily limits and they are deliberately different numbers.
+**Max trades per day** counts *entries* — it is your trade budget. The live
+**orders per day** cap counts *every order sent to the broker*, and closing a
+position is an order too. Setting them equal looks tidy and quietly breaks
+things: a day that spends its budget entering has nothing left to exit with.
+That is not a thought experiment — with both set to 4, a live day spent its
+allowance on three entries plus one stagnation scratch, and the next scratch
+the loop wanted was refused 44 times in a row on "4 placed vs 4/day". The
+position was carried overnight by the guardrail that existed to protect it.
+The app now derives the orders cap as **one entry plus one exit per trade**, so
+raising your trade budget raises the room to close as well. If you ever set
+these by hand, keep the orders cap at least double the trade cap. The general
+lesson generalizes past this app: when you write a rule that throttles
+*actions*, check whether "get me out" is one of the actions you just throttled.
+
 The practical consequence for you: an app that occasionally says "I couldn't
 confirm this, so I did nothing" is working as intended, and those messages are worth
 reading rather than clicking past — each one means your records and your broker might
