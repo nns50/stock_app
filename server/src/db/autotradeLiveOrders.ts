@@ -214,6 +214,37 @@ export function getLiveOrder(intentId: number): LiveOrderMeta | undefined {
   return row ? mapRow(row) : undefined;
 }
 
+/**
+ * The ENTRY order that produced `positionId`, found through this table's own
+ * `position_id` link rather than `positions.source_intent_id`.
+ *
+ * Why both exist (2026-08-24): an ADOPTED position — one the generic Webull
+ * position-sync imported before reconcile caught up, which
+ * materializeEntryFill()/adoptOrphanedLivePositions() then retagged and
+ * linked — never gets `source_intent_id` written (adoption deliberately can't
+ * patch it post-creation). The link is recorded HERE instead, by
+ * setLiveOrderPositionId. Anything that needs "which bracket owns this
+ * position" must therefore fall back to this lookup, or an adopted position
+ * is invisible to it forever. That is not hypothetical: on 2026-08-24 an
+ * adopted CTVA position triggered the stagnation exit and failed to close on
+ * every subsequent tick — 21 identical `live_time_exit_failed` events —
+ * because the only lookup was via source_intent_id.
+ *
+ * Newest entry row wins: a scale-in adds further rows for the same position,
+ * and the most recent one carries the live risk profile.
+ */
+export function getLiveEntryOrderForPosition(positionId: number): LiveOrderMeta | undefined {
+  const row = db
+    .prepare(
+      `SELECT * FROM autotrade_live_orders
+        WHERE position_id = ? AND role = 'entry'
+        ORDER BY created_at DESC, intent_id DESC
+        LIMIT 1`,
+    )
+    .get(positionId) as Row | undefined;
+  return row ? mapRow(row) : undefined;
+}
+
 /** True when `intentId` was placed by autotrade (vs. the human Trade page). */
 export function isAutotradeIntent(intentId: number): boolean {
   return getLiveOrder(intentId) !== undefined;

@@ -45,6 +45,7 @@ import {
   countLiveOrdersSince,
   pendingLiveOrdersRisk,
   getLiveOrder,
+  getLiveEntryOrderForPosition,
   LiveOrderMeta,
 } from '../../db/autotradeLiveOrders';
 import { computeScaleIn } from './scaleIn';
@@ -1442,10 +1443,21 @@ function materializeEntryFill(
     // would have applied: without the tag it stays invisible to every
     // autotrade-scoped figure (open risk, daily P&L, the method ledger).
     if (!isAutotradePosition(adopted)) {
+      // Carry the same at-entry context the create path below records. It is
+      // known here (it lives on the order, not the fill) and nothing else ever
+      // backfills it, so without this an adopted position is permanently
+      // missing its grade/score/regime and its entry VWAP — silently shrinking
+      // the very datasets those fields exist to build.
+      const meta = getLiveOrder(intent.id);
       updatePosition(adopted.id, {
         tags: Array.from(new Set([...adopted.tags, ...AUTOTRADE_TAGS])),
         stopPrice: adopted.stopPrice ?? stopPrice,
         targetPrice: adopted.targetPrice ?? targetPrice,
+        grade: adopted.grade ?? meta?.grade ?? null,
+        entryScore: adopted.entryScore ?? meta?.entryScore ?? null,
+        marketRegime: adopted.marketRegime ?? meta?.marketRegime ?? null,
+        marketAtrPct: adopted.marketAtrPct ?? meta?.marketAtrPct ?? null,
+        entryVwap: adopted.entryVwap ?? meta?.entryVwap ?? null,
       });
     }
     setLiveOrderPositionId(intent.id, adopted.id);
@@ -2343,7 +2355,17 @@ export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutc
     // Both of these leave a position sitting past its hold limit with no close
     // attempted, every tick, so they are journaled like any other failed close
     // rather than reported only in this function's return value.
-    if (pos.sourceIntentId === null) {
+    // Which bracket owns this position? Normally positions.source_intent_id,
+    // set at creation. An ADOPTED position never has it (see
+    // getLiveEntryOrderForPosition's own comment) — its link lives only in
+    // autotrade_live_orders.position_id — so fall back to that rather than
+    // declaring the position unclosable. Without the fallback a triggered
+    // time exit re-failed on EVERY tick and the position could never be
+    // exited by the loop at all.
+    const entryOrderMeta =
+      pos.sourceIntentId !== null ? getLiveOrder(pos.sourceIntentId) : getLiveEntryOrderForPosition(pos.id);
+    const entryIntentId = pos.sourceIntentId ?? entryOrderMeta?.intentId ?? null;
+    if (entryIntentId === null) {
       outcomes.push(
         timeExitFailure(
           pos,
@@ -2353,10 +2375,10 @@ export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutc
       );
       continue;
     }
-    const entryIntent = getIntent(pos.sourceIntentId);
-    const riskProfile = getLiveOrder(pos.sourceIntentId)?.riskProfile ?? cfg.riskProfile;
+    const entryIntent = getIntent(entryIntentId);
+    const riskProfile = entryOrderMeta?.riskProfile ?? cfg.riskProfile;
     if (!entryIntent) {
-      outcomes.push(timeExitFailure(pos, riskProfile, `Source intent ${pos.sourceIntentId} not found`));
+      outcomes.push(timeExitFailure(pos, riskProfile, `Source intent ${entryIntentId} not found`));
       continue;
     }
 
@@ -2446,8 +2468,11 @@ export async function checkLiveScaleIns(): Promise<LiveScaleInOutcome[]> {
   for (const pos of open) {
     try {
       if (inFlightSymbols.has(pos.symbol)) continue;
-      if (pos.sourceIntentId === null) continue; // can't locate the original risk
-      const entryOrder = getLiveOrder(pos.sourceIntentId);
+      // Same adopted-position fallback as the time-exit loop above: without
+      // it an adopted position can never scale in, since it has no
+      // source_intent_id to carry the original risk geometry.
+      const entryOrder =
+        pos.sourceIntentId !== null ? getLiveOrder(pos.sourceIntentId) : getLiveEntryOrderForPosition(pos.id);
       if (!entryOrder || !(entryOrder.stopPrice > 0)) continue;
       if (countLiveAddOns(pos.id) >= cfg.liveMaxAddOns) continue;
 

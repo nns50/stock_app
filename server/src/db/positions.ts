@@ -372,6 +372,14 @@ export interface PositionPatch {
   /** Manual correction — e.g. tagging a legacy pre-migration row, or fixing
    *  a row the account-blind sync bug (2026-07-17 and earlier) mis-tracked. */
   accountId?: string | null;
+  /** At-entry context, normally written once at creation. Patchable only so
+   *  an ADOPTED live position — one the broker sync imported before autotrade
+   *  reconciled its own fill — can be backfilled from the order that placed
+   *  it (2026-08-24). Nothing else ever sets these after creation. */
+  entryScore?: number | null;
+  marketRegime?: string | null;
+  marketAtrPct?: number | null;
+  entryVwap?: number | null;
 }
 
 export function updatePosition(id: number, patch: PositionPatch): Position | undefined {
@@ -394,6 +402,10 @@ export function updatePosition(id: number, patch: PositionPatch): Position | und
   if (patch.stopPrice !== undefined) set('stop_price', patch.stopPrice);
   if (patch.targetPrice !== undefined) set('target_price', patch.targetPrice);
   if (patch.accountId !== undefined) set('account_id', patch.accountId);
+  if (patch.entryScore !== undefined) set('entry_score', patch.entryScore);
+  if (patch.marketRegime !== undefined) set('market_regime', patch.marketRegime);
+  if (patch.marketAtrPct !== undefined) set('market_atr_pct', patch.marketAtrPct);
+  if (patch.entryVwap !== undefined) set('entry_vwap', patch.entryVwap);
   if (fields.length === 0) return existing;
   set('updated_at', Date.now());
   params.push(id);

@@ -256,6 +256,52 @@ describe('checkLiveEquityTimeExits', () => {
     expect(placedIntent).toMatchObject({ symbol: 'AAPL', side: 'sell', openClose: 'close', quantity });
   });
 
+  // -------------------------------------------------------------------------
+  // Adopted positions (2026-08-24). A position the generic Webull sync imported
+  // before autotrade reconciled its own fill gets retagged and LINKED via
+  // autotrade_live_orders.position_id, but never gets positions.source_intent_id
+  // (adoption deliberately can't patch it). The time-exit loop used to look up
+  // the owning bracket ONLY through source_intent_id, so an adopted position
+  // failed to close on every tick, forever. Production: an adopted CTVA
+  // position triggered the stagnation exit and logged 21 identical
+  // live_time_exit_failed events between 15:22 and 15:59 ET, never closing.
+  // -------------------------------------------------------------------------
+  it('closes an ADOPTED position (no source_intent_id) via its live-order link', async () => {
+    const { position, quantity, entryIntentId } = await openAgedLivePosition(30);
+    // Exactly what adoption leaves behind: the order->position link is set,
+    // the position->intent back-reference is not.
+    db.prepare('UPDATE positions SET source_intent_id = NULL WHERE id = ?').run(position.id);
+    expect(listPositions({ status: 'open' })[0].sourceIntentId).toBeNull();
+    expect(getLiveOrder(entryIntentId)?.positionId).toBe(position.id);
+
+    mockOpenOrders.mockResolvedValue(noOpenOrders);
+    mockOrderStatus.mockResolvedValue({ ok: true, found: false } as WebullOrderStatus);
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(quantity) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE' });
+
+    const outcomes = await checkLiveEquityTimeExits();
+
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', positionId: position.id, requested: true });
+    expect(mockPlaceOrder).toHaveBeenCalled();
+    expect(listPendingLiveOrders().find((o) => o.role === 'exit')).toMatchObject({ positionId: position.id });
+  });
+
+  it('still reports a genuinely unlinked position as unclosable rather than guessing', async () => {
+    const { position, entryIntentId } = await openAgedLivePosition(30);
+    // Neither link survives: no back-reference AND no order pointing at it.
+    db.prepare('UPDATE positions SET source_intent_id = NULL WHERE id = ?').run(position.id);
+    db.prepare('UPDATE autotrade_live_orders SET position_id = NULL WHERE intent_id = ?').run(entryIntentId);
+
+    const outcomes = await checkLiveEquityTimeExits();
+
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ positionId: position.id, requested: false });
+    expect(outcomes[0].reason).toMatch(/cannot locate its bracket/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
   it('closes without cancelling anything when the broker shows no resting exit order (bracket already gone)', async () => {
     const { position, quantity } = await openAgedLivePosition(30);
     mockOpenOrders.mockResolvedValue(noOpenOrders);
