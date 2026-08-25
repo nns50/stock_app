@@ -1279,8 +1279,20 @@ shouldn't be a tab-switch away.
   this cycle if SPY's own volatility is too high — stricter than the manual Screen/
   Decision preview below, since an unattended loop has no one to override a bad read),
   **stop distance** and **target** (the stop sits this many ATRs from entry; the target
-  sits stop-distance × this further out, as a reward:risk multiple), **session
-  buffer** (no new entries within this many minutes of the open or close, when prices
+  sits stop-distance × this further out, as a reward:risk multiple), **max stop distance
+  (%)** (2026-08-25 — a hard ceiling on how far the stop may sit from entry, as a % of
+  entry price; 0 = off. The ATR here is the **daily** range, so a 1.5× stop is one and a
+  half typical *days* away — right for a swing, wrong for a loop that scratches at 90
+  minutes and is flat by the close. Because position size is *risk budget ÷ stop
+  distance*, an over-wide stop spends the whole budget on a share or two, and because the
+  target is a multiple of that same distance, it lands somewhere the session will never
+  reach — so trades exit on the stagnation timer near break-even instead. Capping the
+  stop shrinks risk-per-share, so the *same* dollar risk buys a real position, and it
+  fixes the target for free. Measured on this book: a 14.6% stop meant 1 share and a
+  +14.4% target; the stock traded −1.15%/+3.42% after entry, where a 2% stop survives, a
+  3% target is hit, and the identical risk buys 14 shares. It is a **ceiling, never a
+  floor** — a calmer stock keeps its own tighter ATR stop — and the signal's rationale
+  says when the cap bit), **session buffer** (no new entries within this many minutes of the open or close, when prices
   are most distorted), **earnings blackout** (skip an equity candidate whose next
   known earnings date falls within this many calendar days — an unattended loop can't
   react to an earnings-driven overnight gap the way ATR-based stop sizing assumes;
