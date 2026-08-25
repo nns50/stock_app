@@ -1005,7 +1005,18 @@ starts.
      Trade page's browser-`localStorage` source — meaningless for an unattended loop),
      the autotrade-specific cap set (`liveMaxOrderUsd`, `liveMaxDailyLossUsd`,
      `liveMaxOrdersPerDay`, `liveFatFingerPct`, `liveAllowNakedShort`), and the
-     probation fields (`liveProbationTrades`, `liveProbationSizeMultiplier`). Setting
+     probation fields (`liveProbationTrades`, `liveProbationSizeMultiplier`).
+     **`liveMaxOrdersPerDay` is not `maxTradesPerDay`** (corrected 2026-08-25):
+     `maxTradesPerDay` counts ENTRIES and is enforced by riskCheck, while this
+     cap counts every submitted intent — entries, loop-placed exits and
+     scale-in add-ons alike — via `countTodaysOrders` and guardrails.ts's
+     `max_orders_per_day`. Both `shapeToPatch` and `suggestLiveCaps` set it to
+     `maxTradesPerDay` exactly, which made every exit cost an entry: on
+     2026-08-24, with both at 4, three entries plus one stagnation scratch
+     spent the budget and GRMN's own stagnation exit was blocked 44 times
+     ("4 placed vs 4/day") and carried overnight. Both now derive it through
+     the shared `liveOrderCapForTrades()` (entries + one close each), so the
+     entry budget is untouched and exits can no longer eat it. Setting
      `liveTradingEnabled: true` requires an explicit typed-phrase confirmation at the
      route (a new, stronger analog of `confirmAggressive`'s boolean, given the stakes
      categorically exceed a risk-profile change) — a one-time gesture, not per-order

@@ -8,7 +8,7 @@
 // the stored config fields remain freely editable afterward.
 // ---------------------------------------------------------------------------
 
-import { maxOrderEquityFractionFor } from './targetTune';
+import { maxOrderEquityFractionFor, liveOrderCapForTrades } from './targetTune';
 
 export interface SuggestedLiveCaps {
   liveMaxOrderUsd: number;
@@ -26,16 +26,25 @@ export interface SuggestedLiveCaps {
  * clicking "Suggest from equity" after a tune can't silently replace the tune's
  * order cap with a different number.
  *
- * `liveMaxDailyLossUsd` / `liveMaxOrdersPerDay` — set to exactly match the
- * caller's current maxDailyDrawdownPct/maxTradesPerDay (AutotradeConfig
- * fields — see riskCheck.ts and db/autotradeConfig.ts; no longer derived from
- * a risk-profile preset table, since both moved to being directly
- * user-configured 2026-07-10), rather than an independently-guessed second
- * number. The risk engine (riskCheck.ts) already hard-blocks on both; having
- * the guardrail layer agree exactly means it's a redundant, independently-
- * coded confirmation of the same limit, not a second opinion that could
- * conflict with the first (mirrors optionStrategy.ts's analyzeStrategy()
- * acting as a structural backstop rather than a competing rule).
+ * `liveMaxDailyLossUsd` — set to exactly match the caller's current
+ * maxDailyDrawdownPct (an AutotradeConfig field — see riskCheck.ts and
+ * db/autotradeConfig.ts; no longer derived from a risk-profile preset table,
+ * since it moved to being directly user-configured 2026-07-10), rather than
+ * an independently-guessed second number. The risk engine (riskCheck.ts)
+ * already hard-blocks on it; having the guardrail layer agree exactly means
+ * it's a redundant, independently-coded confirmation of the same limit, not a
+ * second opinion that could conflict with the first (mirrors
+ * optionStrategy.ts's analyzeStrategy() acting as a structural backstop
+ * rather than a competing rule).
+ *
+ * `liveMaxOrdersPerDay` — maxTradesPerDay through targetTune's
+ * liveOrderCapForTrades(), NOT maxTradesPerDay itself. maxTradesPerDay counts
+ * ENTRIES; this cap counts every submitted intent, exits included, so the two
+ * are not the same number and setting them equal made exits eat the entry
+ * budget. See liveOrderCapForTrades' own comment for what that cost in
+ * production. Shared with the tuner for the same reason liveMaxOrderUsd is:
+ * clicking "Suggest from equity" after a tune must not silently replace the
+ * tune's cap with a different one.
  */
 export function suggestLiveCaps(
   equityUsd: number,
@@ -46,6 +55,6 @@ export function suggestLiveCaps(
   return {
     liveMaxOrderUsd: Math.round(equityUsd * maxOrderEquityFractionFor(riskProfile)),
     liveMaxDailyLossUsd: Math.round(equityUsd * (maxDailyDrawdownPct / 100)),
-    liveMaxOrdersPerDay: maxTradesPerDay,
+    liveMaxOrdersPerDay: liveOrderCapForTrades(maxTradesPerDay),
   };
 }
