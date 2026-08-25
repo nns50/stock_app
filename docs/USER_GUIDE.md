@@ -1356,9 +1356,11 @@ shouldn't be a tab-switch away.
   scratch journals its held time and R (`live_time_exit_placed` with
   `trigger: "stagnation"`), so you can audit whether it's cutting losers or
   winners. Their end-of-session sibling is the **end-of-day flatten**
-  (2026-08-25, live equity only, default off): set it to a number of **minutes
+  (2026-08-25, default off): set it to a number of **minutes
   before the 16:00 ET close** and every open live position is closed through
-  that same cancel-bracket-then-close path rather than carried overnight. It
+  that same cancel-bracket-then-close path rather than carried overnight —
+  **live options positions too**, which since 2026-08-25 also honour **max hold
+  days** (see "Live options trading" below). It
   fires on **working positions too** — the decision is about the clock, not the
   trade, since a winner gaps down as easily as a loser — and it never runs after
   the bell, because closing into after-hours liquidity pays a wide spread to
@@ -1597,7 +1599,21 @@ shouldn't be a tab-switch away.
   take-profit (%)** — but here a trigger places a **real** closing order (a single-leg
   sell, or both spread legs together as one combo) instead of just recording a paper
   close, with the reason (`stop_loss` / `take_profit` / `time_exit`) recorded on the
-  exit and shown by the table's Reason badge. There's never a resting bracket: a live
+  exit and shown by the table's Reason badge. Since 2026-08-25 live options also
+  honour the two **intraday** time rules equity already did — **max hold days**
+  and the **end-of-day flatten** — using those same settings rather than
+  options-specific ones. Before that the only time rule here was the
+  days-to-expiry backstop, so a contract bought at 14-60 DTE could be held for
+  weeks while holding a slot in the concurrent-position budget both books share.
+  Each fires regardless of how the position is doing, is journaled as
+  `live_options_intraday_exit` with its `trigger` (`end_of_day` or
+  `max_hold_days`), and books the close as `time_exit` — unless a stop-loss or
+  take-profit fires in the same cycle, which keeps its own reason. The
+  **stagnation exit** stays equity-only on purpose: a long option that goes
+  nowhere is already paying for its slot through theta. Unlike equity's flatten,
+  this one does **not** re-price a closing order that is already working: an
+  options close is priced 5% through the mark (against equity's 0.5%), so a
+  resting one is far likelier to fill than to be left behind. There's never a resting bracket: a live
   options exit is always a fresh closing order the loop places when its rule fires. An exit
   makes the *opposite* call on a stale price: it still places (declining would just leave
   the position drifting to expiration, which is what the time exit exists to prevent) but
@@ -1934,9 +1950,10 @@ shouldn't be a tab-switch away.
   Configuration; each defaults to 0 (disabled). Delta-drift still stays
   human-review-only on the Options page. The exit-reason badge is color-coded (green
   take-profit, red stop-loss, blue time-exit, slate end-of-period) in both this table and
-  the options backtest results below. These two price rules are **paper and backtest
-  only** — a live options position still exits on time only, the same scope boundary
-  the equity trailing-stop/breakeven fields below already have. Shows the same
+  the options backtest results below. These two price rules apply to **live**
+  options as well (since 2026-07-26 — see "Live options trading" above), unlike
+  the equity trailing-stop/breakeven fields below, which are still paper and
+  backtest only. Shows the same
   open/closed counts, realized/unrealized P&L, and full trade history (contract,
   strike/expiration, entry, a live **Current $** for open positions from a fresh
   contract quote, exit, reason, contracts, P&L, R) as equity's own paper trading above.

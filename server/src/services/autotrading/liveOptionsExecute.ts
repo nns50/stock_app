@@ -11,6 +11,7 @@ import {
   TradingConfig,
 } from '../trading/guardrails';
 import { marketOpenContext } from '../trading/marketHours';
+import { evaluateEndOfDayFlatten } from './endOfDayFlatten';
 import { webullAccountState, webullAccountType } from '../../providers/webull/accountState';
 import {
   newClientOrderId,
@@ -118,6 +119,10 @@ import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../d
  *  for BOTH entries (price above the mark to guarantee a buy) and exits
  *  (price below the mark to guarantee a sell). */
 const OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT = 5;
+
+/** For the intraday maxHoldDays check in checkLiveOptionsExits — same constant
+ *  liveExecute.ts uses for equity's own. */
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** The always-on exit backstop -- mirrors optionsExecute.ts's own
  *  AUTOTRADE_TIME_EXIT_DAYS constant exactly (duplicated per this codebase's
@@ -1236,7 +1241,67 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
         takeProfitPct: freshCfg.optionsTakeProfitPct || undefined,
       },
     );
-    if (!ev.triggered) continue;
+    // --- INTRADAY time exits (2026-08-25) -------------------------------
+    // The only time rule above is exitRules' days-to-expiry, so a 14-60 DTE
+    // contract could be held for WEEKS: no stagnation exit, no maxHoldDays, no
+    // end-of-day flatten — all three were equity-only. And because options
+    // share the concurrent-position budget with equity
+    // (eq.openPositionsCount + optPositions.length), one such position could
+    // hold half the account's slots for that whole time while the intraday
+    // equity strategy that owns the daily target went short of room.
+    //
+    // A loop whose edge is intraday should not carry ANY position overnight,
+    // whichever instrument it is in. These reuse the SAME settings equity
+    // already honours rather than adding options-specific ones.
+    //
+    // Deliberately NOT added here: the stagnation exit. stagnationExit.ts's own
+    // header explains why options are excluded — a stagnant long option is
+    // already paying for its slot through theta and has its own %-of-premium
+    // rules. That reasoning still holds; "held past the close" does not.
+    //
+    // One deliberate difference from equity's flatten: a position that already
+    // has a CLOSING ORDER working is skipped above (pendingExitPositionIds) and
+    // is NOT re-priced inside the window the way equity's is. Equity needs that
+    // because its exits rest at a 0.5% marketable buffer and can be left behind
+    // by the tape (GRMN, 2026-08-25); an options close here is priced 5% through
+    // the mark, so a resting one is far likelier to fill than to be stranded —
+    // and there is no "cancel a VERTICAL and re-place it" path in this codebase
+    // to do the replacement safely. A close that is already working is left to
+    // work.
+    const flatten = evaluateEndOfDayFlatten(freshCfg, Date.now());
+    const heldPastMaxDays = freshCfg.maxHoldDays > 0 && Date.now() - pos.entryAt >= freshCfg.maxHoldDays * MS_PER_DAY;
+    const intradayTrigger = flatten.active ? 'end_of_day' : heldPastMaxDays ? 'max_hold_days' : null;
+    const intradayReason = flatten.active
+      ? `flattening ${flatten.minutesLeft}m before the close rather than carrying overnight`
+      : heldPastMaxDays
+        ? `held past maxHoldDays (${freshCfg.maxHoldDays})`
+        : null;
+
+    if (!ev.triggered && !intradayTrigger) continue;
+    // Journaled only when an intraday rule is what got us here: a stop-loss or
+    // take-profit that fired in the same tick owns the exit and journals its
+    // own reason, and two competing explanations for one close is worse than
+    // none. Either way the placed order carries exitReason 'time_exit' for an
+    // intraday-only trigger, since no price rule chose it.
+    if (intradayTrigger && !ev.triggered) {
+      logAutotradeEvent({
+        symbol: pos.symbol,
+        stage: 'execution',
+        action: 'live_options_intraday_exit',
+        detail: {
+          positionId: pos.id,
+          reason: intradayReason,
+          trigger: intradayTrigger,
+          // Only meaningful for the flatten: FlattenDecision.minutesLeft is
+          // minutes-until-close whether or not the window is open, so carrying
+          // it on a maxHoldDays close would read as "300m to the bell" on an
+          // exit the bell had nothing to do with.
+          ...(flatten.active ? { minutesLeft: flatten.minutesLeft } : {}),
+          expiration: pos.expiration,
+        },
+        riskProfile: pos.riskProfile,
+      });
+    }
 
     // Kill-switch short-circuit, BEFORE the broker round-trips. Previously a
     // triggered exit during a halt went all the way through placeLiveOptionsExit
@@ -1282,7 +1347,14 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
 
     const accountId = freshCfg.liveAccountId;
     if (!accountId) continue; // account cleared mid-loop -- don't use a stale id
-    outcomes.push(await placeLiveOptionsExit(pos, accountId, freshCfg, liveExitReasonFor(ev.activeRule!)));
+    outcomes.push(
+      await placeLiveOptionsExit(
+        pos,
+        accountId,
+        freshCfg,
+        ev.activeRule ? liveExitReasonFor(ev.activeRule) : 'time_exit',
+      ),
+    );
   }
   return outcomes;
 }

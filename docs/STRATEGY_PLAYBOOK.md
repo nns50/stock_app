@@ -911,6 +911,26 @@ because a limit priced off a stale quote can sit unfilled while the market walks
 it — which is how a position gets carried overnight by an exit that already decided to
 leave.
 
+**Apply the clock rules to every instrument, not just the convenient one.** A rule
+that only covers part of the book is not a rule, it is a leak — and the leak grows in
+whichever instrument the rule forgot. This loop's options positions had no intraday
+time rule at all: the only automated timer was "close as expiration approaches", so a
+contract bought at 14-60 days to expiry could sit for weeks. Worse, options draw from
+the *same* concurrent-position budget as stock, so one forgotten contract could hold
+half the slots for a month while the intraday strategy that owns the daily target went
+short of room to trade. If you set a hold limit and a flatten because your edge is
+intraday, they have to bind on calls and puts too, or the book quietly drifts back to
+being a swing book with a day-trading label on it.
+
+Two exceptions worth being deliberate about. A **stagnation** scratch does not
+transfer: a stock that goes nowhere is holding a slot for free, while a long option that
+goes nowhere is already paying for its slot through theta and has %-of-premium rules of
+its own. And **re-pricing a resting exit** does not transfer either, because it does not
+need to — an options close placed several percent through the mark is far likelier to
+fill than an equity close placed a half-percent through it, so the stranded-limit problem
+that motivates the replacement barely exists there. Port the rule; check each mechanism
+against the instrument rather than assuming.
+
 **Score the thing you are actually trading.** A screener assembled from
 "momentum, trend, RSI, volatility" sounds like it measures movement, but check what each
 component *reads*. If momentum averages today's change with the distance from two moving

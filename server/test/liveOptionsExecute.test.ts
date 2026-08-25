@@ -1912,3 +1912,162 @@ describe('reconcileLiveOptionsOrders — booking and the materialization mark ar
     expect(listIntents()[0].materializedQty).toBe(orderedQty);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Intraday exits for live options (2026-08-25). Until this, the only time rule
+// on a live options position was exitRules' days-to-expiry backstop — so a
+// 14-60 DTE contract could be held for WEEKS: no maxHoldDays, no end-of-day
+// flatten, both equity-only. And options share the concurrent-position budget
+// with equity, so one such position could hold half the account's slots that
+// whole time while the intraday strategy that owns the daily target went short
+// of room.
+// ---------------------------------------------------------------------------
+describe('checkLiveOptionsExits — intraday exits', () => {
+  /** 15:58 ET on Monday 2026-08-25 — 2 minutes to the bell. */
+  const INSIDE_WINDOW = Date.parse('2026-08-25T19:58:00Z');
+  /** 11:00 ET the same day — mid-session. */
+  const MID_SESSION = Date.parse('2026-08-25T15:00:00Z');
+
+  afterEach(() => vi.useRealTimers());
+
+  function atClock(ms: number) {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(ms);
+  }
+
+  /** Backdate a position's entry so the maxHoldDays check can see it as aged.
+   *  createLiveOptionsPosition always stamps entry_at = now. */
+  function ageEntry(positionId: number, days: number) {
+    db.prepare('UPDATE autotrade_live_options_positions SET entry_at = ? WHERE id = ?').run(
+      Date.now() - days * 24 * 60 * 60 * 1000,
+      positionId,
+    );
+  }
+
+  function readyToClose(quantity: number) {
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 5 } }) as never);
+    mockAccountState.mockResolvedValue(holdingAccountState(quantity) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-INTRADAY' });
+  }
+
+  const intradayEvent = () => listAutotradeEvents({}).find((e) => e.action === 'live_options_intraday_exit');
+
+  it('flattens a live option before the close rather than carrying it overnight', async () => {
+    // Expiring 2030 and inside both price thresholds: nothing else here would
+    // fire. The decision is the clock, not the trade.
+    setAutotradeConfig(liveConfig({ endOfDayFlattenMinutes: 5, maxHoldDays: 0 }));
+    const pos = openLivePosition();
+    readyToClose(pos.quantity);
+    atClock(INSIDE_WINDOW);
+
+    const outcomes = await checkLiveOptionsExits();
+
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', requested: true });
+    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    expect(placedIntent.side).toBe('sell');
+    expect(placedIntent.openClose).toBe('close');
+    // No price rule chose this exit, so it books as a time exit.
+    expect(getLiveOptionsOrder(outcomes[0].intentId!)).toMatchObject({ positionId: pos.id, exitReason: 'time_exit' });
+    expect(JSON.parse(intradayEvent()!.detail!)).toMatchObject({
+      positionId: pos.id,
+      trigger: 'end_of_day',
+      minutesLeft: 2,
+    });
+  });
+
+  it('does nothing mid-session, however wide the window is', async () => {
+    setAutotradeConfig(liveConfig({ endOfDayFlattenMinutes: 5, maxHoldDays: 0 }));
+    openLivePosition();
+    atClock(MID_SESSION);
+
+    expect(await checkLiveOptionsExits()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(intradayEvent()).toBeUndefined();
+  });
+
+  it('stays off at 0 minutes — the flatten is opt-in for options too', async () => {
+    setAutotradeConfig(liveConfig({ endOfDayFlattenMinutes: 0, maxHoldDays: 0 }));
+    openLivePosition();
+    atClock(INSIDE_WINDOW);
+
+    expect(await checkLiveOptionsExits()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('closes a position held past maxHoldDays, whatever its expiration', async () => {
+    setAutotradeConfig(liveConfig({ maxHoldDays: 1, endOfDayFlattenMinutes: 0 }));
+    const pos = openLivePosition(); // 2030 expiry — the DTE backstop is years away
+    readyToClose(pos.quantity);
+    atClock(MID_SESSION);
+    ageEntry(pos.id, 2);
+
+    const outcomes = await checkLiveOptionsExits();
+
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', requested: true });
+    const detail = JSON.parse(intradayEvent()!.detail!);
+    expect(detail).toMatchObject({ trigger: 'max_hold_days' });
+    // minutes-to-the-bell belongs to the flatten alone — a maxHoldDays close at
+    // 11:00 is not "300m to the close".
+    expect(detail).not.toHaveProperty('minutesLeft');
+  });
+
+  it('leaves a position that has not yet reached maxHoldDays alone', async () => {
+    setAutotradeConfig(liveConfig({ maxHoldDays: 2, endOfDayFlattenMinutes: 0 }));
+    const pos = openLivePosition();
+    atClock(MID_SESSION);
+    ageEntry(pos.id, 1); // one day of a two-day allowance
+
+    expect(await checkLiveOptionsExits()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('holds an intraday exit through a kill-switch halt, same as any other trigger', async () => {
+    setAutotradeConfig(liveConfig({ endOfDayFlattenMinutes: 5, maxHoldDays: 0, killSwitch: true }));
+    openLivePosition();
+    atClock(INSIDE_WINDOW);
+
+    const outcomes = await checkLiveOptionsExits();
+
+    expect(outcomes[0]).toMatchObject({ requested: false, reason: expect.stringMatching(/kill switch/) });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(mockPreviewPositions).not.toHaveBeenCalled();
+  });
+
+  it('lets a price rule own the exit reason when both fire in the same tick', async () => {
+    // A stop-loss that fires inside the flatten window must still book as
+    // stop_loss — the flatten does not overwrite why the trade actually ended,
+    // and it does not add a second, competing explanation to the journal.
+    setAutotradeConfig(liveConfig({ endOfDayFlattenMinutes: 5, maxHoldDays: 0, optionsStopLossPct: 50 }));
+    const pos = openLivePosition({ entryPrice: 3 });
+    // mark 1.4 → -53.3%, past the 50% stop.
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 1.4 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SL-EOD' });
+    atClock(INSIDE_WINDOW);
+
+    const outcomes = await checkLiveOptionsExits();
+
+    expect(outcomes[0]).toMatchObject({ requested: true });
+    expect(getLiveOptionsOrder(outcomes[0].intentId!)).toMatchObject({ exitReason: 'stop_loss' });
+    expect(intradayEvent()).toBeUndefined();
+  });
+
+  it('does not re-order for a position whose close is already working', async () => {
+    setAutotradeConfig(liveConfig({ endOfDayFlattenMinutes: 5, maxHoldDays: 0 }));
+    const pos = openLivePosition();
+    readyToClose(pos.quantity);
+    atClock(INSIDE_WINDOW);
+
+    const first = await checkLiveOptionsExits();
+    expect(first[0]).toMatchObject({ requested: true });
+    mockPlaceOrder.mockClear();
+
+    // Second tick, still inside the window: the exit order placed above is
+    // pending, so this position is skipped rather than double-closed.
+    expect(await checkLiveOptionsExits()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+});
