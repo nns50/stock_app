@@ -323,6 +323,13 @@ export interface AutotradeConfig {
    *  the target for free — the target is a multiple of the stop distance.
    *  See services/autotrading/decide.ts's clampStopDistance(). */
   maxStopDistancePct: number;
+  /** LIVE scale-out (services/autotrading/scaleOut.ts): bank partialExitPct of
+   *  a live equity position once it reaches partialExitRMultiple, by REDUCING
+   *  the resting bracket legs to the remainder and then selling the difference.
+   *  Off by default and behind its own flag on purpose — partialExitRMultiple
+   *  has been 1.5 since the paper-only implementation, so reusing it alone
+   *  would have switched live scale-outs on the moment this deployed. */
+  liveScaleOutEnabled: boolean;
   /** Target distance = stop distance × this (a reward:risk multiple). */
   targetRMultiple: number;
   /** No new entries within this many minutes of the session open or close —
@@ -917,6 +924,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     maxMarketAtrPct: 5,
     stopAtrMultiple: 1.5,
     maxStopDistancePct: 0,
+    liveScaleOutEnabled: false,
     targetRMultiple: 2,
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
@@ -1135,6 +1143,8 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     maxMarketAtrPct: pct(input.maxMarketAtrPct, d.maxMarketAtrPct),
     stopAtrMultiple: posDecimal(input.stopAtrMultiple, d.stopAtrMultiple),
     maxStopDistancePct: nonNeg(input.maxStopDistancePct, d.maxStopDistancePct),
+    liveScaleOutEnabled:
+      typeof input.liveScaleOutEnabled === 'boolean' ? input.liveScaleOutEnabled : d.liveScaleOutEnabled,
     targetRMultiple: posDecimal(input.targetRMultiple, d.targetRMultiple),
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
     earningsBlackoutDays: posInt(input.earningsBlackoutDays, d.earningsBlackoutDays),

@@ -117,6 +117,7 @@ describe('getAutotradeDashboard', () => {
       liveOptionsExitsRequested: 0,
       liveTimeExitsRequested: 0,
       liveScaleInsRequested: 0,
+      liveScaleOutsRequested: 0,
       candidatesScreened: 7,
       candidatesPassedVolatility: 4,
       signalsGenerated: 2,

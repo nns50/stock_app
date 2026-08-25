@@ -19,6 +19,7 @@ import {
   webullOrderStatusBatch,
   webullCancelOrder,
   listWebullOpenOrders,
+  webullReplaceOrder,
   isExitLeg,
   WebullOpenOrder,
 } from '../../providers/webull/orders';
@@ -57,6 +58,7 @@ import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCoold
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
 import { evaluateStagnation } from './stagnationExit';
 import { evaluateEndOfDayFlatten } from './endOfDayFlatten';
+import { evaluateScaleOut } from './scaleOut';
 import { fetchTodayVwap } from './vwap';
 import { detectLevels } from '../../indicators/levels';
 import { planAroundLevels } from './levelPlan';
@@ -1630,19 +1632,25 @@ function materializeTimeExitFill(
   // full exit at a price only part of the order achieved.
   const closeQty = Math.min(quantity ?? position.remainingQuantity, position.remainingQuantity);
   if (closeQty <= 0) return false;
+  // Was this order a SCALE-OUT or an exit? Derived from the order, not stored:
+  // every exit path orders the whole remaining position, and only a scale-out
+  // deliberately orders less. That distinction survives a partial FILL too — a
+  // time exit that only half-filled still ordered the full size, so it books as
+  // a time exit, while a scale-out books as 'partial' even if it fills whole.
+  const isScaleOut = intent.quantity < position.remainingQuantity;
   const closed = addExit(position.id, {
     quantity: closeQty,
     exitPrice,
     exitDate: etDateStr(),
     sourceIntentId: intent.id,
-    exitReason: 'time_exit',
+    exitReason: isScaleOut ? 'partial' : 'time_exit',
   });
   if (!closed) return false;
   logAutotradeEvent({
     symbol: intent.symbol,
     stage: 'execution',
-    action: 'live_time_exit_closed',
-    detail: { exitPrice, pnl: realizedPnlOf(closed), positionId },
+    action: isScaleOut ? 'live_scale_out_filled' : 'live_time_exit_closed',
+    detail: { exitPrice, quantity: closeQty, pnl: realizedPnlOf(closed), positionId },
     riskProfile,
   });
   return true;
@@ -2299,6 +2307,208 @@ async function placeLiveEquityTimeExitClose(
  * attempt ANOTHER cancel+close for the same still-closing position
  * (mirrors checkLiveOptionsExits' identical guard).
  */
+export interface LiveScaleOutOutcome {
+  symbol: string;
+  positionId: number;
+  requested: boolean;
+  quantity?: number;
+  rMultiple?: number | null;
+  reason?: string;
+  intentId?: number;
+}
+
+/**
+ * Bank part of a live winner at the configured R trigger — see scaleOut.ts for
+ * why this exists (live positions otherwise exit on a timer at whatever R they
+ * happen to be) and for the ordering rule this function implements.
+ *
+ * The sequence, and the reason for it:
+ *   1. Read the broker's resting exit legs for the symbol.
+ *   2. REDUCE each of them to the remainder we intend to keep.
+ *   3. Only then sell the scale-out quantity.
+ *
+ * Selling first would leave a full-size bracket against a half-size holding,
+ * and a later stop fill would sell shares we no longer own — for a long, a
+ * SHORT position nobody opened. Reducing first inverts that: if step 3 fails,
+ * the shares we were about to sell sit briefly unbracketed, which
+ * checkLiveBracketProtection already reports and the next tick retries.
+ *
+ * A leg that cannot be reduced ABANDONS the scale-out for this tick with the
+ * position still fully protected. There is no path here that sells against an
+ * unreduced bracket.
+ */
+export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]> {
+  if (!config.trading.placeEnabled) return [];
+  const cfg = getAutotradeConfig();
+  if (!cfg.liveScaleOutEnabled || !cfg.liveAccountId) return [];
+  // Never into pre/after-hours liquidity: this is opportunistic profit-taking,
+  // not a protective exit, so it has no business paying a wide spread.
+  if (!checkSessionWindow(0).ok) return [];
+
+  const open = listAutotradeLivePositions({ status: 'open' });
+  if (open.length === 0) return [];
+  const pendingExitPositionIds = new Set(
+    listPendingLiveOrders()
+      .filter((o) => o.role === 'exit' && o.positionId !== null)
+      .map((o) => o.positionId!),
+  );
+
+  const accountId = cfg.liveAccountId;
+  const outcomes: LiveScaleOutOutcome[] = [];
+  for (const pos of open) {
+    // An exit already working means the whole position is on its way out;
+    // scaling out of it would race that close for the same shares.
+    if (pendingExitPositionIds.has(pos.id)) continue;
+
+    let last: number;
+    try {
+      last = (await getProvider().getQuote(pos.symbol.toUpperCase())).last;
+    } catch {
+      continue; // opportunistic — a transient quote failure just waits a tick
+    }
+    const decision = evaluateScaleOut(pos, last, cfg);
+    if (!decision.triggered) continue;
+
+    const symbol = pos.symbol.toUpperCase();
+    const exitSide: 'buy' | 'sell' = pos.side === 'long' ? 'sell' : 'buy';
+    const keepQty = pos.remainingQuantity - decision.quantity;
+
+    // --- 1. what is actually resting at the broker -------------------------
+    const listed = await listWebullOpenOrders(accountId);
+    if (!listed.ok) {
+      outcomes.push({
+        symbol,
+        positionId: pos.id,
+        requested: false,
+        reason: `Could not read open orders: ${listed.error ?? 'unreadable'}`,
+      });
+      continue;
+    }
+    const resting = restingExitOrders(listed.orders, symbol, exitSide);
+    if (resting.length === 0) {
+      // Same reasoning as the close path's own refusal: an empty list is
+      // ambiguous (nothing resting, OR a leg we failed to parse), and acting on
+      // it is what oversells. A position with no readable protection is
+      // checkLiveBracketProtection's problem, not something to scale out of.
+      outcomes.push({
+        symbol,
+        positionId: pos.id,
+        requested: false,
+        reason: 'No readable resting exit leg — not scaling out against an unknown bracket',
+      });
+      continue;
+    }
+
+    // --- 2. reduce every leg to the remainder FIRST ------------------------
+    let reduceFailed: string | null = null;
+    for (const leg of resting) {
+      const r = await webullReplaceOrder(accountId, leg.clientOrderId!, { quantity: keepQty });
+      if (!r.ok) {
+        reduceFailed = `${leg.clientOrderId}: ${r.error ?? 'replace failed'}`;
+        break;
+      }
+    }
+    if (reduceFailed) {
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: 'live_scale_out_blocked',
+        detail: { positionId: pos.id, reason: `Could not reduce the resting bracket: ${reduceFailed}` },
+        riskProfile: cfg.riskProfile,
+      });
+      outcomes.push({ symbol, positionId: pos.id, requested: false, reason: reduceFailed });
+      continue;
+    }
+
+    // --- 3. and only now sell the difference -------------------------------
+    const buffer = 1 + (exitSide === 'buy' ? 1 : -1) * (MARKETABLE_LIMIT_BUFFER_PCT / 100);
+    const intent: OrderIntent = {
+      symbol,
+      assetKind: 'stock',
+      side: exitSide,
+      openClose: 'close',
+      quantity: decision.quantity,
+      orderType: 'limit',
+      limitPrice: Math.round(last * buffer * 100) / 100,
+      referencePrice: last,
+    };
+    const liveCfg = buildLiveTradingConfig(cfg);
+    const acct = await webullAccountState(accountId, symbol);
+    if (!acct.ok || !acct.state) {
+      outcomes.push({ symbol, positionId: pos.id, requested: false, reason: acct.error ?? 'no account state' });
+      continue;
+    }
+    const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
+    const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
+    const clientOrderId = newClientOrderId();
+    const intentRec = createIntent(intent, clientOrderId);
+    if (!guardrails.ok) {
+      const reasons = blockingFailures(guardrails)
+        .map((c) => `${c.rule}: ${c.detail}`)
+        .join('; ');
+      transitionIntent(intentRec.id, 'rejected', { detail: `blocked: ${reasons}` });
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: 'live_scale_out_blocked',
+        detail: { positionId: pos.id, reasons },
+        riskProfile: cfg.riskProfile,
+      });
+      outcomes.push({ symbol, positionId: pos.id, requested: false, reason: reasons, intentId: intentRec.id });
+      continue;
+    }
+
+    transitionIntent(intentRec.id, 'validated', { detail: 'guardrails passed (live scale-out)' });
+    transitionIntent(intentRec.id, 'confirmed', { detail: 'autotrade — no per-order confirmation' });
+    transitionIntent(intentRec.id, 'submitted', { detail: `submitting (cid ${clientOrderId})` });
+    const broker = await webullPlaceOrder(accountId, intent, clientOrderId);
+    if (!broker.ok && !broker.ambiguous) {
+      transitionIntent(intentRec.id, 'rejected', { detail: broker.error ?? 'placement failed' });
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: 'live_scale_out_failed',
+        detail: { positionId: pos.id, reason: broker.error },
+        riskProfile: cfg.riskProfile,
+      });
+      outcomes.push({ symbol, positionId: pos.id, requested: false, reason: broker.error, intentId: intentRec.id });
+      continue;
+    }
+    // Recorded as a role='exit' order, so reconcile's existing exit path books
+    // the fill — materializeTimeExitFill already reduces a position by what
+    // actually filled and leaves the rest open, which is exactly a scale-out.
+    transitionIntent(intentRec.id, 'acknowledged', {
+      brokerOrderId: broker.orderId,
+      detail: `broker accepted${broker.orderId ? ` (order ${broker.orderId})` : ''}`,
+    });
+    recordLiveExitOrder({ intentId: intentRec.id, symbol, riskProfile: cfg.riskProfile, positionId: pos.id });
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_scale_out_placed',
+      detail: {
+        positionId: pos.id,
+        quantity: decision.quantity,
+        keepQty,
+        rMultiple: decision.rMultiple,
+        limitPrice: intent.limitPrice,
+        legsReduced: resting.length,
+        reason: decision.detail,
+      },
+      riskProfile: cfg.riskProfile,
+    });
+    outcomes.push({
+      symbol,
+      positionId: pos.id,
+      requested: true,
+      quantity: decision.quantity,
+      rMultiple: decision.rMultiple,
+      intentId: intentRec.id,
+    });
+  }
+  return outcomes;
+}
+
 export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutcome[]> {
   // The deploy-level master gate, checked FIRST — mirrors checkLiveOptionsExits'
   // own reasoning: this places a brand-new real order (and cancels a resting
