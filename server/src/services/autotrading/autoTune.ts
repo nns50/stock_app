@@ -169,6 +169,7 @@ async function buildAutotradeExcursionReport(): Promise<ExcursionReport> {
             stopPrice: p.stopPrice,
             realizedPnl: realizedPnlOf(p),
             entryDate: p.entryDate,
+            exitDate: lastExitDateOf(p),
           },
           candles,
         );

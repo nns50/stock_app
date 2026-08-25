@@ -683,6 +683,20 @@ How to use it:
 Small, evidence-based adjustments here often improve expectancy more than any new
 setup.
 
+**Daily bars set the resolution.** Excursion is measured from daily candles, so for a
+trade held less than a full session the MAE and MFE are that whole day's high and low,
+not the range while you actually held. For an intraday strategy that overstates both —
+read those rows as an upper bound, and lean on multi-day trades when tuning stops.
+
+**A sanity check worth doing first.** MAE and MFE should be in the same league as your
+stop: a book stopped out at 1R cannot have an average MAE of several R, because those
+trades would have been stopped long before. If the averages come back at implausible
+multiples of your risk, something is measuring the wrong window rather than revealing a
+hidden truth about your trading — and tuning stops or targets on it would move real money
+against noise. This is not hypothetical: through 2026-08-25 this report measured every
+trade against roughly six months of price history instead of its own holding period,
+and reported a +20.95R average MFE and a −4.28R average MAE.
+
 **Check the sample before you act on it.** The panel fetches daily candles per trade, so
 it caps how many it does per request and can't measure a trade with no entry date or one
 the provider has no data for. When any of that applies it says so above the table —

@@ -1033,7 +1033,29 @@ starts.
      conservative tune journals as MODERATE. So a freshly-applied CONSERVATIVE
      tune already read as hand-edited, permanently excluding its per-order cap
      from re-anchoring. `shapeToPatch` now derives through the same function,
-     and the agreement test runs over every band instead of one. Setting
+     and the agreement test runs over every band instead of one.
+
+     **MAE/MFE excursions measured the wrong window** (fixed 2026-08-25).
+     `computeExcursion` scanned every bar handed to it, trusting its callers'
+     `getCandles(symbol, 'daily', {start: entryDate, end: exitDate})` to have
+     bounded the fetch. The live provider (Webull) has no date-range parameter
+     at all — its bars endpoint takes a `count` — so `start`/`end` were dropped
+     silently and the most recent 120 daily bars came back instead. MAE/MFE was
+     therefore the symbol's ~6-month high/low: +20.95R average MFE and −4.28R
+     average MAE across the book, an average adverse excursion four times the
+     stop on trades that would have been stopped out at 1R. `autoTuneExitsEnabled`
+     consumes the same report through `buildAutotradeExcursionReport`, so turning
+     it on would have tuned `stopAtrMultiple`/`targetRMultiple` from those ranges;
+     it was off, which is the only reason this cost nothing. Fixed on both sides:
+     `computeExcursion` now filters to `[entryDate, exitDate]` itself (the
+     requirement lives there, not in a provider that may not support ranges) and
+     reports an empty window as unmeasurable rather than silently widening, and
+     `WebullProvider.getCandles` honors a range the only way that API allows —
+     request enough bars to reach `start`, filter to the window, and defer to the
+     aux provider when the window predates the oldest bar available rather than
+     return a truncated window a caller would read as complete.
+     Note the remaining limit: excursion is still measured on DAILY bars, so for
+     an intraday hold it reads that session's full high/low, an upper bound. Setting
      `liveTradingEnabled: true` requires an explicit typed-phrase confirmation at the
      route (a new, stronger analog of `confirmAggressive`'s boolean, given the stakes
      categorically exceed a risk-profile change) — a one-time gesture, not per-order

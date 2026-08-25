@@ -20,10 +20,19 @@ const mockDispatch = vi.mocked(dispatchNotifications);
 const mockGetProvider = vi.mocked(getProvider);
 
 /** A provider whose getCandles returns one bar with the given high/low — enough
- *  for computeExcursion to read MFE (high) and MAE (low) for the exit-tune. */
+ *  for computeExcursion to read MFE (high) and MAE (low) for the exit-tune.
+ *
+ *  The bar is dated to the START of the requested window, as a range-supporting
+ *  provider would return. It carried `time: 0` (1970) until 2026-08-25, which
+ *  only worked because computeExcursion ignored timestamps entirely — the very
+ *  defect that let MAE/MFE be measured over six months of unrelated bars. Now
+ *  that the holding period is enforced, an undated bar correctly measures
+ *  nothing, and this fixture has to be honest about when its bar happened. */
 function candleReturning(high: number, low: number) {
   return {
-    getCandles: vi.fn(async () => [{ time: 0, open: 100, high, low, close: 100, volume: 1000 }]),
+    getCandles: vi.fn(async (_symbol: string, _timeframe: string, q?: { start?: string }) => [
+      { time: Date.parse(`${q?.start ?? '2026-08-01'}T16:00:00Z`), open: 100, high, low, close: 100, volume: 1000 },
+    ]),
   };
 }
 
