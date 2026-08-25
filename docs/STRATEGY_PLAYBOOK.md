@@ -683,10 +683,16 @@ How to use it:
 Small, evidence-based adjustments here often improve expectancy more than any new
 setup.
 
-**Daily bars set the resolution.** Excursion is measured from daily candles, so for a
-trade held less than a full session the MAE and MFE are that whole day's high and low,
-not the range while you actually held. For an intraday strategy that overstates both —
-read those rows as an upper bound, and lean on multi-day trades when tuning stops.
+**Same-session trades are measured on intraday bars.** A trade opened and closed in one
+session is read from 5-minute candles, narrowed to the minutes you actually held, so its
+MAE/MFE reflects the trade rather than the day around it. Trades held overnight or longer
+still use daily bars, which is the right granularity for them.
+
+Intraday history is short, so when it isn't available for an older same-session trade the
+panel falls back to daily bars **and says so** — it reports how many rows came from each.
+A daily-bar row for a same-session trade is an upper bound, not a measurement: it credits
+the trade with the day's full high and low, including hours you were flat. If the mix is
+mostly daily, treat the averages as a ceiling.
 
 **A sanity check worth doing first.** MAE and MFE should be in the same league as your
 stop: a book stopped out at 1R cannot have an average MAE of several R, because those

@@ -606,6 +606,9 @@ export interface TradeExcursion {
   maeR: number | null;
   realizedR: number | null;
   capturedPct: number | null;
+  /** Bars this row was measured on. A same-session trade on 'daily' bars reports
+   *  that whole day's range — an upper bound, not a measurement. */
+  resolution: 'intraday' | 'daily';
 }
 
 /** What the excursion analysis covered. `trades` counts only the successes, so
@@ -630,6 +633,9 @@ export interface ExcursionReport {
   capturePct: number | null;
   rows: TradeExcursion[];
   coverage: ExcursionCoverage;
+  /** How many rows came from intraday vs daily bars — a mixed report averages
+   *  measurements together with upper bounds, so the split is worth showing. */
+  resolutionMix: { intraday: number; daily: number };
 }
 
 /** One live-traded fill's execution quality vs. the order's limit price. */

@@ -3,7 +3,7 @@ import { getIntents } from '../../db/orders';
 import { getProvider } from '../../providers';
 import { computeSlippage, groupSlippageBySymbol, SlippageRow } from '../slippage';
 import { computeJournalStats, realizedPnlOf } from '../pnl';
-import { aggregateExcursions, computeExcursion, ExcursionReport, TradeExcursion } from '../excursion';
+import { aggregateExcursions, excursionForTrade, ExcursionReport, TradeExcursion } from '../excursion';
 import { computeExcursionTune } from './excursionTune';
 import { checkOosEdgeConfirmation } from './significance';
 import { getAutotradeConfig, setAutotradeConfig } from '../../db/autotradeConfig';
@@ -154,25 +154,20 @@ async function buildAutotradeExcursionReport(): Promise<ExcursionReport> {
   await Promise.all(
     closed.map(async (p) => {
       try {
-        const candles = await provider.getCandles(p.symbol, 'daily', {
-          start: p.entryDate,
-          end: lastExitDateOf(p) ?? undefined,
+        const ex = await excursionForTrade(provider, {
+          positionId: p.id,
+          symbol: p.symbol,
+          side: p.side,
+          entryPrice: p.entryPrice,
+          quantity: p.quantity,
+          multiplier: p.multiplier,
+          stopPrice: p.stopPrice,
+          realizedPnl: realizedPnlOf(p),
+          entryDate: p.entryDate,
+          exitDate: lastExitDateOf(p),
+          entryTime: p.entryTime,
+          exitAt: p.exits.length ? Math.max(...p.exits.map((e) => e.createdAt)) : null,
         });
-        const ex = computeExcursion(
-          {
-            positionId: p.id,
-            symbol: p.symbol,
-            side: p.side,
-            entryPrice: p.entryPrice,
-            quantity: p.quantity,
-            multiplier: p.multiplier,
-            stopPrice: p.stopPrice,
-            realizedPnl: realizedPnlOf(p),
-            entryDate: p.entryDate,
-            exitDate: lastExitDateOf(p),
-          },
-          candles,
-        );
         if (ex) rows.push(ex);
       } catch {
         // skip trades whose candles can't be fetched — best effort

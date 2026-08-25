@@ -816,15 +816,20 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
 - **Risk of ruin** (Monte Carlo) — set a per-trade risk and a "ruin" drawdown
   threshold; it simulates thousands of trade sequences from your edge and reports the
   **% that hit ruin** plus a median ending. Your guardrail against over-betting.
-- **Excursions (MAE/MFE)** — for closed *stock* trades, replays daily candles over the
-  holding period to show **Maximum Adverse Excursion** (how far underwater it went) and
-  **Maximum Favorable Excursion** (how far in profit), in **%** and **R**. Use it to
-  tighten stops and set realistic targets. Because it fetches candles per trade it caps
-  how many it does per request, and it can't measure a trade with no entry date or one
-  the provider has no candles for — so it now **says what it left out** ("averages over
-  12 of 70 closed stock trades…") rather than presenting a partial sample as the whole
-  picture. If nothing at all could be measured it tells you why, instead of claiming you
-  have no closed stock trades.
+- **Excursions (MAE/MFE)** — for closed *stock* trades, replays candles over the holding
+  period to show **Maximum Adverse Excursion** (how far underwater it went) and **Maximum
+  Favorable Excursion** (how far in profit), in **%** and **R**. Use it to tighten stops
+  and set realistic targets. A trade opened and closed in the **same session** is measured
+  on 5-minute bars narrowed to the minutes you actually held; trades held longer use daily
+  bars. Intraday history is short, so an older same-session trade may fall back to daily —
+  the panel reports the split ("3 measured on intraday bars, 47 on daily"), because a
+  daily-bar row for a same-session trade credits the trade with that whole day's high and
+  low, including hours you were flat. Read those rows as an upper bound. Because it
+  fetches candles per trade it caps how many it does per request, and it can't measure a
+  trade with no entry date or one the provider has no candles for — so it also **says what
+  it left out** ("averages over 12 of 70 closed stock trades…") rather than presenting a
+  partial sample as the whole picture. If nothing at all could be measured it tells you
+  why, instead of claiming you have no closed stock trades.
 - **Execution quality (slippage)** — for each **live-traded** entry/exit that came from an
   order with a limit price, compares the actual **broker fill** to the **limit you set**.
   Positive $ always means it cost you money, whichever side you were on (a buy filled

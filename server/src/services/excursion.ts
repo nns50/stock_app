@@ -3,7 +3,8 @@
 // Excursion) and against you (Maximum Adverse Excursion)? Expressed in R when a
 // stop was logged. Reveals stops that are too tight and winners exited too early.
 
-import { Candle } from '../providers/types';
+import { Candle, Timeframe } from '../providers/types';
+import { etDateTimeToMs } from '../util/marketDate';
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
@@ -20,7 +21,23 @@ export interface ExcursionInput {
   /** Last exit date (ET, YYYY-MM-DD). Null for a trade with no dated exit —
    *  the window is then open-ended forward from the entry. */
   exitDate?: string | null;
+  /** ET wall-clock entry time (HH:MM), when known. Narrows an INTRADAY window
+   *  only; ignored on daily bars, which have no intraday extent. */
+  entryTime?: string | null;
+  /** Epoch ms of the last exit, when known. Same intraday-only role. */
+  exitAt?: number | null;
 }
+
+/** Which bars an excursion was measured on. Daily is an UPPER BOUND for a trade
+ *  held less than a session: that bar's high/low span the whole day, including
+ *  hours the position did not exist. */
+export type ExcursionResolution = 'intraday' | 'daily';
+
+/** 5-minute bars: fine enough that a 90-minute hold is ~18 observations instead
+ *  of one daily high/low, coarse enough that a 50-trade report stays one
+ *  reasonable fetch per trade. 1-minute is sharper on wicks but 5x the payload
+ *  and the shortest history providers retain. */
+export const INTRADAY_TIMEFRAME: Timeframe = '5min';
 
 export interface TradeExcursion {
   positionId: number;
@@ -34,6 +51,10 @@ export interface TradeExcursion {
   realizedR: number | null;
   /** Of the favorable move available (MFE), what fraction you kept. Winners only. */
   capturedPct: number | null;
+  /** Bars this row was measured on. A 'daily' row for a same-session trade is an
+   *  upper bound, not a measurement — it includes hours the position did not
+   *  exist. Carried per row so a mixed report can be read honestly. */
+  resolution: ExcursionResolution;
 }
 
 /** ET calendar date of a bar, matching how entry/exit dates are stored. */
@@ -67,17 +88,79 @@ const etDateOf = new Intl.DateTimeFormat('en-CA', {
  * than trusted to a provider that may not support ranges. Providers that do
  * honor start/end simply hand over a set this filter passes through untouched.
  */
-export function barsWithinHoldingPeriod(candles: Candle[], entryDate: string, exitDate?: string | null): Candle[] {
+export function barsWithinHoldingPeriod(
+  candles: Candle[],
+  entryDate: string,
+  exitDate?: string | null,
+  /** Intraday only: narrow further to the minutes actually held. A DAILY bar is
+   *  stamped at its session and has no intraday extent, so applying these to one
+   *  would discard the very bar being measured. */
+  bounds?: { entryAt?: number | null; exitAt?: number | null },
+): Candle[] {
   return candles.filter((c) => {
     if (!(c.time > 0)) return false;
     const day = etDateOf.format(c.time);
     if (day < entryDate) return false;
     if (exitDate != null && day > exitDate) return false;
+    if (bounds?.entryAt != null && c.time < bounds.entryAt) return false;
+    if (bounds?.exitAt != null && c.time > bounds.exitAt) return false;
     return true;
   });
 }
 
-export function computeExcursion(p: ExcursionInput, candles: Candle[]): TradeExcursion | null {
+/** Just enough of a provider to fetch candles — structural so callers and tests
+ *  can pass anything shaped right. */
+export interface CandleSource {
+  getCandles(
+    symbol: string,
+    timeframe: Timeframe,
+    query?: { start?: string; end?: string; limit?: number },
+  ): Promise<Candle[]>;
+}
+
+/**
+ * Fetch the right bars for a trade and measure its excursion — the ONE path
+ * both callers (the Journal's /excursions route and auto-tune's own report)
+ * now share. They previously carried near-identical copies of this logic and
+ * therefore carried identical bugs; keeping it in one place is what stops the
+ * next fix from landing on only one of them.
+ *
+ * A trade opened and closed in the SAME session is measured on intraday bars.
+ * On daily bars such a trade gets that whole day's high and low — including
+ * hours it did not exist — which for this loop (90-minute stagnation exit,
+ * maxHoldDays 1) is most of them. VALE on 2026-08-24 was held 11:37-13:09 and
+ * read its full session range.
+ *
+ * Intraday history is short (providers retain far less of it than daily), so
+ * when it cannot be had this falls back to daily and SAYS SO via the row's
+ * `resolution` — an upper bound labelled as one, never a precise-looking number
+ * that quietly isn't.
+ */
+export async function excursionForTrade(source: CandleSource, p: ExcursionInput): Promise<TradeExcursion | null> {
+  const sameSession = p.exitDate != null && p.exitDate === p.entryDate;
+  if (sameSession) {
+    try {
+      const intraday = await source.getCandles(p.symbol, INTRADAY_TIMEFRAME, {
+        start: p.entryDate,
+        end: p.exitDate ?? undefined,
+      });
+      const row = computeExcursion(p, intraday, 'intraday');
+      if (row) return row;
+      // No usable intraday bars in the window (history aged out, or a provider
+      // that only serves daily) — fall through rather than report nothing.
+    } catch {
+      // Same: an intraday fetch failure must not lose the trade entirely.
+    }
+  }
+  const daily = await source.getCandles(p.symbol, 'daily', { start: p.entryDate, end: p.exitDate ?? undefined });
+  return computeExcursion(p, daily, 'daily');
+}
+
+export function computeExcursion(
+  p: ExcursionInput,
+  candles: Candle[],
+  resolution: ExcursionResolution = 'daily',
+): TradeExcursion | null {
   if (!candles.length || !p.entryPrice) return null;
   const sign = p.side === 'long' ? 1 : -1;
   const costBasis = p.entryPrice * p.quantity * p.multiplier;
@@ -88,7 +171,18 @@ export function computeExcursion(p: ExcursionInput, candles: Candle[]): TradeExc
   // that lands on no bars at all measures nothing, and is reported as
   // unmeasurable (null) rather than silently falling back to the full set —
   // the whole defect this filter exists to fix was a silent widening.
-  const held = barsWithinHoldingPeriod(candles, p.entryDate, p.exitDate);
+  //
+  // On intraday bars the window narrows again to the MINUTES held: a daily bar
+  // can only say "somewhere that session", but 5-minute bars can say "while you
+  // were actually in it", which is the whole point of fetching them.
+  const held = barsWithinHoldingPeriod(
+    candles,
+    p.entryDate,
+    p.exitDate,
+    resolution === 'intraday'
+      ? { entryAt: p.entryTime ? etDateTimeToMs(p.entryDate, p.entryTime) : null, exitAt: p.exitAt ?? null }
+      : undefined,
+  );
   if (!held.length) return null;
 
   let maxHigh = -Infinity;
@@ -116,6 +210,7 @@ export function computeExcursion(p: ExcursionInput, candles: Candle[]): TradeExc
     maeR,
     realizedR,
     capturedPct: mfeR && mfeR > 0 && realizedR != null ? round2((realizedR / mfeR) * 100) : null,
+    resolution,
   };
 }
 
@@ -148,6 +243,11 @@ export interface ExcursionReport {
   capturePct: number | null;
   rows: TradeExcursion[];
   coverage: ExcursionCoverage;
+  /** How many rows were measured on intraday vs daily bars. A same-session
+   *  trade measured on a DAILY bar reports that whole day's range, so a report
+   *  averaging the two is mixing measurements with upper bounds — visible here
+   *  rather than left for the reader to assume. */
+  resolutionMix: { intraday: number; daily: number };
 }
 
 function mean(xs: number[]): number | null {
@@ -170,6 +270,10 @@ export function aggregateExcursions(rows: TradeExcursion[], coverage?: Partial<E
     avgRealizedR: mean(withR.map((r) => r.realizedR as number)),
     capturePct: mean(captures),
     rows,
+    resolutionMix: {
+      intraday: rows.filter((r) => r.resolution === 'intraday').length,
+      daily: rows.filter((r) => r.resolution !== 'intraday').length,
+    },
     coverage: {
       closedStockTrades: rows.length,
       undated: 0,

@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   aggregateExcursions,
   computeExcursion,
   barsWithinHoldingPeriod,
+  excursionForTrade,
   ExcursionInput,
 } from '../src/services/excursion';
 import type { Candle } from '../src/providers/types';
@@ -174,5 +175,108 @@ describe('holding-period window', () => {
     // nothing at all.
     const oneDay = barsWithinHoldingPeriod([barOn('2026-01-01', 110, 99)], '2026-01-01', '2026-01-01');
     expect(oneDay).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Intraday resolution for same-session trades (2026-08-25). Fixing the window
+// stopped MAE/MFE spanning six months, but a DAILY bar still gives a
+// same-session trade that whole day's high and low — including the hours it did
+// not exist. For this loop (90-minute stagnation exit, maxHoldDays 1) that is
+// most of them: VALE was held 11:37-13:09 and read its full session range.
+// ---------------------------------------------------------------------------
+describe('excursionForTrade', () => {
+  const dayTrade: ExcursionInput = {
+    positionId: 537,
+    symbol: 'VALE',
+    side: 'long',
+    entryPrice: 15.14,
+    quantity: 81,
+    multiplier: 1,
+    stopPrice: 14.56, // risk 0.58/sh
+    realizedPnl: -1.62,
+    entryDate: '2026-08-24',
+    exitDate: '2026-08-24',
+    entryTime: '11:37',
+    exitAt: Date.parse('2026-08-24T17:09:00Z'), // 13:09 ET
+  };
+  const bar = (etTime: string, high: number, low: number): Candle => ({
+    time: Date.parse(`2026-08-24T${etTime}:00Z`),
+    open: low,
+    high,
+    low,
+    close: high,
+    volume: 1,
+  });
+  /** The session: a big morning dip and a big late run, both OUTSIDE 11:37-13:09. */
+  const session = [
+    bar('14:00', 15.0, 14.62), // 10:00 ET — before entry, the day's low
+    bar('16:00', 15.2, 15.05), // 12:00 ET — held
+    bar('17:00', 15.18, 15.02), // 13:00 ET — held
+    bar('19:30', 15.22, 15.1), // 15:30 ET — after exit, the day's high
+  ];
+  const source = (byTimeframe: Record<string, Candle[]>) => ({
+    getCandles: vi.fn(async (_s: string, tf: string) => byTimeframe[tf] ?? []),
+  });
+
+  it('measures a same-session trade on intraday bars, within the minutes held', () => {
+    return excursionForTrade(source({ '5min': session }), dayTrade).then((ex) => {
+      expect(ex!.resolution).toBe('intraday');
+      // Only the two held bars count: high 15.20, low 15.02.
+      expect(ex!.mfeR).toBeCloseTo((15.2 - 15.14) / 0.58, 2);
+      expect(ex!.maeR).toBeCloseTo((15.02 - 15.14) / 0.58, 2);
+    });
+  });
+
+  it('is strictly tighter than the daily-bar answer for the same trade', async () => {
+    const daily = [{ ...bar('20:00', 15.22, 14.62) }];
+    const intra = (await excursionForTrade(source({ '5min': session }), dayTrade))!;
+    const day = (await excursionForTrade(source({ daily }), dayTrade))!;
+    expect(day.resolution).toBe('daily');
+    // The daily bar credits the pre-entry low and the post-exit high to a trade
+    // that was flat at both moments.
+    expect(day.mfeR!).toBeGreaterThan(intra.mfeR!);
+    expect(day.maeR!).toBeLessThan(intra.maeR!);
+  });
+
+  it('falls back to daily — and SAYS so — when intraday history is gone', async () => {
+    const daily = [bar('20:00', 15.22, 14.62)];
+    const ex = (await excursionForTrade(source({ '5min': [], daily }), dayTrade))!;
+    expect(ex.resolution).toBe('daily');
+    expect(ex.mfeR).not.toBeNull();
+  });
+
+  it('falls back to daily when the intraday fetch throws', async () => {
+    const daily = [bar('20:00', 15.22, 14.62)];
+    const src = {
+      getCandles: vi.fn(async (_s: string, tf: string) => {
+        if (tf === '5min') throw new Error('no intraday history');
+        return daily;
+      }),
+    };
+    const ex = (await excursionForTrade(src, dayTrade))!;
+    expect(ex.resolution).toBe('daily');
+  });
+
+  it('never asks for intraday bars on a multi-day trade', async () => {
+    const src = source({ daily: [bar('20:00', 15.22, 14.62)] });
+    await excursionForTrade(src, { ...dayTrade, exitDate: '2026-08-26' });
+    expect(src.getCandles.mock.calls.every((c) => c[1] === 'daily')).toBe(true);
+  });
+
+  it('uses the whole session when the entry time is unknown', async () => {
+    const ex = (await excursionForTrade(source({ '5min': session }), { ...dayTrade, entryTime: null, exitAt: null }))!;
+    expect(ex.resolution).toBe('intraday');
+    expect(ex.maeR).toBeCloseTo((14.62 - 15.14) / 0.58, 2); // the pre-entry low is back
+  });
+});
+
+describe('aggregateExcursions resolution mix', () => {
+  it('reports how many rows are measurements vs upper bounds', () => {
+    const rows = [
+      { ...computeExcursion(longTrade, [candle(130, 94)], 'intraday')! },
+      { ...computeExcursion(longTrade, [candle(130, 94)], 'daily')! },
+    ];
+    expect(aggregateExcursions(rows).resolutionMix).toEqual({ intraday: 1, daily: 1 });
   });
 });
