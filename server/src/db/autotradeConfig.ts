@@ -602,6 +602,15 @@ export interface AutotradeConfig {
    *  deadline = recycled. May be 0 ("scratch only if not even at breakeven
    *  progress"); a slow bleeder below 0R is recycled too. */
   stagnationExitMinR: number;
+  /** END-OF-DAY FLATTEN (services/autotrading/endOfDayFlatten.ts): inside the
+   *  last N minutes of the regular session, close every open LIVE EQUITY
+   *  position at a marketable limit rather than carrying it overnight —
+   *  regardless of progress or hold time, so a WORKING trade is flattened too
+   *  (the decision is about the clock, not the trade). Also replaces a resting
+   *  exit order placed before the window, which may be nowhere near the current
+   *  price. 0 = off. This loop's edge is intraday, so an overnight hold is
+   *  unhedged gap exposure the strategy never intended to take. */
+  endOfDayFlattenMinutes: number;
   /** LEVEL-AWARE EXITS (services/autotrading/levelPlan.ts). When on, a LIVE
    *  equity signal's ATR stop and R target are re-placed against real swing
    *  structure before the risk check sees them: the stop widens to clear the
@@ -937,6 +946,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     finishLineMinSignalScore: 0,
     stagnationExitMinutes: 0,
     stagnationExitMinR: 0.5,
+    endOfDayFlattenMinutes: 0,
     levelExitsEnabled: false,
     levelMinStrength: 0.35,
     levelBufferPct: 0.15,
@@ -1193,6 +1203,9 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     finishLineMinSignalScore: pct(input.finishLineMinSignalScore, d.finishLineMinSignalScore),
     stagnationExitMinutes: posInt(input.stagnationExitMinutes, d.stagnationExitMinutes),
     stagnationExitMinR: nonNeg(input.stagnationExitMinR, d.stagnationExitMinR),
+    // Capped at the session's own length: a window longer than the trading day
+    // would mean "always flattening", which is a way of saying "never enter".
+    endOfDayFlattenMinutes: Math.min(posInt(input.endOfDayFlattenMinutes, d.endOfDayFlattenMinutes), 390),
     levelExitsEnabled: typeof input.levelExitsEnabled === 'boolean' ? input.levelExitsEnabled : d.levelExitsEnabled,
     // 0..1 — a strength outside that range can only be a mistake, so it falls
     // back rather than silently disabling (0) or blocking everything (>1).

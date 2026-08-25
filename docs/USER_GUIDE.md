@@ -1312,7 +1312,19 @@ shouldn't be a tab-switch away.
   recycled too, and a position with no stop is never scratched on a guess. Every
   scratch journals its held time and R (`live_time_exit_placed` with
   `trigger: "stagnation"`), so you can audit whether it's cutting losers or
-  winners. Five more fields manage an
+  winners. Their end-of-session sibling is the **end-of-day flatten**
+  (2026-08-25, live equity only, default off): set it to a number of **minutes
+  before the 16:00 ET close** and every open live position is closed through
+  that same cancel-bracket-then-close path rather than carried overnight. It
+  fires on **working positions too** — the decision is about the clock, not the
+  trade, since a winner gaps down as easily as a loser — and it never runs after
+  the bell, because closing into after-hours liquidity pays a wide spread to
+  avoid a gap you're already exposed to. It also **replaces a resting exit order
+  placed before the window**: a limit priced off an earlier quote can sit
+  unfilled while the market walks away from it, which is how a position ends up
+  carried by an exit that already decided to leave. Journaled as
+  `trigger: "end_of_day"` with the minutes left and whether it replaced a
+  resting order. Five more fields manage an
   already-open **paper or backtest** equity position the same way a discretionary
   trader might (**live positions are untouched — still a fixed stop/target for
   life**): **breakeven trigger** (once unrealized gain reaches this many R, move the

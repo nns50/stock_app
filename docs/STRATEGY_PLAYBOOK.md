@@ -841,6 +841,22 @@ quarter of equity then blocks every legitimate entry rather than catching the
 absurd ones it exists for. If entries are being refused on order notional, the
 cap is the thing that is wrong, not the sizing.
 
+**Flat by the bell, if your edge is intraday.** An overnight hold is a different
+trade from the one you entered: you keep the position but lose every tool that justified
+it — no stop you can manage, no exit you can time, and a price discovered in an opening
+auction you cannot participate in. If your entries are intraday, holding past the close
+means taking gap risk your strategy never priced. The autotrade loop can close everything
+in the last few minutes of the session (**End-of-day flatten**, in minutes before 16:00
+ET; 0 is off). It flattens **winners too** — the decision is about the clock, not the
+trade, because a winner gaps down exactly as easily as a loser.
+
+Two details that make it work rather than merely fire. It runs before the bell, never
+after: a close attempted into after-hours liquidity pays a wide spread to avoid a gap it
+is already exposed to. And it **replaces a resting exit order** placed earlier in the day,
+because a limit priced off a stale quote can sit unfilled while the market walks away from
+it — which is how a position gets carried overnight by an exit that already decided to
+leave.
+
 **A cap that counts exits is not a cap on trades.** Autotrade carries two
 separate daily limits and they are deliberately different numbers.
 **Max trades per day** counts *entries* — it is your trade budget. The live
