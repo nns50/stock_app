@@ -177,6 +177,48 @@ describe('countTodaysOrders (the max-orders/day basis)', () => {
     expect(countTodaysOrders()).toBe(0);
   });
 
+  // -------------------------------------------------------------------------
+  // Closes do not count (2026-08-25). Counting them turned a risk-LIMITING cap
+  // into one that traps you in positions: on 2026-08-24 GRMN's exit was refused
+  // 44 times on "4 placed vs 4/day" and carried overnight, and on 2026-08-25
+  // IT's was refused 36 times from 13:57 to 15:23 while the position slid from
+  // -$11.41 to -$23.94 — two of that day's eight slots having gone to a SINGLE
+  // exit, a stale order plus its replacement.
+  // -------------------------------------------------------------------------
+  const walkClose = (key: string, ...states: OrderState[]) => {
+    const i = createIntent({ ...stockBuy, side: 'sell', openClose: 'close' }, key);
+    for (const s of states) transitionIntent(i.id, s);
+    return i.id;
+  };
+
+  it('does NOT count closing orders — the cap is a runaway-ENTRY backstop', () => {
+    walk('entry', 'validated', 'confirmed', 'submitted', 'acknowledged', 'filled');
+    walkClose('exit1', 'validated', 'confirmed', 'submitted', 'acknowledged', 'filled');
+    walkClose('exit2', 'validated', 'confirmed', 'submitted', 'acknowledged', 'filled');
+    expect(countTodaysOrders()).toBe(1); // the entry alone
+  });
+
+  it('a cancelled-and-replaced exit costs nothing — the GRMN case', () => {
+    // A stale limit was cancelled and a fresh close placed for the same
+    // position. That is ONE exit and used to spend TWO of the day's slots.
+    walkClose('stale', 'validated', 'confirmed', 'submitted', 'acknowledged', 'cancelled');
+    walkClose('replacement', 'validated', 'confirmed', 'submitted', 'acknowledged', 'filled');
+    expect(countTodaysOrders()).toBe(0);
+  });
+
+  it('still counts a cancelled ENTRY — a place/cancel loop is the runaway this catches', () => {
+    walk('cancelled-entry', 'validated', 'confirmed', 'submitted', 'acknowledged', 'cancelled');
+    expect(countTodaysOrders()).toBe(1);
+  });
+
+  it('a full day of exits never exhausts the budget', () => {
+    // The shape of a busy but ordinary day: 4 entries and their closes, plus a
+    // couple of replaced exits. Under the old rule that was 10 and the cap bit.
+    for (let n = 0; n < 4; n++) walk(`e${n}`, 'validated', 'confirmed', 'submitted', 'acknowledged', 'filled');
+    for (let n = 0; n < 6; n++) walkClose(`x${n}`, 'validated', 'confirmed', 'submitted', 'acknowledged', 'filled');
+    expect(countTodaysOrders()).toBe(4);
+  });
+
   it("mirrors the user's day: one fill among a dozen rejections counts as one", () => {
     walk('fill', 'validated', 'confirmed', 'submitted', 'acknowledged', 'filled');
     for (let n = 0; n < 12; n++) walk(`r${n}`, 'validated', 'confirmed', 'submitted', 'rejected');

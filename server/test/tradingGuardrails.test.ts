@@ -47,7 +47,7 @@ describe('trading guardrails', () => {
   });
 
   it('lists every rule in the breakdown (passed or not)', () => {
-    const r = evaluateGuardrails(order(), acct(), cfg());
+    const r = evaluateGuardrails(order(), acct(), cfg()); // an OPEN — see the close case below
     for (const rule of [
       'quantity',
       'limit_price',
@@ -612,5 +612,55 @@ describe('iron_condor_legs (4-leg condor shape + margin gate)', () => {
     expect(failed(evaluateGuardrails(condor(), acct({ accountType: 'INDIVIDUAL_MARGIN' }), cfg()))).not.toContain(
       'spread_account_type',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The daily order cap is a runaway-loop backstop, and a runaway loop places
+// ENTRIES. Refusing an EXIT does not limit risk — it strands you in a position.
+// Live evidence two days running:
+//   2026-08-24  GRMN's exit refused 44 times on "4 placed vs 4/day", carried
+//               overnight, closed next morning at -$11.31.
+//   2026-08-25  IT's exit refused 36 times from 13:57 to 15:23 while the
+//               position slid from -$11.41 to -$23.94.
+// Every risk the cap is nominally about is already held elsewhere: entries by
+// maxTradesPerDay, exposure by concurrent-position/aggregate-risk/buying-power,
+// a bad day by the drawdown halt.
+// ---------------------------------------------------------------------------
+describe('max_orders_per_day never blocks a close', () => {
+  /** Cap long spent, and a real 10-share long on the books to close. */
+  const spent = () => acct({ ordersToday: 999, currentPositionQty: 10 });
+
+  it('blocks an OPEN once the cap is spent', () => {
+    const r = evaluateGuardrails(order({ openClose: 'open' }), spent(), cfg({ maxOrdersPerDay: 4 }));
+    expect(r.ok).toBe(false);
+    expect(failed(r)).toContain('max_orders_per_day');
+  });
+
+  it('lets a CLOSE through with the cap long spent — either side', () => {
+    const sell = evaluateGuardrails(order({ openClose: 'close', side: 'sell' }), spent(), cfg({ maxOrdersPerDay: 4 }));
+    expect(failed(sell)).not.toContain('max_orders_per_day');
+    expect(sell.ok).toBe(true);
+
+    // Closing a SHORT is a buy, and must be just as unblockable.
+    const buyToCover = evaluateGuardrails(
+      order({ openClose: 'close', side: 'buy' }),
+      acct({ ordersToday: 999, currentPositionQty: -10 }),
+      cfg({ maxOrdersPerDay: 4 }),
+    );
+    expect(failed(buyToCover)).not.toContain('max_orders_per_day');
+  });
+
+  it('omits the rule entirely from a close breakdown rather than reporting a pass it never made', () => {
+    const r = evaluateGuardrails(order({ openClose: 'close' }), spent(), cfg({ maxOrdersPerDay: 4 }));
+    expect(r.checks.find((c) => c.rule === 'max_orders_per_day')).toBeUndefined();
+  });
+
+  it('still blocks a close on rules that are actually about risk', () => {
+    // Exempting the ORDER CAP must not exempt closes from everything — the kill
+    // switch still stops a close, because that is a deliberate full stop.
+    const r = evaluateGuardrails(order({ openClose: 'close' }), spent(), cfg({ killSwitch: true }));
+    expect(r.ok).toBe(false);
+    expect(failed(r)).toContain('kill_switch');
   });
 });

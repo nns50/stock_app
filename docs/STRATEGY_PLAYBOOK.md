@@ -911,6 +911,21 @@ because a limit priced off a stale quote can sit unfilled while the market walks
 it — which is how a position gets carried overnight by an exit that already decided to
 leave.
 
+**Never let a safety limit block the exit.** A daily order cap is worth having — it is
+the backstop against a bug that places the same order over and over. But a runaway loop
+places *entries*, and refusing an *exit* does not reduce risk, it strands you in a
+position you have already decided to leave. Every risk such a cap is nominally about is
+better held by a limit aimed at it: entries by a trades-per-day cap, exposure by
+concurrent-position and buying-power checks, a bad day by a drawdown halt. The order cap
+is the only one that can trap you — so scope it to entries and let closes through
+unconditionally.
+
+The general rule this is an instance of: **risk-reducing actions should not be gated like
+risk-adding ones.** Cancelling an order, closing a position, flattening at the bell —
+none of these should ever be refused by a limit designed to stop you doing *more*. When
+you find one that does, the symptom is unmistakable: the same close being retried and
+refused, over and over, while the position moves against you.
+
 **A cap that counts exits is not a cap on trades.** Autotrade carries two
 separate daily limits and they are deliberately different numbers.
 **Max trades per day** counts *entries* — it is your trade budget. The live

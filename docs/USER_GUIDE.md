@@ -488,8 +488,14 @@ The side panel persists your safety settings (server-side):
   while this checkbox arms placement at runtime. **Both must be on** to place — setting the env
   var alone still leaves `trading_enabled` ✕ in the preview until you check this and **Save**.
 - **Allow naked short**, and the caps: **max order $**, **max symbol qty**, **max exposure $**,
-  **max orders/day** (counts only orders that reached the market — broker-rejected orders don't
-  burn a slot), **max daily loss $**, **fat-finger %**. A sell that this toggle actually permits to
+  **max orders/day** (counts only ENTRY orders that reached the market — broker-rejected
+  orders don't burn a slot, and neither do closes. The cap is a runaway-loop backstop, and
+  a runaway loop places entries; refusing an exit doesn't limit risk, it strands you in a
+  position. Before 2026-08-25 closes counted too, and it showed: one live position was
+  carried overnight after its exit was refused 44 times, and another was held 86 minutes
+  past its exit — sliding from −$11.41 to −$23.94 — because a stale exit and its
+  replacement had between them eaten two of the day's slots. **A close is now never
+  blocked by this cap and never consumes it**), **max daily loss $**, **fat-finger %**. A sell that this toggle actually permits to
   open or extend a short submits Webull's own distinct SHORT side (not a plain SELL), so the
   broker's real-time locate/borrow check runs at order time — a symbol it can't currently borrow
   is rejected there, with the reason shown alongside the blocked/rejected order.
