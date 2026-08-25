@@ -545,6 +545,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         relativeStrengthLookbackDays: config.relativeStrengthLookbackDays,
       },
       earningsBlackoutDays: config.earningsBlackoutDays,
+      minRelVolPace: config.minRelVolPace,
       directionMode: config.tradeDirection,
       moversEnabled: config.moversDiscoveryEnabled,
     });

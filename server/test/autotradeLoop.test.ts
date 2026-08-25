@@ -317,6 +317,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -335,6 +336,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -387,6 +389,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -427,6 +430,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -463,6 +467,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -499,6 +504,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -525,6 +531,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -543,6 +550,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -569,6 +577,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -589,6 +598,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -613,6 +623,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -647,6 +658,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -672,6 +684,7 @@ describe('runAutotradeLoopTick', () => {
         relativeStrengthLookbackDays: 20,
       },
       earningsBlackoutDays: 0,
+      minRelVolPace: 0,
       directionMode: 'long',
       moversEnabled: false,
     });
@@ -686,6 +699,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -703,6 +717,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -731,6 +746,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -761,6 +777,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -781,6 +798,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -843,6 +861,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 1, scannedCount: 2 },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL'), signal('GME')], skipped: [] });
@@ -882,6 +901,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 2, moversCount: 0, scannedCount: 2 },
     });
     mockDecide.mockReturnValue({ signals: [signal('CALM')], skipped: [] });
@@ -907,6 +927,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 2, moversCount: 0, scannedCount: 2 },
     });
     mockDecide.mockReturnValue({ signals: [signal('CALM'), signal('WILD')], skipped: [] });
@@ -926,6 +947,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -943,6 +965,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -967,6 +990,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      relVolMedian: null,
       discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -1039,6 +1063,7 @@ describe('runAutotradeLoopTick', () => {
         excluded: [],
         skipped: [],
         errors: [],
+        relVolMedian: null,
         discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
       };
     });
@@ -1065,6 +1090,7 @@ describe('runAutotradeLoopTick', () => {
         excluded: [],
         skipped: [],
         errors: [],
+        relVolMedian: null,
         discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
       };
     });
@@ -1084,6 +1110,7 @@ describe('runAutotradeLoopTick', () => {
         excluded: [],
         skipped: [],
         errors: [],
+        relVolMedian: null,
         discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
       });
       mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -1179,6 +1206,7 @@ describe('runAutotradeLoopTick', () => {
           excluded: [],
           skipped: [],
           errors: [],
+          relVolMedian: null,
           discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
         };
       });
@@ -1207,6 +1235,7 @@ describe('runAutotradeLoopTick', () => {
         excluded: [],
         skipped: [],
         errors: [],
+        relVolMedian: null,
         discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
       });
       mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -1277,6 +1306,7 @@ describe('runAutotradeLoopTick', () => {
           excluded: [],
           skipped: [],
           errors: [],
+          relVolMedian: null,
           discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
         };
       });
@@ -1324,6 +1354,7 @@ describe('startAutotradeLoop / stopAutotradeLoop', () => {
         excluded: [],
         skipped: [],
         errors: [],
+        relVolMedian: null,
         discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
       };
     });

@@ -759,3 +759,82 @@ describe('movers discovery gate (moversDiscoveryEnabled, 2026-07-27)', () => {
     expect(mockWebullMovers).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Relative-volume PACE gate (2026-08-25). Raw relVolume is today's cumulative
+// volume over the average FULL-day volume, so it climbs mechanically through
+// the session and a fixed floor is wrong at every hour but one. On the live
+// book at 10:47 ET, 270 of 271 scored symbols failed minRelVol 1.0 and the loop
+// found 3 candidates in 33 minutes. The gate divides by the universe median
+// instead — see indicators/relVolPace.ts.
+// ---------------------------------------------------------------------------
+describe('runAutotradeScreen — relative-volume pace gate', () => {
+  /** Enough symbols for a median (MIN_PACE_SAMPLES is 20). */
+  const many = Array.from({ length: 25 }, (_, i) => `SCRPACE${i}`);
+
+  it('is off at 0 — candidates come through exactly as before', async () => {
+    const result = await runAutotradeScreen({
+      symbols: many,
+      config: { filters: RELAXED_FILTERS },
+      minRelVolPace: 0,
+    });
+    expect(result.candidates.length).toBeGreaterThan(0);
+    expect(result.relVolMedian).toBeNull(); // not computed when the gate is off
+    expect(result.excluded.filter((e) => /current pace/.test(e.reason))).toHaveLength(0);
+  });
+
+  it('prunes candidates below the pace floor and reports the median it divided by', async () => {
+    const result = await runAutotradeScreen({
+      symbols: many,
+      config: { filters: RELAXED_FILTERS },
+      minRelVolPace: 99, // nothing trades at 99x the market
+    });
+    expect(result.candidates).toHaveLength(0);
+    expect(result.relVolMedian).not.toBeNull();
+    expect(result.excluded.length).toBeGreaterThan(0);
+    expect(result.excluded[0].reason).toMatch(/the market's current pace/);
+  });
+
+  it('journals the prune with the pace, the floor and the denominator', async () => {
+    await runAutotradeScreen({ symbols: many, config: { filters: RELAXED_FILTERS }, minRelVolPace: 99 });
+    const ev = listAutotradeEvents({ stage: 'screen' }).find((e) => e.action === 'excluded_rel_vol_pace');
+    expect(ev).toBeDefined();
+    const detail = JSON.parse(ev!.detail!);
+    expect(detail).toMatchObject({ paceFloor: 99 });
+    expect(typeof detail.pace).toBe('number');
+    expect(typeof detail.universeMedian).toBe('number');
+    // The figure and what it was divided by are both present, so a pace in the
+    // journal can always be checked rather than taken on faith.
+    expect(detail.pace).toBeCloseTo(detail.relVolume / detail.universeMedian, 1);
+  });
+
+  it('never announces a candidate it then discards', async () => {
+    // candidate_found is journaled AFTER the gate for exactly this reason.
+    await runAutotradeScreen({ symbols: many, config: { filters: RELAXED_FILTERS }, minRelVolPace: 99 });
+    const found = listAutotradeEvents({ stage: 'screen' }).filter((e) => e.action === 'candidate_found');
+    expect(found).toHaveLength(0);
+  });
+
+  it('fails OPEN when there are too few symbols to estimate a median', async () => {
+    // Three symbols cannot tell you what the market's pace is. Rejecting the
+    // whole universe off that would be worse than not filtering at all.
+    const result = await runAutotradeScreen({
+      symbols: [NORMAL, 'SCRNORM2', 'SCRNORM3'],
+      config: { filters: RELAXED_FILTERS },
+      minRelVolPace: 99,
+    });
+    expect(result.relVolMedian).toBeNull();
+    expect(result.candidates.length).toBeGreaterThan(0);
+  });
+
+  it('records the pace on the candidates it keeps', async () => {
+    const result = await runAutotradeScreen({
+      symbols: many,
+      config: { filters: RELAXED_FILTERS },
+      minRelVolPace: 0.01, // low enough that everything clears it
+    });
+    expect(result.candidates.length).toBeGreaterThan(0);
+    const ev = listAutotradeEvents({ stage: 'screen' }).find((e) => e.action === 'candidate_found');
+    expect(JSON.parse(ev!.detail!)).toHaveProperty('relVolPace');
+  });
+});

@@ -463,6 +463,7 @@ export const NEVER_TUNED_KEYS = [
   'symbolCooldownDays',
   'finishLineSizingEnabled',
   'finishLineMinSignalScore',
+  'minRelVolPace',
   'stagnationExitMinutes',
   'stagnationExitMinR',
   'endOfDayFlattenMinutes',

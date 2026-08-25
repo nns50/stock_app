@@ -1208,8 +1208,22 @@ shouldn't be a tab-switch away.
   entries are unaffected either way — an autotrade options position is always long the
   contract, a put for a bearish read instead of a call, which is already defined-risk),
   **min relative volume** (a candidate's volume must be at least this many
-  times its own average to pass the screener), **min share price ($)** and **min avg
-  volume (shares)** (2026-07-27 — the liquidity floors, previously stuck at the
+  times its own average to pass the screener — note this compares today's volume
+  *so far* against an average FULL day, so it climbs through the session: a
+  value that blocks everything at 10am can let everything through at 3pm.
+  Prefer **min relative-volume pace** below unless you specifically want an
+  absolute unusual-volume floor), **min relative-volume pace** (2026-08-25 — the
+  same idea made time-of-day neutral: a multiple of the *median* relative volume
+  across everything the screener scored this tick. The median stock is trading
+  at a typical pace by definition, so "1.5×" means the same thing at 10am and
+  3pm, and a market-wide quiet or busy day cancels out instead of silently
+  moving the bar. 0 = off. Measured on the live book at 10:47 ET the median
+  symbol read 0.10 and exactly one of 261 reached 1.0 — which is why a fixed 1.0
+  floor had been finding 3 candidates in 33 minutes. Journaled as
+  `excluded_rel_vol_pace` with the pace, the floor and the median it was divided
+  by, so any figure can be checked rather than taken on faith; when too few
+  symbols are scored to estimate a median it fails **open**),
+  **min share price ($)** and **min avg volume (shares)** (2026-07-27 — the liquidity floors, previously stuck at the
   engine's hardcoded $1 / 200,000. Sub-$3 movers carry a bid-ask/slippage tax the
   zero-cost backtester can't show — measured on the live book, roughly a fifth of all
   bot losses landed *beyond* the declared stop, concentrated in exactly those names.
