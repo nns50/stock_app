@@ -56,6 +56,7 @@ import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
 import { evaluateStagnation } from './stagnationExit';
+import { evaluateEndOfDayFlatten } from './endOfDayFlatten';
 import { fetchTodayVwap } from './vwap';
 import { detectLevels } from '../../indicators/levels';
 import { planAroundLevels } from './levelPlan';
@@ -2110,7 +2111,7 @@ function timeExitFailure(
  *  vocabulary). `journal` carries the trigger's numbers (heldMinutes,
  *  progressR) into the event detail. */
 export interface TimeExitTrigger {
-  kind: 'max_hold_days' | 'stagnation';
+  kind: 'max_hold_days' | 'stagnation' | 'end_of_day';
   journal: Record<string, unknown>;
   /** Human phrasing for the notification, e.g. "max hold time reached". */
   notice: string;
@@ -2306,7 +2307,8 @@ export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutc
   const cfg = getAutotradeConfig();
   if (!cfg.liveAccountId) return [];
   const stagnationConfigured = cfg.stagnationExitMinutes > 0;
-  if (cfg.maxHoldDays <= 0 && !stagnationConfigured) return [];
+  const flatten = evaluateEndOfDayFlatten(cfg, Date.now());
+  if (cfg.maxHoldDays <= 0 && !stagnationConfigured && !flatten.active) return [];
 
   const open = listAutotradeLivePositions({ status: 'open' });
   if (open.length === 0) return [];
@@ -2319,17 +2321,57 @@ export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutc
   // still gates the actual order either way).
   const sessionOpen = stagnationConfigured && checkSessionWindow(0).ok;
 
-  const pendingExitPositionIds = new Set(
-    listPendingLiveOrders()
-      .filter((o) => o.role === 'exit' && o.positionId !== null)
-      .map((o) => o.positionId!),
-  );
+  const pendingExits = listPendingLiveOrders().filter((o) => o.role === 'exit' && o.positionId !== null);
+  const pendingExitPositionIds = new Set(pendingExits.map((o) => o.positionId!));
+  // A resting exit placed BEFORE the flatten window may be nowhere near the
+  // current price — GRMN on 2026-08-25 rested a 293.52 limit priced off the
+  // 294.99 opening print while the stock traded 289.85, and would have been
+  // carried a second night by an exit that had already decided to leave. Inside
+  // the window such an order is replaced once (placeLiveEquityTimeExitClose
+  // cancels every resting exit-side order for the symbol, then re-prices off a
+  // fresh quote). An order placed INSIDE the window is left alone, so this
+  // cannot churn cancel/replace on every tick.
+  //
+  // "Replaceable" means: it has a resting exit from BEFORE the window and none
+  // from inside it. The second half matters — cancelLiveBracketExitLegs cancels
+  // the stale order at the BROKER, but its local intent row stays pending until
+  // a later reconcile tick observes the cancel. Without the freshness check that
+  // lingering row would read as replaceable again next tick and place a THIRD
+  // order against a position that already has a live close working.
+  const windowStartedAt = flatten.active ? Date.now() - cfg.endOfDayFlattenMinutes * 60_000 : 0;
+  const replaceableExitPositionIds = new Set<number>();
+  if (flatten.active) {
+    const byPosition = new Map<number, number[]>();
+    for (const o of pendingExits) {
+      const list = byPosition.get(o.positionId!) ?? [];
+      list.push(o.createdAt);
+      byPosition.set(o.positionId!, list);
+    }
+    for (const [positionId, createdAts] of byPosition) {
+      const hasStale = createdAts.some((t) => t < windowStartedAt);
+      const hasFresh = createdAts.some((t) => t >= windowStartedAt);
+      if (hasStale && !hasFresh) replaceableExitPositionIds.add(positionId);
+    }
+  }
 
   const outcomes: LiveEquityTimeExitOutcome[] = [];
   for (const pos of open) {
-    if (pendingExitPositionIds.has(pos.id)) continue;
+    if (pendingExitPositionIds.has(pos.id) && !replaceableExitPositionIds.has(pos.id)) continue;
     let trigger: TimeExitTrigger | null = null;
-    if (cfg.maxHoldDays > 0 && Date.now() - pos.createdAt >= cfg.maxHoldDays * MS_PER_DAY) {
+    if (flatten.active) {
+      // FIRST, and unconditional on how the trade is doing: a winner held into
+      // the close is still an overnight gap, and this loop's edge is intraday.
+      trigger = {
+        kind: 'end_of_day',
+        journal: {
+          minutesLeft: flatten.minutesLeft,
+          endOfDayFlattenMinutes: cfg.endOfDayFlattenMinutes,
+          replacedRestingExit: replaceableExitPositionIds.has(pos.id),
+          reason: flatten.detail,
+        },
+        notice: `flattening ${flatten.minutesLeft}m before the close`,
+      };
+    } else if (cfg.maxHoldDays > 0 && Date.now() - pos.createdAt >= cfg.maxHoldDays * MS_PER_DAY) {
       trigger = { kind: 'max_hold_days', journal: { maxHoldDays: cfg.maxHoldDays }, notice: 'max hold time reached' };
     } else if (sessionOpen && Date.now() - pos.createdAt >= cfg.stagnationExitMinutes * 60_000) {
       // Progress needs a quote. A transient quote failure just skips this

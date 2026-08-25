@@ -465,6 +465,7 @@ export const NEVER_TUNED_KEYS = [
   'finishLineMinSignalScore',
   'stagnationExitMinutes',
   'stagnationExitMinR',
+  'endOfDayFlattenMinutes',
   'levelExitsEnabled',
   'levelMinStrength',
   'levelBufferPct',

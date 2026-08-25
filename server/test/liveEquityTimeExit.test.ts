@@ -31,7 +31,7 @@ import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../
 import { setTradingConfig } from '../src/db/trading';
 import { createPosition, listPositions } from '../src/db/positions';
 import { createIntent, getIntent, listIntents, type OrderIntentRecord } from '../src/db/orders';
-import { listPendingLiveOrders, getLiveOrder } from '../src/db/autotradeLiveOrders';
+import { listPendingLiveOrders, getLiveOrder, recordLiveExitOrder } from '../src/db/autotradeLiveOrders';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { evaluateRiskCheck } from '../src/services/autotrading/riskCheck';
 import { TradeSignal } from '../src/services/autotrading/decide';
@@ -771,5 +771,145 @@ describe('checkLiveBracketProtection', () => {
     db.prepare('UPDATE order_intents SET is_bracket = 0 WHERE id = ?').run(position.sourceIntentId);
     mockOpenOrders.mockResolvedValue(noOpenOrders);
     expect(await checkLiveBracketProtection()).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End-of-day flatten (2026-08-25). Two positions carried overnight from
+// 2026-08-24 made the case: CTVA sold on the next open for -$0.91 after being
+// +0.10R when the loop first wanted out, and GRMN's exit was ordered at a 293.52
+// limit priced off the 294.99 opening print while the stock traded 289.85 —
+// resting unfilled, about to be carried a second night by an exit that had
+// already decided to leave.
+// ---------------------------------------------------------------------------
+describe('checkLiveEquityTimeExits — end-of-day flatten', () => {
+  /** 15:58 ET on Monday 2026-08-25 — 2 minutes to the bell. */
+  const INSIDE_WINDOW = Date.parse('2026-08-25T19:58:00Z');
+  /** 11:00 ET the same day — mid-session. */
+  const MID_SESSION = Date.parse('2026-08-25T15:00:00Z');
+
+  afterEach(() => vi.useRealTimers());
+
+  function atClock(ms: number) {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(ms);
+  }
+
+  /** A resting exit order on its OWN intent, dated `createdAt` — what a limit
+   *  placed earlier in the session and never filled looks like. */
+  function staleExitFor(positionId: number, createdAt: number) {
+    const rec = createIntent(
+      {
+        symbol: 'AAPL',
+        assetKind: 'stock',
+        side: 'sell',
+        openClose: 'close',
+        quantity: 1,
+        orderType: 'limit',
+        limitPrice: 999, // far from the market: exactly why it never filled
+      },
+      `stale-exit-${positionId}`,
+    );
+    recordLiveExitOrder({ intentId: rec.id, symbol: 'AAPL', riskProfile: 'MODERATE', positionId });
+    db.prepare('UPDATE autotrade_live_orders SET created_at = ? WHERE intent_id = ?').run(createdAt, rec.id);
+  }
+
+  async function readyToClose(quantity: number) {
+    mockOpenOrders.mockResolvedValue(noOpenOrders);
+    mockOrderStatus.mockResolvedValue({ ok: true, found: false } as WebullOrderStatus);
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(quantity) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE' });
+  }
+
+  it('flattens a young, WORKING position — the decision is the clock, not the trade', async () => {
+    // 0 days old and well in profit: neither maxHoldDays nor stagnation would
+    // touch it. An overnight gap does not care that it is winning.
+    const { position, quantity } = await openAgedLivePosition(0);
+    setAutotradeConfig({ maxHoldDays: 0, stagnationExitMinutes: 0, endOfDayFlattenMinutes: 3 });
+    await readyToClose(quantity);
+    atClock(INSIDE_WINDOW);
+
+    const outcomes = await checkLiveEquityTimeExits();
+
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ positionId: position.id, requested: true });
+    expect(mockPlaceOrder).toHaveBeenCalled();
+    const journaled = listAutotradeEvents({ limit: 50 }).find((e) => e.action === 'live_time_exit_placed');
+    expect(JSON.parse(journaled!.detail as string)).toMatchObject({ trigger: 'end_of_day', minutesLeft: 2 });
+  });
+
+  it('does nothing mid-session, however long the window is', async () => {
+    await openAgedLivePosition(0);
+    setAutotradeConfig({ maxHoldDays: 0, stagnationExitMinutes: 0, endOfDayFlattenMinutes: 3 });
+    atClock(MID_SESSION);
+    expect(await checkLiveEquityTimeExits()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('stays off at 0 minutes — the whole feature is opt-in', async () => {
+    await openAgedLivePosition(0);
+    setAutotradeConfig({ maxHoldDays: 0, stagnationExitMinutes: 0, endOfDayFlattenMinutes: 0 });
+    atClock(INSIDE_WINDOW);
+    expect(await checkLiveEquityTimeExits()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('REPLACES a resting exit placed before the window — the GRMN case', async () => {
+    const { position, quantity } = await openAgedLivePosition(0);
+    setAutotradeConfig({ maxHoldDays: 0, stagnationExitMinutes: 0, endOfDayFlattenMinutes: 3 });
+    // A stale exit order from earlier in the session, still working at a price
+    // the stock has left behind.
+    staleExitFor(position.id, INSIDE_WINDOW - 60 * 60_000); // an hour before the window opened
+    await readyToClose(quantity);
+    atClock(INSIDE_WINDOW);
+
+    const outcomes = await checkLiveEquityTimeExits();
+
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ positionId: position.id, requested: true });
+    const journaled = listAutotradeEvents({ limit: 50 }).find((e) => e.action === 'live_time_exit_placed');
+    expect(JSON.parse(journaled!.detail as string)).toMatchObject({ trigger: 'end_of_day', replacedRestingExit: true });
+  });
+
+  it('does NOT replace again while its own fresh close is working', async () => {
+    // cancelLiveBracketExitLegs cancels the stale order at the BROKER, but its
+    // local intent row stays pending until a later reconcile observes that.
+    // Without the freshness check this tick would place a third order against a
+    // position that already has a live close working.
+    const { position, quantity } = await openAgedLivePosition(0);
+    setAutotradeConfig({ maxHoldDays: 0, stagnationExitMinutes: 0, endOfDayFlattenMinutes: 3 });
+    staleExitFor(position.id, INSIDE_WINDOW - 60 * 60_000); // an hour before the window opened
+    await readyToClose(quantity);
+    atClock(INSIDE_WINDOW);
+
+    await checkLiveEquityTimeExits(); // replaces once
+    const afterFirst = mockPlaceOrder.mock.calls.length;
+    const second = await checkLiveEquityTimeExits(); // must not replace again
+
+    expect(second).toEqual([]);
+    expect(mockPlaceOrder.mock.calls.length).toBe(afterFirst);
+  });
+
+  it('takes priority over maxHoldDays, so the journal names the real reason', async () => {
+    const { quantity } = await openAgedLivePosition(30); // long past maxHoldDays too
+    setAutotradeConfig({ maxHoldDays: 5, stagnationExitMinutes: 0, endOfDayFlattenMinutes: 3 });
+    await readyToClose(quantity);
+    atClock(INSIDE_WINDOW);
+
+    await checkLiveEquityTimeExits();
+
+    const journaled = listAutotradeEvents({ limit: 50 }).find((e) => e.action === 'live_time_exit_placed');
+    expect(JSON.parse(journaled!.detail as string)).toMatchObject({ trigger: 'end_of_day' });
+  });
+
+  it('runs even when every other time exit is disabled', async () => {
+    // The early-return used to bail whenever maxHoldDays and stagnation were
+    // both off, which would have made this feature unreachable on its own.
+    const { quantity } = await openAgedLivePosition(0);
+    setAutotradeConfig({ maxHoldDays: 0, stagnationExitMinutes: 0, endOfDayFlattenMinutes: 5 });
+    await readyToClose(quantity);
+    atClock(INSIDE_WINDOW);
+    expect(await checkLiveEquityTimeExits()).toHaveLength(1);
   });
 });
