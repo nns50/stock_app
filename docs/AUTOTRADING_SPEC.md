@@ -1054,8 +1054,22 @@ starts.
      request enough bars to reach `start`, filter to the window, and defer to the
      aux provider when the window predates the oldest bar available rather than
      return a truncated window a caller would read as complete.
-     Note the remaining limit: excursion is still measured on DAILY bars, so for
-     an intraday hold it reads that session's full high/low, an upper bound. Setting
+     **Intraday resolution for same-session trades** (2026-08-25, same day).
+     Fixing the window stopped excursions spanning six months, but a DAILY bar
+     still hands a same-session trade that whole day's high/low — including the
+     hours it did not exist, which for this loop (90-minute stagnation exit,
+     maxHoldDays 1) is most of them. A trade whose entry and exit dates match is
+     now measured on `INTRADAY_TIMEFRAME` (5-minute) bars, narrowed again to the
+     minutes actually held via `positions.entry_time` and the last exit's
+     `created_at` (`etDateTimeToMs` in util/marketDate.ts resolves the ET
+     wall-clock entry to an instant). Intraday history is short, so when it
+     cannot be had this falls back to daily and records it: every row carries a
+     `resolution` ('intraday' | 'daily') and the report carries a
+     `resolutionMix`, surfaced in the Journal's Analytics panel — an upper bound
+     labelled as one, never a precise-looking number that quietly isn't.
+     Both callers now go through ONE shared `excursionForTrade()`; they had
+     carried near-identical copies of this logic, which is exactly why they
+     carried identical bugs. Setting
      `liveTradingEnabled: true` requires an explicit typed-phrase confirmation at the
      route (a new, stronger analog of `confirmAggressive`'s boolean, given the stakes
      categorically exceed a risk-profile change) — a one-time gesture, not per-order

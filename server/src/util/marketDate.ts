@@ -47,3 +47,42 @@ export function etTimeOfDay(now: number = Date.now()): string {
   const hour = get('hour') === '24' ? '00' : get('hour');
   return `${hour}:${get('minute')}`;
 }
+
+const etParts = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+});
+
+/** Minutes America/New_York is offset from UTC at `ms` (-240 EDT, -300 EST). */
+function etOffsetMinutes(ms: number): number {
+  const parts = etParts.formatToParts(ms);
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? '0');
+  const asIfUtc = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour') % 24, get('minute'), get('second'));
+  return (asIfUtc - ms) / 60_000;
+}
+
+/**
+ * The instant an ET wall-clock date + time refers to — the inverse of
+ * etToday/etTimeOfDay above, for reading `positions.entry_date` +
+ * `entry_time` back as a real moment (excursion.ts needs it to bound an
+ * intraday holding period to the minutes actually held).
+ *
+ * Offset is measured AT the instant rather than assumed, then re-measured once
+ * in case the first guess landed on the far side of a DST boundary — the same
+ * reasoning that makes this file exist at all. Returns null for a malformed
+ * date/time rather than a guessed instant.
+ */
+export function etDateTimeToMs(date: string, time: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}(:\d{2})?$/.test(time)) return null;
+  const naiveUtc = Date.parse(`${date}T${time.length === 5 ? `${time}:00` : time}Z`);
+  if (Number.isNaN(naiveUtc)) return null;
+  const first = naiveUtc - etOffsetMinutes(naiveUtc) * 60_000;
+  const second = naiveUtc - etOffsetMinutes(first) * 60_000;
+  return second;
+}

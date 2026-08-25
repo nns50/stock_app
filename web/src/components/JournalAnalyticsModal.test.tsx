@@ -28,8 +28,10 @@ describe('JournalAnalyticsModal', () => {
           maeR: -0.4,
           realizedR: 0.8,
           capturedPct: 60,
+          resolution: 'daily',
         },
       ],
+      resolutionMix: { intraday: 0, daily: 0 },
       coverage: { closedStockTrades: 1, undated: 0, overCap: 0, unavailable: 0 },
     });
     const slipSpy = vi.spyOn(client, 'journalSlippage');
@@ -57,6 +59,7 @@ describe('JournalAnalyticsModal', () => {
       avgRealizedR: null,
       capturePct: null,
       rows: [],
+      resolutionMix: { intraday: 0, daily: 0 },
       coverage: { closedStockTrades: 0, undated: 0, overCap: 0, unavailable: 0 },
     });
     const slipSpy = vi.spyOn(client, 'journalSlippage').mockResolvedValue({
@@ -96,6 +99,7 @@ describe('JournalAnalyticsModal', () => {
       avgRealizedR: null,
       capturePct: null,
       rows: [],
+      resolutionMix: { intraday: 0, daily: 0 },
       coverage: { closedStockTrades: 0, undated: 0, overCap: 0, unavailable: 0 },
     });
     const overrunSpy = vi.spyOn(client, 'journalStopOverrun').mockResolvedValue({
@@ -149,6 +153,7 @@ describe('JournalAnalyticsModal', () => {
       avgRealizedR: null,
       capturePct: null,
       rows: [],
+      resolutionMix: { intraday: 0, daily: 0 },
       coverage: { closedStockTrades: 0, undated: 0, overCap: 0, unavailable: 0 },
     });
     vi.spyOn(client, 'journalStats').mockResolvedValue({ winRate: 55, kelly: { suggestedRiskPct: 2 } } as never);
@@ -188,6 +193,7 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
     maeR: -0.4,
     realizedR: 0.8,
     capturedPct: 60,
+    resolution: 'daily' as const,
   };
 
   it('says the averages are a sample when trades were excluded', async () => {
@@ -198,6 +204,7 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
       avgRealizedR: 0.8,
       capturePct: 60,
       rows: [row],
+      resolutionMix: { intraday: 0, daily: 1 },
       coverage: { closedStockTrades: 70, undated: 4, overCap: 16, unavailable: 49 },
     });
     render(<JournalAnalyticsModal open onClose={() => {}} />);
@@ -215,6 +222,7 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
       avgRealizedR: 0.8,
       capturePct: 60,
       rows: [row],
+      resolutionMix: { intraday: 0, daily: 1 },
       coverage: { closedStockTrades: 1, undated: 0, overCap: 0, unavailable: 0 },
     });
     render(<JournalAnalyticsModal open onClose={() => {}} />);
@@ -231,6 +239,7 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
       avgRealizedR: null,
       capturePct: null,
       rows: [],
+      resolutionMix: { intraday: 0, daily: 0 },
       coverage: { closedStockTrades: 12, undated: 3, overCap: 0, unavailable: 9 },
     });
     render(<JournalAnalyticsModal open onClose={() => {}} />);
@@ -248,6 +257,7 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
       avgRealizedR: null,
       capturePct: null,
       rows: [],
+      resolutionMix: { intraday: 0, daily: 0 },
       coverage: { closedStockTrades: 0, undated: 0, overCap: 0, unavailable: 0 },
     });
     render(<JournalAnalyticsModal open onClose={() => {}} />);

@@ -80,6 +80,10 @@ function ExcursionsPanel({ active }: { active: boolean }) {
   }
   const cov = data.data.coverage;
   const excluded = cov.undated + cov.overCap + cov.unavailable;
+  // A same-session trade measured on a DAILY bar gets that whole day's high and
+  // low — including hours it wasn't held — so those rows are an upper bound, not
+  // a measurement. Worth saying when any of them are in the average.
+  const mix = data.data.resolutionMix;
   return (
     <div className="space-y-3">
       <p className="text-xs text-slate-500">
@@ -99,6 +103,12 @@ function ExcursionsPanel({ active }: { active: boolean }) {
             .filter(Boolean)
             .join(' · ')}
           .
+        </p>
+      )}
+      {mix != null && mix.daily > 0 && mix.intraday > 0 && (
+        <p className="text-[11px] text-slate-500">
+          {mix.intraday} measured on intraday bars, {mix.daily} on daily. A trade opened and closed the same session
+          reads that whole day’s range on a daily bar — treat those rows as an upper bound.
         </p>
       )}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">

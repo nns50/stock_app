@@ -5,7 +5,7 @@ import { listPositions, Position } from '../db/positions';
 import { getIntent } from '../db/orders';
 import { computeJournalStats, realizedPnlOf } from '../services/pnl';
 import { computeDayStats } from '../services/dayGuard';
-import { aggregateExcursions, computeExcursion, TradeExcursion } from '../services/excursion';
+import { aggregateExcursions, excursionForTrade, TradeExcursion } from '../services/excursion';
 import { aggregateSlippage, computeSlippage, SlippageRow } from '../services/slippage';
 import { aggregateStopOverruns, classifyStopExit, computeStopOverrun, StopOverrunRow } from '../services/stopOverrun';
 import { computeBenchmark } from '../services/benchmark';
@@ -13,6 +13,14 @@ import { computeAutoTuneRiskEfficacy } from '../services/autotrading/autoTuneEff
 import { getProvider } from '../providers';
 
 export const journalRouter = Router();
+
+/** When the final exit was RECORDED (epoch ms) — the closing moment, to the
+ *  precision the journal has. Autotrade books an exit on the reconcile tick
+ *  that observes the fill, so this trails the real fill by up to a minute;
+ *  that is well inside a 5-minute bar and is the best available answer. Null
+ *  for a position with no exits. */
+const lastExitAt = (p: Position): number | null =>
+  p.exits.length ? Math.max(...p.exits.map((e) => e.createdAt)) : null;
 
 /** Null when neither an exit nor an entry date is known. */
 const lastExitDate = (p: Position): string | null =>
@@ -156,25 +164,20 @@ journalRouter.get(
     await Promise.all(
       selected.map(async (p) => {
         try {
-          const candles = await provider.getCandles(p.symbol, 'daily', {
-            start: p.entryDate,
-            end: lastExitDate(p) ?? undefined,
+          const ex = await excursionForTrade(provider, {
+            positionId: p.id,
+            symbol: p.symbol,
+            side: p.side,
+            entryPrice: p.entryPrice,
+            quantity: p.quantity,
+            multiplier: p.multiplier,
+            stopPrice: p.stopPrice,
+            realizedPnl: realizedPnlOf(p),
+            entryDate: p.entryDate,
+            exitDate: lastExitDate(p),
+            entryTime: p.entryTime,
+            exitAt: lastExitAt(p),
           });
-          const ex = computeExcursion(
-            {
-              positionId: p.id,
-              symbol: p.symbol,
-              side: p.side,
-              entryPrice: p.entryPrice,
-              quantity: p.quantity,
-              multiplier: p.multiplier,
-              stopPrice: p.stopPrice,
-              realizedPnl: realizedPnlOf(p),
-              entryDate: p.entryDate,
-              exitDate: lastExitDate(p),
-            },
-            candles,
-          );
           // A null here means the candles arrived but held nothing usable over
           // the holding window — counted, not discarded, for the same reason a
           // failed fetch is.

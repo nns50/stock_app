@@ -18,6 +18,7 @@ function winner(maeR: number, mfeR: number, realizedR = 1): TradeExcursion {
     maeR,
     realizedR,
     capturedPct: mfeR > 0 ? Math.round((realizedR / mfeR) * 100) : null,
+    resolution: 'daily',
   };
 }
 /** A losing trade (realizedR <= 0) — excluded from the winner-only signals. */
