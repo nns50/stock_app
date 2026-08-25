@@ -17,6 +17,7 @@ import { listUniverseSymbols } from '../../db/universe';
 import { isExcluded } from '../../db/autotradeExclusions';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { mapPool } from '../../util/async';
+import { relVolMedian, relVolPace } from '../../indicators/relVolPace';
 import { classifySector, buildUniverseSectorMap } from './realEstateClassifier';
 import { getSymbolEvents } from '../events';
 import { getNews } from '../news';
@@ -52,6 +53,12 @@ export interface ScreenResult {
    *  and not blacklisted; may be reconsidered next cycle. */
   skipped: { symbol: string; reason: string }[];
   errors: { symbol: string; message: string }[];
+  /** The universe's median relVolume this tick — the market's current pace, and
+   *  the denominator every relVolPace was measured against. Null when the pace
+   *  gate is off or there were too few samples to estimate it. Surfaced so a
+   *  pace figure in the journal can always be checked against what it was
+   *  divided by. */
+  relVolMedian: number | null;
   discovery: { universeCount: number; moversCount: number; scannedCount: number };
 }
 
@@ -121,6 +128,10 @@ export interface RunScreenOptions {
    *  (loop.ts / the manual Screen+Decision routes), same convention as
    *  config.filters.minRelVol above. */
   earningsBlackoutDays?: number;
+  /** Relative-volume PACE floor — a multiple of the universe's median relVolume
+   *  this tick, so it means the same thing at any hour (indicators/relVolPace.ts).
+   *  0 = off. Read from AutotradeConfig.minRelVolPace by the caller. */
+  minRelVolPace?: number;
   /** 'long' or 'short': scores every candidate as exactly that one direction
    *  (config?.direction, if given, is ignored in favor of this — kept as a
    *  SEPARATE option so a 'both' caller never has to also pick a meaningless
@@ -278,6 +289,12 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
     : await discoverSymbols(opts.moversEnabled ?? true);
 
   const candidates: ScreenCandidate[] = [];
+  // Every scored symbol's raw relVolume — pass or fail — so the universe median
+  // below is the market's true current pace, not just the survivors'.
+  const relVolSamples: (number | null)[] = [];
+  // candidate_found is journaled AFTER the pace filter, so the journal never
+  // announces a candidate this screen then discards.
+  const pendingCandidates: { symbol: string; candidate: ScreenCandidate }[] = [];
   const excluded: { symbol: string; reason: string }[] = [];
   const skipped: { symbol: string; reason: string }[] = [];
   const errors: { symbol: string; message: string }[] = [];
@@ -409,8 +426,8 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
       // pick a meaningless single cfg.direction.
       const picked =
         directionMode === 'both'
-          ? pickDirection(
-              scoreSymbolBothDirections(
+          ? (() => {
+              const both = scoreSymbolBothDirections(
                 symbol,
                 candles,
                 quote,
@@ -420,8 +437,12 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
                 weeklyIndicators,
                 benchmarkLookbackReturnPct,
                 sentimentNetScore,
-              ),
-            )
+              );
+              // Sampled from the LONG score, but relVolume is direction-free —
+              // both directions read the same indicator computation.
+              relVolSamples.push(both.long.indicators.relVolume);
+              return pickDirection(both);
+            })()
           : (() => {
               const score = scoreSymbol(
                 symbol,
@@ -434,24 +455,19 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
                 benchmarkLookbackReturnPct,
                 sentimentNetScore,
               );
+              // Sampled whether or not it passes: the median is the MARKET's
+              // pace, so it must come from the whole scored universe, not from
+              // the survivors of the very filter it feeds.
+              relVolSamples.push(score.indicators.relVolume);
               return score.passedFilters ? { direction: directionMode, score } : null;
             })();
       if (picked) {
-        candidates.push({
-          ...picked.score,
-          direction: picked.direction,
-          discoverySource: fromMovers.has(symbol) ? 'movers' : 'universe',
-        });
-        logAutotradeEvent({
+        pendingCandidates.push({
           symbol,
-          stage: 'screen',
-          action: 'candidate_found',
-          detail: {
+          candidate: {
+            ...picked.score,
             direction: picked.direction,
-            total: picked.score.total,
-            price: picked.score.price,
-            gapPct: picked.score.indicators.gapPct,
-            relVolume: picked.score.indicators.relVolume,
+            discoverySource: fromMovers.has(symbol) ? 'movers' : 'universe',
           },
         });
       }
@@ -462,6 +478,46 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
     }
   });
 
+  // ---------------------------------------------------------------------
+  // Relative-volume PACE gate. Runs here rather than inside the per-symbol
+  // filters because it needs the whole universe: the median relVolume across
+  // everything scored this tick IS the fraction of a normal day's volume
+  // elapsed, so dividing by it makes the threshold mean the same thing at
+  // 10:00 and 15:30 (see indicators/relVolPace.ts for the measurements that
+  // motivated it). Fails OPEN — too few samples, or an unmeasurable symbol,
+  // lets the candidate through rather than rejecting on a guess.
+  // ---------------------------------------------------------------------
+  const paceFloor = opts.minRelVolPace ?? 0;
+  const median = paceFloor > 0 ? relVolMedian(relVolSamples) : null;
+  for (const { symbol, candidate } of pendingCandidates) {
+    const pace = relVolPace(candidate.indicators.relVolume, median);
+    if (paceFloor > 0 && pace !== null && pace < paceFloor) {
+      const reason = `Trading at ${pace}x the market's current pace (needs ${paceFloor}x)`;
+      excluded.push({ symbol, reason });
+      logAutotradeEvent({
+        symbol,
+        stage: 'screen',
+        action: 'excluded_rel_vol_pace',
+        detail: { reason, pace, paceFloor, relVolume: candidate.indicators.relVolume, universeMedian: median },
+      });
+      continue;
+    }
+    candidates.push(candidate);
+    logAutotradeEvent({
+      symbol,
+      stage: 'screen',
+      action: 'candidate_found',
+      detail: {
+        direction: candidate.direction,
+        total: candidate.total,
+        price: candidate.price,
+        gapPct: candidate.indicators.gapPct,
+        relVolume: candidate.indicators.relVolume,
+        relVolPace: pace,
+      },
+    });
+  }
+
   candidates.sort((a, b) => b.total - a.total);
   return {
     generatedAt: Date.now(),
@@ -469,6 +525,7 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
     excluded,
     skipped,
     errors,
+    relVolMedian: median,
     discovery: { universeCount, moversCount, scannedCount: symbols.length },
   };
 }

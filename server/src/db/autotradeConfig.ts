@@ -333,6 +333,15 @@ export interface AutotradeConfig {
    *  is — failing closed here would silently starve the loop of candidates
    *  during ordinary Yahoo flakiness. */
   earningsBlackoutDays: number;
+  /** RELATIVE-VOLUME PACE floor (indicators/relVolPace.ts): a multiple of the
+   *  universe's MEDIAN relVolume this screen tick. Raw relVolume is today's
+   *  cumulative volume over the average FULL-day volume, so it climbs through
+   *  the session and a fixed floor on it is wrong at every hour but one — at
+   *  10:47 ET on 2026-08-25 the median symbol read 0.10 and exactly one of 261
+   *  reached 1.0. Dividing by the median makes "1.5x the market's current pace"
+   *  mean the same thing at any hour, and cancels market-wide quiet/busy days.
+   *  0 = off (raw minRelVol alone). */
+  minRelVolPace: number;
 
   /** Scheduled macro-event blackout (2026-07-18): hard-block new entries,
    *  paper AND live, within this many hours (either side) of any date-time on
@@ -899,6 +908,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     targetRMultiple: 2,
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
+    minRelVolPace: 0,
     macroEventBlackoutHours: 0,
     maxHoldDays: 0,
     breakevenTriggerRMultiple: 0,
@@ -1115,6 +1125,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     targetRMultiple: posDecimal(input.targetRMultiple, d.targetRMultiple),
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
     earningsBlackoutDays: posInt(input.earningsBlackoutDays, d.earningsBlackoutDays),
+    minRelVolPace: nonNeg(input.minRelVolPace, d.minRelVolPace),
     macroEventBlackoutHours: nonNeg(input.macroEventBlackoutHours, d.macroEventBlackoutHours),
     maxHoldDays: posInt(input.maxHoldDays, d.maxHoldDays),
     breakevenTriggerRMultiple: nonNeg(input.breakevenTriggerRMultiple, d.breakevenTriggerRMultiple),

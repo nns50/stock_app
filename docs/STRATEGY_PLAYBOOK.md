@@ -841,6 +841,22 @@ quarter of equity then blocks every legitimate entry rather than catching the
 absurd ones it exists for. If entries are being refused on order notional, the
 cap is the thing that is wrong, not the sizing.
 
+**Relative volume lies about the time of day.** The usual definition — today's volume
+divided by the average daily volume — compares a partial day against a whole one, so it
+climbs mechanically from near zero at the open toward 1.0 at the close no matter how a
+stock is behaving. A fixed threshold on it is therefore wrong at every hour but one:
+demanding "1.5× average volume" at 10am is really demanding seven or eight times normal
+*pace*, and the same threshold at 3:30pm asks for almost nothing. Measured on a real
+session, the median stock read **0.10** at 10:47am and exactly one name in 261 reached
+1.0.
+
+The fix is to compare against how far a normal stock has got by now, and the cheapest
+honest estimate of that is the **median across everything you screened this minute** —
+half the market is above it and half below, by definition. Dividing by it gives a pace
+multiple that means the same thing all session, and that also cancels market-wide quiet
+or busy days instead of letting them quietly move your bar. If you filter on relative
+volume at all, filter on pace.
+
 **Flat by the bell, if your edge is intraday.** An overnight hold is a different
 trade from the one you entered: you keep the position but lose every tool that justified
 it — no stop you can manage, no exit you can time, and a price discovered in an opening
