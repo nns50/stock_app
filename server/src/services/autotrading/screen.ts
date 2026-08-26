@@ -514,6 +514,21 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
         gapPct: candidate.indicators.gapPct,
         relVolume: candidate.indicators.relVolume,
         relVolPace: pace,
+        // Per-component scores (2026-08-26). The total alone cannot answer the
+        // question the weights argument keeps running into: which components
+        // actually predict a realized outcome, and which are along for the
+        // ride? Nothing recorded them anywhere — not here, and not on the
+        // position, whose entry_score is likewise only the total — so any
+        // attribution over historical trades would have been reconstructed
+        // from a snapshot rather than measured.
+        //
+        // Recorded as {key: score} without the weights: the weights are a
+        // config value that can be read for the same date, while the SCORES
+        // are the perishable part, computed from indicator values this tick
+        // that nothing else keeps. Joined to a closed position by
+        // symbol + ET date, which is unambiguous here because a symbol can
+        // hold only one live position at a time.
+        components: Object.fromEntries(candidate.components.map((c) => [c.key, Math.round(c.score * 10) / 10])),
       },
     });
   }

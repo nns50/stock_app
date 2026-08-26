@@ -438,6 +438,26 @@ describe('runAutotradeScreen', () => {
       expect(JSON.parse(found!.detail!)).toMatchObject({ direction: 'short' });
       restore();
     });
+
+    it('journals the PER-COMPONENT scores, not just the total', async () => {
+      // The total cannot say which components predicted a realized outcome and
+      // which were along for the ride — and nothing else records them, on the
+      // position or anywhere else, so an attribution done later would be a
+      // reconstruction rather than a measurement. Scores only: the weights are
+      // config readable for the same date, while these are computed from this
+      // tick's indicators and kept nowhere else.
+      const restore = mockCandles(() => downtrend);
+      await runAutotradeScreen({ symbols: ['SCRCOMP'], config: { filters: RELAXED_FILTERS }, directionMode: 'both' });
+      const found = listAutotradeEvents({ stage: 'screen', symbol: 'SCRCOMP' }).find(
+        (e) => e.action === 'candidate_found',
+      );
+      const detail = JSON.parse(found!.detail!) as { total: number; components: Record<string, number> };
+      for (const key of ['momentum', 'relativeVolume', 'rsi', 'volatility', 'gap', 'trend']) {
+        expect(detail.components, `component ${key} must be journaled`).toHaveProperty(key);
+        expect(typeof detail.components[key]).toBe('number');
+      }
+      restore();
+    });
   });
 
   describe('weekly trend alignment (multi-timeframe confirmation, 2026-07-16)', () => {
