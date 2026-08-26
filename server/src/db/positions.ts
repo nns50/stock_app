@@ -453,7 +453,30 @@ export function updatePosition(id: number, patch: PositionPatch): Position | und
   if (patch.fees !== undefined) set('fees', patch.fees);
   if (patch.entryDate !== undefined) set('entry_date', patch.entryDate);
   if (patch.entryTime !== undefined) set('entry_time', patch.entryTime);
-  if (patch.stopPrice !== undefined) set('stop_price', patch.stopPrice);
+  if (patch.stopPrice !== undefined) {
+    set('stop_price', patch.stopPrice);
+    // The FIRST stop a position ever receives is, by definition, its initial
+    // stop — the frozen denominator every R-multiple is measured against.
+    //
+    // Found live on 2026-08-26, the first session with trailing enabled: not
+    // one ratchet fired all day, on any position. Autotrade's live positions
+    // are created by the BROKER SYNC, which cannot know the intended stop, so
+    // the row is inserted with none and initial_stop_price seeds null.
+    // Adoption then supplies the real stop through this very function — which
+    // wrote stop_price and left initial_stop_price null forever, so
+    // evaluateStopAdjust bailed with "no initial stop recorded" before it ever
+    // reached a broker call. Adoption is the NORMAL path (both of that day's
+    // positions came in that way), so the whole feature was inert on exactly
+    // the positions it was built for. The migration that backfilled existing
+    // open rows is why this did not show up until a new row arrived.
+    //
+    // Only ever fills a NULL: a row that already has an initial stop keeps it,
+    // so a later stop edit — or a ratchet, which does not come through here at
+    // all (see ratchetPositionStop) — can never move the denominator.
+    if (existing.initialStopPrice === null && patch.stopPrice !== null) {
+      set('initial_stop_price', patch.stopPrice);
+    }
+  }
   if (patch.targetPrice !== undefined) set('target_price', patch.targetPrice);
   if (patch.accountId !== undefined) set('account_id', patch.accountId);
   if (patch.entryScore !== undefined) set('entry_score', patch.entryScore);
