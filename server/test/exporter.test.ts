@@ -30,6 +30,8 @@ function pos(overrides: Partial<Position> = {}): Position {
     marketRegime: null,
     marketAtrPct: null,
     entryVwap: null,
+    initialStopPrice: null,
+    bestPriceSinceEntry: null,
     createdAt: 1,
     updatedAt: 1,
     exits: [

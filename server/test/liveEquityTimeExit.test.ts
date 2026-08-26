@@ -50,6 +50,7 @@ import { evaluateRiskCheck } from '../src/services/autotrading/riskCheck';
 import { TradeSignal } from '../src/services/autotrading/decide';
 import {
   checkLiveEquityScaleOuts,
+  checkLiveEquityStopAdjusts,
   attemptLiveEntry,
   reconcileLiveOrders,
   checkLiveEquityTimeExits,
@@ -1066,5 +1067,187 @@ describe('checkLiveEquityScaleOuts', () => {
     mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1')] });
     expect(await checkLiveEquityScaleOuts()).toEqual([]);
     expect(mockReplaceOrder).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live stop ratchet (2026-08-26). breakevenTriggerRMultiple / trailStartRMultiple
+// / trailStopRMultiple ran in the PAPER path only — a live position kept the
+// stop it was born with for life while all three read as active in the UI.
+//
+// The dangerous part is not the arithmetic (stopAdjust.test.ts covers that) but
+// WHICH resting order gets replaced: a bracket rests as a STOP_LOSS stop and a
+// STOP_PROFIT limit, and moving the wrong one would drag the TARGET onto the
+// price and sell the position at a loss. Hence the tests below lean on
+// identification and refusal, not on the R maths.
+// ---------------------------------------------------------------------------
+describe('checkLiveEquityStopAdjusts', () => {
+  const stopLeg = (cid = 'STOP-1') => openOrder({ clientOrderId: cid, comboType: 'STOP_LOSS' });
+  const targetLeg = (cid = 'TGT-1') => openOrder({ clientOrderId: cid, comboType: 'STOP_PROFIT' });
+
+  /** An open live position at `price`, with trailing armed. Entry fills at
+   *  100.5 with a stop at 95 (see signal()), so 1R is ~5.5. */
+  async function armed(price: number, overrides: Partial<AutotradeConfig> = {}) {
+    const { position, quantity } = await openAgedLivePosition(0);
+    setAutotradeConfig({
+      liveTrailingEnabled: true,
+      breakevenTriggerRMultiple: 1,
+      trailStartRMultiple: 1,
+      trailStopRMultiple: 1.5,
+      ...overrides,
+    });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: price }) as ReturnType<typeof getProvider>);
+    return { position, quantity };
+  }
+
+  const ratchetEvents = () => listAutotradeEvents({ limit: 50 }).filter((e) => e.action === 'live_stop_ratcheted');
+
+  it('does nothing while the flag is off, even well past the trigger', async () => {
+    // The three R settings are already non-zero in production, so this is the
+    // check that stops a deploy arming live trailing stops by itself.
+    await armed(200, { liveTrailingEnabled: false });
+    expect(await checkLiveEquityStopAdjusts()).toEqual([]);
+    expect(mockReplaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('moves ONLY the STOP_LOSS leg, never the target', async () => {
+    const { position } = await armed(200);
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [stopLeg(), targetLeg()] });
+    mockReplaceOrder.mockResolvedValue({ ok: true });
+
+    const out = await checkLiveEquityStopAdjusts();
+
+    expect(out[0]).toMatchObject({ positionId: position.id, adjusted: true, kind: 'trail' });
+    expect(mockReplaceOrder).toHaveBeenCalledTimes(1);
+    const [, cid, patch] = mockReplaceOrder.mock.calls[0];
+    expect(cid).toBe('STOP-1');
+    expect(patch).toHaveProperty('stopPrice');
+    expect(patch).not.toHaveProperty('quantity'); // resizing is the scale-out's job
+    // The target leg was not touched at all — moving it would sell the position.
+    expect(mockReplaceOrder.mock.calls.some((c) => c[1] === 'TGT-1')).toBe(false);
+  });
+
+  it('records the new stop locally only AFTER the broker confirms', async () => {
+    const { position } = await armed(200);
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [stopLeg()] });
+    mockReplaceOrder.mockResolvedValue({ ok: true });
+
+    await checkLiveEquityStopAdjusts();
+
+    const after = listPositions({ status: 'open', symbol: 'AAPL' })[0];
+    expect(after.stopPrice).toBeGreaterThan(position.stopPrice!);
+    expect(after.initialStopPrice).toBe(position.initialStopPrice); // denominator frozen
+    expect(ratchetEvents()).toHaveLength(1);
+  });
+
+  it('leaves the ledger untouched when the broker refuses the replace', async () => {
+    // The ledger must never claim protection the broker has not got.
+    const { position } = await armed(200);
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [stopLeg()] });
+    mockReplaceOrder.mockResolvedValue({ ok: false, error: 'broker said no' });
+
+    const out = await checkLiveEquityStopAdjusts();
+
+    expect(out[0]).toMatchObject({ adjusted: false });
+    const after = listPositions({ status: 'open', symbol: 'AAPL' })[0];
+    expect(after.stopPrice).toBe(position.stopPrice); // unchanged
+    expect(ratchetEvents()).toHaveLength(0);
+    expect(listAutotradeEvents({ limit: 50 }).some((e) => e.action === 'live_stop_adjust_failed')).toBe(true);
+  });
+
+  it('does not claim the move on an AMBIGUOUS replace either', async () => {
+    // We do not know whether it applied. Claiming it would be a guess about
+    // real money; the next tick re-reads the leg and re-decides.
+    const { position } = await armed(200);
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [stopLeg()] });
+    mockReplaceOrder.mockResolvedValue({ ok: false, ambiguous: true, error: 'timeout' });
+
+    await checkLiveEquityStopAdjusts();
+
+    expect(listPositions({ status: 'open', symbol: 'AAPL' })[0].stopPrice).toBe(position.stopPrice);
+    const failed = listAutotradeEvents({ limit: 50 }).find((e) => e.action === 'live_stop_adjust_failed')!;
+    expect(JSON.parse(failed.detail!)).toMatchObject({ ambiguous: true });
+  });
+
+  it('refuses when the stop leg cannot be positively identified', async () => {
+    const { position } = await armed(200);
+    // Two exit-side orders, neither labelled — combo_type did not parse. Acting
+    // on a guess here is how the target gets moved onto the price.
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [
+        openOrder({ clientOrderId: 'A', comboType: undefined }),
+        openOrder({ clientOrderId: 'B', comboType: undefined }),
+      ],
+    });
+
+    const out = await checkLiveEquityStopAdjusts();
+
+    expect(out[0]).toMatchObject({ positionId: position.id, adjusted: false });
+    expect(mockReplaceOrder).not.toHaveBeenCalled();
+    expect(listAutotradeEvents({ limit: 50 }).some((e) => e.action === 'live_stop_adjust_blocked')).toBe(true);
+  });
+
+  it('refuses when two STOP_LOSS legs are resting — it will not guess which protects this lot', async () => {
+    await armed(200);
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [stopLeg('S1'), stopLeg('S2')] });
+
+    const out = await checkLiveEquityStopAdjusts();
+
+    expect(out[0]).toMatchObject({ adjusted: false, reason: expect.stringMatching(/ambiguous/i) });
+    expect(mockReplaceOrder).not.toHaveBeenCalled();
+  });
+
+  /** A working close on its own intent — scoped here rather than reusing the
+   *  scale-out block's identical helper, which is local to that describe. */
+  function closeInFlightFor(positionId: number) {
+    const rec = createIntent(
+      {
+        symbol: 'AAPL',
+        assetKind: 'stock',
+        side: 'sell',
+        openClose: 'close',
+        quantity: 1,
+        orderType: 'limit',
+        limitPrice: 999,
+      },
+      `ratchet-inflight-${positionId}`,
+    );
+    recordLiveExitOrder({ intentId: rec.id, symbol: 'AAPL', riskProfile: 'MODERATE', positionId });
+  }
+
+  it('skips a position whose close is already working', async () => {
+    const { position } = await armed(200);
+    closeInFlightFor(position.id);
+    expect(await checkLiveEquityStopAdjusts()).toEqual([]);
+    expect(mockReplaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('keeps the water mark current even on cycles that move nothing', async () => {
+    // The trail hangs off this number; a tick that fails to record a new peak
+    // is a peak the trail never gets to use.
+    await armed(103); // ~0.45R — under every trigger
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [stopLeg()] });
+
+    await checkLiveEquityStopAdjusts();
+
+    expect(mockReplaceOrder).not.toHaveBeenCalled();
+    expect(listPositions({ status: 'open', symbol: 'AAPL' })[0].bestPriceSinceEntry).toBe(103);
+  });
+
+  it('never places a second replace for a stop already where it wants it', async () => {
+    const { position } = await armed(200);
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [stopLeg()] });
+    mockReplaceOrder.mockResolvedValue({ ok: true });
+
+    await checkLiveEquityStopAdjusts();
+    const afterFirst = listPositions({ status: 'open', symbol: 'AAPL' })[0].stopPrice;
+    mockReplaceOrder.mockClear();
+
+    // Same price on the next tick: the stop is already there, so nothing to do.
+    await checkLiveEquityStopAdjusts();
+    expect(mockReplaceOrder).not.toHaveBeenCalled();
+    expect(listPositions({ status: 'open', symbol: 'AAPL' })[0].stopPrice).toBe(afterFirst);
+    expect(position.id).toBeGreaterThan(0);
   });
 });

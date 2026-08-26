@@ -173,6 +173,7 @@ const configBody = z.object({
   stopAtrMultiple: z.number().positive().optional(),
   maxStopDistancePct: z.number().min(0).max(100).optional(),
   liveScaleOutEnabled: z.boolean().optional(),
+  liveTrailingEnabled: z.boolean().optional(),
   targetRMultiple: z.number().positive().optional(),
   sessionBufferMinutes: z.number().int().nonnegative().optional(),
   earningsBlackoutDays: z.number().int().nonnegative().optional(),
@@ -413,6 +414,7 @@ autotradeRouter.put(
     if (body.stopAtrMultiple !== undefined) patch.stopAtrMultiple = body.stopAtrMultiple;
     if (body.maxStopDistancePct !== undefined) patch.maxStopDistancePct = body.maxStopDistancePct;
     if (body.liveScaleOutEnabled !== undefined) patch.liveScaleOutEnabled = body.liveScaleOutEnabled;
+    if (body.liveTrailingEnabled !== undefined) patch.liveTrailingEnabled = body.liveTrailingEnabled;
     if (body.targetRMultiple !== undefined) patch.targetRMultiple = body.targetRMultiple;
     if (body.sessionBufferMinutes !== undefined) patch.sessionBufferMinutes = body.sessionBufferMinutes;
     if (body.earningsBlackoutDays !== undefined) patch.earningsBlackoutDays = body.earningsBlackoutDays;

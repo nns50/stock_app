@@ -330,6 +330,19 @@ export interface AutotradeConfig {
    *  has been 1.5 since the paper-only implementation, so reusing it alone
    *  would have switched live scale-outs on the moment this deployed. */
   liveScaleOutEnabled: boolean;
+  /** LIVE stop ratchet (services/autotrading/stopAdjust.ts): let
+   *  breakevenTriggerRMultiple / trailStartRMultiple / trailStopRMultiple move
+   *  the stop on a LIVE equity position, by REPLACING the resting bracket's
+   *  STOP_LOSS leg at the broker. Before this those three settings ran in the
+   *  paper path only — they read as active in the UI while a live position
+   *  kept one fixed stop for life.
+   *
+   *  Off by default and behind its own flag for the same reason
+   *  liveScaleOutEnabled has one, and it is not a hypothetical here: all three
+   *  are ALREADY non-zero in production (1 / 1 / 1.5), so wiring them straight
+   *  through would have armed trailing stops on real money the moment this
+   *  deployed, with nobody having chosen that. */
+  liveTrailingEnabled: boolean;
   /** Target distance = stop distance × this (a reward:risk multiple). */
   targetRMultiple: number;
   /** No new entries within this many minutes of the session open or close —
@@ -400,12 +413,18 @@ export interface AutotradeConfig {
   maxHoldDays: number;
 
   // --- Trailing stop / breakeven / partial profit-taking (docs/
-  // AUTOTRADING_SPEC.md — RESOLVED DECISIONS, added 2026-07-11). PAPER and
-  // BACKTEST equity positions only for now — LIVE equity positions are
-  // untouched (see the spec's own writeup on why: modifying/partially
-  // closing a resting live bracket has no existing precedent and a
-  // meaningfully worse failure mode than maxHoldDays' own live force-close
-  // did). All five default to 0/disabled, so an untouched config's behavior
+  // AUTOTRADING_SPEC.md — RESOLVED DECISIONS, added 2026-07-11). Originally
+  // PAPER and BACKTEST equity only, because modifying or partially closing a
+  // resting live bracket had no precedent here and a worse failure mode than
+  // maxHoldDays' own live force-close. That precedent now exists, and all
+  // three reach LIVE equity too — each behind its own flag, since these values
+  // were long since set for the paper path and must not arm real-money
+  // behaviour merely by being non-zero:
+  //   - partialExitRMultiple / partialExitPct -> liveScaleOutEnabled
+  //     (services/autotrading/scaleOut.ts, 2026-08-25)
+  //   - breakevenTriggerRMultiple / trailStartRMultiple / trailStopRMultiple
+  //     -> liveTrailingEnabled (services/autotrading/stopAdjust.ts, 2026-08-26)
+  // All five still default to 0/disabled, so an untouched config's behavior
   // doesn't change. R-multiples here are measured against the position's
   // OWN original stop distance (fixed at entry), never a value that moves
   // as the stop itself ratchets. ---------------------------------------------
@@ -938,6 +957,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     stopAtrMultiple: 1.5,
     maxStopDistancePct: 0,
     liveScaleOutEnabled: false,
+    liveTrailingEnabled: false,
     targetRMultiple: 2,
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
@@ -1160,6 +1180,8 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     maxStopDistancePct: nonNeg(input.maxStopDistancePct, d.maxStopDistancePct),
     liveScaleOutEnabled:
       typeof input.liveScaleOutEnabled === 'boolean' ? input.liveScaleOutEnabled : d.liveScaleOutEnabled,
+    liveTrailingEnabled:
+      typeof input.liveTrailingEnabled === 'boolean' ? input.liveTrailingEnabled : d.liveTrailingEnabled,
     targetRMultiple: posDecimal(input.targetRMultiple, d.targetRMultiple),
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
     earningsBlackoutDays: posInt(input.earningsBlackoutDays, d.earningsBlackoutDays),

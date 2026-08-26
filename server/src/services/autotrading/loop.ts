@@ -22,6 +22,7 @@ import {
   syncAccountEquityFromBroker,
   checkLiveEquityTimeExits,
   checkLiveEquityScaleOuts,
+  checkLiveEquityStopAdjusts,
   checkLiveScaleIns,
   adoptOrphanedLivePositions,
   checkLiveBracketProtection,
@@ -123,6 +124,8 @@ export interface LoopTickSummary {
   /** Live equity scale-out orders newly PLACED this tick (0 unless
    *  liveScaleOutEnabled and a position reached the R trigger). */
   liveScaleOutsRequested: number;
+  /** Live stops moved by breakeven/trailing this tick (stopAdjust.ts). */
+  liveStopsRatcheted: number;
   candidatesScreened: number;
   candidatesPassedVolatility: number;
   signalsGenerated: number;
@@ -201,6 +204,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     liveTimeExitsRequested: 0,
     liveScaleInsRequested: 0,
     liveScaleOutsRequested: 0,
+    liveStopsRatcheted: 0,
     candidatesScreened: 0,
     candidatesPassedVolatility: 0,
     signalsGenerated: 0,
@@ -350,6 +354,19 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     } catch (e) {
       console.error('[autotrade-loop] bracket protection check failed:', (e as Error).message);
     }
+    // Ratchet live stops BEFORE the scale-out and the time exits. Order
+    // matters in both directions: the scale-out places a partial sell, which
+    // becomes a pending exit order and makes the ratchet skip the position for
+    // a tick, so running it second would delay every stop move by a cycle; and
+    // the time exits can close the position outright, after which there is no
+    // stop left to move. Reducing risk (it only ever tightens), so no entry
+    // gate — it has its own liveTrailingEnabled flag and session check.
+    let liveStopAdjustOutcomes: Awaited<ReturnType<typeof checkLiveEquityStopAdjusts>> = [];
+    try {
+      liveStopAdjustOutcomes = await checkLiveEquityStopAdjusts();
+    } catch (e) {
+      console.error('[autotrade-loop] live stop ratchet failed:', (e as Error).message);
+    }
     // Scale out of a live winner BEFORE the time exits below. Order matters:
     // a scale-out is skipped entirely once an exit order is working, so running
     // the exits first would mean a position that qualified for both never banks
@@ -495,6 +512,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       liveTimeExitsRequested: liveEquityTimeExitOutcomes.filter((o) => o.requested).length,
       liveScaleInsRequested: liveScaleInOutcomes.filter((o) => o.requested).length,
       liveScaleOutsRequested: liveScaleOutOutcomes.filter((o) => o.requested).length,
+      liveStopsRatcheted: liveStopAdjustOutcomes.filter((o) => o.adjusted).length,
     };
 
     const config = getAutotradeConfig();

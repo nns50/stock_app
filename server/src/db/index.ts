@@ -189,6 +189,17 @@ CREATE TABLE IF NOT EXISTS ${name} (
   -- any filter acts on it (services/autotrading/vwap.ts). Null: manual/
   -- imported rows, rows predating the column, or a failed/unmeasurable fetch.
   entry_vwap REAL,
+  -- Live stop ratchet (2026-08-26) — the two figures a breakeven/trailing stop
+  -- needs, mirroring autotrade_paper_positions' own pair. initial_stop_price is
+  -- the R denominator, frozen at open: measuring R off the CURRENT stop would
+  -- shrink the denominator every time the stop ratchets, so each subsequent
+  -- reading would overstate progress and the trail would run away from the
+  -- price. best_price_since_entry is the high-water (long) / low-water (short)
+  -- mark the trail hangs behind. Null on manual/imported rows and rows
+  -- predating the columns, which makes the ratchet a silent no-op for them
+  -- rather than a guess.
+  initial_stop_price REAL,
+  best_price_since_entry REAL,
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );`;
@@ -200,7 +211,8 @@ CREATE TABLE IF NOT EXISTS ${name} (
 const POSITIONS_COLS =
   'id, asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees, option_type, ' +
   'strike, expiration, multiplier, status, tags, grade, notes, checklist, stop_price, target_price, ' +
-  'source_intent_id, account_id, entry_score, market_regime, market_atr_pct, entry_vwap, created_at, updated_at';
+  'source_intent_id, account_id, entry_score, market_regime, market_atr_pct, entry_vwap, ' +
+  'initial_stop_price, best_price_since_entry, created_at, updated_at';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS universe (
@@ -1133,6 +1145,23 @@ function migrate(): void {
   const aloVwapCols = db.prepare('PRAGMA table_info(autotrade_live_orders)').all() as { name: string }[];
   if (!aloVwapCols.some((c) => c.name === 'entry_vwap')) {
     db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN entry_vwap REAL');
+  }
+
+  // 2026-08-26: the live stop ratchet's two columns (see the positions DDL
+  // comment). Nullable — a row without them is simply never ratcheted, which
+  // is the correct behaviour for a manual or imported position. Backfilling
+  // initial_stop_price from stop_price is safe ONLY at this moment, before any
+  // ratchet has ever run: today every stop_price in the table is still the
+  // one set at entry, so the snapshot is exact rather than an approximation of
+  // an already-moved stop. Do it now or the currently-open positions could
+  // never be ratcheted at all.
+  const posRatchetCols = db.prepare('PRAGMA table_info(positions)').all() as { name: string }[];
+  if (!posRatchetCols.some((c) => c.name === 'initial_stop_price')) {
+    db.exec('ALTER TABLE positions ADD COLUMN initial_stop_price REAL');
+    db.exec("UPDATE positions SET initial_stop_price = stop_price WHERE status = 'open' AND stop_price IS NOT NULL");
+  }
+  if (!posRatchetCols.some((c) => c.name === 'best_price_since_entry')) {
+    db.exec('ALTER TABLE positions ADD COLUMN best_price_since_entry REAL');
   }
 
   // 2026-08-22: the daily baseline singleton gained the give-back guard's two
