@@ -494,6 +494,23 @@ live journal (zero 2R target hits across the bot's twelve decisive trades). Trea
 dollar figures as optimistic: costs aren't modeled, two splits over one history are
 not independent confirmations, and the best p-value was 0.069.
 
+**The postscript, and the lesson worth more than the finding (2026-08-26).** That
+result sat in this playbook for six weeks while the live book could not act on it. The
+runner shapes it recommends are built from breakeven and trailing stops — and those
+three settings, though present in the config and showing as set in the UI, ran only in
+the paper and backtest paths. A live position kept the stop it was born with for its
+entire life. So the sweep's own recommendation was unreachable on real money, and the
+corroborating evidence it cited (zero 2R target hits in twelve live trades) was in part
+a description of that gap rather than of the market.
+
+Before trusting a research finding, check that the live path can *express* it. A
+setting that exists, validates, persists and displays can still reach nothing — the
+config is a description of intent, not proof of behaviour. The cheap test is to grep
+for where the value is read and confirm the execution path you care about is among the
+readers. Three separate settings groups in this codebase failed exactly that test
+(live partial exits, live options exits, live trailing), each found only by asking of a
+specific number: *what code reads this?*
+
 To trade the runner shape, set **Target R multiple** to 6, **Breakeven trigger
 (R-multiple)** to 1, **Trailing start (R-multiple)** to 1, and **Trailing distance
 (R-multiple)** to 1.5. The far target is deliberate — it stands in for "uncapped," and

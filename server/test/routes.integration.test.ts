@@ -1108,6 +1108,7 @@ describe('health (integration)', () => {
       liveTimeExitsRequested: 0,
       liveScaleInsRequested: 0,
       liveScaleOutsRequested: 0,
+      liveStopsRatcheted: 0,
       candidatesScreened: 0,
       candidatesPassedVolatility: 0,
       signalsGenerated: 0,
@@ -1334,6 +1335,29 @@ describe('autotrade config routes (integration)', () => {
       await put('/api/autotrade/config', { [key]: current }); // restore
     }
     expect(unreachable).toEqual([]);
+
+    // BOOLEANS, same sweep. liveTrailingEnabled (2026-08-26) was the reminder
+    // that the numeric-only version above covers one type and the gap is not
+    // type-specific — a flag missing from the zod body returns 200 and changes
+    // nothing exactly the way a number does. A flag nested under the master
+    // live gate THROWS 400 rather than silently dropping (see the route's
+    // liveOptionsEnabled / liveScaleInEnabled guards), so a non-200 here is a
+    // guard doing its job and only 200-but-unchanged is the bug.
+    const boolKeys = Object.entries(before)
+      .filter(([k, v]) => typeof v === 'boolean' && !skip.has(k))
+      .map(([k]) => k);
+    expect(boolKeys.length).toBeGreaterThan(3);
+
+    const unreachableBools: string[] = [];
+    for (const key of boolKeys) {
+      const current = before[key] as boolean;
+      const res = await put('/api/autotrade/config', { [key]: !current });
+      if (res.status !== 200) continue; // guarded — refused loudly, which is correct
+      const after = (await getJson('/api/autotrade/config')) as Record<string, unknown>;
+      if (after[key] === current) unreachableBools.push(key);
+      await put('/api/autotrade/config', { [key]: current }); // restore
+    }
+    expect(unreachableBools).toEqual([]);
   });
 
   it('a whitespace-only liveAccountId cannot stand in for a real one', async () => {

@@ -108,6 +108,14 @@ export interface Position {
   marketRegime: string | null;
   marketAtrPct: number | null;
   entryVwap: number | null;
+  /** Stop price as it stood at OPEN — the frozen denominator every R-multiple
+   *  on this position is measured against. Never mutated after insert, so a
+   *  ratcheted stop cannot shrink the denominator and inflate later readings.
+   *  Seeded from stopPrice at insert; null on rows that predate the column. */
+  initialStopPrice: number | null;
+  /** Highest price seen since entry for a long, lowest for a short — the mark a
+   *  trailing stop hangs behind. Seeded to entryPrice at insert. */
+  bestPriceSinceEntry: number | null;
   createdAt: number;
   updatedAt: number;
   exits: PositionExit[];
@@ -142,6 +150,8 @@ interface PositionRow {
   market_regime: string | null;
   market_atr_pct: number | null;
   entry_vwap: number | null;
+  initial_stop_price: number | null;
+  best_price_since_entry: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -233,6 +243,8 @@ function mapPosition(row: PositionRow, exits?: PositionExit[]): Position {
     marketRegime: row.market_regime ?? null,
     marketAtrPct: row.market_atr_pct ?? null,
     entryVwap: row.entry_vwap ?? null,
+    initialStopPrice: row.initial_stop_price ?? null,
+    bestPriceSinceEntry: row.best_price_since_entry ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     exits: resolvedExits,
@@ -328,8 +340,9 @@ export function createPosition(input: PositionInput): Position {
         (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
          option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
          stop_price, target_price, source_intent_id, account_id,
-         entry_score, market_regime, market_atr_pct, entry_vwap, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         entry_score, market_regime, market_atr_pct, entry_vwap,
+         initial_stop_price, best_price_since_entry, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       input.assetType,
@@ -356,6 +369,13 @@ export function createPosition(input: PositionInput): Position {
       input.marketRegime ?? null,
       input.marketAtrPct ?? null,
       input.entryVwap ?? null,
+      // Seeded here rather than asked of every caller: the snapshot is only
+      // ever "stop_price as it was at open", which is exactly what was just
+      // inserted, and entryPrice is the correct starting high-water mark
+      // (a position has not been in profit until it moves). Mirrors
+      // autotradePaperPositions.ts's own seeding.
+      input.stopPrice ?? null,
+      input.entryPrice,
       now,
       now,
     );
@@ -384,6 +404,36 @@ export interface PositionPatch {
   marketRegime?: string | null;
   marketAtrPct?: number | null;
   entryVwap?: number | null;
+}
+
+/**
+ * Move an OPEN position's stop to `stopPrice`, leaving initial_stop_price
+ * alone. Deliberately NOT part of updatePosition's generic patch: the ratchet
+ * is the one caller allowed to move a stop on a live position, and giving it
+ * its own narrow function keeps "what may move a live stop" greppable.
+ *
+ * The caller is responsible for having already moved the stop AT THE BROKER —
+ * this only records what is now true there. Writing it first would leave the
+ * ledger claiming protection the broker does not have, which is the more
+ * dangerous of the two orderings.
+ */
+export function ratchetPositionStop(id: number, stopPrice: number): Position | undefined {
+  db.prepare("UPDATE positions SET stop_price = ?, updated_at = ? WHERE id = ? AND status = 'open'").run(
+    stopPrice,
+    Date.now(),
+    id,
+  );
+  return getPosition(id);
+}
+
+/** Record a new high-water (long) / low-water (short) mark. Pure bookkeeping —
+ *  no journal entry, called every cycle a position is looked at. */
+export function updatePositionBestPrice(id: number, bestPrice: number): void {
+  db.prepare("UPDATE positions SET best_price_since_entry = ?, updated_at = ? WHERE id = ? AND status = 'open'").run(
+    bestPrice,
+    Date.now(),
+    id,
+  );
 }
 
 export function updatePosition(id: number, patch: PositionPatch): Position | undefined {

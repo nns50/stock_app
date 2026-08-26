@@ -54,6 +54,8 @@ function positionFixture(o: Partial<Position> = {}): Position {
     marketRegime: null,
     marketAtrPct: null,
     entryVwap: null,
+    initialStopPrice: null,
+    bestPriceSinceEntry: null,
     createdAt: AGREEING,
     updatedAt: AGREEING,
     remainingQuantity: Math.max(0, quantity - exits.reduce((s, e) => s + e.quantity, 0)),

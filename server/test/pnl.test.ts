@@ -38,6 +38,8 @@ function makePosition(
     marketRegime: null,
     marketAtrPct: null,
     entryVwap: null,
+    initialStopPrice: null,
+    bestPriceSinceEntry: null,
     createdAt: 0,
     updatedAt: 0,
     exits,

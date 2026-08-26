@@ -1370,9 +1370,15 @@ shouldn't be a tab-switch away.
   carried by an exit that already decided to leave. Journaled as
   `trigger: "end_of_day"` with the minutes left and whether it replaced a
   resting order. Five more fields manage an
-  already-open **paper or backtest** equity position the same way a discretionary
-  trader might (**live positions are untouched — still a fixed stop/target for
-  life**): **breakeven trigger** (once unrealized gain reaches this many R, move the
+  already-open equity position the same way a discretionary trader might. All
+  five run on **paper and backtest**, and since 2026-08-26 all five can reach
+  **live** equity too — each behind its own switch, because these values were
+  set long ago for the paper path and must not start moving real money just by
+  being non-zero: the two partial-exit fields via **live scale-out**, and the
+  three stop fields below via **live trailing** (both default off). Before
+  those switches existed a live position kept one fixed stop for its whole
+  life while these settings read as active. The fields: **breakeven trigger**
+  (once unrealized gain reaches this many R, move the
   stop to exactly the entry price — a one-time move, never applied if it would
   loosen the current stop), **trailing start** and **trailing distance** (once gain
   reaches the trailing-start R-multiple, the stop trails the trailing-distance R
@@ -1384,6 +1390,18 @@ shouldn't be a tab-switch away.
   whenever its trigger gets turned on — so leaving them untouched changes nothing.
   R-multiples here are always measured against the position's own original stop
   distance, fixed at entry, even after the stop itself has since moved.
+  On a **live** position the stop is not a number in a database but a resting
+  **STOP_LOSS** order at the broker, so a ratchet is a *replace* on that leg —
+  atomic, so the position is never momentarily unprotected. Two consequences
+  worth knowing: only the stop leg moves (never the take-profit leg, which if
+  dragged onto the price would sell the position outright), and the local
+  record is updated **only after the broker confirms** — a refused or
+  uncertain replace leaves the old stop standing and is journaled as
+  `live_stop_adjust_failed`. If the resting stop leg cannot be positively
+  identified — no order labelled `STOP_LOSS`, or two of them — the ratchet
+  refuses rather than guessing (`live_stop_adjust_blocked`) and retries next
+  cycle. A successful move journals `live_stop_ratcheted` with which rule
+  fired, the old and new stop, and the R it fired at.
 - **Scale into winners** (2026-07-23, **paper + backtest** equity only — live is
   untouched) — three more fields let a _winning_ position **pyramid**: **scale-in
   trigger (R-multiple)** (once unrealized gain reaches this many R, add more shares),

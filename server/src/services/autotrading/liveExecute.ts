@@ -58,6 +58,7 @@ import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCoold
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
 import { evaluateStagnation } from './stagnationExit';
 import { evaluateEndOfDayFlatten } from './endOfDayFlatten';
+import { evaluateStopAdjust } from './stopAdjust';
 import { evaluateScaleOut } from './scaleOut';
 import { fetchTodayVwap } from './vwap';
 import { detectLevels } from '../../indicators/levels';
@@ -78,6 +79,8 @@ import {
   updatePosition,
   addExit,
   Position,
+  ratchetPositionStop,
+  updatePositionBestPrice,
 } from '../../db/positions';
 import { realizedPnlOf, initialRiskOf, computeStreaksAndDrawdown } from '../pnl';
 import { etTimeOfDay } from '../../util/marketDate';
@@ -2954,4 +2957,191 @@ async function placeLiveScaleInAddOn(
     },
   ]);
   return { symbol, positionId: pos.id, requested: true };
+}
+
+// ---------------------------------------------------------------------------
+// Live stop ratchet (2026-08-26) — breakeven and trailing stops for LIVE
+// equity. See services/autotrading/stopAdjust.ts for the decision and for why
+// the three R settings driving it were inert on this path until now.
+//
+// The mechanism is a REPLACE on the bracket's resting STOP_LOSS leg, not a
+// cancel-and-place: a replace is atomic at the broker, so the position is
+// never momentarily unprotected. This is the same webullReplaceOrder the live
+// scale-out already uses to resize those legs — only the field differs.
+//
+// IDENTIFYING THE STOP LEG is the part that has to be right, and it is why
+// this refuses more often than it acts. A bracket rests as TWO exit-side
+// orders: a STOP_PROFIT limit (the target) and a STOP_LOSS stop. They are told
+// apart by `combo_type`, which a real-account capture confirmed is carried on
+// the ENVELOPE (providers/webull/orders.ts's WebullOrderLeg comment documents
+// that capture). Moving the wrong one would drag the TARGET down onto the
+// price and sell the position at a loss the moment it filled — so anything
+// short of exactly one positively-identified STOP_LOSS leg is refused and
+// retried next tick, the same fail-closed posture restingExitOrders() takes.
+//
+// ORDER OF OPERATIONS: broker first, ledger second. The local stop_price is
+// only written once the broker has confirmed the replace. Doing it the other
+// way round would leave the ledger claiming protection at a price the broker
+// has never heard of — and every downstream risk figure reads the ledger.
+// ---------------------------------------------------------------------------
+
+export interface LiveStopAdjustOutcome {
+  symbol: string;
+  positionId: number;
+  adjusted: boolean;
+  from?: number;
+  to?: number;
+  kind?: 'breakeven' | 'trail';
+  rMultiple?: number | null;
+  reason?: string;
+}
+
+/** The resting STOP_LOSS leg for a symbol, or a reason there isn't exactly one
+ *  we can act on. Never guesses: a bracket whose legs cannot be told apart is
+ *  left strictly alone. */
+function restingStopLeg(
+  orders: WebullOpenOrder[],
+  symbol: string,
+  exitSide: 'buy' | 'sell',
+): { ok: true; leg: WebullOpenOrder } | { ok: false; reason: string } {
+  const exits = restingExitOrders(orders, symbol, exitSide);
+  if (exits.length === 0) return { ok: false, reason: 'no readable resting exit leg' };
+  const stops = exits.filter((o) => (o.comboType ?? '').toUpperCase() === 'STOP_LOSS');
+  if (stops.length === 1) return { ok: true, leg: stops[0] };
+  if (stops.length === 0) {
+    // Either the bracket genuinely has no stop leg (checkLiveBracketProtection's
+    // problem, not ours) or combo_type did not parse. Both mean the same thing
+    // here: we cannot say which resting order is the stop, so we touch none.
+    return { ok: false, reason: `no resting leg identifiable as STOP_LOSS among ${exits.length} exit order(s)` };
+  }
+  return {
+    ok: false,
+    reason: `${stops.length} resting STOP_LOSS legs — ambiguous, not guessing which protects this lot`,
+  };
+}
+
+/**
+ * Ratchet the stop on every open live equity position whose breakeven or
+ * trailing trigger has been reached.
+ *
+ * Opportunistic, like the scale-out: a transient quote or broker failure just
+ * waits for the next tick, because nothing is left unprotected by doing
+ * nothing — the original stop is still resting at the broker throughout.
+ */
+export async function checkLiveEquityStopAdjusts(): Promise<LiveStopAdjustOutcome[]> {
+  if (!config.trading.placeEnabled) return [];
+  const cfg = getAutotradeConfig();
+  if (!cfg.liveTrailingEnabled || !cfg.liveAccountId) return [];
+  // Regular session only. A stop replace outside it is not dangerous the way a
+  // market close is, but the quote driving the decision is thin and stale
+  // enough after hours to move a stop off a price nobody traded at.
+  if (!checkSessionWindow(0).ok) return [];
+
+  const open = listAutotradeLivePositions({ status: 'open' });
+  if (open.length === 0) return [];
+  const pendingExitPositionIds = new Set(
+    listPendingLiveOrders()
+      .filter((o) => o.role === 'exit' && o.positionId !== null)
+      .map((o) => o.positionId!),
+  );
+
+  const accountId = cfg.liveAccountId;
+  const outcomes: LiveStopAdjustOutcome[] = [];
+  for (const pos of open) {
+    // A close already working means the position is on its way out; moving its
+    // stop now would only race that close.
+    if (pendingExitPositionIds.has(pos.id)) continue;
+
+    let last: number;
+    try {
+      last = (await getProvider().getQuote(pos.symbol.toUpperCase())).last;
+    } catch {
+      continue;
+    }
+
+    const decision = evaluateStopAdjust(pos, last, cfg);
+    // Maintain the water mark on EVERY cycle, including the ones that do not
+    // move the stop — the trail hangs off this number, so a tick skipped here
+    // is a peak the trail never learns about.
+    if (decision.bestPrice !== null && decision.bestPrice !== pos.bestPriceSinceEntry) {
+      updatePositionBestPrice(pos.id, decision.bestPrice);
+    }
+    if (!decision.adjust || decision.newStop === null) continue;
+
+    const symbol = pos.symbol.toUpperCase();
+    const exitSide: 'buy' | 'sell' = pos.side === 'long' ? 'sell' : 'buy';
+
+    const listed = await listWebullOpenOrders(accountId);
+    if (!listed.ok) {
+      outcomes.push({
+        symbol,
+        positionId: pos.id,
+        adjusted: false,
+        reason: `Could not read open orders: ${listed.error ?? 'unreadable'}`,
+      });
+      continue;
+    }
+    const found = restingStopLeg(listed.orders, symbol, exitSide);
+    if (!found.ok) {
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: 'live_stop_adjust_blocked',
+        detail: { positionId: pos.id, reason: found.reason, wanted: decision.newStop },
+        riskProfile: cfg.riskProfile,
+      });
+      outcomes.push({ symbol, positionId: pos.id, adjusted: false, reason: found.reason });
+      continue;
+    }
+
+    const replaced = await webullReplaceOrder(accountId, found.leg.clientOrderId!, { stopPrice: decision.newStop });
+    if (!replaced.ok) {
+      // Including the ambiguous case: we do NOT know whether the broker applied
+      // it, so we must not claim the new stop locally. The next tick re-reads
+      // the resting leg and re-decides from whatever is actually there.
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: 'live_stop_adjust_failed',
+        detail: {
+          positionId: pos.id,
+          reason: replaced.error ?? 'replace failed',
+          ambiguous: !!replaced.ambiguous,
+          from: pos.stopPrice,
+          wanted: decision.newStop,
+        },
+        riskProfile: cfg.riskProfile,
+      });
+      outcomes.push({ symbol, positionId: pos.id, adjusted: false, reason: replaced.error ?? 'replace failed' });
+      continue;
+    }
+
+    // Broker confirmed — only now does the ledger get to say so.
+    const from = pos.stopPrice;
+    ratchetPositionStop(pos.id, decision.newStop);
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_stop_ratcheted',
+      detail: {
+        positionId: pos.id,
+        kind: decision.kind,
+        from,
+        to: decision.newStop,
+        rMultiple: decision.rMultiple,
+        bestPrice: decision.bestPrice,
+      },
+      riskProfile: cfg.riskProfile,
+    });
+    outcomes.push({
+      symbol,
+      positionId: pos.id,
+      adjusted: true,
+      from: from ?? undefined,
+      to: decision.newStop,
+      kind: decision.kind ?? undefined,
+      rMultiple: decision.rMultiple,
+    });
+  }
+  return outcomes;
 }
