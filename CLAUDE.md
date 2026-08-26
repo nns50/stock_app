@@ -62,3 +62,18 @@ Guidelines:
   (`server/src/indicators/`) and the About page.
 - The DB schema is created by `initDb()` at startup (and in `scripts/seed.ts`) — not on
   import; call it before using db functions in a standalone script.
+- **A config field is not done until something READS it.** Four settings groups have
+  shipped configurable, validated, stored and displayed while the execution path they
+  described never read them — so they read as active in the UI and did nothing to real
+  money. Three separate guards now cover the chain, and a new field needs all three:
+  1. `targetTune.ts` — compile-time exhaustiveness: every key is in `TunablePatch` or
+     `NEVER_TUNED_KEYS`. Proves the key is *classified*, nothing more.
+  2. `routes.integration.test.ts` — drives every numeric AND boolean field through the
+     real `PUT /api/autotrade/config`. Catches a field missing from the zod body or its
+     `patch.x = body.x` line, which returns 200 and changes nothing.
+  3. `configReachability.test.ts` — scans the source for what actually reads each field,
+     and holds an explicit allowlist of paper-only settings. Catches a field that lands
+     in the database and goes nowhere, and a paper-only field that was never a written-
+     down decision.
+  Passing (1) tells you nothing about (2) or (3) — that gap is how each of the four got
+  through.
