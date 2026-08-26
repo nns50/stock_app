@@ -1,5 +1,6 @@
 import { Position } from '../../db/positions';
 import { AutotradeConfig } from '../../db/autotradeConfig';
+import { DailyTargetStatus } from './dailyTarget';
 
 // ---------------------------------------------------------------------------
 // Live stop ratchet (2026-08-26) — breakeven and trailing stops for LIVE equity.
@@ -42,14 +43,55 @@ import { AutotradeConfig } from '../../db/autotradeConfig';
 
 export type StopAdjustConfig = Pick<
   AutotradeConfig,
-  'liveTrailingEnabled' | 'breakevenTriggerRMultiple' | 'trailStartRMultiple' | 'trailStopRMultiple'
+  | 'liveTrailingEnabled'
+  | 'breakevenTriggerRMultiple'
+  | 'trailStartRMultiple'
+  | 'trailStopRMultiple'
+  | 'dayProtectiveStopEnabled'
+  | 'giveBackFloorPct'
 >;
+
+// --- The day-protective stop (2026-08-26) ----------------------------------
+// Observed on the first target-hitting day: at ~+2.7%, needing 0.3% more to
+// bank, the loop opened a full-size position with a 2R target ~4.9% away. It
+// won, and the day finished +5.96%. But price the OTHER branch: a stop-out
+// there costs ~2% and drops the day to ~0.7% — BELOW the 1% give-back floor,
+// so the guard would only halt AFTER the damage. Three quarters of a banked
+// day risked to earn a tenth of one.
+//
+// The obvious fix is a breakeven stop once the day is armed. It is also the
+// wrong one, because it is not free: a stop at entry scratches every trade
+// that dips and recovers, and those are winners you paid for.
+//
+// So this asks a narrower question — not "can I lock in a profit" but "can
+// this ONE trade still cost me the day?" It moves the stop no further than the
+// price at which a stop-out leaves the day exactly at its give-back floor, and
+// only when the current stop would breach that floor. When the existing stop
+// is already safe it does NOTHING, which is most of the time. That is what
+// keeps the cost near zero: it intervenes only in the case that motivated it.
+//
+// Worked against the real trade: ANF, entry 145.11, stop 141.33, 9 shares,
+// day at ~+1.6% ($2,137) with a 1% floor ($2,124). A stop-out loses $34 and
+// lands the day at 0% — under the floor. The day-protective stop sits at
+// 143.72, still $1.39 below entry, so the trade keeps room to breathe. ANF
+// never traded below 145.11 before running to its target, so this would not
+// have scratched it.
+//
+// Deliberately NOT breakeven, and deliberately floored by minimum room: a stop
+// parked a cent under the price is a market order with extra steps.
+// ---------------------------------------------------------------------------
+
+/** Never place a day-protective stop closer than this fraction of the
+ *  position's ORIGINAL stop distance. Below roughly a quarter of the original
+ *  risk the stop sits inside ordinary intraday noise, and the protection it
+ *  buys costs more in scratches than the day it is guarding. */
+export const DAY_PROTECTIVE_MIN_ROOM_R = 0.25;
 
 /** The position fields the decision needs — a structural subset of Position so
  *  a caller can pass a real row straight in. */
 export type StopAdjustPosition = Pick<
   Position,
-  'side' | 'entryPrice' | 'stopPrice' | 'initialStopPrice' | 'bestPriceSinceEntry'
+  'side' | 'entryPrice' | 'stopPrice' | 'initialStopPrice' | 'bestPriceSinceEntry' | 'remainingQuantity'
 >;
 
 export interface StopAdjustDecision {
@@ -64,7 +106,7 @@ export interface StopAdjustDecision {
   /** Progress in R at the supplied price — null when unmeasurable. */
   rMultiple: number | null;
   /** Which rule produced newStop, for the journal. */
-  kind: 'breakeven' | 'trail' | null;
+  kind: 'breakeven' | 'trail' | 'day_protective' | null;
   detail: string;
 }
 
@@ -83,6 +125,59 @@ function roundStop(price: number, side: 'long' | 'short'): number {
 }
 
 /**
+ * The stop price at which a stop-out would leave the day exactly at its
+ * give-back floor — or null when the rule does not apply.
+ *
+ * Null (does nothing) whenever: the feature is off, no floor is configured,
+ * the day has no measurable equity, the guard has not ARMED, the position's
+ * size is unknown, the day is already at or under the floor (nothing left to
+ * protect — the guard itself handles that), the current stop is ALREADY safe,
+ * or the required stop would sit closer to the price than
+ * DAY_PROTECTIVE_MIN_ROOM_R of the original risk.
+ *
+ * That last guard is the one that keeps this cheap: rather than squeezing a
+ * position into a stop it cannot survive, the rule declines and leaves the
+ * original stop alone. Protecting the day is not worth converting a live
+ * trade into a coin flip on the next tick.
+ */
+function dayProtectiveStop(
+  pos: StopAdjustPosition,
+  cfg: StopAdjustConfig,
+  dt: DailyTargetStatus | undefined,
+  initialStopDistance: number,
+): number | null {
+  if (!cfg.dayProtectiveStopEnabled) return null;
+  if (cfg.giveBackFloorPct === null || !(cfg.giveBackFloorPct > 0)) return null;
+  if (!dt || !dt.active || !dt.giveBackArmed) return null;
+  if (dt.baselineEquityUsd === undefined || dt.currentEquityUsd === undefined) return null;
+
+  const qty = pos.remainingQuantity;
+  if (!(qty > 0)) return null;
+
+  const floorEquity = dt.baselineEquityUsd * (1 + cfg.giveBackFloorPct / 100);
+  // Headroom: how much this position may lose before the day breaches its
+  // floor. Non-positive means the day is already at or below it, which is the
+  // give-back guard's business, not this rule's.
+  const headroomUsd = dt.currentEquityUsd - floorEquity;
+  if (!(headroomUsd > 0)) return null;
+
+  const perShare = headroomUsd / qty;
+  const long = pos.side === 'long';
+  const required = long ? pos.entryPrice - perShare : pos.entryPrice + perShare;
+
+  // Already safe: the stop we hold cannot breach the floor, so leave it be.
+  // This is the common case, and the reason the rule is near-free.
+  if (pos.stopPrice !== null && (long ? pos.stopPrice >= required : pos.stopPrice <= required)) return null;
+
+  // Too tight to be a stop rather than an exit.
+  const minRoom = DAY_PROTECTIVE_MIN_ROOM_R * initialStopDistance;
+  const roomLeft = long ? pos.entryPrice - required : required - pos.entryPrice;
+  if (roomLeft < minRoom) return null;
+
+  return required;
+}
+
+/**
  * Should this live position's stop move now? Pure — the caller supplies the
  * current price and does the broker work.
  *
@@ -90,7 +185,14 @@ function roundStop(price: number, side: 'long' | 'short'): number {
  * mark is bookkeeping the trail depends on, and it has to be maintained on
  * every cycle or the trail hangs off a stale peak.
  */
-export function evaluateStopAdjust(pos: StopAdjustPosition, price: number, cfg: StopAdjustConfig): StopAdjustDecision {
+export function evaluateStopAdjust(
+  pos: StopAdjustPosition,
+  price: number,
+  cfg: StopAdjustConfig,
+  /** The day as it stands. Omitted by callers that have no daily goal, which
+   *  simply leaves the day-protective rule out of the running. */
+  dailyTarget?: DailyTargetStatus,
+): StopAdjustDecision {
   if (!cfg.liveTrailingEnabled) return noAdjust('live trailing off');
   if (pos.stopPrice === null) return noAdjust('no stop on this position — nothing to ratchet');
   if (pos.initialStopPrice === null) {
@@ -114,7 +216,7 @@ export function evaluateStopAdjust(pos: StopAdjustPosition, price: number, cfg: 
 
   // Both rules propose; the most favourable wins. See rule 2 in the header.
   let candidate = pos.stopPrice;
-  let kind: 'breakeven' | 'trail' | null = null;
+  let kind: 'breakeven' | 'trail' | 'day_protective' | null = null;
 
   if (cfg.breakevenTriggerRMultiple > 0 && rMultiple >= cfg.breakevenTriggerRMultiple) {
     const be = pos.entryPrice;
@@ -130,6 +232,15 @@ export function evaluateStopAdjust(pos: StopAdjustPosition, price: number, cfg: 
       candidate = trailing;
       kind = 'trail';
     }
+  }
+
+  // The day-protective candidate. Only while the guard is ARMED (a day worth
+  // protecting), and only when the stop as it stands would drop the day under
+  // its floor. See the module header for why this is not a breakeven stop.
+  const dpFloor = dayProtectiveStop(pos, cfg, dailyTarget, initialStopDistance);
+  if (dpFloor !== null && (long ? dpFloor > candidate : dpFloor < candidate)) {
+    candidate = dpFloor;
+    kind = 'day_protective';
   }
 
   if (kind === null) {

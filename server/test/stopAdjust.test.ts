@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { evaluateStopAdjust, StopAdjustPosition } from '../src/services/autotrading/stopAdjust';
 import { initDb } from '../src/db';
 import { createPosition, updatePosition, ratchetPositionStop } from '../src/db/positions';
+import type { DailyTargetStatus } from '../src/services/autotrading/dailyTarget';
 
 beforeAll(() => initDb());
 
@@ -10,6 +11,10 @@ const cfg = {
   breakevenTriggerRMultiple: 1,
   trailStartRMultiple: 1,
   trailStopRMultiple: 1.5,
+  // Off in the baseline fixture, so every existing case still describes the
+  // breakeven/trail rules alone. Its own describe block turns it on.
+  dayProtectiveStopEnabled: false,
+  giveBackFloorPct: 1,
 };
 
 /** Long: entry 100, stop 96 => $4 of risk per share, so 1R = $4. */
@@ -19,6 +24,7 @@ const long = (over: Partial<StopAdjustPosition> = {}): StopAdjustPosition => ({
   stopPrice: 96,
   initialStopPrice: 96,
   bestPriceSinceEntry: 100,
+  remainingQuantity: 10,
   ...over,
 });
 
@@ -227,5 +233,111 @@ describe('initial stop seeding — the adoption path', () => {
     const after = ratchetPositionStop(p.id, 100)!;
     expect(after.stopPrice).toBe(100);
     expect(after.initialStopPrice).toBe(96); // denominator still the entry stop
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The day-protective stop. Motivated by ANF on 2026-08-26: entered at 145.11
+// with a 141.33 stop and 9 shares while the day was ~+1.6%, against a 1%
+// give-back floor. A stop-out would have cost $34 and put the day at 0% —
+// under the floor, so the guard would only have halted AFTER the damage.
+//
+// The design constraint that matters: it must not cost wins. So it moves the
+// stop ONLY when the current one would breach the floor, and only as far as
+// the floor requires — never to breakeven, which would scratch every trade
+// that dips and recovers.
+// ---------------------------------------------------------------------------
+describe('day-protective stop', () => {
+  const dpCfg = { ...cfg, dayProtectiveStopEnabled: true, giveBackFloorPct: 1 };
+
+  /** A day up `gainPct` on a 2103.43 baseline, guard armed. */
+  const day = (gainPct: number, armed = true): DailyTargetStatus => ({
+    active: true,
+    reached: false,
+    giveBackArmed: armed,
+    giveBackHalted: false,
+    entriesHalted: false,
+    baselineEquityUsd: 2103.43,
+    currentEquityUsd: 2103.43 * (1 + gainPct / 100),
+  });
+
+  /** ANF as it actually was. 1R = 3.78/share. */
+  const anf = (over = {}) => ({
+    side: 'long' as const,
+    entryPrice: 145.11,
+    stopPrice: 141.33,
+    initialStopPrice: 141.33,
+    bestPriceSinceEntry: 145.11,
+    remainingQuantity: 9,
+    ...over,
+  });
+
+  it('tightens only to the floor, NOT to breakeven — the trade keeps room', () => {
+    // Day +1.6% ($2137), floor 1% ($2124.46) => $12.5 of headroom over 9
+    // shares = ~$1.39/share, so the stop lands ~143.72: well below entry.
+    const d = evaluateStopAdjust(anf(), 146.5, dpCfg, day(1.6));
+    expect(d.adjust).toBe(true);
+    expect(d.kind).toBe('day_protective');
+    expect(d.newStop!).toBeGreaterThan(143.0);
+    expect(d.newStop!).toBeLessThan(144.5);
+    expect(d.newStop!).toBeLessThan(145.11); // NOT breakeven
+    expect(d.newStop!).toBeGreaterThan(141.33); // but tighter than the original
+  });
+
+  it('would NOT have scratched the real ANF trade', () => {
+    // ANF never traded below its 145.11 entry before running to 152.20. The
+    // protective stop sits under that, so the winner survives it.
+    const d = evaluateStopAdjust(anf(), 146.5, dpCfg, day(1.6));
+    expect(d.newStop!).toBeLessThan(145.11);
+  });
+
+  it('does NOTHING while the give-back guard is unarmed — a normal day is untouched', () => {
+    // This is what keeps the rule near-free: on most days it never fires.
+    const d = evaluateStopAdjust(anf(), 146.5, dpCfg, day(1.6, false));
+    expect(d.adjust).toBe(false);
+  });
+
+  it('does nothing when the existing stop is already safe', () => {
+    // Day well ahead: a full stop-out still leaves it above the floor, so the
+    // original stop stands. The common case once a day is banked.
+    const d = evaluateStopAdjust(anf(), 146.5, dpCfg, day(5.0));
+    expect(d.adjust).toBe(false);
+  });
+
+  it('declines rather than squeezing the stop into the noise', () => {
+    // Barely above the floor: the "required" stop would sit almost at entry,
+    // inside ordinary intraday movement. Protecting the day is not worth
+    // turning the position into a coin flip — leave the original stop.
+    const d = evaluateStopAdjust(anf(), 146.5, dpCfg, day(1.02));
+    expect(d.adjust).toBe(false);
+  });
+
+  it('does nothing once the day is already at or under the floor', () => {
+    // That is the give-back guard's job, not this rule's.
+    expect(evaluateStopAdjust(anf(), 146.5, dpCfg, day(0.5)).adjust).toBe(false);
+    expect(evaluateStopAdjust(anf(), 146.5, dpCfg, day(1.0)).adjust).toBe(false);
+  });
+
+  it('is off unless its own flag is set, and needs a measurable day', () => {
+    expect(evaluateStopAdjust(anf(), 146.5, cfg, day(1.6)).adjust).toBe(false); // flag off
+    expect(evaluateStopAdjust(anf(), 146.5, dpCfg, undefined).adjust).toBe(false); // no day
+    expect(evaluateStopAdjust(anf(), 146.5, { ...dpCfg, giveBackFloorPct: 0 }, day(1.6)).adjust).toBe(false);
+  });
+
+  it('never loosens, and yields to a tighter breakeven or trail', () => {
+    // The rule is one candidate among three; the most favourable still wins,
+    // so it can only ever ADD protection, never remove any.
+    const alreadyTight = anf({ stopPrice: 145.0, bestPriceSinceEntry: 152.0 });
+    const d = evaluateStopAdjust(alreadyTight, 152.0, dpCfg, day(1.6));
+    if (d.adjust) expect(d.newStop!).toBeGreaterThanOrEqual(145.0);
+  });
+
+  it('mirrors for a short', () => {
+    const shortPos = anf({ side: 'short' as const, stopPrice: 148.89, initialStopPrice: 148.89 });
+    const d = evaluateStopAdjust(shortPos, 143.5, dpCfg, day(1.6));
+    expect(d.adjust).toBe(true);
+    expect(d.kind).toBe('day_protective');
+    expect(d.newStop!).toBeGreaterThan(145.11); // above entry for a short
+    expect(d.newStop!).toBeLessThan(148.89); // tighter than the original
   });
 });
