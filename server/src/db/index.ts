@@ -1163,6 +1163,21 @@ function migrate(): void {
   if (!posRatchetCols.some((c) => c.name === 'best_price_since_entry')) {
     db.exec('ALTER TABLE positions ADD COLUMN best_price_since_entry REAL');
   }
+  // Heal any OPEN row that has a stop but no initial stop — the state an
+  // adopted position was left in before updatePosition learned to seed it
+  // (2026-08-26; see the comment there for how the whole trailing feature sat
+  // inert on exactly the positions it was built for).
+  //
+  // Runs every startup rather than once behind a column guard, and that is
+  // safe for a reason worth stating: a row with a NULL initial stop can never
+  // have been ratcheted, because evaluateStopAdjust refuses on the null. So
+  // its stop_price is still the one it was given at entry, and copying it is
+  // exact — not an approximation of an already-moved stop. The moment a row
+  // has an initial stop, this stops touching it.
+  db.exec(
+    'UPDATE positions SET initial_stop_price = stop_price ' +
+      "WHERE status = 'open' AND stop_price IS NOT NULL AND initial_stop_price IS NULL",
+  );
 
   // 2026-08-22: the daily baseline singleton gained the give-back guard's two
   // sticky timestamps (see the DDL comment). Nullable, so a pre-existing row

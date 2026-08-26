@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { evaluateStopAdjust, StopAdjustPosition } from '../src/services/autotrading/stopAdjust';
+import { initDb } from '../src/db';
+import { createPosition, updatePosition, ratchetPositionStop } from '../src/db/positions';
+
+beforeAll(() => initDb());
 
 const cfg = {
   liveTrailingEnabled: true,
@@ -151,5 +155,77 @@ describe('evaluateStopAdjust', () => {
     const d = evaluateStopAdjust(long(), 102, cfg); // 0.5R — no trigger
     expect(d.adjust).toBe(false);
     expect(d.bestPrice).toBe(102);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The initial-stop seeding bug, found live on 2026-08-26 (the first session
+// with trailing enabled): not one ratchet fired all day, on any position.
+//
+// Autotrade's live positions are created by the BROKER SYNC, which cannot know
+// the intended stop, so the row lands with no stop and initial_stop_price
+// seeds null. Adoption then supplies the real stop via updatePosition, which
+// wrote stop_price and left initial_stop_price null — so evaluateStopAdjust
+// refused with "no initial stop recorded" before reaching any broker call.
+// Adoption is the NORMAL path, so the feature was inert on exactly the
+// positions it was built for.
+// ---------------------------------------------------------------------------
+describe('initial stop seeding — the adoption path', () => {
+  it('seeds the initial stop when a stopless position is first given one', () => {
+    // Exactly the live sequence: sync inserts with no stop, adoption sets it.
+    const created = createPosition({
+      assetType: 'stock',
+      symbol: 'ADOPT',
+      side: 'long',
+      quantity: 9,
+      entryPrice: 145.11,
+      entryDate: '2026-08-26',
+      tags: ['autotrade', 'live'],
+    });
+    expect(created.stopPrice).toBeNull();
+    expect(created.initialStopPrice).toBeNull(); // nothing to snapshot yet
+
+    const adopted = updatePosition(created.id, { stopPrice: 141.33, targetPrice: 152.2 })!;
+    expect(adopted.stopPrice).toBe(141.33);
+    expect(adopted.initialStopPrice).toBe(141.33); // <- the fix
+
+    // And it is now measurable, which is the whole point.
+    const d = evaluateStopAdjust(adopted, 149.0, cfg);
+    expect(d.rMultiple).toBeGreaterThan(1);
+    expect(d.adjust).toBe(true);
+  });
+
+  it('never overwrites an initial stop that already exists', () => {
+    // A later stop edit must not move the denominator — every R reading on the
+    // position is measured against it.
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'KEEPINIT',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-08-26',
+      stopPrice: 96,
+    });
+    expect(p.initialStopPrice).toBe(96);
+
+    const moved = updatePosition(p.id, { stopPrice: 98 })!;
+    expect(moved.stopPrice).toBe(98);
+    expect(moved.initialStopPrice).toBe(96); // unchanged
+  });
+
+  it('a ratchet does not come through updatePosition, so it cannot reseed', () => {
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'RATCHSEED',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-08-26',
+      stopPrice: 96,
+    });
+    const after = ratchetPositionStop(p.id, 100)!;
+    expect(after.stopPrice).toBe(100);
+    expect(after.initialStopPrice).toBe(96); // denominator still the entry stop
   });
 });
