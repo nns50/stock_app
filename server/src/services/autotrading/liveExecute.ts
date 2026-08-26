@@ -2991,7 +2991,7 @@ export interface LiveStopAdjustOutcome {
   adjusted: boolean;
   from?: number;
   to?: number;
-  kind?: 'breakeven' | 'trail';
+  kind?: 'breakeven' | 'trail' | 'day_protective';
   rMultiple?: number | null;
   reason?: string;
 }
@@ -3031,7 +3031,8 @@ function restingStopLeg(
 export async function checkLiveEquityStopAdjusts(): Promise<LiveStopAdjustOutcome[]> {
   if (!config.trading.placeEnabled) return [];
   const cfg = getAutotradeConfig();
-  if (!cfg.liveTrailingEnabled || !cfg.liveAccountId) return [];
+  if (!cfg.liveTrailingEnabled && !cfg.dayProtectiveStopEnabled) return [];
+  if (!cfg.liveAccountId) return [];
   // Regular session only. A stop replace outside it is not dangerous the way a
   // market close is, but the quote driving the decision is thin and stale
   // enough after hours to move a stop off a price nobody traded at.
@@ -3044,6 +3045,10 @@ export async function checkLiveEquityStopAdjusts(): Promise<LiveStopAdjustOutcom
       .filter((o) => o.role === 'exit' && o.positionId !== null)
       .map((o) => o.positionId!),
   );
+
+  // One read for the sweep: the day does not move between positions, and
+  // this is the same persisted baseline the entry path measures against.
+  const dailyTarget = evaluateDailyTarget(cfg, getDailyBaseline());
 
   const accountId = cfg.liveAccountId;
   const outcomes: LiveStopAdjustOutcome[] = [];
@@ -3059,7 +3064,7 @@ export async function checkLiveEquityStopAdjusts(): Promise<LiveStopAdjustOutcom
       continue;
     }
 
-    const decision = evaluateStopAdjust(pos, last, cfg);
+    const decision = evaluateStopAdjust(pos, last, cfg, dailyTarget);
     // Maintain the water mark on EVERY cycle, including the ones that do not
     // move the stop — the trail hangs off this number, so a tick skipped here
     // is a peak the trail never learns about.

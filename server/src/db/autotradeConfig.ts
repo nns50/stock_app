@@ -343,6 +343,16 @@ export interface AutotradeConfig {
    *  through would have armed trailing stops on real money the moment this
    *  deployed, with nobody having chosen that. */
   liveTrailingEnabled: boolean;
+  /** Day-protective stop (services/autotrading/stopAdjust.ts): once the
+   *  give-back guard is ARMED, tighten a live position's stop just enough that
+   *  a stop-out cannot drop the day below giveBackFloorPct — and no further.
+   *
+   *  Not a breakeven stop, on purpose. Breakeven scratches every trade that
+   *  dips and recovers; this moves the stop only when the CURRENT one would
+   *  breach the floor, and only as far as the floor requires, so on a normal
+   *  day it does nothing at all. See the module header for the trade that
+   *  motivated it. Off by default: it changes where real stops sit. */
+  dayProtectiveStopEnabled: boolean;
   /** Target distance = stop distance × this (a reward:risk multiple). */
   targetRMultiple: number;
   /** No new entries within this many minutes of the session open or close —
@@ -958,6 +968,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     maxStopDistancePct: 0,
     liveScaleOutEnabled: false,
     liveTrailingEnabled: false,
+    dayProtectiveStopEnabled: false,
     targetRMultiple: 2,
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
@@ -1182,6 +1193,8 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       typeof input.liveScaleOutEnabled === 'boolean' ? input.liveScaleOutEnabled : d.liveScaleOutEnabled,
     liveTrailingEnabled:
       typeof input.liveTrailingEnabled === 'boolean' ? input.liveTrailingEnabled : d.liveTrailingEnabled,
+    dayProtectiveStopEnabled:
+      typeof input.dayProtectiveStopEnabled === 'boolean' ? input.dayProtectiveStopEnabled : d.dayProtectiveStopEnabled,
     targetRMultiple: posDecimal(input.targetRMultiple, d.targetRMultiple),
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
     earningsBlackoutDays: posInt(input.earningsBlackoutDays, d.earningsBlackoutDays),
