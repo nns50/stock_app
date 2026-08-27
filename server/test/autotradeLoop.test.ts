@@ -96,6 +96,8 @@ import { initDb, db } from '../src/db';
 import { addMacroEvent } from '../src/db/macroEvents';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
+import { saveDailyBaseline, markDailyTargetReached } from '../src/db/dailyBaseline';
+import { etToday } from '../src/util/marketDate';
 import { config } from '../src/config';
 
 const mockScreen = vi.mocked(runAutotradeScreen);
@@ -199,6 +201,10 @@ const origPlaceEnabled = config.trading.placeEnabled;
 
 beforeAll(() => initDb());
 beforeEach(() => {
+  // The daily baseline is a persisted singleton, and the banked-day test below
+  // marks it reached — sticky by design. Without this every test after it would
+  // inherit a halted day and see no entries at all.
+  db.exec('DELETE FROM autotrade_daily_baseline');
   mockScreen.mockReset();
   mockDecide.mockReset();
   mockOptionsDecide.mockReset().mockResolvedValue({ signals: [], skipped: [] });
@@ -1302,6 +1308,40 @@ describe('runAutotradeLoopTick', () => {
 
       expect(mockLiveOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }], 2, 'neutral');
       expect(summary.liveOptionsEntriesOpened).toBe(1);
+    });
+
+    it('halts live OPTIONS entries on a banked day, the same as equity', async () => {
+      // Until 2026-08-26 only equity carried the banked-day halt, so a day that
+      // had already reached its 3% target kept opening options positions while
+      // equity stood down — even though options P&L counts toward that same
+      // target and draws on the same risk budget. Latent while contracts were
+      // unaffordable on this account; short-dated options make them affordable.
+      armLive();
+      // PAPER must be on, and that is the whole point rather than a detail. With
+      // paper off, a banked day makes liveStillActive false and the tick returns
+      // early before options are reached — so the gap is invisible. Paper is the
+      // always-on sanity track (it has no real account, so a banked day does not
+      // halt it), which is exactly the everyday configuration in which live
+      // options kept firing on a day that had already been won.
+      setAutotradeConfig({
+        enabled: true,
+        liveOptionsEnabled: true,
+        targetDailyGainPct: 3,
+        accountEquityUsd: 2103.43,
+      });
+      saveDailyBaseline(etToday(), 2103.43);
+      markDailyTargetReached(Date.now()); // sticky: the day is banked
+      armScreenAndDecide();
+      mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+      mockLiveExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+      mockLiveOptionsExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+      const summary = await runAutotradeLoopTick();
+
+      expect(mockLiveOptionsExecute).not.toHaveBeenCalled();
+      expect(mockLiveExecute).not.toHaveBeenCalled(); // equity halts too, as it always did
+      expect(mockExecute).toHaveBeenCalled(); // ...but PAPER keeps running, which is why the tick got this far
+      expect(summary.liveOptionsEntriesOpened).toBe(0);
     });
 
     it("does not activate live options when the human Trade page's own enabled is off, even with liveOptionsEnabled true", async () => {

@@ -724,7 +724,14 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // re-measures), and both halts are sticky so neither can flap back on
     // mid-cycle.
     const liveStillActive = isLiveEntryActive(recheck) && !dailyTarget.entriesHalted;
-    const liveOptionsStillActive = isLiveOptionsEntryActive(recheck);
+    // Options get the SAME banked-day halt equity has. They did not until
+    // 2026-08-26, which meant a day that had already reached its target kept
+    // opening options positions while equity stood down — options P&L counts
+    // toward that same target (see runLiveOptionsExecution's own dailyPnl sum)
+    // and draws on the same risk budget, so there was never a reason for them
+    // to be exempt. Latent only because contracts were unaffordable on this
+    // account; short-dated options make them affordable and make this live.
+    const liveOptionsStillActive = isLiveOptionsEntryActive(recheck) && !dailyTarget.entriesHalted;
     if (!paperStillActive && !liveStillActive) {
       summary.skippedReason = recheck.killSwitch
         ? 'Kill switch engaged mid-cycle — entries aborted before execution'
