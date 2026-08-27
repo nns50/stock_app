@@ -27,6 +27,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+// NOTE: this fixture carries a `buying_power` key. The real account does NOT
+// return one — see REAL_BALANCE at the bottom of this file, captured from the
+// wire on 2026-08-27. The mapping still honours `buying_power` first for any
+// account that does report it, which is why these cases stay as they are.
 // The confirmed live /openapi/assets/balance shape (every value a string).
 const BALANCE = {
   total_asset_currency: 'USD',
@@ -279,5 +283,83 @@ describe('realized-today derivation (the daily-loss halt input)', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp(balance('-99.00', undefined)));
     const r = await webullAccountState('ACC1');
     expect(r.state?.realizedPnlTodayUsd).toBe(-99);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The ACTUAL payload, captured from the wire 2026-08-27.
+//
+// The fixture above was written with a `buying_power` key that this account
+// has never returned. accountState.ts read it, fell through to
+// `total_cash_balance` on every real call, and so reported the CASH BALANCE as
+// buying power — understating a margin account roughly fourfold and refusing
+// live entries it could comfortably fund. A fixture that agrees with the code
+// rather than with the broker cannot catch that, so this one is the wire.
+// ---------------------------------------------------------------------------
+const REAL_BALANCE = {
+  total_asset_currency: 'USD',
+  total_net_liquidation_value: '2450.20',
+  total_market_value: '0.00',
+  total_cash_balance: '2450.20',
+  total_unrealized_profit_loss: '0.00',
+  total_day_profit_loss: '221.38',
+  day_trades_left: 'UNLIMITED',
+  maintenance_margin: '0.00',
+  open_margin_calls: [],
+  account_currency_assets: [
+    {
+      currency: 'USD',
+      net_liquidation_value: '2450.20',
+      market_value: '0.00',
+      cash_balance: '2450.20',
+      option_buying_power: '2450.20',
+      day_buying_power: '9800.80',
+      overnight_buying_power: '4900.40',
+      night_trading_buying_power: '2450.20',
+      unrealized_profit_loss: '0.00',
+      day_profit_loss: '221.38',
+    },
+  ],
+};
+
+describe('webullAccountState — the real payload has no `buying_power` key', () => {
+  beforeEach(() => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp(REAL_BALANCE));
+  });
+
+  it('reads overnight buying power rather than falling through to the cash balance', async () => {
+    const res = await webullAccountState('ACC1');
+    expect(res.ok).toBe(true);
+    // The bug: 2450.20 (cash) instead of 4900.40 (what can actually be spent).
+    expect(res.state!.buyingPowerUsd).toBe(4_900.4);
+    expect(res.netLiquidationUsd).toBe(2_450.2);
+  });
+
+  it('surfaces day buying power separately, for the one caller that is flat by the bell', async () => {
+    const res = await webullAccountState('ACC1');
+    // 4x net liquidation on a PDT-flagged margin account.
+    expect(res.state!.dayBuyingPowerUsd).toBe(9_800.8);
+    // Deliberately NOT folded into buyingPowerUsd: a position held overnight
+    // cannot use it.
+    expect(res.state!.buyingPowerUsd).toBeLessThan(res.state!.dayBuyingPowerUsd!);
+  });
+
+  it('leaves settledCashUsd undefined — this payload has no settled_cash either', async () => {
+    // Undefined, not 0: the good-faith-violation check skips rather than
+    // warning on a fabricated shortfall.
+    const res = await webullAccountState('ACC1');
+    expect(res.state!.settledCashUsd).toBeUndefined();
+  });
+
+  it('falls back to cash only when the broker reports no buying-power field at all', async () => {
+    const noBp = {
+      ...REAL_BALANCE,
+      account_currency_assets: [{ currency: 'USD', cash_balance: '2450.20', market_value: '0.00' }],
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp(noBp));
+    const res = await webullAccountState('ACC1');
+    expect(res.state!.buyingPowerUsd).toBe(2_450.2); // total_cash_balance
+    expect(res.state!.dayBuyingPowerUsd).toBeUndefined();
   });
 });

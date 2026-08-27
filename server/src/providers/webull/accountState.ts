@@ -50,11 +50,30 @@ function matchesInstrument(pos: ImportablePosition, instrument?: OrderInstrument
 // places, cancels, or modifies an order. Realized-today is DERIVED, not read
 // off a field — see the realized-P&L block in webullAccountState below.
 //
-// Confirmed balance shape (all values are STRINGS):
-//   { total_market_value, total_cash_balance, total_day_profit_loss,
-//     total_net_liquidation_value, total_unrealized_profit_loss,
-//     account_currency_assets: [{ buying_power, option_buying_power,
-//       settled_cash, cash_balance, market_value, day_profit_loss, … }] }
+// Balance shape, CAPTURED FROM THE WIRE 2026-08-27 (all values are STRINGS).
+// The previous version of this comment listed a `buying_power` key on the
+// asset, and the mapping below trusted it. That key does not exist. The
+// `?? bal.total_cash_balance` fallback therefore fired on every single call,
+// so what this file has always called "buying power" was the account's CASH
+// BALANCE -- which on a margin account understates capacity by ~4x and refused
+// live entries the account could comfortably fund (2026-08-27: entries blocked
+// against "$1,005.46 available" while day buying power was near $4,000).
+//   {
+//     total_asset_currency, total_net_liquidation_value, total_market_value,
+//     total_cash_balance, total_unrealized_profit_loss, total_day_profit_loss,
+//     day_trades_left, maintenance_margin, open_margin_calls: [],
+//     account_currency_assets: [{
+//       currency, net_liquidation_value, market_value, cash_balance,
+//       option_buying_power, day_buying_power, overnight_buying_power,
+//       night_trading_buying_power, unrealized_profit_loss, day_profit_loss,
+//     }]
+//   }
+// Note there is no `settled_cash` either -- settledCashUsd below is therefore
+// undefined for this account, which its own doc comment already handles by
+// skipping the good-faith-violation check rather than warning on a fabricated
+// shortfall. Re-capture with `npm run capture:broker` rather than editing this
+// from memory: reading the comment instead of the wire is what caused the bug
+// above.
 // ---------------------------------------------------------------------------
 
 function num(v: unknown): number {
@@ -136,8 +155,13 @@ export async function webullAccountState(
   const assets = Array.isArray(bal.account_currency_assets) ? bal.account_currency_assets : [];
   const asset = (assets[0] ?? {}) as Record<string, unknown>;
 
-  const buyingPowerUsd = num(asset.buying_power ?? bal.total_cash_balance);
-  const optionBuyingPowerUsd = num(asset.option_buying_power ?? asset.buying_power);
+  // overnight_buying_power is the honest general-purpose figure: it is what a
+  // position can use WITHOUT having to be closed by the bell, which is the
+  // question every caller except autotrade's intraday loop is really asking.
+  // Falls back to cash only when the broker reports neither.
+  const buyingPowerUsd = num(asset.buying_power ?? asset.overnight_buying_power ?? bal.total_cash_balance);
+  const optionBuyingPowerUsd = num(asset.option_buying_power ?? asset.buying_power ?? buyingPowerUsd);
+  const dayBuyingPowerUsd = numOrUndefined(asset.day_buying_power);
   const exposureUsd = num(bal.total_market_value);
   const netLiquidationUsd = num(bal.total_net_liquidation_value);
   const settledCashUsd = numOrUndefined(asset.settled_cash);
@@ -199,7 +223,15 @@ export async function webullAccountState(
   return {
     ok: true,
     accountId,
-    state: { buyingPowerUsd, exposureUsd, realizedPnlTodayUsd, ordersToday: 0, currentPositionQty, settledCashUsd },
+    state: {
+      buyingPowerUsd,
+      exposureUsd,
+      realizedPnlTodayUsd,
+      ordersToday: 0,
+      currentPositionQty,
+      settledCashUsd,
+      dayBuyingPowerUsd,
+    },
     optionBuyingPowerUsd,
     netLiquidationUsd,
     positionsUnavailable,
