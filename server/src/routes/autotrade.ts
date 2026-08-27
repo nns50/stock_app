@@ -129,12 +129,7 @@ autotradeRouter.get(
     }
     const bp = await tuneBuyingPower(config);
     res.json({
-      patch: resetToModerate(
-        config.accountEquityUsd,
-        config.maxStopDistancePct,
-        bp.buyingPowerUsd,
-        bp.optionBuyingPowerUsd,
-      ),
+      patch: resetToModerate(config.accountEquityUsd, config.maxStopDistancePct, bp.buyingPowerUsd),
     });
   }),
 );

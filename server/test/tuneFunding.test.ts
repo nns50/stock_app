@@ -27,14 +27,19 @@ const okState = (over: Record<string, unknown> = {}) => ({
 describe('tuneBuyingPower', () => {
   beforeEach(() => mockAccountState.mockReset());
 
-  it('feeds the tune BOTH pools — the wiring that was missing', () => {
+  it('feeds the tune a buying power at all — the wiring that was missing', () => {
     // deriveDollarCaps could bound by buying power since 2026-08-27, but the
     // route never passed one, so the bound was dead code. This is the guard.
     mockAccountState.mockResolvedValue(okState());
-    return expect(tuneBuyingPower(cfg())).resolves.toEqual({
-      buyingPowerUsd: DAY_BP,
-      optionBuyingPowerUsd: OPTION_BP,
-    });
+    return expect(tuneBuyingPower(cfg())).resolves.toEqual({ buyingPowerUsd: DAY_BP });
+  });
+
+  it('does NOT return option BP — a stored cap must not be bound to it', async () => {
+    // See deriveDollarCaps: liveCapsReanchor re-derives the same caps from
+    // config alone and cannot see option BP, so a cap bound to it would read
+    // as hand-edited there and freeze out of re-anchoring.
+    mockAccountState.mockResolvedValue(okState());
+    expect(await tuneBuyingPower(cfg())).not.toHaveProperty('optionBuyingPowerUsd');
   });
 
   it('prefers DAY buying power — these caps gate intraday entries', async () => {
@@ -84,8 +89,8 @@ describe('tuneBuyingPower', () => {
     expect(await tuneBuyingPower(cfg())).toEqual({});
   });
 
-  it('omits whichever pool the broker did not report', async () => {
-    mockAccountState.mockResolvedValue({ ok: true, state: { buyingPowerUsd: OVERNIGHT_BP } });
-    expect(await tuneBuyingPower(cfg())).toEqual({ buyingPowerUsd: OVERNIGHT_BP });
+  it('omits the figure entirely when the broker reported no buying power', async () => {
+    mockAccountState.mockResolvedValue({ ok: true, state: {} });
+    expect(await tuneBuyingPower(cfg())).toEqual({});
   });
 });

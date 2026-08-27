@@ -286,44 +286,66 @@ describe('deriveDollarCaps — funding bounds', () => {
   const EQUITY = 5_161.18;
   const UNBOUNDED = Math.round(EQUITY * 0.5 * 1.5); // 3871
 
-  it('leaves both caps unbounded when no funding is known', () => {
+  it('leaves the caps unbounded when no funding is known', () => {
     const caps = deriveDollarCaps(cfg, EQUITY);
     expect(caps.liveMaxOrderUsd).toBe(UNBOUNDED);
     expect(caps.liveOptionsMaxOrderUsd).toBe(UNBOUNDED);
   });
 
-  it('bounds the equity cap by buying power, and the options twin follows it', () => {
+  it('bounds the per-order cap by buying power — an unfundable cap is not a cap', () => {
     const caps = deriveDollarCaps(cfg, EQUITY, 2_000);
     expect(caps.liveMaxOrderUsd).toBe(2_000);
-    expect(caps.liveOptionsMaxOrderUsd).toBe(2_000);
   });
 
-  it('bounds the OPTIONS cap by option buying power, which is its own pool', () => {
-    // Day BP $8,644.72 but option BP only $471.41 — the real spread that day.
-    // Bounding options by equity BP produced a cap ~8x what the account could
-    // actually spend on a contract: a backstop that cannot backstop.
-    const caps = deriveDollarCaps(cfg, EQUITY, 8_644.72, 471.41);
-    expect(caps.liveMaxOrderUsd).toBe(UNBOUNDED); // day BP does not bind here
-    expect(caps.liveOptionsMaxOrderUsd).toBe(471);
+  it('keeps the options twin equal to the equity cap, on purpose', () => {
+    // Option BP is a much smaller pool ($322-471 that day against a day BP of
+    // $8,644), but these are STORED caps and liveCapsReanchor re-derives them
+    // from config alone, with no broker call. A cap bound to a figure only the
+    // tune can see -- and which moved 32% in an hour -- would read as
+    // hand-edited to the re-anchor and freeze out of re-anchoring forever.
+    for (const bp of [undefined, 2_000, 8_644.72]) {
+      const caps = deriveDollarCaps(cfg, EQUITY, bp);
+      expect(caps.liveOptionsMaxOrderUsd).toBe(caps.liveMaxOrderUsd);
+    }
   });
 
-  it('does not let option BP loosen the options cap above the equity bound', () => {
-    // Option BP is a ceiling, never a floor: a broker reporting a huge option
-    // BP must not widen the cap past what the equity bound already allowed.
-    const caps = deriveDollarCaps(cfg, EQUITY, 1_000, 99_999);
-    expect(caps.liveOptionsMaxOrderUsd).toBe(1_000);
-  });
-
-  it('ignores a zero or missing option BP, keeping the twins equal as before', () => {
-    expect(deriveDollarCaps(cfg, EQUITY, 2_000, 0).liveOptionsMaxOrderUsd).toBe(2_000);
-    expect(deriveDollarCaps(cfg, EQUITY, 2_000, undefined).liveOptionsMaxOrderUsd).toBe(2_000);
+  it('ignores a zero or missing buying power rather than zeroing the cap', () => {
+    expect(deriveDollarCaps(cfg, EQUITY, 0).liveMaxOrderUsd).toBe(UNBOUNDED);
+    expect(deriveDollarCaps(cfg, EQUITY, undefined).liveMaxOrderUsd).toBe(UNBOUNDED);
   });
 
   it('never lets a funding bound touch the daily-loss caps', () => {
     // Those track the tuned drawdown %, not what the account can fund today.
-    const caps = deriveDollarCaps(cfg, EQUITY, 100, 50);
+    const caps = deriveDollarCaps(cfg, EQUITY, 100);
     expect(caps.liveMaxDailyLossUsd).toBe(Math.round(EQUITY * 0.0642));
     expect(caps.liveOptionsMaxDailyLossUsd).toBe(caps.liveMaxDailyLossUsd);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The patch must carry deriveDollarCaps's OWN options figures. shapeToPatch
+// used to assign the equity cap to the options twin, so anything
+// deriveDollarCaps decided for options was silently discarded -- and every
+// unit test on deriveDollarCaps still passed, because none of them looked at
+// the patch it feeds (found 2026-08-27).
+// ---------------------------------------------------------------------------
+describe('computeTargetTune — the patch carries the caps it derived', () => {
+  it('takes every dollar cap from deriveDollarCaps, options twins included', () => {
+    const equityUsd = 5_161.18;
+    const r = base({ targetDailyGainPct: 3, equityUsd });
+    const expected = deriveDollarCaps(
+      {
+        maxDailyDrawdownPct: r.patch.maxDailyDrawdownPct,
+        riskProfile: r.patch.riskProfile,
+        riskPerTradePct: r.patch.riskPerTradePct,
+        maxStopDistancePct: defaultAutotradeConfig().maxStopDistancePct,
+      },
+      equityUsd,
+    );
+    expect(r.patch.liveMaxOrderUsd).toBe(expected.liveMaxOrderUsd);
+    expect(r.patch.liveMaxDailyLossUsd).toBe(expected.liveMaxDailyLossUsd);
+    expect(r.patch.liveOptionsMaxOrderUsd).toBe(expected.liveOptionsMaxOrderUsd);
+    expect(r.patch.liveOptionsMaxDailyLossUsd).toBe(expected.liveOptionsMaxDailyLossUsd);
   });
 });
 
