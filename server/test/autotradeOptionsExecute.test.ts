@@ -1259,6 +1259,57 @@ describe('short-dated options — the paper book', () => {
 // entire short-dated roll-out rests on, and it cannot produce evidence it is
 // never given a slot to generate.
 // ---------------------------------------------------------------------------
+describe('short_dated_position_already_open — the max-1 gate is countable', () => {
+  // The tuning plan's F7 fires when this gate refuses >=5 candidates in a week.
+  // It used to return silently, so the rule had nothing to count and a gate
+  // throttling the book looked exactly like one that never fired.
+  it('journals the refusal, with the candidate count F7 needs', async () => {
+    setAutotradeConfig({
+      accountEquityUsd: 100_000,
+      riskProfile: 'MODERATE',
+      maxConcurrentPositions: 5,
+      optionsMaxConcurrentPositions: 5, // room by every OTHER measure
+      shortDatedOptionsEnabled: true,
+    });
+    openOptionsPaperPosition({
+      symbol: 'MSFT',
+      side: 'call',
+      contractSymbol: 'MSFT-shortdated',
+      strike: 400,
+      expiration: '2026-08-28',
+      quantity: 1,
+      entryPrice: 3,
+      riskAmount: 300,
+      riskProfile: 'MODERATE',
+      rationale: 'holds the one short-dated slot',
+    });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3 } }) as never);
+
+    const out = await runOptionsPaperExecution([{ signal: optionSignal() }, { signal: optionSignal() }]);
+
+    expect(out.every((o) => !o.ok)).toBe(true);
+    const ev = listAutotradeEvents({ actions: ['short_dated_position_already_open'] });
+    expect(ev).toHaveLength(1);
+    expect(JSON.parse(ev[0]!.detail!)).toMatchObject({ book: 'paper', refused: 2, openPositions: 1 });
+  });
+
+  it('journals nothing when the gate does not fire', async () => {
+    // The common case. A rule that counts events must not count a quiet tick.
+    setAutotradeConfig({
+      accountEquityUsd: 100_000,
+      riskProfile: 'MODERATE',
+      maxConcurrentPositions: 5,
+      optionsMaxConcurrentPositions: 5,
+      shortDatedOptionsEnabled: true,
+    });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3 } }) as never);
+
+    await runOptionsPaperExecution([{ signal: optionSignal() }]);
+
+    expect(listAutotradeEvents({ actions: ['short_dated_position_already_open'] })).toHaveLength(0);
+  });
+});
+
 describe('optionsMaxConcurrentPositions — the options book gets its own slots', () => {
   /** Fill the EQUITY paper book to the shared cap, the way a normal morning
    *  does: equity runs first in the loop tick and takes what it needs. */

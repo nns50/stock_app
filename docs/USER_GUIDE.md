@@ -1099,6 +1099,15 @@ equally-weighted cards in the order they happened to be built:
   paper all keep running. The Monitoring card shows the goal line and progress. It
   never sizes UP to chase a shortfall — behind the target, sizing stays exactly what
   the tune calibrated. **Reset to moderate** (or clearing the field) disarms it.
+  Since 2026-08-27 a **deposit or withdrawal no longer counts as gain**: the goal is a
+  _return_ on the day's starting value, and money you pay in was not earned. When the
+  broker reports a sustained balance change that its own day P&L does not account for,
+  the loop moves the day's baseline by that amount instead — one
+  `daily_baseline_rebased` entry in Recent activity — so the gain % runs continuously
+  across the flow and a deposit can neither bank the day nor distort the %-of-equity
+  caps derived from it. It takes **two** agreeing signals to declare a flow, so a
+  genuinely large trading gain is never mistaken for one and re-based away. A reach you
+  had already earned before the flow landed stays banked.
   Since 2026-08-22 a **give-back guard** protects the day that _almost_ banks: applying
   a tune also stamps an **arm** level at 2/3 of the target and a **floor** at 1/3
   (`giveBackArmPct` / `giveBackFloorPct` — a 3% goal arms at +2%, floors at +1%). Once

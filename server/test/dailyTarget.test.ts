@@ -4,7 +4,7 @@ import { defaultAutotradeConfig, setAutotradeConfig } from '../src/db/autotradeC
 import { getDailyBaseline, saveDailyBaseline } from '../src/db/dailyBaseline';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { computeTargetTune, resetToModerate } from '../src/services/autotrading/targetTune';
-import { evaluateDailyTarget, updateDailyTarget } from '../src/services/autotrading/dailyTarget';
+import { applyExternalCashFlow, evaluateDailyTarget, updateDailyTarget } from '../src/services/autotrading/dailyTarget';
 import { etToday } from '../src/util/marketDate';
 
 // A fixed instant: 2026-08-21 14:00 UTC = 10:00 ET (during the session).
@@ -127,6 +127,81 @@ describe('evaluateDailyTarget (pure)', () => {
       const s = evaluateDailyTarget(zeroFloor, baseline(10_000, null, NOW - 60_000));
       expect(s).toMatchObject({ giveBackArmed: true, giveBackHalted: true, entriesHalted: true });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A deposit is not a return. On 2026-08-27 a $5,000 deposit against a
+// $2,228.83 baseline read as +131.56%, banked the day, and halted live entries
+// on a session whose actual autotrade P&L was -$8.32.
+// ---------------------------------------------------------------------------
+describe('applyExternalCashFlow (DB + journal)', () => {
+  beforeAll(() => initDb());
+  beforeEach(() =>
+    db.exec('DELETE FROM autotrade_config; DELETE FROM autotrade_events; DELETE FROM autotrade_daily_baseline;'),
+  );
+
+  const BASE = 2_228.83;
+
+  it('re-bases the day so the deposit is not gain, and the day stops reading banked', () => {
+    setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 5_352.23, targetDailyGainPct: 3 });
+    saveDailyBaseline(TODAY, BASE);
+
+    // Before: the deposit alone clears a 3% goal many times over.
+    expect(updateDailyTarget(NOW).gainPct).toBeGreaterThan(130);
+
+    const out = applyExternalCashFlow(5_352.23, -2_067.64, NOW);
+
+    expect(out!.flowUsd).toBeCloseTo(5_191.04, 2);
+    expect(getDailyBaseline()!.equityUsd).toBeCloseTo(7_419.87, 2);
+    // After: the day reads its trading result — a loss — not the deposit.
+    expect(
+      evaluateDailyTarget(
+        { targetDailyGainPct: 3, accountEquityUsd: 5_352.23, giveBackArmPct: null, giveBackFloorPct: null },
+        getDailyBaseline(),
+      ),
+    ).toMatchObject({ reached: false });
+  });
+
+  it('journals the re-base — a silent baseline move would be untraceable', () => {
+    setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 5_352.23, targetDailyGainPct: 3 });
+    saveDailyBaseline(TODAY, BASE);
+    applyExternalCashFlow(5_352.23, -2_067.64, NOW);
+    const ev = listAutotradeEvents({ actions: ['daily_baseline_rebased'] });
+    expect(ev).toHaveLength(1);
+    expect(JSON.parse(ev[0]!.detail!)).toMatchObject({ fromBaselineUsd: BASE });
+  });
+
+  it('keeps a reach that was already EARNED before the deposit landed', () => {
+    // Stickiness is the point: a real +3% morning stays banked. The deposit
+    // changes what the percentage is OF, not whether it was earned.
+    setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 5_352.23, targetDailyGainPct: 3 });
+    saveDailyBaseline(TODAY, BASE);
+    db.prepare('UPDATE autotrade_daily_baseline SET reached_at = ?').run(NOW - 1000);
+
+    applyExternalCashFlow(5_352.23, -2_067.64, NOW);
+
+    expect(getDailyBaseline()!.reachedAt).toBe(NOW - 1000);
+  });
+
+  it('does nothing on an ordinary day, and writes no event', () => {
+    setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: BASE + 40, targetDailyGainPct: 3 });
+    saveDailyBaseline(TODAY, BASE);
+    expect(applyExternalCashFlow(BASE + 40, 40, NOW)).toBeNull();
+    expect(getDailyBaseline()!.equityUsd).toBe(BASE);
+    expect(listAutotradeEvents({ actions: ['daily_baseline_rebased'] })).toHaveLength(0);
+  });
+
+  it('will not touch a baseline belonging to another ET day', () => {
+    setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 5_352.23, targetDailyGainPct: 3 });
+    saveDailyBaseline('2026-08-20', BASE);
+    expect(applyExternalCashFlow(5_352.23, -2_067.64, NOW)).toBeNull();
+    expect(getDailyBaseline()!.equityUsd).toBe(BASE);
+  });
+
+  it('does nothing when there is no baseline at all', () => {
+    setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 5_352.23, targetDailyGainPct: 3 });
+    expect(applyExternalCashFlow(5_352.23, -2_067.64, NOW)).toBeNull();
   });
 });
 

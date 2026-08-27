@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, HttpError, param, parseBody, parseQuery } from './_helpers';
+import { tuneBuyingPower } from '../services/autotrading/tuneFunding';
 import { resetDailyBaselineFlags } from '../db/dailyBaseline';
 import { updateDailyTarget } from '../services/autotrading/dailyTarget';
 import {
@@ -94,34 +95,49 @@ const tunePreviewBody = z.object({
   basis: z.enum(['expected', 'perfectDay']),
 });
 
-autotradeRouter.post('/tune/preview', (req, res) => {
-  const body = parseBody(tunePreviewBody, req);
-  const config = getAutotradeConfig();
-  if (config.accountEquityUsd == null) {
-    throw new HttpError(400, 'Set account equity before tuning from a target.');
-  }
-  res.json(
-    computeTargetTune({
-      equityUsd: config.accountEquityUsd,
-      targetDailyGainPct: body.targetDailyGainPct,
-      basis: body.basis,
-      // The whole config: the tuner reads the auto-tune flags to warn about
-      // interactions, and the dollar caps + their anchor to tell a hand-set cap
-      // from a derived one so it preserves the former.
-      config,
-    }),
-  );
-});
+autotradeRouter.post(
+  '/tune/preview',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(tunePreviewBody, req);
+    const config = getAutotradeConfig();
+    if (config.accountEquityUsd == null) {
+      throw new HttpError(400, 'Set account equity before tuning from a target.');
+    }
+    res.json(
+      computeTargetTune({
+        equityUsd: config.accountEquityUsd,
+        targetDailyGainPct: body.targetDailyGainPct,
+        basis: body.basis,
+        // The whole config: the tuner reads the auto-tune flags to warn about
+        // interactions, and the dollar caps + their anchor to tell a hand-set cap
+        // from a derived one so it preserves the former.
+        config,
+        ...(await tuneBuyingPower(config)),
+      }),
+    );
+  }),
+);
 
 /** The moderate baseline for the current account — the "reset to moderate"
  *  patch, equity-scaled. Same fail-closed-on-unset-equity posture. */
-autotradeRouter.get('/tune/moderate', (_req, res) => {
-  const config = getAutotradeConfig();
-  if (config.accountEquityUsd == null) {
-    throw new HttpError(400, 'Set account equity before resetting to moderate.');
-  }
-  res.json({ patch: resetToModerate(config.accountEquityUsd, config.maxStopDistancePct) });
-});
+autotradeRouter.get(
+  '/tune/moderate',
+  asyncHandler(async (_req, res) => {
+    const config = getAutotradeConfig();
+    if (config.accountEquityUsd == null) {
+      throw new HttpError(400, 'Set account equity before resetting to moderate.');
+    }
+    const bp = await tuneBuyingPower(config);
+    res.json({
+      patch: resetToModerate(
+        config.accountEquityUsd,
+        config.maxStopDistancePct,
+        bp.buyingPowerUsd,
+        bp.optionBuyingPowerUsd,
+      ),
+    });
+  }),
+);
 
 const configBody = z.object({
   enabled: z.boolean().optional(),

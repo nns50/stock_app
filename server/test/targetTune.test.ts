@@ -267,6 +267,66 @@ describe('tunable/never-tuned classification', () => {
 // ("order_notional: $1,236.06 vs cap $439.00"); a retune would have restored
 // exactly that state.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Funding bounds on the per-order caps. Both were plumbed before anything fed
+// them: deriveDollarCaps took buyingPowerUsd from 2026-08-27, but its only
+// production caller (/tune/preview) omitted the argument, so the bound existed
+// and never applied. These pin the arithmetic; routes.integration covers the
+// route actually passing it.
+// ---------------------------------------------------------------------------
+describe('deriveDollarCaps — funding bounds', () => {
+  const cfg = {
+    maxDailyDrawdownPct: 6.42,
+    riskProfile: 'MODERATE' as const,
+    riskPerTradePct: 1.25,
+    maxStopDistancePct: 2.5,
+  };
+  // The real 2026-08-27 account: sizer floor is 1.25/2.5 = 50% of equity, so
+  // bySizer (x1.5) = 75% wins over the moderate band's 25%.
+  const EQUITY = 5_161.18;
+  const UNBOUNDED = Math.round(EQUITY * 0.5 * 1.5); // 3871
+
+  it('leaves both caps unbounded when no funding is known', () => {
+    const caps = deriveDollarCaps(cfg, EQUITY);
+    expect(caps.liveMaxOrderUsd).toBe(UNBOUNDED);
+    expect(caps.liveOptionsMaxOrderUsd).toBe(UNBOUNDED);
+  });
+
+  it('bounds the equity cap by buying power, and the options twin follows it', () => {
+    const caps = deriveDollarCaps(cfg, EQUITY, 2_000);
+    expect(caps.liveMaxOrderUsd).toBe(2_000);
+    expect(caps.liveOptionsMaxOrderUsd).toBe(2_000);
+  });
+
+  it('bounds the OPTIONS cap by option buying power, which is its own pool', () => {
+    // Day BP $8,644.72 but option BP only $471.41 — the real spread that day.
+    // Bounding options by equity BP produced a cap ~8x what the account could
+    // actually spend on a contract: a backstop that cannot backstop.
+    const caps = deriveDollarCaps(cfg, EQUITY, 8_644.72, 471.41);
+    expect(caps.liveMaxOrderUsd).toBe(UNBOUNDED); // day BP does not bind here
+    expect(caps.liveOptionsMaxOrderUsd).toBe(471);
+  });
+
+  it('does not let option BP loosen the options cap above the equity bound', () => {
+    // Option BP is a ceiling, never a floor: a broker reporting a huge option
+    // BP must not widen the cap past what the equity bound already allowed.
+    const caps = deriveDollarCaps(cfg, EQUITY, 1_000, 99_999);
+    expect(caps.liveOptionsMaxOrderUsd).toBe(1_000);
+  });
+
+  it('ignores a zero or missing option BP, keeping the twins equal as before', () => {
+    expect(deriveDollarCaps(cfg, EQUITY, 2_000, 0).liveOptionsMaxOrderUsd).toBe(2_000);
+    expect(deriveDollarCaps(cfg, EQUITY, 2_000, undefined).liveOptionsMaxOrderUsd).toBe(2_000);
+  });
+
+  it('never lets a funding bound touch the daily-loss caps', () => {
+    // Those track the tuned drawdown %, not what the account can fund today.
+    const caps = deriveDollarCaps(cfg, EQUITY, 100, 50);
+    expect(caps.liveMaxDailyLossUsd).toBe(Math.round(EQUITY * 0.0642));
+    expect(caps.liveOptionsMaxDailyLossUsd).toBe(caps.liveMaxDailyLossUsd);
+  });
+});
+
 describe('computeTargetTune — hand-edited dollar caps', () => {
   /** A config whose caps match what `anchor` derives — i.e. nothing hand-set. */
   const derivedAt = (anchor: number, over: Partial<AutotradeConfig> = {}): Partial<AutotradeConfig> => {

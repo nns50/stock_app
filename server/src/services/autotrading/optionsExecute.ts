@@ -519,6 +519,17 @@ export async function runOptionsPaperExecution(
   // paper and live each risk-check their own pool.
   if (config.shortDatedOptionsEnabled && optSnapshot.openPositionsCount >= 1) {
     const reason = 'a short-dated options position is already open (max 1 at a time)';
+    // Journaled because a pre-committed tuning rule COUNTS these: the plan's F7
+    // fires when this gate refuses >=5 candidates in a week. Returning silently
+    // made that rule unmeasurable -- there was no event to count, so a gate that
+    // was throttling the book would have looked identical to one that never
+    // fired (found 2026-08-27). `refused` is per-candidate, matching how F7 is
+    // phrased; one event per tick keeps the feed honest without a row each.
+    logAutotradeEvent({
+      stage: 'execution',
+      action: 'short_dated_position_already_open',
+      detail: { book: 'paper', reason, refused: candidates.length, openPositions: optSnapshot.openPositionsCount },
+    });
     return candidates.map(({ signal }) => ({ symbol: signal.symbol.toUpperCase(), ok: false, reason }));
   }
 

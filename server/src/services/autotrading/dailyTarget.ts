@@ -6,8 +6,10 @@ import {
   markDailyTargetReached,
   markGiveBackArmed,
   markGiveBackHalted,
+  rebaseDailyBaseline,
   saveDailyBaseline,
 } from '../../db/dailyBaseline';
+import { detectExternalCashFlow } from './externalCashFlow';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { etToday } from '../../util/marketDate';
 
@@ -279,4 +281,48 @@ export function updateDailyTarget(now: number = Date.now()): DailyTargetStatus {
     });
   }
   return status;
+}
+
+/**
+ * Absorb a deposit or withdrawal into today's baseline so it is not counted as
+ * gain — see externalCashFlow.ts for why this is a baseline move rather than a
+ * change to the equity-based axis, and why it needs two agreeing signals.
+ *
+ * Called from the equity sync on the ONE tick where the guard accepts a
+ * sustained out-of-band reading (signal 1); the detector supplies signal 2.
+ * Runs BEFORE updateDailyTarget in the loop's tick order, which is what stops
+ * a deposit banking the day on the tick it lands.
+ *
+ * Returns the flow it applied, or null when there was nothing to do — the
+ * ordinary case, which writes and journals nothing.
+ */
+export function applyExternalCashFlow(
+  currentEquityUsd: number,
+  brokerDayPnlUsd: number | undefined,
+  now: number = Date.now(),
+): { flowUsd: number; baselineUsd: number } | null {
+  const baseline = getDailyBaseline();
+  if (!baseline || baseline.etDate !== etToday(now) || !(baseline.equityUsd > 0)) return null;
+
+  const flow = detectExternalCashFlow({
+    baselineUsd: baseline.equityUsd,
+    currentEquityUsd,
+    brokerDayPnlUsd,
+  });
+  if (!flow) return null;
+
+  rebaseDailyBaseline(flow.adjustedBaselineUsd);
+  logAutotradeEvent({
+    stage: 'config',
+    action: 'daily_baseline_rebased',
+    detail: {
+      flowUsd: round2(flow.flowUsd),
+      fromBaselineUsd: baseline.equityUsd,
+      toBaselineUsd: round2(flow.adjustedBaselineUsd),
+      currentEquityUsd,
+      brokerDayPnlUsd,
+      reason: flow.reason,
+    },
+  });
+  return { flowUsd: flow.flowUsd, baselineUsd: flow.adjustedBaselineUsd };
 }
