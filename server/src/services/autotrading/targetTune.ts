@@ -307,6 +307,13 @@ export function deriveDollarCaps(
    *  would refuse it anyway, and a cap above real capacity only hides the
    *  refusal. Omitted (or 0) leaves the cap unbounded by funding. */
   buyingPowerUsd?: number,
+  /** Available OPTION buying power, when known. A separate, far smaller pool
+   *  than equity buying power -- on 2026-08-27 it was $471.41 against a day
+   *  BP of $8,644.72 -- so bounding the options twin by equity BP produced a
+   *  cap ~8x what the account could actually spend on a contract: a backstop
+   *  that cannot backstop. Omitted (or 0) falls back to the equity bound, and
+   *  the twins stay equal exactly as before. */
+  optionBuyingPowerUsd?: number,
 ): DollarCaps {
   const dailyLossUsd = Math.round(equityUsd * (cfg.maxDailyDrawdownPct / 100));
   // The larger of the fat-finger intent and what the sizer actually makes.
@@ -314,14 +321,26 @@ export function deriveDollarCaps(
   // which is not caution, it is a system that cannot trade.
   const byProfile = equityUsd * maxOrderEquityFractionFor(cfg.riskProfile);
   const bySizer = equityUsd * sizerFloorFraction(cfg) * ORDER_CAP_SIZER_HEADROOM;
-  let orderUsd = Math.max(byProfile, bySizer);
-  if (buyingPowerUsd !== undefined && buyingPowerUsd > 0) orderUsd = Math.min(orderUsd, buyingPowerUsd);
+  const orderUsd = boundByFunding(Math.max(byProfile, bySizer), buyingPowerUsd);
+  // Deliberately NOT floored by the sizer: options are sized by premium, not
+  // by the equity sizer's risk/stop arithmetic, so the sizer floor says
+  // nothing about what an options order needs. Only the funding bound differs
+  // from equity's, and only when option BP is actually known.
+  const optionsOrderUsd = boundByFunding(orderUsd, optionBuyingPowerUsd);
   return {
     liveMaxOrderUsd: Math.round(orderUsd),
     liveMaxDailyLossUsd: dailyLossUsd,
-    liveOptionsMaxOrderUsd: Math.round(orderUsd),
+    liveOptionsMaxOrderUsd: Math.round(optionsOrderUsd),
     liveOptionsMaxDailyLossUsd: dailyLossUsd,
   };
+}
+
+/** Cap a dollar figure by an available-funding number, ignoring an unknown or
+ *  non-positive one. An order the account cannot fund is not a cap worth
+ *  having -- the broker refuses it anyway, and a cap above real capacity only
+ *  hides the refusal. */
+function boundByFunding(usd: number, fundingUsd: number | undefined): number {
+  return fundingUsd !== undefined && fundingUsd > 0 ? Math.min(usd, fundingUsd) : usd;
 }
 
 /** The config a hand-edit check needs: the caps themselves, the percentages
@@ -611,6 +630,7 @@ function shapeToPatch(
    *  does not set it, so it is threaded in from live config. */
   maxStopDistancePct: number,
   buyingPowerUsd?: number,
+  optionBuyingPowerUsd?: number,
 ): TunablePatch {
   // Daily-loss halt sized to a bad day at THIS sizing (~75% of the day's trades
   // losing), floored at 2% and capped at 40% so it never trips before the
@@ -632,6 +652,7 @@ function shapeToPatch(
     { maxDailyDrawdownPct, riskProfile: shape.riskProfile, riskPerTradePct, maxStopDistancePct },
     equityUsd,
     buyingPowerUsd,
+    optionBuyingPowerUsd,
   );
   const dailyLossUsd = caps.liveMaxDailyLossUsd;
   const orderUsd = caps.liveMaxOrderUsd;
@@ -706,6 +727,9 @@ export interface ComputeTargetTuneInput {
   /** Available buying power, when the caller knows it — bounds the per-order
    *  cap, since an order the account cannot fund is not a cap worth having. */
   buyingPowerUsd?: number;
+  /** Available OPTION buying power, when known — bounds the options twin of
+   *  that cap, which draws on a separate and much smaller pool. */
+  optionBuyingPowerUsd?: number;
 }
 
 /** Derive a full tunable patch from equity + a target daily gain % under the
@@ -727,6 +751,7 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
     targetDailyGainPct,
     input.config.maxStopDistancePct,
     input.buyingPowerUsd,
+    input.optionBuyingPowerUsd,
   );
 
   const warnings: string[] = [];
@@ -779,8 +804,13 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
  *  Deliberately NOT identical to defaultAutotradeConfig() — see the note on
  *  BANDS above for the three fields that differ and why. "Moderate" here means
  *  the band, not the shipped defaults. */
-export function resetToModerate(equityUsd: number, maxStopDistancePct: number): TunablePatch {
+export function resetToModerate(
+  equityUsd: number,
+  maxStopDistancePct: number,
+  buyingPowerUsd?: number,
+  optionBuyingPowerUsd?: number,
+): TunablePatch {
   // No declared goal — the moderate baseline is a risk shape, not a promise;
   // writing null here also DISARMS the daily-goal tracker until the next tune.
-  return shapeToPatch(BANDS.moderate, equityUsd, 1, null, maxStopDistancePct);
+  return shapeToPatch(BANDS.moderate, equityUsd, 1, null, maxStopDistancePct, buyingPowerUsd, optionBuyingPowerUsd);
 }

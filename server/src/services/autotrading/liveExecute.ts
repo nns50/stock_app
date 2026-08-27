@@ -63,7 +63,7 @@ import { evaluateScaleOut } from './scaleOut';
 import { fetchTodayVwap } from './vwap';
 import { detectLevels } from '../../indicators/levels';
 import { planAroundLevels } from './levelPlan';
-import { evaluateDailyTarget } from './dailyTarget';
+import { applyExternalCashFlow, evaluateDailyTarget } from './dailyTarget';
 import { evaluateEquitySync, freshEquityGuardState, EquityGuardState } from './equitySyncGuard';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 // DB-layer reads only (NOT the options execution service) -- so the combined
@@ -569,6 +569,18 @@ export async function syncAccountEquityFromBroker(opts?: { log?: boolean }): Pro
   }
 
   const next = setAutotradeConfig({ accountEquityUsd: acct.netLiquidationUsd });
+
+  // A jump the guard accepted only after repeated corroboration is, by its own
+  // definition, a real balance change rather than noise. That is the first of
+  // the two signals an external cash flow needs; applyExternalCashFlow checks
+  // the second (the broker's day P&L does not account for the move) and, if
+  // both agree, moves the day's baseline so a deposit is not read as gain.
+  // guard.reason is non-null ONLY on that path — an ordinary in-band tick
+  // returns null and must not go anywhere near the baseline.
+  if (guard.reason !== null) {
+    applyExternalCashFlow(acct.netLiquidationUsd, acct.realizedToday?.brokerDayPnlUsd);
+  }
+
   if ((opts?.log ?? true) && next.accountEquityUsd !== previousEquityUsd) {
     logAutotradeEvent({
       stage: 'config',

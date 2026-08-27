@@ -131,6 +131,20 @@ export function resetDailyBaselineFlags(baselineEquityUsd?: number): DailyBaseli
   return getDailyBaseline();
 }
 
+/**
+ * Move today's base WITHOUT touching the sticky flags — the external-cash-flow
+ * re-base (services/autotrading/externalCashFlow.ts).
+ *
+ * Deliberately not resetDailyBaselineFlags(): that one is the "this day was
+ * spoiled, start it over" escape hatch, and clearing the flags here would be
+ * wrong. A day that genuinely banked +3% before a deposit landed has still
+ * banked; the deposit changes what the percentage is OF, not whether it was
+ * earned.
+ */
+export function rebaseDailyBaseline(equityUsd: number): void {
+  db.prepare('UPDATE autotrade_daily_baseline SET equity_usd = ? WHERE id = 1').run(equityUsd);
+}
+
 /** Record (or clear) the pending reach — see reach_candidate_at's DDL comment. */
 export function setReachCandidate(at: number | null): void {
   db.prepare('UPDATE autotrade_daily_baseline SET reach_candidate_at = ? WHERE id = 1').run(at);

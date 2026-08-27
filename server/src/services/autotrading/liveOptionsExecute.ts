@@ -808,6 +808,13 @@ export async function runLiveOptionsExecution(
   // have, and one this account cannot absorb twice in a day.
   if (cfg.shortDatedOptionsEnabled && optSnapshot.openPositionsCount >= 1) {
     const reason = 'a short-dated options position is already open (max 1 at a time)';
+    // Counted by the tuning plan's F7 -- see the paper path's twin for why a
+    // silent return made that rule unmeasurable.
+    logAutotradeEvent({
+      stage: 'execution',
+      action: 'short_dated_position_already_open',
+      detail: { book: 'live', reason, refused: candidates.length, openPositions: optSnapshot.openPositionsCount },
+    });
     return candidates.map(({ signal }) => ({ symbol: signal.symbol.toUpperCase(), ok: false, reason }));
   }
 
