@@ -122,6 +122,13 @@ npm run seed       # 5 closed + 2 open trades, 7 watchlist symbols (idempotent)
 - **[Tune from target daily gain](docs/TUNE_FROM_TARGET.md)** — how to set up the whole
   Auto-Trade risk config at once from a target daily gain % + your equity, with the
   Expected/Perfect-day basis explained and worked examples.
+- **[Short-dated options spec](docs/SHORT_DATED_OPTIONS_SPEC.md)** — why 0–2 DTE
+  contracts need their own six-rule exit ladder (a %-of-premium stop on a 0DTE
+  measures decay, not the thesis), and every modelled number the ladder came from.
+- **[Options tuning plan](docs/OPTIONS_TUNING_PLAN.md)** — how the daily post-close
+  read turns into parameter changes: layered diagnosis (funnel → signal → ladder),
+  pre-committed decision rules with minimum sample sizes, a one-change-per-week
+  budget, and the decision log.
 - In-app **About** page — the live, authoritative description of the scoring formulas
   and glossary.
 

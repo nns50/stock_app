@@ -1,0 +1,164 @@
+# Options tuning plan — how the daily read turns into changes
+
+Companion to `docs/SHORT_DATED_OPTIONS_SPEC.md`. That document says what was
+built and why. This one says **how it gets improved**, and — more importantly —
+**when it does not**.
+
+Written 2026-08-27, the day short-dated options went live on the paper book.
+Every parameter in the ladder came from a Black-Scholes model at a single
+volatility on a single hypothetical underlying. None has been checked against a
+real trade. This plan exists so that changes to those numbers come from
+evidence rather than from the most recent day's mood.
+
+---
+
+## The failure this is built to prevent
+
+A daily check-in with no memory has exactly two failure modes, and they look
+like opposites:
+
+1. **It never changes anything.** Day 1: "sample too small." Day 2: "sample too
+   small." Day 20: "sample too small." Each read is honest and each read is
+   useless, because nothing accumulates.
+2. **It changes something every day.** Each day's noise gets a parameter tweak,
+   the tweaks interact, and after two weeks the system is worse than the model
+   it started from — with no way to tell which change did it.
+
+The defence against both is the same: **decide the rules before seeing the
+data.** Everything below is pre-committed. When a threshold is met, the change
+is made and logged. When it is not, the read says "no change" and moves on —
+and that is a result, not a failure to produce one.
+
+---
+
+## Layer before parameter
+
+The single most common tuning mistake is fixing the wrong layer. These must be
+diagnosed **in order**, and a layer is only worth tuning once every layer above
+it is healthy:
+
+| Layer | Question | If broken, nothing below it means anything |
+|---|---|---|
+| **0. Funnel** | Does it place a trade at all? | Zero entries → exit stats are empty. Tuning the ladder here is tuning nothing. |
+| **1. Signal** | Do entries get followed by movement? | If entries go nowhere, that is the *entry criteria*, not the exit. Loosening stagnation just holds losers longer. |
+| **2. Ladder** | Do exits capture what movement there is? | Only meaningful once 0 and 1 are healthy. |
+| **3. Edge** | Is any of this profitable? | The honest question. Answered at review, not daily. |
+
+**Layer 0 is where this starts, and it is not a formality.** On 2026-08-26 live
+options generated 14 signals and placed **zero** orders — every one died on
+`risk budget is too small to size even one contract at this premium`. That is
+the entire reason short-dated exists. Whether that reason has disappeared is
+the first thing the daily read checks, every day, before anything else.
+
+---
+
+## Pre-committed decision rules
+
+Each rule names its trigger, its minimum sample, and its response. **No
+parameter moves without one of these firing.**
+
+### Layer 0 — funnel
+
+| # | Trigger | Min sample | Response |
+|---|---|---|---|
+| F1 | ≥3 consecutive sessions with 0 options entries, same dominant block reason | 3 sessions | Diagnose that reason per F2–F5. Do not touch the ladder. |
+| F2 | Dominant reason is **risk budget** | 3 sessions | **No loosening.** Short-dated was the fix for this; if it still dominates, options are structurally unreachable at this account size. Report that and stop. Raising `riskPerTradePct` to reach an instrument is backwards. |
+| F3 | Dominant reason is **liquidity** (`optionsMaxSpreadPct` 8, `optionsMinOpenInterest` 100, `optionsMinVolume` 10) | 3 sessions | **Measure before changing.** These were set for 7–21 DTE contracts; 0–2 DTE spreads behave differently. Sample the actual spread/OI/volume distribution on 0–2 DTE contracts across the universe, then set the gate from the observed distribution. Never widen a liquidity gate to hit a trade count. |
+| F4 | Dominant reason is **DTE window** | 3 sessions | Likely structural: daily expiries exist for index ETFs and a handful of mega-caps, not for most of a 500-name universe. Report the share of the universe that *has* a 0–2 DTE chain. If it is small, the honest fix is a narrower universe for options, not a wider DTE band. |
+| F5 | Dominant reason is **IV/RV** (`optionsMaxIvRvRatio` 1.0) | 5 sessions | 0DTE IV is structurally elevated into the close. If this blocks most candidates, report the observed IV/RV distribution before proposing a number. |
+| F6 | `short_dated_entry_window_closed` on ≥50% of sessions | 5 sessions | The 210m cutoff is eating the day. Check *when* signals arrive: if they cluster after 12:30 ET, the problem is signal timing, not the cutoff. |
+| F7 | "max 1 at a time" refuses ≥5 candidates in a week | 1 week | Note it. Do **not** raise the cap — §D6 of the spec is explicit that two 0DTE positions can go to zero on one adverse move. Revisit only after ≥30 closed trades show the exits work. |
+
+### Layer 1 — signal
+
+| # | Trigger | Min sample | Response |
+|---|---|---|---|
+| S1 | `stagnation` ≥40% of exits | 10 closed trades | The entry signal is not producing movement. **Do not loosen stagnation.** Report which entry criteria the stagnant names shared. |
+| S2 | Median underlying move at exit < 0.3% in either direction | 10 closed trades | Same conclusion as S1 by a different route: the names being picked do not move enough for this instrument. |
+
+### Layer 2 — the ladder
+
+**No ladder parameter moves before 15 closed short-dated trades.** Below that,
+the read reports the distribution and says so.
+
+| # | Trigger | Min sample | Response |
+|---|---|---|---|
+| L1 | `disaster_stop` fires **at all** | 1 | Immediate investigation, sample size irrelevant. It means something outran the underlying stop between ticks. Report the case in full — entry, tick timeline, underlying path. |
+| L2 | `take_profit` never fires while `give_back` does | 10 closed trades | The 60% target is above what these contracts reach. Lower it to the **observed median peak gain**, not to a guess. |
+| L3 | `hard_time` ≥50% of exits | 10 closed trades | Positions open too late or the thesis is too slow. **Tighten the entry cutoff, never loosen the 14:00 clock** — the clock is the one rule whose cost is arithmetic. |
+| L4 | `underlying_stop` ≥50% of exits **and** median exit is a loss | 15 closed trades | 0.5% may be inside the noise band for the names being traded. Compare against each name's own ATR% before proposing a number. |
+| L5 | `give_back` fires and the median outcome is worse than holding to the 60% target would have been | 15 closed trades | The trail is too tight. Raise `optionsGiveBackPct` toward 60–65 — one step, then re-measure. |
+| L6 | Any single rule accounts for ≥70% of exits | 15 closed trades | The ladder has collapsed to one rule; the others are dead weight. Report which, and why the rest never get a turn. |
+
+### The always-check
+
+| # | Trigger | Response |
+|---|---|---|
+| A1 | Any options position open after the close | **Lead the report with it.** The ladder failed. Everything else in the report is secondary. |
+
+---
+
+## Change budget
+
+- **At most one parameter change per week**, so an effect is attributable to a
+  cause. Two changes in a week make both uninterpretable.
+- **Never two changes on the same day**, regardless of how many rules fire. If
+  two fire, take the one on the **lowest layer** — a funnel fix precedes a
+  ladder fix, always.
+- **Every change is logged below** with its trigger, evidence, and the metric it
+  was expected to move.
+- **Rollback rule:** if a change has not moved the metric it targeted within 5
+  sessions, revert it. A change that does nothing is not neutral — it is noise
+  in the next analysis.
+
+---
+
+## What the daily read actually queries
+
+The journal writes roughly 1000 rows every 8 hours and the events endpoint caps
+at 1000, so **an unfiltered read cannot see yesterday.** Cumulative analysis
+depends on narrowing:
+
+```
+GET /api/autotrade/events?actions=<names>&since=<epoch_ms>&limit=1000
+```
+
+`actions` (comma-separated) and `since` were added 2026-08-27 for exactly this
+reason. The useful narrowings:
+
+| Purpose | actions |
+|---|---|
+| Exit rule distribution | `short_dated_options_exit` |
+| Entry funnel | `options_signal_generated,no_options_signal` |
+| Risk-check blocks | `blocked` |
+| Entry gates | `short_dated_entry_window_closed` |
+
+`since` should be the timestamp short-dated was enabled (**2026-08-27**), so
+every read covers the whole life of the feature rather than one day.
+
+---
+
+## Decision log
+
+Append-only. Every parameter change to the options path goes here, whether it
+came from a rule above or from a direct instruction. A change not in this table
+did not happen for the purposes of the next analysis.
+
+| Date | Change | Trigger | Evidence | Expected effect | Outcome |
+|---|---|---|---|---|---|
+| 2026-08-27 | `shortDatedOptionsEnabled` false → **true**; DTE band 7–21 → **0–2**; `liveOptionsEnabled` true → **false** | Roll-out step 3 of the spec | 2026-08-26: 14 live options signals, 0 orders, all on risk budget vs $241–340 contracts against a ~$44 budget | Options become affordable; paper starts producing exit-rule data | — |
+| 2026-08-27 | `optionsTakeProfitPct` 75 → **60** | Spec §D3 | Modelled: reachable on a ~+0.8% underlying move before noon; 75 was not | `take_profit` fires at all, rather than every winner ending on `give_back` or `hard_time` | — |
+
+---
+
+## What this plan will not do
+
+It will not produce a tuning change from a single day, and it will not treat
+"no change recommended" as a wasted read. Most days early on should end that
+way. The parameters here came from a model; the point of the next few weeks is
+to accumulate enough real trades to say something about them that the model
+could not — and the fastest way to destroy that is to start fitting to noise on
+day two.
+
+The 2026-09-05 review is where the accumulated picture gets judged against the
+question the spec could not answer: whether there is any edge here at all.

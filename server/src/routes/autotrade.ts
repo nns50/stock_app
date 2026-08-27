@@ -1839,12 +1839,24 @@ const STAGES: [AutotradeStage, ...AutotradeStage[]] = ['screen', 'decision', 'ri
 const eventsQuery = z.object({
   stage: z.enum(STAGES).optional(),
   symbol: z.string().optional(),
+  /** Comma-separated action names. With `since` below, this is what makes a
+   *  multi-day read possible: the journal writes ~1000 rows every 8 hours, so
+   *  an unfiltered read cannot reach yesterday, let alone a two-week window. */
+  actions: z.string().optional(),
+  /** Epoch ms; only events at or after it. */
+  since: z.coerce.number().int().nonnegative().optional(),
   limit: z.coerce.number().int().min(1).max(1000).optional(),
 });
 autotradeRouter.get(
   '/events',
   asyncHandler(async (req, res) => {
-    const q = parseQuery(eventsQuery, req);
-    res.json({ events: listAutotradeEvents(q) });
+    const { actions, ...q } = parseQuery(eventsQuery, req);
+    const list = actions
+      ? actions
+          .split(',')
+          .map((a) => a.trim())
+          .filter(Boolean)
+      : undefined;
+    res.json({ events: listAutotradeEvents({ ...q, ...(list ? { actions: list } : {}) }) });
   }),
 );

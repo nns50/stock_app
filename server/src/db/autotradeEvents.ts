@@ -42,6 +42,12 @@ export interface ListEventsFilter {
   /** Restrict to these action strings (e.g. the live-order outcome vocabulary).
    *  An empty array matches nothing. */
   actions?: string[];
+  /** Only events at or after this epoch-ms. Without it a caller asking for
+   *  history gets whatever fits under `limit` — and the journal writes ~1000
+   *  rows every 8 hours, so an unfiltered read cannot see yesterday at all.
+   *  Pairing this with `actions` is what makes a multi-day read possible:
+   *  a handful of rows per day instead of the whole funnel. */
+  since?: number;
   /** Max rows to return (default 200, capped at 1000). */
   limit?: number;
 }
@@ -109,6 +115,10 @@ export function listAutotradeEvents(filter: ListEventsFilter = {}): AutotradeEve
     if (filter.actions.length === 0) return [];
     clauses.push(`action IN (${filter.actions.map(() => '?').join(',')})`);
     params.push(...filter.actions);
+  }
+  if (typeof filter.since === 'number' && Number.isFinite(filter.since)) {
+    clauses.push('created_at >= ?');
+    params.push(filter.since);
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const limit = Math.min(Math.max(filter.limit ?? 200, 1), 1000);
