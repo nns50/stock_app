@@ -2,6 +2,7 @@ import { AutotradeConfig, getAutotradeConfig } from '../../db/autotradeConfig';
 import {
   DailyBaseline,
   getDailyBaseline,
+  setReachCandidate,
   markDailyTargetReached,
   markGiveBackArmed,
   markGiveBackHalted,
@@ -200,7 +201,43 @@ export function updateDailyTarget(now: number = Date.now()): DailyTargetStatus {
   }
 
   const status = evaluateDailyTarget(cfg, baseline);
-  if (status.active && status.reached && baseline && baseline.reachedAt === null) {
+
+  // Two-tick confirmation before the FIRST bank of the day. Banking is
+  // irreversible for the session, so it must not rest on one instantaneous
+  // reading: on 2026-08-27 a single spurious net-liquidation tick banked a
+  // fictional +9.69% day and halted live entries for the rest of it.
+  // equitySyncGuard.ts stops such a reading reaching the config at all; this
+  // is the second line, and it is cheap — a REAL +3% day is still +3% sixty
+  // seconds later. An already-recorded reach is sticky and skips this
+  // entirely: the confirmation guards the moment of banking, not the state.
+  const firstReachThisTick = status.active && status.reached && baseline !== null && baseline.reachedAt === null;
+  const confirmed = firstReachThisTick && baseline !== null && baseline.reachCandidateAt !== null;
+  if (baseline && (firstReachThisTick ? baseline.reachCandidateAt === null : baseline.reachCandidateAt !== null)) {
+    // Set on the first sighting, cleared the moment the target is not met —
+    // so two NON-consecutive spikes can never add up to a confirmation.
+    setReachCandidate(firstReachThisTick ? now : null);
+    baseline.reachCandidateAt = firstReachThisTick ? now : null;
+  }
+  if (firstReachThisTick && !confirmed) {
+    logAutotradeEvent({
+      stage: 'execution',
+      action: 'daily_target_pending_confirmation',
+      detail: {
+        targetPct: status.targetPct,
+        baselineEquityUsd: status.baselineEquityUsd,
+        currentEquityUsd: status.currentEquityUsd,
+        gainPct: status.gainPct,
+        note: 'target reached on this tick — banking the day needs it again on the next one',
+      },
+      riskProfile: cfg.riskProfile,
+    });
+    // Not banked yet, so nothing is halted BY THE REACH this tick. An already
+    // -fired give-back halt below still stands on its own.
+    status.reached = false;
+    status.entriesHalted = status.giveBackHalted;
+  }
+
+  if (confirmed && baseline) {
     markDailyTargetReached(now);
     status.reachedAt = now;
     logAutotradeEvent({

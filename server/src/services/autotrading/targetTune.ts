@@ -405,6 +405,9 @@ export const NEVER_TUNED_KEYS = [
   // never granted.
   'liveMaxExposurePct',
   'liveDayBuyingPowerUsd',
+  // A data-quality guard on the broker feed. Nothing about a target daily gain
+  // implies how much a net-liquidation reading is allowed to jump.
+  'equitySyncMaxJumpPct',
   // Safety gates & identity — a preset must never arm anything or change whose
   // account it is.
   'enabled',

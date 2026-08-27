@@ -331,7 +331,10 @@ describe('syncAccountEquityFromBroker', () => {
   });
 
   it('syncs accountEquityUsd from netLiquidationUsd and journals the change', async () => {
-    setAutotradeConfig({ liveAccountId: 'ACC1', accountEquityUsd: 50_000 });
+    // equitySyncMaxJumpPct: 0 disables the sanity guard — this case is about
+    // the write and the journal entry, and its 50k -> 74k figure (chosen long
+    // before the guard existed) is a 48% jump the guard would rightly refuse.
+    setAutotradeConfig({ liveAccountId: 'ACC1', accountEquityUsd: 50_000, equitySyncMaxJumpPct: 0 });
     mockAccountState.mockResolvedValue({ ...okAccountState, netLiquidationUsd: 74_123.45 });
     const result = await syncAccountEquityFromBroker();
     expect(result).toMatchObject({
@@ -348,6 +351,32 @@ describe('syncAccountEquityFromBroker', () => {
     expect(JSON.parse(synced?.detail ?? '{}')).toMatchObject({ from: 50_000, to: 74_123.45, accountId: 'ACC1' });
   });
 
+  it('refuses a spurious reading, keeps the last confirmed equity, and journals the rejection', async () => {
+    // The 2026-08-27 failure end to end: a $2,444.70 net-liquidation print
+    // against a $2,234.58 account holding one position that moved cents. Left
+    // unguarded it banked the day at a fictional +9.69% and halted live
+    // entries for the rest of the session.
+    setAutotradeConfig({ liveAccountId: 'ACC1', accountEquityUsd: 2_234.58, equitySyncMaxJumpPct: 5 });
+    mockAccountState.mockResolvedValue({ ...okAccountState, netLiquidationUsd: 2_444.7 });
+
+    const result = await syncAccountEquityFromBroker();
+
+    expect(result.ok).toBe(true); // not an error — the sync ran, the value was refused
+    expect(getAutotradeConfig().accountEquityUsd).toBe(2_234.58); // last confirmed figure kept
+    const rejected = listAutotradeEvents({ actions: ['equity_sync_rejected'] });
+    expect(rejected).toHaveLength(1);
+    expect(JSON.parse(rejected[0].detail!)).toMatchObject({
+      rejectedUsd: 2_444.7,
+      keptUsd: 2_234.58,
+      maxJumpPct: 5,
+    });
+    // Journaled even though the per-tick sync passes log:false — a refused
+    // reading is not mark-to-market drift, it is the thing worth seeing.
+    const alsoWithLogOff = await syncAccountEquityFromBroker({ log: false });
+    expect(alsoWithLogOff.ok).toBe(true);
+    expect(listAutotradeEvents({ actions: ['equity_sync_rejected'] }).length).toBeGreaterThan(1);
+  });
+
   it('does not journal an event when the synced value equals the current one', async () => {
     setAutotradeConfig({ liveAccountId: 'ACC1', accountEquityUsd: 50_000 });
     mockAccountState.mockResolvedValue({ ...okAccountState, netLiquidationUsd: 50_000 });
@@ -361,7 +390,7 @@ describe('syncAccountEquityFromBroker', () => {
     // The automatic per-tick sync (loop.ts) passes this — net liquidation
     // drifts with mark-to-market on nearly every once-a-minute check, so
     // logging on every change there would flood Recent Activity with noise.
-    setAutotradeConfig({ liveAccountId: 'ACC1', accountEquityUsd: 50_000 });
+    setAutotradeConfig({ liveAccountId: 'ACC1', accountEquityUsd: 50_000, equitySyncMaxJumpPct: 0 });
     mockAccountState.mockResolvedValue({ ...okAccountState, netLiquidationUsd: 74_123.45 });
     const result = await syncAccountEquityFromBroker({ log: false });
     expect(result).toMatchObject({ ok: true, previousEquityUsd: 50_000, netLiquidationUsd: 74_123.45 });

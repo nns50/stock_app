@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, HttpError, param, parseBody, parseQuery } from './_helpers';
+import { resetDailyBaselineFlags } from '../db/dailyBaseline';
+import { updateDailyTarget } from '../services/autotrading/dailyTarget';
 import {
   AutotradeConfig,
   getAutotradeConfig,
@@ -232,6 +234,7 @@ const configBody = z.object({
   liveAccountId: z.string().min(1).nullable().optional(),
   liveMaxOrderUsd: z.number().nonnegative().optional(),
   liveMaxExposurePct: z.number().nonnegative().optional(),
+  equitySyncMaxJumpPct: z.number().nonnegative().optional(),
   liveDayBuyingPowerUsd: z.number().nonnegative().optional(),
   liveMaxDailyLossUsd: z.number().nonnegative().optional(),
   liveMaxOrdersPerDay: z.number().int().nonnegative().optional(),
@@ -483,6 +486,7 @@ autotradeRouter.put(
     }
     if (body.liveMaxOrderUsd !== undefined) patch.liveMaxOrderUsd = body.liveMaxOrderUsd;
     if (body.liveMaxExposurePct !== undefined) patch.liveMaxExposurePct = body.liveMaxExposurePct;
+    if (body.equitySyncMaxJumpPct !== undefined) patch.equitySyncMaxJumpPct = body.equitySyncMaxJumpPct;
     if (body.liveDayBuyingPowerUsd !== undefined) patch.liveDayBuyingPowerUsd = body.liveDayBuyingPowerUsd;
     if (body.liveMaxDailyLossUsd !== undefined) patch.liveMaxDailyLossUsd = body.liveMaxDailyLossUsd;
     if (body.liveMaxOrdersPerDay !== undefined) patch.liveMaxOrdersPerDay = body.liveMaxOrdersPerDay;
@@ -700,6 +704,40 @@ autotradeRouter.put(
  *  for why netLiquidationUsd (not buying power) is the right figure. Read-only
  *  against the broker; requires no confirmation phrase, unlike liveTradingEnabled
  *  itself, since nothing here places an order. */
+/** Clear today's sticky daily-target halt flags, optionally re-basing the day.
+ *
+ *  Every halt is sticky on purpose — a faded gain must not un-bank a real win.
+ *  That is right until a flag is set on a reading that never happened: on
+ *  2026-08-27 a spurious net-liquidation tick banked the day at a fictional
+ *  +9.69% and there was no way to undo it short of editing the database.
+ *
+ *  Clearing the flags alone is often not enough, and the response says so:
+ *  `reached` is recomputed as `reachedAt !== null || equity >= target`, so
+ *  while the feed still reads above the target the next tick re-trips it.
+ *  Pass `baselineEquityUsd` to re-base the day onto the equity that is
+ *  actually true. Read-write against our own DB only — places no order. */
+autotradeRouter.post(
+  '/daily-target/reset',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(z.object({ baselineEquityUsd: z.number().positive().optional() }), req);
+    const before = updateDailyTarget();
+    const baseline = resetDailyBaselineFlags(body.baselineEquityUsd);
+    logAutotradeEvent({
+      stage: 'config',
+      action: 'daily_target_reset',
+      detail: {
+        clearedReachedAt: before.reachedAt ?? null,
+        clearedGiveBackHaltedAt: before.giveBackHaltedAt ?? null,
+        previousBaselineEquityUsd: before.baselineEquityUsd ?? null,
+        newBaselineEquityUsd: baseline?.equityUsd ?? null,
+        note: 'sticky daily-target halt flags cleared by hand',
+      },
+    });
+    const after = updateDailyTarget();
+    res.json({ ok: true, baseline, status: after });
+  }),
+);
+
 autotradeRouter.post(
   '/sync-equity',
   asyncHandler(async (_req, res) => {

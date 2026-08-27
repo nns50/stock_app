@@ -356,7 +356,15 @@ CREATE TABLE IF NOT EXISTS autotrade_daily_baseline (
   -- the arm level, fired (= live entries halted, sticky like reached_at) if an
   -- ARMED day then falls back to the floor. Both clear on the day roll.
   give_back_armed_at   INTEGER,        -- epoch ms the guard armed today, or NULL
-  give_back_halted_at  INTEGER         -- epoch ms the guard fired today, or NULL
+  give_back_halted_at  INTEGER,        -- epoch ms the guard fired today, or NULL
+  -- Two-tick confirmation before banking the day (2026-08-27). Banking is
+  -- irreversible for the session, and one spurious net-liquidation reading
+  -- ($2,444.70 against a $2,228.83 baseline) once banked a fictional +9.69%
+  -- day and halted live entries for the rest of it. Set when the target is
+  -- first seen met, cleared the moment it is not; only a reach still standing
+  -- on the NEXT tick banks. Persisted alongside the other per-day flags for
+  -- the same reason they are: a mid-day restart must not lose the day's state.
+  reach_candidate_at   INTEGER         -- epoch ms the target was first SEEN met, or NULL
 );
 
 CREATE TABLE IF NOT EXISTS autotrade_exclusions (
@@ -1040,6 +1048,10 @@ function migrate(): void {
   // price at entry, the same reference the live table gained a day earlier.
   // best_basis_since_entry already serves as the peak-premium high-water mark,
   // so unlike the live table this needs one new column, not two.
+  const dbCols = db.prepare('PRAGMA table_info(autotrade_daily_baseline)').all() as { name: string }[];
+  if (!dbCols.some((c) => c.name === 'reach_candidate_at')) {
+    db.exec('ALTER TABLE autotrade_daily_baseline ADD COLUMN reach_candidate_at INTEGER');
+  }
   if (!hasOpp('underlying_at_entry')) {
     db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN underlying_at_entry REAL');
   }

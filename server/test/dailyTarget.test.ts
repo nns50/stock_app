@@ -34,6 +34,7 @@ describe('evaluateDailyTarget (pure)', () => {
     reachedAt,
     giveBackArmedAt,
     giveBackHaltedAt,
+    reachCandidateAt: null,
   });
 
   it('is inactive with no target set — the calibration-only tune never halts anything', () => {
@@ -168,17 +169,104 @@ describe('updateDailyTarget (DB + journal)', () => {
     updateDailyTarget(NOW); // baseline 10,000
     setAutotradeConfig({ accountEquityUsd: 10_400 }); // +4% — past the goal
 
+    // Banking now takes TWO consecutive ticks (2026-08-27) — the first only
+    // records a candidate.
     const first = updateDailyTarget(NOW + 60_000);
-    expect(first.reached).toBe(true);
+    expect(first.reached).toBe(false);
+    const second = updateDailyTarget(NOW + 120_000);
+    expect(second.reached).toBe(true);
     // Later ticks, including a fade back UNDER the line: still reached, no new event.
     setAutotradeConfig({ accountEquityUsd: 10_100 });
-    const later = updateDailyTarget(NOW + 120_000);
+    const later = updateDailyTarget(NOW + 180_000);
     expect(later.reached).toBe(true);
 
     const events = listAutotradeEvents({}).filter((e) => e.action === 'daily_target_reached');
     expect(events).toHaveLength(1);
     const detail = JSON.parse(events[0].detail!) as { targetPct: number; baselineEquityUsd: number; gainPct: number };
     expect(detail).toMatchObject({ targetPct: 3, baselineEquityUsd: 10_000, gainPct: 4 });
+  });
+
+  describe('two-tick confirmation before banking the day (2026-08-27)', () => {
+    // On 2026-08-27 a single spurious net-liquidation reading of $2,444.70
+    // against a $2,228.83 baseline banked the day at a fictional +9.69% and
+    // halted live entries for the rest of the session. reachedAt is sticky by
+    // design, so nothing could undo it.
+    const arm = () => {
+      setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 2_228.83, targetDailyGainPct: 3 });
+      updateDailyTarget(NOW);
+    };
+
+    it('does NOT bank on a one-tick spike, and does not halt entries for it', () => {
+      arm();
+      setAutotradeConfig({ accountEquityUsd: 2_444.7 }); // the spurious reading
+      const spike = updateDailyTarget(NOW + 60_000);
+      expect(spike).toMatchObject({ reached: false, entriesHalted: false });
+
+      // Feed returns to reality: the candidate is dropped and nothing banked.
+      setAutotradeConfig({ accountEquityUsd: 2_235.54 });
+      const back = updateDailyTarget(NOW + 120_000);
+      expect(back).toMatchObject({ reached: false, entriesHalted: false });
+      expect(getDailyBaseline()).toMatchObject({ reachedAt: null, reachCandidateAt: null });
+      expect(listAutotradeEvents({}).filter((e) => e.action === 'daily_target_reached')).toHaveLength(0);
+    });
+
+    it('journals the pending reach, so a near-miss is visible rather than silent', () => {
+      arm();
+      setAutotradeConfig({ accountEquityUsd: 2_444.7 });
+      updateDailyTarget(NOW + 60_000);
+      const pending = listAutotradeEvents({}).filter((e) => e.action === 'daily_target_pending_confirmation');
+      expect(pending).toHaveLength(1);
+      expect(JSON.parse(pending[0].detail!)).toMatchObject({ targetPct: 3, baselineEquityUsd: 2_228.83 });
+    });
+
+    it('still banks a REAL day — one tick later than before, which a real +3% survives', () => {
+      arm();
+      setAutotradeConfig({ accountEquityUsd: 2_300 }); // a genuine +3.2%
+      expect(updateDailyTarget(NOW + 60_000).reached).toBe(false);
+      const banked = updateDailyTarget(NOW + 120_000);
+      expect(banked).toMatchObject({ reached: true, entriesHalted: true });
+      expect(listAutotradeEvents({}).filter((e) => e.action === 'daily_target_reached')).toHaveLength(1);
+    });
+
+    it('will not let two NON-consecutive spikes add up to a confirmation', () => {
+      arm();
+      setAutotradeConfig({ accountEquityUsd: 2_444.7 });
+      updateDailyTarget(NOW + 60_000); // candidate set
+      setAutotradeConfig({ accountEquityUsd: 2_235.54 });
+      updateDailyTarget(NOW + 120_000); // candidate cleared
+      setAutotradeConfig({ accountEquityUsd: 2_444.7 });
+      const second = updateDailyTarget(NOW + 180_000); // starts over, must not bank
+      expect(second.reached).toBe(false);
+      expect(listAutotradeEvents({}).filter((e) => e.action === 'daily_target_reached')).toHaveLength(0);
+    });
+
+    it('leaves an ALREADY-banked day alone — the confirmation guards banking, not the state', () => {
+      arm();
+      setAutotradeConfig({ accountEquityUsd: 2_300 });
+      updateDailyTarget(NOW + 60_000);
+      updateDailyTarget(NOW + 120_000); // banked
+      // A later fade must still read reached, with no re-confirmation dance.
+      setAutotradeConfig({ accountEquityUsd: 2_100 });
+      expect(updateDailyTarget(NOW + 180_000)).toMatchObject({ reached: true, entriesHalted: true });
+    });
+
+    it('does not suppress an already-fired give-back halt while a reach is pending', () => {
+      // entriesHalted must not be cleared by the pending-reach branch when the
+      // give-back guard has independently halted the day.
+      setAutotradeConfig({
+        ...defaultAutotradeConfig(),
+        accountEquityUsd: 10_000,
+        targetDailyGainPct: 3,
+        giveBackArmPct: 2,
+        giveBackFloorPct: 1,
+      });
+      updateDailyTarget(NOW);
+      setAutotradeConfig({ accountEquityUsd: 10_250 }); // arms the guard at +2.5%
+      updateDailyTarget(NOW + 60_000);
+      setAutotradeConfig({ accountEquityUsd: 10_050 }); // fades to the +0.5% floor
+      const halted = updateDailyTarget(NOW + 120_000);
+      expect(halted).toMatchObject({ giveBackHalted: true, entriesHalted: true });
+    });
   });
 
   it('with no target set it still maintains the baseline but never journals or halts', () => {

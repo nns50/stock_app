@@ -156,6 +156,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     liveFatFingerPct: 10,
     liveAllowNakedShort: false,
     liveMaxExposurePct: 100,
+    equitySyncMaxJumpPct: 5,
     liveDayBuyingPowerUsd: 0,
     liveProbationTrades: 20,
     liveProbationSizeMultiplier: 0.5,
