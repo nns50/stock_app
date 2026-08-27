@@ -179,10 +179,20 @@ did not happen for the purposes of the next analysis.
 |---|---|---|---|---|---|
 | 2026-08-27 | `shortDatedOptionsEnabled` false → **true**; DTE band 7–21 → **0–2**; `liveOptionsEnabled` true → **false** | Roll-out step 3 of the spec | 2026-08-26: 14 live options signals, 0 orders, all on risk budget vs $241–340 contracts against a ~$44 budget | Options become affordable; paper starts producing exit-rule data | — |
 | 2026-08-27 | `optionsTakeProfitPct` 75 → **60** | Spec §D3 | Modelled: reachable on a ~+0.8% underlying move before noon; 75 was not | `take_profit` fires at all, rather than every winner ending on `give_back` or `hard_time` | — |
+| 2026-08-27 | Universe: **+SPY, +QQQ** (526 → 528) | Operator instruction, after a manual SPY 0DTE call carried the whole day's +11% | The loop screened 34 distinct names that session — OKTA, HRL, DG, CRWD — and **no index ETF once**. The instrument the short-dated ladder was built for is one the universe could not see | SPY/QQQ reach the options decision, where 0–2 DTE chains actually exist and are liquid | **Watch, do not tune.** There is no separate options universe: options candidates are the equity-screened set, so both must first clear a single-name volatility-breakout screen. Three plausible blocks — `minChangePct: 1` (an index rarely moves 1%), `skipped_unknown_sector` (ETFs have no GICS sector; fired 69× that day), and `optionsMaxIvRvRatio: 1` (index IV usually sits above realized). No gate was loosened to make room; the next read reports where they actually die |
 
 ---
 
 ## What this plan will not do
+
+It will not fit the screen to one memorable trade. The 2026-08-27 SPY entry
+above is the live test of that: a hand-taken index trade made the day's entire
+return while the loop, blocked four separate ways, produced one losing position.
+The tempting read is "automate what worked". The disciplined one is to put SPY
+and QQQ where the loop can see them, change nothing else, and let a few sessions
+say whether an index-level signal survives a screen built for single-name
+breakouts — knowing the honest answer may be that it does not, and that the gate
+which excludes it is right to.
 
 It will not produce a tuning change from a single day, and it will not treat
 "no change recommended" as a wasted read. Most days early on should end that
