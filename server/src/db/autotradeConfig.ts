@@ -588,6 +588,16 @@ export interface AutotradeConfig {
    *  above its net liquidation cannot express that at all while this is fixed
    *  at 100. Still fails closed at 0 when equity is unset. */
   liveMaxExposurePct: number;
+  /** Reject a synced net-liquidation reading that moves more than this % from
+   *  the last accepted one (default 5; 0 disables the guard).
+   *
+   *  On 2026-08-27 the broker's feed swung $1,907-$2,317 on a ~$2,230 account
+   *  holding one position that moved cents. A $2,444.70 reading banked the day
+   *  at a fictional +9.69% and halted live entries for the session, and every
+   *  %-of-equity cap was sized off the same noise. An out-of-band reading that
+   *  REPEATS is still accepted, so a deposit, a withdrawal or an overnight gap
+   *  lands within a few ticks — see equitySyncGuard.ts. */
+  equitySyncMaxJumpPct: number;
   /** Day-trading buying power in DOLLARS, or 0 to use the broker's own
    *  reported figure (the default).
    *
@@ -1055,6 +1065,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveAccountId: null,
     liveMaxOrderUsd: 500,
     liveMaxExposurePct: 100,
+    equitySyncMaxJumpPct: 5,
     liveDayBuyingPowerUsd: 0,
     liveMaxDailyLossUsd: 250,
     liveMaxOrdersPerDay: DEFAULT_LIVE_MAX_ORDERS_PER_DAY,
@@ -1306,6 +1317,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     liveAccountId: accountId,
     liveMaxOrderUsd: nonNeg(input.liveMaxOrderUsd, d.liveMaxOrderUsd),
     liveMaxExposurePct: nonNeg(input.liveMaxExposurePct, d.liveMaxExposurePct),
+    equitySyncMaxJumpPct: nonNeg(input.equitySyncMaxJumpPct, d.equitySyncMaxJumpPct),
     liveDayBuyingPowerUsd: nonNeg(input.liveDayBuyingPowerUsd, d.liveDayBuyingPowerUsd),
     liveMaxDailyLossUsd: nonNeg(input.liveMaxDailyLossUsd, d.liveMaxDailyLossUsd),
     liveMaxOrdersPerDay: posInt(input.liveMaxOrdersPerDay, d.liveMaxOrdersPerDay),

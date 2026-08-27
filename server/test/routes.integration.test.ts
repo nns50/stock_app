@@ -2932,6 +2932,46 @@ describe('autotrade monitoring dashboard + kill switch routes (integration)', ()
     expect(future.summary).toEqual([]);
   });
 
+  it('POST /daily-target/reset clears the sticky halt flags, and can re-base the day', async () => {
+    // Every halt here is sticky on purpose, which is right until a flag is set
+    // on a reading that never happened: on 2026-08-27 a spurious
+    // net-liquidation tick banked the day at a fictional +9.69% and there was
+    // no way to undo it short of editing the database.
+    const putCfg = (body: unknown) =>
+      fetch(`${base}/api/autotrade/config`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    await putCfg({ accountEquityUsd: 10_000, targetDailyGainPct: 3 });
+    await post('/api/autotrade/daily-target/reset', {}); // establishes today's baseline at 10,000
+
+    // Bank the day the honest way — two consecutive ticks past the goal.
+    await putCfg({ accountEquityUsd: 10_400 });
+    const dash = async () =>
+      ((await getJson('/api/autotrade/dashboard')) as { dailyTarget: { reached: boolean; entriesHalted: boolean } })
+        .dailyTarget;
+    await dash();
+    await dash();
+    expect(await dash()).toMatchObject({ reached: true, entriesHalted: true });
+
+    // Clearing the flags alone is not enough while equity still reads above
+    // the target — the endpoint's own doc comment says so, and this proves it.
+    await post('/api/autotrade/daily-target/reset', {});
+    expect((await dash()).reached).toBe(true);
+
+    // Re-basing onto the equity that is actually true does unhalt the day.
+    const res = await post('/api/autotrade/daily-target/reset', { baselineEquityUsd: 10_400 });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { ok: boolean }).toMatchObject({ ok: true });
+    expect(await dash()).toMatchObject({ reached: false, entriesHalted: false });
+
+    const events = (await getJson('/api/autotrade/events?actions=daily_target_reset')) as {
+      events: { action: string }[];
+    };
+    expect(events.events.length).toBeGreaterThan(0);
+  });
+
   it('POST /kill-switch rejects a non-boolean body', async () => {
     const res = await post('/api/autotrade/kill-switch', { on: 'yes' });
     expect(res.status).toBe(400);

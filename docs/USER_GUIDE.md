@@ -1579,7 +1579,25 @@ equally-weighted cards in the order they happened to be built:
   intraday — the end-of-day flatten closes everything before the bell, so day-trading
   buying power is never carried overnight. Re-check it if your account size changes
   materially; a stale figure overstates what you can fund, and the broker's own
-  real-time check is then the only thing left. Needs account equity set first (Configuration, above). A **probation**
+  real-time check is then the only thing left.
+
+  A third setting protects everything downstream of the broker's equity feed.
+  **Max equity-sync jump (%)** (default 5) refuses a synced net-liquidation
+  reading that moves more than that from the last accepted one. It exists
+  because on 2026-08-27 the feed swung between $1,907.21 and $2,316.71 on a
+  ~$2,230 account holding a single position that moved cents — and two things
+  read that number. A $2,444.70 print banked the day at a fictional **+9.69%**
+  and halted live entries for the rest of the session, and every %-of-equity
+  cap was sized off the same noise. A rejected reading is journaled as
+  `equity_sync_rejected` and the last confirmed figure is kept; a reading that
+  **repeats** at the same new level is accepted after three ticks, so a
+  deposit, a withdrawal or an overnight gap still lands. Set it to 0 to
+  disable. Belt and braces: banking the day now also needs the target met on
+  **two consecutive ticks**, so a one-tick spike can no longer end a session.
+  If a day is spoiled anyway, **POST `/api/autotrade/daily-target/reset`**
+  clears the sticky flags — and because a reach is recomputed as "flag set OR
+  equity above target", pass `baselineEquityUsd` to re-base the day onto the
+  equity that is actually true, or the next tick simply re-trips it. Needs account equity set first (Configuration, above). A **probation**
   setting cuts position size (e.g. to half) for the first N live trades after you enable
   it, on top of whatever the configured risk-per-trade % and any loss-streak step-down
   already produce — save these before enabling. Your **paper track record** (trade count, win rate, date

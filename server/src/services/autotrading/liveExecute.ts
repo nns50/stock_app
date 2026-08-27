@@ -64,6 +64,7 @@ import { fetchTodayVwap } from './vwap';
 import { detectLevels } from '../../indicators/levels';
 import { planAroundLevels } from './levelPlan';
 import { evaluateDailyTarget } from './dailyTarget';
+import { evaluateEquitySync, freshEquityGuardState, EquityGuardState } from './equitySyncGuard';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 // DB-layer reads only (NOT the options execution service) -- so the combined
 // live budget can fold in the options book without a liveExecute <-> options
@@ -508,6 +509,12 @@ export interface EquitySyncResult {
  * there would flood the Recent Activity feed's fixed-size window with equity
  * noise, crowding out the screen/decide/execute events it exists to surface.
  */
+/** Corroboration state for the equity guard, held across ticks. Module-level
+ *  because it is a property of THIS process's view of the feed, not something
+ *  worth a table: a restart simply costs a few more ticks before a genuinely
+ *  changed balance is accepted, and never accepts a bad one. */
+let equityGuard: EquityGuardState = freshEquityGuardState();
+
 export async function syncAccountEquityFromBroker(opts?: { log?: boolean }): Promise<EquitySyncResult> {
   const cfg = getAutotradeConfig();
   const accountId = cfg.liveAccountId;
@@ -522,6 +529,40 @@ export async function syncAccountEquityFromBroker(opts?: { log?: boolean }): Pro
   }
 
   const previousEquityUsd = cfg.accountEquityUsd;
+
+  // Sanity-check before writing. The feed can contradict itself (2026-08-27:
+  // $1,907-$2,317 on a ~$2,230 account holding one position that moved cents),
+  // and BOTH readers of this number are damaged by that — the daily target
+  // banked a fictional +9.69% day and halted live entries, and every
+  // %-of-equity cap sized off the noise. See equitySyncGuard.ts.
+  const guard = evaluateEquitySync(acct.netLiquidationUsd, previousEquityUsd, cfg.equitySyncMaxJumpPct, equityGuard);
+  equityGuard = guard.state;
+  if (!guard.accept) {
+    // Journaled unconditionally, NOT under opts.log: the per-tick sync passes
+    // log:false to keep ordinary mark-to-market drift out of the feed, but a
+    // rejected reading is not drift — it is the one thing here worth seeing.
+    logAutotradeEvent({
+      stage: 'config',
+      action: 'equity_sync_rejected',
+      detail: {
+        rejectedUsd: acct.netLiquidationUsd,
+        keptUsd: previousEquityUsd,
+        jumpPct: guard.jumpPct,
+        maxJumpPct: cfg.equitySyncMaxJumpPct,
+        reason: guard.reason,
+        accountId,
+      },
+    });
+    return {
+      ok: true,
+      accountId,
+      previousEquityUsd,
+      netLiquidationUsd: acct.netLiquidationUsd,
+      ...(acct.state ? { buyingPowerUsd: acct.state.buyingPowerUsd } : {}),
+      config: cfg,
+    };
+  }
+
   const next = setAutotradeConfig({ accountEquityUsd: acct.netLiquidationUsd });
   if ((opts?.log ?? true) && next.accountEquityUsd !== previousEquityUsd) {
     logAutotradeEvent({
