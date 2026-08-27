@@ -265,16 +265,61 @@ export type DollarCaps = Record<DollarCapKey, number>;
 /** The dollar caps THIS config's percentages imply at `equityUsd`. Derived
  *  from the CURRENT config rather than by replaying a tune, so it stays correct
  *  after auto-tune or a hand edit moves the percentages. */
-export function deriveDollarCaps(
-  cfg: Pick<AutotradeConfig, 'maxDailyDrawdownPct' | 'riskProfile'>,
+/** Headroom above the smallest order the sizer can produce. A tighter stop
+ *  makes the notional BIGGER (same dollars of risk over a shorter distance),
+ *  so the floor is only the smallest case; 1.5x leaves room for ordinary
+ *  tighter-stop candidates without the cap ceasing to be a backstop. */
+const ORDER_CAP_SIZER_HEADROOM = 1.5;
+
+/** The smallest order the sizer can produce at this equity, in dollars. A
+ *  per-order cap below this blocks every entry. */
+export function sizerFloorUsd(
+  cfg: Pick<AutotradeConfig, 'riskPerTradePct' | 'maxStopDistancePct'>,
   equityUsd: number,
+): number {
+  return equityUsd * sizerFloorFraction(cfg);
+}
+
+/**
+ * The smallest position the sizer can legitimately produce, as a fraction of
+ * equity: risk% spread over the WIDEST stop it will accept.
+ *
+ * This is the term the cap formula was missing, and its absence is not a
+ * rounding issue — it is a contradiction. On 2026-08-27 at riskPerTradePct
+ * 1.25 and maxStopDistancePct 2.5, the sizer produced 50% of equity while the
+ * profile fraction allowed 25%: a correctly-sized position could never fit its
+ * own cap, and re-anchoring would have rewritten the cap DOWN from $1,600 to
+ * $1,290, tightening the block. The failure surfaced twice in one day — once
+ * at $2,283 of equity and again after a $5,000 deposit — because nothing tied
+ * the two formulas together.
+ */
+export function sizerFloorFraction(cfg: Pick<AutotradeConfig, 'riskPerTradePct' | 'maxStopDistancePct'>): number {
+  const stop = cfg.maxStopDistancePct;
+  if (!(stop > 0) || !(cfg.riskPerTradePct > 0)) return 0;
+  return cfg.riskPerTradePct / stop;
+}
+
+export function deriveDollarCaps(
+  cfg: Pick<AutotradeConfig, 'maxDailyDrawdownPct' | 'riskProfile' | 'riskPerTradePct' | 'maxStopDistancePct'>,
+  equityUsd: number,
+  /** Available buying power, when known. The cap is bounded by it because an
+   *  order the account cannot fund is not a cap worth having — the broker
+   *  would refuse it anyway, and a cap above real capacity only hides the
+   *  refusal. Omitted (or 0) leaves the cap unbounded by funding. */
+  buyingPowerUsd?: number,
 ): DollarCaps {
   const dailyLossUsd = Math.round(equityUsd * (cfg.maxDailyDrawdownPct / 100));
-  const orderUsd = Math.round(equityUsd * maxOrderEquityFractionFor(cfg.riskProfile));
+  // The larger of the fat-finger intent and what the sizer actually makes.
+  // max(), not min(): a cap below the sizer's own output blocks every order,
+  // which is not caution, it is a system that cannot trade.
+  const byProfile = equityUsd * maxOrderEquityFractionFor(cfg.riskProfile);
+  const bySizer = equityUsd * sizerFloorFraction(cfg) * ORDER_CAP_SIZER_HEADROOM;
+  let orderUsd = Math.max(byProfile, bySizer);
+  if (buyingPowerUsd !== undefined && buyingPowerUsd > 0) orderUsd = Math.min(orderUsd, buyingPowerUsd);
   return {
-    liveMaxOrderUsd: orderUsd,
+    liveMaxOrderUsd: Math.round(orderUsd),
     liveMaxDailyLossUsd: dailyLossUsd,
-    liveOptionsMaxOrderUsd: orderUsd,
+    liveOptionsMaxOrderUsd: Math.round(orderUsd),
     liveOptionsMaxDailyLossUsd: dailyLossUsd,
   };
 }
@@ -283,7 +328,12 @@ export function deriveDollarCaps(
  *  they were derived from, and the equity they were derived AT. */
 export type DollarCapConfig = Pick<
   AutotradeConfig,
-  DollarCapKey | 'maxDailyDrawdownPct' | 'riskProfile' | 'liveCapsAnchorEquityUsd'
+  | DollarCapKey
+  | 'maxDailyDrawdownPct'
+  | 'riskProfile'
+  | 'riskPerTradePct'
+  | 'maxStopDistancePct'
+  | 'liveCapsAnchorEquityUsd'
 >;
 
 /**
@@ -408,6 +458,9 @@ export const NEVER_TUNED_KEYS = [
   // A data-quality guard on the broker feed. Nothing about a target daily gain
   // implies how much a net-liquidation reading is allowed to jump.
   'equitySyncMaxJumpPct',
+  // A slot reservation for the evidence track, not a risk parameter — the
+  // combined aggregate-RISK budget the tune does calibrate is untouched by it.
+  'optionsMaxConcurrentPositions',
   // Safety gates & identity — a preset must never arm anything or change whose
   // account it is.
   'enabled',
@@ -553,6 +606,11 @@ function shapeToPatch(
   equityUsd: number,
   riskPerTradePct: number,
   targetDailyGainPct: number | null,
+  /** The stop ceiling the sizer works to. deriveDollarCaps needs it to keep
+   *  the order cap above what the sizer can actually produce; the tune itself
+   *  does not set it, so it is threaded in from live config. */
+  maxStopDistancePct: number,
+  buyingPowerUsd?: number,
 ): TunablePatch {
   // Daily-loss halt sized to a bad day at THIS sizing (~75% of the day's trades
   // losing), floored at 2% and capped at 40% so it never trips before the
@@ -563,11 +621,20 @@ function shapeToPatch(
   // equity, not primary sizing), and the daily-loss cap matches the tuned
   // drawdown % in dollars so the guardrail layer agrees exactly with the risk
   // engine's own % halt rather than being a conflicting second number.
-  const dailyLossUsd = Math.round(equityUsd * (maxDailyDrawdownPct / 100));
-  // Through maxOrderEquityFractionFor, NOT shape.maxOrderEquityFraction
-  // directly: that function is what deriveDollarCaps and liveCapsReanchor read,
-  // and the two must agree by construction or a fresh tune reads as drifted.
-  const orderUsd = Math.round(equityUsd * maxOrderEquityFractionFor(shape.riskProfile));
+  // Through deriveDollarCaps, NOT a second copy of its arithmetic: that
+  // function is what liveCapsReanchor reads, and the two must agree by
+  // construction or a fresh tune reads as drifted. This file used to compute
+  // the order cap inline from maxOrderEquityFractionFor and they agreed by
+  // coincidence of formula; once deriveDollarCaps gained the sizer-floor term
+  // (see its doc comment) the copies diverged, which is precisely the failure
+  // the old comment here was written to prevent.
+  const caps = deriveDollarCaps(
+    { maxDailyDrawdownPct, riskProfile: shape.riskProfile, riskPerTradePct, maxStopDistancePct },
+    equityUsd,
+    buyingPowerUsd,
+  );
+  const dailyLossUsd = caps.liveMaxDailyLossUsd;
+  const orderUsd = caps.liveMaxOrderUsd;
   return {
     riskProfile: shape.riskProfile,
     maxConcurrentPositions: shape.maxConcurrentPositions,
@@ -636,6 +703,9 @@ export interface ComputeTargetTuneInput {
    *  (the auto-tuners), and to spot dollar caps a human set deliberately so
    *  this tune preserves them instead of reverting them. */
   config: Pick<AutotradeConfig, 'autoTuneEnabled' | 'autoTuneExitsEnabled'> & DollarCapConfig;
+  /** Available buying power, when the caller knows it — bounds the per-order
+   *  cap, since an order the account cannot fund is not a cap worth having. */
+  buyingPowerUsd?: number;
 }
 
 /** Derive a full tunable patch from equity + a target daily gain % under the
@@ -650,7 +720,14 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
   const rawRiskPerTradePct = round2(targetDailyGainPct / (shape.maxTradesPerDay * edgeR));
   const riskPerTradePct = clamp(rawRiskPerTradePct, 0.1, MAX_SUGGESTED_RISK_PER_TRADE_PCT);
 
-  const patch = shapeToPatch(shape, equityUsd, riskPerTradePct, targetDailyGainPct);
+  const patch = shapeToPatch(
+    shape,
+    equityUsd,
+    riskPerTradePct,
+    targetDailyGainPct,
+    input.config.maxStopDistancePct,
+    input.buyingPowerUsd,
+  );
 
   const warnings: string[] = [];
 
@@ -702,8 +779,8 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
  *  Deliberately NOT identical to defaultAutotradeConfig() — see the note on
  *  BANDS above for the three fields that differ and why. "Moderate" here means
  *  the band, not the shipped defaults. */
-export function resetToModerate(equityUsd: number): TunablePatch {
+export function resetToModerate(equityUsd: number, maxStopDistancePct: number): TunablePatch {
   // No declared goal — the moderate baseline is a risk shape, not a promise;
   // writing null here also DISARMS the daily-goal tracker until the next tune.
-  return shapeToPatch(BANDS.moderate, equityUsd, 1, null);
+  return shapeToPatch(BANDS.moderate, equityUsd, 1, null, maxStopDistancePct);
 }

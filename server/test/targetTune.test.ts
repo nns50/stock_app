@@ -177,7 +177,7 @@ describe('resetToModerate', () => {
     // disabled so untouched configs don't change behavior, but a preset the
     // user asks for takes a stance); the liquidity floors sit a notch above
     // the shipped engine constants.
-    const p = resetToModerate(10000);
+    const p = resetToModerate(10000, defaultAutotradeConfig().maxStopDistancePct);
     expect(p.maxDailyDrawdownPct).toBe(4.5);
     expect(p.optionsStopLossPct).toBe(50);
     expect(p.optionsTakeProfitPct).toBe(80);
@@ -196,7 +196,7 @@ describe('resetToModerate', () => {
   });
 
   it('reproduces the default MODERATE shape at 1% risk, equity-scaled', () => {
-    const p = resetToModerate(10000);
+    const p = resetToModerate(10000, defaultAutotradeConfig().maxStopDistancePct);
     expect(p.riskProfile).toBe('MODERATE');
     expect(p.riskPerTradePct).toBe(1);
     expect(p.maxConcurrentPositions).toBe(2);
@@ -210,7 +210,7 @@ describe('resetToModerate', () => {
   });
 
   it('never emits the safety/identity fields (only the tunable allowlist)', () => {
-    const p = resetToModerate(1000) as Record<string, unknown>;
+    const p = resetToModerate(1000, defaultAutotradeConfig().maxStopDistancePct) as Record<string, unknown>;
     for (const forbidden of [
       'enabled',
       'killSwitch',
@@ -237,7 +237,7 @@ describe('tunable/never-tuned classification', () => {
   // config field without classifying it fails here (and fails typecheck via
   // targetTune.ts's UnclassifiedAutotradeConfigKey assertion).
   it('classifies every AutotradeConfig field as tuned or deliberately untouched', () => {
-    const tuned = new Set(Object.keys(resetToModerate(1000)));
+    const tuned = new Set(Object.keys(resetToModerate(1000, defaultAutotradeConfig().maxStopDistancePct)));
     const excluded = new Set<string>(NEVER_TUNED_KEYS);
     for (const key of Object.keys(defaultAutotradeConfig())) {
       const classified = tuned.has(key) || excluded.has(key);
@@ -251,7 +251,7 @@ describe('tunable/never-tuned classification', () => {
     // If a key is in TunablePatch but shapeToPatch forgets to write it, the
     // patch silently leaves that field at whatever it was — the classification
     // above can't see it (it reads the emitted patch), so pin the count too.
-    const emitted = Object.keys(resetToModerate(1000)).length;
+    const emitted = Object.keys(resetToModerate(1000, defaultAutotradeConfig().maxStopDistancePct)).length;
     expect(emitted + NEVER_TUNED_KEYS.length).toBe(Object.keys(defaultAutotradeConfig()).length);
   });
 });
@@ -289,7 +289,12 @@ describe('computeTargetTune — hand-edited dollar caps', () => {
   it('still sizes every cap the human did NOT touch', () => {
     const r = base({ targetDailyGainPct: 3, equityUsd: 2137, config: derivedAt(2137) });
     const expected = deriveDollarCaps(
-      { maxDailyDrawdownPct: r.patch.maxDailyDrawdownPct, riskProfile: r.patch.riskProfile },
+      {
+        maxDailyDrawdownPct: r.patch.maxDailyDrawdownPct,
+        riskProfile: r.patch.riskProfile,
+        riskPerTradePct: r.patch.riskPerTradePct,
+        maxStopDistancePct: defaultAutotradeConfig().maxStopDistancePct,
+      },
       2137,
     );
     expect(r.patch.liveMaxOrderUsd).toBe(expected.liveMaxOrderUsd);

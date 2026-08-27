@@ -8,7 +8,7 @@ import {
 } from '../src/db/autotradeConfig';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { db } from '../src/db';
-import { computeTargetTune } from '../src/services/autotrading/targetTune';
+import { computeTargetTune, sizerFloorUsd } from '../src/services/autotrading/targetTune';
 import {
   REANCHOR_THRESHOLD_PCT,
   decideLiveCapsReanchor,
@@ -46,7 +46,12 @@ describe('deriveDollarCaps', () => {
         config: { ...defaultAutotradeConfig(), autoTuneEnabled: false, autoTuneExitsEnabled: false },
       });
       const derived = deriveDollarCaps(
-        { maxDailyDrawdownPct: tune.patch.maxDailyDrawdownPct, riskProfile: tune.patch.riskProfile },
+        {
+          maxDailyDrawdownPct: tune.patch.maxDailyDrawdownPct,
+          riskProfile: tune.patch.riskProfile,
+          riskPerTradePct: tune.patch.riskPerTradePct,
+          maxStopDistancePct: defaultAutotradeConfig().maxStopDistancePct,
+        },
         equity,
       );
       expect(tune.patch.liveMaxOrderUsd).toBe(derived.liveMaxOrderUsd);
@@ -208,5 +213,93 @@ describe('reanchorLiveCapsIfDrifted (DB + journal)', () => {
 
     expect(getAutotradeConfig()).toEqual(before);
     expect(listAutotradeEvents({ stage: 'config' }).filter((e) => e.action === 'live_caps_reanchored')).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The order cap must never sit below the sizer's own floor (2026-08-27).
+//
+// The cap formula allowed a band fraction of equity (25% moderate) while the
+// sizer produces riskPerTradePct/maxStopDistancePct of it — 50% at 1.25/2.5.
+// A correctly-sized position could never fit its own cap, and re-anchoring
+// would have made it WORSE, rewriting $1,600 down to $1,290. It surfaced
+// twice in one day: once at $2,283 of equity, and again after a $5,000
+// deposit doubled the sizer's output while the stored cap stayed put.
+// ---------------------------------------------------------------------------
+describe('the per-order cap and the position sizer cannot contradict each other', () => {
+  const sizing = { riskPerTradePct: 1.25, maxStopDistancePct: 2.5 }; // sizer makes 50% of equity
+
+  it('derives a cap at or above the smallest order the sizer can produce', () => {
+    const cfg = { ...defaultAutotradeConfig(), ...sizing, riskProfile: 'MODERATE' as const };
+    for (const equity of [2_283, 2_450, 5_142, 20_000]) {
+      const cap = deriveDollarCaps(cfg, equity).liveMaxOrderUsd;
+      const floor = sizerFloorUsd(cfg, equity);
+      expect(cap).toBeGreaterThanOrEqual(floor);
+    }
+  });
+
+  it('takes the band fraction when IT is the larger — the fat-finger intent is not lost', () => {
+    // A wide stop ceiling makes the sizer's floor small, and then the original
+    // 25%-of-equity backstop is what should bind.
+    const cfg = {
+      ...defaultAutotradeConfig(),
+      riskPerTradePct: 1,
+      maxStopDistancePct: 20, // floor is only 5% of equity
+      riskProfile: 'MODERATE' as const,
+    };
+    const cap = deriveDollarCaps(cfg, 10_000).liveMaxOrderUsd;
+    expect(cap).toBe(2_500); // 25% of equity, not the 750 the sizer floor would give
+  });
+
+  it('is bounded by buying power when the caller knows it', () => {
+    // A cap above what the account can fund is not a cap worth having — the
+    // broker refuses the order anyway and the cap only hides the refusal.
+    const cfg = { ...defaultAutotradeConfig(), ...sizing, riskProfile: 'MODERATE' as const };
+    const unbounded = deriveDollarCaps(cfg, 10_000).liveMaxOrderUsd;
+    const bounded = deriveDollarCaps(cfg, 10_000, 3_000).liveMaxOrderUsd;
+    expect(bounded).toBe(3_000);
+    expect(bounded).toBeLessThan(unbounded);
+    // 0/undefined leaves it unbounded.
+    expect(deriveDollarCaps(cfg, 10_000, 0).liveMaxOrderUsd).toBe(unbounded);
+  });
+
+  it('re-anchors on a BLOCKING cap even when drift is far inside the threshold', () => {
+    // The 2026-08-27 shape exactly: cap $1,600, sizer floor $2,581, drift 4%.
+    // Drift alone would have waited for another 11% move while the loop placed
+    // nothing at all.
+    const cfg: AutotradeConfig = {
+      ...defaultAutotradeConfig(),
+      ...sizing,
+      riskProfile: 'MODERATE',
+      liveMaxOrderUsd: 1_600,
+      liveCapsAnchorEquityUsd: 5_352,
+      accountEquityUsd: 5_161,
+    };
+    expect(sizerFloorUsd(cfg, 5_161)).toBeGreaterThan(cfg.liveMaxOrderUsd);
+
+    const d = decideLiveCapsReanchor(cfg, 5_161);
+
+    expect(d.action).toBe('reanchor');
+    if (d.action !== 'reanchor') throw new Error('unreachable');
+    expect(d.driftPct).toBeLessThan(REANCHOR_THRESHOLD_PCT);
+    // The $1,600 was hand-set, so "only move what you own" would normally
+    // leave it. Correctness overrides that: a cap that blocks every order is
+    // not a preference being honoured.
+    expect(d.handEdited).not.toContain('liveMaxOrderUsd');
+    expect(d.patch.liveMaxOrderUsd!).toBeGreaterThanOrEqual(sizerFloorUsd(cfg, 5_161));
+  });
+
+  it('still holds when the cap is NOT blocking and drift is small — no churn', () => {
+    // The pair to the case above: same small drift, but a cap that clears the
+    // floor. Without this, the new trigger would re-anchor on every tick.
+    const cfg: AutotradeConfig = {
+      ...defaultAutotradeConfig(),
+      ...sizing,
+      riskProfile: 'MODERATE',
+      liveMaxOrderUsd: 9_000,
+      liveCapsAnchorEquityUsd: 5_352,
+      accountEquityUsd: 5_161,
+    };
+    expect(decideLiveCapsReanchor(cfg, 5_161).action).toBe('skip');
   });
 });

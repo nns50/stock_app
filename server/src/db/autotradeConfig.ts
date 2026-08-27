@@ -588,6 +588,22 @@ export interface AutotradeConfig {
    *  above its net liquidation cannot express that at all while this is fixed
    *  at 100. Still fails closed at 0 when equity is unset. */
   liveMaxExposurePct: number;
+  /** Concurrent-position slots reserved for the OPTIONS book, or 0 (the
+   *  default) to keep sharing maxConcurrentPositions with equity.
+   *
+   *  Options and equity deliberately share one combined budget (phase 12) so
+   *  an approved options signal's risk counts against the next equity
+   *  candidate's cap and vice versa. Sound for RISK. Ruinous for SLOTS at a
+   *  small cap: equity runs first in the loop tick, and on 2026-08-27 it held
+   *  both of the two slots all session, so 184 options signals produced ZERO
+   *  orders — every one refused "2 open vs cap 2". The paper options book is
+   *  the evidence track the whole short-dated roll-out depends on, and it
+   *  cannot produce evidence it is never given a slot to generate.
+   *
+   *  When set, the options path counts only its OWN open options positions
+   *  against this number. The combined AGGREGATE RISK budget is untouched —
+   *  that one is about money and stays shared. */
+  optionsMaxConcurrentPositions: number;
   /** Reject a synced net-liquidation reading that moves more than this % from
    *  the last accepted one (default 5; 0 disables the guard).
    *
@@ -1064,6 +1080,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveAccountId: null,
     liveMaxOrderUsd: 500,
     liveMaxExposurePct: 100,
+    optionsMaxConcurrentPositions: 0,
     equitySyncMaxJumpPct: 5,
     liveDayBuyingPowerUsd: 0,
     liveMaxDailyLossUsd: 250,
@@ -1316,6 +1333,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     liveAccountId: accountId,
     liveMaxOrderUsd: nonNeg(input.liveMaxOrderUsd, d.liveMaxOrderUsd),
     liveMaxExposurePct: nonNeg(input.liveMaxExposurePct, d.liveMaxExposurePct),
+    optionsMaxConcurrentPositions: nonNeg(input.optionsMaxConcurrentPositions, d.optionsMaxConcurrentPositions),
     equitySyncMaxJumpPct: nonNeg(input.equitySyncMaxJumpPct, d.equitySyncMaxJumpPct),
     liveDayBuyingPowerUsd: nonNeg(input.liveDayBuyingPowerUsd, d.liveDayBuyingPowerUsd),
     liveMaxDailyLossUsd: nonNeg(input.liveMaxDailyLossUsd, d.liveMaxDailyLossUsd),
