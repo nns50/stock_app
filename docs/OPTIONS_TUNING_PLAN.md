@@ -115,28 +115,59 @@ the read reports the distribution and says so.
 
 ## What the daily read actually queries
 
-The journal writes roughly 1000 rows every 8 hours and the events endpoint caps
-at 1000, so **an unfiltered read cannot see yesterday.** Cumulative analysis
-depends on narrowing:
+The journal writes roughly 1000 rows every 8 hours overnight and far more
+during market hours, and the row endpoint caps at 1000 — so **an unfiltered
+read cannot see yesterday.** Measured 2026-08-27: 1000 unfiltered rows spanned
+7.9 hours.
 
-```
-GET /api/autotrade/events?actions=<names>&since=<epoch_ms>&limit=1000
-```
+Narrowing by action helps, but **only for low-volume actions.** Also measured
+that day, at `limit=1000`:
 
-`actions` (comma-separated) and `since` were added 2026-08-27 for exactly this
-reason. The useful narrowings:
-
-| Purpose | actions |
+| Query | Reach |
 |---|---|
-| Exit rule distribution | `short_dated_options_exit` |
-| Entry funnel | `options_signal_generated,no_options_signal` |
-| Risk-check blocks | `blocked` |
-| Entry gates | `short_dated_entry_window_closed` |
+| unfiltered | 7.9h — cannot see yesterday |
+| `actions=blocked` | 3.5h — still capped, worse in wall-clock |
+| `actions=options_signal_generated,no_options_signal` | 5.4h — still capped |
+| `actions=short_dated_options_exit` | uncapped (≤4/day, so years) |
 
-`since` should be the timestamp short-dated was enabled (**2026-08-27**), so
-every read covers the whole life of the feature rather than one day.
+So the two reads split:
 
----
+**Layer 2 (the ladder) reads rows.** `short_dated_options_exit` fires at most
+once per closed position, against a max of one concurrent position and a 4/day
+order cap — a handful a day. The full history fits well under the cap, and the
+rows carry the `rule`, `premiumGainPct` and `underlyingMovePct` the L-rules
+need:
+
+```
+GET /api/autotrade/events?actions=short_dated_options_exit&since=<epoch_ms>&limit=1000
+```
+
+**Layer 0 (the funnel) reads counts, not rows.** `blocked` and the signal
+actions fire hundreds of times an hour during market hours, so no amount of
+paging reaches a two-week window. Use the summary endpoint, which counts by ET
+calendar date and never materialises the JSON `detail` blob that makes a row
+heavy:
+
+```
+GET /api/autotrade/events/summary?actions=<names>&since=<epoch_ms>
+→ { summary: [{ date: 'YYYY-MM-DD', action, count }, ...] }
+```
+
+| Purpose | Endpoint | actions |
+|---|---|---|
+| Exit rule distribution (L1–L6) | `/events` | `short_dated_options_exit` |
+| Entry funnel (F1–F5) | `/events/summary` | `options_signal_generated,no_options_signal` |
+| Risk-check blocks (F2–F5) | `/events/summary` | `blocked` |
+| Entry gates (F6–F7) | `/events/summary` | `short_dated_entry_window_closed` |
+
+`since` should be the epoch ms of **2026-08-27**, when short-dated was
+enabled, so every read covers the whole life of the feature rather than one
+day.
+
+One thing the summary cannot give you: the *reason* inside a `blocked` event's
+`detail`. When F1 fires and the dominant reason has to be identified, pull the
+rows for a single recent session (a narrow `since`) and read the detail there —
+the summary establishes *that* blocks dominate, the rows establish *why*.
 
 ## Decision log
 
