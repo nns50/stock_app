@@ -10,7 +10,12 @@ import {
 } from '../db/autotradeConfig';
 import { addExclusion, listExclusions, removeExclusion } from '../db/autotradeExclusions';
 import { addMacroEvent, listMacroEvents, removeMacroEvent } from '../db/macroEvents';
-import { AutotradeStage, listAutotradeEvents, logAutotradeEvent } from '../db/autotradeEvents';
+import {
+  AutotradeStage,
+  countAutotradeEventsByDay,
+  listAutotradeEvents,
+  logAutotradeEvent,
+} from '../db/autotradeEvents';
 import { runAutotradeScreen } from '../services/autotrading/screen';
 import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/decide';
 import { OptionsDecisionConfig, runOptionsDecision } from '../services/autotrading/optionsDecide';
@@ -1847,6 +1852,24 @@ const eventsQuery = z.object({
   since: z.coerce.number().int().nonnegative().optional(),
   limit: z.coerce.number().int().min(1).max(1000).optional(),
 });
+/** Counts by ET date and action. The row endpoint below caps at 1000, which
+ *  during market hours is ~3 hours of the busiest actions — so a multi-day
+ *  distribution (what docs/OPTIONS_TUNING_PLAN.md decides on) is not reachable
+ *  by paging rows and needs this instead. */
+autotradeRouter.get(
+  '/events/summary',
+  asyncHandler(async (req, res) => {
+    const { actions, limit: _limit, ...q } = parseQuery(eventsQuery, req);
+    const list = actions
+      ? actions
+          .split(',')
+          .map((a) => a.trim())
+          .filter(Boolean)
+      : undefined;
+    res.json({ summary: countAutotradeEventsByDay({ ...q, ...(list ? { actions: list } : {}) }) });
+  }),
+);
+
 autotradeRouter.get(
   '/events',
   asyncHandler(async (req, res) => {

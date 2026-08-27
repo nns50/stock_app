@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { etToday } from '../src/util/marketDate';
 import type { AddressInfo } from 'node:net';
 import { app } from '../src/index';
 import { db } from '../src/db';
@@ -2900,6 +2901,35 @@ describe('autotrade monitoring dashboard + kill switch routes (integration)', ()
     expect(future.events).toEqual([]);
     const past = (await getJson(`/api/autotrade/events?since=${Date.now() - 60 * 60_000}`)) as { events: unknown[] };
     expect(past.events.length).toBeGreaterThan(0);
+  });
+
+  it('GET /events/summary counts by ET date and action, past the row cap', async () => {
+    // The row endpoint caps at 1000, and during market hours the busiest
+    // actions write that many in ~3 hours — so the multi-day distribution the
+    // options tuning plan decides on is not reachable by paging rows at all.
+    // This counts instead of listing, and never materialises the JSON detail
+    // blob that makes a row heavy.
+    await post('/api/autotrade/kill-switch', { on: true });
+    await post('/api/autotrade/kill-switch', { on: false });
+    await post('/api/autotrade/kill-switch', { on: true });
+    await post('/api/autotrade/kill-switch', { on: false });
+
+    const { summary } = (await getJson('/api/autotrade/events/summary?actions=kill_switch_engaged')) as {
+      summary: { date: string; action: string; count: number }[];
+    };
+    expect(summary.length).toBe(1);
+    expect(summary[0]!.action).toBe('kill_switch_engaged');
+    expect(summary[0]!.count).toBe(2);
+    // An America/New_York calendar date, not a UTC one — bucketing by UTC
+    // would file a session's own after-hours events under tomorrow.
+    expect(summary[0]!.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(summary[0]!.date).toBe(etToday());
+
+    // Same filters as the row endpoint.
+    const none = (await getJson('/api/autotrade/events/summary?actions=__does_not_exist__')) as { summary: [] };
+    expect(none.summary).toEqual([]);
+    const future = (await getJson(`/api/autotrade/events/summary?since=${Date.now() + 60_000}`)) as { summary: [] };
+    expect(future.summary).toEqual([]);
   });
 
   it('POST /kill-switch rejects a non-boolean body', async () => {

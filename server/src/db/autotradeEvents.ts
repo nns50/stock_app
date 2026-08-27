@@ -1,4 +1,5 @@
 import { db } from './index';
+import { etToday } from '../util/marketDate';
 
 // ---------------------------------------------------------------------------
 // The auto-trading journal (docs/AUTOTRADING_SPEC.md — JOURNALING / stage 5 of
@@ -126,4 +127,69 @@ export function listAutotradeEvents(filter: ListEventsFilter = {}): AutotradeEve
     .prepare(`SELECT * FROM autotrade_events ${where} ORDER BY id DESC LIMIT ?`)
     .all(...params, limit) as Row[];
   return rows.map(map);
+}
+
+/** One (ET calendar date, action) bucket. */
+export interface EventDayCount {
+  /** YYYY-MM-DD on the US market calendar — NOT a UTC date. A loop tick at
+   *  20:30 UTC is 16:30 ET the same day, but one at 01:00 UTC belongs to the
+   *  PREVIOUS trading day, and bucketing that by UTC would file a session's
+   *  own after-hours events under tomorrow. */
+  date: string;
+  action: string;
+  count: number;
+}
+
+/**
+ * Counts by ET date and action — what a multi-day read actually needs.
+ *
+ * listAutotradeEvents() cannot answer this. It caps at 1000 rows, and during
+ * market hours the busiest actions write that many in ~3 hours, so a
+ * two-week distribution is simply not reachable by paging rows. This skips
+ * the cap by never materialising the rows: `detail` is the JSON blob that
+ * makes an event row heavy, and this reads only action + created_at, so even
+ * a month of the busiest action is a few hundred KB rather than a refusal.
+ *
+ * Grouping happens in JS rather than SQL because the bucket is an
+ * America/New_York calendar date and SQLite has no timezone database — a
+ * hardcoded `-4 hours` would be right in August and wrong in December.
+ */
+export function countAutotradeEventsByDay(
+  filter: Pick<ListEventsFilter, 'stage' | 'symbol' | 'actions' | 'since'> = {},
+): EventDayCount[] {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (filter.stage) {
+    clauses.push('stage = ?');
+    params.push(filter.stage);
+  }
+  if (filter.symbol) {
+    clauses.push('symbol = ?');
+    params.push(filter.symbol.toUpperCase());
+  }
+  if (filter.actions) {
+    if (filter.actions.length === 0) return [];
+    clauses.push(`action IN (${filter.actions.map(() => '?').join(',')})`);
+    params.push(...filter.actions);
+  }
+  if (typeof filter.since === 'number' && Number.isFinite(filter.since)) {
+    clauses.push('created_at >= ?');
+    params.push(filter.since);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const rows = db.prepare(`SELECT action, created_at FROM autotrade_events ${where}`).all(...params) as {
+    action: string;
+    created_at: number;
+  }[];
+
+  const buckets = new Map<string, EventDayCount>();
+  for (const r of rows) {
+    const date = etToday(r.created_at);
+    const key = `${date}\u0000${r.action}`;
+    const hit = buckets.get(key);
+    if (hit) hit.count += 1;
+    else buckets.set(key, { date, action: r.action, count: 1 });
+  }
+  // Newest day first, then biggest bucket — the order a report reads in.
+  return [...buckets.values()].sort((a, b) => (a.date === b.date ? b.count - a.count : a.date < b.date ? 1 : -1));
 }
