@@ -1527,6 +1527,8 @@ export interface AutotradeConfig {
   liveMaxOrdersPerDay: number;
   liveFatFingerPct: number;
   liveAllowNakedShort: boolean;
+  liveMaxExposurePct: number;
+  liveDayBuyingPowerUsd: number;
   liveProbationTrades: number;
   liveProbationSizeMultiplier: number;
   // --- Live scale-into-winners (nested under liveTradingEnabled) ---

@@ -139,6 +139,30 @@ import { dispatchNotifications } from '../notifier';
  *  MARKET at all; guardrails.ts blocks it). */
 const MARKETABLE_LIMIT_BUFFER_PCT = 0.5;
 
+/**
+ * Overlay the configured day-trading buying power, when one is set.
+ *
+ * Webull's `buying_power` is the OVERNIGHT figure: on 2026-08-27 it read
+ * $1,054.81 while the account's intraday buying power was $5,205.61. Checking
+ * an intraday entry against the overnight number refuses orders the account
+ * can genuinely fund, and that is exactly what kept a second morning position
+ * from ever being placed once the first had taken its share.
+ *
+ * Only sound because this loop is strictly intraday — endOfDayFlattenMinutes
+ * closes everything before the bell, so day-trading buying power is never
+ * carried overnight. What is already deployed still consumes it, the same way
+ * the broker's own figure nets out open positions.
+ *
+ * max(), never min(): this can only ever LOOSEN the broker's number. A stale
+ * or too-small config value therefore cannot tighten a genuinely larger
+ * allowance, and 0 (the default) leaves the broker's figure untouched.
+ */
+function withDayBuyingPower(state: AccountState, cfg: AutotradeConfig): AccountState {
+  if (!(cfg.liveDayBuyingPowerUsd > 0)) return state;
+  const availableIntraday = Math.max(0, cfg.liveDayBuyingPowerUsd - state.exposureUsd);
+  return { ...state, buyingPowerUsd: Math.max(state.buyingPowerUsd, availableIntraday) };
+}
+
 /** Combine the autotrade-specific live caps with BOTH kill switches — the
  *  human Trade page's own (since live orders share the same real broker
  *  account) and autotrade's own. Either being engaged, or either "enabled"
@@ -157,12 +181,14 @@ export function buildLiveTradingConfig(autotradeCfg: AutotradeConfig): TradingCo
     // notional cap already does, so this check is effectively disabled here
     // rather than duplicating a backstop maxOrderUsd already provides.
     maxSymbolPositionQty: Number.MAX_SAFE_INTEGER,
-    // 100% of configured equity — a cash account (confirmed in
-    // LIVE_TRADING_DESIGN.md §13) can't have MORE gross exposure than its own
-    // equity without margin. 0 when equity is unset, which fails closed
-    // (any nonzero notional exceeds it) rather than silently allowing
-    // anything through.
-    maxExposureUsd: autotradeCfg.accountEquityUsd ?? 0,
+    // liveMaxExposurePct % of configured equity. This was pinned at exactly
+    // 100% on the reasoning that a cash account cannot hold more gross
+    // exposure than its own equity — true, and it left no headroom at all:
+    // on 2026-08-27 two correctly-sized positions summed to $2,284 against a
+    // $2,283.61 cap and the second was refused by 39 cents. Still 0 when
+    // equity is unset, which fails closed (any nonzero notional exceeds it)
+    // rather than silently allowing anything through.
+    maxExposureUsd: ((autotradeCfg.accountEquityUsd ?? 0) * autotradeCfg.liveMaxExposurePct) / 100,
     maxOrdersPerDay: autotradeCfg.liveMaxOrdersPerDay,
     maxDailyLossUsd: autotradeCfg.liveMaxDailyLossUsd,
     fatFingerPct: autotradeCfg.liveFatFingerPct,
@@ -607,7 +633,10 @@ export async function attemptLiveEntry(
   if (!acct.ok || !acct.state) {
     return { symbol, ok: false, reason: acct.error ?? 'Could not load account state' };
   }
-  const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
+  const accountState: AccountState = withDayBuyingPower(
+    { ...acct.state, ordersToday: countTodaysOrders() },
+    autotradeCfg,
+  );
   const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
   // Only matters for a permitted short entry (allowNakedShort — naked_short
   // above already blocks it otherwise): submit Webull's own SHORT side instead
@@ -824,6 +853,21 @@ export async function runLiveExecution(
     const symbol = candidateSignal.symbol.toUpperCase();
     if (skipSymbols.has(symbol)) {
       outcomes.push({ symbol, ok: false, reason: 'Already has an open live position' });
+      continue;
+    }
+    // A short entry cannot be placed while naked shorts are off — guardrails'
+    // naked_short rule refuses it at the very end, after a correlation lookup,
+    // a sector lookup, a risk check and a broker round-trip have all been
+    // spent on it. On 2026-08-27 that was 31 of 48 live refusals: a third of
+    // the day's live attempts went to orders that were never placeable.
+    // Skipping here changes no outcome, only the work and the journal noise —
+    // and it re-opens itself the moment liveAllowNakedShort is turned on.
+    if (candidateSignal.side === 'sell' && !cfg.liveAllowNakedShort) {
+      outcomes.push({
+        symbol,
+        ok: false,
+        reason: 'short entry skipped — liveAllowNakedShort is off',
+      });
       continue;
     }
     const cooldown = cooldowns.get(symbol);

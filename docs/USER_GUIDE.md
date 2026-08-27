@@ -1549,7 +1549,8 @@ equally-weighted cards in the order they happened to be built:
   it doesn't touch that setting either way.
 - **Live trading** — configure and arm the loop to place **real** orders through Webull.
   Set a **Webull account ID** (server-side only — unlike the Trade page, never sourced
-  from your browser) and the **live guardrail caps**: max order size ($), max daily loss
+  from your browser) and the **live guardrail caps**: max order size ($), **max gross
+  exposure (% of equity)**, **day buying power ($)**, max daily loss
   ($), max orders/day, fat-finger %, and whether to **allow naked-short exposure**
   (leave unchecked unless **Trade direction** above is `Short` or `Both` — every other
   position this app can take live is defined-risk (long stock, long calls, long puts),
@@ -1562,7 +1563,23 @@ equally-weighted cards in the order they happened to be built:
   suggesting after a tune can't quietly replace the tune's own order cap; the other two
   match those settings exactly) — a starting point only, so it fills the
   fields without saving them; review or edit before clicking **Save live-trading
-  settings** below. Needs account equity set first (Configuration, above). A **probation**
+  settings** below.
+
+  Two of those caps decide whether a **second** position can open while a first is
+  still on, which matters most in the morning when volume and direction are
+  strongest. **Max gross exposure** was fixed at 100% of equity until 2026-08-27, on
+  the reasoning that a cash account cannot hold more than it is worth — true, and it
+  left no headroom at all: two correctly-sized positions came to $2,284 against a
+  $2,283.61 cap and the second was refused by 39 cents. **Day buying power** exists
+  because Webull's reported `buying_power` is the *overnight* figure — on the same day
+  it read $1,054.81 while the account's intraday buying power was $5,205.61, so entries
+  the account could genuinely fund were being refused. Set it to your intraday buying
+  power, or leave it at **0** to use the broker's own number. It only ever *raises* the
+  broker's figure, never lowers it, and it is only sound because this loop is strictly
+  intraday — the end-of-day flatten closes everything before the bell, so day-trading
+  buying power is never carried overnight. Re-check it if your account size changes
+  materially; a stale figure overstates what you can fund, and the broker's own
+  real-time check is then the only thing left. Needs account equity set first (Configuration, above). A **probation**
   setting cuts position size (e.g. to half) for the first N live trades after you enable
   it, on top of whatever the configured risk-per-trade % and any loss-streak step-down
   already produce — save these before enabling. Your **paper track record** (trade count, win rate, date

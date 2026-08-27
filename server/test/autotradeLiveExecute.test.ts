@@ -227,6 +227,23 @@ describe('buildLiveTradingConfig', () => {
   it('falls back maxExposureUsd to 0 when equity is unset, failing closed', () => {
     expect(buildLiveTradingConfig(liveConfig({ accountEquityUsd: null })).maxExposureUsd).toBe(0);
   });
+
+  it('scales maxExposureUsd by liveMaxExposurePct, which used to be pinned at 100', () => {
+    // Pinned at exactly equity, this left no headroom whatsoever: on
+    // 2026-08-27 two correctly-sized positions summed to $2,284 against a
+    // $2,283.61 cap and the second was refused by 39 cents.
+    const at = (pct: number) =>
+      buildLiveTradingConfig(liveConfig({ accountEquityUsd: 2_283.61, liveMaxExposurePct: pct })).maxExposureUsd;
+    expect(at(100)).toBeCloseTo(2_283.61, 2);
+    expect(at(150)).toBeCloseTo(3_425.415, 2);
+    expect(at(0)).toBe(0);
+  });
+
+  it('still fails closed at 0 equity however generous the percentage', () => {
+    expect(buildLiveTradingConfig(liveConfig({ accountEquityUsd: null, liveMaxExposurePct: 400 })).maxExposureUsd).toBe(
+      0,
+    );
+  });
 });
 
 describe('getProbationStatus', () => {
@@ -584,6 +601,124 @@ describe('attemptLiveEntry', () => {
     const full = mockPlaceOrder.mock.calls[0][1].quantity;
 
     expect(halved).toBe(Math.floor(full * 0.5));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Funding capacity and unplaceable shorts (2026-08-27). Both came out of one
+// session: 24 signals a tick, one position all day, and 48 live refusals of
+// which 31 were shorts that liveAllowNakedShort could never have let through.
+// ---------------------------------------------------------------------------
+describe('runLiveExecution — funding capacity and unplaceable shorts', () => {
+  const cfgFields = {
+    accountEquityUsd: 100_000,
+    riskProfile: 'MODERATE' as const,
+    liveAccountId: 'ACC1',
+    liveTradingEnabled: true,
+    liveEnabledAt: Date.now(),
+    liveMaxOrderUsd: 50_000,
+    liveMaxDailyLossUsd: 5_000,
+    liveMaxOrdersPerDay: 20,
+    killSwitch: false,
+  };
+
+  it('skips a short entry outright while naked shorts are off, without touching the broker', async () => {
+    // It was reaching guardrails' naked_short rule at the very end, after a
+    // correlation lookup, a sector lookup, a risk check and a broker
+    // round-trip had all been spent on an order that was never placeable.
+    setAutotradeConfig({ ...cfgFields, liveAllowNakedShort: false });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SHORT' });
+
+    const outcomes = await runLiveExecution([{ signal: signal({ side: 'sell', entry: 100, stop: 105, target: 90 }) }]);
+
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', ok: false });
+    expect(outcomes[0].reason).toMatch(/liveAllowNakedShort is off/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(mockAccountState).not.toHaveBeenCalled(); // never even loaded the account
+  });
+
+  it('lets the same short through to the broker once naked shorts are on', async () => {
+    // The skip must be a consequence of the flag, not a new hard block —
+    // otherwise turning shorts on would silently do nothing.
+    setAutotradeConfig({ ...cfgFields, liveAllowNakedShort: true });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SHORT-OK' });
+
+    const outcomes = await runLiveExecution([{ signal: signal({ side: 'sell', entry: 100, stop: 105, target: 90 }) }]);
+
+    expect(outcomes[0].reason ?? '').not.toMatch(/liveAllowNakedShort is off/);
+  });
+
+  it('does not skip a LONG entry on the same flag', async () => {
+    setAutotradeConfig({ ...cfgFields, liveAllowNakedShort: false });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LONG' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0].reason ?? '').not.toMatch(/liveAllowNakedShort is off/);
+  });
+
+  // The fixture signal sizes to 2 shares at a $100.50 limit — a $201 notional
+  // once probation (liveEnabledAt is set above) has halved it. The mocked
+  // OVERNIGHT buying power below therefore has to sit UNDER $201, or both
+  // halves of the pair pass whether or not the overlay exists. The first
+  // version of this used $1,054.81 (the real broker figure that day) and was
+  // vacuous for exactly that reason.
+  const STARVED_OVERNIGHT_BP = 150;
+
+  it('funds an entry the OVERNIGHT buying power alone would have refused', async () => {
+    // Webull's buying_power is the overnight figure: on 2026-08-27 it read
+    // $1,054.81 against $5,205.61 of intraday buying power, so the second
+    // morning position was refused for funds the account genuinely had.
+    setAutotradeConfig({ ...cfgFields, accountEquityUsd: 2_283.61, liveDayBuyingPowerUsd: 5_205.61 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, buyingPowerUsd: STARVED_OVERNIGHT_BP, exposureUsd: 1_227.84 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-DTBP' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0].reason ?? '').not.toMatch(/buying_power/);
+    expect(mockPlaceOrder).toHaveBeenCalled();
+  });
+
+  it('blocks that SAME entry with the day figure unset — proving the test above bites', async () => {
+    // 0 is the default and must change nothing at all. Identical account
+    // state to the case above; only liveDayBuyingPowerUsd differs.
+    setAutotradeConfig({ ...cfgFields, accountEquityUsd: 2_283.61, liveDayBuyingPowerUsd: 0 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, buyingPowerUsd: STARVED_OVERNIGHT_BP, exposureUsd: 1_227.84 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NOBP' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0]).toMatchObject({ ok: false });
+    expect(outcomes[0].reason).toMatch(/buying_power/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('never TIGHTENS the broker figure — a stale small config value cannot block a funded order', async () => {
+    setAutotradeConfig({ ...cfgFields, accountEquityUsd: 2_283.61, liveDayBuyingPowerUsd: 50 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, buyingPowerUsd: 1_000_000, exposureUsd: 0 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-MAX' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0].reason ?? '').not.toMatch(/buying_power/);
   });
 });
 
