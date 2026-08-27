@@ -175,6 +175,15 @@ const configBody = z.object({
   liveScaleOutEnabled: z.boolean().optional(),
   liveTrailingEnabled: z.boolean().optional(),
   dayProtectiveStopEnabled: z.boolean().optional(),
+  shortDatedOptionsEnabled: z.boolean().optional(),
+  optionsHardExitMinutesBeforeClose: z.number().nonnegative().optional(),
+  optionsNoEntryMinutesBeforeClose: z.number().nonnegative().optional(),
+  optionsUnderlyingStopPct: z.number().nonnegative().optional(),
+  optionsGiveBackArmPct: z.number().nonnegative().optional(),
+  optionsGiveBackPct: z.number().nonnegative().optional(),
+  optionsStagnationMinutes: z.number().nonnegative().optional(),
+  optionsStagnationMinMovePct: z.number().nonnegative().optional(),
+  optionsDisasterStopPct: z.number().nonnegative().optional(),
   targetRMultiple: z.number().positive().optional(),
   sessionBufferMinutes: z.number().int().nonnegative().optional(),
   earningsBlackoutDays: z.number().int().nonnegative().optional(),
@@ -417,6 +426,18 @@ autotradeRouter.put(
     if (body.liveScaleOutEnabled !== undefined) patch.liveScaleOutEnabled = body.liveScaleOutEnabled;
     if (body.liveTrailingEnabled !== undefined) patch.liveTrailingEnabled = body.liveTrailingEnabled;
     if (body.dayProtectiveStopEnabled !== undefined) patch.dayProtectiveStopEnabled = body.dayProtectiveStopEnabled;
+    if (body.shortDatedOptionsEnabled !== undefined) patch.shortDatedOptionsEnabled = body.shortDatedOptionsEnabled;
+    if (body.optionsHardExitMinutesBeforeClose !== undefined)
+      patch.optionsHardExitMinutesBeforeClose = body.optionsHardExitMinutesBeforeClose;
+    if (body.optionsNoEntryMinutesBeforeClose !== undefined)
+      patch.optionsNoEntryMinutesBeforeClose = body.optionsNoEntryMinutesBeforeClose;
+    if (body.optionsUnderlyingStopPct !== undefined) patch.optionsUnderlyingStopPct = body.optionsUnderlyingStopPct;
+    if (body.optionsGiveBackArmPct !== undefined) patch.optionsGiveBackArmPct = body.optionsGiveBackArmPct;
+    if (body.optionsGiveBackPct !== undefined) patch.optionsGiveBackPct = body.optionsGiveBackPct;
+    if (body.optionsStagnationMinutes !== undefined) patch.optionsStagnationMinutes = body.optionsStagnationMinutes;
+    if (body.optionsStagnationMinMovePct !== undefined)
+      patch.optionsStagnationMinMovePct = body.optionsStagnationMinMovePct;
+    if (body.optionsDisasterStopPct !== undefined) patch.optionsDisasterStopPct = body.optionsDisasterStopPct;
     if (body.targetRMultiple !== undefined) patch.targetRMultiple = body.targetRMultiple;
     if (body.sessionBufferMinutes !== undefined) patch.sessionBufferMinutes = body.sessionBufferMinutes;
     if (body.earningsBlackoutDays !== undefined) patch.earningsBlackoutDays = body.earningsBlackoutDays;

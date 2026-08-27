@@ -202,9 +202,17 @@ const origPlaceEnabled = config.trading.placeEnabled;
 
 beforeAll(() => initDb());
 beforeEach(() => {
-  // The daily baseline is a persisted singleton, and the banked-day test below
-  // marks it reached — sticky by design. Without this every test after it would
-  // inherit a halted day and see no entries at all.
+  // Test files share ONE SQLite file and run serially (see vitest.config.ts),
+  // so a file that ends with a non-default config poisons whichever runs next.
+  // liveOptionsExecute's short-dated tests leave optionsMinDte/MaxDte at 0/2,
+  // which reached the assertions here as a 0-2 DTE window where 7-60 was
+  // expected. Clearing both singletons on entry makes this file independent of
+  // whatever ran before it, rather than fixing one leak at its source and
+  // waiting for the next.
+  db.exec('DELETE FROM autotrade_config');
+  // The daily baseline is likewise a persisted singleton, and the banked-day
+  // test below marks it reached — sticky by design. Without this every test
+  // after it would inherit a halted day and see no entries at all.
   db.exec('DELETE FROM autotrade_daily_baseline');
   mockScreen.mockReset();
   mockDecide.mockReset();
