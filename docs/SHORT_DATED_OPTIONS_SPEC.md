@@ -224,7 +224,10 @@ arithmetic.
    **Done 2026-08-27.**
 3. **Paper first**, for at least two weeks. Every parameter above is a first
    estimate from a model, not from this book's own trades.
-4. A **daily post-close read** runs every weekday at 16:30 ET, reporting which
+4. A **daily post-close read** runs every weekday at 16:30 ET, working to
+   `docs/OPTIONS_TUNING_PLAN.md` — which holds the pre-committed decision
+   rules, the one-change-per-week budget and the decision log, so the
+   accumulating reads turn into changes without turning into noise. It reports which
    of the six rules fired and how the entry funnel broke down. The rule
    distribution is the most informative number: `hard_time` dominating means
    entries are too late or the thesis too slow; `stagnation` dominating means

@@ -2875,6 +2875,33 @@ describe('autotrade monitoring dashboard + kill switch routes (integration)', ()
     expect(actions).toContain('kill_switch_released');
   });
 
+  it('GET /events narrows by action and by since — what makes a multi-day read possible', async () => {
+    // The journal writes ~1000 rows every 8 hours, and the endpoint caps at
+    // 1000, so an unfiltered read cannot reach yesterday — let alone the
+    // two-week window the options tuning plan plans decisions over. Narrowing
+    // to a handful of action names turns that into weeks of history.
+    await post('/api/autotrade/kill-switch', { on: true });
+    await post('/api/autotrade/kill-switch', { on: false });
+
+    const filtered = (await getJson('/api/autotrade/events?actions=kill_switch_engaged')) as {
+      events: { action: string }[];
+    };
+    expect(filtered.events.length).toBeGreaterThan(0);
+    expect(new Set(filtered.events.map((e) => e.action))).toEqual(new Set(['kill_switch_engaged']));
+
+    // Two names at once, comma-separated.
+    const pair = (await getJson('/api/autotrade/events?actions=kill_switch_engaged,kill_switch_released')) as {
+      events: { action: string }[];
+    };
+    expect(new Set(pair.events.map((e) => e.action))).toEqual(new Set(['kill_switch_engaged', 'kill_switch_released']));
+
+    // A `since` in the future excludes everything; one in the past keeps it.
+    const future = (await getJson(`/api/autotrade/events?since=${Date.now() + 60_000}`)) as { events: unknown[] };
+    expect(future.events).toEqual([]);
+    const past = (await getJson(`/api/autotrade/events?since=${Date.now() - 60 * 60_000}`)) as { events: unknown[] };
+    expect(past.events.length).toBeGreaterThan(0);
+  });
+
   it('POST /kill-switch rejects a non-boolean body', async () => {
     const res = await post('/api/autotrade/kill-switch', { on: 'yes' });
     expect(res.status).toBe(400);
