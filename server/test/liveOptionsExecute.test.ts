@@ -41,6 +41,7 @@ import {
   createLiveOptionsPosition,
   getLiveOptionsPosition,
   listOpenLiveOptionsPositions,
+  raiseLiveOptionsPeakPremium,
 } from '../src/db/autotradeLiveOptionsPositions';
 import * as liveOptionsPositionsDb from '../src/db/autotradeLiveOptionsPositions';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from '../src/services/autotrading/optionsRiskCheck';
@@ -69,6 +70,7 @@ function optionSignal(overrides: Partial<SingleLegOptionsSignal> = {}): SingleLe
     kind: 'single_leg',
     symbol: 'AAPL',
     side: 'call',
+    underlyingPrice: 100,
     contractSymbol: 'AAPL-fixture',
     strike: 100,
     expiration: '2024-06-21',
@@ -88,6 +90,7 @@ function spreadSignal(overrides: Partial<DebitSpreadOptionsSignal> = {}): DebitS
     kind: 'debit_spread',
     symbol: 'AAPL',
     side: 'call',
+    underlyingPrice: 100,
     expiration: '2024-06-21',
     dte: 21,
     ivRank: 50,
@@ -138,6 +141,10 @@ function chainsFor(fixtures: Record<string, ContractFixture | ContractFixture[]>
       };
     }),
     getCandles: vi.fn(async () => []),
+    // Short-dated exits quote the UNDERLYING (not the chain) for the
+    // underlying-based stop. Real providers always have this; the stub did
+    // not, and its absence threw synchronously rather than rejecting.
+    getQuote: vi.fn(async (symbol: string) => ({ symbol, last: 100, timestamp: Date.now() })),
   } as unknown as ReturnType<typeof getProvider>;
 }
 
@@ -2069,5 +2076,167 @@ describe('checkLiveOptionsExits — intraday exits', () => {
     // pending, so this position is skipped rather than double-closed.
     expect(await checkLiveOptionsExits()).toEqual([]);
     expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Short-dated options groundwork (2026-08-26): the two figures nothing
+// recorded. underlyingAtEntry is the reference an underlying-based stop
+// measures against — a %-of-premium stop cannot do that job on a 0DTE, where
+// the premium decays ~11% by 10:30 and ~63% by 13:30 with the underlying
+// perfectly still. peakPremium is the mark the give-back trail hangs off.
+// ---------------------------------------------------------------------------
+describe('options position — underlying at entry and peak premium', () => {
+  it('seeds the peak premium to the entry premium', () => {
+    // Not zero and not null: a position has not been in profit until it moves,
+    // so a retrace is measured from the entry until a higher mark is seen.
+    const pos = openLivePosition({ entryPrice: 3 });
+    expect(pos.peakPremium).toBe(3);
+  });
+
+  it('raises the peak but never lowers it — a retrace is the thing being measured', () => {
+    const pos = openLivePosition({ entryPrice: 3 });
+    raiseLiveOptionsPeakPremium(pos.id, 4.8);
+    expect(getLiveOptionsPosition(pos.id)!.peakPremium).toBe(4.8);
+
+    raiseLiveOptionsPeakPremium(pos.id, 3.5); // faded — must NOT move the mark
+    expect(getLiveOptionsPosition(pos.id)!.peakPremium).toBe(4.8);
+
+    raiseLiveOptionsPeakPremium(pos.id, 5.2); // new high
+    expect(getLiveOptionsPosition(pos.id)!.peakPremium).toBe(5.2);
+  });
+
+  it('carries the underlying price from the signal through the order row to the position', async () => {
+    // Three hops, each of which has silently dropped a field before in this
+    // codebase: signal -> entry order row -> position at materialization.
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-UL' });
+
+    const signal = optionSignal({ underlyingPrice: 187.42 });
+    const out = await attemptLiveOptionsEntry(signal, okResult(signal), 'MODERATE', liveConfig());
+    expect(out.ok).toBe(true);
+
+    // Hop 1 -> 2: recorded on the order row.
+    expect(getLiveOptionsOrder(out.intentId!)!.underlyingAtEntry).toBe(187.42);
+
+    // Hop 2 -> 3: carried to the position when the fill materializes.
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: 1,
+      filledPrice: 3,
+    } as WebullOrderStatus);
+    await reconcileLiveOptionsOrders();
+    const pos = listOpenLiveOptionsPositions()[0];
+    expect(pos.underlyingAtEntry).toBe(187.42);
+    expect(pos.peakPremium).toBe(3); // seeded from the real fill price
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Short-dated options gates (2026-08-26, docs/SHORT_DATED_OPTIONS_SPEC.md).
+// ---------------------------------------------------------------------------
+describe('short-dated options — entry gates and the DTE coupling', () => {
+  /** 15:00 ET Wednesday — 60m to the close, inside a 210m entry cutoff. */
+  const LATE = Date.parse('2026-08-26T19:00:00Z');
+  /** 10:30 ET — well clear of it. */
+  const EARLY = Date.parse('2026-08-26T14:30:00Z');
+
+  afterEach(() => vi.useRealTimers());
+  const atClock = (ms: number) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(ms);
+  };
+
+  const shortDated = (over: Partial<AutotradeConfig> = {}) =>
+    liveConfig({
+      shortDatedOptionsEnabled: true,
+      optionsNoEntryMinutesBeforeClose: 210,
+      optionsHardExitMinutesBeforeClose: 120,
+      optionsMinDte: 0,
+      optionsMaxDte: 2,
+      ...over,
+    });
+
+  it('refuses new entries past the cutoff, and says why', async () => {
+    setAutotradeConfig(shortDated());
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.4 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LATE' });
+    atClock(LATE);
+
+    const out = await runLiveOptionsExecution([{ signal: optionSignal() }]);
+
+    expect(out[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/entry cutoff/) });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(listAutotradeEvents({}).some((e) => e.action === 'short_dated_entry_window_closed')).toBe(true);
+  });
+
+  it('allows entries earlier in the session', async () => {
+    setAutotradeConfig(shortDated());
+    atClock(EARLY);
+    // Reaches the risk check rather than being turned away at the window.
+    const out = await runLiveOptionsExecution([{ signal: optionSignal() }]);
+    expect(out[0]?.reason ?? '').not.toMatch(/entry cutoff/);
+  });
+
+  it('allows only ONE short-dated position at a time', async () => {
+    setAutotradeConfig(shortDated());
+    openLivePosition({ symbol: 'MSFT', expiration: '2030-01-18' });
+    atClock(EARLY);
+
+    const out = await runLiveOptionsExecution([{ signal: optionSignal() }]);
+
+    expect(out[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/max 1 at a time/) });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('does not apply either gate while the flag is off', async () => {
+    setAutotradeConfig(liveConfig({ shortDatedOptionsEnabled: false, optionsNoEntryMinutesBeforeClose: 210 }));
+    atClock(LATE);
+    const out = await runLiveOptionsExecution([{ signal: optionSignal() }]);
+    expect(out[0]?.reason ?? '').not.toMatch(/entry cutoff/);
+  });
+
+  it('drops the 7-day DTE backstop to 0 — the coupling that must not be split', async () => {
+    // With the band at 0-2 DTE and the backstop still 7, a freshly bought
+    // contract satisfies `dte <= 7` on the very first check: the loop would
+    // sell it on the next tick, paying the round-trip spread for nothing.
+    // A 1DTE position must therefore NOT be closed by the DTE rule.
+    const tomorrow = new Date(EARLY + 24 * 3600_000).toISOString().slice(0, 10);
+    setAutotradeConfig(shortDated({ optionsStagnationMinutes: 0, optionsUnderlyingStopPct: 0 }));
+    const pos = openLivePosition({ expiration: tomorrow, entryPrice: 0.4 });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.42 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NODTE' });
+    atClock(EARLY);
+
+    const outcomes = await checkLiveOptionsExits();
+
+    expect(outcomes).toEqual([]); // held, not instantly round-tripped
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('the hard clock closes a short-dated position late in the day', async () => {
+    const tomorrow = new Date(EARLY + 24 * 3600_000).toISOString().slice(0, 10);
+    setAutotradeConfig(shortDated());
+    const pos = openLivePosition({ expiration: tomorrow, entryPrice: 0.4 });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.9 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-HARD' });
+    atClock(LATE); // 60m to the close, inside the 120m hard exit
+
+    const outcomes = await checkLiveOptionsExits();
+
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', requested: true });
+    const ev = listAutotradeEvents({}).find((e) => e.action === 'short_dated_options_exit')!;
+    expect(JSON.parse(ev.detail!)).toMatchObject({ rule: 'hard_time', positionId: pos.id });
   });
 });

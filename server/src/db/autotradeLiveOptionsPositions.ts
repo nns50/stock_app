@@ -61,6 +61,9 @@ export interface CreateLiveOptionsPositionInput {
   ivRank?: number | null;
   marketRegime?: string | null;
   marketAtrPct?: number | null;
+  /** Underlying price at entry, carried from the entry order row at
+   *  materialization — see the column comment in db/index.ts. */
+  underlyingAtEntry?: number | null;
 }
 
 export interface CloseLiveOptionsPositionInput {
@@ -101,6 +104,13 @@ export interface LiveOptionsPosition {
   ivRank: number | null;
   marketRegime: string | null;
   marketAtrPct: number | null;
+  /** Underlying price at entry — the reference an underlying-based stop
+   *  measures against (docs/SHORT_DATED_OPTIONS_SPEC.md). Null on rows that
+   *  predate the column, which makes that stop silently inert for them. */
+  underlyingAtEntry: number | null;
+  /** Highest premium (net basis for a spread) seen since entry — the mark the
+   *  give-back trail hangs off. Seeded to entryPrice at creation. */
+  peakPremium: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -152,6 +162,8 @@ interface Row {
   iv_rank: number | null;
   market_regime: string | null;
   market_atr_pct: number | null;
+  underlying_at_entry: number | null;
+  peak_premium: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -185,12 +197,24 @@ function map(r: Row): LiveOptionsPosition {
     ivRank: r.iv_rank ?? null,
     marketRegime: r.market_regime ?? null,
     marketAtrPct: r.market_atr_pct ?? null,
+    underlyingAtEntry: r.underlying_at_entry ?? null,
+    peakPremium: r.peak_premium ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
 }
 
 /** Materialize a confirmed real entry fill into a new live options position. */
+/** Raise the peak-premium high-water mark. Only ever RAISES — the give-back
+ *  trail measures a retrace from the best the position ever saw, so a lower
+ *  reading is exactly the thing being measured, not a new peak. */
+export function raiseLiveOptionsPeakPremium(id: number, premium: number): void {
+  db.prepare(
+    'UPDATE autotrade_live_options_positions SET peak_premium = ?, updated_at = ? ' +
+      "WHERE id = ? AND status = 'open' AND (peak_premium IS NULL OR peak_premium < ?)",
+  ).run(premium, Date.now(), id, premium);
+}
+
 export function createLiveOptionsPosition(input: CreateLiveOptionsPositionInput): LiveOptionsPosition {
   const now = Date.now();
   const info = db
@@ -199,8 +223,9 @@ export function createLiveOptionsPosition(input: CreateLiveOptionsPositionInput)
          (symbol, side, kind, contract_symbol, strike, short_contract_symbol, short_strike,
           expiration, quantity, entry_price, short_entry_price, entry_at,
           risk_amount, risk_profile, rationale, status, account_id,
-          grade, entry_score, iv_rank, market_regime, market_atr_pct, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)`,
+          grade, entry_score, iv_rank, market_regime, market_atr_pct,
+          underlying_at_entry, peak_premium, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.symbol.toUpperCase(),
@@ -224,6 +249,10 @@ export function createLiveOptionsPosition(input: CreateLiveOptionsPositionInput)
       input.ivRank ?? null,
       input.marketRegime ?? null,
       input.marketAtrPct ?? null,
+      input.underlyingAtEntry ?? null,
+      // The peak starts at the entry premium: a position has not been in
+      // profit until it moves, so the give-back trail measures from here.
+      input.entryPrice,
       now,
       now,
     );

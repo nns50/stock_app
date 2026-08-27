@@ -353,6 +353,25 @@ export interface AutotradeConfig {
    *  day it does nothing at all. See the module header for the trade that
    *  motivated it. Off by default: it changes where real stops sit. */
   dayProtectiveStopEnabled: boolean;
+  /** Master gate for the short-dated (0-2 DTE) options path — docs/SHORT_DATED_OPTIONS_SPEC.md. Off by default: it changes which contracts are bought AND how they are exited, and every parameter below is a Black-Scholes estimate rather than a measured value. */
+  shortDatedOptionsEnabled: boolean;
+  /** Hard flatten this many minutes before the 16:00 ET close. 120 = 14:00. Past roughly there a CORRECT thesis stops paying: a 0DTE whose underlying moved +1% is +15% at 13:30 and -15% at 14:30. Outranks every other exit rule. 0 disables. */
+  optionsHardExitMinutesBeforeClose: number;
+  /** No new short-dated entries this many minutes before the close. 210 = 12:30 — a contract opened later has too little time for the move to arrive against a steepening decay headwind. 0 disables. */
+  optionsNoEntryMinutesBeforeClose: number;
+  /** Stop when the UNDERLYING moves this % against the position. The real stop for a short-dated contract: time-invariant, where a percentage of a decaying premium is not (a flat tape alone costs 11% by 10:30 and 63% by 13:30). 0 disables. */
+  optionsUnderlyingStopPct: number;
+  /** Arm the give-back trail once the premium has been up at least this %. Below it a retrace is noise rather than a fade. */
+  optionsGiveBackArmPct: number;
+  /** Once armed, exit if the position gives back this % of its PEAK gain. Unrealised gain on a 0DTE is perishable — a +62% winner that retraces half its underlying move is -9%. */
+  optionsGiveBackPct: number;
+  /** Cut a short-dated position that has not started working within this many minutes. Reverses stagnationExit.ts's options exclusion on purpose: theta pricing the slot is mild at 30 DTE and the dominant risk at 0DTE. 0 disables. */
+  optionsStagnationMinutes: number;
+  /** The underlying move, in the position's favour, that counts as 'working' for the stagnation cut above. */
+  optionsStagnationMinMovePct: number;
+  /** Premium-percentage backstop for a gap or volatility collapse — NOT management. Deliberately wide: at anything tighter, ordinary decay fires it with no adverse move at all. 0 disables. */
+  optionsDisasterStopPct: number;
+
   /** Target distance = stop distance × this (a reward:risk multiple). */
   targetRMultiple: number;
   /** No new entries within this many minutes of the session open or close —
@@ -969,6 +988,15 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveScaleOutEnabled: false,
     liveTrailingEnabled: false,
     dayProtectiveStopEnabled: false,
+    shortDatedOptionsEnabled: false,
+    optionsHardExitMinutesBeforeClose: 120,
+    optionsNoEntryMinutesBeforeClose: 210,
+    optionsUnderlyingStopPct: 0.5,
+    optionsGiveBackArmPct: 40,
+    optionsGiveBackPct: 50,
+    optionsStagnationMinutes: 30,
+    optionsStagnationMinMovePct: 0.3,
+    optionsDisasterStopPct: 70,
     targetRMultiple: 2,
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
@@ -1195,6 +1223,22 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       typeof input.liveTrailingEnabled === 'boolean' ? input.liveTrailingEnabled : d.liveTrailingEnabled,
     dayProtectiveStopEnabled:
       typeof input.dayProtectiveStopEnabled === 'boolean' ? input.dayProtectiveStopEnabled : d.dayProtectiveStopEnabled,
+    shortDatedOptionsEnabled:
+      typeof input.shortDatedOptionsEnabled === 'boolean' ? input.shortDatedOptionsEnabled : d.shortDatedOptionsEnabled,
+    optionsHardExitMinutesBeforeClose: nonNeg(
+      input.optionsHardExitMinutesBeforeClose,
+      d.optionsHardExitMinutesBeforeClose,
+    ),
+    optionsNoEntryMinutesBeforeClose: nonNeg(
+      input.optionsNoEntryMinutesBeforeClose,
+      d.optionsNoEntryMinutesBeforeClose,
+    ),
+    optionsUnderlyingStopPct: nonNeg(input.optionsUnderlyingStopPct, d.optionsUnderlyingStopPct),
+    optionsGiveBackArmPct: nonNeg(input.optionsGiveBackArmPct, d.optionsGiveBackArmPct),
+    optionsGiveBackPct: nonNeg(input.optionsGiveBackPct, d.optionsGiveBackPct),
+    optionsStagnationMinutes: nonNeg(input.optionsStagnationMinutes, d.optionsStagnationMinutes),
+    optionsStagnationMinMovePct: nonNeg(input.optionsStagnationMinMovePct, d.optionsStagnationMinMovePct),
+    optionsDisasterStopPct: nonNeg(input.optionsDisasterStopPct, d.optionsDisasterStopPct),
     targetRMultiple: posDecimal(input.targetRMultiple, d.targetRMultiple),
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
     earningsBlackoutDays: posInt(input.earningsBlackoutDays, d.earningsBlackoutDays),

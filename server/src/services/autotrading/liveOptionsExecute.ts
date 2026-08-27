@@ -1,4 +1,5 @@
 import { config } from '../../config';
+import { getProvider } from '../../providers';
 import { db } from '../../db';
 import { AutotradeConfig, getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
 import { getTradingConfig } from '../../db/trading';
@@ -11,7 +12,8 @@ import {
   TradingConfig,
 } from '../trading/guardrails';
 import { marketOpenContext } from '../trading/marketHours';
-import { evaluateEndOfDayFlatten } from './endOfDayFlatten';
+import { evaluateEndOfDayFlatten, minutesUntilClose } from './endOfDayFlatten';
+import { evaluateShortDatedExit } from './shortDatedOptionsExit';
 import { webullAccountState, webullAccountType } from '../../providers/webull/accountState';
 import {
   newClientOrderId,
@@ -52,6 +54,7 @@ import {
   LiveOptionsExitReason,
   getLiveOptionsPosition,
   reduceLiveOptionsPositionQuantity,
+  raiseLiveOptionsPeakPremium,
 } from '../../db/autotradeLiveOptionsPositions';
 import { computeStreaksAndDrawdown } from '../pnl';
 import { defaultExitConfig, evaluateExit } from '../../options/exitRules';
@@ -132,6 +135,27 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
  *  positions too (checkLiveOptionsExits) -- this constant remains the
  *  quote-free floor under both. */
 const AUTOTRADE_TIME_EXIT_DAYS = defaultExitConfig().timeExitDaysBeforeExpiry ?? 7;
+
+/** The days-to-expiry backstop, resolved against the short-dated flag.
+ *
+ *  THE COUPLING THAT MUST NOT BE SPLIT (docs/SHORT_DATED_OPTIONS_SPEC.md): the
+ *  7-day rule and a 0-2 DTE band are mutually exclusive. Widen the DTE band
+ *  while this still reads 7 and every contract bought satisfies `dte <= 7` on
+ *  the very first check, so the loop buys a 0DTE and sells it on the next tick,
+ *  paying the round-trip spread for nothing, every time. Short-dated positions
+ *  are governed by the hard 14:00 clock in shortDatedOptionsExit.ts instead,
+ *  which is a real exit rather than an instant round trip. */
+async function quoteOrNull(symbol: string): Promise<number | null> {
+  try {
+    return (await getProvider().getQuote(symbol)).last;
+  } catch {
+    return null;
+  }
+}
+
+function timeExitDaysFor(cfg: AutotradeConfig): number {
+  return cfg.shortDatedOptionsEnabled ? 0 : AUTOTRADE_TIME_EXIT_DAYS;
+}
 
 /** Combine the autotrade-specific LIVE OPTIONS caps with BOTH kill switches
  *  and liveOptionsEnabled -- mirrors liveExecute.ts's buildLiveTradingConfig()
@@ -453,6 +477,7 @@ export async function attemptLiveOptionsEntry(
     ivRank: signal.ivRank,
     marketRegime,
     marketAtrPct,
+    underlyingAtEntry: signal.underlyingPrice,
   };
 
   if (signal.kind === 'debit_spread') {
@@ -751,6 +776,30 @@ export async function runLiveOptionsExecution(
     riskPerTradePct: cfg.riskPerTradePct,
     rewardMultiple: cfg.optionsTakeProfitPct / 100,
   });
+
+  // --- Short-dated entry gates (docs/SHORT_DATED_OPTIONS_SPEC.md) ----------
+  // Both are batch-level: neither depends on which candidate is being looked
+  // at, so evaluating them per-candidate would just repeat the same answer.
+  if (cfg.shortDatedOptionsEnabled && cfg.optionsNoEntryMinutesBeforeClose > 0) {
+    const left = minutesUntilClose(Date.now());
+    if (left !== null && left <= cfg.optionsNoEntryMinutesBeforeClose) {
+      // A short-dated contract opened this late has too little time for the
+      // move to arrive, against a decay headwind that steepens all the way in:
+      // flat premium is already -63% by 13:30 and -82% by 14:30. And the hard
+      // 14:00 exit would close it almost immediately anyway.
+      const reason = `${left}m to the close — past the ${cfg.optionsNoEntryMinutesBeforeClose}m short-dated entry cutoff`;
+      logAutotradeEvent({ stage: 'execution', action: 'short_dated_entry_window_closed', detail: { reason, left } });
+      return candidates.map(({ signal }) => ({ symbol: signal.symbol.toUpperCase(), ok: false, reason }));
+    }
+  }
+  // One short-dated position at a time. Tighter than the shared 2-slot cap on
+  // purpose: two 0DTE positions can both go to zero inside the same half hour
+  // on a single adverse market move — a correlation stock positions do not
+  // have, and one this account cannot absorb twice in a day.
+  if (cfg.shortDatedOptionsEnabled && optSnapshot.openPositionsCount >= 1) {
+    const reason = 'a short-dated options position is already open (max 1 at a time)';
+    return candidates.map(({ signal }) => ({ symbol: signal.symbol.toUpperCase(), ok: false, reason }));
+  }
 
   const outcomes: LiveOptionsExecutionOutcome[] = [];
   for (const { signal } of candidates) {
@@ -1236,7 +1285,7 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
     const ev = evaluateExit(
       { entryPrice: entryBasis, currentPrice: currentBasis, side: 'long', expiration: pos.expiration },
       {
-        timeExitDaysBeforeExpiry: AUTOTRADE_TIME_EXIT_DAYS,
+        timeExitDaysBeforeExpiry: timeExitDaysFor(freshCfg),
         stopLossPct: freshCfg.optionsStopLossPct || undefined,
         takeProfitPct: freshCfg.optionsTakeProfitPct || undefined,
       },
@@ -1268,6 +1317,70 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
     // and there is no "cancel a VERTICAL and re-place it" path in this codebase
     // to do the replacement safely. A close that is already working is left to
     // work.
+    // --- SHORT-DATED ladder (docs/SHORT_DATED_OPTIONS_SPEC.md) -----------
+    // Runs BEFORE the DTE/stop/take-profit rules above have a say, because on
+    // a 0-2 DTE contract those rules are the wrong instrument entirely: a
+    // %-of-premium stop measures decay rather than the thesis, and the equity
+    // flatten fires ~2 hours after being right stops paying. When the flag is
+    // off this is inert and the original rules stand unchanged.
+    if (freshCfg.shortDatedOptionsEnabled) {
+      // A failed quote disables only the rules that need it — the clock in
+      // particular must still fire, since a quote outage near the close is
+      // exactly when being stuck in a decaying contract is worst.
+      //
+      // try/catch rather than .catch(): a provider missing getQuote entirely
+      // throws SYNCHRONOUSLY, before any promise exists, so a rejection
+      // handler never sees it and the whole exit sweep dies. Found by a test
+      // provider that only stubbed getOptionsChain.
+      const underlying = await quoteOrNull(pos.symbol.toUpperCase());
+      const sd = evaluateShortDatedExit(pos, currentBasis, underlying, freshCfg, Date.now());
+      // Persist the high-water mark on EVERY tick, not just the ones that
+      // exit — a give-back trail that only learns about peaks when it acts is
+      // measuring the wrong thing.
+      if (sd.peakPremium !== null && sd.peakPremium !== pos.peakPremium) {
+        raiseLiveOptionsPeakPremium(pos.id, sd.peakPremium);
+      }
+      if (sd.exit) {
+        logAutotradeEvent({
+          symbol: pos.symbol,
+          stage: 'execution',
+          action: 'short_dated_options_exit',
+          detail: {
+            positionId: pos.id,
+            rule: sd.rule,
+            reason: sd.detail,
+            premiumGainPct: sd.premiumGainPct,
+            underlyingMovePct: sd.underlyingMovePct,
+            expiration: pos.expiration,
+          },
+          riskProfile: pos.riskProfile,
+        });
+        const gateCfgSd = buildLiveOptionsTradingConfig(freshCfg);
+        if (gateCfgSd.killSwitch) {
+          outcomes.push({
+            symbol: pos.symbol,
+            requested: false,
+            reason: 'kill_switch: kill switch is engaged — exit held until released',
+          });
+          continue;
+        }
+        const acct = freshCfg.liveAccountId;
+        if (!acct) continue;
+        // The six rules collapse onto the table's four stored reasons; the
+        // precise rule lives in the journal above, which is what the daily
+        // read joins on. Widening the CHECK constraint would mean a table
+        // rebuild for data one analysis reads.
+        const mapped: LiveOptionsExitReason =
+          sd.rule === 'take_profit' || sd.rule === 'give_back'
+            ? 'take_profit'
+            : sd.rule === 'underlying_stop' || sd.rule === 'disaster_stop'
+              ? 'stop_loss'
+              : 'time_exit';
+        outcomes.push(await placeLiveOptionsExit(pos, acct, freshCfg, mapped));
+        continue;
+      }
+    }
+
     const flatten = evaluateEndOfDayFlatten(freshCfg, Date.now());
     const heldPastMaxDays = freshCfg.maxHoldDays > 0 && Date.now() - pos.entryAt >= freshCfg.maxHoldDays * MS_PER_DAY;
     const intradayTrigger = flatten.active ? 'end_of_day' : heldPastMaxDays ? 'max_hold_days' : null;
@@ -1649,6 +1762,7 @@ function materializeOptionsEntryFill(
     ivRank: meta.ivRank,
     marketRegime: meta.marketRegime,
     marketAtrPct: meta.marketAtrPct,
+    underlyingAtEntry: meta.underlyingAtEntry,
   });
   setLiveOptionsOrderPositionId(intent.id, position.id);
   logAutotradeEvent({

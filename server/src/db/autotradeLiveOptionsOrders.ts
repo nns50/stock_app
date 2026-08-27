@@ -57,6 +57,9 @@ export interface LiveOptionsOrderMeta {
   ivRank: number | null;
   marketRegime: string | null;
   marketAtrPct: number | null;
+  /** Underlying price at entry — see recordLiveOptionsEntryOrder. Null on an
+   *  exit row and on any row predating the column. */
+  underlyingAtEntry: number | null;
   createdAt: number;
 }
 
@@ -81,6 +84,7 @@ interface Row {
   iv_rank: number | null;
   market_regime: string | null;
   market_atr_pct: number | null;
+  underlying_at_entry: number | null;
   created_at: number;
 }
 
@@ -106,6 +110,7 @@ function mapRow(r: Row): LiveOptionsOrderMeta {
     ivRank: r.iv_rank ?? null,
     marketRegime: r.market_regime ?? null,
     marketAtrPct: r.market_atr_pct ?? null,
+    underlyingAtEntry: r.underlying_at_entry ?? null,
     createdAt: r.created_at,
   };
 }
@@ -133,14 +138,19 @@ export function recordLiveOptionsEntryOrder(input: {
   ivRank?: number | null;
   marketRegime?: string | null;
   marketAtrPct?: number | null;
+  /** The underlying's price when this entry was decided — the reference an
+   *  underlying-based stop measures against once the position materializes.
+   *  See docs/SHORT_DATED_OPTIONS_SPEC.md for why a %-of-premium stop cannot
+   *  do that job on a short-dated contract. */
+  underlyingAtEntry?: number | null;
 }): LiveOptionsOrderMeta {
   const now = Date.now();
   db.prepare(
     `INSERT INTO autotrade_live_options_orders
        (intent_id, symbol, role, kind, side, contract_symbol, strike, short_contract_symbol, short_strike,
         expiration, risk_amount, risk_profile, position_id, account_id,
-        grade, entry_score, iv_rank, market_regime, market_atr_pct, created_at)
-     VALUES (?, ?, 'entry', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
+        grade, entry_score, iv_rank, market_regime, market_atr_pct, underlying_at_entry, created_at)
+     VALUES (?, ?, 'entry', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.intentId,
     input.symbol.toUpperCase(),
@@ -159,6 +169,7 @@ export function recordLiveOptionsEntryOrder(input: {
     input.ivRank ?? null,
     input.marketRegime ?? null,
     input.marketAtrPct ?? null,
+    input.underlyingAtEntry ?? null,
     now,
   );
   return getLiveOptionsOrder(input.intentId)!;

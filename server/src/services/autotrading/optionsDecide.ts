@@ -123,6 +123,12 @@ interface OptionsSignalBase {
   dte: number;
   ivRank: number;
   rationale: string;
+  /** The underlying's price at decision time. Recorded on the entry order and
+   *  carried to the position, where an underlying-based stop measures against
+   *  it (docs/SHORT_DATED_OPTIONS_SPEC.md). Nothing else on the signal can
+   *  stand in: strike and premium say where the contract sits, not where the
+   *  stock was when the thesis was formed. */
+  underlyingPrice: number;
   /** The underlying's screener score, carried over — same convention as
    *  TradeSignal.score (decide.ts): sorting/comparison across DIFFERENT
    *  underlyings uses the equity screen's score, not this contract's own
@@ -363,6 +369,7 @@ export async function generateOptionsSignal(
         kind: 'single_leg',
         symbol,
         side,
+        underlyingPrice,
         contractSymbol: best.contract.symbol,
         strike: best.contract.strike,
         expiration: best.contract.expiration,
@@ -451,6 +458,7 @@ export async function generateOptionsSignal(
       kind: 'debit_spread',
       symbol,
       side,
+      underlyingPrice,
       expiration: best.contract.expiration,
       dte: best.metrics.dte,
       ivRank: ivContext.ivRank,
