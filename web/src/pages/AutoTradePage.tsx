@@ -1481,6 +1481,91 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
  *  count vs max, and the consecutive-loss streak. Every "used vs limit" pair
  *  here is a direct read of the server's own risk-check math (dashboard.ts),
  *  not re-derived in the UI. */
+// ---------------------------------------------------------------------------
+// The monitoring dashboard used to be 23 StatTiles, with "Open positions",
+// "Aggregate open risk", "Day P&L", "Trades today" and "Consecutive losses"
+// each repeated three times in separate Paper / Live / Live-options blocks.
+// Nothing in a tile said which book it belonged to, and every shared cap
+// ("of $X cap", "halt at $Y") was reprinted three times, so comparing the
+// books meant scrolling and remembering. A table says the same thing in one
+// screen: metric down the side, book across the top, each shared cap written
+// once in the row header where it actually belongs.
+// ---------------------------------------------------------------------------
+
+type BookTone = 'bull' | 'bear' | 'warn';
+
+const BOOK_TONE: Record<BookTone, string> = {
+  bull: 'text-bull',
+  bear: 'text-bear',
+  warn: 'text-amber-400',
+};
+
+interface BookCell {
+  value: ReactNode;
+  sub?: ReactNode;
+  tone?: BookTone;
+}
+
+/** A book's column header: its name and whether it is currently trading.
+ *  `onClass` defaults to text-bear because for the two LIVE books "enabled"
+ *  means real money is at risk — the same red the old per-block headers
+ *  used. Paper passes text-bull, where running is simply good. */
+function BookHead({
+  name,
+  on,
+  onLabel = 'enabled',
+  offLabel = 'disabled',
+  onClass = 'text-bear',
+  note,
+}: {
+  name: string;
+  on: boolean;
+  onLabel?: string;
+  offLabel?: string;
+  onClass?: string;
+  note?: string;
+}) {
+  return (
+    <th scope="col" className="py-2 px-3 text-left align-bottom">
+      <div className="text-xs font-semibold text-slate-200">{name}</div>
+      <div className={cx('text-[10px] font-medium', on ? onClass : 'text-slate-500')}>
+        {on ? `● ${onLabel}` : `○ ${offLabel}`}
+      </div>
+      {note && <div className="text-[10px] text-slate-500 font-normal">{note}</div>}
+    </th>
+  );
+}
+
+/** One metric across all three books. A null cell means the metric does not
+ *  exist for that book (paper has no probation) — rendered as an explicit
+ *  dash rather than a blank, so an empty cell never reads as a zero. */
+function BookRow({ label, hint, cells }: { label: string; hint?: string; cells: (BookCell | null)[] }) {
+  return (
+    <tr className="border-t border-ink-700">
+      <th scope="row" className="py-2 px-3 text-left align-top font-normal">
+        <div className="text-xs text-slate-300">{label}</div>
+        {hint && <div className="text-[10px] text-slate-500">{hint}</div>}
+      </th>
+      {cells.map((cell, i) => (
+        <td key={i} className="py-2 px-3 align-top">
+          {cell === null ? (
+            <span className="text-sm text-slate-600">—</span>
+          ) : (
+            <>
+              <div
+                className={cx('text-sm font-semibold tabular-nums', cell.tone ? BOOK_TONE[cell.tone] : 'text-ink-0')}
+              >
+                {cell.value}
+              </div>
+              {cell.sub !== undefined && <div className="text-[10px] text-slate-500 leading-tight">{cell.sub}</div>}
+            </>
+          )}
+        </td>
+      ))}
+    </tr>
+  );
+}
+
 function MonitoringDashboard({
   dash,
   portfolioGreeks,
@@ -1639,48 +1724,144 @@ function MonitoringDashboard({
         )}
       </div>
       <div>
-        <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-2">Paper</h4>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 mb-2">
+          <h4 className="text-xs uppercase tracking-wide text-slate-400">Books</h4>
+          <span className="text-[10px] text-slate-500">
+            three separate pools — each risk-checks against only its own numbers; the caps on the left are shared
+          </span>
+        </div>
+        <div className="overflow-x-auto rounded-lg border border-ink-700">
+          <table aria-label="Books" className="w-full min-w-[540px] border-collapse">
+            <thead>
+              <tr className="bg-ink-800/60">
+                <th
+                  scope="col"
+                  className="py-2 px-3 text-left text-[10px] uppercase tracking-wider text-slate-500 font-medium"
+                >
+                  Metric
+                </th>
+                <BookHead
+                  name="Paper"
+                  on={dash.enabled && !dash.killSwitch}
+                  onLabel="loop running"
+                  offLabel={dash.killSwitch ? 'kill switch' : 'loop off'}
+                  onClass="text-bull"
+                  note="equity + options combined"
+                />
+                <BookHead name="Live equity" on={dash.liveTradingEnabled} />
+                <BookHead name="Live options" on={dash.liveOptionsEnabled} />
+              </tr>
+            </thead>
+            <tbody>
+              <BookRow
+                label="Open positions"
+                hint={`cap ${dash.maxConcurrentPositions}`}
+                cells={[
+                  {
+                    value: dash.openPositionsCount,
+                    sub: `${dash.openPositions.length} equity + ${dash.openOptionsPositions.length} options`,
+                    tone: positionsBusy ? 'bear' : undefined,
+                  },
+                  { value: dash.liveOpenPositionsCount, tone: livePositionsBusy ? 'bear' : undefined },
+                  { value: dash.liveOptionsOpenPositionsCount, tone: liveOptPositionsBusy ? 'bear' : undefined },
+                ]}
+              />
+              <BookRow
+                label="Aggregate open risk"
+                hint={`cap ${fmtUsd(dash.maxAggregateOpenRisk)}`}
+                cells={[
+                  { value: fmtUsd(dash.openRisk), tone: riskBusy ? 'bear' : undefined },
+                  { value: fmtUsd(dash.liveOpenRisk), tone: liveRiskBusy ? 'bear' : undefined },
+                  { value: fmtUsd(dash.liveOptionsOpenRisk), tone: liveOptRiskBusy ? 'bear' : undefined },
+                ]}
+              />
+              <BookRow
+                label="Day P&L"
+                hint={`halt at ${fmtUsd(dash.dailyDrawdownHaltLevel)}`}
+                cells={[
+                  {
+                    value: fmtSignedUsd(dash.dailyPnl),
+                    sub: haltActive ? 'HALT TRIGGERED' : undefined,
+                    tone: haltActive ? 'bear' : dash.dailyPnl >= 0 ? 'bull' : 'bear',
+                  },
+                  {
+                    value: fmtSignedUsd(dash.liveDailyPnl),
+                    sub: liveHaltActive ? 'HALT TRIGGERED' : undefined,
+                    tone: liveHaltActive ? 'bear' : dash.liveDailyPnl >= 0 ? 'bull' : 'bear',
+                  },
+                  {
+                    value: fmtSignedUsd(dash.liveOptionsDailyPnl),
+                    sub: liveOptHaltActive ? 'HALT TRIGGERED' : undefined,
+                    tone: liveOptHaltActive ? 'bear' : dash.liveOptionsDailyPnl >= 0 ? 'bull' : 'bear',
+                  },
+                ]}
+              />
+              <BookRow
+                label="Trades today"
+                hint={`cap ${dash.maxTradesPerDay}`}
+                cells={[
+                  { value: dash.tradesToday, tone: tradesBusy ? 'bear' : undefined },
+                  { value: dash.liveTradesToday, tone: liveTradesBusy ? 'bear' : undefined },
+                  { value: dash.liveOptionsTradesToday, tone: liveOptTradesBusy ? 'bear' : undefined },
+                ]}
+              />
+              <BookRow
+                label="Consecutive losses"
+                hint={`step-down at ${dash.stepDownAfterLosses}`}
+                cells={[
+                  {
+                    value: dash.consecutiveLosses,
+                    sub: stepDownActive ? 'step-down active' : undefined,
+                    tone: stepDownActive ? 'bear' : undefined,
+                  },
+                  {
+                    value: dash.liveConsecutiveLosses,
+                    sub: liveStepDownActive ? 'step-down active' : undefined,
+                    tone: liveStepDownActive ? 'bear' : undefined,
+                  },
+                  {
+                    value: dash.liveOptionsConsecutiveLosses,
+                    sub: liveOptStepDownActive ? 'step-down active' : undefined,
+                    tone: liveOptStepDownActive ? 'bear' : undefined,
+                  },
+                ]}
+              />
+              <BookRow
+                label="Probation"
+                hint="reduced size until proven"
+                cells={[
+                  null,
+                  {
+                    value: dash.probation.active ? `${dash.probation.multiplier}× size` : 'complete',
+                    sub: dash.probation.active ? `${dash.probation.tradesRemaining} trades left` : undefined,
+                    tone: dash.probation.active ? 'warn' : undefined,
+                  },
+                  {
+                    value: dash.liveOptionsProbation.active
+                      ? `${dash.liveOptionsProbation.multiplier}× size`
+                      : 'complete',
+                    sub: dash.liveOptionsProbation.active
+                      ? `${dash.liveOptionsProbation.tradesRemaining} trades left`
+                      : undefined,
+                    tone: dash.liveOptionsProbation.active ? 'warn' : undefined,
+                  },
+                ]}
+              />
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div>
+        <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-2">
+          Account-wide <span className="normal-case text-slate-500">— one figure across every book</span>
+        </h4>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <StatTile
             label="Risk profile"
             value={dash.riskProfile === 'AGGRESSIVE' ? 'Aggressive' : 'Moderate'}
             sub={dash.killSwitch ? 'kill switch engaged' : dash.enabled ? 'loop enabled' : 'loop disabled'}
             valueClass={dash.killSwitch ? 'text-bear' : undefined}
-          />
-          <StatTile
-            label="Open positions"
-            value={`${dash.openPositionsCount} / ${dash.maxConcurrentPositions}`}
-            sub={`${dash.openPositions.length} equity + ${dash.openOptionsPositions.length} options`}
-            valueClass={positionsBusy ? 'text-bear' : undefined}
-          />
-          <StatTile
-            label="Aggregate open risk"
-            value={fmtUsd(dash.openRisk)}
-            sub={`of ${fmtUsd(dash.maxAggregateOpenRisk)} cap (equity + options combined)`}
-            valueClass={riskBusy ? 'text-bear' : undefined}
-          />
-          <StatTile
-            label="Day P&L"
-            value={fmtSignedUsd(dash.dailyPnl)}
-            sub={
-              haltActive ? (
-                <span className="text-bear font-semibold">HALT TRIGGERED — new entries blocked</span>
-              ) : (
-                `halt at ${fmtUsd(dash.dailyDrawdownHaltLevel)}`
-              )
-            }
-            valueClass={dash.dailyPnl >= 0 ? 'text-bull' : 'text-bear'}
-          />
-          <StatTile
-            label="Trades today"
-            value={`${dash.tradesToday} / ${dash.maxTradesPerDay}`}
-            valueClass={tradesBusy ? 'text-bear' : undefined}
-          />
-          <StatTile
-            label="Consecutive losses"
-            value={dash.consecutiveLosses}
-            sub={stepDownActive ? 'step-down active' : `of ${dash.stepDownAfterLosses} to step-down`}
-            valueClass={stepDownActive ? 'text-bear' : undefined}
           />
           <StatTile
             label="Correlated exposure"
@@ -1787,114 +1968,6 @@ function MonitoringDashboard({
           </div>
         </div>
       )}
-
-      <div>
-        <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-2">
-          Live{' '}
-          {dash.liveTradingEnabled ? (
-            <span className="text-bear normal-case">● enabled</span>
-          ) : (
-            <span className="normal-case">(disabled)</span>
-          )}
-        </h4>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-          <StatTile
-            label="Open positions"
-            value={`${dash.liveOpenPositionsCount} / ${dash.maxConcurrentPositions}`}
-            valueClass={livePositionsBusy ? 'text-bear' : undefined}
-          />
-          <StatTile
-            label="Aggregate open risk"
-            value={fmtUsd(dash.liveOpenRisk)}
-            sub={`of ${fmtUsd(dash.maxAggregateOpenRisk)} cap`}
-            valueClass={liveRiskBusy ? 'text-bear' : undefined}
-          />
-          <StatTile
-            label="Day P&L"
-            value={fmtSignedUsd(dash.liveDailyPnl)}
-            sub={
-              liveHaltActive ? (
-                <span className="text-bear font-semibold">HALT TRIGGERED</span>
-              ) : (
-                `halt at ${fmtUsd(dash.dailyDrawdownHaltLevel)}`
-              )
-            }
-            valueClass={dash.liveDailyPnl >= 0 ? 'text-bull' : 'text-bear'}
-          />
-          <StatTile
-            label="Trades today"
-            value={`${dash.liveTradesToday} / ${dash.maxTradesPerDay}`}
-            valueClass={liveTradesBusy ? 'text-bear' : undefined}
-          />
-          <StatTile
-            label="Consecutive losses"
-            value={dash.liveConsecutiveLosses}
-            sub={liveStepDownActive ? 'step-down active' : `of ${dash.stepDownAfterLosses} to step-down`}
-            valueClass={liveStepDownActive ? 'text-bear' : undefined}
-          />
-          <StatTile
-            label="Probation"
-            value={dash.probation.active ? `${dash.probation.multiplier}× size` : 'complete'}
-            sub={dash.probation.active ? `${dash.probation.tradesRemaining} trades left` : undefined}
-            valueClass={dash.probation.active ? 'text-amber-400' : undefined}
-          />
-        </div>
-      </div>
-
-      <div>
-        <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-2">
-          Live options{' '}
-          {dash.liveOptionsEnabled ? (
-            <span className="text-bear normal-case">● enabled</span>
-          ) : (
-            <span className="normal-case">(disabled)</span>
-          )}
-        </h4>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-          <StatTile
-            label="Open positions"
-            value={`${dash.liveOptionsOpenPositionsCount} / ${dash.maxConcurrentPositions}`}
-            valueClass={liveOptPositionsBusy ? 'text-bear' : undefined}
-          />
-          <StatTile
-            label="Aggregate open risk"
-            value={fmtUsd(dash.liveOptionsOpenRisk)}
-            sub={`of ${fmtUsd(dash.maxAggregateOpenRisk)} cap`}
-            valueClass={liveOptRiskBusy ? 'text-bear' : undefined}
-          />
-          <StatTile
-            label="Day P&L"
-            value={fmtSignedUsd(dash.liveOptionsDailyPnl)}
-            sub={
-              liveOptHaltActive ? (
-                <span className="text-bear font-semibold">HALT TRIGGERED</span>
-              ) : (
-                `halt at ${fmtUsd(dash.dailyDrawdownHaltLevel)}`
-              )
-            }
-            valueClass={dash.liveOptionsDailyPnl >= 0 ? 'text-bull' : 'text-bear'}
-          />
-          <StatTile
-            label="Trades today"
-            value={`${dash.liveOptionsTradesToday} / ${dash.maxTradesPerDay}`}
-            valueClass={liveOptTradesBusy ? 'text-bear' : undefined}
-          />
-          <StatTile
-            label="Consecutive losses"
-            value={dash.liveOptionsConsecutiveLosses}
-            sub={liveOptStepDownActive ? 'step-down active' : `of ${dash.stepDownAfterLosses} to step-down`}
-            valueClass={liveOptStepDownActive ? 'text-bear' : undefined}
-          />
-          <StatTile
-            label="Probation"
-            value={dash.liveOptionsProbation.active ? `${dash.liveOptionsProbation.multiplier}× size` : 'complete'}
-            sub={
-              dash.liveOptionsProbation.active ? `${dash.liveOptionsProbation.tradesRemaining} trades left` : undefined
-            }
-            valueClass={dash.liveOptionsProbation.active ? 'text-amber-400' : undefined}
-          />
-        </div>
-      </div>
     </div>
   );
 }
