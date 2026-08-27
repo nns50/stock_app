@@ -141,26 +141,31 @@ import { dispatchNotifications } from '../notifier';
 const MARKETABLE_LIMIT_BUFFER_PCT = 0.5;
 
 /**
- * Overlay the configured day-trading buying power, when one is set.
+ * Let an intraday entry use the account's DAY-trading buying power.
  *
- * Webull's `buying_power` is the OVERNIGHT figure: on 2026-08-27 it read
- * $1,054.81 while the account's intraday buying power was $5,205.61. Checking
- * an intraday entry against the overnight number refuses orders the account
- * can genuinely fund, and that is exactly what kept a second morning position
- * from ever being placed once the first had taken its share.
+ * `buyingPowerUsd` is deliberately the overnight figure — what a position can
+ * use without having to be closed by the bell. autotrade's live equity loop is
+ * the one caller that always IS flat by the bell (endOfDayFlattenMinutes), so
+ * it is the one caller entitled to the day figure. On 2026-08-27 the account
+ * reported $9,800.80 of day buying power against $2,450.20 of equity, while
+ * entries were being refused for "$1,005.46 available".
  *
- * Only sound because this loop is strictly intraday — endOfDayFlattenMinutes
- * closes everything before the bell, so day-trading buying power is never
- * carried overnight. What is already deployed still consumes it, the same way
- * the broker's own figure nets out open positions.
+ * `liveDayBuyingPowerUsd` is a CAP, not a value: 0 (the default) uses the
+ * broker's figure in full, and a positive number refuses to use more than
+ * that however much the broker offers. It was originally a hand-entered
+ * substitute for a field I believed the payload lacked; the payload has it,
+ * and a number typed in by hand only goes stale, so it earns its keep as a
+ * ceiling instead.
  *
- * max(), never min(): this can only ever LOOSEN the broker's number. A stale
- * or too-small config value therefore cannot tighten a genuinely larger
- * allowance, and 0 (the default) leaves the broker's figure untouched.
+ * What is already deployed still consumes it, the same way the broker's own
+ * figures net out open positions. Never LOWERS what the guardrail would have
+ * used, so this cannot turn into a new way to block a fundable order.
  */
 function withDayBuyingPower(state: AccountState, cfg: AutotradeConfig): AccountState {
-  if (!(cfg.liveDayBuyingPowerUsd > 0)) return state;
-  const availableIntraday = Math.max(0, cfg.liveDayBuyingPowerUsd - state.exposureUsd);
+  const broker = state.dayBuyingPowerUsd;
+  if (broker === undefined || !(broker > 0)) return state;
+  const ceiling = cfg.liveDayBuyingPowerUsd > 0 ? Math.min(broker, cfg.liveDayBuyingPowerUsd) : broker;
+  const availableIntraday = Math.max(0, ceiling - state.exposureUsd);
   return { ...state, buyingPowerUsd: Math.max(state.buyingPowerUsd, availableIntraday) };
 }
 

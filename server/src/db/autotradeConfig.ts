@@ -591,30 +591,29 @@ export interface AutotradeConfig {
   /** Reject a synced net-liquidation reading that moves more than this % from
    *  the last accepted one (default 5; 0 disables the guard).
    *
-   *  On 2026-08-27 the broker's feed swung $1,907-$2,317 on a ~$2,230 account
-   *  holding one position that moved cents. A $2,444.70 reading banked the day
-   *  at a fictional +9.69% and halted live entries for the session, and every
-   *  %-of-equity cap was sized off the same noise. An out-of-band reading that
-   *  REPEATS is still accepted, so a deposit, a withdrawal or an overnight gap
-   *  lands within a few ticks — see equitySyncGuard.ts. */
+   *  Built 2026-08-27 on a misdiagnosis: the feed swinging $1,907-$2,317 on a
+   *  ~$2,230 account looked like corruption, and was actually a manually-traded
+   *  options position marking to market. The account really was up 11% that
+   *  day. Kept as a backstop against a genuinely absurd print (a 10x, a stray
+   *  value), which is all it should ever catch — set generously, because on an
+   *  account where options are traded by hand a 5-10% move between ticks is
+   *  ordinary and real. An out-of-band reading that REPEATS is accepted, so a
+   *  deposit or an overnight gap still lands — see equitySyncGuard.ts. */
   equitySyncMaxJumpPct: number;
-  /** Day-trading buying power in DOLLARS, or 0 to use the broker's own
-   *  reported figure (the default).
+  /** CEILING on the day-trading buying power the live loop may use, or 0 (the
+   *  default) to use whatever the broker reports.
    *
-   *  Webull's /openapi/assets/balance `buying_power` is the OVERNIGHT figure —
-   *  on 2026-08-27 it read $1,054.81 while the account's intraday buying power
-   *  was $5,205.61. The guardrail checking every order against the overnight
-   *  number refuses trades the account can genuinely fund, which is what kept
-   *  a second morning position from ever being placed.
+   *  The account's real day buying power now comes from the balance payload's
+   *  `day_buying_power` (providers/webull/accountState.ts). It did not use to:
+   *  that file read a `buying_power` key which does not exist, silently fell
+   *  back to the CASH balance, and so refused live entries the account could
+   *  fund — on 2026-08-27, blocked against "$1,005.46 available" while day
+   *  buying power was near $4,000.
    *
-   *  Deliberately a user-stated number rather than a broker field: the
-   *  confirmed balance payload (see providers/webull/accountState.ts) has no
-   *  day-buying-power key, and guessing one is how a cap ends up silently
-   *  reading undefined. It is only sound because this loop is strictly
-   *  intraday — endOfDayFlattenMinutes closes everything before the bell, so
-   *  day-trading buying power is never carried overnight. Re-check it if the
-   *  account size changes materially; a stale figure here overstates capacity,
-   *  and the broker's own real-time check is then the only thing left. */
+   *  This field started life as a hand-entered substitute for that missing
+   *  figure. A number typed in by hand only goes stale, so it is a cap now
+   *  instead: useful for saying "never deploy more than $X intraday however
+   *  much margin the broker extends", and inert at 0. */
   liveDayBuyingPowerUsd: number;
   /** How many live trades (counted from liveEnabledAt) get an extra
    *  liveProbationSizeMultiplier size cut on top of the risk profile's normal

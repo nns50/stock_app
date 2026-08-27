@@ -89,6 +89,16 @@ export interface AccountState {
    *  response didn't include it, so the settled_cash check below can skip
    *  rather than warn on a fabricated shortfall. */
   settledCashUsd?: number;
+  /** Day-trading buying power — what a position opened and closed inside the
+   *  same session can use. Typically a multiple of net liquidation (4x on a
+   *  PDT-flagged margin account; on 2026-08-27 this account read $9,800.80
+   *  against $2,450.20 of equity). Undefined when the broker didn't report it.
+   *
+   *  Deliberately NOT folded into buyingPowerUsd: a position held overnight
+   *  cannot use it, so only a caller that knows it is flat by the bell may.
+   *  autotrade's live equity loop is exactly that caller — it flattens at
+   *  endOfDayFlattenMinutes — and nothing else here reads this. */
+  dayBuyingPowerUsd?: number;
 }
 
 export interface TradingConfig {

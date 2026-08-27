@@ -704,16 +704,25 @@ describe('runLiveExecution — funding capacity and unplaceable shorts', () => {
   // vacuous for exactly that reason.
   const STARVED_OVERNIGHT_BP = 150;
 
-  it('funds an entry the OVERNIGHT buying power alone would have refused', async () => {
-    // Webull's buying_power is the overnight figure: on 2026-08-27 it read
-    // $1,054.81 against $5,205.61 of intraday buying power, so the second
-    // morning position was refused for funds the account genuinely had.
-    setAutotradeConfig({ ...cfgFields, accountEquityUsd: 2_283.61, liveDayBuyingPowerUsd: 5_205.61 });
-    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
-    mockAccountState.mockResolvedValue({
+  const starved = (dayBuyingPowerUsd?: number) =>
+    ({
       ...okAccountState,
-      state: { ...okAccountState.state, buyingPowerUsd: STARVED_OVERNIGHT_BP, exposureUsd: 1_227.84 },
-    } as Awaited<ReturnType<typeof webullAccountState>>);
+      state: {
+        ...okAccountState.state,
+        buyingPowerUsd: STARVED_OVERNIGHT_BP,
+        exposureUsd: 1_227.84,
+        ...(dayBuyingPowerUsd === undefined ? {} : { dayBuyingPowerUsd }),
+      },
+    }) as Awaited<ReturnType<typeof webullAccountState>>;
+
+  it("funds an intraday entry from the broker's DAY buying power", async () => {
+    // buyingPowerUsd is the overnight figure by design. This loop flattens
+    // before the bell, so it is the one caller entitled to the day figure --
+    // on 2026-08-27 that was $9,800.80 against $2,450.20 of equity, while
+    // entries were refused for "$1,005.46 available".
+    setAutotradeConfig({ ...cfgFields, accountEquityUsd: 2_283.61, liveDayBuyingPowerUsd: 0 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue(starved(9_800.8));
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-DTBP' });
 
     const outcomes = await runLiveExecution([{ signal: signal() }]);
@@ -722,15 +731,11 @@ describe('runLiveExecution — funding capacity and unplaceable shorts', () => {
     expect(mockPlaceOrder).toHaveBeenCalled();
   });
 
-  it('blocks that SAME entry with the day figure unset — proving the test above bites', async () => {
-    // 0 is the default and must change nothing at all. Identical account
-    // state to the case above; only liveDayBuyingPowerUsd differs.
+  it('blocks that SAME entry when the broker reports no day figure — proving the test above bites', async () => {
+    // Identical account state; only dayBuyingPowerUsd is absent.
     setAutotradeConfig({ ...cfgFields, accountEquityUsd: 2_283.61, liveDayBuyingPowerUsd: 0 });
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
-    mockAccountState.mockResolvedValue({
-      ...okAccountState,
-      state: { ...okAccountState.state, buyingPowerUsd: STARVED_OVERNIGHT_BP, exposureUsd: 1_227.84 },
-    } as Awaited<ReturnType<typeof webullAccountState>>);
+    mockAccountState.mockResolvedValue(starved());
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NOBP' });
 
     const outcomes = await runLiveExecution([{ signal: signal() }]);
@@ -740,12 +745,27 @@ describe('runLiveExecution — funding capacity and unplaceable shorts', () => {
     expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 
-  it('never TIGHTENS the broker figure — a stale small config value cannot block a funded order', async () => {
+  it('honours liveDayBuyingPowerUsd as a CEILING on what the broker offers', async () => {
+    // $9,800.80 available, capped to $500 -- less than the notional, so the
+    // entry is refused. The cap is the point: "never deploy more than this
+    // intraday however much margin the broker extends".
+    setAutotradeConfig({ ...cfgFields, accountEquityUsd: 2_283.61, liveDayBuyingPowerUsd: 500 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue(starved(9_800.8));
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CAP' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0]).toMatchObject({ ok: false });
+    expect(outcomes[0].reason).toMatch(/buying_power/);
+  });
+
+  it('never LOWERS the guardrail figure — a small cap cannot block an otherwise fundable order', async () => {
     setAutotradeConfig({ ...cfgFields, accountEquityUsd: 2_283.61, liveDayBuyingPowerUsd: 50 });
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
     mockAccountState.mockResolvedValue({
       ...okAccountState,
-      state: { ...okAccountState.state, buyingPowerUsd: 1_000_000, exposureUsd: 0 },
+      state: { ...okAccountState.state, buyingPowerUsd: 1_000_000, exposureUsd: 0, dayBuyingPowerUsd: 9_800.8 },
     } as Awaited<ReturnType<typeof webullAccountState>>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-MAX' });
 

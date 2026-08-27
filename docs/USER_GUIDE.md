@@ -1571,33 +1571,37 @@ equally-weighted cards in the order they happened to be built:
   the reasoning that a cash account cannot hold more than it is worth — true, and it
   left no headroom at all: two correctly-sized positions came to $2,284 against a
   $2,283.61 cap and the second was refused by 39 cents. **Day buying power** exists
-  because Webull's reported `buying_power` is the *overnight* figure — on the same day
-  it read $1,054.81 while the account's intraday buying power was $5,205.61, so entries
-  the account could genuinely fund were being refused. Set it to your intraday buying
-  power, or leave it at **0** to use the broker's own number. It only ever *raises* the
-  broker's figure, never lowers it, and it is only sound because this loop is strictly
-  intraday — the end-of-day flatten closes everything before the bell, so day-trading
-  buying power is never carried overnight. Re-check it if your account size changes
-  materially; a stale figure overstates what you can fund, and the broker's own
-  real-time check is then the only thing left.
+because the loop is the only caller that is always flat by the bell, so it is
+  the only one entitled to the account's **day-trading** buying power rather than its
+  overnight figure. That comes straight from the broker now (`day_buying_power` — 4×
+  net liquidation on a PDT-flagged margin account), so there is nothing to type in and
+  nothing to go stale. Leave the setting at **0** to use whatever the broker reports;
+  set a positive number to cap it — "never deploy more than $X intraday however much
+  margin is extended". It only ever *raises* what the guardrail would otherwise have
+  used, so a cap can never block an order the account could already fund.
 
-  A third setting protects everything downstream of the broker's equity feed.
-  **Max equity-sync jump (%)** (default 5) refuses a synced net-liquidation
-  reading that moves more than that from the last accepted one. It exists
-  because on 2026-08-27 the feed swung between $1,907.21 and $2,316.71 on a
-  ~$2,230 account holding a single position that moved cents — and two things
-  read that number. A $2,444.70 print banked the day at a fictional **+9.69%**
-  and halted live entries for the rest of the session, and every %-of-equity
-  cap was sized off the same noise. A rejected reading is journaled as
-  `equity_sync_rejected` and the last confirmed figure is kept; a reading that
-  **repeats** at the same new level is accepted after three ticks, so a
-  deposit, a withdrawal or an overnight gap still lands. Set it to 0 to
-  disable. Belt and braces: banking the day now also needs the target met on
-  **two consecutive ticks**, so a one-tick spike can no longer end a session.
-  If a day is spoiled anyway, **POST `/api/autotrade/daily-target/reset`**
-  clears the sticky flags — and because a reach is recomputed as "flag set OR
-  equity above target", pass `baselineEquityUsd` to re-base the day onto the
-  equity that is actually true, or the next tick simply re-trips it. Needs account equity set first (Configuration, above). A **probation**
+  This mattered more than it sounds: until 2026-08-27 the app read a `buying_power`
+  key that the account **does not return**, silently fell back to the cash balance,
+  and so reported roughly a quarter of the real capacity. Live entries were refused
+  for funds that were sitting there — blocked against "$1,005.46 available" on a day
+  the account had close to $4,000 of day buying power.
+
+  A further setting guards the equity feed itself. **Max equity-sync jump (%)**
+  refuses a synced net-liquidation reading that moves more than that from the last
+  accepted one; a rejected reading is journaled as `equity_sync_rejected` and the last
+  confirmed figure is kept, while a reading that **repeats** at the same new level is
+  accepted after three ticks so a deposit or an overnight gap still lands. Set it
+  generously — it was built on the belief that a wildly swinging feed was corrupt, and
+  the swings turned out to be a hand-traded options position marking to market, so on
+  an account where you trade options by hand a 5–10% move between ticks is ordinary
+  and real. It should only ever catch an absurd print. 0 disables it. Independently,
+  banking the day needs the target met on **two consecutive ticks**, so a one-tick
+  spike cannot end a session; and **POST `/api/autotrade/daily-target/reset`** clears
+  the sticky halt flags if a day is spoiled anyway — pass `baselineEquityUsd` to
+  re-base the day, because a reach is recomputed as "flag set OR equity above target"
+  and the next tick otherwise re-trips it.
+
+  Needs account equity set first (Configuration, above). A **probation**
   setting cuts position size (e.g. to half) for the first N live trades after you enable
   it, on top of whatever the configured risk-per-trade % and any loss-streak step-down
   already produce — save these before enabling. Your **paper track record** (trade count, win rate, date
