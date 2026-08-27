@@ -17,9 +17,7 @@ import { webullAccountState } from '../../providers/webull/accountState';
  * failing a tune the operator asked for over a number that only ever tightens
  * the result.
  */
-export async function tuneBuyingPower(
-  cfg: AutotradeConfig,
-): Promise<{ buyingPowerUsd?: number; optionBuyingPowerUsd?: number }> {
+export async function tuneBuyingPower(cfg: AutotradeConfig): Promise<{ buyingPowerUsd?: number }> {
   if (!cfg.liveAccountId) return {};
   try {
     const acct = await webullAccountState(cfg.liveAccountId);
@@ -34,10 +32,9 @@ export async function tuneBuyingPower(
       equityBp !== undefined && cfg.liveDayBuyingPowerUsd > 0
         ? Math.min(equityBp, cfg.liveDayBuyingPowerUsd)
         : equityBp;
-    return {
-      ...(capped !== undefined ? { buyingPowerUsd: capped } : {}),
-      ...(acct.optionBuyingPowerUsd !== undefined ? { optionBuyingPowerUsd: acct.optionBuyingPowerUsd } : {}),
-    };
+    // Option BP is deliberately NOT returned: see deriveDollarCaps for why a
+    // stored cap must not be bound to a figure only one derivation path can see.
+    return capped !== undefined ? { buyingPowerUsd: capped } : {};
   } catch {
     return {};
   }
