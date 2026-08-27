@@ -641,6 +641,17 @@ CREATE TABLE IF NOT EXISTS autotrade_live_options_positions (
   iv_rank                REAL,                 -- IV rank (0-100) at decision time
   market_regime          TEXT,                 -- 'risk-on' | 'neutral' | 'risk-off'
   market_atr_pct         REAL,
+  -- Short-dated options (2026-08-26, docs/SHORT_DATED_OPTIONS_SPEC.md).
+  -- underlying_at_entry is the reference a stop on the UNDERLYING measures
+  -- against. A %-of-premium stop cannot work on a 0DTE: the premium decays
+  -- ~11% by 10:30 and ~63% by 13:30 with the underlying perfectly still, so
+  -- such a stop fires on the clock rather than on the thesis. peak_premium is
+  -- the high-water mark the give-back trail hangs off -- a +62% winner that
+  -- retraces half its underlying move is -9%, so unrealised gain here is
+  -- perishable in a way stock gain is not. Both null on rows that predate the
+  -- columns, which makes the rules that need them silently inert for those.
+  underlying_at_entry    REAL,
+  peak_premium           REAL,
   created_at             INTEGER NOT NULL,
   updated_at             INTEGER NOT NULL
 );
@@ -1111,6 +1122,22 @@ function migrate(): void {
   // 'take_profit' (2026-07-26) — after the alop ALTERs above for the same
   // copy-list reason.
   rebuildAutotradeLiveOptionsPositionsTable(db);
+
+  // 2026-08-26: short-dated options need two figures nothing recorded — the
+  // underlying price at entry (the reference for an underlying-based stop) and
+  // a peak-premium high-water mark (for the give-back trail). Nullable, so a
+  // pre-existing row simply cannot use the rules that read them.
+  const loPosCols = db.prepare('PRAGMA table_info(autotrade_live_options_positions)').all() as { name: string }[];
+  if (!loPosCols.some((c) => c.name === 'underlying_at_entry')) {
+    db.exec('ALTER TABLE autotrade_live_options_positions ADD COLUMN underlying_at_entry REAL');
+  }
+  if (!loPosCols.some((c) => c.name === 'peak_premium')) {
+    db.exec('ALTER TABLE autotrade_live_options_positions ADD COLUMN peak_premium REAL');
+  }
+  const loOrdCols = db.prepare('PRAGMA table_info(autotrade_live_options_orders)').all() as { name: string }[];
+  if (!loOrdCols.some((c) => c.name === 'underlying_at_entry')) {
+    db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN underlying_at_entry REAL');
+  }
 
   normalizeBacktestBarTimes(db);
 
@@ -1609,7 +1636,7 @@ export function rebuildAutotradeLiveOptionsPositionsTable(database: Database.Dat
     'id, symbol, side, kind, contract_symbol, strike, short_contract_symbol, short_strike, expiration, ' +
     'quantity, entry_price, short_entry_price, entry_at, risk_amount, risk_profile, rationale, status, ' +
     'exit_price, short_exit_price, exit_at, exit_reason, account_id, grade, entry_score, iv_rank, ' +
-    'market_regime, market_atr_pct, created_at, updated_at'
+    'market_regime, market_atr_pct, underlying_at_entry, peak_premium, created_at, updated_at'
   )
     .split(', ')
     .filter((c) => present.has(c))

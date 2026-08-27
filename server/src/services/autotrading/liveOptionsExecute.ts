@@ -453,6 +453,7 @@ export async function attemptLiveOptionsEntry(
     ivRank: signal.ivRank,
     marketRegime,
     marketAtrPct,
+    underlyingAtEntry: signal.underlyingPrice,
   };
 
   if (signal.kind === 'debit_spread') {
@@ -1649,6 +1650,7 @@ function materializeOptionsEntryFill(
     ivRank: meta.ivRank,
     marketRegime: meta.marketRegime,
     marketAtrPct: meta.marketAtrPct,
+    underlyingAtEntry: meta.underlyingAtEntry,
   });
   setLiveOptionsOrderPositionId(intent.id, position.id);
   logAutotradeEvent({

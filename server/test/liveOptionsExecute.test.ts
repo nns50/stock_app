@@ -41,6 +41,7 @@ import {
   createLiveOptionsPosition,
   getLiveOptionsPosition,
   listOpenLiveOptionsPositions,
+  raiseLiveOptionsPeakPremium,
 } from '../src/db/autotradeLiveOptionsPositions';
 import * as liveOptionsPositionsDb from '../src/db/autotradeLiveOptionsPositions';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from '../src/services/autotrading/optionsRiskCheck';
@@ -69,6 +70,7 @@ function optionSignal(overrides: Partial<SingleLegOptionsSignal> = {}): SingleLe
     kind: 'single_leg',
     symbol: 'AAPL',
     side: 'call',
+    underlyingPrice: 100,
     contractSymbol: 'AAPL-fixture',
     strike: 100,
     expiration: '2024-06-21',
@@ -88,6 +90,7 @@ function spreadSignal(overrides: Partial<DebitSpreadOptionsSignal> = {}): DebitS
     kind: 'debit_spread',
     symbol: 'AAPL',
     side: 'call',
+    underlyingPrice: 100,
     expiration: '2024-06-21',
     dte: 21,
     ivRank: 50,
@@ -2069,5 +2072,62 @@ describe('checkLiveOptionsExits — intraday exits', () => {
     // pending, so this position is skipped rather than double-closed.
     expect(await checkLiveOptionsExits()).toEqual([]);
     expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Short-dated options groundwork (2026-08-26): the two figures nothing
+// recorded. underlyingAtEntry is the reference an underlying-based stop
+// measures against — a %-of-premium stop cannot do that job on a 0DTE, where
+// the premium decays ~11% by 10:30 and ~63% by 13:30 with the underlying
+// perfectly still. peakPremium is the mark the give-back trail hangs off.
+// ---------------------------------------------------------------------------
+describe('options position — underlying at entry and peak premium', () => {
+  it('seeds the peak premium to the entry premium', () => {
+    // Not zero and not null: a position has not been in profit until it moves,
+    // so a retrace is measured from the entry until a higher mark is seen.
+    const pos = openLivePosition({ entryPrice: 3 });
+    expect(pos.peakPremium).toBe(3);
+  });
+
+  it('raises the peak but never lowers it — a retrace is the thing being measured', () => {
+    const pos = openLivePosition({ entryPrice: 3 });
+    raiseLiveOptionsPeakPremium(pos.id, 4.8);
+    expect(getLiveOptionsPosition(pos.id)!.peakPremium).toBe(4.8);
+
+    raiseLiveOptionsPeakPremium(pos.id, 3.5); // faded — must NOT move the mark
+    expect(getLiveOptionsPosition(pos.id)!.peakPremium).toBe(4.8);
+
+    raiseLiveOptionsPeakPremium(pos.id, 5.2); // new high
+    expect(getLiveOptionsPosition(pos.id)!.peakPremium).toBe(5.2);
+  });
+
+  it('carries the underlying price from the signal through the order row to the position', async () => {
+    // Three hops, each of which has silently dropped a field before in this
+    // codebase: signal -> entry order row -> position at materialization.
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-UL' });
+
+    const signal = optionSignal({ underlyingPrice: 187.42 });
+    const out = await attemptLiveOptionsEntry(signal, okResult(signal), 'MODERATE', liveConfig());
+    expect(out.ok).toBe(true);
+
+    // Hop 1 -> 2: recorded on the order row.
+    expect(getLiveOptionsOrder(out.intentId!)!.underlyingAtEntry).toBe(187.42);
+
+    // Hop 2 -> 3: carried to the position when the fill materializes.
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: 1,
+      filledPrice: 3,
+    } as WebullOrderStatus);
+    await reconcileLiveOptionsOrders();
+    const pos = listOpenLiveOptionsPositions()[0];
+    expect(pos.underlyingAtEntry).toBe(187.42);
+    expect(pos.peakPremium).toBe(3); // seeded from the real fill price
   });
 });

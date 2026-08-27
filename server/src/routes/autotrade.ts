@@ -896,6 +896,11 @@ const singleLegSignalBody = z.object({
   kind: z.literal('single_leg'),
   symbol: z.string().min(1),
   side: z.enum(['call', 'put']),
+  // Defaulted rather than required: an older client echoing back a signal it
+  // received before this field existed would otherwise 400. Risk-checking is
+  // read-only and never reads it — only the live exit path does, off the
+  // position row — so 0 here costs nothing.
+  underlyingPrice: z.number().nonnegative().default(0),
   contractSymbol: z.string().min(1),
   strike: z.number().positive(),
   expiration: z.string().min(8),
@@ -911,6 +916,7 @@ const debitSpreadSignalBody = z.object({
   kind: z.literal('debit_spread'),
   symbol: z.string().min(1),
   side: z.enum(['call', 'put']),
+  underlyingPrice: z.number().nonnegative().default(0), // see singleLegSignalBody
   expiration: z.string().min(8),
   dte: z.number().nonnegative(),
   ivRank: z.number(),
