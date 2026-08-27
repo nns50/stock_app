@@ -578,6 +578,34 @@ export interface AutotradeConfig {
   /** Defaults false, matching guardrails.ts's own default and this project's
    *  defined-risk-by-default posture. */
   liveAllowNakedShort: boolean;
+  /** Gross-exposure cap as a % of accountEquityUsd (default 100).
+   *
+   *  This was hardcoded to exactly 100% on the reasoning that "a cash account
+   *  can't have MORE gross exposure than its own equity without margin." True
+   *  for a cash account, and it left ZERO headroom: on 2026-08-27 two
+   *  correctly-sized positions summed to $2,284 against a $2,283.61 cap and
+   *  the second was refused by 39 cents. An account with intraday buying power
+   *  above its net liquidation cannot express that at all while this is fixed
+   *  at 100. Still fails closed at 0 when equity is unset. */
+  liveMaxExposurePct: number;
+  /** Day-trading buying power in DOLLARS, or 0 to use the broker's own
+   *  reported figure (the default).
+   *
+   *  Webull's /openapi/assets/balance `buying_power` is the OVERNIGHT figure —
+   *  on 2026-08-27 it read $1,054.81 while the account's intraday buying power
+   *  was $5,205.61. The guardrail checking every order against the overnight
+   *  number refuses trades the account can genuinely fund, which is what kept
+   *  a second morning position from ever being placed.
+   *
+   *  Deliberately a user-stated number rather than a broker field: the
+   *  confirmed balance payload (see providers/webull/accountState.ts) has no
+   *  day-buying-power key, and guessing one is how a cap ends up silently
+   *  reading undefined. It is only sound because this loop is strictly
+   *  intraday — endOfDayFlattenMinutes closes everything before the bell, so
+   *  day-trading buying power is never carried overnight. Re-check it if the
+   *  account size changes materially; a stale figure here overstates capacity,
+   *  and the broker's own real-time check is then the only thing left. */
+  liveDayBuyingPowerUsd: number;
   /** How many live trades (counted from liveEnabledAt) get an extra
    *  liveProbationSizeMultiplier size cut on top of the risk profile's normal
    *  sizing and any loss-streak step-down already active (Phase 8 Step B). */
@@ -1026,6 +1054,8 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveEnabledAt: null,
     liveAccountId: null,
     liveMaxOrderUsd: 500,
+    liveMaxExposurePct: 100,
+    liveDayBuyingPowerUsd: 0,
     liveMaxDailyLossUsd: 250,
     liveMaxOrdersPerDay: DEFAULT_LIVE_MAX_ORDERS_PER_DAY,
     liveFatFingerPct: 10,
@@ -1275,6 +1305,8 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     liveEnabledAt: enabledAt,
     liveAccountId: accountId,
     liveMaxOrderUsd: nonNeg(input.liveMaxOrderUsd, d.liveMaxOrderUsd),
+    liveMaxExposurePct: nonNeg(input.liveMaxExposurePct, d.liveMaxExposurePct),
+    liveDayBuyingPowerUsd: nonNeg(input.liveDayBuyingPowerUsd, d.liveDayBuyingPowerUsd),
     liveMaxDailyLossUsd: nonNeg(input.liveMaxDailyLossUsd, d.liveMaxDailyLossUsd),
     liveMaxOrdersPerDay: posInt(input.liveMaxOrdersPerDay, d.liveMaxOrdersPerDay),
     liveFatFingerPct: pct(input.liveFatFingerPct, d.liveFatFingerPct),

@@ -399,6 +399,12 @@ export type TunablePatch = Pick<
  *  half of the classification TunablePatch starts. Grouped by the reason each
  *  is excluded; a key belongs here only with a reason, not by omission. */
 export const NEVER_TUNED_KEYS = [
+  // Account CAPACITY, not strategy. Both describe what the brokerage account
+  // can actually fund; neither follows from a target daily gain, and a tune
+  // that "helpfully" widened either would be inventing leverage the broker
+  // never granted.
+  'liveMaxExposurePct',
+  'liveDayBuyingPowerUsd',
   // Safety gates & identity — a preset must never arm anything or change whose
   // account it is.
   'enabled',

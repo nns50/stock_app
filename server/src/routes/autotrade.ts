@@ -231,6 +231,8 @@ const configBody = z.object({
   confirmLiveTrading: z.string().optional(),
   liveAccountId: z.string().min(1).nullable().optional(),
   liveMaxOrderUsd: z.number().nonnegative().optional(),
+  liveMaxExposurePct: z.number().nonnegative().optional(),
+  liveDayBuyingPowerUsd: z.number().nonnegative().optional(),
   liveMaxDailyLossUsd: z.number().nonnegative().optional(),
   liveMaxOrdersPerDay: z.number().int().nonnegative().optional(),
   liveFatFingerPct: z.number().min(0).max(100).optional(),
@@ -480,6 +482,8 @@ autotradeRouter.put(
       } as AutotradeConfig['regimeWeightPresets'];
     }
     if (body.liveMaxOrderUsd !== undefined) patch.liveMaxOrderUsd = body.liveMaxOrderUsd;
+    if (body.liveMaxExposurePct !== undefined) patch.liveMaxExposurePct = body.liveMaxExposurePct;
+    if (body.liveDayBuyingPowerUsd !== undefined) patch.liveDayBuyingPowerUsd = body.liveDayBuyingPowerUsd;
     if (body.liveMaxDailyLossUsd !== undefined) patch.liveMaxDailyLossUsd = body.liveMaxDailyLossUsd;
     if (body.liveMaxOrdersPerDay !== undefined) patch.liveMaxOrdersPerDay = body.liveMaxOrdersPerDay;
     if (body.liveFatFingerPct !== undefined) patch.liveFatFingerPct = body.liveFatFingerPct;

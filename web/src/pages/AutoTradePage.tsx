@@ -1125,6 +1125,10 @@ interface LiveTradingSectionProps {
   setLiveAccountIdDraft: (v: string) => void;
   liveMaxOrderUsdDraft: number | undefined;
   setLiveMaxOrderUsdDraft: (v: number | undefined) => void;
+  liveMaxExposurePctDraft: number | undefined;
+  setLiveMaxExposurePctDraft: (v: number | undefined) => void;
+  liveDayBuyingPowerUsdDraft: number | undefined;
+  setLiveDayBuyingPowerUsdDraft: (v: number | undefined) => void;
   liveMaxDailyLossUsdDraft: number | undefined;
   setLiveMaxDailyLossUsdDraft: (v: number | undefined) => void;
   liveMaxOrdersPerDayDraft: number | undefined;
@@ -1182,6 +1186,8 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
   // comes back. Block the save instead, so an empty required field is visible.
   const liveCapsIncomplete =
     p.liveMaxOrderUsdDraft == null ||
+    p.liveMaxExposurePctDraft == null ||
+    p.liveDayBuyingPowerUsdDraft == null ||
     p.liveMaxDailyLossUsdDraft == null ||
     p.liveMaxOrdersPerDayDraft == null ||
     p.liveFatFingerPctDraft == null ||
@@ -1236,6 +1242,28 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
               onChange={p.setLiveMaxOrderUsdDraft}
               min={0}
               placeholder="e.g. 20000"
+            />
+          </Field>
+          <Field
+            label="Max gross exposure (% of equity)"
+            hint="100 = never hold more than the account is worth. Two full-size positions need room for both."
+          >
+            <NumberInput
+              value={p.liveMaxExposurePctDraft}
+              onChange={p.setLiveMaxExposurePctDraft}
+              min={0}
+              placeholder="e.g. 100"
+            />
+          </Field>
+          <Field
+            label="Day buying power ($)"
+            hint="0 = use the broker's own figure. Webull reports the OVERNIGHT number, which refuses intraday entries the account can actually fund. Only safe because the loop flattens before the close."
+          >
+            <NumberInput
+              value={p.liveDayBuyingPowerUsdDraft}
+              onChange={p.setLiveDayBuyingPowerUsdDraft}
+              min={0}
+              placeholder="0 = broker figure"
             />
           </Field>
           <Field label="Max daily loss ($)">
@@ -2617,6 +2645,8 @@ export default function AutoTradePage() {
   const [regimeWeightPresetsDraft, setRegimeWeightPresetsDraft] = useState<AutotradeConfig['regimeWeightPresets']>();
   const [liveAccountIdDraft, setLiveAccountIdDraft] = useState('');
   const [liveMaxOrderUsdDraft, setLiveMaxOrderUsdDraft] = useState<number | undefined>();
+  const [liveMaxExposurePctDraft, setLiveMaxExposurePctDraft] = useState<number | undefined>();
+  const [liveDayBuyingPowerUsdDraft, setLiveDayBuyingPowerUsdDraft] = useState<number | undefined>();
   const [liveMaxDailyLossUsdDraft, setLiveMaxDailyLossUsdDraft] = useState<number | undefined>();
   const [liveMaxOrdersPerDayDraft, setLiveMaxOrdersPerDayDraft] = useState<number | undefined>();
   const [liveFatFingerPctDraft, setLiveFatFingerPctDraft] = useState<number | undefined>();
@@ -2748,6 +2778,8 @@ export default function AutoTradePage() {
     sync('regimeWeightPresets', setRegimeWeightPresetsDraft);
     sync('liveAccountId', (v) => setLiveAccountIdDraft(v ?? ''));
     sync('liveMaxOrderUsd', setLiveMaxOrderUsdDraft);
+    sync('liveMaxExposurePct', setLiveMaxExposurePctDraft);
+    sync('liveDayBuyingPowerUsd', setLiveDayBuyingPowerUsdDraft);
     sync('liveMaxDailyLossUsd', setLiveMaxDailyLossUsdDraft);
     sync('liveMaxOrdersPerDay', setLiveMaxOrdersPerDayDraft);
     sync('liveFatFingerPct', setLiveFatFingerPctDraft);
@@ -3043,6 +3075,8 @@ export default function AutoTradePage() {
       await client.setAutotradeConfig({
         liveAccountId: liveAccountIdDraft.trim() || null,
         liveMaxOrderUsd: liveMaxOrderUsdDraft,
+        liveMaxExposurePct: liveMaxExposurePctDraft,
+        liveDayBuyingPowerUsd: liveDayBuyingPowerUsdDraft,
         liveMaxDailyLossUsd: liveMaxDailyLossUsdDraft,
         liveMaxOrdersPerDay: liveMaxOrdersPerDayDraft,
         liveFatFingerPct: liveFatFingerPctDraft,
@@ -5981,6 +6015,10 @@ export default function AutoTradePage() {
                 setLiveAccountIdDraft={setLiveAccountIdDraft}
                 liveMaxOrderUsdDraft={liveMaxOrderUsdDraft}
                 setLiveMaxOrderUsdDraft={setLiveMaxOrderUsdDraft}
+                liveMaxExposurePctDraft={liveMaxExposurePctDraft}
+                setLiveMaxExposurePctDraft={setLiveMaxExposurePctDraft}
+                liveDayBuyingPowerUsdDraft={liveDayBuyingPowerUsdDraft}
+                setLiveDayBuyingPowerUsdDraft={setLiveDayBuyingPowerUsdDraft}
                 liveMaxDailyLossUsdDraft={liveMaxDailyLossUsdDraft}
                 setLiveMaxDailyLossUsdDraft={setLiveMaxDailyLossUsdDraft}
                 liveMaxOrdersPerDayDraft={liveMaxOrdersPerDayDraft}
