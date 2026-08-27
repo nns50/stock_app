@@ -1528,6 +1528,7 @@ export interface AutotradeConfig {
   liveFatFingerPct: number;
   liveAllowNakedShort: boolean;
   liveMaxExposurePct: number;
+  optionsMaxConcurrentPositions: number;
   equitySyncMaxJumpPct: number;
   liveDayBuyingPowerUsd: number;
   liveProbationTrades: number;

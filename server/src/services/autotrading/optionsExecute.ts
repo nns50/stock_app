@@ -462,7 +462,19 @@ export async function runOptionsPaperExecution(
   const tradesToday = optSnapshot.tradesToday + eqSnapshot.tradesToday;
   const consecutiveLosses = Math.max(optSnapshot.consecutiveLosses, eqSnapshot.consecutiveLosses);
   let runningRisk = optSnapshot.openRisk + eqSnapshot.openRisk;
-  let runningCount = optSnapshot.openPositionsCount + eqSnapshot.openPositionsCount;
+  // Slot budget. Options and equity share ONE combined risk pool by design
+  // (phase 12) — sound for money, ruinous for slots at a small cap: equity
+  // runs first in the loop tick, and on 2026-08-27 it held both of the two
+  // slots all session while 184 options signals produced zero orders, every
+  // one refused "2 open vs cap 2". With optionsMaxConcurrentPositions set,
+  // this book counts only its OWN open positions against its own number.
+  // runningRisk below is deliberately NOT split: that budget is about money,
+  // and money genuinely is shared.
+  const ownSlots = config.optionsMaxConcurrentPositions > 0;
+  const slotCap = ownSlots ? config.optionsMaxConcurrentPositions : config.maxConcurrentPositions;
+  let runningCount = ownSlots
+    ? optSnapshot.openPositionsCount
+    : optSnapshot.openPositionsCount + eqSnapshot.openPositionsCount;
   // Options positions are always 'long' (this app only ever buys premium —
   // see riskCheck.ts's correlatedNotional() doc comment); equity positions
   // folded in here carry their REAL side so an options candidate (always
@@ -537,7 +549,7 @@ export async function runOptionsPaperExecution(
       consecutiveLosses,
       openRisk: runningRisk,
       openPositionsCount: runningCount,
-      maxConcurrentPositions: config.maxConcurrentPositions,
+      maxConcurrentPositions: slotCap,
       correlatedNotional: correlated,
       riskPerTradePct: config.riskPerTradePct,
       maxDailyDrawdownPct: config.maxDailyDrawdownPct,

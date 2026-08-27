@@ -408,6 +408,9 @@ export const NEVER_TUNED_KEYS = [
   // A data-quality guard on the broker feed. Nothing about a target daily gain
   // implies how much a net-liquidation reading is allowed to jump.
   'equitySyncMaxJumpPct',
+  // A slot reservation for the evidence track, not a risk parameter — the
+  // combined aggregate-RISK budget the tune does calibrate is untouched by it.
+  'optionsMaxConcurrentPositions',
   // Safety gates & identity — a preset must never arm anything or change whose
   // account it is.
   'enabled',

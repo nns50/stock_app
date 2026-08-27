@@ -1248,3 +1248,131 @@ describe('short-dated options — the paper book', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// The options book's own slot budget (2026-08-27).
+//
+// Options and equity share one combined budget by design — sound for RISK,
+// and ruinous for SLOTS at a small cap. That session equity held both of the
+// two slots all day while 184 options signals produced ZERO orders, every one
+// refused "2 open vs cap 2". The paper options book is the evidence track the
+// entire short-dated roll-out rests on, and it cannot produce evidence it is
+// never given a slot to generate.
+// ---------------------------------------------------------------------------
+describe('optionsMaxConcurrentPositions — the options book gets its own slots', () => {
+  /** Fill the EQUITY paper book to the shared cap, the way a normal morning
+   *  does: equity runs first in the loop tick and takes what it needs. */
+  function fillEquityBook(n = 2) {
+    for (let i = 0; i < n; i += 1) {
+      openPaperPosition({
+        symbol: `EQ${i}`,
+        side: 'buy',
+        quantity: 10,
+        entryPrice: 100,
+        stopPrice: 95,
+        targetPrice: 110,
+        riskAmount: 50,
+        riskProfile: 'MODERATE',
+        rationale: 'fills a slot',
+      });
+    }
+  }
+
+  it('is starved by a full equity book while the budget is shared — the 2026-08-27 failure', async () => {
+    setAutotradeConfig({
+      accountEquityUsd: 100_000,
+      riskProfile: 'MODERATE',
+      maxConcurrentPositions: 2,
+      optionsMaxConcurrentPositions: 0, // shared: the old behaviour
+    });
+    fillEquityBook(2);
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3 } }) as never);
+
+    const out = await runOptionsPaperExecution([{ signal: optionSignal() }]);
+
+    expect(out[0]).toMatchObject({ ok: false });
+    expect(hasOpenOptionsPaperPosition('AAPL')).toBe(false);
+    const blocked = listAutotradeEvents({ actions: ['blocked'] });
+    const rules = blocked.flatMap((e) =>
+      JSON.parse(e.detail!)
+        .checks.filter((c: { passed: boolean }) => !c.passed)
+        .map((c: { rule: string }) => c.rule),
+    );
+    expect(rules).toContain('max_concurrent_positions');
+  });
+
+  it('opens anyway once the options book has slots of its own', async () => {
+    // Same full equity book, same signal. Only the slot budget differs.
+    setAutotradeConfig({
+      accountEquityUsd: 100_000,
+      riskProfile: 'MODERATE',
+      maxConcurrentPositions: 2,
+      optionsMaxConcurrentPositions: 1,
+    });
+    fillEquityBook(2);
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3 } }) as never);
+
+    const out = await runOptionsPaperExecution([{ signal: optionSignal() }]);
+
+    expect(out[0]).toMatchObject({ symbol: 'AAPL', ok: true });
+    expect(hasOpenOptionsPaperPosition('AAPL')).toBe(true);
+  });
+
+  it('still enforces the options cap against the options book itself', async () => {
+    // Its own budget is a budget, not an exemption.
+    setAutotradeConfig({
+      accountEquityUsd: 100_000,
+      riskProfile: 'MODERATE',
+      maxConcurrentPositions: 5,
+      optionsMaxConcurrentPositions: 1,
+    });
+    openOptionsPaperPosition({
+      symbol: 'MSFT',
+      side: 'call',
+      contractSymbol: 'MSFT-open',
+      strike: 400,
+      expiration: '2026-09-18',
+      quantity: 1,
+      entryPrice: 3,
+      riskAmount: 300,
+      riskProfile: 'MODERATE',
+      rationale: 'already holds the one options slot',
+    });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3 } }) as never);
+
+    const out = await runOptionsPaperExecution([{ signal: optionSignal() }]);
+
+    expect(out[0]).toMatchObject({ ok: false });
+    expect(hasOpenOptionsPaperPosition('AAPL')).toBe(false);
+  });
+
+  it('leaves the combined RISK budget shared — only slots are split', async () => {
+    // The money genuinely is shared. An equity book that has consumed the
+    // aggregate risk cap must still block an options entry even when the
+    // options book has a free slot.
+    setAutotradeConfig({
+      accountEquityUsd: 10_000,
+      riskProfile: 'MODERATE',
+      maxConcurrentPositions: 5,
+      optionsMaxConcurrentPositions: 5,
+      maxAggregateOpenRiskPct: 1, // $100 of room, total
+    });
+    openPaperPosition({
+      symbol: 'HOG',
+      side: 'buy',
+      quantity: 10,
+      entryPrice: 100,
+      stopPrice: 90,
+      targetPrice: 120,
+      riskAmount: 100, // eats the entire aggregate budget
+      riskProfile: 'MODERATE',
+      rationale: 'consumes the shared risk pool',
+    });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3 } }) as never);
+
+    const out = await runOptionsPaperExecution([{ signal: optionSignal() }]);
+
+    expect(out[0]).toMatchObject({ ok: false });
+    expect(hasOpenOptionsPaperPosition('AAPL')).toBe(false);
+  });
+});

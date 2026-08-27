@@ -736,7 +736,17 @@ export async function runLiveOptionsExecution(
   // 2x the aggregate-risk / concurrent-position caps.
   const combined = combinedLiveOpenRisk();
   let runningRisk = combined.risk;
-  let runningCount = combined.count;
+  // Slot budget. Options and equity share ONE combined risk pool by design
+  // (phase 12) — sound for money, ruinous for slots at a small cap: equity
+  // runs first in the loop tick, and on 2026-08-27 it held both of the two
+  // slots all session while 184 options signals produced zero orders, every
+  // one refused "2 open vs cap 2". With optionsMaxConcurrentPositions set,
+  // this book counts only its OWN open positions against its own number.
+  // runningRisk below is deliberately NOT split: that budget is about money,
+  // and money genuinely is shared.
+  const ownSlots = cfg.optionsMaxConcurrentPositions > 0;
+  const slotCap = ownSlots ? cfg.optionsMaxConcurrentPositions : cfg.maxConcurrentPositions;
+  let runningCount = ownSlots ? optSnapshot.openPositionsCount : combined.count;
   // Options positions are always 'long' (see riskCheck.ts's
   // correlatedNotional() doc comment); equity positions folded in here carry
   // their REAL side so an options candidate (always effectively 'long', per
@@ -841,7 +851,7 @@ export async function runLiveOptionsExecution(
       consecutiveLosses,
       openRisk: runningRisk,
       openPositionsCount: runningCount,
-      maxConcurrentPositions: cfg.maxConcurrentPositions,
+      maxConcurrentPositions: slotCap,
       correlatedNotional: correlated,
       riskPerTradePct: cfg.riskPerTradePct,
       maxDailyDrawdownPct: cfg.maxDailyDrawdownPct,

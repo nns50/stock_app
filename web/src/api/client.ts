@@ -537,6 +537,7 @@ export const client = {
     liveAccountId?: string | null;
     liveMaxOrderUsd?: number;
     liveMaxExposurePct?: number;
+    optionsMaxConcurrentPositions?: number;
     equitySyncMaxJumpPct?: number;
     liveDayBuyingPowerUsd?: number;
     liveMaxDailyLossUsd?: number;
