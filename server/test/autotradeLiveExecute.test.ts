@@ -54,6 +54,10 @@ import {
   syncAccountEquityFromBroker,
   adoptOrphanedLivePositions,
   checkLiveScaleIns,
+  checkLiveBracketProtection,
+  checkLiveEquityScaleOuts,
+  checkLiveEquityStopAdjusts,
+  checkLiveEquityTimeExits,
 } from '../src/services/autotrading/liveExecute';
 import { runWebullPositionsSync } from '../src/providers/webull/positions';
 import { priceMap } from '../src/services/quotes';
@@ -2476,5 +2480,126 @@ describe('reconcileLiveOrders — booking and the materialization mark are atomi
     expect(retry[0]).toMatchObject({ changed: true, action: 'entry_filled' });
     expect(listPositions()).toHaveLength(1);
     expect(getIntent(intentId)!.materializedQty).toBe(orderedQty);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A position the human opened by hand is NOT the loop's to close.
+//
+// Every acting path already scopes itself with listAutotradeLivePositions()
+// (the 'autotrade' tag). That is five separate call sites honouring one
+// convention with nothing enforcing it — add a sixth exit path, forget the
+// filter, and the loop starts selling holdings it never opened, with no test
+// to notice. This is the enforcement.
+//
+// Each case is PAIRED: the untagged position is left alone AND an
+// autotrade-tagged one in the identical situation is acted on. Without the
+// second half a filter that accidentally matched nothing would pass.
+// ---------------------------------------------------------------------------
+describe('manual positions are never auto-sold', () => {
+  const cfgFields = {
+    accountEquityUsd: 100_000,
+    riskProfile: 'MODERATE' as const,
+    liveAccountId: 'ACC1',
+    liveTradingEnabled: true,
+    liveEnabledAt: null,
+    liveMaxOrderUsd: 50_000,
+    liveMaxDailyLossUsd: 5_000,
+    liveMaxOrdersPerDay: 20,
+    killSwitch: false,
+    // Force every time-based exit to want to fire right now.
+    maxHoldDays: 1,
+    endOfDayFlattenMinutes: 5,
+  };
+
+  /** A holding the human owns: real shares, broker-imported, no 'autotrade'
+   *  tag and no sourceIntentId — the shape mapWebullPosition() produces. */
+  function manualPosition(symbol = 'MANL') {
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO positions (asset_type, symbol, side, quantity, entry_price, entry_date, fees, multiplier,
+         status, tags, stop_price, target_price, created_at, updated_at)
+       VALUES ('stock',?,'long',10,100,'2026-07-01',0,1,'open',?,95,110,?,?)`,
+    ).run(symbol, JSON.stringify(['webull', 'live']), now - 5 * 86_400_000, now);
+    return symbol;
+  }
+
+  /** The same holding, but genuinely autotrade's. */
+  function autotradePosition(symbol = 'AUTO') {
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO positions (asset_type, symbol, side, quantity, entry_price, entry_date, fees, multiplier,
+         status, tags, stop_price, target_price, initial_stop_price, created_at, updated_at)
+       VALUES ('stock',?,'long',10,100,'2026-07-01',0,1,'open',?,95,110,95,?,?)`,
+    ).run(symbol, JSON.stringify(['webull', 'live', 'autotrade']), now - 5 * 86_400_000, now);
+    return symbol;
+  }
+
+  beforeEach(() => {
+    setAutotradeConfig(cfgFields);
+    mockGetProvider.mockReturnValue(quoteReturning({ MANL: 100, AUTO: 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-MANUAL' });
+  });
+
+  it('listAutotradeLivePositions is the scope every acting path uses, and it excludes the manual one', () => {
+    manualPosition();
+    autotradePosition();
+    const scoped = listAutotradeLivePositions({ status: 'open' }).map((p) => p.symbol);
+    expect(scoped).toContain('AUTO');
+    expect(scoped).not.toContain('MANL');
+    // Both really are open — the manual one is excluded by TAG, not absence.
+    expect(
+      listPositions({ status: 'open' })
+        .map((p) => p.symbol)
+        .sort(),
+    ).toEqual(['AUTO', 'MANL']);
+  });
+
+  it('the max-hold-days time exit closes the autotrade position and not the manual one', async () => {
+    manualPosition();
+    autotradePosition();
+    const outcomes = await checkLiveEquityTimeExits();
+    // Assert on what the rule CONSIDERED, not on what it managed to place: the
+    // fixture has no source_intent_id, so AUTO's close fails at "cannot locate
+    // its bracket to cancel". That is fine — reaching that failure proves the
+    // rule selected it, which is precisely the half that must not happen to a
+    // manual holding.
+    const considered = outcomes.map((o) => o.symbol);
+    expect(considered).toContain('AUTO'); // the pair's other half — the rule did run
+    expect(considered).not.toContain('MANL');
+    for (const call of mockPlaceOrder.mock.calls) expect(call[1].symbol).not.toBe('MANL');
+  });
+
+  it('scale-outs, stop ratchets, scale-ins and bracket protection all skip it too', async () => {
+    manualPosition();
+    setAutotradeConfig({ liveScaleOutEnabled: true, liveTrailingEnabled: true, liveScaleInEnabled: true });
+
+    const touched = [
+      ...(await checkLiveEquityScaleOuts()),
+      ...(await checkLiveEquityStopAdjusts()),
+      ...(await checkLiveScaleIns()),
+      ...(await checkLiveBracketProtection()),
+    ].map((o) => o.symbol);
+
+    expect(touched).not.toContain('MANL');
+    for (const call of mockPlaceOrder.mock.calls) expect(call[1].symbol).not.toBe('MANL');
+  });
+
+  it('is not adopted into autotrade without a matching pending entry order of its own', async () => {
+    // Adoption is what would turn a manual holding INTO a managed one, after
+    // which every rule above would rightly apply to it.
+    manualPosition();
+    expect(adoptOrphanedLivePositions()).toEqual({ adopted: 0 });
+    expect(listAutotradeLivePositions({ status: 'open' }).map((p) => p.symbol)).not.toContain('MANL');
+  });
+
+  it('and autotrade will not even OPEN a position in a symbol the human already holds', async () => {
+    // The other half of the protection: no entry means no fill to reconcile,
+    // so the reconciler can never mistake the human's shares for its own.
+    manualPosition('AAPL');
+    const outcomes = await runLiveExecution([{ signal: signal({ symbol: 'AAPL' }) }]);
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', ok: false });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 });
