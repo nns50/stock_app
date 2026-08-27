@@ -1,6 +1,6 @@
 import { AutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../../db/autotradeConfig';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
-import { DOLLAR_CAP_KEYS, deriveDollarCaps, DollarCapKey } from './targetTune';
+import { DOLLAR_CAP_KEYS, deriveDollarCaps, sizerFloorUsd, DollarCapKey } from './targetTune';
 
 // ---------------------------------------------------------------------------
 // Automatic re-anchoring of the equity-derived DOLLAR caps.
@@ -68,7 +68,14 @@ export function decideLiveCapsReanchor(cfg: AutotradeConfig, equityUsd: number |
     return { action: 'skip', reason: 'no usable account equity to re-anchor against' };
   }
   const driftPct = (Math.abs(equityUsd - anchor) / anchor) * 100;
-  if (driftPct < REANCHOR_THRESHOLD_PCT) {
+  // Drift is not the only reason to re-derive. A per-order cap sitting BELOW
+  // the smallest order the sizer can produce blocks every entry, and drift
+  // alone will not notice: on 2026-08-27 the cap was $1,600 against a $2,581
+  // floor at only 4% drift, so the loop would have placed nothing until equity
+  // moved another 11%. That is a correctness failure, not a proportionality
+  // one, and it gets its own trigger.
+  const blocking = cfg.liveMaxOrderUsd < sizerFloorUsd(cfg, equityUsd);
+  if (driftPct < REANCHOR_THRESHOLD_PCT && !blocking) {
     return {
       action: 'skip',
       reason: `equity within ${REANCHOR_THRESHOLD_PCT}% of the anchor (${driftPct.toFixed(1)}% drift)`,
@@ -83,7 +90,15 @@ export function decideLiveCapsReanchor(cfg: AutotradeConfig, equityUsd: number |
   const changes: Partial<Record<DollarCapKey, { from: number; to: number }>> = {};
   const handEdited: DollarCapKey[] = [];
   for (const key of DOLLAR_CAP_KEYS) {
-    if (cfg[key] === atAnchor[key]) {
+    // "Only move what you own" yields to correctness. A hand-set per-order cap
+    // that sits below the sizer's floor is not a preference being honoured, it
+    // is a config that cannot place an order — and leaving it alone out of
+    // deference means the loop never trades again. Proportionality is the
+    // user's call; blocking every entry is not a thing to be deferential
+    // about. Only the blocking cap is overridden; the rest stay theirs.
+    const mustFix = blocking && (key === 'liveMaxOrderUsd' || key === 'liveOptionsMaxOrderUsd');
+    if (cfg[key] === atAnchor[key] || mustFix) {
+      if (cfg[key] === atCurrent[key]) continue;
       patch[key] = atCurrent[key];
       changes[key] = { from: cfg[key], to: atCurrent[key] };
     } else {

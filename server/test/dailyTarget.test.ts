@@ -334,7 +334,7 @@ describe('tune integration', () => {
   });
 
   it('reset-to-moderate declares NO goal and disarms the tracker AND the guard', () => {
-    const patch = resetToModerate(10_000);
+    const patch = resetToModerate(10_000, defaultAutotradeConfig().maxStopDistancePct);
     expect(patch.targetDailyGainPct).toBeNull();
     expect(patch.giveBackArmPct).toBeNull();
     expect(patch.giveBackFloorPct).toBeNull();

@@ -120,7 +120,7 @@ autotradeRouter.get('/tune/moderate', (_req, res) => {
   if (config.accountEquityUsd == null) {
     throw new HttpError(400, 'Set account equity before resetting to moderate.');
   }
-  res.json({ patch: resetToModerate(config.accountEquityUsd) });
+  res.json({ patch: resetToModerate(config.accountEquityUsd, config.maxStopDistancePct) });
 });
 
 const configBody = z.object({
