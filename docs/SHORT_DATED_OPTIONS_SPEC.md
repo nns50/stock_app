@@ -1,6 +1,8 @@
 # Short-dated options (0–2 DTE) — design spec
 
-Status: **spec, not yet built.** Written 2026-08-26.
+Status: **built 2026-08-26**, shipped OFF behind `shortDatedOptionsEnabled`.
+Spec written the same day; the modelled tables below are what every parameter
+came from, and none has yet been checked against a real trade.
 
 ---
 
@@ -198,12 +200,18 @@ arithmetic.
 
 ## Roll-out
 
-1. Build behind `shortDatedOptionsEnabled`, default **off**.
+1. ~~Build behind `shortDatedOptionsEnabled`, default off.~~ **Done.**
 2. **Paper first**, for at least two weeks. Every parameter above is a first
    estimate from a model, not from this book's own trades.
-3. Judge it at the 2026-09-05 review: win rate, average premium gain, which
-   exit rule fired, and how often the 14:00 cut was the binding one.
-4. Only then consider live, and with probation at 0.5× for 10 trades.
+3. A **daily post-close read** runs every weekday at 16:30 ET, reporting which
+   of the six rules fired and how the entry funnel broke down. The rule
+   distribution is the most informative number: `hard_time` dominating means
+   entries are too late or the thesis too slow; `stagnation` dominating means
+   the problem is the signal rather than the exit; `disaster_stop` firing at
+   all means something outran the underlying stop. It is explicitly instructed
+   not to manufacture a tuning change from a single day.
+4. Judge the accumulated picture at the 2026-09-05 review.
+5. Only then consider live, and with probation at 0.5× for 10 trades.
 
 ---
 
