@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeAll, beforeEach } from 'vitest';
 
 vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
 
@@ -902,5 +902,349 @@ describe('getOptionsPaperPortfolioSnapshot / optionsSeedForEquity', () => {
     // net credit at exit: 6 - 1 = 5; net debit at entry: 2 -> pnl = (5 - 2) * 1 * 100 = 300
     const snapshot = getOptionsPaperPortfolioSnapshot();
     expect(snapshot.dailyPnl).toBe(300);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Short-dated options on the PAPER book (2026-08-27,
+// docs/SHORT_DATED_OPTIONS_SPEC.md). The ladder shipped on the live path a day
+// earlier; this is the port, and paper is where it actually runs first.
+// ---------------------------------------------------------------------------
+describe('short-dated options — the paper book', () => {
+  /** 10:30 ET Wednesday 2026-08-26 — mid-session, clear of every clock. */
+  const EARLY = Date.parse('2026-08-26T14:30:00Z');
+  /** 15:00 ET the same day — 60m to the close, inside a 120m hard exit and a
+   *  210m entry cutoff. */
+  const LATE = Date.parse('2026-08-26T19:00:00Z');
+  /** The ET date EARLY falls on — a contract expiring here is 0DTE. */
+  const TODAY = '2026-08-26';
+
+  afterEach(() => vi.useRealTimers());
+  const atClock = (ms: number) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(ms);
+  };
+
+  const shortDated = (over: Partial<Parameters<typeof setAutotradeConfig>[0]> = {}) =>
+    setAutotradeConfig({
+      accountEquityUsd: 100_000,
+      riskProfile: 'MODERATE',
+      shortDatedOptionsEnabled: true,
+      optionsMinDte: 0,
+      optionsMaxDte: 2,
+      optionsHardExitMinutesBeforeClose: 120,
+      optionsNoEntryMinutesBeforeClose: 210,
+      optionsUnderlyingStopPct: 0.5,
+      optionsGiveBackArmPct: 40,
+      optionsGiveBackPct: 50,
+      optionsTakeProfitPct: 60,
+      optionsStagnationMinutes: 30,
+      optionsStagnationMinMovePct: 0.3,
+      optionsDisasterStopPct: 70,
+      ...over,
+    });
+
+  /** A 0DTE call opened `minutesAgo` before the clock, at 0.40 premium with
+   *  the underlying at 100 — the spec's worked example. */
+  function openShortDated(over: Partial<Parameters<typeof openOptionsPaperPosition>[0]> = {}, minutesAgo = 5) {
+    const pos = openOptionsPaperPosition({
+      symbol: 'AAPL',
+      side: 'call',
+      contractSymbol: 'AAPL-0dte',
+      strike: 100,
+      expiration: TODAY,
+      quantity: 1,
+      entryPrice: 0.4,
+      riskAmount: 40,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+      underlyingAtEntry: 100,
+      ...over,
+    });
+    // openOptionsPaperPosition stamps entry_at from the wall clock, which the
+    // fake timer has already moved — rewrite it so "held N minutes" is exact.
+    db.prepare('UPDATE autotrade_options_paper_positions SET entry_at = ? WHERE id = ?').run(
+      Date.now() - minutesAgo * 60_000,
+      pos.id,
+    );
+    return pos;
+  }
+
+  /** chainsFor() deliberately has no getQuote — the ladder must survive that
+   *  (it throws SYNCHRONOUSLY, which is the case that killed the live sweep).
+   *  This adds one when a test needs the underlying to move. */
+  const withQuote = (chains: ReturnType<typeof chainsFor>, last: number) => ({
+    ...chains,
+    getQuote: vi.fn(async () => ({ symbol: 'AAPL', last, change: 0, changePercent: 0 })),
+  });
+
+  it('stamps the underlying price at entry — the reference the stop measures against', async () => {
+    shortDated();
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.41 } }) as never);
+    const risk = evaluateOptionsRiskCheck(optionSignal({ underlyingPrice: 143.2 }), {
+      equity: 100_000,
+      dailyPnl: 0,
+      tradesToday: 0,
+      consecutiveLosses: 0,
+      openRisk: 0,
+      openPositionsCount: 0,
+      maxConcurrentPositions: 2,
+      correlatedNotional: 0,
+      riskPerTradePct: 1,
+      maxDailyDrawdownPct: 3,
+      stepDownAfterLosses: 2,
+      stepDownSizeCutPct: 50,
+      maxAggregateOpenRiskPct: 2,
+      maxCorrelatedExposurePct: 6,
+      maxTradesPerDay: 6,
+      sectorNotional: 0,
+      maxSectorExposurePct: 20,
+      candidateSector: null,
+      correlationThreshold: 0.7,
+      marketAtrPct: null,
+      regimeAtrThresholdPct: 3,
+      regimeSizeCutPct: 0,
+    });
+    const outcome = await attemptOptionsPaperEntry(optionSignal({ underlyingPrice: 143.2 }), risk, 'MODERATE');
+    expect(outcome.ok).toBe(true);
+    // Nothing else on the signal can stand in: strike and premium say where
+    // the contract sits, not where the stock was when the thesis was formed.
+    expect(outcome.position!.underlyingAtEntry).toBe(143.2);
+  });
+
+  describe('the DTE coupling that must not be split', () => {
+    it('holds a 0DTE contract instead of round-tripping it on the next tick', async () => {
+      // With the band at 0-2 DTE and the backstop still at 7 days, `dte <= 7`
+      // is true from the moment of the fill: the loop buys a contract and
+      // sells it seconds later, paying the round-trip spread, every time.
+      atClock(EARLY);
+      shortDated({ optionsStagnationMinutes: 0, optionsUnderlyingStopPct: 0 });
+      openShortDated();
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.42 } }) as never);
+
+      const out = await checkOptionsPaperExits();
+
+      expect(out[0]).toMatchObject({ symbol: 'AAPL', closed: false });
+    });
+
+    it('still applies the 7-day backstop with the flag off — proving the test above bites', async () => {
+      atClock(EARLY);
+      setAutotradeConfig({ accountEquityUsd: 100_000, riskProfile: 'MODERATE', shortDatedOptionsEnabled: false });
+      openShortDated();
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.42 } }) as never);
+
+      const out = await checkOptionsPaperExits();
+
+      expect(out[0]).toMatchObject({ closed: true });
+      expect(out[0]!.position!.exitReason).toBe('time_exit');
+    });
+  });
+
+  describe('exits', () => {
+    it('the hard clock fires late in the day even with no underlying quote at all', async () => {
+      // Every other rule needs a premium or an underlying. This one must not:
+      // a quote outage near the close is exactly when being stuck in a
+      // decaying contract is worst. chainsFor() has no getQuote, so the
+      // helper's synchronous throw is genuinely exercised here.
+      atClock(LATE);
+      shortDated();
+      const pos = openShortDated();
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.9 } }) as never);
+
+      const out = await checkOptionsPaperExits();
+
+      expect(out[0]).toMatchObject({ symbol: 'AAPL', closed: true });
+      expect(out[0]!.position!.exitReason).toBe('time_exit');
+      const ev = listAutotradeEvents({}).find((e) => e.action === 'short_dated_options_exit')!;
+      expect(JSON.parse(ev.detail!)).toMatchObject({ rule: 'hard_time', book: 'paper', positionId: pos.id });
+    });
+
+    it('cuts on an adverse UNDERLYING move', async () => {
+      atClock(EARLY);
+      shortDated();
+      openShortDated();
+      mockGetProvider.mockReturnValue(
+        withQuote(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.24 } }), 99.4) as never,
+      );
+
+      const out = await checkOptionsPaperExits();
+
+      expect(out[0]!.position!.exitReason).toBe('stop_loss');
+      const ev = listAutotradeEvents({}).find((e) => e.action === 'short_dated_options_exit')!;
+      expect(JSON.parse(ev.detail!)).toMatchObject({ rule: 'underlying_stop', underlyingMovePct: -0.6 });
+    });
+
+    it('does NOT cut when only theta has moved the premium — the whole point', async () => {
+      // Underlying perfectly still, premium down 27% on decay alone. A 40%
+      // premium stop would be minutes from firing here on nothing at all.
+      atClock(EARLY);
+      shortDated({ optionsStagnationMinutes: 0 });
+      openShortDated();
+      mockGetProvider.mockReturnValue(
+        withQuote(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.29 } }), 100) as never,
+      );
+
+      const out = await checkOptionsPaperExits();
+
+      expect(out[0]).toMatchObject({ closed: false });
+    });
+
+    it('banks a fading winner on the give-back trail', async () => {
+      atClock(EARLY);
+      shortDated();
+      // Peaked at +62% (the spec's worked case), now +25%.
+      openShortDated({ entryPrice: 0.4 });
+      db.prepare('UPDATE autotrade_options_paper_positions SET best_basis_since_entry = 0.648').run();
+      mockGetProvider.mockReturnValue(
+        withQuote(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.5 } }), 100.4) as never,
+      );
+
+      const out = await checkOptionsPaperExits();
+
+      expect(out[0]!.position!.exitReason).toBe('take_profit');
+      const ev = listAutotradeEvents({}).find((e) => e.action === 'short_dated_options_exit')!;
+      expect(JSON.parse(ev.detail!)).toMatchObject({ rule: 'give_back' });
+    });
+
+    it('records the peak on a cycle that does NOT exit — best_basis_since_entry is the high-water mark', async () => {
+      // A give-back trail that only learns about peaks when it acts is
+      // measuring the wrong thing. Paper reuses the column it already had for
+      // its trailing stop rather than adding a peak_premium twin.
+      atClock(EARLY);
+      shortDated();
+      const pos = openShortDated();
+      mockGetProvider.mockReturnValue(
+        withQuote(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.55 } }), 100.3) as never,
+      );
+
+      const out = await checkOptionsPaperExits();
+
+      expect(out[0]).toMatchObject({ closed: false });
+      expect(listOptionsPaperPositions({}).find((p) => p.id === pos.id)!.bestBasisSinceEntry).toBeCloseTo(0.55, 6);
+    });
+
+    it('cuts a position that has not started working before decay takes the rest', async () => {
+      // stagnationExit.ts skips options because theta already prices the slot
+      // — mild at 30 DTE, and at 0DTE exactly the reason to leave.
+      atClock(EARLY);
+      shortDated();
+      openShortDated({}, 35);
+      mockGetProvider.mockReturnValue(
+        withQuote(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.36 } }), 100.1) as never,
+      );
+
+      const out = await checkOptionsPaperExits();
+
+      expect(out[0]!.position!.exitReason).toBe('time_exit');
+      const ev = listAutotradeEvents({}).find((e) => e.action === 'short_dated_options_exit')!;
+      expect(JSON.parse(ev.detail!)).toMatchObject({ rule: 'stagnation' });
+    });
+
+    it('silences the 40% premium stop, which would otherwise fire on a flat tape', async () => {
+      // The gap that made the whole priority order a fiction: production runs
+      // optionsStopLossPct at 40, and a stop on the PREMIUM reaches that on
+      // decay alone by early afternoon (-63% at 13:30 with the underlying
+      // perfectly still). It would pre-empt the underlying stop on every
+      // position, every day, with no adverse move whatsoever. Underlying flat,
+      // premium -50%: nothing may fire but the ladder's own 70% backstop,
+      // which this is deliberately short of.
+      atClock(EARLY);
+      shortDated({ optionsStopLossPct: 40, optionsStagnationMinutes: 0 });
+      openShortDated();
+      mockGetProvider.mockReturnValue(
+        withQuote(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.2 } }), 100) as never,
+      );
+
+      const out = await checkOptionsPaperExits();
+
+      expect(out[0]).toMatchObject({ closed: false });
+    });
+
+    it('still applies the premium stop with the flag off — proving the test above bites', async () => {
+      atClock(EARLY);
+      setAutotradeConfig({
+        accountEquityUsd: 100_000,
+        riskProfile: 'MODERATE',
+        shortDatedOptionsEnabled: false,
+        optionsStopLossPct: 40,
+      });
+      // Far-dated, so the DTE backstop cannot be what closes it.
+      openShortDated({ expiration: '2027-06-18' });
+      mockGetProvider.mockReturnValue(
+        withQuote(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.2 } }), 100) as never,
+      );
+
+      const out = await checkOptionsPaperExits();
+
+      expect(out[0]!.position!.exitReason).toBe('stop_loss');
+    });
+
+    it('leaves a legacy row with no underlyingAtEntry to the premium rules alone', async () => {
+      // A position opened before the column existed: the stop and the
+      // stagnation cut go quiet rather than inventing a reference.
+      atClock(EARLY);
+      shortDated();
+      openShortDated({ underlyingAtEntry: null }, 35);
+      mockGetProvider.mockReturnValue(
+        withQuote(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.2 } }), 99.0) as never,
+      );
+
+      const out = await checkOptionsPaperExits();
+
+      expect(out[0]).toMatchObject({ closed: false });
+    });
+  });
+
+  describe('entry gates', () => {
+    it('refuses new entries past the cutoff, and says why', async () => {
+      atClock(LATE);
+      shortDated();
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.4 } }) as never);
+
+      const out = await runOptionsPaperExecution([{ signal: optionSignal() }]);
+
+      expect(out[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/entry cutoff/) });
+      expect(hasOpenOptionsPaperPosition('AAPL')).toBe(false);
+      expect(listAutotradeEvents({}).some((e) => e.action === 'short_dated_entry_window_closed')).toBe(true);
+    });
+
+    it('allows entries earlier in the session', async () => {
+      atClock(EARLY);
+      shortDated();
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.4 } }) as never);
+
+      const out = await runOptionsPaperExecution([{ signal: optionSignal() }]);
+
+      expect(out[0]?.reason ?? '').not.toMatch(/entry cutoff/);
+    });
+
+    it('allows only ONE short-dated position at a time', async () => {
+      // Tighter than the shared concurrent cap on purpose: two 0DTE positions
+      // can both go to zero inside the same half hour on one adverse move.
+      atClock(EARLY);
+      shortDated();
+      openShortDated({ symbol: 'MSFT', contractSymbol: 'MSFT-0dte' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.4 } }) as never);
+
+      const out = await runOptionsPaperExecution([{ signal: optionSignal() }]);
+
+      expect(out[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/max 1 at a time/) });
+      expect(hasOpenOptionsPaperPosition('AAPL')).toBe(false);
+    });
+
+    it('applies neither gate while the flag is off', async () => {
+      atClock(LATE);
+      setAutotradeConfig({
+        accountEquityUsd: 100_000,
+        riskProfile: 'MODERATE',
+        shortDatedOptionsEnabled: false,
+        optionsNoEntryMinutesBeforeClose: 210,
+      });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.4 } }) as never);
+
+      const out = await runOptionsPaperExecution([{ signal: optionSignal() }]);
+
+      expect(out[0]?.reason ?? '').not.toMatch(/entry cutoff/);
+    });
   });
 });

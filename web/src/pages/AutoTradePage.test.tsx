@@ -43,6 +43,18 @@ function renderDashboard() {
   return renderPage();
 }
 
+/** The monitoring dashboard's Books table: metric down the side, one column
+ *  per book. Returns the three book cells of one metric row in column order —
+ *  [paper, live equity, live options]. The old layout was three separate
+ *  blocks of identically-labelled tiles, so a test could only assert that
+ *  "1 / 2" appeared SOMEWHERE; this can say which book it belongs to. */
+function bookCells(metric: string): HTMLElement[] {
+  const table = screen.getByRole('table', { name: 'Books' });
+  const row = within(table).getByText(metric).closest('tr');
+  if (!row) throw new Error(`no Books row for "${metric}"`);
+  return Array.from(row.querySelectorAll('td'));
+}
+
 function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfig {
   return {
     enabled: false,
@@ -2872,9 +2884,13 @@ describe('AutoTradePage', () => {
       renderDashboard();
       // "Aggressive" also appears as a <select><option> elsewhere on the page.
       expect((await screen.findAllByText('Aggressive')).length).toBeGreaterThan(0);
-      expect(screen.getByText('1 / 3')).toBeInTheDocument(); // open positions vs cap
-      expect(screen.getByText('2 / 10')).toBeInTheDocument(); // trades today vs cap
-      expect(screen.getByText('-$200.00')).toBeInTheDocument(); // day P&L
+      // Paper is the first book column. Each shared cap is printed once, in
+      // the row header, rather than once per book the way the old tiles did.
+      expect(within(bookCells('Open positions')[0]!).getByText('1')).toBeInTheDocument();
+      expect(screen.getByText('cap 3')).toBeInTheDocument();
+      expect(within(bookCells('Trades today')[0]!).getByText('2')).toBeInTheDocument();
+      expect(screen.getByText('cap 10')).toBeInTheDocument();
+      expect(within(bookCells('Day P&L')[0]!).getByText('-$200.00')).toBeInTheDocument();
     });
 
     it('shows an error state with retry when the dashboard fails to load', async () => {
@@ -3107,8 +3123,12 @@ describe('AutoTradePage', () => {
         }),
       );
       renderDashboard();
-      expect(await screen.findByText('2 / 2')).toBeInTheDocument(); // combined count
-      expect(screen.getByText('1 equity + 1 options')).toBeInTheDocument();
+      await screen.findByText('Monitoring');
+      const paperPositions = bookCells('Open positions')[0]!;
+      expect(within(paperPositions).getByText('2')).toBeInTheDocument(); // combined count
+      expect(within(paperPositions).getByText('1 equity + 1 options')).toBeInTheDocument();
+      // ...and the Paper column header says so, since only paper combines the
+      // two books into one pool (dashboard.ts's header comment).
       expect(screen.getByText(/equity \+ options combined/)).toBeInTheDocument();
     });
 
@@ -3763,7 +3783,11 @@ describe('AutoTradePage', () => {
       );
       renderDashboard();
       expect(await screen.findByText('● enabled')).toBeInTheDocument();
-      expect(screen.getByText('1 / 2')).toBeInTheDocument();
+      // Third column — the live OPTIONS book. Asserting the column is the
+      // point: paper and live equity are both 0 here, so a bare "1" anywhere
+      // on the page would have passed even if the value landed in the wrong
+      // book entirely.
+      expect(within(bookCells('Open positions')[2]!).getByText('1')).toBeInTheDocument();
     });
 
     describe('closing a live options position (real order)', () => {

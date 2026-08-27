@@ -534,6 +534,14 @@ CREATE TABLE IF NOT EXISTS autotrade_options_paper_positions (
   iv_rank                REAL,                 -- IV rank (0-100) at decision time
   market_regime          TEXT,                 -- 'risk-on' | 'neutral' | 'risk-off'
   market_atr_pct         REAL,
+  -- Short-dated options (2026-08-27, docs/SHORT_DATED_OPTIONS_SPEC.md) — the
+  -- paper counterpart of autotrade_live_options_positions.underlying_at_entry,
+  -- added when the ladder was ported here so paper can run the same six rules
+  -- the live book does. There is no peak_premium twin: best_basis_since_entry
+  -- above is already the running peak of exactly the same net basis, seeded at
+  -- entry, so the give-back trail reads that. Null on rows predating the
+  -- column, which leaves the underlying-based rules inert for those.
+  underlying_at_entry    REAL,
   created_at             INTEGER NOT NULL,
   updated_at             INTEGER NOT NULL
 );
@@ -1027,6 +1035,13 @@ function migrate(): void {
   // here outright: unlike the equity paper table, options never recorded one.
   if (!hasOpp('grade')) {
     db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN grade TEXT');
+  }
+  // 2026-08-27: the short-dated ladder ported to paper needs the underlying
+  // price at entry, the same reference the live table gained a day earlier.
+  // best_basis_since_entry already serves as the peak-premium high-water mark,
+  // so unlike the live table this needs one new column, not two.
+  if (!hasOpp('underlying_at_entry')) {
+    db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN underlying_at_entry REAL');
   }
   if (!hasOpp('entry_score')) {
     db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN entry_score REAL');

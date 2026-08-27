@@ -1,4 +1,4 @@
-import { getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
+import { AutotradeConfig, getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
 import { convictionGrade } from './decide';
 import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskCheck';
@@ -20,6 +20,8 @@ import {
   OptionsPaperPosition,
 } from '../../db/autotradeOptionsPaperPositions';
 import { defaultExitConfig, evaluateExit, unrealizedReturnPct } from '../../options/exitRules';
+import { evaluateShortDatedExit } from './shortDatedOptionsExit';
+import { minutesUntilClose } from './endOfDayFlatten';
 import { getProvider } from '../../providers';
 import { mapPool } from '../../util/async';
 
@@ -59,6 +61,32 @@ import { mapPool } from '../../util/async';
  *  ivRankMax), not something that should silently follow a preference scoped
  *  to a human reviewing their OWN real positions. */
 const AUTOTRADE_TIME_EXIT_DAYS = defaultExitConfig().timeExitDaysBeforeExpiry ?? 7;
+
+/** The single most expensive thing to get wrong on this path, and the reason
+ *  the ladder and this constant must never ship in separate changes: with
+ *  short-dated on, the configured DTE band is 0-2, and a 7-day time-exit
+ *  fires `time-exit` on the very first cycle after the fill. The loop would
+ *  buy a 0DTE contract and sell it seconds later, paying the round-trip
+ *  spread, every single time. Mirrors liveOptionsExecute.ts's own
+ *  timeExitDaysFor() exactly. */
+function timeExitDaysFor(cfg: AutotradeConfig): number {
+  return cfg.shortDatedOptionsEnabled ? 0 : AUTOTRADE_TIME_EXIT_DAYS;
+}
+
+/** The underlying's last price, or null if it can't be read. A failed quote
+ *  must disable only the rules that need it — never the hard clock, which is
+ *  the one rule whose cost is certain. try/catch rather than .catch(): a
+ *  provider with no getQuote at all throws SYNCHRONOUSLY, before any promise
+ *  exists, so a rejection handler never sees it and the whole exit sweep
+ *  dies (found on the live path by a test provider stubbing only
+ *  getOptionsChain). */
+async function underlyingQuoteOrNull(symbol: string): Promise<number | null> {
+  try {
+    return (await getProvider().getQuote(symbol)).last;
+  } catch {
+    return null;
+  }
+}
 
 function etDateStr(ms: number = Date.now()): string {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -254,6 +282,7 @@ export async function attemptOptionsPaperEntry(
         ivRank: signal.ivRank,
         marketRegime,
         marketAtrPct,
+        underlyingAtEntry: signal.underlyingPrice,
       });
     } catch (err) {
       return entryFailure(
@@ -315,6 +344,7 @@ export async function attemptOptionsPaperEntry(
       ivRank: signal.ivRank,
       marketRegime,
       marketAtrPct,
+      underlyingAtEntry: signal.underlyingPrice,
     });
   } catch (err) {
     return entryFailure(
@@ -449,6 +479,36 @@ export async function runOptionsPaperExecution(
   ];
   const skipSymbols = new Set(optSnapshot.openPositions.map((p) => p.symbol));
   const sectorOf = buildSectorOf();
+
+  // --- Short-dated entry gates (docs/SHORT_DATED_OPTIONS_SPEC.md) ----------
+  // The paper twin of runLiveOptionsExecution()'s pair. Both are batch-level:
+  // neither depends on which candidate is being looked at, so evaluating them
+  // per-candidate would just repeat the same answer.
+  if (config.shortDatedOptionsEnabled && config.optionsNoEntryMinutesBeforeClose > 0) {
+    const left = minutesUntilClose(Date.now());
+    if (left !== null && left <= config.optionsNoEntryMinutesBeforeClose) {
+      // A short-dated contract opened this late has too little time for the
+      // move to arrive, against a decay headwind that steepens all the way in:
+      // flat premium is already -63% by 13:30 and -82% by 14:30. And the hard
+      // 14:00 exit would close it almost immediately anyway.
+      const reason = `${left}m to the close — past the ${config.optionsNoEntryMinutesBeforeClose}m short-dated entry cutoff`;
+      logAutotradeEvent({
+        stage: 'execution',
+        action: 'short_dated_entry_window_closed',
+        detail: { book: 'paper', reason, left },
+      });
+      return candidates.map(({ signal }) => ({ symbol: signal.symbol.toUpperCase(), ok: false, reason }));
+    }
+  }
+  // One short-dated position at a time. Tighter than the shared concurrent cap
+  // on purpose: two 0DTE positions can both go to zero inside the same half
+  // hour on a single adverse market move — a correlation stock positions do
+  // not have. Counted against THIS book's own open positions, matching how
+  // paper and live each risk-check their own pool.
+  if (config.shortDatedOptionsEnabled && optSnapshot.openPositionsCount >= 1) {
+    const reason = 'a short-dated options position is already open (max 1 at a time)';
+    return candidates.map(({ signal }) => ({ symbol: signal.symbol.toUpperCase(), ok: false, reason }));
+  }
 
   const outcomes: OptionsExecutionOutcome[] = [];
   for (const { signal } of candidates) {
@@ -607,7 +667,12 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
     cfg.optionsTakeProfitPct > 0 ||
     cfg.optionsBreakevenTriggerPct > 0 ||
     cfg.optionsTrailStartPct > 0 ||
-    cfg.optionsPartialExitTriggerPct > 0;
+    cfg.optionsPartialExitTriggerPct > 0 ||
+    // The short-dated ladder needs a mark every cycle for a different reason
+    // than the rules above: its give-back trail is only as good as the peak
+    // it has seen, and a peak recorded only on the cycles something fires is
+    // measuring the wrong thing.
+    cfg.shortDatedOptionsEnabled;
   return mapPool(open, 6, async (pos): Promise<OptionsExitCheckOutcome> => {
     let marks: { exitPrice: number; shortExitPrice?: number } | undefined;
     if (priceRulesActive) {
@@ -621,18 +686,118 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
         ? marks.exitPrice - (marks.shortExitPrice ?? 0)
         : marks.exitPrice;
 
+    // --- SHORT-DATED ladder (docs/SHORT_DATED_OPTIONS_SPEC.md) ------------
+    // Ahead of the DTE/stop/take-profit rules below, because on a 0-2 DTE
+    // contract those are the wrong instrument entirely: a %-of-premium stop
+    // measures theta rather than the thesis (the premium is already -11% at
+    // 10:30 and -63% at 13:30 with the underlying perfectly still), and the
+    // DTE time-exit has nothing left to say once timeExitDaysFor() has moved
+    // it to 0. Inert with the flag off, so the original rules stand unchanged.
+    //
+    // The same six rules, in the same order, as the live book runs — the one
+    // real difference is where the high-water mark lives: paper already had
+    // best_basis_since_entry tracking exactly this net basis for its trailing
+    // stop, so it is reused rather than duplicated into a peak_premium twin.
+    if (cfg.shortDatedOptionsEnabled) {
+      const underlying = await underlyingQuoteOrNull(pos.symbol.toUpperCase());
+      const sd = evaluateShortDatedExit(
+        {
+          side: pos.side,
+          kind: pos.kind,
+          entryPrice: pos.entryPrice,
+          shortEntryPrice: pos.shortEntryPrice,
+          entryAt: pos.entryAt,
+          underlyingAtEntry: pos.underlyingAtEntry,
+          peakPremium: pos.bestBasisSinceEntry,
+        },
+        currentBasis,
+        underlying,
+        cfg,
+        Date.now(),
+      );
+      if (sd.peakPremium !== null && sd.peakPremium !== pos.bestBasisSinceEntry) {
+        updateOptionsPaperPositionBestBasis(pos.id, sd.peakPremium);
+      }
+      if (sd.exit) {
+        // The close needs a mark. priceRulesActive is true whenever this
+        // branch runs, so one was already attempted — but it can have failed,
+        // and hard_time in particular fires deliberately WITHOUT a quote. Fetch
+        // once more before giving up: being stuck in a decaying contract past
+        // 14:00 because a mark was momentarily unavailable is the exact
+        // failure this rule exists to prevent.
+        let exitMarks = marks;
+        if (!exitMarks) {
+          exitMarks = await fetchExitMarks(pos).catch(() => undefined);
+        }
+        if (!exitMarks) {
+          return { symbol: pos.symbol, closed: false, reason: 'Quote fetch failed pricing a short-dated exit' };
+        }
+        // The six rules collapse onto this table's four stored reasons; the
+        // precise rule lives in the journal below, which is what the daily
+        // read joins on — same mapping the live path uses.
+        const sdReason: OptionsPaperExitReason =
+          sd.rule === 'take_profit' || sd.rule === 'give_back'
+            ? 'take_profit'
+            : sd.rule === 'underlying_stop' || sd.rule === 'disaster_stop'
+              ? 'stop_loss'
+              : 'time_exit';
+        const sdClosed = closeOptionsPaperPosition(pos.id, {
+          exitPrice: exitMarks.exitPrice,
+          shortExitPrice: exitMarks.shortExitPrice,
+          exitReason: sdReason,
+        });
+        if (sdClosed) {
+          logAutotradeEvent({
+            symbol: pos.symbol,
+            stage: 'execution',
+            action: 'short_dated_options_exit',
+            detail: {
+              positionId: pos.id,
+              book: 'paper',
+              rule: sd.rule,
+              reason: sd.detail,
+              premiumGainPct: sd.premiumGainPct,
+              underlyingMovePct: sd.underlyingMovePct,
+              expiration: pos.expiration,
+              exitReason: sdReason,
+              exitPrice: exitMarks.exitPrice,
+              shortExitPrice: exitMarks.shortExitPrice,
+              pnl: optionsPnl(pos, exitMarks.exitPrice, exitMarks.shortExitPrice ?? null),
+            },
+            riskProfile: pos.riskProfile,
+          });
+        }
+        return { symbol: pos.symbol, closed: !!sdClosed, position: sdClosed ?? undefined };
+      }
+    }
+
     // Once a breakeven/trailing event has ratcheted stopFloorPct, it
     // OVERRIDES the live cfg.optionsStopLossPct for this position (mirrors
     // autotradePaperPositions.ts's own stopPrice, position-specific once
     // ratcheted) — null means nothing has ratcheted yet, so behavior is
     // byte-for-byte unchanged from before this feature existed.
-    const stopLossPct = pos.stopFloorPct != null ? -pos.stopFloorPct : cfg.optionsStopLossPct || undefined;
+    // With the short-dated ladder in charge the %-of-premium rules below must
+    // go quiet — the ladder owns them, and leaving them live alongside it
+    // reintroduces exactly the failure the ladder exists to prevent. At the
+    // configured optionsStopLossPct of 40, a stop on the PREMIUM fires on a
+    // FLAT tape by early afternoon (the premium is -11% at 10:30 and -63% at
+    // 13:30 with the underlying perfectly still), pre-empting the underlying
+    // stop that was supposed to be the real one and turning the whole
+    // priority order in the spec into a fiction. The ladder's own disaster
+    // backstop (optionsDisasterStopPct, ~70) is the premium floor instead.
+    // Take-profit goes quiet with it because the ladder already reads
+    // optionsTakeProfitPct itself — one rule set, not two racing.
+    const stopLossPct = cfg.shortDatedOptionsEnabled
+      ? undefined
+      : pos.stopFloorPct != null
+        ? -pos.stopFloorPct
+        : cfg.optionsStopLossPct || undefined;
     const ev = evaluateExit(
       { entryPrice: entryBasis, currentPrice: currentBasis, side: 'long', expiration: pos.expiration },
       {
-        timeExitDaysBeforeExpiry: AUTOTRADE_TIME_EXIT_DAYS,
+        timeExitDaysBeforeExpiry: timeExitDaysFor(cfg),
         stopLossPct,
-        takeProfitPct: cfg.optionsTakeProfitPct || undefined,
+        takeProfitPct: cfg.shortDatedOptionsEnabled ? undefined : cfg.optionsTakeProfitPct || undefined,
       },
     );
     if (!ev.triggered) {

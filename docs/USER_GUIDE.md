@@ -1744,54 +1744,55 @@ shouldn't be a tab-switch away.
   actual last tick (not recomputed), so it reads "hasn't run yet" only before the loop's
   very first cycle, and survives the page being closed and reopened. If that cycle
   didn't place any entries, the exact reason (kill switch engaged, market closed,
-  within the session buffer, etc.) shows first, in place of the funnel. Below that, a
-  real-time panel reads the loop's current state directly: active
-  **risk profile**, **open positions** vs. the configured concurrent-position cap
+  within the session buffer, etc.) shows first, in place of the funnel. Below that, a **Books**
+  table reads the loop's current state directly — one row per metric, one column per
+  book (**Paper**, **Live equity**, **Live options**), with a ●/○ marker under each book
+  name showing whether that book is currently trading. The three books are three
+  separate pools: each risk-checks against only its own numbers, matching how the loop
+  really enforces the caps, so the columns are never added together. The caps themselves
+  *are* shared, so each is written once in the row header instead of three times across
+  the row: **open positions** vs. the configured concurrent-position cap
   (Configuration's "max concurrent positions," not the risk profile — see above),
-  **aggregate open risk** used vs. its $ cap, today's **day P&L** vs. the $ level that
-  would trigger the daily-drawdown halt, **trades today** vs. the daily cap, and the
-  **consecutive-loss streak** vs. the count that triggers step-down sizing. A
-  **correlated exposure** tile is the one exception to "live gauge" above — correlation
-  is relative to a specific candidate, not a single portfolio-wide number, so instead it
-  shows the **last candidate actually risk-checked** against this cap: its symbol, the $
-  amount already correlated, how long ago, and a red **BLOCKED** flag if that check is
-  what stopped it — reading "no candidate checked yet" until the loop (or a manual **Run
-  screen**) has evaluated at least one. The **sector exposure** tile right next to it is
-  back to a live gauge, unlike correlated exposure — sector is a fixed classification,
-  not relative to a hypothetical candidate, so it shows the single most-concentrated
-  sector across your whole current book (paper + live, stocks + options combined) vs.
-  its $ cap right now, flagged red if already over. Below the tile grid, a **Portfolio
-  Greeks** section shows net delta, theta, and vega summed across your whole combined
-  open options book (paper + live) — "am I net long or short the market right now" and
-  "how much am I bleeding or collecting in time decay today," one $ number each, instead
-  of only ever seeing Greeks per-contract on the Options page's own chain browser. Unlike
-  every dashboard tile above (a pure database read), this needs a live options-chain
-  fetch, so it loads once when you open the Dashboard tab and only refetches when you
-  click its own **Reload Greeks** button — it does not ride the 60-second poll the rest
-  of this panel uses, to avoid an options-chain round-trip on every automatic refresh. A
-  debit spread's short leg is netted against its long leg (you're short that contract, so
-  its Greeks subtract rather than add) — every other position in this app is a plain
-  long-the-contract bet. Every other figure
-  is scoped to the loop's own paper positions (never your real ones) and is a direct read
-  of the same numbers the risk engine itself checks before approving a trade — this panel
-  can't show you something the risk engine would disagree with. A tile goes red once
-  its cap is reached; the day P&L tile specifically shows a distinct "HALT TRIGGERED"
-  label (not just its ordinary red-for-a-loss coloring) once the daily-drawdown halt is
-  actually breached, so an ordinary down day and a halted one are never hard to tell
-  apart. **Open positions** and **aggregate open risk** fold in your open options paper
-  positions too — one combined pool, not a second one, matching how the risk engine
-  really enforces both caps together — with a sub-label breaking the combined number back
-  out into its equity/options parts. Whenever any options paper positions are open, an
-  **Options expirations** list appears below, sorted soonest-first, so you can see an
-  upcoming expiration (and the automated close-only exit that's coming for it) before it
-  happens — a position within a week of expiring is flagged in red. A second **Live**
-  section right below shows the exact same figures for your live (equity) positions —
-  its **own** pool, never combined with paper's counts or risk (they're risk-checked
-  completely independently, matching how the loop actually enforces the caps), plus a
-  **Probation** tile showing the size cut and trades remaining while it's active. A
-  third **Live options** section mirrors it for your live options positions — its own
-  pool nested under the live gate, with its own $ caps and probation tile, same
-  reasoning as the equity Live section just above it.
+  **aggregate open risk** vs. its $ cap, **day P&L** vs. the $ level that would trigger
+  the daily-drawdown halt, **trades today** vs. the daily cap, the **consecutive-loss
+  streak** vs. the count that triggers step-down sizing, and **probation** — the size cut
+  and trades remaining while it's active, which is live-only, so paper's cell is an
+  explicit dash rather than a blank. A cell goes red once its cap is reached; the day P&L
+  cell specifically shows a distinct "HALT TRIGGERED" label (not just its ordinary
+  red-for-a-loss coloring) once that book's daily-drawdown halt is actually breached, so
+  an ordinary down day and a halted one are never hard to tell apart. Only the **Paper**
+  column folds equity and options into one pool — its header says so, and its
+  open-positions and open-risk cells carry a sub-label breaking the combined number back
+  out into its equity/options parts; the two live columns are each their own pool. Every
+  figure in the table is a direct read of the same numbers the risk engine itself checks
+  before approving a trade — this panel can't show you something the risk engine would
+  disagree with. Below the table, an **Account-wide** row holds the three figures that
+  aren't per-book: the active **risk profile** (and whether the loop is running or the
+  kill switch is engaged), **correlated exposure**, and **sector exposure**. Correlated
+  exposure is the one exception to "live gauge" above — correlation is relative to a
+  specific candidate, not a single portfolio-wide number, so instead it shows the **last
+  candidate actually risk-checked** against this cap: its symbol, the $ amount already
+  correlated, how long ago, and a red **BLOCKED** flag if that check is what stopped it —
+  reading "no candidate checked yet" until the loop (or a manual **Run screen**) has
+  evaluated at least one. The **sector exposure** tile next to it is back to a live
+  gauge — sector is a fixed classification, not relative to a hypothetical candidate, so
+  it shows the single most-concentrated sector across your whole current book (paper +
+  live, stocks + options combined) vs. its $ cap right now, flagged red if already over.
+  Below those, a **Portfolio Greeks** section shows net delta, theta, and vega summed
+  across your whole combined open options book (paper + live) — "am I net long or short
+  the market right now" and "how much am I bleeding or collecting in time decay today,"
+  one $ number each, instead of only ever seeing Greeks per-contract on the Options
+  page's own chain browser. Unlike everything above it (a pure database read), this needs
+  a live options-chain fetch, so it loads once when you open the Dashboard tab and only
+  refetches when you click its own **Reload Greeks** button — it does not ride the
+  60-second poll the rest of this panel uses, to avoid an options-chain round-trip on
+  every automatic refresh. A debit spread's short leg is netted against its long leg
+  (you're short that contract, so its Greeks subtract rather than add) — every other
+  position in this app is a plain long-the-contract bet. Whenever any options paper
+  positions are open, an **Options expirations** list appears below, sorted
+  soonest-first, so you can see an upcoming expiration (and the automated close-only exit
+  that's coming for it) before it happens — a position within a week of expiring is
+  flagged in red.
 - **Real-estate exclusion list** — real estate is a hard, permanent exclusion for this
   strategy. A starter list of well-known real-estate ETFs ships seeded in; add or remove
   symbols freely. This list is a backstop, not the only check — the screen (Dashboard

@@ -1,8 +1,9 @@
 # Short-dated options (0–2 DTE) — design spec
 
-Status: **built 2026-08-26**, shipped OFF behind `shortDatedOptionsEnabled`.
-Spec written the same day; the modelled tables below are what every parameter
-came from, and none has yet been checked against a real trade.
+Status: **built 2026-08-26** (live path), **ported to paper 2026-08-27**.
+Shipped OFF behind `shortDatedOptionsEnabled` on both books. Spec written the
+same day as the build; the modelled tables below are what every parameter came
+from, and none has yet been checked against a real trade.
 
 ---
 
@@ -109,7 +110,10 @@ afternoon, every time, with no adverse move whatsoever.
   `evaluateExit` fires `time-exit` on `dte <= 7`. Left at 7, the loop would buy a
   0DTE contract and sell it on the very next tick, paying the round-trip spread
   for nothing, every time. This is the single easiest way to burn money here and
-  it must not be split across two PRs.
+  it must not be split across two PRs. Both books now gate it through their own
+  `timeExitDaysFor(cfg)`, and both carry a test pairing "flag on, 0DTE held"
+  with "flag off, closed on the DTE rule" so the coupling cannot silently come
+  apart later.
 
 ### D2. The stop is on the UNDERLYING, not the premium
 
@@ -119,12 +123,25 @@ Exit when the **underlying** has moved that far against the position, measured
 from the underlying price at entry. Time-invariant: it means the same thing at
 10:00 and 13:00, which a premium percentage never can.
 
-The existing `optionsStopLossPct` stays as a **disaster backstop only**, and is
-raised to ~70% for short-dated so it cannot fire on decay alone. It exists for
-a gap or a volatility collapse, not for ordinary management.
+The existing `optionsStopLossPct` does **not** stay in play alongside this.
+When the flag is on, both `optionsStopLossPct` and `optionsTakeProfitPct` go
+quiet on the `evaluateExit` path and the ladder owns the premium entirely —
+a separate `optionsDisasterStopPct` (~70) is its backstop.
 
-Requires storing the underlying price at entry on the options position — it is
-not recorded today.
+This is not tidiness. The first build left `optionsStopLossPct` live next to
+the ladder, and production runs it at **40**. Per the table in §3, a 40% stop on
+the premium is reached on a **flat tape** by early afternoon, so it would have
+pre-empted the underlying stop on every position, every day, with no adverse
+move whatsoever — the exact failure this section exists to prevent, silently
+reintroduced one rule below it. Caught 2026-08-27 during the paper port and
+fixed on both books; both now carry a regression test that pairs "flag on, does
+not fire" with "flag off, does fire", so a future revert cannot pass quietly.
+
+Requires storing the underlying price at entry on the options position. The
+live table gained `underlying_at_entry` on 2026-08-26; the paper table gained
+the same column on 2026-08-27. Paper needs no `peak_premium` twin — its
+`best_basis_since_entry` column already tracks the running peak of exactly the
+same net basis for its trailing stop, so the give-back trail reads that.
 
 ### D3. Take profit twice: a fixed target AND a give-back trail
 
@@ -201,17 +218,21 @@ arithmetic.
 ## Roll-out
 
 1. ~~Build behind `shortDatedOptionsEnabled`, default off.~~ **Done.**
-2. **Paper first**, for at least two weeks. Every parameter above is a first
+2. ~~Port the ladder to the paper book, so "paper first" is actually
+   reachable — before this, paper still ran the 7-day DTE backstop and would
+   have time-exited every 0-2 DTE contract on the tick after the fill.~~
+   **Done 2026-08-27.**
+3. **Paper first**, for at least two weeks. Every parameter above is a first
    estimate from a model, not from this book's own trades.
-3. A **daily post-close read** runs every weekday at 16:30 ET, reporting which
+4. A **daily post-close read** runs every weekday at 16:30 ET, reporting which
    of the six rules fired and how the entry funnel broke down. The rule
    distribution is the most informative number: `hard_time` dominating means
    entries are too late or the thesis too slow; `stagnation` dominating means
    the problem is the signal rather than the exit; `disaster_stop` firing at
    all means something outran the underlying stop. It is explicitly instructed
    not to manufacture a tuning change from a single day.
-4. Judge the accumulated picture at the 2026-09-05 review.
-5. Only then consider live, and with probation at 0.5× for 10 trades.
+5. Judge the accumulated picture at the 2026-09-05 review.
+6. Only then consider live, and with probation at 0.5× for 10 trades.
 
 ---
 
