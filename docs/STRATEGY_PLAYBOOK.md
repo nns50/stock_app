@@ -828,6 +828,37 @@ book that isn't correlated it changes nothing. Because it's genuinely a selectio
 it runs in the **backtest** engines too — so you can measure whether de-crowding actually
 improved your historical risk-adjusted return before enabling it live.
 
+**"Why won't a second position open in the morning?" → Notional caps versus risk-based
+sizing (2026-08-27).** Worth understanding, because the two are measured in different
+units and the mismatch is easy to misread as caution. Risk-based sizing makes a position
+*large in notional and small in risk*: at 1.25% risk over a 2.5% stop, one position is
+**50% of equity in notional** but only **1.25% of equity at risk**. The correlated- and
+sector-exposure caps compare **notional**, so a cap chosen as though it were a risk
+number — 4% and 15% of equity, i.e. $206 and $774 on a $5.2k account — sits far below a
+single $2,580 position. The arithmetic is structural, not an artefact of account size:
+both sides scale with equity, so a *second correlated or same-sector position could never
+open*, at any equity, no matter what the concurrent-position cap said.
+
+That is a real cost if your edge is in the open. Volume and directional conviction are
+greatest in the first hour, and morning momentum names are correlated almost by
+definition — which is exactly the set those caps excluded. The book was configured for
+two concurrent positions and could only ever reach one.
+
+The fix is to size the notional caps against the notional they must admit. To let a
+second position open while the first sits at the full per-order cap, the correlated and
+sector caps must exceed that cap — **80% of equity** against a $3,871 order cap, with
+margin rather than a knife-edge tie (75% lands 11 cents short, because the sizer's 1.5x
+headroom makes the order cap *exactly* 75% of equity). Check the real risk separately,
+and it is unchanged: two positions risk **1.25% each, 2.50% together**, against an
+aggregate open-risk cap of 4.28% and a daily drawdown halt of 6.42%. **Both stopping out
+on the same adverse move costs 2.50% — comfortably inside the halt that already exists.**
+
+So loosening these did not add risk; it stopped a notional cap from silently overriding
+the risk budget. What still bounds the book is what should: the concurrent-position cap,
+the aggregate open-risk cap, and the per-trade risk %. A *third* correlated position
+remains blocked on notional as well as on concurrency. If you ever raise concurrency
+above two, revisit these caps deliberately rather than assuming they still bind.
+
 **"What happens when the app isn't sure?"** Worth knowing, because it shapes what you'll
 see: every live-order decision made under an unknown resolves toward **doing less**, not
 toward assuming the convenient answer. A fill the app can't fully account for is booked
