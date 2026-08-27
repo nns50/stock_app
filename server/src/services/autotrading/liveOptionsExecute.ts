@@ -1256,7 +1256,10 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
     // trigger evaluation now, since the stop/take-profit thresholds
     // themselves come from it.
     const freshCfg = getAutotradeConfig();
-    const priceRulesActive = freshCfg.optionsStopLossPct > 0 || freshCfg.optionsTakeProfitPct > 0;
+    // The ladder needs a mark every cycle regardless of the premium rules:
+    // its give-back trail is only as good as the peak it has seen.
+    const priceRulesActive =
+      freshCfg.optionsStopLossPct > 0 || freshCfg.optionsTakeProfitPct > 0 || freshCfg.shortDatedOptionsEnabled;
 
     let currentBasis: number | null = null;
     if (priceRulesActive) {
@@ -1282,12 +1285,23 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
     }
 
     const entryBasis = pos.kind === 'debit_spread' ? pos.entryPrice - (pos.shortEntryPrice ?? 0) : pos.entryPrice;
+    // With the short-dated ladder in charge the %-of-premium rules below must
+    // go quiet — the ladder owns them, and leaving them live alongside it
+    // reintroduces exactly the failure the ladder exists to prevent. At the
+    // configured optionsStopLossPct of 40, a stop on the PREMIUM fires on a
+    // FLAT tape by early afternoon (the premium is -11% at 10:30 and -63% at
+    // 13:30 with the underlying perfectly still), pre-empting the underlying
+    // stop that was supposed to be the real one and turning the whole
+    // priority order in the spec into a fiction. The ladder's own disaster
+    // backstop (optionsDisasterStopPct, ~70) is the premium floor instead.
+    // Take-profit goes quiet with it because the ladder already reads
+    // optionsTakeProfitPct itself — one rule set, not two racing.
     const ev = evaluateExit(
       { entryPrice: entryBasis, currentPrice: currentBasis, side: 'long', expiration: pos.expiration },
       {
         timeExitDaysBeforeExpiry: timeExitDaysFor(freshCfg),
-        stopLossPct: freshCfg.optionsStopLossPct || undefined,
-        takeProfitPct: freshCfg.optionsTakeProfitPct || undefined,
+        stopLossPct: freshCfg.shortDatedOptionsEnabled ? undefined : freshCfg.optionsStopLossPct || undefined,
+        takeProfitPct: freshCfg.shortDatedOptionsEnabled ? undefined : freshCfg.optionsTakeProfitPct || undefined,
       },
     );
     // --- INTRADAY time exits (2026-08-25) -------------------------------

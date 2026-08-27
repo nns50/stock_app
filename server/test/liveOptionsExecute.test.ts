@@ -2222,6 +2222,48 @@ describe('short-dated options — entry gates and the DTE coupling', () => {
     expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 
+  it('silences the 40% premium stop, which would otherwise fire on a flat tape', async () => {
+    // Production runs optionsStopLossPct at 40. A stop on the PREMIUM reaches
+    // that on decay alone by early afternoon (-63% at 13:30 with the
+    // underlying perfectly still), so leaving it live alongside the ladder
+    // would pre-empt the underlying stop on every position, every day, with no
+    // adverse move whatsoever -- turning the spec's priority order into a
+    // fiction. Underlying flat, premium -50%: only the ladder's own 70%
+    // backstop may fire, and this is deliberately short of it.
+    const tomorrow = new Date(EARLY + 24 * 3600_000).toISOString().slice(0, 10);
+    setAutotradeConfig(shortDated({ optionsStopLossPct: 40, optionsStagnationMinutes: 0 }));
+    const pos = openLivePosition({ expiration: tomorrow, entryPrice: 0.4 });
+    mockGetProvider.mockReturnValue({
+      ...chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.2 } }),
+      getQuote: vi.fn(async () => ({ symbol: 'AAPL', last: 100, change: 0, changePercent: 0 })),
+    } as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NOSTOP' });
+    atClock(EARLY);
+
+    const outcomes = await checkLiveOptionsExits();
+
+    expect(outcomes).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('still applies the premium stop with the flag off — proving the test above bites', async () => {
+    setAutotradeConfig(liveConfig({ shortDatedOptionsEnabled: false, optionsStopLossPct: 40 }));
+    const pos = openLivePosition({ expiration: '2030-01-18', entryPrice: 0.4 });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.2 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-STOP' });
+    atClock(EARLY);
+
+    const outcomes = await checkLiveOptionsExits();
+
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', requested: true });
+  });
+
   it('the hard clock closes a short-dated position late in the day', async () => {
     const tomorrow = new Date(EARLY + 24 * 3600_000).toISOString().slice(0, 10);
     setAutotradeConfig(shortDated());
