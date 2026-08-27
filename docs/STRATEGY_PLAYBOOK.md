@@ -853,6 +853,17 @@ and it is unchanged: two positions risk **1.25% each, 2.50% together**, against 
 aggregate open-risk cap of 4.28% and a daily drawdown halt of 6.42%. **Both stopping out
 on the same adverse move costs 2.50% — comfortably inside the halt that already exists.**
 
+The account-exposure ceiling (`liveMaxExposurePct`) needed the same treatment for the same
+reason, and it is the one number here that genuinely is leverage: it caps *gross deployed
+capital* as a multiple of equity, measured against the broker's whole market value — so
+positions you open by hand consume it too. Two positions at the full order cap come to
+exactly 2 x 75% = 150% of equity, so a 150% ceiling tied and lost by 23 cents. It is now
+**155%**, which clears the pair with ~$258 of margin and adds the least borrowing headroom
+that does the job. A third position is still far outside it. Gross exposure is what hurts
+when a stop cannot protect you — a gap or a halt — which is muted here only because the
+book flattens five minutes before the close and holds nothing overnight; if that ever
+changes, this is the first number to reconsider.
+
 So loosening these did not add risk; it stopped a notional cap from silently overriding
 the risk budget. What still bounds the book is what should: the concurrent-position cap,
 the aggregate open-risk cap, and the per-trade risk %. A *third* correlated position
