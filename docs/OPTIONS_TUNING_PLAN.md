@@ -170,6 +170,24 @@ One thing the summary cannot give you: the *reason* inside a `blocked` event's
 rows for a single recent session (a narrow `since`) and read the detail there —
 the summary establishes *that* blocks dominate, the rows establish *why*.
 
+## Data-quality notes
+
+Facts about the ACCOUNT that are not facts about the STRATEGY. Any analysis
+reading `accountEquityUsd`, the daily-target gain %, or anything sized off
+them has to know about these; the trade-level record does not, and the
+distinction is the whole point of the section.
+
+| Date | What happened | What it contaminates | What stays clean |
+|---|---|---|---|
+| 2026-08-27 | **+$5,000 deposited**, and **−$2.2k of manual (non-autotrade) trading**, on a day that also carried a hand-taken SPY 0DTE call | `accountEquityUsd` ($2,450 → $5,142 in one step), the daily-target gain % (read **+130.71%**, none of it trading), and every %-of-equity size derived from them. The equity series has a **discontinuity here — do not difference across it** | Autotrade's own P&L, which is computed from **tagged positions**, not from equity. Its real number for the day is **−$8.32** on one SMCI round trip. Manual fills are untagged and never enter it, so the trade-level record the 2026-09-05 review depends on is unaffected |
+
+The general rule this establishes: **equity-derived series are account facts and
+carry deposits, withdrawals and manual trading; position-derived series are
+strategy facts and do not.** When the two disagree, the position-derived one is
+the one that says anything about whether this works.
+
+---
+
 ## Decision log
 
 Append-only. Every parameter change to the options path goes here, whether it
