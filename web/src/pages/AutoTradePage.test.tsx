@@ -40,6 +40,14 @@ function renderPage() {
 // every single case just to reach content that isn't on the default tab.
 function renderDashboard() {
   localStorage.setItem('autotrade.view', JSON.stringify('dashboard'));
+  // The dashboard's "Tools" section (Research/Screen, Backtest) ships
+  // collapsed — both produce a screenful of output, and the view is meant to
+  // open on state rather than on tooling. Seeding them open here is the same
+  // trick as the tab above: a stored preference beats the default, so tests
+  // that assert on their contents reach them without a click-and-wait each.
+  // The default itself is covered by its own case further down.
+  localStorage.setItem('tile.collapsed.autotrade.screen', JSON.stringify(false));
+  localStorage.setItem('tile.collapsed.autotrade.backtest', JSON.stringify(false));
   return renderPage();
 }
 
@@ -2426,8 +2434,10 @@ describe('AutoTradePage', () => {
     });
     renderDashboard();
     await screen.findByText('AAPL');
-    const tile = screen.getByText('Unrealized P&L').parentElement!;
-    expect(within(tile).getByText('—')).toBeInTheDocument();
+    // BookLedger renders each figure as a <dt>label</dt><dd>value</dd> pair,
+    // so the value is the label's next sibling.
+    const label = screen.getAllByText('Unrealized')[0]!;
+    expect(label.nextElementSibling).toHaveTextContent('—');
   });
 
   function optionsPaperPosition(overrides: Partial<OptionsPaperPosition> = {}): OptionsPaperPosition {
@@ -2861,6 +2871,57 @@ describe('AutoTradePage', () => {
       expect(await screen.findByText('Something went wrong')).toBeInTheDocument();
       // ...but the button to release the kill switch is still right there.
       expect(screen.getByRole('button', { name: '■ Kill switch ENGAGED — release' })).toBeInTheDocument();
+    });
+  });
+
+  describe('Dashboard layout', () => {
+    it('groups the view into Now / History / Tools, in that order', async () => {
+      // The view used to be six equally-weighted cards in the order they were
+      // written: live book, Monitoring, screener, backtester, paper book,
+      // journal. The two "what am I holding" cards sat either side of two big
+      // research tools, and the summary that should orient you was second.
+      renderDashboard();
+      await screen.findByText('Monitoring');
+
+      const order = ['Now', 'History', 'Tools'].map((t) => screen.getByRole('heading', { name: t, level: 2 }));
+      for (let i = 1; i < order.length; i += 1) {
+        expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      }
+
+      // Monitoring leads "Now", and both position cards follow it before the
+      // History heading — the ordering that broke before.
+      const monitoring = screen.getByText('Monitoring');
+      const paper = screen.getByText('Paper trading');
+      expect(order[0]!.compareDocumentPosition(monitoring) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(monitoring.compareDocumentPosition(paper) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(paper.compareDocumentPosition(order[1]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('ships the Tools cards collapsed, so the view opens on state not tooling', async () => {
+      // renderDashboard() seeds these open for every other test; this one uses
+      // the real default, which is the whole point of putting them last.
+      localStorage.setItem('autotrade.view', JSON.stringify('dashboard'));
+      renderPage();
+      await screen.findByText('Monitoring');
+
+      expect(screen.getByRole('button', { name: /Research, Screen & Decide/ })).toHaveAttribute(
+        'aria-expanded',
+        'false',
+      );
+      expect(screen.getByRole('button', { name: /Backtest & walk-forward/ })).toHaveAttribute('aria-expanded', 'false');
+      // ...while the state cards stay open.
+      expect(screen.getByRole('button', { name: /Monitoring/ })).toHaveAttribute('aria-expanded', 'true');
+    });
+
+    it('keeps the real-money warning on the card title, where a collapsed card still shows it', async () => {
+      // It used to live in a heading INSIDE the body, so collapsing the card
+      // hid the one thing that must not be missed.
+      localStorage.setItem('autotrade.view', JSON.stringify('dashboard'));
+      localStorage.setItem('tile.collapsed.autotrade.livePositions', JSON.stringify(true));
+      renderPage();
+      const header = await screen.findByRole('button', { name: /Live positions/ });
+      expect(header).toHaveAttribute('aria-expanded', 'false');
+      expect(header).toHaveTextContent(/real money/);
     });
   });
 

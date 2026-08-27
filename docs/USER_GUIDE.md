@@ -1013,11 +1013,29 @@ state you watch constantly aren't one long scroll together. **Configuration** ho
 everything below through **Macro event blackout list** — settings you set once and
 revisit occasionally, further grouped into labeled cards (core settings; sizing & risk
 guardrails; screening & entry filters; equity exits; options exits; entry timing;
-auto-promote) so the field count stays scannable. **Dashboard** holds **Monitoring**
-through **Recent activity**, plus the **Live positions** / **Live options positions**
-tables described under Live trading below — everything that reflects live, ongoing
-state. The kill switch stays visible on both tabs, since a halt you need in a hurry
-shouldn't be a tab-switch away.
+auto-promote) so the field count stays scannable. The kill switch stays visible on
+both tabs, since a halt you need in a hurry shouldn't be a tab-switch away.
+
+**Dashboard** holds everything that reflects live, ongoing state, grouped into three
+labelled sections so the page reads top-to-bottom as one story instead of as six
+equally-weighted cards in the order they happened to be built:
+
+- **Now** — what the loop is holding and how the day is going. **Monitoring** comes
+  first, because it is the summary that orients you: the Books table, the account-wide
+  figures, portfolio Greeks. Then **Live positions** (real money) and **Paper trading**
+  (simulated), which sit next to each other so the two books can be compared without
+  scrolling past anything else. Each card carries its nature in its own title — "Live
+  positions · real money, no per-order confirmation", "Paper trading · simulated, never
+  reaches a broker" — so a collapsed card still tells you which one it is, and each is
+  split into an **Equity** and an **Options** half with the same one-line
+  open/closed/realized/unrealized ledger above each table.
+- **History** — **Recent activity**, the journal of what the loop actually did, most
+  recent first.
+- **Tools** — **Research, Screen & Decide** and **Backtest & walk-forward**. Both are
+  run on demand and neither places an order, so both ship **collapsed**: they produce a
+  screenful of output each, and the dashboard is meant to open on state rather than on
+  tooling. Expand either one and it stays expanded — every card on this page remembers
+  whether you left it open.
 
 - **Configuration** — a master **enabled** switch for the execution loop below (when on,
   the server runs the full cycle on its own every minute, placing paper trades — see

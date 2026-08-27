@@ -1482,6 +1482,82 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
  *  here is a direct read of the server's own risk-check math (dashboard.ts),
  *  not re-derived in the UI. */
 // ---------------------------------------------------------------------------
+// Dashboard-view furniture.
+//
+// The view had grown to six equally-weighted collapsible cards in a flat list,
+// in the order they happened to be written: the live book, then Monitoring,
+// then two big on-demand research tools, then the paper book, then the
+// journal. So the two "what am I holding" cards sat ~500 lines apart with the
+// screener and the backtester between them, and the summary that should
+// orient you was second. These give the view a spine instead: Now (state),
+// History (what it did), Tools (things you run).
+// ---------------------------------------------------------------------------
+
+function DashSection({ title, hint }: { title: string; hint: string }) {
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 pt-1">
+      <h2 className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">{title}</h2>
+      <span className="text-[11px] text-slate-500">{hint}</span>
+    </div>
+  );
+}
+
+/** One book's open/closed/realized/unrealized. Four StatTiles x four books
+ *  (live equity, live options, paper equity, paper options) was sixteen cards
+ *  of chrome for sixteen numbers, and it pushed the tables carrying the actual
+ *  per-position detail below the fold on every one of them. Same numbers, one
+ *  line. */
+function BookLedger({
+  open,
+  closed,
+  realized,
+  unrealized,
+}: {
+  open: number;
+  closed: number;
+  realized: number;
+  /** Null when no open position has a usable mark — rendered as an explicit
+   *  dash, since a zero here would read as "flat" rather than "unknown". */
+  unrealized: number | null;
+}) {
+  const tone = (v: number) => (v >= 0 ? 'text-bull' : 'text-bear');
+  const Item = ({ label, value, className }: { label: string; value: ReactNode; className?: string }) => (
+    <div className="flex items-baseline gap-1.5">
+      <dt className="text-slate-500">{label}</dt>
+      <dd className={cx('font-semibold tabular-nums', className ?? 'text-ink-0')}>{value}</dd>
+    </div>
+  );
+  return (
+    <dl className="mb-3 flex flex-wrap items-baseline gap-x-6 gap-y-1 rounded-lg border border-ink-700 bg-ink-800/40 px-3 py-2 text-xs">
+      <Item label="Open" value={open} />
+      <Item label="Closed" value={closed} />
+      <Item label="Realized" value={fmtSignedUsd(realized)} className={tone(realized)} />
+      <Item
+        label="Unrealized"
+        value={unrealized === null ? '—' : fmtSignedUsd(unrealized)}
+        className={unrealized === null ? 'text-slate-600' : tone(unrealized)}
+      />
+    </dl>
+  );
+}
+
+/** A book subsection inside one of the two position cards ("Equity" /
+ *  "Options"). Both cards carried a full-sentence heading that repeated their
+ *  own card title, so the page said "Live positions" twice before any data. */
+function BookHeading({ children, tone }: { children: ReactNode; tone?: 'bear' }) {
+  return (
+    <h4
+      className={cx(
+        'text-xs font-semibold uppercase tracking-wide mb-2',
+        tone === 'bear' ? 'text-bear' : 'text-slate-300',
+      )}
+    >
+      {children}
+    </h4>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // The monitoring dashboard used to be 23 StatTiles, with "Open positions",
 // "Aggregate open risk", "Day P&L", "Trades today" and "Consecutive losses"
 // each repeated three times in separate Paper / Live / Live-options blocks.
@@ -5956,10 +6032,29 @@ export default function AutoTradePage() {
 
       {view === 'dashboard' && (
         <>
-          <CollapsibleCard id="autotrade.livePositions" title="Live positions">
-            <h4 className="font-medium text-sm mb-3 text-bear">
-              Live positions — real money, no per-order confirmation
-            </h4>
+          <DashSection title="Now" hint="what the loop is holding, and how the day is going" />
+          <CollapsibleCard id="autotrade.monitoring" title="Monitoring">
+            {dashboard.loading && !dashboard.data ? (
+              <Spinner />
+            ) : dashboard.error ? (
+              <ErrorState error={dashboard.error} onRetry={dashboard.reload} />
+            ) : dashboard.data ? (
+              <MonitoringDashboard dash={dashboard.data} portfolioGreeks={portfolioGreeks} />
+            ) : null}
+          </CollapsibleCard>
+
+          <CollapsibleCard
+            id="autotrade.livePositions"
+            // The real-money warning belongs in the title, not in a heading
+            // inside the body: a collapsed card showed only "Live positions",
+            // so the one thing you must not miss was the one thing hidden.
+            title={
+              <>
+                Live positions <span className="font-normal text-bear">· real money, no per-order confirmation</span>
+              </>
+            }
+          >
+            <BookHeading tone="bear">Equity</BookHeading>
             <p className="text-xs text-slate-500 mb-3">
               The real fills the loop has actually placed through Webull — the same{' '}
               <code className="text-[11px]">positions</code> rows your own manual trades use, tagged so only
@@ -5981,20 +6076,12 @@ export default function AutoTradePage() {
                 return (
                   <>
                     {rows.length > 0 && (
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
-                        <StatTile label="Open" value={open.length} />
-                        <StatTile label="Closed" value={closed.length} />
-                        <StatTile
-                          label="Realized P&L"
-                          value={fmtSignedUsd(totalRealized)}
-                          valueClass={totalRealized >= 0 ? 'text-bull' : 'text-bear'}
-                        />
-                        <StatTile
-                          label="Unrealized P&L"
-                          value={unrealizedKnown ? fmtSignedUsd(unrealizedTotal) : '—'}
-                          valueClass={unrealizedKnown ? (unrealizedTotal >= 0 ? 'text-bull' : 'text-bear') : undefined}
-                        />
-                      </div>
+                      <BookLedger
+                        open={open.length}
+                        closed={closed.length}
+                        realized={totalRealized}
+                        unrealized={unrealizedKnown ? unrealizedTotal : null}
+                      />
                     )}
                     <LivePositionsTable positions={rows} onClose={setCloseEquityPos} />
                   </>
@@ -6002,9 +6089,9 @@ export default function AutoTradePage() {
               })()
             )}
 
-            <h4 className="font-medium text-sm mt-5 mb-3 text-bear">
-              Live options positions — real money, no per-order confirmation
-            </h4>
+            <div className="mt-5">
+              <BookHeading tone="bear">Options</BookHeading>
+            </div>
             <p className="text-xs text-slate-500 mb-3">
               The real options fills the loop has actually placed through Webull — its own ledger (
               <code className="text-[11px]">autotrade_live_options_positions</code>), separate from the equity live
@@ -6026,20 +6113,12 @@ export default function AutoTradePage() {
                 return (
                   <>
                     {rows.length > 0 && (
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
-                        <StatTile label="Open" value={open.length} />
-                        <StatTile label="Closed" value={closed.length} />
-                        <StatTile
-                          label="Realized P&L"
-                          value={fmtSignedUsd(totalRealized)}
-                          valueClass={totalRealized >= 0 ? 'text-bull' : 'text-bear'}
-                        />
-                        <StatTile
-                          label="Unrealized P&L"
-                          value={unrealizedKnown ? fmtSignedUsd(unrealizedTotal) : '—'}
-                          valueClass={unrealizedKnown ? (unrealizedTotal >= 0 ? 'text-bull' : 'text-bear') : undefined}
-                        />
-                      </div>
+                      <BookLedger
+                        open={open.length}
+                        closed={closed.length}
+                        realized={totalRealized}
+                        unrealized={unrealizedKnown ? unrealizedTotal : null}
+                      />
                     )}
                     <LiveOptionsPositionsTable
                       positions={rows}
@@ -6052,145 +6131,147 @@ export default function AutoTradePage() {
             )}
           </CollapsibleCard>
 
-          <CollapsibleCard id="autotrade.monitoring" title="Monitoring">
-            {dashboard.loading && !dashboard.data ? (
-              <Spinner />
-            ) : dashboard.error ? (
-              <ErrorState error={dashboard.error} onRetry={dashboard.reload} />
-            ) : dashboard.data ? (
-              <MonitoringDashboard dash={dashboard.data} portfolioGreeks={portfolioGreeks} />
-            ) : null}
-          </CollapsibleCard>
-        </>
-      )}
-
-      {view === 'config' && (
-        <>
-          <CollapsibleCard id="autotrade.realEstateExclusion" title="Real-estate exclusion list">
-            <div className="grid sm:grid-cols-4 gap-2 items-end mb-3">
-              <Field label="Symbol">
-                <input
-                  className="input"
-                  value={newSymbol}
-                  onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
-                  placeholder="O"
-                />
-              </Field>
-              <div className="sm:col-span-2">
-                <Field label="Reason (optional)">
-                  <input
-                    className="input"
-                    value={newReason}
-                    onChange={(e) => setNewReason(e.target.value)}
-                    placeholder="REIT"
-                  />
-                </Field>
-              </div>
-              <button className="btn-primary" onClick={addExclusion}>
-                Add
+          <CollapsibleCard
+            id="autotrade.paperTrading"
+            title={
+              <>
+                Paper trading <span className="font-normal text-slate-500">· simulated, never reaches a broker</span>
+              </>
+            }
+            action={
+              <button className="btn-primary" onClick={runLoopOnce} disabled={loopBusy}>
+                {loopBusy ? 'Running…' : 'Run one cycle now'}
               </button>
-            </div>
-            {exclusions.loading && !exclusions.data ? (
-              <Spinner />
-            ) : exclusions.error ? (
-              <ErrorState error={exclusions.error} onRetry={exclusions.reload} />
-            ) : exclusionRows.length === 0 ? (
-              <EmptyState
-                title="No exclusions"
-                hint="Add a symbol above — the sector/industry classification check also catches unlisted REITs."
-              />
-            ) : (
-              <table className="w-full">
-                <thead className="border-b border-ink-600/60">
-                  <tr>
-                    <th className="th">Symbol</th>
-                    <th className="th">Reason</th>
-                    <th className="th">Source</th>
-                    <th className="th text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {exclusionRows.map((e) => (
-                    <tr key={e.symbol} className="border-b border-ink-700/50">
-                      <td className="td font-semibold">{e.symbol}</td>
-                      <td className="td text-slate-400">{e.reason || '—'}</td>
-                      <td className="td">
-                        <Badge color={e.source === 'default' ? 'slate' : 'blue'}>{e.source}</Badge>
-                      </td>
-                      <td className="td text-right">
-                        <button
-                          className="text-xs text-slate-500 hover:text-bear"
-                          onClick={() => removeExclusion(e.symbol)}
-                        >
-                          remove
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </CollapsibleCard>
-
-          <CollapsibleCard id="autotrade.macroEvents" title="Macro event blackout list">
-            <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-2xl">
-              Hand-maintained scheduled dates (FOMC, CPI, jobs reports, ...) checked by "Macro event blackout (hours)"
-              above — there's no economic-calendar feed in this app, so add your own from the Fed's/BLS's own published
-              calendars.
+            }
+          >
+            <p className="text-xs text-slate-500 mb-3">
+              When enabled above, the server runs this same Screen → Decision → Risk Check → Execution cycle on its own
+              every minute — this button just runs one cycle immediately, so you can watch it work without waiting.
+              Every fill here is a local simulation from a live quote; it never places a real order (see
+              docs/AUTOTRADING_SPEC.md). No entries in the first/last 15 minutes of the session, and a volatility filter
+              (per-ticker and broad-market) can skip a cycle&apos;s entries entirely.
             </p>
-            <div className="grid sm:grid-cols-4 gap-2 items-end mb-3">
-              <div className="sm:col-span-2">
-                <Field label="Label">
-                  <input
-                    className="input"
-                    value={newEventLabel}
-                    onChange={(e) => setNewEventLabel(e.target.value)}
-                    placeholder="FOMC decision"
-                  />
-                </Field>
-              </div>
-              <Field label="Date & time">
-                <input
-                  type="datetime-local"
-                  className="input"
-                  value={newEventAt}
-                  onChange={(e) => setNewEventAt(e.target.value)}
-                />
-              </Field>
-              <button className="btn-primary" onClick={addMacroEvent}>
-                Add
-              </button>
-            </div>
-            {macroEvents.loading && !macroEvents.data ? (
+            {loopErr && <div className="text-bear text-sm mb-2">{loopErr}</div>}
+            {loopSummary && (
+              <p className="text-[11px] text-slate-500 mb-3">
+                {loopSummary.skippedReason ? (
+                  <>New entries skipped — {loopSummary.skippedReason}. </>
+                ) : (
+                  <>
+                    Screened {loopSummary.candidatesScreened}, {loopSummary.candidatesPassedVolatility} passed the
+                    volatility filter, {loopSummary.signalsGenerated} signal(s) generated, {loopSummary.entriesOpened}{' '}
+                    opened ({loopSummary.optionsEntriesOpened} options). Options decision considered{' '}
+                    {loopSummary.optionsCandidatesConsidered} candidate(s) (universe-sourced only — movers can't
+                    accumulate real IV-rank history) and generated {loopSummary.optionsSignalsGenerated} signal(s).{' '}
+                    {loopSummary.moversAutoPromoted > 0 && (
+                      <>{loopSummary.moversAutoPromoted} recurring mover(s) promoted to the universe. </>
+                    )}
+                  </>
+                )}
+                Exits checked: {loopSummary.exitsChecked} ({loopSummary.exitsClosed} closed) — options:{' '}
+                {loopSummary.optionsExitsChecked} ({loopSummary.optionsExitsClosed} closed).
+              </p>
+            )}
+            <BookHeading>Equity</BookHeading>
+            {paperPositions.loading && !paperPositions.data ? (
               <Spinner />
-            ) : macroEvents.error ? (
-              <ErrorState error={macroEvents.error} onRetry={macroEvents.reload} />
-            ) : macroEventRows.length === 0 ? (
+            ) : paperPositions.error ? (
+              <ErrorState error={paperPositions.error} onRetry={paperPositions.reload} />
+            ) : (
+              (() => {
+                const rows = paperPositions.data?.positions ?? [];
+                const open = rows.filter((p) => p.status === 'open');
+                const closed = rows.filter((p) => p.status === 'closed');
+                const totalPnl = closed.reduce((s, p) => s + (paperPnl(p) ?? 0), 0);
+                const unrealizedTotal = open.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0);
+                const unrealizedKnown = open.some((p) => p.unrealizedPnl !== null);
+                return (
+                  <>
+                    {rows.length > 0 && (
+                      <BookLedger
+                        open={open.length}
+                        closed={closed.length}
+                        realized={totalPnl}
+                        unrealized={unrealizedKnown ? unrealizedTotal : null}
+                      />
+                    )}
+                    <PaperPositionsTable positions={rows} />
+                  </>
+                );
+              })()
+            )}
+
+            <div className="mt-5">
+              <BookHeading>Options</BookHeading>
+            </div>
+            <p className="text-xs text-slate-500 mb-3">
+              Long calls/puts or debit spreads (whichever the Options strategy setting above builds), gated by the same
+              combined risk budget as equity. A spread's Entry/Current/Exit $ show its net value (long leg minus short
+              leg). Automated exit is time-based only (close as expiration approaches, no roll) — take-profit/stop-loss/
+              delta-drift stay human-review-only on the Options page.
+            </p>
+            {optionsPaperPositions.loading && !optionsPaperPositions.data ? (
+              <Spinner />
+            ) : optionsPaperPositions.error ? (
+              <ErrorState error={optionsPaperPositions.error} onRetry={optionsPaperPositions.reload} />
+            ) : (
+              (() => {
+                const rows = optionsPaperPositions.data?.positions ?? [];
+                const open = rows.filter((p) => p.status === 'open');
+                const closed = rows.filter((p) => p.status === 'closed');
+                const totalPnl = closed.reduce((s, p) => s + (optionsPaperPnl(p) ?? 0), 0);
+                const unrealizedTotal = open.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0);
+                const unrealizedKnown = open.some((p) => p.unrealizedPnl !== null);
+                return (
+                  <>
+                    {rows.length > 0 && (
+                      <BookLedger
+                        open={open.length}
+                        closed={closed.length}
+                        realized={totalPnl}
+                        unrealized={unrealizedKnown ? unrealizedTotal : null}
+                      />
+                    )}
+                    <OptionsPaperPositionsTable positions={rows} events={symbolEvents.data?.events ?? []} />
+                  </>
+                );
+              })()
+            )}
+          </CollapsibleCard>
+
+          <DashSection title="History" hint="what it actually did, most recent first" />
+          <CollapsibleCard id="autotrade.recentActivity" title="Recent activity">
+            {events.loading && !events.data ? (
+              <Spinner />
+            ) : events.error ? (
+              <ErrorState error={events.error} onRetry={events.reload} />
+            ) : eventRows.length === 0 ? (
               <EmptyState
-                title="No scheduled events"
-                hint="Add a date above — the blackout stays disabled until then."
+                title="No activity yet"
+                hint="Run a screen above, or change a setting, to see journal entries here."
               />
             ) : (
               <table className="w-full">
                 <thead className="border-b border-ink-600/60">
                   <tr>
-                    <th className="th">Label</th>
                     <th className="th">When</th>
-                    <th className="th text-right">Actions</th>
+                    <th className="th">Stage</th>
+                    <th className="th">Action</th>
+                    <th className="th">Symbol</th>
+                    <th className="th">Detail</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {macroEventRows.map((e) => (
+                  {eventRows.map((e) => (
                     <tr key={e.id} className="border-b border-ink-700/50">
-                      <td className="td font-semibold">{e.label}</td>
-                      <td className="td text-slate-400">{new Date(e.eventAt).toLocaleString()}</td>
-                      <td className="td text-right">
-                        <button
-                          className="text-xs text-slate-500 hover:text-bear"
-                          onClick={() => removeMacroEvent(e.id, e.label)}
-                        >
-                          remove
-                        </button>
+                      <td className="td text-slate-500 text-xs whitespace-nowrap">{ago(e.createdAt)}</td>
+                      <td className="td">
+                        <Badge>{e.stage}</Badge>
+                      </td>
+                      <td className="td">{e.action}</td>
+                      <td className="td font-semibold">{e.symbol || '—'}</td>
+                      <td className="td text-slate-500 text-xs max-w-[280px] truncate" title={detailText(e.detail)}>
+                        {detailText(e.detail)}
                       </td>
                     </tr>
                   ))}
@@ -6198,13 +6279,11 @@ export default function AutoTradePage() {
               </table>
             )}
           </CollapsibleCard>
-        </>
-      )}
 
-      {view === 'dashboard' && (
-        <>
+          <DashSection title="Tools" hint="run on demand — nothing here places an order" />
           <CollapsibleCard
             id="autotrade.screen"
+            defaultCollapsed
             title="Research, Screen & Decide"
             action={
               <button className="btn-primary" onClick={runScreen} disabled={screenBusy}>
@@ -6430,7 +6509,7 @@ export default function AutoTradePage() {
             )}
           </CollapsibleCard>
 
-          <CollapsibleCard id="autotrade.backtest" title="Backtest & walk-forward">
+          <CollapsibleCard id="autotrade.backtest" title="Backtest & walk-forward" defaultCollapsed>
             <p className="text-xs text-slate-500 mb-3">
               Replays Screen → Decision → Risk Check day-by-day over historical daily bars, using the exact same logic
               the live loop uses — the validation gate docs/AUTOTRADING_SPEC.md requires before any paper or live
@@ -6573,7 +6652,6 @@ export default function AutoTradePage() {
                 />
               </div>
             )}
-
             <div className="mt-5 pt-5 border-t border-ink-700/60">
               <h4 className="font-medium text-sm mb-1">Parameter sweep — risk per trade</h4>
               <p className="text-xs text-slate-500 mb-3">
@@ -6602,7 +6680,6 @@ export default function AutoTradePage() {
                 <ParameterSweepTable rows={sweepRows} baseValue={sweepBaseSubmitted} />
               )}
             </div>
-
             {optBtErr && <div className="text-bear text-sm mb-2">{optBtErr}</div>}
             {optBtResult && (
               <div className="space-y-3">
@@ -6704,156 +6781,136 @@ export default function AutoTradePage() {
               </div>
             )}
           </CollapsibleCard>
+        </>
+      )}
 
-          <CollapsibleCard
-            id="autotrade.paperTrading"
-            title="Paper trading"
-            action={
-              <button className="btn-primary" onClick={runLoopOnce} disabled={loopBusy}>
-                {loopBusy ? 'Running…' : 'Run one cycle now'}
+      {view === 'config' && (
+        <>
+          <CollapsibleCard id="autotrade.realEstateExclusion" title="Real-estate exclusion list">
+            <div className="grid sm:grid-cols-4 gap-2 items-end mb-3">
+              <Field label="Symbol">
+                <input
+                  className="input"
+                  value={newSymbol}
+                  onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
+                  placeholder="O"
+                />
+              </Field>
+              <div className="sm:col-span-2">
+                <Field label="Reason (optional)">
+                  <input
+                    className="input"
+                    value={newReason}
+                    onChange={(e) => setNewReason(e.target.value)}
+                    placeholder="REIT"
+                  />
+                </Field>
+              </div>
+              <button className="btn-primary" onClick={addExclusion}>
+                Add
               </button>
-            }
-          >
-            <p className="text-xs text-slate-500 mb-3">
-              When enabled above, the server runs this same Screen → Decision → Risk Check → Execution cycle on its own
-              every minute — this button just runs one cycle immediately, so you can watch it work without waiting.
-              Every fill here is a local simulation from a live quote; it never places a real order (see
-              docs/AUTOTRADING_SPEC.md). No entries in the first/last 15 minutes of the session, and a volatility filter
-              (per-ticker and broad-market) can skip a cycle&apos;s entries entirely.
-            </p>
-            {loopErr && <div className="text-bear text-sm mb-2">{loopErr}</div>}
-            {loopSummary && (
-              <p className="text-[11px] text-slate-500 mb-3">
-                {loopSummary.skippedReason ? (
-                  <>New entries skipped — {loopSummary.skippedReason}. </>
-                ) : (
-                  <>
-                    Screened {loopSummary.candidatesScreened}, {loopSummary.candidatesPassedVolatility} passed the
-                    volatility filter, {loopSummary.signalsGenerated} signal(s) generated, {loopSummary.entriesOpened}{' '}
-                    opened ({loopSummary.optionsEntriesOpened} options). Options decision considered{' '}
-                    {loopSummary.optionsCandidatesConsidered} candidate(s) (universe-sourced only — movers can't
-                    accumulate real IV-rank history) and generated {loopSummary.optionsSignalsGenerated} signal(s).{' '}
-                    {loopSummary.moversAutoPromoted > 0 && (
-                      <>{loopSummary.moversAutoPromoted} recurring mover(s) promoted to the universe. </>
-                    )}
-                  </>
-                )}
-                Exits checked: {loopSummary.exitsChecked} ({loopSummary.exitsClosed} closed) — options:{' '}
-                {loopSummary.optionsExitsChecked} ({loopSummary.optionsExitsClosed} closed).
-              </p>
-            )}
-            {paperPositions.loading && !paperPositions.data ? (
+            </div>
+            {exclusions.loading && !exclusions.data ? (
               <Spinner />
-            ) : paperPositions.error ? (
-              <ErrorState error={paperPositions.error} onRetry={paperPositions.reload} />
-            ) : (
-              (() => {
-                const rows = paperPositions.data?.positions ?? [];
-                const open = rows.filter((p) => p.status === 'open');
-                const closed = rows.filter((p) => p.status === 'closed');
-                const totalPnl = closed.reduce((s, p) => s + (paperPnl(p) ?? 0), 0);
-                const unrealizedTotal = open.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0);
-                const unrealizedKnown = open.some((p) => p.unrealizedPnl !== null);
-                return (
-                  <>
-                    {rows.length > 0 && (
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
-                        <StatTile label="Open" value={open.length} />
-                        <StatTile label="Closed" value={closed.length} />
-                        <StatTile
-                          label="Realized P&L"
-                          value={fmtSignedUsd(totalPnl)}
-                          valueClass={totalPnl >= 0 ? 'text-bull' : 'text-bear'}
-                        />
-                        <StatTile
-                          label="Unrealized P&L"
-                          value={unrealizedKnown ? fmtSignedUsd(unrealizedTotal) : '—'}
-                          valueClass={unrealizedKnown ? (unrealizedTotal >= 0 ? 'text-bull' : 'text-bear') : undefined}
-                        />
-                      </div>
-                    )}
-                    <PaperPositionsTable positions={rows} />
-                  </>
-                );
-              })()
-            )}
-
-            <h4 className="font-medium text-sm mt-5 mb-3">Options paper positions</h4>
-            <p className="text-xs text-slate-500 mb-3">
-              Long calls/puts or debit spreads (whichever the Options strategy setting above builds), gated by the same
-              combined risk budget as equity. A spread's Entry/Current/Exit $ show its net value (long leg minus short
-              leg). Automated exit is time-based only (close as expiration approaches, no roll) — take-profit/stop-loss/
-              delta-drift stay human-review-only on the Options page.
-            </p>
-            {optionsPaperPositions.loading && !optionsPaperPositions.data ? (
-              <Spinner />
-            ) : optionsPaperPositions.error ? (
-              <ErrorState error={optionsPaperPositions.error} onRetry={optionsPaperPositions.reload} />
-            ) : (
-              (() => {
-                const rows = optionsPaperPositions.data?.positions ?? [];
-                const open = rows.filter((p) => p.status === 'open');
-                const closed = rows.filter((p) => p.status === 'closed');
-                const totalPnl = closed.reduce((s, p) => s + (optionsPaperPnl(p) ?? 0), 0);
-                const unrealizedTotal = open.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0);
-                const unrealizedKnown = open.some((p) => p.unrealizedPnl !== null);
-                return (
-                  <>
-                    {rows.length > 0 && (
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
-                        <StatTile label="Open" value={open.length} />
-                        <StatTile label="Closed" value={closed.length} />
-                        <StatTile
-                          label="Realized P&L"
-                          value={fmtSignedUsd(totalPnl)}
-                          valueClass={totalPnl >= 0 ? 'text-bull' : 'text-bear'}
-                        />
-                        <StatTile
-                          label="Unrealized P&L"
-                          value={unrealizedKnown ? fmtSignedUsd(unrealizedTotal) : '—'}
-                          valueClass={unrealizedKnown ? (unrealizedTotal >= 0 ? 'text-bull' : 'text-bear') : undefined}
-                        />
-                      </div>
-                    )}
-                    <OptionsPaperPositionsTable positions={rows} events={symbolEvents.data?.events ?? []} />
-                  </>
-                );
-              })()
-            )}
-          </CollapsibleCard>
-
-          <CollapsibleCard id="autotrade.recentActivity" title="Recent activity">
-            {events.loading && !events.data ? (
-              <Spinner />
-            ) : events.error ? (
-              <ErrorState error={events.error} onRetry={events.reload} />
-            ) : eventRows.length === 0 ? (
+            ) : exclusions.error ? (
+              <ErrorState error={exclusions.error} onRetry={exclusions.reload} />
+            ) : exclusionRows.length === 0 ? (
               <EmptyState
-                title="No activity yet"
-                hint="Run a screen above, or change a setting, to see journal entries here."
+                title="No exclusions"
+                hint="Add a symbol above — the sector/industry classification check also catches unlisted REITs."
               />
             ) : (
               <table className="w-full">
                 <thead className="border-b border-ink-600/60">
                   <tr>
-                    <th className="th">When</th>
-                    <th className="th">Stage</th>
-                    <th className="th">Action</th>
                     <th className="th">Symbol</th>
-                    <th className="th">Detail</th>
+                    <th className="th">Reason</th>
+                    <th className="th">Source</th>
+                    <th className="th text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {eventRows.map((e) => (
-                    <tr key={e.id} className="border-b border-ink-700/50">
-                      <td className="td text-slate-500 text-xs whitespace-nowrap">{ago(e.createdAt)}</td>
+                  {exclusionRows.map((e) => (
+                    <tr key={e.symbol} className="border-b border-ink-700/50">
+                      <td className="td font-semibold">{e.symbol}</td>
+                      <td className="td text-slate-400">{e.reason || '—'}</td>
                       <td className="td">
-                        <Badge>{e.stage}</Badge>
+                        <Badge color={e.source === 'default' ? 'slate' : 'blue'}>{e.source}</Badge>
                       </td>
-                      <td className="td">{e.action}</td>
-                      <td className="td font-semibold">{e.symbol || '—'}</td>
-                      <td className="td text-slate-500 text-xs max-w-[280px] truncate" title={detailText(e.detail)}>
-                        {detailText(e.detail)}
+                      <td className="td text-right">
+                        <button
+                          className="text-xs text-slate-500 hover:text-bear"
+                          onClick={() => removeExclusion(e.symbol)}
+                        >
+                          remove
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </CollapsibleCard>
+
+          <CollapsibleCard id="autotrade.macroEvents" title="Macro event blackout list">
+            <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-2xl">
+              Hand-maintained scheduled dates (FOMC, CPI, jobs reports, ...) checked by "Macro event blackout (hours)"
+              above — there's no economic-calendar feed in this app, so add your own from the Fed's/BLS's own published
+              calendars.
+            </p>
+            <div className="grid sm:grid-cols-4 gap-2 items-end mb-3">
+              <div className="sm:col-span-2">
+                <Field label="Label">
+                  <input
+                    className="input"
+                    value={newEventLabel}
+                    onChange={(e) => setNewEventLabel(e.target.value)}
+                    placeholder="FOMC decision"
+                  />
+                </Field>
+              </div>
+              <Field label="Date & time">
+                <input
+                  type="datetime-local"
+                  className="input"
+                  value={newEventAt}
+                  onChange={(e) => setNewEventAt(e.target.value)}
+                />
+              </Field>
+              <button className="btn-primary" onClick={addMacroEvent}>
+                Add
+              </button>
+            </div>
+            {macroEvents.loading && !macroEvents.data ? (
+              <Spinner />
+            ) : macroEvents.error ? (
+              <ErrorState error={macroEvents.error} onRetry={macroEvents.reload} />
+            ) : macroEventRows.length === 0 ? (
+              <EmptyState
+                title="No scheduled events"
+                hint="Add a date above — the blackout stays disabled until then."
+              />
+            ) : (
+              <table className="w-full">
+                <thead className="border-b border-ink-600/60">
+                  <tr>
+                    <th className="th">Label</th>
+                    <th className="th">When</th>
+                    <th className="th text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {macroEventRows.map((e) => (
+                    <tr key={e.id} className="border-b border-ink-700/50">
+                      <td className="td font-semibold">{e.label}</td>
+                      <td className="td text-slate-400">{new Date(e.eventAt).toLocaleString()}</td>
+                      <td className="td text-right">
+                        <button
+                          className="text-xs text-slate-500 hover:text-bear"
+                          onClick={() => removeMacroEvent(e.id, e.label)}
+                        >
+                          remove
+                        </button>
                       </td>
                     </tr>
                   ))}
