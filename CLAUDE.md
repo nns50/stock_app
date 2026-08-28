@@ -77,3 +77,34 @@ Guidelines:
      down decision.
   Passing (1) tells you nothing about (2) or (3) — that gap is how each of the four got
   through.
+
+- **Assert at the CONSUMER, not the producer — the same disease lives below config.**
+  On 2026-08-27 the three guards above were all green while four values were computed
+  and then read by nothing:
+  - `deriveDollarCaps` gained a buying-power bound; its only caller omitted the
+    argument, so the bound was dead. Its unit tests passed throughout.
+  - `shapeToPatch` computed `liveOptionsMaxOrderUsd` and then assigned the *equity*
+    cap to it, discarding the result. Again green — nothing tested the patch it builds.
+  - The options "max 1 at a time" gate returned without journaling, so the tuning
+    plan's F7 rule had no event to count.
+  - Webull's balance payload was read for a `buying_power` key that does not exist,
+    silently falling back to cash and understating a margin account ~4x.
+
+  The guards above stop at config fields. Every one of these was a function parameter,
+  a struct field, or a wire key — one layer down, where nothing scans. **A test that
+  exercises a value where it is COMPUTED proves nothing about whether anything consumes
+  it.** So: test the patch, not just the function that builds it; test the route, not
+  just the helper it calls; and when a derived struct grows a field, assert its consumer
+  reads *that* field rather than a sibling. Two of these were caught only by curling the
+  deployed endpoint and finding the number unchanged — if a change should move a
+  user-visible number, go look at that number.
+
+- **When two places derive the same quantity, they must agree by construction.** The
+  other half of 2026-08-27's bugs were unit mismatches between honest-looking formulas:
+  a per-order cap derived from a risk-profile band while the sizer derived from
+  `riskPerTradePct / maxStopDistancePct` (so a correct order could never fit its own
+  cap); correlated/sector exposure comparing *notional* against a percentage chosen as
+  if it were *risk* (so a second correlated position could never open, at any equity);
+  and the daily target treating account *value* as *return* (so a deposit banked the
+  day). Prefer one function both paths call over two that agree today — and when a
+  comparison spans two quantities, say in a comment which unit each is in.
