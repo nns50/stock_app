@@ -52,6 +52,87 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Buying power must reach the SIZER, not just the guardrail. On 2026-08-28 the
+// sizer worked from risk alone and the guardrail refused the result 627 times,
+// for zero live entries — while a smaller, fundable position was available all
+// session. These assert at the consumer: it is the risk check's own output that
+// has to change, not merely the helper's return value.
+// ---------------------------------------------------------------------------
+describe('evaluateRiskCheck — buying-power aware sizing (2026-08-28)', () => {
+  it('sizes DOWN to fit buying power instead of producing an unfundable order', () => {
+    // $100k equity at 1% risk over a 5% stop wants 200 shares ($20,000).
+    const full = evaluateRiskCheck(signal(), baseCtx());
+    expect(full.sizing.suggestedQuantity).toBe(200);
+
+    // Same candidate, but only $6,000 of buying power is available.
+    const funded = evaluateRiskCheck(signal(), baseCtx({ buyingPowerUsd: 6_000 }));
+    // 2% reserve => $5,880 usable => 58 shares at $100.
+    expect(funded.sizing.suggestedQuantity).toBe(58);
+    expect(funded.ok).toBe(true); // it TRADES, rather than being refused later
+    expect(funded.sizing.suggestedQuantity * 100).toBeLessThan(6_000);
+  });
+
+  it('only ever reduces size — never sizes up to consume spare buying power', () => {
+    const funded = evaluateRiskCheck(signal(), baseCtx({ buyingPowerUsd: 10_000_000 }));
+    expect(funded.sizing.suggestedQuantity).toBe(200); // the risk-based size, unchanged
+  });
+
+  it('leaves sizing untouched when buying power is unknown (paper path)', () => {
+    const a = evaluateRiskCheck(signal(), baseCtx());
+    const b = evaluateRiskCheck(signal(), baseCtx({ buyingPowerUsd: undefined }));
+    expect(b.sizing.suggestedQuantity).toBe(a.sizing.suggestedQuantity);
+    expect(findCheck(b, 'buying_power_sizing')?.detail).toMatch(/inactive/);
+  });
+
+  it('says in the journal that it sized down, and by how much', () => {
+    // An undersized book must be visible, not silently read as a normal one.
+    const funded = evaluateRiskCheck(signal(), baseCtx({ buyingPowerUsd: 6_000 }));
+    const c = findCheck(funded, 'buying_power_sizing');
+    expect(c?.passed).toBe(true);
+    expect(c?.detail).toMatch(/sized down to 58 of 200 shares/);
+  });
+
+  it('is exact at the 25% floor — 49 of 200 is under it, 50 is not', () => {
+    // $5,000 BP funds 49 of 200 shares = 24.5%, just under the floor; $5,200
+    // funds 50 = 25.0%, just over. Worth pinning: the first draft of these
+    // tests assumed $5,000 would trade and it correctly did not.
+    expect(evaluateRiskCheck(signal(), baseCtx({ buyingPowerUsd: 5_000 })).ok).toBe(false);
+    expect(evaluateRiskCheck(signal(), baseCtx({ buyingPowerUsd: 5_200 })).ok).toBe(true);
+  });
+
+  it('skips a token position rather than spending a slot on it', () => {
+    // $2,000 of buying power against a 200-share intent funds 19 shares — under
+    // a tenth of the trade, for a full concurrency slot and one of the day's
+    // trades.
+    const tiny = evaluateRiskCheck(signal(), baseCtx({ buyingPowerUsd: 2_000 }));
+    expect(tiny.ok).toBe(false);
+    expect(findCheck(tiny, 'buying_power_sizing')?.detail).toMatch(/below the 25% floor/);
+  });
+
+  it('blocks with a buying-power reason when not even one share is affordable', () => {
+    const none = evaluateRiskCheck(signal(), baseCtx({ buyingPowerUsd: 50 }));
+    expect(none.ok).toBe(false);
+    expect(findCheck(none, 'quantity')?.detail).toMatch(/will not fund a single share/);
+  });
+
+  it('respects whichever cap binds first — ADV or buying power', () => {
+    // ADV cap of 1% of 10,000 shares = 100; buying power would allow 49.
+    const bpBinds = evaluateRiskCheck(
+      signal({ avgVolume: 10_000 }),
+      baseCtx({ maxAdvParticipationPct: 1, buyingPowerUsd: 6_000 }),
+    );
+    expect(bpBinds.sizing.suggestedQuantity).toBe(58);
+
+    // Plenty of buying power, so the ADV cap is the binding one.
+    const advBinds = evaluateRiskCheck(
+      signal({ avgVolume: 10_000 }),
+      baseCtx({ maxAdvParticipationPct: 1, buyingPowerUsd: 1_000_000 }),
+    );
+    expect(advBinds.sizing.suggestedQuantity).toBe(100);
+  });
+});
+
 const findCheck = (result: ReturnType<typeof evaluateRiskCheck>, rule: string) =>
   result.checks.find((c) => c.rule === rule)!;
 

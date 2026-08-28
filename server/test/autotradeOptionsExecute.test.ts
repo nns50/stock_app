@@ -1260,6 +1260,18 @@ describe('short-dated options — the paper book', () => {
 // never given a slot to generate.
 // ---------------------------------------------------------------------------
 describe('short_dated_position_already_open — the max-1 gate is countable', () => {
+  // Pin the clock. The short-dated ENTRY WINDOW gate (210m to the close) runs
+  // BEFORE the max-1 gate, so on the real wall clock this whole block passes or
+  // fails by time of day — it was written without this and slipped through CI,
+  // then failed at 12:30 ET, exactly 210 minutes before the bell.
+  // 2026-08-28T14:30:00Z is 10:30 ET: 330 minutes to the close, well inside.
+  const MID_MORNING = Date.parse('2026-08-28T14:30:00Z');
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(MID_MORNING);
+  });
+  afterEach(() => vi.useRealTimers());
+
   // The tuning plan's F7 fires when this gate refuses >=5 candidates in a week.
   // It used to return silently, so the rule had nothing to count and a gate
   // throttling the book looked exactly like one that never fired.

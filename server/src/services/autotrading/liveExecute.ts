@@ -859,6 +859,39 @@ export async function runLiveExecution(
   const combined = combinedLiveOpenRisk();
   let runningRisk = combined.risk;
   let runningCount = combined.count;
+  // Buying power for the SIZER, so it fits the order to what the account can
+  // fund rather than building an unfundable one for the guardrail to refuse
+  // (see buyingPowerSizing.ts -- 627 such refusals and zero entries on
+  // 2026-08-28).
+  //
+  // Loaded LAZILY, and only for a buy: an unplaceable short must still cost no
+  // broker round-trip, which is the whole point of the skip below it. Read once
+  // per batch and then decremented by each fill, so two entries in the same
+  // tick cannot both be sized against the same dollars -- the broker's own
+  // figure only catches up on the next tick.
+  //
+  // Best-effort throughout: no account id, a failed read, or a payload without
+  // the field all leave it undefined, which imposes no constraint and restores
+  // the previous behaviour exactly.
+  let buyingPowerLoaded = false;
+  let availableBuyingPowerUsd: number | undefined;
+  const buyingPowerForSide = async (side: 'buy' | 'sell'): Promise<number | undefined> => {
+    if (side !== 'buy') return undefined;
+    if (!buyingPowerLoaded) {
+      buyingPowerLoaded = true;
+      if (cfg.liveAccountId) {
+        try {
+          const acct = await webullAccountState(cfg.liveAccountId);
+          if (acct.ok && acct.state) {
+            availableBuyingPowerUsd = withDayBuyingPower(acct.state, cfg).buyingPowerUsd;
+          }
+        } catch {
+          /* leave undefined — unconstrained, exactly as before */
+        }
+      }
+    }
+    return availableBuyingPowerUsd;
+  };
   const runningPositions: { symbol: string; notional: number; side: 'long' | 'short' }[] = snapshot.openPositions.map(
     (p) => ({
       symbol: p.symbol,
@@ -1058,6 +1091,7 @@ export async function runLiveExecution(
       equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
       equityCurveDeriskCutPct: cfg.equityCurveDeriskCutPct,
       maxAdvParticipationPct: cfg.maxAdvParticipationPct,
+      buyingPowerUsd: await buyingPowerForSide(signal.side),
       expectancyMultiplier:
         snapshot.gradeExpectancyMultipliers[
           convictionGrade(signal.score, {
@@ -1102,11 +1136,19 @@ export async function runLiveExecution(
     if (outcome.ok) {
       runningRisk += result.approvedRiskAmount;
       runningCount += 1;
+      const notional = signal.entry * result.sizing.suggestedQuantity;
       runningPositions.push({
         symbol,
-        notional: signal.entry * result.sizing.suggestedQuantity,
+        notional,
         side: signal.side === 'buy' ? 'long' : 'short',
       });
+      // A filled BUY has spent this money — the next candidate in the same
+      // batch must not be sized against it too. The broker's own figure only
+      // catches up on the next tick's read. (Sells free buying power rather
+      // than consuming it, matching guardrails.ts, so they leave it alone.)
+      if (availableBuyingPowerUsd !== undefined && signal.side === 'buy') {
+        availableBuyingPowerUsd = Math.max(0, availableBuyingPowerUsd - notional);
+      }
       skipSymbols.add(symbol);
     }
   }
