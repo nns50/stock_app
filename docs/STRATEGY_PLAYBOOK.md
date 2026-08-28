@@ -870,6 +870,36 @@ the aggregate open-risk cap, and the per-trade risk %. A *third* correlated posi
 remains blocked on notional as well as on concurrency. If you ever raise concurrency
 above two, revisit these caps deliberately rather than assuming they still bind.
 
+**"Is the limit priced where trades actually go?" → Peak-R against the target (2026-08-27).**
+Worth measuring rather than assuming, because the answer moves real money and the intuition
+cuts both ways. Journal → Analytics → Excursions reports each closed trade's **MFE** — the
+best unrealized profit it reached — in R. Read across the book, that says whether the
+take-profit end of the bracket sits where trades actually travel, or above it.
+
+The first read on this book: of 36 closed trades, **60.5% reached 1.0R but only 28.9%
+reached 2.0R**, against a `targetRMultiple` of 2 — and `capturePct` was **−28.46%**, meaning
+the average trade gave back more than it kept. Winners peaked at **1.83R** on average, which
+under the built-in tuner's 0.8 capture fraction implies a **1.46R** target. Treat all of
+that as an *upper bound*: 30 of the 36 were measured on daily bars, whose high spans hours
+the position did not exist. The 8 intraday-measured trades had a median peak of **0.17R**.
+
+The trap is concluding "so lower the target." Do the daily arithmetic first. At 1.25% risk
+with a 4-trade daily cap, +3% means netting **2.4R**, and a *lower* target makes that
+harder, not easier — at 2.0R a 2W/1L day clears it, at 1.0R you need 3W/0L, at 0.75R a
+perfect 4W/0L. Smaller targets raise win rate and cap the winners that carry the day. An
+MFE-based policy sim on the same 36 trades still favoured a nearer target (**+0.43R/trade
+at 1.0R vs +0.20R at 2.0R**, against −0.16R as actually traded), but note what it also
+says: **no target level reaches +3%/day on average within a 4-trade cap.** The lever that
+would is win rate or trade count, not target distance.
+
+So the rule here is: **let the tuner do it, from winners, gradually.** `autoTuneExitsEnabled`
+moves `targetRMultiple` toward 0.8 × winners' average peak and `stopAtrMultiple` toward
+1.3 × their average heat, refuses to act below `autoTuneMinTrades` winning trades, moves
+either by at most 0.25 per run, and clamps hard. Winners only is the honest sample — a
+trade that stopped out did so *because of* the current stop, so its excursion is censored
+and cannot tell you whether a different geometry was better. Hand-setting a multiple off a
+simulation, or off one memorable stagnant trade, is how you fit a parameter to noise.
+
 **"What happens when the app isn't sure?"** Worth knowing, because it shapes what you'll
 see: every live-order decision made under an unknown resolves toward **doing less**, not
 toward assuming the convenient answer. A fill the app can't fully account for is booked
