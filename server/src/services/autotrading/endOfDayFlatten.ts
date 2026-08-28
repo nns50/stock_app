@@ -37,6 +37,73 @@ import { AutotradeConfig } from '../../db/autotradeConfig';
 
 export type EndOfDayFlattenConfig = Pick<AutotradeConfig, 'endOfDayFlattenMinutes'>;
 
+// ---------------------------------------------------------------------------
+// Entry cutoff before that flatten (2026-08-28).
+//
+// The flatten had no matching entry gate, so the loop could open a position
+// the flatten would immediately close. It did: on 2026-08-28 ESTC was opened
+// at 15:56:04 and flattened at 15:57:12 — 68 seconds, -$0.20 plus two spreads.
+// GAP had been flattened at 15:55:05, and freeing its slot and buying power is
+// what let the next candidate through a minute later.
+//
+// The cost is not the cents. A position opened inside the flatten window
+// CANNOT reach its stop or target — the clock closes it first — so it is a
+// guaranteed-waste trade that still consumes a concurrency slot and one of the
+// day's `maxTradesPerDay`. It recurs on any day a position flattens and frees
+// capacity behind it.
+//
+// DERIVED from endOfDayFlattenMinutes rather than configured separately, so the
+// two cannot disagree: a cutoff set below the flatten would silently reopen
+// exactly this hole. (The options path's own cutoff IS a config field because
+// 210m is a strategy choice about decay; this one is a correctness guard about
+// a clock the flatten already owns.)
+//
+// The runway on top is what separates "not doomed" from "not worth taking":
+// with maxStopDistancePct 2.5 and a 2R target, a position needs a ~5% move to
+// pay out, and 15 minutes is already generous for that. It also comfortably
+// clears the loop's own ~1-2 minute tick, so an entry can never land inside
+// the window through a slow fill.
+// ---------------------------------------------------------------------------
+
+/** Minutes of runway a new position needs BEYOND the flatten window. */
+export const ENTRY_RUNWAY_MINUTES = 15;
+
+export interface EntryCutoffDecision {
+  /** True when a new entry must not be opened this close to the bell. */
+  blocked: boolean;
+  /** Minutes to the close, or null outside the regular session. */
+  minutesLeft: number | null;
+  /** The cutoff this was judged against. 0 when the flatten is off. */
+  cutoffMinutes: number;
+  /** For the journal; null when nothing is blocked. */
+  reason: string | null;
+}
+
+/**
+ * May a new LIVE EQUITY position be opened right now?
+ *
+ * Off entirely when the flatten is off (`endOfDayFlattenMinutes` 0) — with no
+ * flatten there is no window to be swallowed by, and this gate has no opinion
+ * about how late the loop trades. Outside the regular session it also declines
+ * to block: entries there are the market-open guard's business, not this one's.
+ */
+export function evaluateEntryCutoff(cfg: EndOfDayFlattenConfig, now: number): EntryCutoffDecision {
+  const cutoffMinutes = cfg.endOfDayFlattenMinutes > 0 ? cfg.endOfDayFlattenMinutes + ENTRY_RUNWAY_MINUTES : 0;
+  const minutesLeft = minutesUntilClose(now);
+  if (cutoffMinutes === 0 || minutesLeft === null || minutesLeft > cutoffMinutes) {
+    return { blocked: false, minutesLeft, cutoffMinutes, reason: null };
+  }
+  return {
+    blocked: true,
+    minutesLeft,
+    cutoffMinutes,
+    reason:
+      `${minutesLeft}m to the close — past the ${cutoffMinutes}m entry cutoff ` +
+      `(${cfg.endOfDayFlattenMinutes}m flatten + ${ENTRY_RUNWAY_MINUTES}m runway); ` +
+      `a position opened now would be flattened before it could reach its stop or target`,
+  };
+}
+
 const SESSION_OPEN_MIN = 9 * 60 + 30;
 export const SESSION_CLOSE_MIN = 16 * 60;
 

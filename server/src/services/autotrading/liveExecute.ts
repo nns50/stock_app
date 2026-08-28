@@ -57,7 +57,7 @@ import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
 import { evaluateStagnation } from './stagnationExit';
-import { evaluateEndOfDayFlatten } from './endOfDayFlatten';
+import { evaluateEndOfDayFlatten, evaluateEntryCutoff } from './endOfDayFlatten';
 import { evaluateStopAdjust } from './stopAdjust';
 import { evaluateScaleOut } from './scaleOut';
 import { fetchTodayVwap } from './vwap';
@@ -856,6 +856,28 @@ export async function runLiveExecution(
   // options, positions AND placed-but-unmaterialized orders) -- not this book's
   // position-only snapshot -- so equity and options entries in the same tick
   // can't jointly exceed the aggregate-risk / concurrent-position caps.
+  // Nothing may be opened so close to the bell that the end-of-day flatten
+  // would swallow it — batch-level, and BEFORE the buying-power read below, so
+  // a doomed batch costs no broker round-trip either. See evaluateEntryCutoff.
+  const entryCutoff = evaluateEntryCutoff(cfg, Date.now());
+  if (entryCutoff.blocked) {
+    logAutotradeEvent({
+      stage: 'execution',
+      action: 'entry_window_closed',
+      detail: {
+        reason: entryCutoff.reason,
+        minutesLeft: entryCutoff.minutesLeft,
+        cutoffMinutes: entryCutoff.cutoffMinutes,
+        refused: candidates.length,
+      },
+    });
+    return candidates.map(({ signal }) => ({
+      symbol: signal.symbol.toUpperCase(),
+      ok: false,
+      reason: entryCutoff.reason ?? 'past the end-of-day entry cutoff',
+    }));
+  }
+
   const combined = combinedLiveOpenRisk();
   let runningRisk = combined.risk;
   let runningCount = combined.count;
