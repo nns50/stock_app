@@ -911,6 +911,30 @@ trade that stopped out did so *because of* the current stop, so its excursion is
 and cannot tell you whether a different geometry was better. Hand-setting a multiple off a
 simulation, or off one memorable stagnant trade, is how you fit a parameter to noise.
 
+**"Why did a whole session produce no trades?" → Sizing has to know what you can fund
+(2026-08-28).** Position size came from risk alone — `riskPerTradePct` over the stop
+distance — and buying power was checked only afterwards, at the guardrail, on a fully
+sized order. So an unfundable order was built in full and then refused. On 2026-08-28 that
+happened **627 times for zero entries**: buying power was $2,161.18 (a $5,000 deposit had
+not settled) while the sizer kept producing $3,600–$5,378 orders.
+
+The day was not unlucky, it was unwinnable by construction. Risking 1.25% of a $5,161
+account inside $2,161 of buying power needs a stop **2.98%** away, and `maxStopDistancePct`
+is 2.5 — so no order could be both correctly sized and fundable. A ~$2,000 position was
+affordable the entire session and was never attempted.
+
+**Buying power is not a fixed property of the account.** It moves with settlement holds,
+with margin state, and with the previous days' wins and losses. That is precisely why it
+cannot be a number anyone edits each morning — the sizer reads it and adapts.
+
+Sizing down only ever *reduces* risk: fewer shares at the same stop is strictly less money
+at stake than intended. What the loop must not do is pretend the risk target was met, so
+every sized-down entry says so in its journal — `sized down to N of M shares to fit $X of
+buying power — risking $A instead of the intended $B` — and an undersized book is visible
+rather than being read as a normal one. Below **25%** of the intended size it skips
+instead: a token position still costs a concurrency slot and one of the day's trades, and
+returns almost nothing for them.
+
 **"What happens when the app isn't sure?"** Worth knowing, because it shapes what you'll
 see: every live-order decision made under an unknown resolves toward **doing less**, not
 toward assuming the convenient answer. A fill the app can't fully account for is booked

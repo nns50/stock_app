@@ -10,6 +10,7 @@ import { getMarketAtrPct } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
 import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
+import { buyingPowerMaxQuantity, isTooSmallToFund, MIN_FUNDED_SIZE_FRACTION } from './buyingPowerSizing';
 import { listLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
 import { TradeSignal, convictionGrade } from './decide';
 
@@ -376,6 +377,12 @@ export interface RiskCheckContext {
    *  0 or undefined means no cap. Needs the signal's own `avgVolume` to apply;
    *  when that's unresolved the cap is skipped (reported, not blocked). */
   maxAdvParticipationPct?: number;
+  /** Available buying power, when the caller knows it (the LIVE path reads it
+   *  from the broker each batch). Undefined on paper and on a failed broker
+   *  read, which imposes no constraint — sizing behaves exactly as it did
+   *  before. See buyingPowerSizing.ts for why the sizer, not just the
+   *  guardrail, has to see this. */
+  buyingPowerUsd?: number;
   /** Expectancy-weighted sizing multiplier (2026-07-24) for THIS candidate's
    *  conviction grade, pre-computed by the caller from the book's realized
    *  per-grade edge (services/autotrading/expectancySizing.ts). Optional — only
@@ -523,7 +530,9 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
       ? Math.floor((advCapPct / 100) * signal.avgVolume)
       : undefined;
 
-  const sizing = computeRiskSizing({
+  // What risk alone asks for, before funding is considered — the denominator
+  // for "how much of the intended trade can this account actually afford".
+  const intended = computeRiskSizing({
     accountSize: ctx.equity,
     riskPct: effectiveRiskPct,
     entryPrice: signal.entry,
@@ -533,13 +542,61 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     maxQuantity: advMaxQty,
   });
 
+  // Buying power caps the size instead of refusing the order later. Before
+  // 2026-08-28 this was checked only at the guardrail, on an already-sized
+  // order, so an unfundable order was built in full and then blocked — 627
+  // times in one session, for zero entries.
+  const bp = buyingPowerMaxQuantity({
+    buyingPowerUsd: ctx.buyingPowerUsd,
+    entryPrice: signal.entry,
+    side: signal.side,
+  });
+  const fundedCap =
+    bp.maxQuantity === undefined
+      ? advMaxQty
+      : advMaxQty === undefined
+        ? bp.maxQuantity
+        : Math.min(advMaxQty, bp.maxQuantity);
+
+  const sizing =
+    fundedCap === advMaxQty
+      ? intended
+      : computeRiskSizing({
+          accountSize: ctx.equity,
+          riskPct: effectiveRiskPct,
+          entryPrice: signal.entry,
+          stopPrice: signal.stop,
+          assetType: 'stock',
+          side: signal.side === 'buy' ? 'long' : 'short',
+          maxQuantity: fundedCap,
+        });
+
+  const bpBound = bp.maxQuantity !== undefined && sizing.suggestedQuantity < intended.suggestedQuantity;
+  // A token position still costs a concurrency slot and one of the day's
+  // trades; below MIN_FUNDED_SIZE_FRACTION, waiting for a candidate that fits
+  // is worth more than being nominally in the market.
+  const tooSmall = isTooSmallToFund(sizing.suggestedQuantity, intended.suggestedQuantity);
+  check(
+    'buying_power_sizing',
+    !tooSmall,
+    bp.maxQuantity === undefined
+      ? 'inactive — no buying-power figure supplied (paper, or the broker read failed)'
+      : tooSmall
+        ? `only ${sizing.suggestedQuantity} of ${intended.suggestedQuantity} shares fundable from ${usd(bp.usableUsd ?? 0)} — below the ${Math.round(MIN_FUNDED_SIZE_FRACTION * 100)}% floor, skipping rather than taking a token position`
+        : bpBound
+          ? `sized down to ${sizing.suggestedQuantity} of ${intended.suggestedQuantity} shares to fit ${usd(bp.usableUsd ?? 0)} of buying power — risking ${usd(sizing.riskOfPosition ?? 0)} instead of the intended ${usd(intended.riskOfPosition ?? 0)}`
+          : `fits — ${intended.suggestedQuantity} shares inside ${usd(bp.usableUsd ?? 0)} of buying power`,
+  );
+
   const qtyOk = sizing.suggestedQuantity > 0;
   check(
     'quantity',
     qtyOk,
     qtyOk
       ? `${sizing.suggestedQuantity} shares`
-      : 'risk budget is too small to size even one share at this stop distance',
+      : bp.maxQuantity === 0
+        ? `buying power ${usd(bp.usableUsd ?? 0)} will not fund a single share at ${usd(signal.entry)}`
+        : 'risk budget is too small to size even one share at this stop distance',
   );
   check(
     'adv_participation_cap',

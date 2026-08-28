@@ -741,7 +741,11 @@ describe('runLiveExecution — funding capacity and unplaceable shorts', () => {
     const outcomes = await runLiveExecution([{ signal: signal() }]);
 
     expect(outcomes[0]).toMatchObject({ ok: false });
-    expect(outcomes[0].reason).toMatch(/buying_power/);
+    // Since 2026-08-28 the refusal happens in the SIZER rather than at the
+    // guardrail: buying power now caps the quantity first, so $150 funds one
+    // share and probation's halving rounds that to nothing. Either way the
+    // entry never reaches the broker — which is what this pair exists to prove.
+    expect(outcomes[0].reason).toMatch(/buying_power|rounded to 0/);
     expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 
@@ -757,7 +761,8 @@ describe('runLiveExecution — funding capacity and unplaceable shorts', () => {
     const outcomes = await runLiveExecution([{ signal: signal() }]);
 
     expect(outcomes[0]).toMatchObject({ ok: false });
-    expect(outcomes[0].reason).toMatch(/buying_power/);
+    // Same move as the pair above — the ceiling now binds in the sizer.
+    expect(outcomes[0].reason).toMatch(/buying_power|rounded to 0/);
   });
 
   it('never LOWERS the guardrail figure — a small cap cannot block an otherwise fundable order', async () => {
