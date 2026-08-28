@@ -2521,6 +2521,83 @@ describe('reconcileLiveOrders — booking and the materialization mark are atomi
 // autotrade-tagged one in the identical situation is acted on. Without the
 // second half a filter that accidentally matched nothing would pass.
 // ---------------------------------------------------------------------------
+describe('runLiveExecution — end-of-day entry cutoff (2026-08-28)', () => {
+  const cfgFields = {
+    accountEquityUsd: 100_000,
+    riskProfile: 'MODERATE' as const,
+    liveAccountId: 'ACC1',
+    liveTradingEnabled: true,
+    liveMaxOrderUsd: 50_000,
+    liveMaxDailyLossUsd: 5_000,
+    liveMaxOrdersPerDay: 20,
+    killSwitch: false,
+    endOfDayFlattenMinutes: 5,
+  };
+  const at = (hhmm: string) => Date.parse(`2026-08-28T${hhmm}:00-04:00`);
+  afterEach(() => vi.useRealTimers());
+  const atClock = (ms: number) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(ms);
+  };
+
+  it('refuses the batch inside the flatten window, without touching the broker', async () => {
+    // The real 2026-08-28 case: ESTC opened 15:56:04, flattened 15:57:12.
+    // Blocking before the broker read matters — a doomed batch should cost no
+    // round-trip, the same reason the unplaceable-short skip exists.
+    setAutotradeConfig(cfgFields);
+    atClock(at('15:56'));
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LATE' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', ok: false });
+    expect(outcomes[0].reason).toMatch(/past the 20m entry cutoff/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(mockAccountState).not.toHaveBeenCalled();
+  });
+
+  it('journals the refusal with the candidate count', async () => {
+    setAutotradeConfig(cfgFields);
+    atClock(at('15:56'));
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+
+    await runLiveExecution([{ signal: signal() }, { signal: signal() }]);
+
+    const ev = listAutotradeEvents({ actions: ['entry_window_closed'] });
+    expect(ev).toHaveLength(1);
+    expect(JSON.parse(ev[0]!.detail!)).toMatchObject({ refused: 2, minutesLeft: 4, cutoffMinutes: 20 });
+  });
+
+  it('still lets an entry through earlier in the session — proving the gate bites, not blocks all', async () => {
+    // GAP opened 15:19 that same day and had a real 36-minute hold. If this
+    // gate swallowed that too it would just be an afternoon shutdown.
+    setAutotradeConfig(cfgFields);
+    atClock(at('15:19'));
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OK' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0].reason ?? '').not.toMatch(/entry cutoff/);
+    expect(listAutotradeEvents({ actions: ['entry_window_closed'] })).toHaveLength(0);
+  });
+
+  it('is inert when the flatten is off', async () => {
+    setAutotradeConfig({ ...cfgFields, endOfDayFlattenMinutes: 0 });
+    atClock(at('15:59'));
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NOFLAT' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0].reason ?? '').not.toMatch(/entry cutoff/);
+  });
+});
+
 describe('manual positions are never auto-sold', () => {
   const cfgFields = {
     accountEquityUsd: 100_000,

@@ -1388,6 +1388,18 @@ equally-weighted cards in the order they happened to be built:
   that same cancel-bracket-then-close path rather than carried overnight —
   **live options positions too**, which since 2026-08-25 also honour **max hold
   days** (see "Live options trading" below). It
+  Since 2026-08-28 the flatten also closes the **entry** side of that window:
+  no new live equity position opens within **the flatten window plus 15 minutes**
+  of the close (a 5-minute flatten therefore stops entries from 15:40). One
+  refusal is journalled per batch as `entry_window_closed`. Without it the loop
+  could open a position the flatten immediately closed — on 2026-08-28 it opened
+  ESTC at 15:56:04 and flattened it at 15:57:12, 68 seconds later, after another
+  position's flatten had freed the slot. The cost is not the cents: a position
+  opened that late **cannot** reach its stop or target, so it spends a
+  concurrency slot and one of the day's trades on a coin flip. The cutoff is
+  derived from the flatten rather than set separately, so the two can never
+  disagree, and it disables itself along with the flatten.
+
   fires on **working positions too** — the decision is about the clock, not the
   trade, since a winner gaps down as easily as a loser — and it never runs after
   the bell, because closing into after-hours liquidity pays a wide spread to
