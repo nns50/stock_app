@@ -26,9 +26,41 @@ const STOP_MULT_MIN = 0.5;
 const STOP_MULT_MAX = 4;
 const TARGET_R_MIN = 1;
 const TARGET_R_MAX = 6;
-// Keep the stop this far beyond the heat a winning trade typically takes, so a
-// normal pullback inside a good trade doesn't stop it out.
-const STOP_SAFETY_BUFFER = 1.3;
+// How much room a winner needs, read as a PERCENTILE of winners' heat rather
+// than a multiple of the mean.
+//
+// The mean is the wrong statistic here and it fails in the expensive direction.
+// Heat is bounded below by 0 and above by 1R (a trade that took more than 1R of
+// heat was stopped out and is not a winner), and real samples bunch near the
+// middle with a tail pressed against 1R -- so the mean sits well below where the
+// hardest-won winners actually live. On the first real sample (2026-08-27, 9
+// winners: 0, 0.18, 0.29, 0.49, 0.50, 0.52, 0.53, 0.67, 1.00) the old
+// mean x 1.3 gave 0.604R of room and would have stopped out 2 of those 9 --
+// including the one that took a full 1R of heat before winning. Tightening a
+// stop to a level that kills 22% of your winners is not a tuning, it is a
+// different and worse strategy.
+//
+// A percentile states the trade-off honestly: cover this share of winners, give
+// up the rest. 90 is deliberately conservative — the stop only tightens when
+// nearly every winner demonstrably did not need the room, which matches the
+// "resolve toward doing less" posture the rest of the live path takes.
+const STOP_ROOM_PERCENTILE = 90;
+/** A small allowance on top, because a percentile drawn from a few dozen trades
+ *  is itself noisy — and being slightly too generous with stop room costs a
+ *  little size, while being too tight costs whole winners. */
+const STOP_SAFETY_BUFFER = 1.1;
+
+/** Linear-interpolated percentile of an unsorted sample. Empty -> 0. */
+function percentile(values: number[], p: number): number {
+  if (values.length === 0) return 0;
+  const xs = [...values].sort((a, b) => a - b);
+  if (xs.length === 1) return xs[0] as number;
+  const rank = (p / 100) * (xs.length - 1);
+  const lo = Math.floor(rank);
+  const hi = Math.ceil(rank);
+  const frac = rank - lo;
+  return (xs[lo] as number) * (1 - frac) + (xs[hi] as number) * frac;
+}
 // Aim the target at this fraction of a winner's average favorable peak — you
 // can't sell the exact high, so target a bit below it to actually get filled.
 const TARGET_CAPTURE_FRACTION = 0.8;
@@ -130,9 +162,15 @@ export function computeExcursionTune(
   const patch: ExcursionTuneResult['patch'] = {};
 
   // STOP: the current stop distance IS 1R by construction (initialRisk =
-  // |entry−stop|×qty). A winner uses avgHeatR of that room; keep a buffer beyond
-  // it, then scale the ATR multiple by that needed fraction of R.
-  const neededRoomR = clamp(avgHeatR * STOP_SAFETY_BUFFER, 0.1, 2);
+  // |entry−stop|×qty). Winners use some fraction of that room; keep enough for
+  // STOP_ROOM_PERCENTILE of them plus a small allowance, then scale the ATR
+  // multiple by that needed fraction of R. avgHeatR stays in the diagnostics
+  // because it is what a human reads, but it no longer drives the number.
+  const heatPercentileR = percentile(
+    winners.map((w) => Math.abs(w.maeR as number)),
+    STOP_ROOM_PERCENTILE,
+  );
+  const neededRoomR = clamp(heatPercentileR * STOP_SAFETY_BUFFER, 0.1, 2);
   const rawStop = clamp(current.stopAtrMultiple * neededRoomR, STOP_MULT_MIN, STOP_MULT_MAX);
   const suggestedStop = stepToward(rawStop, current.stopAtrMultiple, bounds.maxStep);
   diagnostics.stopAtrMultiple.suggested = suggestedStop;

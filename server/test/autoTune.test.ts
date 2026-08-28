@@ -394,8 +394,10 @@ describe('maybeAutoTune', () => {
       closedAutotradeWinner('BBB', '2026-08-02');
       const result = await maybeAutoTune(ET_DAY_1);
       expect(result.exitsAdjusted).toBe(true);
-      // stop: 0.4R heat × 1.3 buffer × 1.5 = 0.78×ATR; target: 4R MFE × 0.8 = 3.2R
-      expect(getAutotradeConfig().stopAtrMultiple).toBeCloseTo(0.78, 5);
+      // stop: p90 of {0.4, 0.4} = 0.4R heat × 1.1 allowance × 1.5 = 0.66×ATR
+      // (both winners take identical heat, so the percentile IS 0.4 here);
+      // target: 4R MFE × 0.8 = 3.2R
+      expect(getAutotradeConfig().stopAtrMultiple).toBeCloseTo(0.66, 5);
       expect(getAutotradeConfig().targetRMultiple).toBeCloseTo(3.2, 5);
       const events = listAutotradeEvents({ actions: ['auto_tune_exits_adjusted'] });
       expect(events).toHaveLength(1);

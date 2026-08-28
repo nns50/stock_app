@@ -828,6 +828,89 @@ book that isn't correlated it changes nothing. Because it's genuinely a selectio
 it runs in the **backtest** engines too — so you can measure whether de-crowding actually
 improved your historical risk-adjusted return before enabling it live.
 
+**"Why won't a second position open in the morning?" → Notional caps versus risk-based
+sizing (2026-08-27).** Worth understanding, because the two are measured in different
+units and the mismatch is easy to misread as caution. Risk-based sizing makes a position
+*large in notional and small in risk*: at 1.25% risk over a 2.5% stop, one position is
+**50% of equity in notional** but only **1.25% of equity at risk**. The correlated- and
+sector-exposure caps compare **notional**, so a cap chosen as though it were a risk
+number — 4% and 15% of equity, i.e. $206 and $774 on a $5.2k account — sits far below a
+single $2,580 position. The arithmetic is structural, not an artefact of account size:
+both sides scale with equity, so a *second correlated or same-sector position could never
+open*, at any equity, no matter what the concurrent-position cap said.
+
+That is a real cost if your edge is in the open. Volume and directional conviction are
+greatest in the first hour, and morning momentum names are correlated almost by
+definition — which is exactly the set those caps excluded. The book was configured for
+two concurrent positions and could only ever reach one.
+
+The fix is to size the notional caps against the notional they must admit. To let a
+second position open while the first sits at the full per-order cap, the correlated and
+sector caps must exceed that cap — **80% of equity** against a $3,871 order cap, with
+margin rather than a knife-edge tie (75% lands 11 cents short, because the sizer's 1.5x
+headroom makes the order cap *exactly* 75% of equity). Check the real risk separately,
+and it is unchanged: two positions risk **1.25% each, 2.50% together**, against an
+aggregate open-risk cap of 4.28% and a daily drawdown halt of 6.42%. **Both stopping out
+on the same adverse move costs 2.50% — comfortably inside the halt that already exists.**
+
+The account-exposure ceiling (`liveMaxExposurePct`) needed the same treatment for the same
+reason, and it is the one number here that genuinely is leverage: it caps *gross deployed
+capital* as a multiple of equity, measured against the broker's whole market value — so
+positions you open by hand consume it too. Two positions at the full order cap come to
+exactly 2 x 75% = 150% of equity, so a 150% ceiling tied and lost by 23 cents. It is now
+**155%**, which clears the pair with ~$258 of margin and adds the least borrowing headroom
+that does the job. A third position is still far outside it. Gross exposure is what hurts
+when a stop cannot protect you — a gap or a halt — which is muted here only because the
+book flattens five minutes before the close and holds nothing overnight; if that ever
+changes, this is the first number to reconsider.
+
+So loosening these did not add risk; it stopped a notional cap from silently overriding
+the risk budget. What still bounds the book is what should: the concurrent-position cap,
+the aggregate open-risk cap, and the per-trade risk %. A *third* correlated position
+remains blocked on notional as well as on concurrency. If you ever raise concurrency
+above two, revisit these caps deliberately rather than assuming they still bind.
+
+**"Is the limit priced where trades actually go?" → Peak-R against the target (2026-08-27).**
+Worth measuring rather than assuming, because the answer moves real money and the intuition
+cuts both ways. Journal → Analytics → Excursions reports each closed trade's **MFE** — the
+best unrealized profit it reached — in R. Read across the book, that says whether the
+take-profit end of the bracket sits where trades actually travel, or above it.
+
+The first read on this book: of 36 closed trades, **60.5% reached 1.0R but only 28.9%
+reached 2.0R**, against a `targetRMultiple` of 2 — and `capturePct` was **−28.46%**, meaning
+the average trade gave back more than it kept. Winners peaked at **1.83R** on average, which
+under the built-in tuner's 0.8 capture fraction implies a **1.46R** target. Treat all of
+that as an *upper bound*: 30 of the 36 were measured on daily bars, whose high spans hours
+the position did not exist. The 8 intraday-measured trades had a median peak of **0.17R**.
+
+The trap is concluding "so lower the target." Do the daily arithmetic first. At 1.25% risk
+with a 4-trade daily cap, +3% means netting **2.4R**, and a *lower* target makes that
+harder, not easier — at 2.0R a 2W/1L day clears it, at 1.0R you need 3W/0L, at 0.75R a
+perfect 4W/0L. Smaller targets raise win rate and cap the winners that carry the day. An
+MFE-based policy sim on the same 36 trades still favoured a nearer target (**+0.43R/trade
+at 1.0R vs +0.20R at 2.0R**, against −0.16R as actually traded), but note what it also
+says: **no target level reaches +3%/day on average within a 4-trade cap.** The lever that
+would is win rate or trade count, not target distance.
+
+So the rule here is: **let the tuner do it, from winners, gradually.** `autoTuneExitsEnabled`
+moves `targetRMultiple` toward 0.8 × winners' average peak and `stopAtrMultiple` toward the
+room the **90th percentile** of winners' heat needs (plus a 1.1 allowance), refuses to act
+below `autoTuneMinTrades` winning trades, moves either by at most 0.25 per run, and clamps
+hard.
+
+The stop side used to read the **mean** heat × 1.3, and that was wrong in the expensive
+direction. Heat is bounded above by 1R — a trade taking more than that was stopped out and
+is not a winner — so real samples bunch mid-range with a tail pressed against the ceiling,
+and the mean sits well below where the hardest-won winners live. On the first real sample
+(9 winners: 0, 0.18, 0.29, 0.49, 0.50, 0.52, 0.53, 0.67, 1.00) mean × 1.3 granted 0.60R of
+room and would have stopped out **2 of the 9**, including the one that took a full 1R before
+winning. Tightening a stop to a level that kills a fifth of your winners is not a tuning, it
+is a different and worse strategy. The percentile states the trade-off honestly — cover this
+share of winners, give up the rest — and on that same sample grants 0.81R and gives up one. Winners only is the honest sample — a
+trade that stopped out did so *because of* the current stop, so its excursion is censored
+and cannot tell you whether a different geometry was better. Hand-setting a multiple off a
+simulation, or off one memorable stagnant trade, is how you fit a parameter to noise.
+
 **"What happens when the app isn't sure?"** Worth knowing, because it shapes what you'll
 see: every live-order decision made under an unknown resolves toward **doing less**, not
 toward assuming the convenient answer. A fill the app can't fully account for is booked
