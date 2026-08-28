@@ -893,9 +893,20 @@ says: **no target level reaches +3%/day on average within a 4-trade cap.** The l
 would is win rate or trade count, not target distance.
 
 So the rule here is: **let the tuner do it, from winners, gradually.** `autoTuneExitsEnabled`
-moves `targetRMultiple` toward 0.8 × winners' average peak and `stopAtrMultiple` toward
-1.3 × their average heat, refuses to act below `autoTuneMinTrades` winning trades, moves
-either by at most 0.25 per run, and clamps hard. Winners only is the honest sample — a
+moves `targetRMultiple` toward 0.8 × winners' average peak and `stopAtrMultiple` toward the
+room the **90th percentile** of winners' heat needs (plus a 1.1 allowance), refuses to act
+below `autoTuneMinTrades` winning trades, moves either by at most 0.25 per run, and clamps
+hard.
+
+The stop side used to read the **mean** heat × 1.3, and that was wrong in the expensive
+direction. Heat is bounded above by 1R — a trade taking more than that was stopped out and
+is not a winner — so real samples bunch mid-range with a tail pressed against the ceiling,
+and the mean sits well below where the hardest-won winners live. On the first real sample
+(9 winners: 0, 0.18, 0.29, 0.49, 0.50, 0.52, 0.53, 0.67, 1.00) mean × 1.3 granted 0.60R of
+room and would have stopped out **2 of the 9**, including the one that took a full 1R before
+winning. Tightening a stop to a level that kills a fifth of your winners is not a tuning, it
+is a different and worse strategy. The percentile states the trade-off honestly — cover this
+share of winners, give up the rest — and on that same sample grants 0.81R and gives up one. Winners only is the honest sample — a
 trade that stopped out did so *because of* the current stop, so its excursion is censored
 and cannot tell you whether a different geometry was better. Hand-setting a multiple off a
 simulation, or off one memorable stagnant trade, is how you fit a parameter to noise.

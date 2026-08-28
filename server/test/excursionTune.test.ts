@@ -57,12 +57,15 @@ describe('computeExcursionTune', () => {
   it('widens the stop when winners routinely take near-full-R heat', () => {
     const report = aggregateExcursions([winner(-1, 2.5), winner(-1, 2.5)]);
     const r = computeExcursionTune(report, { stopAtrMultiple: 1.5, targetRMultiple: 2 }, BOUNDS);
-    expect(r.patch.stopAtrMultiple).toBe(1.75); // 1.5 + maxStep(0.25)
+    // p90 of {1, 1} = 1R of heat, x1.1 allowance => 1.5 x 1.1 = 1.65. It still
+    // widens, just less eagerly than the old mean x 1.3 (which gave 1.95 -> 1.75).
+    expect(r.patch.stopAtrMultiple).toBe(1.65);
   });
 
   it('raises the target toward winners’ favorable peak', () => {
-    // heat 0.77 keeps the stop unchanged; MFE 5R pulls the target up.
-    const report = aggregateExcursions([winner(-0.77, 5), winner(-0.77, 5)]);
+    // heat 0.91 keeps the stop unchanged (0.91 x 1.1 ~ 1.0R of room); MFE 5R
+    // pulls the target up.
+    const report = aggregateExcursions([winner(-0.91, 5), winner(-0.91, 5)]);
     const r = computeExcursionTune(report, { stopAtrMultiple: 1.5, targetRMultiple: 2 }, BOUNDS);
     expect(r.patch.targetRMultiple).toBe(2.25); // 2 + maxStep(0.25)
     expect(r.patch.stopAtrMultiple).toBeUndefined();
@@ -82,11 +85,51 @@ describe('computeExcursionTune', () => {
   });
 
   it('makes no change (and says so) when the geometry already matches the excursion', () => {
-    // heat 0.77 => needed room ~1.0R => stop unchanged; MFE 2.5 × 0.8 = 2.0 => target unchanged.
-    const report = aggregateExcursions([winner(-0.77, 2.5), winner(-0.77, 2.5)]);
+    // heat 0.91 => needed room ~1.0R => stop unchanged; MFE 2.5 × 0.8 = 2.0 => target unchanged.
+    const report = aggregateExcursions([winner(-0.91, 2.5), winner(-0.91, 2.5)]);
     const r = computeExcursionTune(report, { stopAtrMultiple: 1.5, targetRMultiple: 2 }, BOUNDS);
     expect(r.patch).toEqual({});
     expect(r.warnings.join(' ')).toMatch(/already matches/);
+  });
+});
+
+describe('computeExcursionTune — stop room covers the tail, not the mean (2026-08-27)', () => {
+  /** The real first sample: 9 winners, heat clustered mid-range with a tail
+   *  pressed against 1R. Heat is bounded above by 1R by construction — a trade
+   *  that took more never became a winner — so the mean sits well below where
+   *  the hardest-won winners actually live. */
+  const REAL_HEAT = [0, 0.18, 0.29, 0.49, 0.5, 0.52, 0.53, 0.67, 1.0];
+  const realWinners = REAL_HEAT.map((h) => winner(-h, 2.5));
+
+  it('keeps enough room for the winners the mean would have stopped out', () => {
+    const report = aggregateExcursions(realWinners);
+    const r = computeExcursionTune(report, { stopAtrMultiple: 1.5, targetRMultiple: 2 }, { minTrades: 9, maxStep: 5 });
+    // Room actually granted, as a fraction of the current 1R stop.
+    const roomR = (r.patch.stopAtrMultiple ?? 1.5) / 1.5;
+    const stoppedOut = REAL_HEAT.filter((h) => h > roomR);
+    // The old mean x 1.3 = 0.604R gave up 2 of 9 winners, including the 1.00R one.
+    expect(0.46 * 1.3).toBeLessThan(0.67);
+    expect(stoppedOut.length).toBeLessThanOrEqual(1);
+    expect(roomR).toBeGreaterThan(0.46 * 1.3);
+  });
+
+  it('still tightens when winners genuinely do not use the room', () => {
+    // The tuner must not become inert — a book whose winners never take heat
+    // should still get a tighter stop and the larger size that comes with it.
+    const report = aggregateExcursions(Array.from({ length: 9 }, () => winner(-0.1, 2.5)));
+    const r = computeExcursionTune(report, { stopAtrMultiple: 1.5, targetRMultiple: 2 }, { minTrades: 9, maxStep: 5 });
+    expect(r.patch.stopAtrMultiple).toBeLessThan(1.5);
+  });
+
+  it('is driven by the percentile, not by an outlier-dragged mean', () => {
+    // One enormous-heat winner must not, by itself, widen the stop the way it
+    // would drag a mean. Eight quiet winners and one at the 1R ceiling.
+    const skewed = aggregateExcursions([...Array.from({ length: 8 }, () => winner(-0.1, 2.5)), winner(-1, 2.5)]);
+    const r = computeExcursionTune(skewed, { stopAtrMultiple: 1.5, targetRMultiple: 2 }, { minTrades: 9, maxStep: 5 });
+    // Mean heat is 0.2 here; p90 is far higher, so the stop stays wider than a
+    // mean-driven tuner would have set — but still tightens off 1.5.
+    expect(r.patch.stopAtrMultiple).toBeLessThan(1.5);
+    expect(r.patch.stopAtrMultiple).toBeGreaterThan(1.5 * 0.2 * 1.1);
   });
 });
 
