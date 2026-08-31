@@ -1108,6 +1108,26 @@ these by hand, keep the orders cap at least double the trade cap. The general
 lesson generalizes past this app: when you write a rule that throttles
 *actions*, check whether "get me out" is one of the actions you just throttled.
 
+**The number a trade is booked at is not the number the signal named.** A third
+version of the same disease, measured 2026-08-31. The bot's signals ask for 2R.
+Its trades do not get 2R. When support sits inside the planned stop, the app
+widens the stop to clear it — correct, a stop resting on a level buyers defend
+is the worst place on the chart — but the target stays where it was, priced off
+the *old* stop. Same reward, bigger risk, lower R. Across 285 adjusted plans that
+session, **every single one came out under 2.0R**, median 1.53R, and 45% under
+1.5R. The journal recorded the 1.53 and never recorded the 2.0 it started from,
+so the cost was invisible for a week.
+
+Two things generalize. First: **when you widen a stop, you have silently changed
+every ratio derived from it** — reward:risk, position size, expectancy per trade.
+Widening is usually right, and it is never free; if your target does not move
+with your stop, decide that on purpose rather than by omission. Second, and more
+useful: **record the ask, not just the outcome.** A row saying "1.5R" is
+compatible with a healthy 1.5R strategy and with a 2R strategy losing a quarter
+of its edge to mechanics, and you cannot tell which from the row. Any time your
+system adjusts a plan, store what it wanted next to what it did — otherwise the
+only thing you can audit is the adjustment's result, never its price.
+
 **And a cap that counts nothing is not a cap at all.** The sibling failure to the
 one above, found on 2026-08-31: **max trades per day** was enforced perfectly — it
 was simply counting zero, every day, no matter how much the loop traded. It counts

@@ -3119,3 +3119,61 @@ than implementing against the existing live/manual data paths and backtesting la
 data-source question is now resolved — see "Options backtest data source: Options
 Starter, $29/mo — confirmed and final" under "Resolved decisions" above
 for the current state of that data-source search.
+
+---
+
+## Level-aware exits: what the signal asks for vs. what gets booked (2026-08-31)
+
+`levelPlan.ts` re-places an ATR stop/target against real structure, in three
+steps: **widen** the stop to clear the nearest support (a stop resting inside
+support is the worst place on the chart), **cap** the target short of the
+nearest opposing wall, then **veto** if what remains is under `levelMinRewardR`.
+
+The interaction between step 1 and step 2 was never written down, and it has a
+consequence worth stating plainly. **When the stop widens, the target does not
+move.** The target was computed as an R multiple off the *original* stop, so a
+wider stop divides the same absolute reward by a larger risk and the R multiple
+falls. A 2R signal is booked at 1.5R. This is by design — targets only ever move
+DOWN, toward reachability, never out — and the resulting `rewardR` is computed
+correctly against the risk actually taken and gated by the veto.
+
+What was missing is the **ask**. Only the post-adjustment `rewardR` was
+journaled, and on its own it cannot distinguish "a 2R signal cut to 1.5R" from
+"a 1.5R signal taken whole" — the two write an identical row. So the cost of the
+adjustment was unmeasurable, on both the applied and the vetoed populations.
+`LevelPlan.intendedRewardR` now carries the signal's own target over its own
+pre-widening stop, and both `level_exits_applied` and `level_veto` journal it
+beside `rewardR`.
+
+**Measurement only — no gate changed.** The 2026-08-31 session, the first read
+that quantified this:
+
+| | |
+|---|---|
+| plans adjusted | 285 across 5 symbols |
+| stop widened, target untouched | 81 |
+| stop widened **and** target capped | 136 |
+| target capped only | 68 |
+| vetoed outright | 715 |
+| `rewardR` after adjustment | min 1.00, **median 1.53**, max 2.00 |
+| share under 2.0R / under 1.5R | **100%** / 45% |
+
+Every adjusted plan came out under the 2R its signal named. The live SLB entry
+that prompted this: signal 2R, support at 56.75 widened the stop from 56.92 to
+56.51, booked at 1.5R, scratched by the stagnation exit at +0.05R after 90m.
+
+**One coupling to note before touching either parameter.** Widening is capped at
+`levelMaxStopWidenPct` of the original risk, so a kR signal can fall no further
+than `k / (1 + maxStopWidenPct/100)` — at 2R and 60% that is 1.25R, always above
+a `levelMinRewardR` of 1.0. **The veto therefore cannot fire on widening alone**;
+it only ever bites when a wall caps the target. The two numbers are configured
+independently and currently cannot interact, which is exactly the "two places
+deriving the same quantity" hazard in CLAUDE.md. Whether the answer is a higher
+floor, a widening cap coupled to that floor, or nothing at all is a question
+about the distribution above — which is why the distribution is now recorded
+rather than a parameter guessed at.
+
+Deliberately **not** done: re-deriving the target to preserve the signal's R when
+no wall is in the way. It would push every target further out, against a measured
+peak-R distribution in which 60.5% of trades reach 1.0R and only 28.9% reach
+2.0R. Reachability is the scarce thing here, not nominal reward:risk.

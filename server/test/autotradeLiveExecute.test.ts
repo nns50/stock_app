@@ -867,6 +867,53 @@ describe('runLiveExecution — level-aware exits', () => {
   });
 });
 
+// The pure function computing intendedRewardR proves nothing about whether it
+// reaches the journal, and the journal is the entire point of recording it —
+// the Sept 5 review reads events, not return values. So assert it on the ROWS
+// both journal sites write, per the standing consumer rule.
+describe('runLiveExecution — the level plan journals what the signal ASKED for', () => {
+  const liveCfgFields = {
+    accountEquityUsd: 100_000,
+    riskProfile: 'MODERATE' as const,
+    liveAccountId: 'ACC1',
+    liveTradingEnabled: true,
+    liveEnabledAt: Date.now(),
+    liveMaxOrderUsd: 50_000,
+    liveMaxDailyLossUsd: 5_000,
+    liveMaxOrdersPerDay: 20,
+    killSwitch: false,
+  };
+
+  it('records it on a VETO — the population that says whether the floor is right', async () => {
+    setAutotradeConfig({ ...liveCfgFields, levelExitsEnabled: true, levelMinRewardR: 1 });
+    mockGetProvider.mockReturnValue(providerWithWall({ AAPL: 100 }, 103));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-VETO2' });
+
+    await runLiveExecution([{ signal: signal() }]);
+
+    const detail = JSON.parse(listAutotradeEvents({ actions: ['level_veto'] })[0].detail!);
+    expect(detail.intendedRewardR).toBe(2); // the fixture signal asks 2R (100/95/110)
+    expect(detail.rewardR).toBeLessThan(detail.intendedRewardR);
+  });
+
+  it('records it on an APPLIED plan, so the cost of the adjustment is recoverable', async () => {
+    setAutotradeConfig({ ...liveCfgFields, levelExitsEnabled: true, levelMinRewardR: 1 });
+    mockGetProvider.mockReturnValue(providerWithWall({ AAPL: 100 }, 108));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CAP2' });
+
+    await runLiveExecution([{ signal: signal() }]);
+
+    const detail = JSON.parse(listAutotradeEvents({ actions: ['level_exits_applied'] })[0].detail!);
+    expect(detail.intendedRewardR).toBe(2);
+    expect(detail.rewardR).toBeLessThan(2);
+    // Both numbers on the same row is the requirement: either alone cannot
+    // distinguish "a 2R signal cut to 1.5R" from "a 1.5R signal taken whole".
+    expect(detail).toEqual(expect.objectContaining({ rewardR: expect.any(Number), intendedRewardR: 2 }));
+  });
+});
+
 describe('runLiveExecution', () => {
   it('re-checks autotrade’s own config fresh for EACH candidate in a batch — engaging the kill switch mid-batch stops the next candidate, not just the next cycle', async () => {
     setAutotradeConfig({
