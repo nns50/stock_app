@@ -3177,3 +3177,34 @@ Deliberately **not** done: re-deriving the target to preserve the signal's R whe
 no wall is in the way. It would push every target further out, against a measured
 peak-R distribution in which 60.5% of trades reach 1.0R and only 28.9% reach
 2.0R. Reachability is the scarce thing here, not nominal reward:risk.
+
+### Pre-committed decision rules for the coupling above
+
+Written **before** the data exists, for the same reason
+`docs/OPTIONS_TUNING_PLAN.md` pre-commits its rules: a question left open until
+the numbers arrive gets answered by whatever the numbers happen to look like
+that week. The operator has agreed this needs fixing once there is data; these
+rules say what "fixing" means, and what result would mean leaving it alone.
+
+**Population.** Closed live autotrade trades whose entry carried a
+`level_exits_applied` with `stopAdjusted: true` and `rewardR < intendedRewardR`.
+Note the funnel: on 2026-08-31 there were 313 adjustments and 5 positions, so the
+event count is NOT the sample — most adjusted plans never become trades.
+
+**Minimum sample: 25 closed degraded trades, with ≥10 undegraded closed trades to
+compare against.** At the observed ~4 closed trades/day across both buckets this
+is roughly three weeks, so it is **not** reachable by the 2026-09-05 review. That
+review should report the distribution and explicitly decline to act on it.
+
+| # | Trigger | Response |
+|---|---|---|
+| R1 | Degraded trades reach their (lower) target at a rate **≥** the undegraded rate | The widening is buying reachability, which is exactly what it is for. **No change** — close the question rather than leaving it open to be re-litigated. |
+| R2 | Degraded trades reach target at a materially lower rate **and** their median realized R is worse | The widening costs more than it buys. Couple the two parameters: refuse to widen past the point where `rewardR` would fall below `levelMinRewardR`, and **veto** instead of booking the degraded trade. One change, then re-measure. |
+| R3 | No plan in the sample ever reaches `levelMaxStopWidenPct` | The cap is not the binding constraint, so coupling it to the floor changes nothing. Report and stop. |
+| R4 | R2 fired and `levelMinRewardR` needs a number | Set it from the observed distribution of realized R on degraded trades. Never from a guess, and never to hit a target trade count. |
+
+**The confound to respect.** A stop widens *because* support sits near the entry,
+which is not a random property of a setup — it may correlate with quality in
+either direction. So compare **target-hit rates**, not raw expectancy, and treat
+a difference in raw P&L between the buckets as uninterpretable on its own. This
+is the one place where the obvious comparison is the wrong one.
