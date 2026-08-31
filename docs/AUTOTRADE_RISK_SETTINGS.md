@@ -286,6 +286,18 @@ next day, regardless of every other check passing.
 candidate is blocked here, even with a great setup and plenty of room everywhere
 else.
 
+> **Fixed 2026-08-31 — this cap did not bind on the LIVE book.** It counts positions
+> whose entry date is today, and live positions were arriving with no entry date:
+> autotrade opens them, but the broker's positions feed usually reports the holding
+> before the order reconciles, so the position is imported from that feed (which has
+> no open date to report) and then adopted — and adoption never stamped one. The
+> count therefore read **0 every day**, here and in the **Trades today** tile of the
+> Monitoring panel below, whatever the loop actually did. On 2026-08-31 five live
+> entries were placed against a cap of four. Adoption now stamps the entry date and
+> time from the order that opened the position, so the cap binds and the tile is
+> live. Paper trading was never affected. Positions opened before this date keep
+> their missing stamp and stay uncounted.
+
 ## 5. Worked example: why "raise the position cap" didn't fix it
 
 This is the exact scenario that prompted this guide to be written, using the app's

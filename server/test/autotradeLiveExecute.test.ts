@@ -1969,6 +1969,187 @@ describe('reconcileLiveOrders + adoptOrphanedLivePositions interaction', () => {
   });
 });
 
+// EVERY live entry currently reaches the `positions` table through adoption:
+// Webull's positions feed beats reconcile to the fill, the generic sync imports
+// the holding, and autotrade adopts it. That importer records entry_date as
+// NULL by design — it reports an average cost for a lot, not an open date — and
+// adoption never filled it in. So getLivePortfolioSnapshot()'s tradesToday,
+// which counts `entryDate === today`, counted ZERO every single day, and
+// maxTradesPerDay was inert: on 2026-08-31 five entries were placed against a
+// cap of four, held back only by liveMaxOrdersPerDay counting ORDER rows.
+//
+// These assert at the CONSUMER — the snapshot figure and the risk rule that
+// reads it — not merely that a column got written. A test that stopped at the
+// column would have gone green while the cap stayed inert, which is the whole
+// shape of this bug.
+describe('adopted positions carry an entry stamp', () => {
+  /** Place a real autotrade entry order and return its intent id. */
+  async function placeEntry(symbol = 'AAPL') {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ [symbol]: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: `WB-${symbol}` });
+    const result = evaluateRiskCheck(signal({ symbol }), baseRiskCtx());
+    await attemptLiveEntry(signal({ symbol }), result, 'MODERATE', liveConfig());
+    return { intentId: listIntents()[0].id, quantity: result.sizing.suggestedQuantity };
+  }
+
+  /** The real import path: the broker's positions feed reports the holding
+   *  with no open date, exactly as mapWebullPosition() leaves it. */
+  async function importBrokerHolding(symbol: string, quantity: number) {
+    mockBrokerPositions([{ symbol, quantity, cost_price: 100, asset_type: 'stock' }]);
+    await runWebullPositionsSync('ACC1');
+    const [orphan] = listPositions({ status: 'open', symbol });
+    // Guard the premise: if the importer ever starts stamping a date, this
+    // whole describe is testing something that no longer happens.
+    expect(orphan.entryDate).toBeNull();
+    return orphan;
+  }
+
+  it('counts an adopted position toward tradesToday — the figure maxTradesPerDay reads', async () => {
+    const { quantity } = await placeEntry();
+    await importBrokerHolding('AAPL', quantity);
+
+    expect(getLivePortfolioSnapshot().tradesToday).toBe(0); // nothing adopted yet
+    expect(adoptOrphanedLivePositions().adopted).toBe(1);
+
+    const snapshot = getLivePortfolioSnapshot();
+    expect(snapshot.tradesToday).toBe(1); // was 0 forever, whatever the day did
+    expect(listPositions({ status: 'open', symbol: 'AAPL' })[0].entryDate).toBe(snapshot.today);
+  });
+
+  it('makes the cap actually bind — the rule that was inert', async () => {
+    const { quantity } = await placeEntry();
+    await importBrokerHolding('AAPL', quantity);
+    adoptOrphanedLivePositions();
+
+    const { tradesToday } = getLivePortfolioSnapshot();
+    // Drive the REAL rule with the REAL figure, at a cap of one. Before the
+    // stamp this context carried tradesToday: 0 and the check passed, which is
+    // precisely how a fifth entry got placed against a cap of four.
+    const blocked = evaluateRiskCheck(signal({ symbol: 'MSFT' }), {
+      ...baseRiskCtx(),
+      tradesToday,
+      maxTradesPerDay: 1,
+    });
+    expect(blocked.checks.find((c) => c.rule === 'max_trades_per_day')?.passed).toBe(false);
+    expect(blocked.ok).toBe(false);
+
+    // And it is the STAMP doing the work, not the cap being trivially small:
+    // the same rule at a cap of two still lets the next entry through.
+    const allowed = evaluateRiskCheck(signal({ symbol: 'MSFT' }), {
+      ...baseRiskCtx(),
+      tradesToday,
+      maxTradesPerDay: 2,
+    });
+    expect(allowed.checks.find((c) => c.rule === 'max_trades_per_day')?.passed).toBe(true);
+  });
+
+  it('dates the entry from the ORDER, not from the tick that adopts it', async () => {
+    // A reconcile or adoption pass runs a minute or more after the fill, and
+    // can run far later if a tick was missed — dating by the pass would drift
+    // every entry toward "later than it happened".
+    //
+    // The instant below is a FIXED PAST one (2026-08-24 was a Monday), not
+    // today offset by a few hours: a stamp taken from the wall clock can never
+    // produce it, on any day CI runs. An earlier draft of this test used the
+    // day it was written and passed for the wrong reason.
+    const placedAt = Date.parse('2026-08-24T10:17:00-04:00');
+    const { intentId, quantity } = await placeEntry();
+    db.prepare('UPDATE autotrade_live_orders SET created_at = ? WHERE intent_id = ?').run(placedAt, intentId);
+    await importBrokerHolding('AAPL', quantity);
+
+    adoptOrphanedLivePositions();
+
+    const [pos] = listPositions({ status: 'open', symbol: 'AAPL' });
+    expect(pos.entryDate).toBe('2026-08-24');
+    expect(pos.entryTime).toBe('10:17');
+    // Corollary worth stating: a stamp this old is correctly NOT today's
+    // trade, so it must not inflate today's count either.
+    expect(getLivePortfolioSnapshot().tradesToday).toBe(0);
+  });
+
+  it('stamps an untagged orphan that reconcile reaches before adoption does', async () => {
+    // The other order of events: no adoption pass in between, so
+    // materializeEntryFill() is the first thing to see the orphan and heals
+    // the tag itself. It owes the same stamp.
+    const { intentId, quantity } = await placeEntry();
+    await importBrokerHolding('AAPL', quantity);
+
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: quantity,
+      filledPrice: 100.5,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+
+    const [pos] = listPositions({ status: 'open', symbol: 'AAPL' });
+    expect(pos.tags).toEqual(expect.arrayContaining(['autotrade'])); // healed, as before
+    expect(getLiveOrder(intentId)?.positionId).toBe(pos.id);
+    expect(pos.entryDate).toBe(getLivePortfolioSnapshot().today);
+    expect(pos.entryTime).toMatch(/^\d{2}:\d{2}$/);
+    expect(getLivePortfolioSnapshot().tradesToday).toBe(1);
+  });
+
+  it('stamps an already-tagged position reconcile links to — the branch that heals legacy rows', async () => {
+    // A position adopted before this existed is autotrade-tagged already, so
+    // the tag-healing branch is skipped entirely. It still has no stamp, and
+    // reconcile catching up is the last chance to give it one.
+    const { intentId, quantity } = await placeEntry();
+    await importBrokerHolding('AAPL', quantity);
+    adoptOrphanedLivePositions();
+    const adoptedId = listPositions({ status: 'open', symbol: 'AAPL' })[0].id;
+    // Re-open the gap exactly as a pre-fix row carries it: tagged, unstamped.
+    db.prepare('UPDATE positions SET entry_date = NULL, entry_time = NULL WHERE id = ?').run(adoptedId);
+    expect(getLivePortfolioSnapshot().tradesToday).toBe(0);
+
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: quantity,
+      filledPrice: 100.5,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+
+    expect(listPositions({ status: 'open' })).toHaveLength(1); // still linked, not duplicated
+    expect(listPositions({ status: 'open' })[0].id).toBe(adoptedId);
+    expect(getLiveOrder(intentId)?.positionId).toBe(adoptedId);
+    expect(getLivePortfolioSnapshot().tradesToday).toBe(1);
+  });
+
+  it('never overwrites an entry stamp the position already has', async () => {
+    // A position that reached the table by a route which DOES know its open
+    // date (the generic reconcile stamps one) must keep it. This heals a gap;
+    // it does not restate a known truth in the adopter's own terms.
+    const { intentId, quantity } = await placeEntry();
+    mockBrokerPositions([{ symbol: 'AAPL', quantity, cost_price: 100, asset_type: 'stock' }]);
+    await runWebullPositionsSync('ACC1');
+    const orphanId = listPositions({ status: 'open', symbol: 'AAPL' })[0].id;
+    db.prepare("UPDATE positions SET entry_date = '2026-08-24', entry_time = '09:41' WHERE id = ?").run(orphanId);
+
+    adoptOrphanedLivePositions();
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: quantity,
+      filledPrice: 100.5,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+
+    const [pos] = listPositions({ status: 'open', symbol: 'AAPL' });
+    expect(pos.entryDate).toBe('2026-08-24'); // both adoption paths left it alone
+    expect(pos.entryTime).toBe('09:41');
+    expect(getLiveOrder(intentId)?.positionId).toBe(pos.id);
+  });
+});
+
 describe('listPendingLiveOrders / terminal-state exclusion', () => {
   it('keeps a filled bracket entry pending (to keep checking exit legs) until its position actually closes', async () => {
     setAutotradeConfig({ liveAccountId: 'ACC1' });

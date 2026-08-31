@@ -2874,6 +2874,43 @@ Fixed both, deliberately kept separate in scope:
   deliberately left as-is (tag-scoped) — once adopted, a position is tagged
   and counts normally; nothing needed to change there.
 
+  **Entry stamp (added 2026-08-31) — and a correction to the sentence above.**
+  "Once adopted, a position is tagged and counts normally" holds for the
+  tag-scoped figures, and is wrong for every DATE-keyed one. Adoption backfilled
+  the stop/target and the at-entry context but not `entry_date`/`entry_time`, and
+  the route that creates the row cannot supply them: `mapWebullPosition()`
+  deliberately records `entry_date` as NULL, because that endpoint returns an
+  aggregate of current holdings — a quantity and an average cost — with no single
+  open date to report (stamping the import date there was itself a bug, fixed
+  earlier). The importer is honest about not knowing; the adopter *does* know, and
+  never wrote it down.
+
+  Three consumers read the resulting null as "not today" or "undated", all
+  silently:
+  - `getLivePortfolioSnapshot().tradesToday` counts `p.entryDate === today`, so it
+    returned **0 every day** and `maxTradesPerDay` never bound. On 2026-08-31 five
+    live entries were placed against a cap of four; only `liveMaxOrdersPerDay`
+    (which counts order rows) was holding the line. The Auto page's **Trades
+    today** monitoring tile reads the same figure and showed the same zero.
+  - the same function's equity-curve de-risk history filters undated trades out,
+    so live trades never reached that curve.
+  - the Journal's time-of-day session buckets read `entry_time`, so that dataset
+    was empty for the live book.
+
+  Fixed by a shared `entryStampPatch(position, placedAtMs)` in `liveExecute.ts`,
+  applied by **both** adoption paths — `adoptOrphanedLivePositions()` (dated from
+  the matched order's `createdAt`) and `materializeEntryFill()` (dated from
+  `getLiveOrder(intent.id).createdAt`) — rather than one deriving it and the other
+  not, since either can reach the position first. Dated from the ORDER's placement
+  moment for the same reason the create path is: a reconcile pass runs a minute or
+  more after the fill and would drift every entry later than it happened. Each
+  field is `??`-guarded, so a position that already carries a stamp keeps it. In
+  `materializeEntryFill()` the stamp is applied outside the untagged-healing
+  branch, because a position adoption already retagged still needs it. Same shape
+  as the `initial_stop_price` gap: the create path sets the field, adoption forgot
+  to. Not backfilled onto existing rows — positions opened before this stay
+  undated and uncounted.
+
 **Options are NOT affected by the orphan-adoption gap** — confirmed live
 options positions (`autotrade_live_options_positions`) have no analogous
 generic-import backstop; `syncLiveOptionsPositionsFromBroker` only closes

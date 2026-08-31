@@ -1108,6 +1108,24 @@ these by hand, keep the orders cap at least double the trade cap. The general
 lesson generalizes past this app: when you write a rule that throttles
 *actions*, check whether "get me out" is one of the actions you just throttled.
 
+**And a cap that counts nothing is not a cap at all.** The sibling failure to the
+one above, found on 2026-08-31: **max trades per day** was enforced perfectly — it
+was simply counting zero, every day, no matter how much the loop traded. It counts
+positions whose *entry date* is today, and live positions were reaching the journal
+with no entry date at all. Nothing errored, no tile turned red, and the Monitoring
+panel cheerfully reported "0 placed" on a day with five entries against a budget of
+four. The only thing actually holding the line was the orders-per-day cap, which
+counts broker orders and cannot be fooled this way.
+
+The lesson is not about this one field. **A limit is only as real as the number it
+compares against, and that number is usually computed somewhere else by something
+that does not know a limit depends on it.** So when you rely on a cap, do not check
+that the cap is *set* — check that its *reading moves*. Trade twice and watch
+"Trades today" go to 2. If a gauge you are trusting sits at zero on a busy day, it
+is not reassuring you, it is broken; a limit that has never once refused anything
+has not been proven safe, it has been left untested. That goes double for the caps
+you most want to believe in, because those are the ones you stop looking at.
+
 The practical consequence for you: an app that occasionally says "I couldn't
 confirm this, so I did nothing" is working as intended, and those messages are worth
 reading rather than clicking past — each one means your records and your broker might
