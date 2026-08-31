@@ -146,3 +146,71 @@ describe('planAroundLevels — the veto', () => {
     expect(p.rewardR).toBeCloseTo((p.target - 100) / risk, 1);
   });
 });
+
+// The number that was missing (2026-08-31). `rewardR` records what a trade is
+// worth AFTER the adjustment; on its own it cannot say what the adjustment
+// COST, because a 2R signal taken at 1.5R and a 1.5R signal taken whole write
+// the identical row. Real SLB entry that day: signal 2R, stop widened to clear
+// support 56.75, booked at 1.5R — and every one of 285 adjusted plans that
+// session came out under 2.0R with nothing recording that they started higher.
+describe('planAroundLevels — intendedRewardR (what the signal asked for)', () => {
+  it('records the signal\u2019s own R, measured on the PRE-widening risk', () => {
+    // Support at 93 widens the stop; the target has no wall and stays at 110.
+    const p = planAroundLevels({ ...long, levels: [level(93, { from: 'lows' })], cfg });
+    expect(p.stopAdjusted).toBe(true);
+    expect(p.targetAdjusted).toBe(false);
+    // Asked for 2R off the 95 stop (risk 5, target 110).
+    expect(p.intendedRewardR).toBe(2);
+    // Got less, off the widened stop — the whole point of keeping both.
+    expect(p.rewardR).toBeLessThan(2);
+    expect(p.rewardR).toBeGreaterThan(0);
+  });
+
+  it('reproduces the SLB degradation the operator asked about', () => {
+    // Entry 58.38, ATR stop 56.92 (the 2.5% cap), 2R target 61.30, support
+    // 56.75 -> stop widened to 56.51. Booked at ~1.5R against an asked-for 2R.
+    const slb = { side: 'long' as const, entry: 58.38, stop: 56.92, target: 61.3 };
+    const p = planAroundLevels({
+      ...slb,
+      levels: [level(56.75, { from: 'lows' })],
+      cfg: { ...cfg, bufferPct: 0.4 },
+    });
+    expect(p.stopAdjusted).toBe(true);
+    expect(p.intendedRewardR).toBe(2);
+    expect(p.rewardR).toBeLessThan(1.6);
+    expect(p.rewardR).toBeGreaterThan(1.4);
+  });
+
+  it('is EQUAL to rewardR when nothing moved — no phantom degradation', () => {
+    // A plan the structure already clears must not read as though it lost
+    // something, or every untouched trade pollutes the distribution.
+    const p = planAroundLevels({ ...long, levels: [level(130), level(80, { from: 'lows' })], cfg });
+    expect(p.stopAdjusted).toBe(false);
+    expect(p.targetAdjusted).toBe(false);
+    expect(p.intendedRewardR).toBe(p.rewardR);
+  });
+
+  it('still reports the ask on a VETOED setup — that population matters most', () => {
+    // A veto is a trade structure refused. Knowing it was a 2R ask that fell
+    // under the floor is the evidence for whether the floor is set right.
+    const p = planAroundLevels({ ...long, levels: [level(103)], cfg });
+    expect(p.veto).toBe(true);
+    expect(p.intendedRewardR).toBe(2);
+    expect(p.rewardR).toBeLessThan(cfg.minRewardR);
+  });
+
+  it('is null on the untouched paths, matching rewardR rather than guessing', () => {
+    for (const p of [
+      planAroundLevels({ ...long, levels: [level(105)], cfg: { ...cfg, enabled: false } }),
+      planAroundLevels({ ...long, levels: [], cfg }),
+    ]) {
+      expect(p.intendedRewardR).toBeNull();
+      expect(p.rewardR).toBeNull();
+    }
+  });
+
+  it('does not divide by a zero risk', () => {
+    const p = planAroundLevels({ ...long, stop: 100, levels: [level(105)], cfg });
+    expect(p.intendedRewardR).toBeNull();
+  });
+});

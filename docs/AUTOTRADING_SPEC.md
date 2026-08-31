@@ -3119,3 +3119,92 @@ than implementing against the existing live/manual data paths and backtesting la
 data-source question is now resolved — see "Options backtest data source: Options
 Starter, $29/mo — confirmed and final" under "Resolved decisions" above
 for the current state of that data-source search.
+
+---
+
+## Level-aware exits: what the signal asks for vs. what gets booked (2026-08-31)
+
+`levelPlan.ts` re-places an ATR stop/target against real structure, in three
+steps: **widen** the stop to clear the nearest support (a stop resting inside
+support is the worst place on the chart), **cap** the target short of the
+nearest opposing wall, then **veto** if what remains is under `levelMinRewardR`.
+
+The interaction between step 1 and step 2 was never written down, and it has a
+consequence worth stating plainly. **When the stop widens, the target does not
+move.** The target was computed as an R multiple off the *original* stop, so a
+wider stop divides the same absolute reward by a larger risk and the R multiple
+falls. A 2R signal is booked at 1.5R. This is by design — targets only ever move
+DOWN, toward reachability, never out — and the resulting `rewardR` is computed
+correctly against the risk actually taken and gated by the veto.
+
+What was missing is the **ask**. Only the post-adjustment `rewardR` was
+journaled, and on its own it cannot distinguish "a 2R signal cut to 1.5R" from
+"a 1.5R signal taken whole" — the two write an identical row. So the cost of the
+adjustment was unmeasurable, on both the applied and the vetoed populations.
+`LevelPlan.intendedRewardR` now carries the signal's own target over its own
+pre-widening stop, and both `level_exits_applied` and `level_veto` journal it
+beside `rewardR`.
+
+**Measurement only — no gate changed.** The 2026-08-31 session, the first read
+that quantified this:
+
+| | |
+|---|---|
+| plans adjusted | 285 across 5 symbols |
+| stop widened, target untouched | 81 |
+| stop widened **and** target capped | 136 |
+| target capped only | 68 |
+| vetoed outright | 715 |
+| `rewardR` after adjustment | min 1.00, **median 1.53**, max 2.00 |
+| share under 2.0R / under 1.5R | **100%** / 45% |
+
+Every adjusted plan came out under the 2R its signal named. The live SLB entry
+that prompted this: signal 2R, support at 56.75 widened the stop from 56.92 to
+56.51, booked at 1.5R, scratched by the stagnation exit at +0.05R after 90m.
+
+**One coupling to note before touching either parameter.** Widening is capped at
+`levelMaxStopWidenPct` of the original risk, so a kR signal can fall no further
+than `k / (1 + maxStopWidenPct/100)` — at 2R and 60% that is 1.25R, always above
+a `levelMinRewardR` of 1.0. **The veto therefore cannot fire on widening alone**;
+it only ever bites when a wall caps the target. The two numbers are configured
+independently and currently cannot interact, which is exactly the "two places
+deriving the same quantity" hazard in CLAUDE.md. Whether the answer is a higher
+floor, a widening cap coupled to that floor, or nothing at all is a question
+about the distribution above — which is why the distribution is now recorded
+rather than a parameter guessed at.
+
+Deliberately **not** done: re-deriving the target to preserve the signal's R when
+no wall is in the way. It would push every target further out, against a measured
+peak-R distribution in which 60.5% of trades reach 1.0R and only 28.9% reach
+2.0R. Reachability is the scarce thing here, not nominal reward:risk.
+
+### Pre-committed decision rules for the coupling above
+
+Written **before** the data exists, for the same reason
+`docs/OPTIONS_TUNING_PLAN.md` pre-commits its rules: a question left open until
+the numbers arrive gets answered by whatever the numbers happen to look like
+that week. The operator has agreed this needs fixing once there is data; these
+rules say what "fixing" means, and what result would mean leaving it alone.
+
+**Population.** Closed live autotrade trades whose entry carried a
+`level_exits_applied` with `stopAdjusted: true` and `rewardR < intendedRewardR`.
+Note the funnel: on 2026-08-31 there were 313 adjustments and 5 positions, so the
+event count is NOT the sample — most adjusted plans never become trades.
+
+**Minimum sample: 25 closed degraded trades, with ≥10 undegraded closed trades to
+compare against.** At the observed ~4 closed trades/day across both buckets this
+is roughly three weeks, so it is **not** reachable by the 2026-09-05 review. That
+review should report the distribution and explicitly decline to act on it.
+
+| # | Trigger | Response |
+|---|---|---|
+| R1 | Degraded trades reach their (lower) target at a rate **≥** the undegraded rate | The widening is buying reachability, which is exactly what it is for. **No change** — close the question rather than leaving it open to be re-litigated. |
+| R2 | Degraded trades reach target at a materially lower rate **and** their median realized R is worse | The widening costs more than it buys. Couple the two parameters: refuse to widen past the point where `rewardR` would fall below `levelMinRewardR`, and **veto** instead of booking the degraded trade. One change, then re-measure. |
+| R3 | No plan in the sample ever reaches `levelMaxStopWidenPct` | The cap is not the binding constraint, so coupling it to the floor changes nothing. Report and stop. |
+| R4 | R2 fired and `levelMinRewardR` needs a number | Set it from the observed distribution of realized R on degraded trades. Never from a guess, and never to hit a target trade count. |
+
+**The confound to respect.** A stop widens *because* support sits near the entry,
+which is not a random property of a setup — it may correlate with quality in
+either direction. So compare **target-hit rates**, not raw expectancy, and treat
+a difference in raw P&L between the buckets as uninterpretable on its own. This
+is the one place where the obvious comparison is the wrong one.

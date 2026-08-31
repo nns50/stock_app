@@ -1091,6 +1091,7 @@ export async function runLiveExecution(
             atrTarget: signal.target,
             cappedTarget: plan.target,
             rewardR: plan.rewardR,
+            intendedRewardR: plan.intendedRewardR,
             minRewardR: cfg.levelMinRewardR,
             resistance: plan.resistancePrice,
             support: plan.supportPrice,
@@ -1114,6 +1115,9 @@ export async function runLiveExecution(
             stopAdjusted: plan.stopAdjusted,
             targetAdjusted: plan.targetAdjusted,
             rewardR: plan.rewardR,
+            // What the signal asked for, so the COST of the adjustment is
+            // recoverable from the journal — rewardR alone cannot show it.
+            intendedRewardR: plan.intendedRewardR,
             support: plan.supportPrice,
             resistance: plan.resistancePrice,
             reason: plan.detail,

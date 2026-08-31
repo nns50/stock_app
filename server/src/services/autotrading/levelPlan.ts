@@ -59,8 +59,31 @@ export interface LevelPlan {
   target: number;
   /** True when the signal should be dropped — the wall is too close to pay. */
   veto: boolean;
-  /** Reward from entry to the (possibly capped) target, in R. */
+  /** Reward from entry to the (possibly capped) target, in R — measured
+   *  against the possibly-WIDENED stop, i.e. what the trade is actually
+   *  worth if taken. */
   rewardR: number | null;
+  /** Reward the SIGNAL asked for, in R: its own target over its own stop,
+   *  before this function touched either.
+   *
+   *  Recorded (2026-08-31) because `rewardR` alone cannot tell you what the
+   *  adjustment COST. Widening a stop to clear support leaves the target at
+   *  its original price, so the R multiple falls — a 2R signal taken at 1.5R
+   *  looks identical in the journal to a 1.5R signal taken whole. On
+   *  2026-08-31 every one of 285 adjusted plans came out under 2.0R (median
+   *  1.53R, 45% under 1.5R) and nothing recorded that they had all started
+   *  higher.
+   *
+   *  This is measurement, not a gate. Whether the right response is a higher
+   *  `minRewardR`, a widening cap coupled to it, or nothing at all is a
+   *  question about the DISTRIBUTION of this degradation, and that question
+   *  was unanswerable while only the post-adjustment number was kept. Note
+   *  the two parameters currently cannot interact: widening is capped at
+   *  `maxStopWidenPct` of the original risk, so a kR signal can only fall to
+   *  k/(1 + maxStopWidenPct/100) — at 2R and 60% that is 1.25R, always above
+   *  a 1.0 `minRewardR`. The veto therefore never fires on widening alone,
+   *  only on a target capped by a wall. */
+  intendedRewardR: number | null;
   stopAdjusted: boolean;
   targetAdjusted: boolean;
   /** The levels this plan reasoned about, for the journal. */
@@ -90,6 +113,7 @@ export function planAroundLevels(input: {
     target,
     veto: false,
     rewardR: null,
+    intendedRewardR: null,
     stopAdjusted: false,
     targetAdjusted: false,
     supportPrice: null,
@@ -146,6 +170,10 @@ export function planAroundLevels(input: {
 
   // --- 3. veto: is what's left actually worth the risk? ---------------------
   const rewardR = newRisk > 0 ? round2(Math.abs(newTarget - entry) / newRisk) : null;
+  // The signal's own ask, against its own (pre-widening) risk — `risk`, not
+  // `newRisk`. Using newRisk here would silently make the two numbers equal
+  // and record nothing.
+  const intendedRewardR = round2(Math.abs(target - entry) / risk);
   const reachedWrongSide = side === 'long' ? newTarget <= entry : newTarget >= entry;
   const veto = cfg.minRewardR > 0 && (reachedWrongSide || (rewardR !== null && rewardR < cfg.minRewardR));
 
@@ -166,6 +194,7 @@ export function planAroundLevels(input: {
     target: newTarget,
     veto,
     rewardR,
+    intendedRewardR,
     stopAdjusted,
     targetAdjusted,
     supportPrice: below?.price ?? null,

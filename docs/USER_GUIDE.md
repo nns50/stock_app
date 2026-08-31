@@ -1893,7 +1893,9 @@ because the loop is the only caller that is always flat by the bell, so it is
   now with an **Entry / Stop / Target / R** trade plan for each — the stop is set at
   1.5× the symbol's own ATR so it adapts to its actual volatility, and the target is a
   fixed 2:1 reward:risk multiple of that stop distance, not a number tuned to hit any
-  particular return), **Excluded** (real estate), **Skipped** (sector/industry couldn't
+  particular return — note this is the *screener's* plan; when auto-trading takes one
+  of these it re-places both exits against support/resistance, which routinely books a
+  lower R than the 2:1 shown here), **Excluded** (real estate), **Skipped** (sector/industry couldn't
   be verified this run — reconsidered next run, never silently allowed through), and
   **Errors**. A candidate with no usable volatility history (ATR) gets no trade plan —
   shown separately as "no signal," not guessed at. Each candidate with a trade plan is
