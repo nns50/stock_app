@@ -243,6 +243,51 @@ function etDateStr(ms: number = Date.now()): string {
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
+/**
+ * The entry stamp an ADOPTED position is owed, or null when it already has one.
+ *
+ * A position autotrade opened can reach the `positions` table by a route that
+ * cannot know when it was opened. The Webull position-sync backstop imports an
+ * aggregate of current holdings — a quantity and an AVERAGE cost — so it
+ * deliberately records `entry_date` as NULL rather than stamping the import
+ * date over an unknown (see mapWebullPosition's own comment; that decision is
+ * right for a generic import). But when AUTOTRADE adopts such a row it is no
+ * longer unknown: we placed the order, and its placement moment is on the
+ * order record. The importer is honest about not knowing; the adopter knew all
+ * along and never wrote it down.
+ *
+ * The cost was silent. getLivePortfolioSnapshot() counts `p.entryDate === today`
+ * for tradesToday, so a null makes a position invisible to maxTradesPerDay —
+ * and since EVERY live entry currently reaches the table through adoption, the
+ * cap was counting zero all along. On 2026-08-31 five entries were placed
+ * against a cap of four, with only liveMaxOrdersPerDay (which counts order
+ * rows, not positions) actually binding. The same null also drops the trade
+ * from that function's equity-curve de-risk history, which filters undated
+ * trades out, and empties the Journal's time-of-day session buckets, which
+ * read entry_time. Same shape as the initial_stop_price gap PR #432 fixed: the
+ * create path sets it, adoption forgot to.
+ *
+ * Dated from the ORDER's placement moment, exactly as materializeEntryFill's
+ * create path dates a fresh fill and for the same reason — see its comment on
+ * why a reconcile pass's wall clock drifts every entry later than it happened.
+ *
+ * `??` per field: an adopted position that already carries a stamp keeps it.
+ * This heals a gap, it never overwrites a known truth. Shared by BOTH adoption
+ * paths (adoptOrphanedLivePositions and materializeEntryFill) so the two cannot
+ * drift into disagreeing about how an adopted entry is dated — either can run
+ * first, and whichever gets there stamps the same values.
+ */
+function entryStampPatch(
+  p: Pick<Position, 'entryDate' | 'entryTime'>,
+  placedAtMs: number,
+): { entryDate: string; entryTime: string } | null {
+  if (p.entryDate !== null && p.entryTime !== null) return null;
+  return {
+    entryDate: p.entryDate ?? etDateStr(placedAtMs),
+    entryTime: p.entryTime ?? etTimeOfDay(placedAtMs),
+  };
+}
+
 const AUTOTRADE_TAGS = ['live', 'autotrade'];
 export const isAutotradePosition = (p: Position): boolean => p.tags.includes('autotrade');
 
@@ -441,6 +486,10 @@ export function adoptOrphanedLivePositions(): { adopted: number } {
       tags: Array.from(new Set([...p.tags, ...AUTOTRADE_TAGS])),
       stopPrice: p.stopPrice ?? match.stopPrice,
       targetPrice: p.targetPrice ?? match.targetPrice,
+      // Dated from the matched ORDER, not this tick — see entryStampPatch().
+      // The webull-import route above records entry_date as NULL by design,
+      // and this is the first moment anything knows the real answer.
+      ...(entryStampPatch(p, match.createdAt) ?? {}),
     });
     setLiveOrderPositionId(match.intentId, p.id);
     logAutotradeEvent({
@@ -1611,6 +1660,13 @@ function materializeEntryFill(
         (accountId == null || p.accountId == null || p.accountId === accountId),
     );
   if (adopted) {
+    const meta = getLiveOrder(intent.id);
+    // The entry stamp is applied OUTSIDE the untagged-healing block below,
+    // because a null entryDate breaks tradesToday/maxTradesPerDay whether or
+    // not the orphan carried the tag — adoptOrphanedLivePositions() may have
+    // retagged it a tick earlier without stamping it, and did until 2026-08-31.
+    // See entryStampPatch().
+    const entryStamp = entryStampPatch(adopted, meta?.createdAt ?? Date.now());
     // An untagged orphan needs the same healing adoptOrphanedLivePositions()
     // would have applied: without the tag it stays invisible to every
     // autotrade-scoped figure (open risk, daily P&L, the method ledger).
@@ -1620,7 +1676,6 @@ function materializeEntryFill(
       // backfills it, so without this an adopted position is permanently
       // missing its grade/score/regime and its entry VWAP — silently shrinking
       // the very datasets those fields exist to build.
-      const meta = getLiveOrder(intent.id);
       updatePosition(adopted.id, {
         tags: Array.from(new Set([...adopted.tags, ...AUTOTRADE_TAGS])),
         stopPrice: adopted.stopPrice ?? stopPrice,
@@ -1630,7 +1685,12 @@ function materializeEntryFill(
         marketRegime: adopted.marketRegime ?? meta?.marketRegime ?? null,
         marketAtrPct: adopted.marketAtrPct ?? meta?.marketAtrPct ?? null,
         entryVwap: adopted.entryVwap ?? meta?.entryVwap ?? null,
+        ...(entryStamp ?? {}),
       });
+    } else if (entryStamp) {
+      // Already tagged, but still missing its entry stamp — the cap needs it
+      // just the same.
+      updatePosition(adopted.id, entryStamp);
     }
     setLiveOrderPositionId(intent.id, adopted.id);
     logAutotradeEvent({
