@@ -876,6 +876,92 @@ describe('runLiveExecution — level-aware exits', () => {
 // live entries stopped, the reason had to be inferred from a dashboard gauge
 // instead of read, and past explanations of "why live stopped trading" were
 // read off PAPER rows.
+// The loop kept handing a freed slot straight back to the name that had just
+// failed to move: 4 of 26 live entries since 08-24 were same-day re-entries
+// (ANF, ESTC, CRWD, DE). symbolCooldown cannot see it — it needs two LOSING
+// closed trades and a stagnation scratch is not a loss.
+describe('runLiveExecution — same-session re-entry cooldown', () => {
+  /** A closed autotrade position in `symbol`, exited `minutesAgo`. */
+  function closedAgo(symbol: string, minutesAgo: number) {
+    const now = Date.now();
+    const exitAt = now - minutesAgo * 60_000;
+    const info = db
+      .prepare(
+        `INSERT INTO positions (asset_type, symbol, side, quantity, entry_price, entry_date, fees, multiplier, status, tags, created_at, updated_at)
+         VALUES ('stock',?,'long',10,100,'2026-09-01',0,1,'closed',?,?,?)`,
+      )
+      .run(symbol, JSON.stringify(['live', 'autotrade']), exitAt, exitAt);
+    db.prepare(
+      `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, exit_reason, created_at)
+       VALUES (?,10,100.5,'2026-09-01',0,'time_exit',?)`,
+    ).run(info.lastInsertRowid, exitAt);
+  }
+
+  it('refuses the reflexive re-entry and says why', async () => {
+    closedAgo('AAPL', 39); // the real DE gap: exited, re-entered 39m later
+    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false, symbolReentryCooldownMinutes: 90 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-REENTRY' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', ok: false });
+    expect(outcomes[0].reason).toMatch(/Re-entry cooldown/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled(); // never reached the broker
+    const ev = listAutotradeEvents({ actions: ['symbol_reentry_cooldown_skipped'] });
+    expect(ev).toHaveLength(1);
+    expect(JSON.parse(ev[0].detail!)).toMatchObject({ symbol: 'AAPL', cooldownMinutes: 90 });
+  });
+
+  it('lets a genuine later setup through once the window passes', async () => {
+    closedAgo('AAPL', 120);
+    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false, symbolReentryCooldownMinutes: 90 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LATER' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0]).toMatchObject({ ok: true });
+    expect(mockPlaceOrder).toHaveBeenCalled();
+  });
+
+  it('is off at 0 — the pre-2026-09-01 behaviour, unchanged', async () => {
+    closedAgo('AAPL', 1);
+    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false, symbolReentryCooldownMinutes: 0 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OFF' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+    expect(outcomes[0]).toMatchObject({ ok: true });
+  });
+
+  it("does not gate on a HUMAN's trade in the same name", async () => {
+    // A manual position is not the loop's thesis. Same symbol, same timing,
+    // but tagged plain 'webull' — the loop must be free to take its own setup.
+    const now = Date.now();
+    const info = db
+      .prepare(
+        `INSERT INTO positions (asset_type, symbol, side, quantity, entry_price, entry_date, fees, multiplier, status, tags, created_at, updated_at)
+         VALUES ('stock','AAPL','long',10,100,'2026-09-01',0,1,'closed',?,?,?)`,
+      )
+      .run(JSON.stringify(['webull']), now - 60_000, now - 60_000);
+    db.prepare(
+      `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, exit_reason, created_at)
+       VALUES (?,10,100.5,'2026-09-01',0,'manual',?)`,
+    ).run(info.lastInsertRowid, now - 60_000);
+    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false, symbolReentryCooldownMinutes: 90 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-HUMAN' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+    expect(outcomes[0]).toMatchObject({ ok: true });
+  });
+});
+
 describe('runLiveExecution — a live refusal is journaled with its reason', () => {
   /** An open, autotrade-tagged live position in some OTHER symbol, so it eats
    *  a concurrency slot without tripping runLiveExecution's own skipSymbols

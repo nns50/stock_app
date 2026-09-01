@@ -498,6 +498,10 @@ export const NEVER_TUNED_KEYS = [
   // range, not about a desired return. A tune that relaxed it to hit a target
   // would be buying trades that cannot pay, which is the opposite of tuning.
   'maxRiskAtrFraction',
+  // How long to stay away from a name just exited is a discipline rule, not a
+  // dial on a desired return — same reason the LOSS cooldown's own fields are
+  // never tuned.
+  'symbolReentryCooldownMinutes',
   'levelTargetReachAtrMultiple',
   'levelBreakoutRelVolPace',
   'levelLookbackBars',

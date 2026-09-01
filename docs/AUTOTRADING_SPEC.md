@@ -3460,3 +3460,79 @@ problem") came from a 38-row sample whose recent portion was 8 rows.
 worked — 2026-09-01 finished **+$17.03** while every trade was flat and the
 mechanism under test never engaged once. Judge the MFE distribution, not the
 P&L.
+
+### Pre-committed reading of the 0.30R scale-out (2026-09-01, same session)
+
+Set alongside the ATR floor, so the two are tracked separately or neither is
+interpretable. `partialExitRMultiple` went **1.0 -> 0.30** with
+`partialExitPct` 50.
+
+**Why 0.30 and not the eight-trade optimum.** A counterfactual over the recent
+8 trades put the best single target at ~0.25R (+0.136 R/trade vs -0.027 as
+traded). That number is NOT the justification — it is fitted to eight
+observations drawn from a distribution the ATR floor changed hours earlier. The
+justification is structural: at 1.0R the trigger sat **above the entire observed
+MFE range** (max 0.92R), so it could not fire, and did not fire once on
+2026-09-01. A trigger that is provably unreachable should move regardless of
+where exactly the optimum sits.
+
+**The ladder now:** +0.30R banks 50%, +1R moves the stop to breakeven on the
+remainder, the reach-capped target (~0.77x ATR) takes the rest.
+
+**The measurement.** `live_scale_out_placed` per session (baseline: **0**), and
+mean realized R. The comparison that matters is against what the FULL position
+would have returned — recoverable per trade from `mfeR` and the exit — because
+banking half at 0.30R deliberately gives up upside on that half.
+
+| # | Reading | Response |
+|---|---|---|
+| B1 | Fires on >=30% of trades **and** mean realized R beats the no-scale-out counterfactual | Keep. This is the intended effect. |
+| B2 | Fires often but realized R is **no better** than the counterfactual | The partial is banking noise and capping winners. Raise the trigger back toward the observed MFE median rather than lowering it further. |
+| B3 | Still does not fire | 0.30R is *also* above the distribution. That is an A3-class result — the constraint is selection or entry timing, not the exit ladder. Do not lower the trigger a third time. |
+
+**The fragility to keep watching.** A small target against a 1R stop needs a high
+hit rate to pay: at 0.30R, break-even is ~77%. The recent book only came out
+positive because its LOSERS scratched near zero on the time exit (-0.02, -0.11,
+-0.03) rather than taking full stops. **If losses start arriving at full -1R,
+this ladder degrades fast** — so track the realized-loss distribution, not just
+the win rate. That dependency is the whole risk of the change.
+
+Same 3-session minimum as the ATR floor above.
+
+---
+
+## The loop kept going back to the name it had just exited (2026-09-01)
+
+Measured over the 26 live entries since 2026-08-24: **four were re-entries into
+a symbol already traded that same day** — ANF (08-26), ESTC (08-28), CRWD
+(08-31), DE (09-01). 15% of the entry budget, on four of seven sessions.
+
+**Why `symbolCooldown.ts` does not catch it, by design.** That gate needs
+`symbolCooldownLosses` (>= 2) **losing** closed trades in a rolling window, and
+its own header says *"wins and breakeven scratches never count"*. The exit doing
+the damage is the STAGNATION exit, which by definition scratches near zero — so
+it is not a loss, never counts, and the cooldown never engages. That module also
+measures in calendar days, so it has no intraday opinion at all.
+
+**And the re-entry contradicts the exit that produced it.** The stagnation exit
+journals its own reason as *"recycling the slot for fresh signals"*. Handing the
+freed slot straight back to the name that just failed to move is the opposite of
+a fresh signal: the same thesis, at a worse time of day, with less of the session
+left to work in.
+
+`symbolReentryCooldownMinutes` (0 = off) blocks a NEW live entry for N minutes
+after that symbol's own autotrade position closes. `reentryCooldown.ts` is pure;
+`liveExecute` supplies autotrade-tagged closed positions only, so a human's
+manual trade in the same name never gates the loop.
+
+**Time-based, not rest-of-day.** `symbolCooldown`'s header records the
+counter-case that keeps this honest: LVWR lost -0.98R at 12:30 and the same-day
+re-entry won +1.93R. A genuine second setup hours later is a real thing. This
+blocks the reflex and then gets out of the way.
+
+**Journaled every time** as `symbol_reentry_cooldown_skipped`, not once per day
+like the cheap skips — a re-entry the loop WANTED is exactly the population to
+audit before trusting the gate, and these were invisible until now.
+
+Ships **off**. Paper, backtests and the manual preview are unchanged until live
+config opts in.

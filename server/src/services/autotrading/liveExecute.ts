@@ -62,6 +62,7 @@ import { evaluateStopAdjust } from './stopAdjust';
 import { evaluateScaleOut } from './scaleOut';
 import { fetchTodayVwap } from './vwap';
 import { detectLevels } from '../../indicators/levels';
+import { reentryCooldownFor } from './reentryCooldown';
 import { atr } from '../../indicators/indicators';
 import { planAroundLevels } from './levelPlan';
 import { applyExternalCashFlow, evaluateDailyTarget } from './dailyTarget';
@@ -1003,6 +1004,10 @@ export async function runLiveExecution(
   // the same protection the loop does.
   const dailyTarget = evaluateDailyTarget(cfg, getDailyBaseline());
   const cooldowns = activeSymbolCooldowns(cfg);
+  // Autotrade's OWN closed positions only — a human's manual trade in the same
+  // name is not the loop's thesis and must not gate it.
+  const closedAutotradeForReentry =
+    cfg.symbolReentryCooldownMinutes > 0 ? listPositions({ status: 'closed' }).filter(isAutotradePosition) : [];
   const finishLine = computeFinishLineFactor({
     enabled: cfg.finishLineSizingEnabled,
     dailyTarget,
@@ -1031,6 +1036,22 @@ export async function runLiveExecution(
         ok: false,
         reason: 'short entry skipped — liveAllowNakedShort is off',
       });
+      continue;
+    }
+    const reentry = reentryCooldownFor(symbol, closedAutotradeForReentry, cfg.symbolReentryCooldownMinutes);
+    if (reentry) {
+      const reason = `Re-entry cooldown — exited ${reentry.minutesSince}m ago, resumes after ${reentry.cooldownMinutes}m`;
+      // Journaled EVERY time, not once per day: a re-entry the loop wanted is
+      // exactly the population to audit before trusting this gate, and the
+      // whole reason it exists is that these were invisible.
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: 'symbol_reentry_cooldown_skipped',
+        detail: { ...reentry, reason },
+        riskProfile: cfg.riskProfile,
+      });
+      outcomes.push({ symbol, ok: false, reason });
       continue;
     }
     const cooldown = cooldowns.get(symbol);
