@@ -3460,3 +3460,41 @@ problem") came from a 38-row sample whose recent portion was 8 rows.
 worked — 2026-09-01 finished **+$17.03** while every trade was flat and the
 mechanism under test never engaged once. Judge the MFE distribution, not the
 P&L.
+
+### Pre-committed reading of the 0.30R scale-out (2026-09-01, same session)
+
+Set alongside the ATR floor, so the two are tracked separately or neither is
+interpretable. `partialExitRMultiple` went **1.0 -> 0.30** with
+`partialExitPct` 50.
+
+**Why 0.30 and not the eight-trade optimum.** A counterfactual over the recent
+8 trades put the best single target at ~0.25R (+0.136 R/trade vs -0.027 as
+traded). That number is NOT the justification — it is fitted to eight
+observations drawn from a distribution the ATR floor changed hours earlier. The
+justification is structural: at 1.0R the trigger sat **above the entire observed
+MFE range** (max 0.92R), so it could not fire, and did not fire once on
+2026-09-01. A trigger that is provably unreachable should move regardless of
+where exactly the optimum sits.
+
+**The ladder now:** +0.30R banks 50%, +1R moves the stop to breakeven on the
+remainder, the reach-capped target (~0.77x ATR) takes the rest.
+
+**The measurement.** `live_scale_out_placed` per session (baseline: **0**), and
+mean realized R. The comparison that matters is against what the FULL position
+would have returned — recoverable per trade from `mfeR` and the exit — because
+banking half at 0.30R deliberately gives up upside on that half.
+
+| # | Reading | Response |
+|---|---|---|
+| B1 | Fires on >=30% of trades **and** mean realized R beats the no-scale-out counterfactual | Keep. This is the intended effect. |
+| B2 | Fires often but realized R is **no better** than the counterfactual | The partial is banking noise and capping winners. Raise the trigger back toward the observed MFE median rather than lowering it further. |
+| B3 | Still does not fire | 0.30R is *also* above the distribution. That is an A3-class result — the constraint is selection or entry timing, not the exit ladder. Do not lower the trigger a third time. |
+
+**The fragility to keep watching.** A small target against a 1R stop needs a high
+hit rate to pay: at 0.30R, break-even is ~77%. The recent book only came out
+positive because its LOSERS scratched near zero on the time exit (-0.02, -0.11,
+-0.03) rather than taking full stops. **If losses start arriving at full -1R,
+this ladder degrades fast** — so track the realized-loss distribution, not just
+the win rate. That dependency is the whole risk of the change.
+
+Same 3-session minimum as the ATR floor above.
