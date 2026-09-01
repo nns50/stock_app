@@ -1200,6 +1200,37 @@ export async function runLiveExecution(
     };
     const result = evaluateRiskCheck(signal, ctx);
     if (!result.ok) {
+      // JOURNAL THE REFUSAL (2026-09-01). This path used to drop a blocked
+      // candidate silently: an `outcomes` entry reading 'Risk check blocked',
+      // no event, and no record of WHICH rule refused it.
+      //
+      // Every `blocked` row in the journal comes from runPaperExecution() or
+      // the manual preview route, so the LIVE book's refusals — the ones that
+      // decide what real money does — were the only ones invisible. Asked why
+      // buying power sat idle, the honest answer had to be inferred from a
+      // dashboard gauge rather than read: the cap was `max_concurrent_positions`
+      // at 2 of 2, which no journal row anywhere would have told you. It also
+      // means historical claims about why live entries stopped were read off
+      // PAPER rows and may have been misattributed.
+      //
+      // A distinct action rather than reusing 'blocked': folding these in with
+      // paper's would preserve the exact ambiguity this exists to remove.
+      // Only refusals are journaled — a pass already produces its own
+      // live_order_placed (or a live_entry_blocked at the guardrail), so
+      // logging passes here would double the row count to say nothing new.
+      logAutotradeEvent({
+        symbol,
+        stage: 'risk_check',
+        riskProfile: cfg.riskProfile,
+        action: 'live_risk_blocked',
+        detail: {
+          // Named up front so the reason is readable without parsing `checks`,
+          // and countable straight off the summary endpoint.
+          failedRules: result.checks.filter((c) => !c.passed).map((c) => c.rule),
+          checks: result.checks,
+          quantity: result.sizing.suggestedQuantity,
+        },
+      });
       outcomes.push({ symbol, ok: false, reason: 'Risk check blocked' });
       continue;
     }

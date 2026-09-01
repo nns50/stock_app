@@ -3298,3 +3298,39 @@ behaviour of that population is a stagnation scratch — on 2026-08-31 all five
 positions peaked under 0.30R and four exited on stagnation at 90 minutes. Fewer
 entries that can pay is the intended trade, not a side effect. Whether it is the
 right one is a question for the accumulated record, not for this document.
+
+---
+
+## The live book's refusals were the only ones not written down (2026-09-01)
+
+Asked why buying power sat idle while two positions were open, the honest answer
+had to be **inferred from a dashboard gauge**, because no journal row anywhere
+said why the live loop stopped entering.
+
+`runLiveExecution()` dropped a blocked candidate with an `outcomes` entry reading
+`'Risk check blocked'` and nothing else — no event, no failed rule. Every
+`blocked` row in the journal comes from `runPaperExecution()` or the manual
+preview route (`runAutotradeRiskCheck`), so the one book that moves real money
+was the one book whose refusals were invisible. It also means earlier
+explanations of "why live entries stopped" were read off PAPER rows and may have
+been misattributed — including a claim that a session's blocks were dominated by
+buying power.
+
+`live_risk_blocked` (stage `risk_check`) now carries `failedRules`, the full
+`checks`, and the intended `quantity`. A **distinct action**, not a reuse of
+`blocked`: folding live refusals in with paper's would preserve exactly the
+ambiguity this exists to remove. Only refusals are journaled — an approval
+already produces `live_order_placed` (or a `live_entry_blocked` at the
+guardrail), so logging passes would double the row count to say nothing new.
+
+The answer it would have given directly, from that session:
+
+```
+max_concurrent_positions     FAIL  2 open vs cap 2
+max_aggregate_open_risk      PASS  $141.00 vs cap $218.10 (4.28% of equity)
+```
+
+Buying power was never the constraint. `maxConcurrentPositions` was, and with
+risk-based sizing producing ~$2,000-2,600 positions a cap of 2 bounds deployable
+capital at ~$4,500 no matter how much margin exists behind it — which is why
+`liveMaxExposurePct` at 155 was unreachable.

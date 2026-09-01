@@ -871,6 +871,75 @@ describe('runLiveExecution — level-aware exits', () => {
 // reaches the journal, and the journal is the entire point of recording it —
 // the Sept 5 review reads events, not return values. So assert it on the ROWS
 // both journal sites write, per the standing consumer rule.
+// The live book's refusals were the only ones NOT in the journal — every
+// `blocked` row comes from the paper path or the manual preview route. So when
+// live entries stopped, the reason had to be inferred from a dashboard gauge
+// instead of read, and past explanations of "why live stopped trading" were
+// read off PAPER rows.
+describe('runLiveExecution — a live refusal is journaled with its reason', () => {
+  /** An open, autotrade-tagged live position in some OTHER symbol, so it eats
+   *  a concurrency slot without tripping runLiveExecution's own skipSymbols
+   *  guard for the candidate under test. */
+  function openLivePosition(symbol: string) {
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO positions (asset_type, symbol, side, quantity, entry_price, entry_date, fees, multiplier, status, tags, source_intent_id, created_at, updated_at)
+       VALUES ('stock',?,'long',10,100,'2026-09-01',0,1,'open',?,NULL,?,?)`,
+    ).run(symbol, JSON.stringify(['live', 'autotrade']), now, now);
+  }
+
+  it('records WHICH rule refused the trade, not just that one did', async () => {
+    // A cap of 1 with one position already open — the real shape of the
+    // 2026-09-01 session. (A cap of 0 does NOT work as a fixture:
+    // posIntMin1() clamps it back to the default, deliberately, since 0 would
+    // silently block every entry forever.)
+    openLivePosition('MSFT');
+    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false, maxConcurrentPositions: 1 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NEVER' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', ok: false });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+
+    const blocked = listAutotradeEvents({ actions: ['live_risk_blocked'] });
+    expect(blocked).toHaveLength(1);
+    const detail = JSON.parse(blocked[0].detail!);
+    // The whole point: the rule is named, readable without parsing `checks`.
+    expect(detail.failedRules).toContain('max_concurrent_positions');
+    expect(detail.checks.find((c: { rule: string }) => c.rule === 'max_concurrent_positions').passed).toBe(false);
+  });
+
+  it('does NOT collide with the paper book\u2019s own blocked rows', async () => {
+    // A separate action, deliberately: folding live refusals in with paper's
+    // would preserve exactly the ambiguity this exists to remove.
+    openLivePosition('MSFT');
+    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false, maxConcurrentPositions: 1 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+
+    await runLiveExecution([{ signal: signal() }]);
+
+    expect(listAutotradeEvents({ actions: ['blocked'] })).toHaveLength(0);
+    expect(listAutotradeEvents({ actions: ['live_risk_blocked'] })).toHaveLength(1);
+  });
+
+  it('stays quiet when the trade is APPROVED — the order event already says so', async () => {
+    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OK' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0]).toMatchObject({ ok: true });
+    expect(listAutotradeEvents({ actions: ['live_risk_blocked'] })).toHaveLength(0);
+    expect(listAutotradeEvents({ actions: ['live_order_placed'] })).toHaveLength(1);
+  });
+});
+
 describe('runLiveExecution — the level plan journals what the signal ASKED for', () => {
   const liveCfgFields = {
     accountEquityUsd: 100_000,
