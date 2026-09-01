@@ -24,6 +24,7 @@ function candidate(symbol: string, discoverySource: DiscoverySource = 'movers'):
     direction: 'long' as const,
     price: 100,
     total: 70,
+    relVolPace: null,
     passedFilters: true,
     filterReasons: [],
     components: [],

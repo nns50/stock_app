@@ -60,6 +60,28 @@ export interface PriceLevel {
   from: 'highs' | 'lows' | 'both';
   /** 0..1 — touch count blended with recency. */
   strength: number;
+  /** This zone contains the highest high (or lowest low) of the whole window —
+   *  the 52-week high, when the window is a year.
+   *
+   *  Needed because the strength model systematically UNDER-RATES exactly the
+   *  levels that matter most (2026-09-01). Strength is touch count blended with
+   *  recency, which is right for a shelf tested repeatedly and wrong for an
+   *  extreme: an extreme is touched once, by definition, and the older it is
+   *  the more recency discounts it. DE's 52-week high at 670.49 scored 0.28 —
+   *  one touch, 133 bars old — against a 0.35 minimum, so it was filtered out
+   *  and a target was placed at 695.52, ABOVE the high, needing 1.5x a normal
+   *  day's range to reach. Widening the lookback alone does not fix that; the
+   *  level is found and then discarded.
+   *
+   *  Worse, widening the window actively DILUTES ordinary levels, because
+   *  touchScore is relative to the most-touched cluster in it — DE's 660.70
+   *  fell from 0.46 to 0.43 purely from looking back further.
+   *
+   *  So an extreme gets a strength FLOOR (EXTREME_STRENGTH_FLOOR) rather than
+   *  a bypass: it stops being scored as an ordinary shelf, but a caller that
+   *  deliberately demands very strong structure can still exclude it. A
+   *  52-week high is watched by everyone whether or not it was tested twice. */
+  isExtreme: boolean;
 }
 
 export interface LevelOptions {
@@ -72,6 +94,12 @@ export interface LevelOptions {
 }
 
 const DEFAULTS = { pivotWindow: 3, tolerancePct: 0.75, lookbackBars: 120 };
+
+/** Strength an extreme is worth at minimum, however few times it was touched
+ *  and however long ago. Chosen to clear the 0.35 default minStrength with
+ *  headroom: DE's 52-week high scored 0.28 on its own (one touch, 133 bars
+ *  back) and was filtered out, which is how a target ended up above it. */
+const EXTREME_STRENGTH_FLOOR = 0.5;
 
 /**
  * Confirmed swing pivots. A bar qualifies only when it is the extreme of the
@@ -136,11 +164,17 @@ export function detectLevels(bars: Bar[], opts: LevelOptions = {}): PriceLevel[]
   clusters.push(current);
 
   const maxTouches = Math.max(...clusters.map((c) => c.length));
+  // The extremes of the window itself, measured over the pivots that survived
+  // the lookback filter (not the raw bars) so the flag always describes a zone
+  // that actually exists in the returned set.
+  const highestPivot = Math.max(...pivots.map((p) => p.price));
+  const lowestPivot = Math.min(...pivots.map((p) => p.price));
   return clusters
     .map((c) => {
       const price = c.reduce((s, x) => s + x.price, 0) / c.length;
       const barsSinceTouch = newest - Math.max(...c.map((x) => x.index));
       const kinds = new Set(c.map((x) => x.kind));
+      const isExtreme = c.some((x) => x.price === highestPivot || x.price === lowestPivot);
       // Touch weight dominates (a thrice-tested level is genuinely stronger),
       // recency modulates it. Recency decays linearly across the lookback so a
       // level at the edge of the window still counts for something.
@@ -153,7 +187,11 @@ export function detectLevels(bars: Bar[], opts: LevelOptions = {}): PriceLevel[]
         touches: c.length,
         barsSinceTouch,
         from: kinds.size === 2 ? ('both' as const) : kinds.has('high') ? ('highs' as const) : ('lows' as const),
-        strength: round4(0.7 * touchScore + 0.3 * recency),
+        // Floor, not a bypass: an extreme still answers to minStrength, it just
+        // stops being scored as though it were an ordinary shelf. A caller that
+        // deliberately demands very strong structure still excludes it.
+        strength: round4(Math.max(0.7 * touchScore + 0.3 * recency, isExtreme ? EXTREME_STRENGTH_FLOOR : 0)),
+        isExtreme,
       };
     })
     .sort((a, b) => b.strength - a.strength);

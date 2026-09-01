@@ -43,6 +43,14 @@ export interface ScreenCandidate extends SymbolScore {
    *  direction that actually passed filters (the stronger of the two, if
    *  both did — see pickDirection()). */
   direction: Direction;
+  /** This candidate's relative-volume PACE — its relVolume over the universe's
+   *  median relVolume this tick, so it means the same thing at 10:00 and 15:30
+   *  (indicators/relVolPace.ts). Computed for every candidate since 2026-09-01,
+   *  not only when the pace GATE is on: levelPlan reads it to tell a genuine
+   *  high-volume breakout through a wall from a drift into one, and a gate
+   *  being off is no reason for the number not to exist. Null when the pace is
+   *  unmeasurable (too few samples, or no relVolume for this symbol). */
+  relVolPace: number | null;
 }
 
 export interface ScreenResult {
@@ -54,10 +62,12 @@ export interface ScreenResult {
   skipped: { symbol: string; reason: string }[];
   errors: { symbol: string; message: string }[];
   /** The universe's median relVolume this tick — the market's current pace, and
-   *  the denominator every relVolPace was measured against. Null when the pace
-   *  gate is off or there were too few samples to estimate it. Surfaced so a
-   *  pace figure in the journal can always be checked against what it was
-   *  divided by. */
+   *  the denominator every relVolPace was measured against. Computed every tick
+   *  since 2026-09-01 (it used to be skipped when the pace GATE was off), because
+   *  the pace itself is now read downstream by levelPlan's breakout test. Null
+   *  only when there were too few samples to estimate it. Surfaced so a pace
+   *  figure in the journal can always be checked against what it was divided
+   *  by. */
   relVolMedian: number | null;
   discovery: { universeCount: number; moversCount: number; scannedCount: number };
 }
@@ -468,6 +478,8 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
             ...picked.score,
             direction: picked.direction,
             discoverySource: fromMovers.has(symbol) ? 'movers' : 'universe',
+            // Filled in below, once the universe median this tick is known.
+            relVolPace: null,
           },
         });
       }
@@ -488,7 +500,11 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
   // lets the candidate through rather than rejecting on a guess.
   // ---------------------------------------------------------------------
   const paceFloor = opts.minRelVolPace ?? 0;
-  const median = paceFloor > 0 ? relVolMedian(relVolSamples) : null;
+  // Computed whether or not the GATE is on: the pace is now also read
+  // downstream (levelPlan's breakout test), and tying its existence to an
+  // unrelated filter's setting is how a value ends up silently null in
+  // production. relVolMedian over the same samples is cheap.
+  const median = relVolMedian(relVolSamples);
   for (const { symbol, candidate } of pendingCandidates) {
     const pace = relVolPace(candidate.indicators.relVolume, median);
     if (paceFloor > 0 && pace !== null && pace < paceFloor) {
@@ -502,6 +518,7 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
       });
       continue;
     }
+    candidate.relVolPace = pace;
     candidates.push(candidate);
     logAutotradeEvent({
       symbol,

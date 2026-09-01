@@ -884,6 +884,40 @@ describe('runLiveExecution — the level plan journals what the signal ASKED for
     killSwitch: false,
   };
 
+  it('journals the reach cap and breakout verdict, not just the level ones', async () => {
+    // Consumer assertion for the 2026-09-01 reach cap: the Sept review reads
+    // rows, so a field the plan computes and the journal drops is invisible.
+    setAutotradeConfig({
+      ...liveCfgFields,
+      levelExitsEnabled: true,
+      levelMinRewardR: 0, // isolate the journaling from the veto
+      levelTargetReachAtrMultiple: 1,
+    });
+    // A quiet name: 40 bars in a tight 98-99 band, so ATR ~1 against a 100
+    // entry. The 110 target asks for ten times a normal day's travel.
+    // (providerWithWall returns only 13 bars, and atr() needs 14 periods —
+    // with a null ATR the cap correctly does nothing, which is its own test
+    // above but useless here.)
+    const quiet = Array.from({ length: 40 }, () => ({ high: 99, low: 98, close: 98.5, volume: 1_000 }));
+    mockGetProvider.mockReturnValue({
+      getQuote: vi.fn(async (symbol: string) => ({ symbol, last: 100, timestamp: Date.now() })),
+      getCandles: vi.fn(async () => quiet),
+    } as unknown as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-REACH' });
+
+    await runLiveExecution([{ signal: signal() }]);
+
+    const applied = listAutotradeEvents({ actions: ['level_exits_applied'] });
+    expect(applied).toHaveLength(1);
+    const detail = JSON.parse(applied[0].detail!);
+    expect(detail.reachCapped).toBe(true);
+    expect(detail.breakoutAllowed).toBe(false);
+    // And the order that reached the broker carries the reachable target.
+    const placed = mockPlaceOrder.mock.calls[0][1] as { bracket?: { takeProfitPrice: number } };
+    expect(placed.bracket!.takeProfitPrice).toBeLessThan(110);
+  });
+
   it('records it on a VETO — the population that says whether the floor is right', async () => {
     setAutotradeConfig({ ...liveCfgFields, levelExitsEnabled: true, levelMinRewardR: 1 });
     mockGetProvider.mockReturnValue(providerWithWall({ AAPL: 100 }, 103));

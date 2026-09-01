@@ -799,8 +799,14 @@ describe('runAutotradeScreen — relative-volume pace gate', () => {
       minRelVolPace: 0,
     });
     expect(result.candidates.length).toBeGreaterThan(0);
-    expect(result.relVolMedian).toBeNull(); // not computed when the gate is off
     expect(result.excluded.filter((e) => /current pace/.test(e.reason))).toHaveLength(0);
+    // The median is now computed whether or not the GATE is on (2026-09-01):
+    // levelPlan's breakout test reads each candidate's pace, and tying that
+    // number's existence to an unrelated filter's setting is how a value ends
+    // up silently null in production. What "off" means is that nothing is
+    // EXCLUDED by it, asserted above.
+    expect(result.relVolMedian).not.toBeNull();
+    expect(result.candidates.every((c) => c.relVolPace !== undefined)).toBe(true);
   });
 
   it('prunes candidates below the pace floor and reports the median it divided by', async () => {

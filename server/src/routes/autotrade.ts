@@ -295,6 +295,9 @@ const configBody = z.object({
   levelBufferPct: z.number().min(0).optional(),
   levelMaxStopWidenPct: z.number().min(0).optional(),
   levelMinRewardR: z.number().min(0).optional(),
+  levelTargetReachAtrMultiple: z.number().min(0).optional(),
+  levelBreakoutRelVolPace: z.number().min(0).optional(),
+  levelLookbackBars: z.number().min(0).optional(),
   liveOptionsFatFingerPct: z.number().min(0).max(100).optional(),
   liveOptionsProbationTrades: z.number().int().nonnegative().optional(),
   liveOptionsProbationSizeMultiplier: z.number().positive().max(1).optional(),
@@ -534,6 +537,10 @@ autotradeRouter.put(
     if (body.levelBufferPct !== undefined) patch.levelBufferPct = body.levelBufferPct;
     if (body.levelMaxStopWidenPct !== undefined) patch.levelMaxStopWidenPct = body.levelMaxStopWidenPct;
     if (body.levelMinRewardR !== undefined) patch.levelMinRewardR = body.levelMinRewardR;
+    if (body.levelTargetReachAtrMultiple !== undefined)
+      patch.levelTargetReachAtrMultiple = body.levelTargetReachAtrMultiple;
+    if (body.levelBreakoutRelVolPace !== undefined) patch.levelBreakoutRelVolPace = body.levelBreakoutRelVolPace;
+    if (body.levelLookbackBars !== undefined) patch.levelLookbackBars = body.levelLookbackBars;
     if (body.liveOptionsFatFingerPct !== undefined) patch.liveOptionsFatFingerPct = body.liveOptionsFatFingerPct;
     if (body.liveOptionsProbationTrades !== undefined) {
       patch.liveOptionsProbationTrades = body.liveOptionsProbationTrades;

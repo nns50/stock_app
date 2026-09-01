@@ -1108,6 +1108,36 @@ these by hand, keep the orders cap at least double the trade cap. The general
 lesson generalizes past this app: when you write a rule that throttles
 *actions*, check whether "get me out" is one of the actions you just throttled.
 
+**A target is a forecast about distance, and reward:risk cannot check it.** The
+most expensive thing found in this app's exits, 2026-09-01. Targets were set as a
+multiple of the stop, and the stop was capped at a flat percentage of price — so
+the target asked for roughly the same 4.7% move whether the stock travels 2% in a
+day or 18%. Measured across 22 live entries, **the median target sat at 1.06x the
+name's ENTIRE daily range**, and 12 of 22 needed more than a full day's move, from
+entries taken mid-morning and scratched 90 minutes later. One was given a limit
+above its own 52-week high.
+
+Reward:risk looked perfect the whole time. **2R says the target is twice the risk;
+it says nothing about whether the stock can get there.** Those are different
+questions and only one of them was being asked. The check that was missing is
+embarrassingly simple: compare the distance to the target against the stock's own
+average daily range. If you are asking for more than a day's move inside a day,
+you do not have a target, you have a wish — and every trade that drifts sideways
+into a time-based exit is that wish being quietly billed to you.
+
+Two corollaries worth carrying to any system:
+
+- **Anything derived from a capped input inherits the cap, not the intent.** The
+  stop was meant to adapt to volatility (1.5x ATR) and then got clipped by a flat
+  2.5%. Every target downstream was built on the clip, not the volatility, so a
+  quiet name and a wild one got the same target distance. When you cap a value,
+  find what reads it.
+- **A level is a ceiling until it is the thing being broken.** Capping targets at
+  a 52-week high sounds obviously right and would refuse every breakout — which is
+  the setup a breakout screener exists to find. What separates the two is
+  participation: volume. Rules about structure need a way to say "except when the
+  structure is what is being taken out," or they quietly delete your best trades.
+
 **The number a trade is booked at is not the number the signal named.** A third
 version of the same disease, measured 2026-08-31. The bot's signals ask for 2R.
 Its trades do not get 2R. When support sits inside the planned stop, the app

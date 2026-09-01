@@ -737,7 +737,10 @@ export function simulateBacktest(
             })();
       if (!picked) continue;
       const signal = generateSignal(
-        { ...picked.score, discoverySource: 'universe', direction: picked.direction },
+        // relVolPace: a backtest has no universe-wide median for the bar being
+        // replayed, so the pace is genuinely unknown rather than zero — levelPlan
+        // treats null as "no breakout evidence" and simply caps at the wall.
+        { ...picked.score, discoverySource: 'universe', direction: picked.direction, relVolPace: null },
         decisionCfg,
       );
       if (signal) candidates.push({ score: picked.score, signal });
