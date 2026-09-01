@@ -3368,3 +3368,63 @@ Live values at the time of writing: `maxTradesPerDay` 6, `liveMaxOrdersPerDay`
 18, `maxConcurrentPositions` 3, with the aggregate open-risk cap (4.28% =
 ~$217) and the daily drawdown halt (6.42% = ~$325) as the real limits — five
 full-stop losses trip the halt before the six-trade budget is spent.
+
+---
+
+## 1R has to be reachable on the name you are trading (2026-09-01)
+
+The same arithmetic as the target-reachability section above, one layer down —
+and the one that actually explains flat days.
+
+`maxStopDistancePct` (2.5%) binds on nearly every candidate, so **1R is a fixed
+~2.5% move**. But 2.5% is a quarter of a normal day on one stock and more than a
+whole day on another:
+
+| symbol | daily ATR | 1R as x ATR | MFE that day |
+|---|---|---|---|
+| XOM | 2.00% | **1.25x** | +0.19R |
+| DG | 3.20% | 0.78x | +0.08R |
+| DE | 3.16% | 0.79x | +0.27R |
+| CF | 3.85% | 0.65x | +0.46R |
+| HOOD | 5.91% | 0.42x | +0.29R |
+
+A 2.0%-ATR name cannot produce a 1R winner in a session that flattens at the
+close. No signal quality rescues that — it is arithmetic. The book was full of
+those trades and behaved exactly as the arithmetic demands: six live entries on
+2026-09-01 reached a **median MFE of 0.28R and not one reached 1.0R**, so both
+the reach-capped target (~1R) and the new 1.0R scale-out trigger were above
+anything the day could produce.
+
+`maxRiskAtrFraction` (DecisionConfig + AutotradeConfig, 0 = off) refuses a
+candidate when `stopDistance > atr * fraction`, in `generateSignal` — a property
+of the SETUP, not the portfolio, so no sizing or slot decision could rescue it
+later. Expressed against the stop **actually used** rather than as a minimum ATR
+so it cannot drift apart from `maxStopDistancePct` / `stopAtrMultiple`: the two
+are one quantity.
+
+**Threshold chosen from the distribution, not a guess.** Over that day's 27
+signalled names (median ATR 3.42%):
+
+| bar | implied min ATR | names surviving |
+|---|---|---|
+| 0.9x | 2.78% | 22 / 27 |
+| 0.8x | 3.12% | 18 / 27 |
+| **0.7x** | **3.57%** | **13 / 27** |
+| 0.6x | 4.17% | 9 / 27 |
+| 0.5x | 5.00% | 4 / 27 |
+
+0.7 halves the pool while still comfortably feeding a six-trade budget, and it
+splits the day exactly where the outcomes did: out go XOM (1.25x), DE (0.79x),
+DG (0.78x); in stay the day's two best, CF (0.65x) and HOOD (0.42x).
+
+**Correcting the previous session'''s reading.** An earlier analysis concluded the
+opposite — that positions DO move (median MFE 1.18R) and the failure was capture.
+That rested on 38 excursion rows of which **29 predated 2026-08-24**, because the
+`entry_date` gap (fixed the same morning) kept recent trades out of the excursion
+dataset entirely. Split by era the sample says: older 1.21R, 08-24..08-31 0.26R,
+2026-09-01 0.28R. The recent book is flat; the old one was not. Any future read
+of excursion data should check its era mix before drawing a conclusion from the
+median.
+
+Ships **off** (0). Backtests, paper and the manual preview are unchanged until
+live config opts in.
