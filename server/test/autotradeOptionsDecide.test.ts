@@ -55,6 +55,7 @@ function candidate(symbol = 'AAPL', price = 100, direction: 'long' | 'short' = '
       sentimentNetScore: null,
     },
     discoverySource: 'universe',
+    relVolPace: null,
   };
 }
 

@@ -103,6 +103,12 @@ export interface TradeSignal {
    *  carried so the risk check can apply an ADV participation size cap without
    *  re-fetching. Null/absent when the screener couldn't resolve it. */
   avgVolume?: number | null;
+  /** Relative-volume PACE at signal time (screen.ts), carried for the same
+   *  reason avgVolume is: levelPlan needs it to judge whether a move through
+   *  overhead structure has real participation behind it, and re-deriving it
+   *  downstream would mean a second, differently-timed measurement of the same
+   *  quantity. Null when unmeasurable. */
+  relVolPace?: number | null;
 }
 
 function fmtPct(v: number | null): string {
@@ -176,6 +182,7 @@ export function generateSignal(
     rationale,
     score: candidate.total,
     avgVolume: candidate.indicators.avgVolume,
+    relVolPace: candidate.relVolPace ?? null,
   };
 }
 

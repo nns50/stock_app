@@ -979,7 +979,9 @@ export async function simulateCombinedBacktest(
 
     for (const candidate of orderedEquityCandidates) {
       const signal = generateSignal(
-        { ...candidate.score, discoverySource: 'universe', direction: candidate.direction },
+        // relVolPace null: a backtest has no universe-wide median for the bar
+        // being replayed, so the pace is genuinely unknown rather than zero.
+        { ...candidate.score, discoverySource: 'universe', direction: candidate.direction, relVolPace: null },
         decisionCfg,
       );
       if (!signal) continue;

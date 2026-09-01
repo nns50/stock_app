@@ -153,6 +153,7 @@ function candidate(symbol: string, atrPct: number | null): ScreenCandidate {
       sentimentNetScore: null,
     },
     discoverySource: 'universe',
+    relVolPace: null,
   };
 }
 

@@ -478,6 +478,15 @@ export const NEVER_TUNED_KEYS = [
   // A slot reservation for the evidence track, not a risk parameter — the
   // combined aggregate-RISK budget the tune does calibrate is untouched by it.
   'optionsMaxConcurrentPositions',
+  // Structural facts about the CHART, not about a desired return. How far a
+  // name travels in a session, how much volume marks a real breakout, and how
+  // much history counts as structure are all properties of the market; a tune
+  // that stretched them to reach a daily target would be moving the measuring
+  // stick rather than the trade. levelMinRewardR and the rest of the level
+  // family are already NEVER_TUNED for the same reason.
+  'levelTargetReachAtrMultiple',
+  'levelBreakoutRelVolPace',
+  'levelLookbackBars',
   // Safety gates & identity — a preset must never arm anything or change whose
   // account it is.
   'enabled',

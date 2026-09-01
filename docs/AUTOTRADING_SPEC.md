@@ -3208,3 +3208,93 @@ which is not a random property of a setup — it may correlate with quality in
 either direction. So compare **target-hit rates**, not raw expectancy, and treat
 a difference in raw P&L between the buckets as uninterpretable on its own. This
 is the one place where the obvious comparison is the wrong one.
+
+---
+
+## Targets have to be reachable, not just well-proportioned (2026-09-01)
+
+Prompted by a live DE entry given a **695.52** sell limit against a **670.49**
+52-week high. Three separate defects, each of which alone would have produced it.
+
+**1. The target had no idea what the stock can travel.** It is a multiple of the
+STOP distance, and the stop is `min(stopAtrMultiple x ATR, maxStopDistancePct)`.
+So a 2R target asks for a **3x ATR move**, and wherever the flat percentage cap
+binds it asks for ~4.7% of price regardless of the name. Measured over the 22
+live entries since level exits shipped:
+
+| | |
+|---|---|
+| stop set by the flat 2.5% cap rather than 1.5x ATR | **16 / 22** |
+| median target distance / the stock's own daily ATR | **1.06x** |
+| entries needing more than one full day's range | 12 / 22 |
+| entries needing more than two | 3 / 22 |
+
+For a book that flattens at the close and scratches on stagnation at 90 minutes,
+that is not ambition, it is arithmetic that cannot come true. Nothing about
+reward:risk detects it — **R says nothing about whether the underlying can travel
+the distance.** `LevelPlanConfig.targetReachAtrMultiple` (default 1.0) caps the
+target at a plausible session move; `reachCapped` is journaled.
+
+Applied even when the chart has NO detected structure. The old code returned
+early on an empty level set, which skipped this on exactly the charts that most
+need it — a name with no overhead level is one where nothing else was ever going
+to catch an unreachable target.
+
+**2. The level engine could not see a 52-week high.** It read `limit: 120` daily
+bars and scanned `lookbackBars: 120` — ~5.7 months. DE's high sat 133 bars back,
+so the highest thing in the window (660.70) was *below* the entry and the plan
+found no resistance at all. XOM the same morning behaved correctly, because its
+high happened to fall inside the window. Both numbers now come from
+`levelLookbackBars` (default 252), since raising either alone does nothing.
+
+**3. Even at 252, the high was found and then discarded.** Strength is touch
+count blended with recency — right for a shelf tested repeatedly, wrong for an
+extreme, which is touched once by definition and discounted further for age.
+DE's 670.49 scored **0.28** against a 0.35 minimum. Widening the window also
+*dilutes* ordinary levels, because touch score is relative to the most-touched
+cluster in it: DE's 660.70 fell from 0.46 to 0.43 purely from looking further
+back. `PriceLevel.isExtreme` now marks the window's highest/lowest pivot and
+floors its strength at `EXTREME_STRENGTH_FLOOR` (0.5). A **floor, not a bypass** —
+a caller that deliberately demands very strong structure can still exclude it.
+
+**4. And the fix needed a brake, or it would have killed the strategy.** A
+breakout trades AT its 52-week high, so the wall is always inches overhead,
+leaving a fraction of an R and a veto every time — the reach cap alone would
+refuse precisely the setup the screener is built to find. A 52-week high is a
+ceiling right up until it is the thing being broken, and **volume is what tells
+those apart.** `levelBreakoutRelVolPace` (default 2.0) lets a target price
+through a level when participation supports it. DE drifted into its high at
+1.87x pace on 0.06x relative volume — not a breakout. The reach cap still
+applies to a breakout: conviction earns the right to price through structure,
+never the right to ask for a move the name cannot make.
+
+This required `relVolPace` to reach the signal. It was computed in `screen.ts`
+and only journaled — and only when the pace GATE was on. It is now computed every
+tick and carried on `ScreenCandidate` and `TradeSignal`, like `avgVolume` before
+it. Tying a value's existence to an unrelated filter's setting is how it ends up
+silently null in production.
+
+### Verified against the case that prompted it
+
+| DE signal (entry 662.40, stop 645.84, ask 695.52) | target | R | outcome |
+|---|---|---|---|
+| as shipped that morning | 695.52 | 2.00 | taken; scratched at +0.05R |
+| after this change, actual 1.87x pace | **669.50** | 0.43 | **vetoed** — capped short of the 670.49 extreme |
+| the same setup at 3x pace | 682.42 | 1.21 | taken, through the wall, inside 1x ATR |
+
+### Impact, and its limits
+
+Replaying all 22 live entries: **vetoes rise from 8 to 14 of 22**, and survivors'
+median target falls from 1.06x to **0.85x** daily ATR. Trade frequency roughly
+halves.
+
+Two honest caveats. The replay uses *today's* candles for entries made up to a
+week ago, so levels and ATR are not exactly what they were at the time —
+directional, not exact. And it passes `relVolPace: null`, so **no** breakout
+relief is applied; 14 is therefore an upper bound on the vetoes.
+
+The refused trades are the ones whose targets were unreachable, and the observed
+behaviour of that population is a stagnation scratch — on 2026-08-31 all five
+positions peaked under 0.30R and four exited on stagnation at 90 minutes. Fewer
+entries that can pay is the intended trade, not a side effect. Whether it is the
+right one is a question for the accumulated record, not for this document.

@@ -62,6 +62,7 @@ import { evaluateStopAdjust } from './stopAdjust';
 import { evaluateScaleOut } from './scaleOut';
 import { fetchTodayVwap } from './vwap';
 import { detectLevels } from '../../indicators/levels';
+import { atr } from '../../indicators/indicators';
 import { planAroundLevels } from './levelPlan';
 import { applyExternalCashFlow, evaluateDailyTarget } from './dailyTarget';
 import { evaluateEquitySync, freshEquityGuardState, EquityGuardState } from './equitySyncGuard';
@@ -1060,21 +1061,36 @@ export async function runLiveExecution(
     // back — a data blip must never silently re-price a real order.
     let signal = candidateSignal;
     if (cfg.levelExitsEnabled) {
+      // Fetch and scan the SAME span: these two numbers are one quantity, and
+      // raising either alone does nothing. At the old 120 the detector could
+      // not see a 52-week high at all (DE's sat 133 bars back), so a target
+      // was placed above it.
       const bars = await getProvider()
-        .getCandles(symbol, 'daily', { limit: 120 })
+        .getCandles(symbol, 'daily', { limit: cfg.levelLookbackBars })
         .catch(() => []);
       const plan = planAroundLevels({
         side: signal.side === 'buy' ? 'long' : 'short',
         entry: signal.entry,
         stop: signal.stop,
         target: signal.target,
-        levels: detectLevels(bars, { pivotWindow: 3, tolerancePct: 0.75, lookbackBars: 120 }),
+        levels: detectLevels(bars, {
+          pivotWindow: 3,
+          tolerancePct: 0.75,
+          lookbackBars: cfg.levelLookbackBars,
+        }),
+        // From the bars already in hand — no second fetch, and the same series
+        // the levels were read from, so the reach cap and the wall cannot be
+        // measured against different history.
+        atr: atr(bars),
+        relVolPace: signal.relVolPace ?? null,
         cfg: {
           enabled: true,
           minStrength: cfg.levelMinStrength,
           bufferPct: cfg.levelBufferPct,
           maxStopWidenPct: cfg.levelMaxStopWidenPct,
           minRewardR: cfg.levelMinRewardR,
+          targetReachAtrMultiple: cfg.levelTargetReachAtrMultiple,
+          breakoutRelVolPace: cfg.levelBreakoutRelVolPace,
         },
       });
       if (plan.veto) {
@@ -1092,6 +1108,8 @@ export async function runLiveExecution(
             cappedTarget: plan.target,
             rewardR: plan.rewardR,
             intendedRewardR: plan.intendedRewardR,
+            reachCapped: plan.reachCapped,
+            breakoutAllowed: plan.breakoutAllowed,
             minRewardR: cfg.levelMinRewardR,
             resistance: plan.resistancePrice,
             support: plan.supportPrice,
@@ -1118,6 +1136,8 @@ export async function runLiveExecution(
             // What the signal asked for, so the COST of the adjustment is
             // recoverable from the journal — rewardR alone cannot show it.
             intendedRewardR: plan.intendedRewardR,
+            reachCapped: plan.reachCapped,
+            breakoutAllowed: plan.breakoutAllowed,
             support: plan.supportPrice,
             resistance: plan.resistancePrice,
             reason: plan.detail,

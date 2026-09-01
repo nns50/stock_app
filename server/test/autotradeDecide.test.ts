@@ -41,6 +41,7 @@ function candidate(overrides: Partial<ScreenCandidate> = {}): ScreenCandidate {
     symbol: 'AAPL',
     price: 100,
     total: 72.5,
+    relVolPace: null,
     passedFilters: true,
     filterReasons: [],
     components: [],

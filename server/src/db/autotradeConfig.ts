@@ -770,6 +770,16 @@ export interface AutotradeConfig {
   /** Reject a setup whose capped target is worth less than this in R. 0 caps
    *  targets but never refuses a trade. */
   levelMinRewardR: number;
+  /** Cap the target at this multiple of the symbol's own daily ATR. 0 = off.
+   *  Added 2026-09-01 after the median live target was measured at 1.06x the
+   *  stock's ENTIRE daily range — see levelPlan.ts. */
+  levelTargetReachAtrMultiple: number;
+  /** Relative-volume pace at or above which a target may price THROUGH
+   *  overhead structure (a genuine breakout). 0 = never. */
+  levelBreakoutRelVolPace: number;
+  /** Daily bars the level detector reads. 252 ~ one year, so a 52-week high is
+   *  visible; the old 120 (~5.7 months) could not see one. */
+  levelLookbackBars: number;
   liveOptionsFatFingerPct: number;
   /** Mirrors liveProbationTrades/liveProbationSizeMultiplier, counted from
    *  liveOptionsEnabledAt via countLiveOptionsOrdersSince() — a fully
@@ -1113,6 +1123,9 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     levelBufferPct: 0.15,
     levelMaxStopWidenPct: 60,
     levelMinRewardR: 1,
+    levelTargetReachAtrMultiple: 1,
+    levelBreakoutRelVolPace: 2,
+    levelLookbackBars: 252,
     liveOptionsFatFingerPct: 10,
     liveOptionsProbationTrades: 20,
     liveOptionsProbationSizeMultiplier: 0.5,
@@ -1408,6 +1421,9 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     levelBufferPct: nonNeg(input.levelBufferPct, d.levelBufferPct),
     levelMaxStopWidenPct: nonNeg(input.levelMaxStopWidenPct, d.levelMaxStopWidenPct),
     levelMinRewardR: nonNeg(input.levelMinRewardR, d.levelMinRewardR),
+    levelTargetReachAtrMultiple: nonNeg(input.levelTargetReachAtrMultiple, d.levelTargetReachAtrMultiple),
+    levelBreakoutRelVolPace: nonNeg(input.levelBreakoutRelVolPace, d.levelBreakoutRelVolPace),
+    levelLookbackBars: nonNeg(input.levelLookbackBars, d.levelLookbackBars),
     liveOptionsFatFingerPct: pct(input.liveOptionsFatFingerPct, d.liveOptionsFatFingerPct),
     liveOptionsProbationTrades: posInt(input.liveOptionsProbationTrades, d.liveOptionsProbationTrades),
     liveOptionsProbationSizeMultiplier: (() => {

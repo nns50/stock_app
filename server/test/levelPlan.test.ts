@@ -9,6 +9,7 @@ const level = (price: number, over: Partial<PriceLevel> = {}): PriceLevel => ({
   barsSinceTouch: 10,
   from: 'highs',
   strength: 0.8,
+  isExtreme: false,
   ...over,
 });
 
@@ -18,6 +19,11 @@ const cfg: LevelPlanConfig = {
   bufferPct: 0.15,
   maxStopWidenPct: 60,
   minRewardR: 1,
+  // Off in the shared fixture so the pre-2026-09-01 describes below keep
+  // testing exactly what they were written to test; the reach/breakout
+  // describes opt in explicitly.
+  targetReachAtrMultiple: 0,
+  breakoutRelVolPace: 0,
 };
 
 // A long: entry 100, ATR stop 95 (risk 5), 2R target 110.
@@ -199,18 +205,139 @@ describe('planAroundLevels — intendedRewardR (what the signal asked for)', () 
     expect(p.rewardR).toBeLessThan(cfg.minRewardR);
   });
 
-  it('is null on the untouched paths, matching rewardR rather than guessing', () => {
+  it('is null on the genuinely inactive paths, matching rewardR rather than guessing', () => {
+    // Feature off, and no usable stop to measure against. NOT "no levels":
+    // since 2026-09-01 an empty chart still gets a real plan, because the
+    // reach cap does not depend on structure (see the reachability describe).
     for (const p of [
       planAroundLevels({ ...long, levels: [level(105)], cfg: { ...cfg, enabled: false } }),
-      planAroundLevels({ ...long, levels: [], cfg }),
+      planAroundLevels({ ...long, stop: 100, levels: [level(105)], cfg }),
     ]) {
       expect(p.intendedRewardR).toBeNull();
       expect(p.rewardR).toBeNull();
     }
   });
 
+  it('still measures a chart with NO structure — the reach cap needs no levels', () => {
+    const p = planAroundLevels({ ...long, levels: [], cfg });
+    expect(p.intendedRewardR).toBe(2);
+    expect(p.rewardR).toBe(2); // nothing bound it, but it was measured
+    expect(p.detail).toMatch(/no confirmed structure/);
+  });
+
   it('does not divide by a zero risk', () => {
     const p = planAroundLevels({ ...long, stop: 100, levels: [level(105)], cfg });
     expect(p.intendedRewardR).toBeNull();
+  });
+});
+
+// A 2R target off a 1.5x-ATR stop asks for a 3x ATR move, and where the flat
+// 2.5% stop cap binds (16 of 22 real entries) it asks for ~4.7% of price no
+// matter what the name does in a day. Measured over those entries the median
+// target sat at 1.06x the stock's ENTIRE daily range. Reward:risk cannot see
+// this — R says nothing about whether the underlying can travel the distance.
+describe('planAroundLevels — target reachability (ATR)', () => {
+  // entry 100, stop 95 (risk 5), 2R target 110 = a 10% move.
+  const reachCfg = { ...cfg, targetReachAtrMultiple: 1 };
+
+  it('cuts a target the name cannot travel in a session', () => {
+    // ATR 3 => 1x ATR reach is 103, well short of the 110 ask.
+    const p = planAroundLevels({ ...long, levels: [], cfg: reachCfg, atr: 3 });
+    // No levels at all, so this is the reach cap acting entirely on its own —
+    // the case the level engine could never have covered.
+    expect(p.target).toBe(103);
+    expect(p.reachCapped).toBe(true);
+    expect(p.rewardR).toBeCloseTo(0.6, 5);
+    expect(p.detail).toMatch(/as far as this name travels/);
+  });
+
+  it('leaves a target the name CAN travel completely alone', () => {
+    // A high-ATR name: 1x ATR is 115, beyond the 110 ask, so nothing binds.
+    const p = planAroundLevels({ ...long, levels: [], cfg: reachCfg, atr: 15 });
+    expect(p.target).toBe(110);
+    expect(p.reachCapped).toBe(false);
+    expect(p.rewardR).toBe(2);
+  });
+
+  it('mirrors for a short', () => {
+    const short = { side: 'short' as const, entry: 100, stop: 105, target: 90 };
+    const p = planAroundLevels({ ...short, levels: [], cfg: reachCfg, atr: 3 });
+    expect(p.target).toBe(97);
+    expect(p.reachCapped).toBe(true);
+  });
+
+  it('imposes NO cap when ATR is unusable — never guesses a distance', () => {
+    for (const bad of [undefined, null, 0, -1, Number.NaN]) {
+      const p = planAroundLevels({ ...long, levels: [], cfg: reachCfg, atr: bad });
+      expect(p.target).toBe(110);
+      expect(p.reachCapped).toBe(false);
+    }
+  });
+
+  it('is off when the multiple is 0, exactly as before it existed', () => {
+    expect(planAroundLevels({ ...long, levels: [], cfg, atr: 3 }).target).toBe(110);
+  });
+
+  it('takes the NEARER of reach and wall, and names which one bound it', () => {
+    // Wall at 108 (cap ~107.8) vs reach at 103 — reach is nearer.
+    const near = planAroundLevels({ ...long, levels: [level(108)], cfg: reachCfg, atr: 3 });
+    expect(near.target).toBe(103);
+    expect(near.reachCapped).toBe(true);
+    expect(near.detail).toMatch(/as far as this name travels/);
+
+    // Same wall, a name with room to run: now the WALL is the binding one, and
+    // reachCapped must NOT claim the credit.
+    const far = planAroundLevels({ ...long, levels: [level(108)], cfg: reachCfg, atr: 15 });
+    expect(far.target).toBeLessThan(108);
+    expect(far.reachCapped).toBe(false);
+    expect(far.detail).toMatch(/short of resistance/);
+  });
+});
+
+// Without this the reach cap would quietly kill the strategy's best setup: a
+// breakout trades AT its 52-week high, so the wall is always inches overhead,
+// leaving a fraction of an R and a veto every time.
+describe('planAroundLevels — breakout allowance', () => {
+  const bCfg = { ...cfg, targetReachAtrMultiple: 1, breakoutRelVolPace: 2 };
+
+  it('prices THROUGH the wall when volume says the move is real', () => {
+    const p = planAroundLevels({ ...long, levels: [level(103)], cfg: bCfg, atr: 15, relVolPace: 3 });
+    expect(p.breakoutAllowed).toBe(true);
+    expect(p.target).toBeGreaterThan(103); // through the level, not short of it
+    expect(p.veto).toBe(false); // and therefore takeable
+  });
+
+  it('still refuses the same setup on ordinary volume', () => {
+    const p = planAroundLevels({ ...long, levels: [level(103)], cfg: bCfg, atr: 15, relVolPace: 1.2 });
+    expect(p.breakoutAllowed).toBe(false);
+    expect(p.target).toBeLessThan(103);
+    expect(p.veto).toBe(true); // too little room to pay — the DE shape
+  });
+
+  it('treats an ABSENT pace as no evidence, never as permission', () => {
+    // The permissive reading has to be earned by a number.
+    for (const pace of [undefined, null]) {
+      const p = planAroundLevels({ ...long, levels: [level(103)], cfg: bCfg, atr: 15, relVolPace: pace });
+      expect(p.breakoutAllowed).toBe(false);
+    }
+  });
+
+  it('never lets a breakout escape the reach cap — conviction is not teleportation', () => {
+    // 5x pace, but the name only travels 3 a day: the target is still 103.
+    const p = planAroundLevels({ ...long, levels: [level(101)], cfg: bCfg, atr: 3, relVolPace: 5 });
+    expect(p.breakoutAllowed).toBe(true);
+    expect(p.target).toBe(103); // the reach cap, not the wall and not the 110 ask
+    expect(p.reachCapped).toBe(true);
+  });
+
+  it('is off when the threshold is 0 — no pace ever counts as a breakout', () => {
+    const p = planAroundLevels({
+      ...long,
+      levels: [level(103)],
+      cfg: { ...bCfg, breakoutRelVolPace: 0 },
+      atr: 15,
+      relVolPace: 99,
+    });
+    expect(p.breakoutAllowed).toBe(false);
   });
 });
