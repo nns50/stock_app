@@ -3498,3 +3498,41 @@ this ladder degrades fast** — so track the realized-loss distribution, not jus
 the win rate. That dependency is the whole risk of the change.
 
 Same 3-session minimum as the ATR floor above.
+
+---
+
+## The loop kept going back to the name it had just exited (2026-09-01)
+
+Measured over the 26 live entries since 2026-08-24: **four were re-entries into
+a symbol already traded that same day** — ANF (08-26), ESTC (08-28), CRWD
+(08-31), DE (09-01). 15% of the entry budget, on four of seven sessions.
+
+**Why `symbolCooldown.ts` does not catch it, by design.** That gate needs
+`symbolCooldownLosses` (>= 2) **losing** closed trades in a rolling window, and
+its own header says *"wins and breakeven scratches never count"*. The exit doing
+the damage is the STAGNATION exit, which by definition scratches near zero — so
+it is not a loss, never counts, and the cooldown never engages. That module also
+measures in calendar days, so it has no intraday opinion at all.
+
+**And the re-entry contradicts the exit that produced it.** The stagnation exit
+journals its own reason as *"recycling the slot for fresh signals"*. Handing the
+freed slot straight back to the name that just failed to move is the opposite of
+a fresh signal: the same thesis, at a worse time of day, with less of the session
+left to work in.
+
+`symbolReentryCooldownMinutes` (0 = off) blocks a NEW live entry for N minutes
+after that symbol's own autotrade position closes. `reentryCooldown.ts` is pure;
+`liveExecute` supplies autotrade-tagged closed positions only, so a human's
+manual trade in the same name never gates the loop.
+
+**Time-based, not rest-of-day.** `symbolCooldown`'s header records the
+counter-case that keeps this honest: LVWR lost -0.98R at 12:30 and the same-day
+re-entry won +1.93R. A genuine second setup hours later is a real thing. This
+blocks the reflex and then gets out of the way.
+
+**Journaled every time** as `symbol_reentry_cooldown_skipped`, not once per day
+like the cheap skips — a re-entry the loop WANTED is exactly the population to
+audit before trusting the gate, and these were invisible until now.
+
+Ships **off**. Paper, backtests and the manual preview are unchanged until live
+config opts in.

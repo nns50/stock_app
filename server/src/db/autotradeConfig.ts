@@ -776,6 +776,11 @@ export interface AutotradeConfig {
   /** Refuse a candidate whose 1R costs more than this fraction of its own daily
    *  ATR. 0 = off. See decide.ts's DecisionConfig.maxRiskAtrFraction. */
   maxRiskAtrFraction: number;
+  /** Minutes a symbol is blocked from a NEW live entry after its own autotrade
+   *  position closes. 0 = off. Catches the same-session re-entry the LOSS
+   *  cooldown cannot see, because a stagnation scratch is not a loss — see
+   *  services/autotrading/reentryCooldown.ts. */
+  symbolReentryCooldownMinutes: number;
   levelTargetReachAtrMultiple: number;
   /** Relative-volume pace at or above which a target may price THROUGH
    *  overhead structure (a genuine breakout). 0 = never. */
@@ -1127,6 +1132,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     levelMaxStopWidenPct: 60,
     levelMinRewardR: 1,
     maxRiskAtrFraction: 0,
+    symbolReentryCooldownMinutes: 0,
     levelTargetReachAtrMultiple: 1,
     levelBreakoutRelVolPace: 2,
     levelLookbackBars: 252,
@@ -1426,6 +1432,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     levelMaxStopWidenPct: nonNeg(input.levelMaxStopWidenPct, d.levelMaxStopWidenPct),
     levelMinRewardR: nonNeg(input.levelMinRewardR, d.levelMinRewardR),
     maxRiskAtrFraction: nonNeg(input.maxRiskAtrFraction, d.maxRiskAtrFraction),
+    symbolReentryCooldownMinutes: nonNeg(input.symbolReentryCooldownMinutes, d.symbolReentryCooldownMinutes),
     levelTargetReachAtrMultiple: nonNeg(input.levelTargetReachAtrMultiple, d.levelTargetReachAtrMultiple),
     levelBreakoutRelVolPace: nonNeg(input.levelBreakoutRelVolPace, d.levelBreakoutRelVolPace),
     levelLookbackBars: nonNeg(input.levelLookbackBars, d.levelLookbackBars),

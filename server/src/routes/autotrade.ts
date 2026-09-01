@@ -307,6 +307,7 @@ const configBody = z.object({
   levelMaxStopWidenPct: z.number().min(0).optional(),
   levelMinRewardR: z.number().min(0).optional(),
   maxRiskAtrFraction: z.number().min(0).optional(),
+  symbolReentryCooldownMinutes: z.number().min(0).optional(),
   levelTargetReachAtrMultiple: z.number().min(0).optional(),
   levelBreakoutRelVolPace: z.number().min(0).optional(),
   levelLookbackBars: z.number().min(0).optional(),
@@ -550,6 +551,8 @@ autotradeRouter.put(
     if (body.levelMaxStopWidenPct !== undefined) patch.levelMaxStopWidenPct = body.levelMaxStopWidenPct;
     if (body.levelMinRewardR !== undefined) patch.levelMinRewardR = body.levelMinRewardR;
     if (body.maxRiskAtrFraction !== undefined) patch.maxRiskAtrFraction = body.maxRiskAtrFraction;
+    if (body.symbolReentryCooldownMinutes !== undefined)
+      patch.symbolReentryCooldownMinutes = body.symbolReentryCooldownMinutes;
     if (body.levelTargetReachAtrMultiple !== undefined)
       patch.levelTargetReachAtrMultiple = body.levelTargetReachAtrMultiple;
     if (body.levelBreakoutRelVolPace !== undefined) patch.levelBreakoutRelVolPace = body.levelBreakoutRelVolPace;
