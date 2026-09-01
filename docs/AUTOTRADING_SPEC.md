@@ -3428,3 +3428,35 @@ median.
 
 Ships **off** (0). Backtests, paper and the manual preview are unchanged until
 live config opts in.
+
+### Pre-committed reading of the ATR-floor experiment
+
+Written 2026-09-01 **before** the first session under it, for the reason
+`docs/OPTIONS_TUNING_PLAN.md` gives: a question left open until the numbers
+arrive gets answered by whatever the numbers happen to look like. Eight config
+changes and six merges landed the same day, so nothing tomorrow attributes
+cleanly to one cause — which makes a pre-committed reading more necessary, not
+less.
+
+**The measurement.** Median MFE (`/api/journal/excursions`, rows filtered to the
+session's `entryDate`) over the day's closed live trades. Baseline to beat:
+**0.28R median, 0/6 reaching 1.0R** on 2026-09-01. Secondary: whether
+`live_scale_out_placed` fires at all, which it never did on the baseline day
+because nothing reached the 1.0R trigger.
+
+| # | Reading | Response |
+|---|---|---|
+| A1 | Median MFE **≥ 0.6R** and scale-out fires at least once | The floor is doing what it was built to do. Change nothing; accumulate toward the 25-trade sample rule #19 needs. |
+| A2 | Median MFE **0.4–0.6R** | Directionally right, sample far too thin to act on. No change, and say so plainly rather than reaching for a follow-up tweak. |
+| A3 | Median MFE **still ≤ 0.35R** with the floor active | Selection is **not** the constraint. Do NOT loosen further and do NOT raise the floor again — look at ENTRY TIMING instead (the entries cluster mid-morning; measure MFE by entry hour before proposing anything). |
+| A4 | Trade count **< 3** for two consecutive sessions | The floor plus the 3.57%–15% window is starving the book. Reconsider the 0.7 fraction against the measured distribution, not by feel. |
+
+**Minimum sample before any parameter moves on this: 3 sessions.** One day of
+6–8 trades cannot separate a real effect from noise, and the whole reason this
+block exists is that the previous conclusion ("positions do move, capture is the
+problem") came from a 38-row sample whose recent portion was 8 rows.
+
+**The trap to avoid specifically.** A profitable day is not evidence the floor
+worked — 2026-09-01 finished **+$17.03** while every trade was flat and the
+mechanism under test never engaged once. Judge the MFE distribution, not the
+P&L.
