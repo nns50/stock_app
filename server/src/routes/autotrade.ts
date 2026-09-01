@@ -79,7 +79,13 @@ autotradeRouter.get('/live-caps/suggest', (_req, res) => {
     throw new HttpError(400, 'Set account equity before requesting suggested live caps.');
   }
   res.json(
-    suggestLiveCaps(config.accountEquityUsd, config.maxDailyDrawdownPct, config.maxTradesPerDay, config.riskProfile),
+    suggestLiveCaps(
+      config.accountEquityUsd,
+      config.maxDailyDrawdownPct,
+      config.maxTradesPerDay,
+      config.riskProfile,
+      config.liveScaleOutEnabled,
+    ),
   );
 });
 
@@ -129,7 +135,12 @@ autotradeRouter.get(
     }
     const bp = await tuneBuyingPower(config);
     res.json({
-      patch: resetToModerate(config.accountEquityUsd, config.maxStopDistancePct, bp.buyingPowerUsd),
+      patch: resetToModerate(
+        config.accountEquityUsd,
+        config.maxStopDistancePct,
+        bp.buyingPowerUsd,
+        config.liveScaleOutEnabled,
+      ),
     });
   }),
 );

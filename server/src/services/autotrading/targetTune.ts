@@ -227,6 +227,16 @@ const BANDS: Record<TuneBand, BandShape> = {
  *  thing to lose, and closing a position is not. */
 const ORDERS_PER_TRADE = 2;
 
+/** ...and THREE when scale-out is on (2026-09-01): entry, the partial exit at
+ *  partialExitRMultiple, then the final close. Enabling liveScaleOutEnabled
+ *  silently raised every trade's order cost by 50% while this formula still
+ *  said 2, leaving the cap short by a third of a day's budget — the same
+ *  exit-starvation shape the comment below describes, arrived at from a new
+ *  direction. A partial exit is a CLOSE, not an optional add-on: it is the
+ *  half of the position that actually banks the move, so it must be inside
+ *  the budget rather than competing with it. */
+const ORDERS_PER_TRADE_WITH_SCALE_OUT = 3;
+
 /**
  * `liveMaxOrdersPerDay` for a given entry budget.
  *
@@ -246,8 +256,8 @@ const ORDERS_PER_TRADE = 2;
  * The entry budget is unchanged — maxTradesPerDay still caps entries, and
  * riskCheck still enforces it. This only stops exits from eating that budget.
  */
-export function liveOrderCapForTrades(maxTradesPerDay: number): number {
-  return maxTradesPerDay * ORDERS_PER_TRADE;
+export function liveOrderCapForTrades(maxTradesPerDay: number, scaleOutEnabled = false): number {
+  return maxTradesPerDay * (scaleOutEnabled ? ORDERS_PER_TRADE_WITH_SCALE_OUT : ORDERS_PER_TRADE);
 }
 
 /** The dollar caps a tune derives, and the only ones liveCapsReanchor moves.
@@ -637,6 +647,10 @@ function shapeToPatch(
    *  does not set it, so it is threaded in from live config. */
   maxStopDistancePct: number,
   buyingPowerUsd?: number,
+  /** Whether the live book takes a partial exit — threaded in from live config
+   *  for the same reason maxStopDistancePct is: the tune does not set it, but
+   *  the order cap it derives is wrong without it. */
+  scaleOutEnabled = false,
 ): TunablePatch {
   // Daily-loss halt sized to a bad day at THIS sizing (~75% of the day's trades
   // losing), floored at 2% and capped at 40% so it never trips before the
@@ -690,7 +704,7 @@ function shapeToPatch(
     targetRMultiple: shape.targetRMultiple,
     liveMaxOrderUsd: orderUsd,
     liveMaxDailyLossUsd: dailyLossUsd,
-    liveMaxOrdersPerDay: liveOrderCapForTrades(shape.maxTradesPerDay),
+    liveMaxOrdersPerDay: liveOrderCapForTrades(shape.maxTradesPerDay, scaleOutEnabled),
     // Records the equity the dollar caps above were derived from, ARMING the
     // automatic re-anchor (liveCapsReanchor.ts): when synced equity later
     // drifts ≥15% from this, the caps are re-derived so they keep meaning what
@@ -735,7 +749,7 @@ export interface ComputeTargetTuneInput {
   /** Current config — read only, never mutated: to warn about interactions
    *  (the auto-tuners), and to spot dollar caps a human set deliberately so
    *  this tune preserves them instead of reverting them. */
-  config: Pick<AutotradeConfig, 'autoTuneEnabled' | 'autoTuneExitsEnabled'> & DollarCapConfig;
+  config: Pick<AutotradeConfig, 'autoTuneEnabled' | 'autoTuneExitsEnabled' | 'liveScaleOutEnabled'> & DollarCapConfig;
   /** Available buying power, when the caller knows it — bounds the per-order
    *  cap, since an order the account cannot fund is not a cap worth having. */
   buyingPowerUsd?: number;
@@ -760,6 +774,7 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
     targetDailyGainPct,
     input.config.maxStopDistancePct,
     input.buyingPowerUsd,
+    input.config.liveScaleOutEnabled,
   );
 
   const warnings: string[] = [];
@@ -812,8 +827,13 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
  *  Deliberately NOT identical to defaultAutotradeConfig() — see the note on
  *  BANDS above for the three fields that differ and why. "Moderate" here means
  *  the band, not the shipped defaults. */
-export function resetToModerate(equityUsd: number, maxStopDistancePct: number, buyingPowerUsd?: number): TunablePatch {
+export function resetToModerate(
+  equityUsd: number,
+  maxStopDistancePct: number,
+  buyingPowerUsd?: number,
+  scaleOutEnabled = false,
+): TunablePatch {
   // No declared goal — the moderate baseline is a risk shape, not a promise;
   // writing null here also DISARMS the daily-goal tracker until the next tune.
-  return shapeToPatch(BANDS.moderate, equityUsd, 1, null, maxStopDistancePct, buyingPowerUsd);
+  return shapeToPatch(BANDS.moderate, equityUsd, 1, null, maxStopDistancePct, buyingPowerUsd, scaleOutEnabled);
 }

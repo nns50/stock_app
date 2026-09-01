@@ -106,4 +106,53 @@ describe('liveMaxOrdersPerDay vs maxTradesPerDay', () => {
     // retune reproduces the hand-set value instead of resetting it to 4.
     expect(liveOrderCapForTrades(4)).toBe(8);
   });
+
+  // Scale-out (2026-09-01) makes a trade cost THREE orders, not two: entry,
+  // the partial exit at partialExitRMultiple, then the final close. Turning
+  // liveScaleOutEnabled on while this formula still said 2 left the cap short
+  // by a third of a day's budget — the same exit-starvation the block above
+  // exists to prevent, reached from a new direction.
+  it('budgets a THIRD order per trade when scale-out is on', () => {
+    expect(liveOrderCapForTrades(6, true)).toBe(18);
+    expect(liveOrderCapForTrades(6, false)).toBe(12);
+  });
+
+  it('leaves room for entry + partial + close on every band', () => {
+    for (const target of [1, 3, 5, 8, 12]) {
+      const tuned = computeTargetTune({
+        equityUsd: 100_000,
+        targetDailyGainPct: target,
+        basis: 'expected',
+        config: {
+          ...defaultAutotradeConfig(),
+          autoTuneEnabled: false,
+          autoTuneExitsEnabled: false,
+          liveScaleOutEnabled: true,
+        },
+      });
+      const entries = tuned.patch.maxTradesPerDay;
+      expect(tuned.patch.liveMaxOrdersPerDay).toBeGreaterThanOrEqual(entries * 3);
+    }
+  });
+
+  it('a tune must not silently shrink the cap a scale-out book depends on', () => {
+    // The concrete hazard: the operator's live config on 2026-09-01 is 6
+    // trades with scale-out ON, needing 18. A tune that re-derived 12 would
+    // reopen the hole without anything failing loudly.
+    const cfg = { ...defaultAutotradeConfig(), autoTuneEnabled: false, autoTuneExitsEnabled: false };
+    const withScaleOut = computeTargetTune({
+      equityUsd: 100_000,
+      targetDailyGainPct: 3,
+      basis: 'expected',
+      config: { ...cfg, liveScaleOutEnabled: true },
+    });
+    const without = computeTargetTune({
+      equityUsd: 100_000,
+      targetDailyGainPct: 3,
+      basis: 'expected',
+      config: { ...cfg, liveScaleOutEnabled: false },
+    });
+    expect(withScaleOut.patch.liveMaxOrdersPerDay).toBeGreaterThan(without.patch.liveMaxOrdersPerDay);
+    expect(withScaleOut.patch.maxTradesPerDay).toBe(without.patch.maxTradesPerDay); // entry budget untouched
+  });
 });

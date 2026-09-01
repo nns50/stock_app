@@ -51,10 +51,12 @@ export function suggestLiveCaps(
   maxDailyDrawdownPct: number,
   maxTradesPerDay: number,
   riskProfile: 'MODERATE' | 'AGGRESSIVE' = 'MODERATE',
+  /** A partial exit is a third order per trade — see liveOrderCapForTrades. */
+  scaleOutEnabled = false,
 ): SuggestedLiveCaps {
   return {
     liveMaxOrderUsd: Math.round(equityUsd * maxOrderEquityFractionFor(riskProfile)),
     liveMaxDailyLossUsd: Math.round(equityUsd * (maxDailyDrawdownPct / 100)),
-    liveMaxOrdersPerDay: liveOrderCapForTrades(maxTradesPerDay),
+    liveMaxOrdersPerDay: liveOrderCapForTrades(maxTradesPerDay, scaleOutEnabled),
   };
 }
