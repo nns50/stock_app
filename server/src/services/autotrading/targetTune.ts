@@ -494,6 +494,10 @@ export const NEVER_TUNED_KEYS = [
   // that stretched them to reach a daily target would be moving the measuring
   // stick rather than the trade. levelMinRewardR and the rest of the level
   // family are already NEVER_TUNED for the same reason.
+  // Whether 1R is reachable on a given name is a fact about that stock's daily
+  // range, not about a desired return. A tune that relaxed it to hit a target
+  // would be buying trades that cannot pay, which is the opposite of tuning.
+  'maxRiskAtrFraction',
   'levelTargetReachAtrMultiple',
   'levelBreakoutRelVolPace',
   'levelLookbackBars',

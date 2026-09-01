@@ -40,10 +40,31 @@ export interface DecisionConfig {
   /** Hard ceiling on stop distance as a % of entry price. 0 = off.
    *  See clampStopDistance() below for why this exists. */
   maxStopDistancePct?: number;
+  /** Refuse a candidate whose 1R costs more than this fraction of its own
+   *  daily ATR. 0 = off.
+   *
+   *  THE FLAT STOP CAP MEANS DIFFERENT THINGS ON DIFFERENT NAMES (2026-09-01).
+   *  `maxStopDistancePct` binds on almost every candidate, so 1R is a fixed
+   *  ~2.5% move — but 2.5% is a quarter of a normal day for one stock and more
+   *  than a whole day for another. On a 2.0%-ATR name (XOM), 1R costs 1.25x the
+   *  daily range: no signal, however good, can produce a 1R winner inside a
+   *  session that flattens at the close. The book was full of those trades and
+   *  they behaved exactly as the arithmetic demands — six entries on 2026-09-01
+   *  reached a MEDIAN of 0.28R and not one reached 1.0R.
+   *
+   *  Measured over that day's 27 signalled names: at 0.7 the pool goes from 27
+   *  to 13, which still comfortably feeds a six-trade budget, and it excludes
+   *  precisely the names that could not have worked (XOM 1.25x, DE 0.79x,
+   *  DG 0.78x) while keeping the day's two best (CF 0.65x, HOOD 0.42x).
+   *
+   *  Expressed against the stop ACTUALLY used rather than as a minimum ATR, so
+   *  it stays correct by construction if maxStopDistancePct or stopAtrMultiple
+   *  ever move — the two are one quantity and must not drift apart. */
+  maxRiskAtrFraction?: number;
 }
 
 export function defaultDecisionConfig(): DecisionConfig {
-  return { stopAtrMultiple: 1.5, targetRMultiple: 2, maxStopDistancePct: 0 };
+  return { stopAtrMultiple: 1.5, targetRMultiple: 2, maxStopDistancePct: 0, maxRiskAtrFraction: 0 };
 }
 
 /**
@@ -150,6 +171,14 @@ export function generateSignal(
   const long = candidate.direction === 'long';
   const stop = round2(long ? entry - stopDistance : entry + stopDistance);
   if (stop <= 0) return null;
+
+  // Is 1R reachable on THIS name inside a session? See maxRiskAtrFraction.
+  // Refused here rather than at the risk check because it is a property of the
+  // setup, not of the portfolio: no sizing or slot decision can rescue a trade
+  // whose target needs more than the stock's daily range.
+  if (cfg.maxRiskAtrFraction && cfg.maxRiskAtrFraction > 0 && atr > 0) {
+    if (stopDistance > atr * cfg.maxRiskAtrFraction) return null;
+  }
 
   const targetDistance = stopDistance * cfg.targetRMultiple;
   const target = round2(long ? entry + targetDistance : entry - targetDistance);
