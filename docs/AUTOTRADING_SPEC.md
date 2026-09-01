@@ -3334,3 +3334,37 @@ Buying power was never the constraint. `maxConcurrentPositions` was, and with
 risk-based sizing producing ~$2,000-2,600 positions a cap of 2 bounds deployable
 capital at ~$4,500 no matter how much margin exists behind it — which is why
 `liveMaxExposurePct` at 155 was unreachable.
+
+---
+
+## Scale-out costs a third order per trade (2026-09-01)
+
+`liveOrderCapForTrades()` multiplied the entry budget by `ORDERS_PER_TRADE = 2`
+— one entry, one close. Turning on `liveScaleOutEnabled` makes a trade cost
+**three**: entry, the partial exit at `partialExitRMultiple`, then the final
+close. The constant did not know that, so enabling scale-out silently raised
+every trade's order cost by 50% against an unchanged cap.
+
+This is the 2026-08-24 GRMN failure reached from a new direction — there, entry
+and exit budgets were set equal and a stagnation exit was refused 44 times on
+`max_orders_per_day` while the position was carried overnight. **A partial exit
+is a CLOSE, not an optional add-on** (unlike a scale-in, which the constant
+deliberately does not multiply in): it is the half of the position that actually
+banks the move, so it belongs inside the budget rather than competing with it.
+
+`liveOrderCapForTrades(maxTradesPerDay, scaleOutEnabled)` now takes the flag,
+threaded through `shapeToPatch`, `computeTargetTune` (from `input.config`),
+`resetToModerate`, and `suggestLiveCaps` — every path that derives the cap, so
+none of them can derive it a different way.
+
+**Why this could not stay a hand-edit.** The live config was raised to 6 trades
+with scale-out on, needing 18 orders. The formula still derived 12, so the 18
+was a hand-set number sitting on top of a stale derivation: the next tune or
+"Suggest from equity" would have quietly reset it and re-opened the hole, with
+nothing failing loudly. Exactly the trap the dollar-cap re-anchor notes above
+describe, and the reason the fix is in the formula rather than the config.
+
+Live values at the time of writing: `maxTradesPerDay` 6, `liveMaxOrdersPerDay`
+18, `maxConcurrentPositions` 3, with the aggregate open-risk cap (4.28% =
+~$217) and the daily drawdown halt (6.42% = ~$325) as the real limits — five
+full-stop losses trip the halt before the six-trade budget is spent.
