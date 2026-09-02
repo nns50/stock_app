@@ -10,6 +10,7 @@ import {
   webullOrderStatusBatch,
   webullCancelOrder,
   webullReplaceOrder,
+  webullReplaceOrders,
   listWebullOpenOrders,
   newClientOrderId,
 } from '../src/providers/webull/orders';
@@ -718,9 +719,128 @@ describe('webull stock order + preview', () => {
     expect(body.account_id).toBe('ACC1');
     expect(body.modify_orders[0]).toEqual({ client_order_id: 'CID-REP', quantity: '2', limit_price: '179' });
   });
+
+  // A bracket's take-profit and stop-loss rest as an OCO pair, and the broker
+  // validates that group's balance PER REQUEST: modifying one leg on its own is
+  // refused with "The number of take-profit orders and the number of stop-loss
+  // orders must be the same". The live scale-out looped the legs and sent one
+  // replace each, so it was refused 89 times on 2026-09-02 and had never once
+  // executed. modify_orders was always an array; every caller just sent one.
+  it('sends EVERY leg in ONE replace request, so an OCO pair stays balanced', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) } as Response);
+
+    const r = await webullReplaceOrders('ACC1', [
+      { clientOrderId: 'CID-TP', quantity: 5 },
+      { clientOrderId: 'CID-SL', quantity: 5 },
+    ]);
+
+    expect(r.ok).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1); // ONE request, not one per leg
+    const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.modify_orders).toEqual([
+      { client_order_id: 'CID-TP', quantity: '5' },
+      { client_order_id: 'CID-SL', quantity: '5' },
+    ]);
+  });
+
+  it('keeps the single-order form working — it is now the batch form with one entry', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) } as Response);
+
+    await webullReplaceOrder('ACC1', 'CID-ONE', { stopPrice: 101.5 });
+
+    const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.modify_orders).toEqual([{ client_order_id: 'CID-ONE', stop_price: '101.5' }]);
+  });
+
+  it('refuses an empty batch rather than POSTing a no-op modify', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const r = await webullReplaceOrders('ACC1', []);
+    expect(r.ok).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('listWebullOpenOrders', () => {
+  // The shape a REAL account returns, per this file's own WebullOrderLeg
+  // comment: a bracket is THREE separate top-level envelopes sharing a
+  // combo_order_id, each wrapping its own single leg, with combo_type on the
+  // ENVELOPE. mapOpenOrder read it off the sub-order only, so every
+  // WebullOpenOrder.comboType came back undefined — and restingStopLeg, which
+  // filters for STOP_LOSS to know which leg to ratchet, matched zero of two on
+  // every tick. Breakeven and trailing stops had therefore never once moved a
+  // live stop; measured 2026-09-02, DELL asked to move 434.52 -> 449.58 on a
+  // position that ran to +2.07R and was refused every time with "no resting leg
+  // identifiable as STOP_LOSS among 2 exit order(s)".
+  it('reads combo_type from the ENVELOPE when the sub-order does not carry it', () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const envelopes = [
+      {
+        client_order_id: 'CID-MASTER',
+        combo_order_id: 'WB-COMBO',
+        combo_type: 'MASTER',
+        orders: [{ client_order_id: 'CID-MASTER', symbol: 'AAPL', side: 'BUY', status: 'FILLED' }],
+      },
+      {
+        client_order_id: 'CID-SL',
+        combo_order_id: 'WB-COMBO',
+        combo_type: 'STOP_LOSS',
+        orders: [{ client_order_id: 'CID-SL', symbol: 'AAPL', side: 'SELL', status: 'WORKING' }],
+      },
+      {
+        client_order_id: 'CID-TP',
+        combo_order_id: 'WB-COMBO',
+        combo_type: 'STOP_PROFIT',
+        orders: [{ client_order_id: 'CID-TP', symbol: 'AAPL', side: 'SELL', status: 'WORKING' }],
+      },
+    ];
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(envelopes),
+    } as Response);
+
+    return listWebullOpenOrders('ACC1').then((r) => {
+      expect(r.ok).toBe(true);
+      const byId = Object.fromEntries(r.orders.map((o) => [o.clientOrderId, o]));
+      expect(byId['CID-SL'].comboType).toBe('STOP_LOSS');
+      expect(byId['CID-TP'].comboType).toBe('STOP_PROFIT');
+      expect(byId['CID-MASTER'].comboType).toBe('MASTER');
+      // The consumer's own question: exactly one identifiable stop among the
+      // resting exit legs.
+      const sells = r.orders.filter((o) => o.side === 'sell');
+      expect(sells.filter((o) => (o.comboType ?? '').toUpperCase() === 'STOP_LOSS')).toHaveLength(1);
+    });
+  });
+
+  it('still prefers the SUB-ORDER combo_type when the response does nest it there', () => {
+    // The other half — a response carrying it on the leg must keep working, so
+    // the envelope is a fallback rather than an override.
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const envelopes = [
+      {
+        client_order_id: 'CID-X',
+        combo_type: 'MASTER',
+        orders: [{ combo_type: 'STOP_LOSS', client_order_id: 'CID-SL2', symbol: 'AAPL', side: 'SELL' }],
+      },
+    ];
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(envelopes),
+    } as Response);
+
+    return listWebullOpenOrders('ACC1').then((r) => {
+      expect(r.orders[0].comboType).toBe('STOP_LOSS');
+    });
+  });
+
   it('flattens combo envelopes into one entry per sub-order, normalizing side/status', () => {
     // A bracket envelope (MASTER buy + two exit sells, each with its OWN
     // client_order_id) plus a standalone order — mirrors what the open-orders

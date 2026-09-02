@@ -877,14 +877,42 @@ function pickStr(o: Record<string, unknown>, keys: string[]): string | undefined
   return undefined;
 }
 
-function mapOpenOrder(o: Record<string, unknown>): WebullOpenOrder {
+/**
+ * `env` is the ENVELOPE the sub-order came from, and it is where `combo_type`
+ * actually lives.
+ *
+ * This function used to read `combo_type` off the sub-order alone, which is
+ * the exact mistake this file's own WebullOrderLeg comment documents finding
+ * and fixing for webullOrderStatus — "combo_type was looked for one level
+ * below where it lives, so every comboType filter matched nothing". That fix
+ * was applied to the STATUS path and never to this one, so every
+ * WebullOpenOrder came back with comboType undefined.
+ *
+ * The visible consequence (2026-09-02, on a real account): restingStopLeg()
+ * filters the resting exit legs for combo_type STOP_LOSS to know which leg to
+ * ratchet, matched zero of two every time, and refused with "no resting leg
+ * identifiable as STOP_LOSS among 2 exit order(s)". Breakeven and trailing
+ * stops had therefore NEVER once adjusted a live stop — DELL asked to move
+ * 434.52 -> 449.58 on a position that ran to +2.07R and was refused on every
+ * tick.
+ *
+ * Sub-order first, envelope second: a response that ever does carry it on the
+ * leg keeps working, and neither level is trusted to exist.
+ */
+function mapOpenOrder(o: Record<string, unknown>, env?: Record<string, unknown>): WebullOpenOrder {
+  const comboType =
+    typeof o.combo_type === 'string'
+      ? o.combo_type
+      : typeof env?.combo_type === 'string'
+        ? (env.combo_type as string)
+        : undefined;
   return {
     clientOrderId: pickStr(o, ['client_order_id', 'clientOrderId']),
     brokerOrderId: pickStr(o, ['order_id', 'orderId', 'combo_order_id']),
     symbol: pickStr(o, ['symbol', 'ticker', 'instrument_symbol', 'stock_symbol']),
     side: normalizeSide(o.side ?? o.action ?? o.order_side ?? o.buy_sell ?? o.trade_side ?? o.direction),
     status: o.status ? String(o.status).toUpperCase() : undefined,
-    comboType: typeof o.combo_type === 'string' ? o.combo_type : undefined,
+    comboType,
   };
 }
 
@@ -903,8 +931,9 @@ export async function listWebullOpenOrders(accountId: string): Promise<WebullOpe
   if (!r.ok) return { ok: false, orders: [], error: r.error };
   const orders: WebullOpenOrder[] = [];
   for (const env of r.envelopes) {
-    const subs = Array.isArray(env.orders) && env.orders.length ? env.orders : [env as Record<string, unknown>];
-    for (const o of subs) orders.push(mapOpenOrder(o as Record<string, unknown>));
+    const envRec = env as unknown as Record<string, unknown>;
+    const subs = Array.isArray(env.orders) && env.orders.length ? env.orders : [envRec];
+    for (const o of subs) orders.push(mapOpenOrder(o as Record<string, unknown>, envRec));
   }
   return { ok: true, orders, raw: r.envelopes };
 }
@@ -964,13 +993,49 @@ export async function webullReplaceOrder(
   clientOrderId: string,
   patch: ReplacePatch,
 ): Promise<WebullReplaceResult> {
+  return webullReplaceOrders(accountId, [{ clientOrderId, ...patch }]);
+}
+
+/** One order's worth of modification, for the batch form below. */
+export interface ReplaceOrderPatch extends ReplacePatch {
+  clientOrderId: string;
+}
+
+/**
+ * Modify SEVERAL orders in a single replace request.
+ *
+ * `modify_orders` has always been an array in Webull's API; every caller just
+ * happened to send one element. That is fine for a standalone order and wrong
+ * for a bracket, because the broker validates the OCO group's balance PER
+ * REQUEST: modifying one leg of a resting take-profit/stop-loss pair on its own
+ * is refused with "The number of take-profit orders and the number of stop-loss
+ * orders must be the same."
+ *
+ * Which is exactly what the live scale-out did — it looped the resting legs and
+ * sent one replace each. Measured 2026-09-02: 89 attempts across DELL, GTLB and
+ * HPQ, every one refused, and not a single scale-out has ever executed. Sending
+ * both legs together satisfies the group check.
+ *
+ * It also closes a real hole in the loop it replaces. That loop broke on the
+ * first failure WITHOUT rolling back legs it had already modified, so a partial
+ * success would leave a bracket whose take-profit covers the reduced size and
+ * whose stop still covers the full one. One request cannot half-apply that way.
+ */
+export async function webullReplaceOrders(
+  accountId: string,
+  patches: ReplaceOrderPatch[],
+): Promise<WebullReplaceResult> {
   if (!webullConfigured()) return { ok: false, error: 'Webull is not configured.' };
-  const modify: Record<string, string> = { client_order_id: clientOrderId };
-  if (patch.quantity !== undefined) modify.quantity = String(patch.quantity);
-  if (patch.limitPrice !== undefined) modify.limit_price = priceStr(patch.limitPrice);
-  if (patch.stopPrice !== undefined) modify.stop_price = priceStr(patch.stopPrice);
+  if (patches.length === 0) return { ok: false, error: 'No orders to replace.' };
+  const modifyOrders = patches.map((patch) => {
+    const modify: Record<string, string> = { client_order_id: patch.clientOrderId };
+    if (patch.quantity !== undefined) modify.quantity = String(patch.quantity);
+    if (patch.limitPrice !== undefined) modify.limit_price = priceStr(patch.limitPrice);
+    if (patch.stopPrice !== undefined) modify.stop_price = priceStr(patch.stopPrice);
+    return modify;
+  });
   const r = await webullClient().call('POST', '/openapi/trade/order/replace', {
-    body: { account_id: accountId, modify_orders: [modify] },
+    body: { account_id: accountId, modify_orders: modifyOrders },
     surface: 'trade',
     // A modify is a state change on a live order; don't blind-retry a lost
     // response (the first may have applied). Reconcile instead.

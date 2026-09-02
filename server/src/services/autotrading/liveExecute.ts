@@ -20,6 +20,7 @@ import {
   webullCancelOrder,
   listWebullOpenOrders,
   webullReplaceOrder,
+  webullReplaceOrders,
   isExitLeg,
   WebullOpenOrder,
 } from '../../providers/webull/orders';
@@ -2761,14 +2762,24 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
     }
 
     // --- 2. reduce every leg to the remainder FIRST ------------------------
-    let reduceFailed: string | null = null;
-    for (const leg of resting) {
-      const r = await webullReplaceOrder(accountId, leg.clientOrderId!, { quantity: keepQty });
-      if (!r.ok) {
-        reduceFailed = `${leg.clientOrderId}: ${r.error ?? 'replace failed'}`;
-        break;
-      }
-    }
+    // ONE request carrying every leg, not a replace per leg. The broker checks
+    // the OCO group's balance per request, so reducing a take-profit without
+    // its stop-loss in the same call is refused: "The number of take-profit
+    // orders and the number of stop-loss orders must be the same." Measured
+    // 2026-09-02 — 89 refusals across DELL, GTLB and HPQ, and not one
+    // scale-out had ever executed since the mechanism shipped.
+    //
+    // It also removes the partial-modify window the loop had: it broke on the
+    // first failure without undoing legs it had already changed, which could
+    // leave the target covering the reduced size while the stop still covered
+    // the full one. A single request cannot half-apply.
+    const replaced = await webullReplaceOrders(
+      accountId,
+      resting.map((leg) => ({ clientOrderId: leg.clientOrderId!, quantity: keepQty })),
+    );
+    const reduceFailed = replaced.ok
+      ? null
+      : `${resting.map((l) => l.clientOrderId).join(', ')}: ${replaced.error ?? 'replace failed'}`;
     if (reduceFailed) {
       logAutotradeEvent({
         symbol,

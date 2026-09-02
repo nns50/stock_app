@@ -23,6 +23,7 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
     webullOrderStatusBatch: batchFromSingle(webullOrderStatus),
     webullCancelOrder: vi.fn(),
     webullReplaceOrder: vi.fn(),
+    webullReplaceOrders: vi.fn(),
     listWebullOpenOrders: vi.fn(),
   };
 });
@@ -35,6 +36,7 @@ import {
   webullOrderStatus,
   webullCancelOrder,
   webullReplaceOrder,
+  webullReplaceOrders,
   listWebullOpenOrders,
   WebullOrderStatus,
 } from '../src/providers/webull/orders';
@@ -64,6 +66,7 @@ const mockPlaceOrder = vi.mocked(webullPlaceOrder);
 const mockOrderStatus = vi.mocked(webullOrderStatus);
 const mockCancelOrder = vi.mocked(webullCancelOrder);
 const mockReplaceOrder = vi.mocked(webullReplaceOrder);
+const mockReplaceOrders = vi.mocked(webullReplaceOrders);
 const mockOpenOrders = vi.mocked(listWebullOpenOrders);
 
 /** A resting broker open order (defaults to a working SELL on AAPL — a long's
@@ -211,6 +214,7 @@ beforeEach(() => {
   mockOrderStatus.mockReset();
   mockCancelOrder.mockReset();
   mockReplaceOrder.mockReset();
+  mockReplaceOrders.mockReset();
   mockOpenOrders.mockReset();
   // Default: no resting orders at the broker, so a triggered force-close finds
   // nothing to cancel and proceeds. Tests exercising the cancel path override.
@@ -976,31 +980,38 @@ describe('checkLiveEquityScaleOuts', () => {
     setAutotradeConfig({ liveScaleOutEnabled: false });
     expect(await checkLiveEquityScaleOuts()).toEqual([]);
     expect(mockPlaceOrder).not.toHaveBeenCalled();
-    expect(mockReplaceOrder).not.toHaveBeenCalled();
+    expect(mockReplaceOrders).not.toHaveBeenCalled();
   });
 
-  it('reduces the resting legs BEFORE selling, never the other way round', async () => {
+  it('reduces BOTH resting legs in ONE request, before selling', async () => {
+    // One request, not one per leg. The broker validates the OCO group's
+    // balance per request, so reducing the take-profit without its stop-loss in
+    // the same call is refused with "The number of take-profit orders and the
+    // number of stop-loss orders must be the same" — which is what happened 89
+    // times on 2026-09-02, and why no scale-out had ever executed.
     const { position, quantity } = await armed(200); // well past 1.5R
     mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1'), restingLeg('TGT-1')] });
-    mockReplaceOrder.mockResolvedValue({ ok: true });
+    mockReplaceOrders.mockResolvedValue({ ok: true });
 
     const out = await checkLiveEquityScaleOuts();
 
     expect(out[0]).toMatchObject({ positionId: position.id, requested: true });
-    // Both legs resized to the KEPT quantity...
     const keep = quantity - Math.floor(quantity / 2);
-    expect(mockReplaceOrder).toHaveBeenCalledWith('ACC1', 'STOP-1', { quantity: keep });
-    expect(mockReplaceOrder).toHaveBeenCalledWith('ACC1', 'TGT-1', { quantity: keep });
-    // ...and the sell happened AFTER both of them. This ordering is the
-    // difference between a scale-out and an accidental short.
-    const lastReplace = Math.max(...mockReplaceOrder.mock.invocationCallOrder);
+    expect(mockReplaceOrders).toHaveBeenCalledTimes(1);
+    expect(mockReplaceOrders).toHaveBeenCalledWith('ACC1', [
+      { clientOrderId: 'STOP-1', quantity: keep },
+      { clientOrderId: 'TGT-1', quantity: keep },
+    ]);
+    // ...and the sell happened AFTER it. This ordering is the difference
+    // between a scale-out and an accidental short.
+    const lastReplace = Math.max(...mockReplaceOrders.mock.invocationCallOrder);
     expect(mockPlaceOrder.mock.invocationCallOrder[0]).toBeGreaterThan(lastReplace);
   });
 
   it('sells only the scale-out slice, leaving the rest running', async () => {
     const { quantity } = await armed(200);
     mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1')] });
-    mockReplaceOrder.mockResolvedValue({ ok: true });
+    mockReplaceOrders.mockResolvedValue({ ok: true });
 
     await checkLiveEquityScaleOuts();
 
@@ -1015,7 +1026,7 @@ describe('checkLiveEquityScaleOuts', () => {
     // fall through to a sell.
     await armed(200);
     mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1')] });
-    mockReplaceOrder.mockResolvedValue({ ok: false, error: 'broker refused the modify' });
+    mockReplaceOrders.mockResolvedValue({ ok: false, error: 'broker refused the modify' });
 
     const out = await checkLiveEquityScaleOuts();
 
