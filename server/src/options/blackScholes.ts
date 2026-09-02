@@ -1,3 +1,4 @@
+import { etToday } from '../util/marketDate';
 // ---------------------------------------------------------------------------
 // Black–Scholes(–Merton) pricing + Greeks, used when a provider doesn't supply
 // Greeks, and to price the mock provider's synthetic chains.
@@ -177,8 +178,56 @@ export function yearsToExpiration(expiration: string, from: Date = new Date()): 
   return Math.max(0, years);
 }
 
-/** Days from now until the given expiration date (can be fractional). */
+/**
+ * Days from now until the given expiration date, FRACTIONAL — 2.27 at Wednesday
+ * lunchtime for a Friday expiry.
+ *
+ * This is time-to-expiry for PRICING and for decay-sensitive exit rules, where a
+ * fraction of a day genuinely matters. It is the WRONG function for a
+ * configured min/max-DTE WINDOW: a user setting "max 2 days to expiration"
+ * means two CALENDAR days, and on a Wednesday every Friday contract in the
+ * market scores 2.27 and is rejected. Use calendarDaysToExpiration() for any
+ * comparison against a whole-days config value.
+ */
 export function daysToExpiration(expiration: string, from: Date = new Date()): number {
   const expiry = new Date(`${expiration}T20:00:00Z`).getTime();
   return Math.max(0, (expiry - from.getTime()) / (24 * 60 * 60 * 1000));
+}
+
+/**
+ * WHOLE calendar days from the US-market day containing `from` to `expiration`
+ * — Wednesday to Friday is 2, and same-day expiry is 0, at any hour.
+ *
+ * The unit every DTE *window* is configured in (2026-09-02). optionsMinDte /
+ * optionsMaxDte and entryRules' min/max DTE both compared the FRACTIONAL
+ * daysToExpiration() above against these whole-day settings, so a 0-2 window
+ * admitted a Friday contract only from Thursday onward: measured on the live
+ * book on a Wednesday, 214 of 218 candidates were skipped for "No expiration
+ * within the configured DTE window [0, 2] days" while DE, TXN and the rest all
+ * listed a 2026-09-04 expiry. entryRules made the contradiction visible on its
+ * own rule line, which rendered the failure as "2d <= 2d" because the DETAIL
+ * string already rounded to whole days while the comparison did not.
+ *
+ * Anchored to the ET calendar day rather than the server's, so the answer does
+ * not change with deployment timezone, and floored at 0 like its sibling: an
+ * expiration already past is 0 days out, never negative.
+ */
+export function calendarDaysToExpiration(expiration: string, from: Date = new Date()): number {
+  return calendarDaysBetween(etToday(from.getTime()), expiration);
+}
+
+/**
+ * Whole days between two YYYY-MM-DD market dates, floored at 0.
+ *
+ * The shared definition behind calendarDaysToExpiration(). Callers that already
+ * HOLD a market date — the options backtest walks bar by bar and knows its
+ * as-of date as a string — use this directly rather than converting to a Date
+ * and back, which would misread a date-only midnight-UTC value as the previous
+ * ET day and shift every DTE by one.
+ */
+export function calendarDaysBetween(fromDate: string, toDate: string): number {
+  const fromMs = Date.parse(`${fromDate}T00:00:00Z`);
+  const toMs = Date.parse(`${toDate}T00:00:00Z`);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return 0;
+  return Math.max(0, Math.round((toMs - fromMs) / (24 * 60 * 60 * 1000)));
 }

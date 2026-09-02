@@ -369,17 +369,32 @@ describe('attemptLiveOptionsEntry', () => {
     expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 
-  it('skips (no order) when the probation-adjusted quantity rounds to 0', async () => {
+  // Probation cuts size; it is not a kill switch. A contract is indivisible,
+  // so at one contract there is nothing left to cut and the entry goes out at
+  // the minimum rather than being silently refused (2026-09-02). Before this,
+  // ANY multiplier below 1 floored an approved 1 contract to 0 — and since the
+  // single-leg sizer produces roughly one contract at this account's size,
+  // switching probation on would have refused every options entry for the
+  // whole window, reported as "rounded to 0" as though it were arithmetic.
+  it('clamps a probation-cut size to one contract instead of refusing the entry', async () => {
     const sig = optionSignal();
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-PROB' });
+
     const r = await attemptLiveOptionsEntry(
       sig,
       okResult(sig),
       'MODERATE',
       liveConfig({ liveOptionsProbationSizeMultiplier: 0.001 }),
     );
-    expect(r.ok).toBe(false);
-    expect(r.reason).toMatch(/rounded to 0/);
-    expect(mockPlaceOrder).not.toHaveBeenCalled();
+
+    expect(r.ok).toBe(true);
+    expect(mockPlaceOrder).toHaveBeenCalled();
+    expect((mockPlaceOrder.mock.calls[0][1] as { quantity: number }).quantity).toBe(1);
+    // And it says so, rather than leaving "probation isn't cutting anything"
+    // to be inferred from an order size.
+    expect(listAutotradeEvents({}).some((e) => e.action === 'options_probation_at_minimum')).toBe(true);
   });
 
   // guardrails values an OPENING order against buyingPowerUsd, and acct.state's
@@ -822,28 +837,22 @@ describe('runLiveOptionsExecution', () => {
       expect(blockedEvents('live_options_risk_blocked')).toHaveLength(1);
     });
 
-    it('journals an entry refused AFTER the risk check passed — probation flooring the size to zero', async () => {
-      // A 1-contract size cut by any multiplier below 1 floors to 0, so this
-      // refuses EVERY candidate for the whole probation window. It returned
-      // ok:false and wrote nothing.
-      setAutotradeConfig(
-        liveConfig({
-          liveOptionsProbationTrades: 10,
-          liveOptionsProbationSizeMultiplier: 0.5,
-          accountEquityUsd: 1_000, // 1% of 1,000 = $10 budget -> 1 contract at most
-          riskPerTradePct: 1,
-        }),
-      );
-      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    it('journals an entry refused AFTER the risk check passed — a stale last-trade-only quote', async () => {
+      // The class this covers: orderly, common, and previously written
+      // nowhere. (Probation used to be the example here; it now clamps to one
+      // contract rather than refusing — see its own test above.)
+      setAutotradeConfig(liveConfig());
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, last: 2.5 } }) as never);
       mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-STALE' });
 
-      // $10 budget / ($0.08 x 100) = 1 contract, which 0.5x floors to 0.
-      const outcomes = await runLiveOptionsExecution([{ signal: optionSignal({ premium: 0.08 }) }]);
+      const outcomes = await runLiveOptionsExecution([{ signal: optionSignal() }]);
 
-      expect(outcomes[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/rounded to 0/i) });
+      expect(outcomes[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/last-trade/i) });
       const rows = blockedEvents('live_options_entry_refused');
       expect(rows).toHaveLength(1);
-      expect(JSON.parse(rows[0].detail!)).toMatchObject({ reason: expect.stringMatching(/rounded to 0/i) });
+      expect(JSON.parse(rows[0].detail!)).toMatchObject({ reason: expect.stringMatching(/last-trade/i) });
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
     });
 
     it('does not double-journal a refusal the order placer already recorded', async () => {

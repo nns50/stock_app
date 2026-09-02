@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { bsPrice, bsGreeks, impliedVol, normCdf, daysToExpiration } from '../src/options/blackScholes';
+import {
+  bsPrice,
+  bsGreeks,
+  impliedVol,
+  normCdf,
+  daysToExpiration,
+  calendarDaysToExpiration,
+  calendarDaysBetween,
+} from '../src/options/blackScholes';
 
 describe('normCdf', () => {
   it('is 0.5 at 0 and saturates at the tails', () => {
@@ -76,6 +84,58 @@ describe('impliedVol', () => {
   it('returns undefined when the price is below intrinsic', () => {
     const iv = impliedVol({ type: 'call', marketPrice: 1, S: 150, K: 100, T: 0.5, r: 0.04 });
     expect(iv).toBeUndefined();
+  });
+});
+
+// The unit every DTE *window* is configured in. daysToExpiration is fractional
+// and is right for pricing; comparing it against a whole-day setting is what
+// made a 0-2 window reject every Friday contract on a Wednesday.
+describe('calendarDaysToExpiration', () => {
+  it('is 2 for Wednesday -> Friday at EVERY hour of the session', () => {
+    // 2026-09-02 is a Wednesday; 2026-09-04 the Friday weekly expiry that
+    // DE, TXN and the rest of the universe all list. Fractional DTE scores
+    // this 2.27 at the open and 2.00 only after the close, so the window
+    // admitted it on Thursday and Friday alone.
+    for (const t of ['13:35', '16:00', '19:59']) {
+      const from = new Date(`2026-09-02T${t}:00Z`);
+      expect(calendarDaysToExpiration('2026-09-04', from), `at ${t}Z`).toBe(2);
+      expect(daysToExpiration('2026-09-04', from)).toBeGreaterThan(2); // the old comparison
+    }
+  });
+
+  it('is 0 on the expiration day itself, at any hour', () => {
+    expect(calendarDaysToExpiration('2026-09-04', new Date('2026-09-04T13:35:00Z'))).toBe(0);
+    expect(calendarDaysToExpiration('2026-09-04', new Date('2026-09-04T19:59:00Z'))).toBe(0);
+  });
+
+  it('floors at 0 for an expiration already past, like its fractional sibling', () => {
+    expect(calendarDaysToExpiration('2026-08-28', new Date('2026-09-02T13:35:00Z'))).toBe(0);
+  });
+
+  it('is anchored to the ET calendar day, not the server clock', () => {
+    // 03:00Z on Sep 2 is 23:00 ET on Sep 1 — still the Sep 1 market day, so
+    // Friday Sep 4 is 3 days out, not 2. A UTC-anchored version would say 2
+    // and quietly admit a contract a day early.
+    expect(calendarDaysToExpiration('2026-09-04', new Date('2026-09-02T03:00:00Z'))).toBe(3);
+  });
+});
+
+describe('calendarDaysBetween', () => {
+  it('counts whole days between two market dates', () => {
+    expect(calendarDaysBetween('2026-09-02', '2026-09-04')).toBe(2); // Wed -> Fri
+    expect(calendarDaysBetween('2026-09-04', '2026-09-04')).toBe(0); // same day
+    expect(calendarDaysBetween('2026-08-31', '2026-09-04')).toBe(4); // Mon -> Fri
+  });
+
+  it('floors at 0 rather than going negative', () => {
+    expect(calendarDaysBetween('2026-09-04', '2026-08-31')).toBe(0);
+  });
+
+  it('is the definition calendarDaysToExpiration is built on', () => {
+    // One function, so the live window gates and the options backtest cannot
+    // select different contracts for the same configured window.
+    const from = new Date('2026-09-02T13:35:00Z'); // Wed 09:35 ET
+    expect(calendarDaysToExpiration('2026-09-04', from)).toBe(calendarDaysBetween('2026-09-02', '2026-09-04'));
   });
 });
 

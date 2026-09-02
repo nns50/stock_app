@@ -1,7 +1,7 @@
 import { AutotradeConfig, getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
 import { convictionGrade } from './decide';
 import { OptionsTradeSignal } from './optionsDecide';
-import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskCheck';
+import { evaluateOptionsRiskCheck, OptionsRiskCheckResult, optionsPositionNotionalUsd } from './optionsRiskCheck';
 import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
 import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
 import { getPaperPortfolioSnapshot, PaperPortfolioSeed } from './execute';
@@ -414,9 +414,11 @@ export function getOptionsPaperPortfolioSnapshot(): OptionsPaperPortfolioSnapsho
 
 /** What to seed EQUITY's runPaperExecution() with, from options' pre-existing
  *  book — the "vice versa" half of the combined budget. Correlation notional
- *  for an open options position is its stored riskAmount (= premium paid),
- *  matching optionsRiskCheck.ts's own "notional here is the premium paid"
- *  convention, not a fresh entryPrice x quantity computation. */
+ *  for an open options position is the CAPITAL IT DEPLOYED (premium or net
+ *  debit paid x contracts x 100), via optionsPositionNotionalUsd. It used to
+ *  read the position's stored riskAmount, which was the same number only
+ *  while sizing assumed the whole premium was at risk — see that helper's own
+ *  comment. */
 export function optionsSeedForEquity(
   snapshot: OptionsPaperPortfolioSnapshot = getOptionsPaperPortfolioSnapshot(),
 ): PaperPortfolioSeed {
@@ -426,7 +428,11 @@ export function optionsSeedForEquity(
     dailyPnl: snapshot.dailyPnl,
     consecutiveLosses: snapshot.consecutiveLosses,
     tradesToday: snapshot.tradesToday,
-    positions: snapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.riskAmount, side: 'long' as const })),
+    positions: snapshot.openPositions.map((p) => ({
+      symbol: p.symbol,
+      notional: optionsPositionNotionalUsd(p),
+      side: 'long' as const,
+    })),
   };
 }
 
@@ -482,7 +488,11 @@ export async function runOptionsPaperExecution(
   // against — rather than piles onto — an existing SHORT equity position in
   // the same/correlated name.
   const runningPositions: { symbol: string; notional: number; side: 'long' | 'short' }[] = [
-    ...optSnapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.riskAmount, side: 'long' as const })),
+    ...optSnapshot.openPositions.map((p) => ({
+      symbol: p.symbol,
+      notional: optionsPositionNotionalUsd(p),
+      side: 'long' as const,
+    })),
     ...eqSnapshot.openPositions.map((p) => ({
       symbol: p.symbol,
       notional: p.entryPrice * p.quantity,
@@ -563,6 +573,11 @@ export async function runOptionsPaperExecution(
       maxConcurrentPositions: slotCap,
       correlatedNotional: correlated,
       riskPerTradePct: config.riskPerTradePct,
+      // Single-leg options size against the loss the exit ladder actually
+      // enforces, not against a 100% wipeout it never permits. Threaded from
+      // config at every options caller so the sizer and the exit path cannot
+      // drift apart.
+      optionsDisasterStopPct: config.optionsDisasterStopPct,
       maxDailyDrawdownPct: config.maxDailyDrawdownPct,
       stepDownAfterLosses: config.stepDownAfterLosses,
       stepDownSizeCutPct: config.stepDownSizeCutPct,

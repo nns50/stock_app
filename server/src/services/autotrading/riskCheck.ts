@@ -351,6 +351,21 @@ export interface RiskCheckContext {
    *  null skips the max_sector_exposure check entirely (see its doc comment
    *  for why: nothing to compare an unclassified symbol against). */
   candidateSector: string | null;
+  /** OPTIONS ONLY, and only for single-leg sizing (2026-09-02): the deepest
+   *  premium loss the exit ladder will actually hold a position through —
+   *  AutotradeConfig.optionsDisasterStopPct, enforced by
+   *  shortDatedOptionsExit's `disaster_stop` on BOTH books. Sizing used to
+   *  assume 100% of premium (stopPrice: 0), which is a loss the exit path
+   *  never permits in an orderly market, so a position sized that way risked
+   *  only riskPerTradePct x this fraction when the stop it will actually hit
+   *  fires — under-sizing by 1/fraction against the user's own stated risk
+   *  appetite, and at a small account it priced options out entirely (a
+   *  $63.43 budget bought nothing above $0.634 of premium).
+   *
+   *  Optional and fails SAFE: undefined, 0, or >= 100 all fall back to the
+   *  full-premium assumption, which is exactly the previous behaviour. Ignored
+   *  by the equity path and by debit spreads, whose loss is structural. */
+  optionsDisasterStopPct?: number;
   /** Regime-aware sizing (2026-07-16, docs/AUTOTRADING_SPEC.md phase 18).
    *  `marketAtrPct` is the SAME broad-market-proxy (SPY) ATR% reading
    *  executionGuards.ts's checkVolatility() already gates entries on — null

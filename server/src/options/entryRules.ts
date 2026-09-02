@@ -1,5 +1,5 @@
 import { OptionContract, OptionsChain } from '../providers/types';
-import { daysToExpiration } from './blackScholes';
+import { calendarDaysToExpiration, daysToExpiration } from './blackScholes';
 
 // ---------------------------------------------------------------------------
 // Strategy-based option ENTRY screening. Given a chain + a configurable rule
@@ -93,7 +93,14 @@ function evaluateContract(
 ): EntryCandidate {
   const absDelta = c.greeks?.delta !== undefined ? Math.abs(c.greeks.delta) : null;
   const iv = c.greeks?.iv ?? null;
+  // Two different questions, two different units. `dte` is fractional
+  // time-to-expiry and is what the metrics/greeks consumers want; `windowDte`
+  // is whole CALENDAR days and is the only one that may be compared against
+  // the min/max DTE settings below — which are configured in whole days, and
+  // whose own detail strings have always rounded to whole days, so comparing
+  // the fraction rendered a failing rule as the self-contradictory "2d <= 2d".
   const dte = daysToExpiration(c.expiration, now);
+  const windowDte = calendarDaysToExpiration(c.expiration, now);
   const spreadPct = spreadPctOf(c);
   const oi = c.openInterest ?? null;
   const vol = c.volume ?? null;
@@ -115,9 +122,9 @@ function evaluateContract(
   add('min open interest', (oi ?? 0) >= cfg.minOpenInterest, `OI ${oi ?? 0} ≥ ${cfg.minOpenInterest}`);
   add('min volume', (vol ?? 0) >= cfg.minVolume, `vol ${vol ?? 0} ≥ ${cfg.minVolume}`);
   if (cfg.minDaysToExpiration !== undefined)
-    add('min DTE', dte >= cfg.minDaysToExpiration, `${dte.toFixed(0)}d ≥ ${cfg.minDaysToExpiration}d`);
+    add('min DTE', windowDte >= cfg.minDaysToExpiration, `${windowDte}d ≥ ${cfg.minDaysToExpiration}d`);
   if (cfg.maxDaysToExpiration !== undefined)
-    add('max DTE', dte <= cfg.maxDaysToExpiration, `${dte.toFixed(0)}d ≤ ${cfg.maxDaysToExpiration}d`);
+    add('max DTE', windowDte <= cfg.maxDaysToExpiration, `${windowDte}d ≤ ${cfg.maxDaysToExpiration}d`);
   if (cfg.ivMin !== undefined)
     add(
       'min IV',
