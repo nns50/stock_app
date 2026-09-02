@@ -14,7 +14,7 @@ const BP = 2_161.18;
 describe('buyingPowerMaxQuantity', () => {
   it('caps the size to what the account can actually fund', () => {
     // PGY on the day: the sizer wanted $3,607.74 of stock.
-    const r = buyingPowerMaxQuantity({ buyingPowerUsd: BP, entryPrice: 36.08, side: 'buy' });
+    const r = buyingPowerMaxQuantity({ buyingPowerUsd: BP, entryPrice: 36.08, openClose: 'open' });
     // 2% reserve => $2,117.96 usable => 58 shares ($2,092.64), inside BP.
     expect(r.maxQuantity).toBe(58);
     expect(r.maxQuantity! * 36.08).toBeLessThan(BP);
@@ -24,7 +24,7 @@ describe('buyingPowerMaxQuantity', () => {
     // Sizing to exactly the available figure leaves a fundable order one tick
     // of drift from a broker rejection, because the guardrail values the order
     // at its limit price.
-    const r = buyingPowerMaxQuantity({ buyingPowerUsd: 1_000, entryPrice: 100, side: 'buy' });
+    const r = buyingPowerMaxQuantity({ buyingPowerUsd: 1_000, entryPrice: 100, openClose: 'open' });
     expect(r.maxQuantity).toBe(9); // not 10
     expect(r.usableUsd).toBeCloseTo(980, 6);
   });
@@ -32,38 +32,49 @@ describe('buyingPowerMaxQuantity', () => {
   it('imposes NO constraint when buying power is unknown', () => {
     // Paper, or a failed broker read. Must behave exactly as before this
     // module existed, rather than guessing a cap that shrinks every order.
-    expect(buyingPowerMaxQuantity({ buyingPowerUsd: undefined, entryPrice: 50, side: 'buy' })).toEqual({
+    expect(buyingPowerMaxQuantity({ buyingPowerUsd: undefined, entryPrice: 50, openClose: 'open' })).toEqual({
       maxQuantity: undefined,
       usableUsd: undefined,
     });
   });
 
-  it('leaves sells alone — they free buying power, they do not consume it', () => {
+  it('leaves CLOSING orders alone — they free buying power', () => {
     // Mirrors guardrails.ts, so the two cannot disagree about which orders are
     // constrained.
-    expect(buyingPowerMaxQuantity({ buyingPowerUsd: 10, entryPrice: 500, side: 'sell' }).maxQuantity).toBeUndefined();
+    expect(
+      buyingPowerMaxQuantity({ buyingPowerUsd: 10, entryPrice: 500, openClose: 'close' }).maxQuantity,
+    ).toBeUndefined();
+  });
+
+  it('CONSTRAINS a short entry — an opening sell consumes margin', () => {
+    // The bug this replaced: keying on `side` waved every sell through as
+    // "frees cash". True of closing a long, false of opening a short. It was
+    // inert only because liveAllowNakedShort was off, and would have become
+    // live money the moment shorts were enabled.
+    const r = buyingPowerMaxQuantity({ buyingPowerUsd: 1_000, entryPrice: 100, openClose: 'open' });
+    expect(r.maxQuantity).toBe(9);
   });
 
   it('returns 0 — not undefined — when not even one share is affordable', () => {
     // 0 is a real answer that must block the trade; undefined would wave it
     // through unconstrained, which is the opposite.
-    const r = buyingPowerMaxQuantity({ buyingPowerUsd: 100, entryPrice: 500, side: 'buy' });
+    const r = buyingPowerMaxQuantity({ buyingPowerUsd: 100, entryPrice: 500, openClose: 'open' });
     expect(r.maxQuantity).toBe(0);
   });
 
   it('refuses to invent a cap from unusable inputs', () => {
     for (const bad of [0, -10, Number.NaN]) {
-      expect(buyingPowerMaxQuantity({ buyingPowerUsd: 1_000, entryPrice: bad, side: 'buy' }).maxQuantity).toBe(
+      expect(buyingPowerMaxQuantity({ buyingPowerUsd: 1_000, entryPrice: bad, openClose: 'open' }).maxQuantity).toBe(
         undefined,
       );
     }
-    expect(buyingPowerMaxQuantity({ buyingPowerUsd: Number.NaN, entryPrice: 50, side: 'buy' }).maxQuantity).toBe(
+    expect(buyingPowerMaxQuantity({ buyingPowerUsd: Number.NaN, entryPrice: 50, openClose: 'open' }).maxQuantity).toBe(
       undefined,
     );
   });
 
   it('treats negative buying power as zero rather than a negative size', () => {
-    expect(buyingPowerMaxQuantity({ buyingPowerUsd: -500, entryPrice: 50, side: 'buy' }).maxQuantity).toBe(0);
+    expect(buyingPowerMaxQuantity({ buyingPowerUsd: -500, entryPrice: 50, openClose: 'open' }).maxQuantity).toBe(0);
   });
 });
 

@@ -549,7 +549,10 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   const bp = buyingPowerMaxQuantity({
     buyingPowerUsd: ctx.buyingPowerUsd,
     entryPrice: signal.entry,
-    side: signal.side,
+    // A TradeSignal is always an ENTRY, so this is 'open' for a long AND for a
+    // short: both consume buying power. Passing signal.side here used to let
+    // every short entry through unconstrained.
+    openClose: 'open',
   });
   const fundedCap =
     bp.maxQuantity === undefined
