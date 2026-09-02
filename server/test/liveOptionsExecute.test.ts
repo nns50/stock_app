@@ -780,6 +780,86 @@ describe('runLiveOptionsExecution', () => {
     expect(outcomes[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/risk check/i) });
     expect(mockPlaceOrder).not.toHaveBeenCalled(); // the pending equity risk left no room
   });
+
+  // Every refusal below used to be returned as a bare string into an outcomes
+  // array the loop counts and discards. The equity book had the identical hole
+  // and it is why "why has this never traded" was unanswerable there; this is
+  // the same fix on the options side, before live options is switched on.
+  describe('refusals leave a journal row (2026-09-02)', () => {
+    const blockedEvents = (action: string) => listAutotradeEvents({}).filter((e) => e.action === action);
+
+    it('journals a blocked risk check with the failed rules and the sized quantity', async () => {
+      setAutotradeConfig(liveConfig({ maxAggregateOpenRiskPct: 0.0001 }));
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+
+      const outcomes = await runLiveOptionsExecution([{ signal: optionSignal() }]);
+
+      expect(outcomes[0]).toMatchObject({ ok: false });
+      const rows = blockedEvents('live_options_risk_blocked');
+      expect(rows).toHaveLength(1);
+      const detail = JSON.parse(rows[0].detail!) as { failedRules: string[]; quantity: number; premium: number };
+      expect(detail.failedRules.length).toBeGreaterThan(0);
+      expect(detail.premium).toBe(3);
+      expect(typeof detail.quantity).toBe('number');
+      // Risk-check stage, so it lands where risk refusals are read — and the
+      // throttle's own dedupe read has to look in that same stage.
+      expect(rows[0].stage).toBe('risk_check');
+    });
+
+    it('throttles the risk-block row to once per symbol per day', async () => {
+      // The options decision emitted 184 signals in one tick on 2026-08-27,
+      // the loop ticks every 60s, and a refusal like the premium ceiling is a
+      // permanent condition — unthrottled this is tens of thousands of rows a
+      // session saying one thing.
+      setAutotradeConfig(liveConfig({ maxAggregateOpenRiskPct: 0.0001 }));
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+
+      await runLiveOptionsExecution([{ signal: optionSignal() }]);
+      await runLiveOptionsExecution([{ signal: optionSignal() }]);
+
+      expect(blockedEvents('live_options_risk_blocked')).toHaveLength(1);
+    });
+
+    it('journals an entry refused AFTER the risk check passed — probation flooring the size to zero', async () => {
+      // A 1-contract size cut by any multiplier below 1 floors to 0, so this
+      // refuses EVERY candidate for the whole probation window. It returned
+      // ok:false and wrote nothing.
+      setAutotradeConfig(
+        liveConfig({
+          liveOptionsProbationTrades: 10,
+          liveOptionsProbationSizeMultiplier: 0.5,
+          accountEquityUsd: 1_000, // 1% of 1,000 = $10 budget -> 1 contract at most
+          riskPerTradePct: 1,
+        }),
+      );
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+
+      // $10 budget / ($0.08 x 100) = 1 contract, which 0.5x floors to 0.
+      const outcomes = await runLiveOptionsExecution([{ signal: optionSignal({ premium: 0.08 }) }]);
+
+      expect(outcomes[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/rounded to 0/i) });
+      const rows = blockedEvents('live_options_entry_refused');
+      expect(rows).toHaveLength(1);
+      expect(JSON.parse(rows[0].detail!)).toMatchObject({ reason: expect.stringMatching(/rounded to 0/i) });
+    });
+
+    it('does not double-journal a refusal the order placer already recorded', async () => {
+      setAutotradeConfig(liveConfig());
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: false, error: 'broker rejected' });
+
+      const outcomes = await runLiveOptionsExecution([{ signal: optionSignal() }]);
+
+      expect(outcomes[0].ok).toBe(false);
+      // placeLiveOptionsOrder wrote live_options_entry_failed itself; the batch
+      // loop must not add a second row for the same refusal.
+      expect(blockedEvents('live_options_entry_refused')).toHaveLength(0);
+    });
+  });
 });
 
 function openLivePosition(overrides: Partial<Parameters<typeof createLiveOptionsPosition>[0]> = {}) {

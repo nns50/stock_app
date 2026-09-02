@@ -3760,3 +3760,231 @@ that cannot execute cannot be wrong yet.** The three config guards prove a field
 is read; they say nothing about whether the path that reads it has ever run.
 Before enabling any long-disabled flag, audit its path as untested code — because
 that is what it is.
+
+---
+
+## 2026-09-02 — Movers discovery: working, contributing ~nothing, and unobservable
+
+`universe_auto_promoted` had fired **zero times in 2+ weeks** while both
+`moversDiscoveryEnabled` and `autoPromoteMoversEnabled` were on. Four separate
+layers made the cause unknowable from inside the app:
+
+1. The movers fetch swallowed every error with a bare `catch {}` — "provider
+   broken for weeks" and "quiet premarket" produced the identical observation.
+2. `discovery.moversCount` was returned by `runAutotradeScreen` and read by
+   nothing.
+3. `discoverySource` was computed per candidate, **drove real behaviour on both
+   sides** (promotion counts only `'movers'`; the options decision considers only
+   `'universe'`), and was journaled nowhere — absent from all 400 sampled
+   `candidate_found` rows.
+4. Promotions themselves were the only signal, and they were zero.
+
+### What it actually was
+
+Measured directly against the live book on 2026-09-02 via `POST /api/autotrade/screen`:
+
+| Quantity | Value |
+|---|---|
+| Universe symbols | 528 |
+| Movers fetched (unusual + gainers, deduped) | 35 |
+| Symbols scanned | 563 |
+| Candidates | 225 |
+| **Candidates sourced from movers** | **1** (WETO, short) |
+
+The provider works. The gappers it finds mostly don't clear screening: of the 35
+movers, only 11 were priced **at or above the $5 `minPrice` floor** (sample
+prices 0.24, 0.30, 0.32, 0.36, 0.75, 0.79, 0.83, 0.95, 1.34 …), and
+`minAvgVolume` 1,000,000 cuts further. Webull's premarket movers skew hard
+toward sub-$5 names by construction — that is what a premarket gapper list is.
+
+So auto-promotion is not broken. `recordMoverOccurrence` fires only for
+movers-sourced candidates that **passed** screening, and it needs the SAME symbol
+on 3 distinct days inside a 10-day window. At roughly one surviving mover per
+day, drawn from a set that rotates daily, three repeats is a rare coincidence
+rather than a threshold anything approaches.
+
+### Fixed
+
+- `discoverSymbols` returns `moversError`; the bare catch keeps the screen
+  running (movers remain an enhancement, never required) but no longer discards
+  the reason.
+- `candidate_found` journals `discoverySource`, so the fetched-vs-survived ratio
+  is measurable over time instead of by hand.
+- `LoopTickSummary` gains `moversDiscovered` / `moversCandidates` /
+  `moversFetchError`, surfaced on the Monitoring **Last cycle** line.
+- The loop journals `movers_fetch_failed`, throttled to once per ET day per
+  distinct message — the loop ticks every 60s, so an unthrottled outage would
+  write ~390 identical rows a session.
+
+`moversDiscovered` and `moversCandidates` are derived from the **screen result**,
+not from `processMoversForPromotion`'s return: the diagnostic's whole purpose is
+answering "is movers discovery contributing", and reading it from the promotion
+result would have made it go dark in the one case it exists for — a throwing
+promotion call.
+
+### Not changed, deliberately
+
+`minPrice: 5` is the direct cause of the thin contribution and is **left alone**.
+Lowering it to reach premarket gappers means routing real money into sub-$5
+names, whose bid-ask/slippage tax is exactly what that floor exists to avoid —
+that is a risk decision, not a bug fix. The observability above is what makes it
+a decision that can now be made against measured numbers instead of a guess.
+
+### The pattern, again — one layer up from config
+
+CLAUDE.md's rule is *assert at the consumer, not the producer*. This is the same
+disease at the observability layer: **a value that is computed, returned, and
+read by nothing is indistinguishable from a value that is wrong.** `moversCount`
+and `discoverySource` were both live, both correct, and both unable to answer
+the one question anyone asked of them for two weeks.
+
+---
+
+## 2026-09-02 — The options book's refusals were invisible, and its size ceiling is $0.63
+
+Two findings from auditing the live options path as untested code (it has never
+executed — `liveOptionsEnabled` is off).
+
+### 1. Every live options refusal was silent — FIXED
+
+`runLiveOptionsExecution` pushed `{ok: false, reason}` into an `outcomes` array
+the loop counts and discards. Only a **throw** wrote a journal row
+(`live_options_entry_failed`). So the orderly refusals — the common ones — left
+no trace anywhere:
+
+- a blocked risk check became the bare string `'Risk check blocked'`, discarding
+  *which rule* failed;
+- `attemptLiveOptionsEntry`'s own refusals (probation flooring size to 0, a
+  last-trade-only quote, a vanished net debit, a failed quote fetch) wrote
+  nothing at all.
+
+This is the third instance of the identical hole — the equity book's
+`live_risk_blocked` and the options "max 1 at a time" gate were the first two.
+Now journaled as `live_options_risk_blocked` (stage `risk_check`, carrying
+`failedRules`, `checks`, `quantity`, `premium`) and `live_options_entry_refused`.
+
+Both are **throttled to once per symbol per ET day** via
+`journalEntrySkipOncePerDay`, unlike equity's unthrottled twin. The options
+decision emitted **184 signals in one tick** on 2026-08-27 and the loop ticks
+every 60s; the refusals here are steady-state conditions, not events, so
+unthrottled they would be tens of thousands of rows a session saying one thing.
+The helper gained an optional `stage` parameter for this — its dedupe read has
+to look in the same stage it writes to, or the throttle silently never matches.
+
+Refusals that already journal themselves carry `journaled: true` on the outcome
+so the batch loop does not write a second row.
+
+### 2. The risk model implies a $0.634 premium ceiling — REPORTED, NOT CHANGED
+
+`optionsRiskCheck` sizes a single leg with `stopPrice: 0` — the full premium is
+the risk, because a long option really can expire worthless. So:
+
+> contracts = floor(riskBudget / (premium × 100))
+
+At the live book — **$5,074.68 equity, `riskPerTradePct` 1.25%** — the budget is
+**$63.43**, and the largest premium that sizes even one contract is
+**$0.634/share**. Anything above it is refused on the `quantity` rule.
+
+The paper options book confirms it exactly. Four positions, ever:
+
+| Symbol | Contracts | Entry premium |
+|---|---|---|
+| INTC | 1 | 0.59 |
+| MRVL | 1 | 0.62 |
+| NOW  | 1 | 0.57 |
+| RKLB | 1 | 0.54 |
+
+All four under the ceiling; all four exactly 1 contract. With the configured
+window (`optionsMinDte` 0 / `optionsMaxDte` 2, delta 0.25–0.40) a liquid
+underlying's contract is routinely $1–$3 — sized to **zero**.
+
+Note the model disagreement, in CLAUDE.md's "two places derive the same
+quantity" family: the **sizer** assumes 100% of premium is at risk while the
+**exit path** stops at `optionsStopLossPct` 40% (disaster stop 70%). They differ
+by 2.5×. Sizing on the worst case is the safe direction to disagree in, so this
+is left alone — but it is the reason the ceiling is where it is, and it is a
+risk decision, not a bug fix.
+
+Pinned as a characterization test (`autotradeOptionsRiskCheck.test.ts`) so a
+change to the risk model, the budget, or the account size says out loud where
+the ceiling moved rather than landing silently in a live book.
+
+**And it makes the option-buying-power fix shipped hours earlier inert at this
+size.** Read live the same day:
+
+| Figure | Value |
+|---|---|
+| `optionBuyingPowerUsd` | $5,074.68 |
+| `buyingPowerUsd` | $10,149.36 |
+| `dayBuyingPowerUsd` | $20,298.72 |
+
+The option pool is a real field, not a fallback — it is distinct from both of
+the others (Webull extends no margin on long options, so it equals net
+liquidation). But the largest premium order the sizer will ever build is
+**$63.43**, which is **80× inside** the $5,074.68 pool. The buying-power check
+is correct and worth having; it simply cannot bind until either the account
+grows a great deal or the risk model changes. Worth writing down so the fix is
+not mistaken for a change that will alter behaviour today.
+
+### 3. Probation cannot cut a 1-contract size — REPORTED
+
+`quantity = Math.floor(rawQuantity * probation.multiplier)`. Since the sizer can
+only ever produce **1** contract at this account size, any multiplier below 1
+floors to **0** and refuses the entry. With
+`liveOptionsProbationSizeMultiplier` 0.5, turning options probation on — the
+obvious careful thing to do before going live — would block **every** options
+entry for the whole window, refused as *"Probation-adjusted quantity rounded to
+0"*, which reads like a fluke rather than a permanent state.
+
+It is inert today only because `liveOptionsProbationTrades` is **0**, so
+probation never activates. The refusal is now journaled, so if it is ever turned
+on the cause is visible on day one instead of looking like a quiet book.
+
+---
+
+## 2026-09-02 — The short buying-power fix was half a fix
+
+PR #460/#462 moved `guardrails.ts` and `buyingPowerSizing.ts` off `side` and
+onto `openClose`, and corrected `buyingPowerForSide` in `liveExecute` to hand a
+short a real figure. All three were the READ side.
+
+The **write-back** was left on the old premise:
+
+```ts
+// A filled BUY has spent this money — the next candidate in the same
+// batch must not be sized against it too. (Sells free buying power rather
+// than consuming it, matching guardrails.ts, so they leave it alone.)
+if (availableBuyingPowerUsd !== undefined && signal.side === 'buy') {
+  availableBuyingPowerUsd = Math.max(0, availableBuyingPowerUsd - notional);
+}
+```
+
+"Sells free buying power" is true of a **closing** sell. `runLiveExecution` is
+the **entry** batch — every signal reaching it is an OPEN, and `side: 'sell'`
+means *open a short*, which consumes margin exactly as a buy consumes cash.
+
+So a batch that opened a short decremented nothing, and the next candidate was
+sized against money the short had already spent — the precise double-spend the
+decrement exists to prevent, and one that could only ever fire once shorts were
+enabled. **Fourth site of the same confusion.**
+
+Fixed: both sides decrement. Covered by a two-sided test — short then long on
+$25,000 (the long is correctly declined as only 25% fundable, under the
+min-funded-size floor) and the same batch on $45,000 (both go out at full size,
+so the first test cannot pass by the decrement over-subtracting). Reverting the
+one-line change fails the first and passes the second.
+
+### Why the guards did not catch it
+
+The three config guards stop at config fields. `configReachability` proves
+`liveAllowNakedShort` is *read*; it says nothing about whether every branch
+that reads `side` reads it correctly. And the unit tests for
+`buyingPowerSizing` and `guardrails` both pass either way — they test the
+functions, not the batch loop that calls them.
+
+CLAUDE.md already names this: **assert at the consumer.** The lesson this adds
+is narrower and worth stating on its own — *when you fix a premise, grep for the
+premise, not for the function.* The string `side === 'buy'` was the defect;
+three of its four occurrences were fixed by reasoning about buying power, and
+the fourth survived because it lived in a batch-accounting line nobody was
+thinking about buying power in.

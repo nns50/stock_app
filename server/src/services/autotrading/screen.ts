@@ -69,7 +69,13 @@ export interface ScreenResult {
    *  figure in the journal can always be checked against what it was divided
    *  by. */
   relVolMedian: number | null;
-  discovery: { universeCount: number; moversCount: number; scannedCount: number };
+  /** `moversError` is the message from a FAILED movers fetch, null when the
+   *  fetch succeeded or was never attempted. Movers discovery used to swallow
+   *  every error with a bare catch, so a provider outage and "the provider
+   *  returned nothing" were the same observation: moversCount 0, no log, no
+   *  event. They mean different things — one is broken, the other is a quiet
+   *  premarket — so they are now distinguishable. */
+  discovery: { universeCount: number; moversCount: number; scannedCount: number; moversError: string | null };
 }
 
 /** Auto-trade screening leans harder on "unusual volume" than the manual
@@ -107,9 +113,11 @@ async function discoverSymbols(moversEnabled: boolean): Promise<{
   universeCount: number;
   moversCount: number;
   fromMovers: Set<string>;
+  moversError: string | null;
 }> {
   const universeSymbols = listUniverseSymbols().map((s) => s.toUpperCase());
   const fromMovers = new Set<string>();
+  let moversError: string | null = null;
 
   if (moversEnabled && webullConfigured()) {
     try {
@@ -118,13 +126,19 @@ async function discoverSymbols(moversEnabled: boolean): Promise<{
         webullMovers('gainers', 20, 'premarket'),
       ]);
       for (const m of [...unusual.movers, ...gainers.movers]) fromMovers.add(m.symbol);
-    } catch {
-      /* discovery enhancement only — universe alone still works */
+    } catch (e) {
+      // Still a discovery enhancement — universe alone works, so this is NOT
+      // rethrown and the screen proceeds exactly as before. What changed
+      // (2026-09-02) is that it is no longer SILENT: the previous bare
+      // `catch {}` meant a movers fetch that had been failing for weeks
+      // looked identical, from every vantage point in the app, to one
+      // returning an empty premarket. The caller journals this.
+      moversError = e instanceof Error ? e.message : String(e);
     }
   }
 
   const symbols = Array.from(new Set([...universeSymbols, ...fromMovers]));
-  return { symbols, universeCount: universeSymbols.length, moversCount: fromMovers.size, fromMovers };
+  return { symbols, universeCount: universeSymbols.length, moversCount: fromMovers.size, fromMovers, moversError };
 }
 
 export interface RunScreenOptions {
@@ -289,12 +303,13 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
   // IDENTICAL behavior to before this option existed.
   const directionMode = opts.directionMode ?? cfg.direction;
   const provider = getProvider();
-  const { symbols, universeCount, moversCount, fromMovers } = opts.symbols?.length
+  const { symbols, universeCount, moversCount, fromMovers, moversError } = opts.symbols?.length
     ? {
         symbols: Array.from(new Set(opts.symbols.map((s) => s.toUpperCase()))),
         universeCount: 0,
         moversCount: 0,
         fromMovers: new Set<string>(),
+        moversError: null,
       }
     : await discoverSymbols(opts.moversEnabled ?? true);
 
@@ -531,6 +546,17 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
         gapPct: candidate.indicators.gapPct,
         relVolume: candidate.indicators.relVolume,
         relVolPace: pace,
+        // 'universe' or 'movers' (2026-09-02). The field has existed on
+        // ScreenCandidate since movers discovery shipped and drives real
+        // behaviour — moversPromotion counts occurrences only for 'movers',
+        // and the options decision considers only 'universe' — but it was
+        // recorded NOWHERE, so "how much is movers discovery actually
+        // contributing" was unanswerable from the journal across 400
+        // sampled candidate_found rows. Measured once by hand on 2026-09-02:
+        // 35 movers fetched, 563 symbols scanned, 225 candidates, of which
+        // exactly ONE was movers-sourced. That ratio is the thing this field
+        // makes visible over time instead of on demand.
+        discoverySource: candidate.discoverySource,
         // Per-component scores (2026-08-26). The total alone cannot answer the
         // question the weights argument keeps running into: which components
         // actually predict a realized outcome, and which are along for the
@@ -558,6 +584,6 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
     skipped,
     errors,
     relVolMedian: median,
-    discovery: { universeCount, moversCount, scannedCount: symbols.length },
+    discovery: { universeCount, moversCount, scannedCount: symbols.length, moversError },
   };
 }

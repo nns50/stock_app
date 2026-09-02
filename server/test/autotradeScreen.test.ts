@@ -439,6 +439,25 @@ describe('runAutotradeScreen', () => {
       restore();
     });
 
+    // discoverySource drives real behaviour on both sides — moversPromotion
+    // records an occurrence only for 'movers', and the options decision
+    // considers only 'universe' — but it was journaled nowhere, so how much
+    // movers discovery actually contributes could not be answered from the
+    // journal at all.
+    it('journals discoverySource on candidate_found', async () => {
+      const restore = mockCandles(() => downtrend);
+      await runAutotradeScreen({ symbols: ['SCRSRC'], config: { filters: RELAXED_FILTERS }, directionMode: 'both' });
+      const found = listAutotradeEvents({ stage: 'screen', symbol: 'SCRSRC' }).find(
+        (e) => e.action === 'candidate_found',
+      );
+      // Explicit `symbols` bypasses discovery entirely, so this one is
+      // universe-sourced by construction — the point is that the field is
+      // PRESENT, which it was not for any of the 400 rows sampled on the
+      // live book.
+      expect(JSON.parse(found!.detail!)).toMatchObject({ discoverySource: 'universe' });
+      restore();
+    });
+
     it('journals the PER-COMPONENT scores, not just the total', async () => {
       // The total cannot say which components predicted a realized outcome and
       // which were along for the ride — and nothing else records them, on the
@@ -777,6 +796,32 @@ describe('movers discovery gate (moversDiscoveryEnabled, 2026-07-27)', () => {
   it('never fetches movers when explicit symbols bypass discovery, regardless of the flag', async () => {
     await runAutotradeScreen({ symbols: ['AAPL'], config: { filters: { minRelVol: 0 } }, moversEnabled: true });
     expect(mockWebullMovers).not.toHaveBeenCalled();
+  });
+
+  // A failing fetch and an empty premarket both produced moversCount 0 and
+  // nothing else — no log, no event, no field — so a provider that had been
+  // broken for weeks was indistinguishable from a quiet morning. The screen
+  // still must NOT fail (movers are an enhancement), so the distinction has
+  // to be carried out rather than thrown.
+  it('reports a FAILED movers fetch as an error, distinct from an empty one', async () => {
+    mockWebullMovers.mockReset().mockRejectedValue(new Error('webull session expired'));
+    const result = await runAutotradeScreen({ config: { filters: { minRelVol: 0 } } });
+    expect(result.discovery.moversError).toBe('webull session expired');
+    expect(result.discovery.moversCount).toBe(0);
+    // Still a successful screen — universe-only, exactly as before.
+    expect(result.generatedAt).toBeGreaterThan(0);
+  });
+
+  it('leaves moversError null when the fetch succeeds but returns nothing', async () => {
+    const result = await runAutotradeScreen({ config: { filters: { minRelVol: 0 } } });
+    expect(result.discovery.moversError).toBeNull();
+    expect(result.discovery.moversCount).toBe(0);
+  });
+
+  it('leaves moversError null when discovery is switched off', async () => {
+    mockWebullMovers.mockReset().mockRejectedValue(new Error('would have failed'));
+    const result = await runAutotradeScreen({ config: { filters: { minRelVol: 0 } }, moversEnabled: false });
+    expect(result.discovery.moversError).toBeNull();
   });
 });
 

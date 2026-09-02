@@ -1824,6 +1824,16 @@ function MonitoringDashboard({
               {dash.lastTick.summary.moversAutoPromoted > 0 &&
                 ` · ${dash.lastTick.summary.moversAutoPromoted} movers promoted`}
             </p>
+            {dash.lastTick.summary.moversFetchError ? (
+              <p className="text-amber-400">
+                Movers discovery failed — {dash.lastTick.summary.moversFetchError}. Screening ran universe-only.
+              </p>
+            ) : (
+              <p>
+                Movers discovery: {dash.lastTick.summary.moversCandidates} of {dash.lastTick.summary.moversDiscovered}{' '}
+                fetched became candidates
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -6203,6 +6213,16 @@ export default function AutoTradePage() {
                     accumulate real IV-rank history) and generated {loopSummary.optionsSignalsGenerated} signal(s).{' '}
                     {loopSummary.moversAutoPromoted > 0 && (
                       <>{loopSummary.moversAutoPromoted} recurring mover(s) promoted to the universe. </>
+                    )}
+                    {loopSummary.moversFetchError ? (
+                      <span className="text-amber-400">
+                        Movers discovery failed this tick ({loopSummary.moversFetchError}) — universe-only.{' '}
+                      </span>
+                    ) : (
+                      <>
+                        Movers discovery contributed {loopSummary.moversCandidates} of {loopSummary.moversDiscovered}{' '}
+                        fetched.{' '}
+                      </>
                     )}
                   </>
                 )}

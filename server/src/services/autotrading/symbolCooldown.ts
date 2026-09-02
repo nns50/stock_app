@@ -127,11 +127,17 @@ export function journalEntrySkipOncePerDay(
   action: string,
   detail: Record<string, unknown>,
   now: number = Date.now(),
+  /** Journal stage. Defaults to 'execution' — every caller predating
+   *  2026-09-02 is an execution-stage entry skip. The live options RISK
+   *  refusal reuses this throttle but genuinely belongs in 'risk_check', and
+   *  the dedupe read has to look in the same stage it writes to or the
+   *  throttle silently never matches and re-journals every tick. */
+  stage: 'execution' | 'risk_check' = 'execution',
 ): void {
   const today = etToday(now);
-  const already = listAutotradeEvents({ stage: 'execution', symbol, limit: 50 }).some(
+  const already = listAutotradeEvents({ stage, symbol, limit: 50 }).some(
     (e) => e.action === action && etToday(e.createdAt) === today,
   );
   if (already) return;
-  logAutotradeEvent({ symbol, stage: 'execution', action, detail });
+  logAutotradeEvent({ symbol, stage, action, detail });
 }
