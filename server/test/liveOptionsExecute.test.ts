@@ -382,6 +382,51 @@ describe('attemptLiveOptionsEntry', () => {
     expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 
+  // guardrails values an OPENING order against buyingPowerUsd, and acct.state's
+  // is the EQUITY/day pool. Options are bought from a separate, far smaller one
+  // — $471.41 against a day BP of $8,644.72 on 2026-08-27. Passing the equity
+  // figure let a premium order clear the check and then be refused by the
+  // broker, with no local record of why.
+  describe('option buying power, not the equity pool', () => {
+    it('REFUSES a premium order that exceeds OPTION buying power', async () => {
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      // Plenty of equity BP, almost no OPTION BP — the real 2026-08-27 shape.
+      mockAccountState.mockResolvedValue({
+        ...okAccountState,
+        state: { ...okAccountState.state, buyingPowerUsd: 1_000_000 },
+        optionBuyingPowerUsd: 50,
+      } as Awaited<ReturnType<typeof webullAccountState>>);
+      const sig = optionSignal();
+      const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+      expect(r.ok).toBe(false);
+      expect(r.reason).toMatch(/Guardrails blocked/);
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+    });
+
+    it('allows the same order when OPTION buying power covers it', async () => {
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue({
+        ...okAccountState,
+        optionBuyingPowerUsd: 1_000_000,
+      } as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OPTBP' });
+      const sig = optionSignal();
+      const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+      expect(r.ok).toBe(true);
+    });
+
+    it('falls back to the equity figure when the broker reports no option pool', async () => {
+      // Fails OPEN: behaviour identical to before this existed, so a provider
+      // that omits option_buying_power never silently blocks every entry.
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NOOPT' });
+      const sig = optionSignal();
+      const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+      expect(r.ok).toBe(true);
+    });
+  });
+
   describe('single_leg', () => {
     it('fails closed on a quote-fetch failure — no intent, no broker call', async () => {
       mockGetProvider.mockReturnValue(chainsFor({}) as never);

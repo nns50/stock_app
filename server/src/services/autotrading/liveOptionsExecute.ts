@@ -375,8 +375,25 @@ async function loadAccountAndGuardrails(
   // Account type gates spreads (margin only) -- fetch it only for a spread,
   // same convention as livePreview.ts / placeOrder.ts.
   const accountType = isSpread ? await webullAccountType(accountId) : undefined;
+  // OPTION buying power, not the equity figure (2026-09-02). guardrails' own
+  // buying_power rule values an OPENING order against `buyingPowerUsd`, and
+  // `acct.state.buyingPowerUsd` is the EQUITY/day pool. Options are bought from
+  // a separate and far smaller one: measured 2026-08-27 at $471.41 against a
+  // day BP of $8,644.72, an ~18x difference. Passing the equity figure let a
+  // $600 premium order clear the check (600 < 8,644) and then be refused by the
+  // broker (600 > 471) — a build-then-reject loop with no local record of why.
+  //
+  // webullAccountState has returned optionBuyingPowerUsd all along; nothing
+  // read it. Deferred deliberately on 2026-08-27 as belonging "at use time, in
+  // liveOptionsExecute" — this is that use time.
+  //
+  // Fails OPEN: the provider already falls back option_buying_power ->
+  // buying_power -> cash, so a broker that reports no option pool yields the
+  // equity figure and behaviour is exactly as before. Only ever NARROWS the
+  // check, never widens it.
   const accountState: AccountState = {
     ...acct.state,
+    ...(acct.optionBuyingPowerUsd !== undefined ? { buyingPowerUsd: acct.optionBuyingPowerUsd } : {}),
     ordersToday: countTodaysOrders(),
     accountType,
     ...(currentPositionQtyOverride !== undefined ? { currentPositionQty: currentPositionQtyOverride } : {}),
