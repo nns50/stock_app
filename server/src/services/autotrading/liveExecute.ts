@@ -1038,6 +1038,34 @@ export async function runLiveExecution(
       });
       continue;
     }
+    // Is 1R reachable on THIS name inside a session? A property of the SETUP,
+    // not the portfolio — no sizing or slot decision can rescue a trade whose
+    // 1R needs more than the stock's daily range.
+    //
+    // LIVE-ONLY, and that placement is the point (moved here 2026-09-01). It
+    // first shipped inside generateSignal, which sits ABOVE the paper/live
+    // split: loop.ts calls decide once and both books consume the same
+    // signals, so the filter silently removed those names from PAPER too and
+    // left the experiment measuring it with no control group. Every other
+    // entry gate here is live-only for exactly that reason.
+    const atrForReach = candidateSignal.atr;
+    if (cfg.maxRiskAtrFraction > 0 && atrForReach && atrForReach > 0) {
+      const stopDistance = Math.abs(candidateSignal.entry - candidateSignal.stop);
+      if (stopDistance > atrForReach * cfg.maxRiskAtrFraction) {
+        const reason =
+          `1R costs ${(stopDistance / atrForReach).toFixed(2)}x this name's daily range ` +
+          `(max ${cfg.maxRiskAtrFraction}) — not reachable in a session`;
+        journalEntrySkipOncePerDay(symbol, 'risk_atr_unreachable_skipped', {
+          stopDistance: Math.round(stopDistance * 100) / 100,
+          atr: Math.round(atrForReach * 100) / 100,
+          ratio: Math.round((stopDistance / atrForReach) * 100) / 100,
+          maxRiskAtrFraction: cfg.maxRiskAtrFraction,
+          reason,
+        });
+        outcomes.push({ symbol, ok: false, reason });
+        continue;
+      }
+    }
     const reentry = reentryCooldownFor(symbol, closedAutotradeForReentry, cfg.symbolReentryCooldownMinutes);
     if (reentry) {
       const reason = `Re-entry cooldown — exited ${reentry.minutesSince}m ago, resumes after ${reentry.cooldownMinutes}m`;

@@ -627,7 +627,6 @@ describe('runAutotradeLoopTick', () => {
       stopAtrMultiple: 1.5,
       targetRMultiple: 2,
       maxStopDistancePct: 0,
-      maxRiskAtrFraction: 0,
     });
     expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral');
     expect(summary.ranEntries).toBe(true);
@@ -721,7 +720,6 @@ describe('runAutotradeLoopTick', () => {
       stopAtrMultiple: 2.5,
       targetRMultiple: 3,
       maxStopDistancePct: 0,
-      maxRiskAtrFraction: 0,
     });
   });
 
@@ -910,7 +908,6 @@ describe('runAutotradeLoopTick', () => {
       stopAtrMultiple: 1.5,
       targetRMultiple: 2,
       maxStopDistancePct: 0,
-      maxRiskAtrFraction: 0,
     });
     // Options decision sees ONLY the universe-sourced one.
     expect(mockOptionsDecide).toHaveBeenCalledWith([universeCandidate], {
@@ -948,7 +945,7 @@ describe('runAutotradeLoopTick', () => {
 
     expect(mockDecide).toHaveBeenCalledWith(
       [candidate('CALM', 2)], // WILD excluded
-      { stopAtrMultiple: 1.5, targetRMultiple: 2, maxStopDistancePct: 0, maxRiskAtrFraction: 0 },
+      { stopAtrMultiple: 1.5, targetRMultiple: 2, maxStopDistancePct: 0 },
     );
     expect(summary.candidatesScreened).toBe(2);
     expect(summary.candidatesPassedVolatility).toBe(1);
@@ -996,7 +993,6 @@ describe('runAutotradeLoopTick', () => {
       stopAtrMultiple: 1.5,
       targetRMultiple: 2,
       maxStopDistancePct: 0,
-      maxRiskAtrFraction: 0,
     });
   });
 

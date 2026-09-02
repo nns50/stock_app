@@ -661,7 +661,6 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     const decision = runAutotradeDecision(selectedCandidates, {
       stopAtrMultiple: config.stopAtrMultiple,
       maxStopDistancePct: config.maxStopDistancePct,
-      maxRiskAtrFraction: config.maxRiskAtrFraction,
       targetRMultiple: config.targetRMultiple,
     });
     summary.signalsGenerated = decision.signals.length;

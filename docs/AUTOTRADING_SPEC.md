@@ -3562,3 +3562,41 @@ audit before trusting the gate, and these were invisible until now.
 
 Ships **off**. Paper, backtests and the manual preview are unchanged until live
 config opts in.
+
+---
+
+## The reachability gate was filtering the control book too (2026-09-01, same day)
+
+`maxRiskAtrFraction` shipped inside `generateSignal` in `decide.ts`. That sits
+**above the paper/live split**: `loop.ts` calls `runAutotradeDecision` ONCE and
+both `runPaperExecution` and `runLiveExecution` consume the same
+`decision.signals`. So the filter silently removed low-ATR names from **paper**
+as well as live.
+
+Every other entry gate is live-only, deliberately. `symbolCooldown.ts` states the
+convention outright: *"Paper deliberately keeps trading the cooled name — it
+stays the always-on sanity track, and its trades are the evidence that the name
+has started behaving again."* The naked-short skip and `reentryCooldown` follow
+it. This one did not, and nothing caught the asymmetry because the three config
+guards check that a field is READ, not WHERE.
+
+The cost was specific: it left the experiment set up the same evening with **no
+control group**. Rule A3 asks whether excluding those names was right, and
+answering it needs a book that still trades them.
+
+Moved to `runLiveExecution`, beside the other gates. `generateSignal` now carries
+the deriving `atr` on `TradeSignal` — the same pattern `avgVolume` and
+`relVolPace` already use — and the live path does the refusing. Journaled as
+`risk_atr_unreachable_skipped`.
+
+**The regression test is at the property, not the placement:** a paper test
+asserts `runPaperExecution` still takes a name whose 1R costs 5x its daily
+range, which live refuses at 0.7. Asserting the gate's location would pass
+again the next time it moves; asserting that paper stays a control cannot.
+
+### The general lesson
+
+A gate's PLACEMENT in the pipeline is part of its meaning. Above the split it
+gates the experiment; below it, it gates one arm. The config guards cover
+whether a field is read and by what — they say nothing about whether the reader
+sits on the right side of a fork the whole evidence design depends on.

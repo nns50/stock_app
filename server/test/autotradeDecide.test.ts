@@ -128,11 +128,11 @@ describe('generateSignal', () => {
     expect(defaultDecisionConfig()).toEqual({
       stopAtrMultiple: 1.5,
       targetRMultiple: 2,
+      // Ships OFF: a bare decision config must reproduce the plain ATR plan,
+      // so backtests and the manual preview are unchanged. The reachability
+      // gate is no longer here at all — see the describe at the foot of this
+      // file for why it moved to the live path.
       maxStopDistancePct: 0,
-      // Both caps ship OFF: a bare decision config must reproduce the plain
-      // ATR plan, so backtests and the manual preview are unchanged until
-      // live config opts in.
-      maxRiskAtrFraction: 0,
     });
   });
 });
@@ -273,47 +273,28 @@ describe('stop-distance cap', () => {
   });
 });
 
-// The flat maxStopDistancePct cap binds on nearly every candidate, so 1R is a
-// fixed ~2.5% move -- which is a quarter of a normal day on one stock and more
-// than a whole day on another. On 2026-09-01 six live entries reached a MEDIAN
-// of 0.28R and not one reached 1.0R; XOM's 1R cost 1.25x its entire daily
-// range. No signal quality can rescue that: it is arithmetic, not luck.
-describe('generateSignal — 1R has to be reachable on this name', () => {
-  // ATR 1.0 on a $100 stock = a 1% daily range. The 2.5% stop cap makes 1R
-  // cost 2.5 = 2.5x ATR, far past any session.
-  const quiet = candidate({ symbol: 'XOM', price: 100, indicators: ind({ atr: 1 }) });
-  // ATR 6 on the same price: 1R costs 2.5 = 0.42x ATR, comfortably intraday.
-  const lively = candidate({ symbol: 'HOOD', price: 100, indicators: ind({ atr: 6 }) });
-  const cfg = { stopAtrMultiple: 1.5, targetRMultiple: 2, maxStopDistancePct: 2.5, maxRiskAtrFraction: 0.7 };
-
-  it('refuses a name whose 1R costs more than the bar', () => {
-    expect(generateSignal(quiet, cfg)).toBeNull();
+// The reachability gate MOVED to liveExecute on 2026-09-01 (it sat above the
+// paper/live split here and silently filtered the paper control book too), so
+// what decide owes now is the NUMBER, not the decision. Its gating tests live
+// in autotradeLiveExecute.test.ts, at the consumer.
+describe('generateSignal — carries the ATR the live gate needs', () => {
+  it('puts the stop-deriving ATR on the signal', () => {
+    const sig = generateSignal(candidate({ indicators: ind({ atr: 4 }) }), {
+      stopAtrMultiple: 1.5,
+      targetRMultiple: 2,
+    });
+    expect(sig!.atr).toBe(4);
   });
 
-  it('takes a name that can actually travel 1R', () => {
-    const sig = generateSignal(lively, cfg);
+  it('does NOT refuse a low-ATR name itself — that is the live path\u2019s call now', () => {
+    // ATR 1 on a $100 stock with a 2.5% cap: 1R costs 2.5x the daily range.
+    // decide must still emit it, so PAPER keeps trading it as the control.
+    const sig = generateSignal(candidate({ indicators: ind({ atr: 1 }) }), {
+      stopAtrMultiple: 1.5,
+      targetRMultiple: 2,
+      maxStopDistancePct: 2.5,
+    });
     expect(sig).not.toBeNull();
-    expect(sig!.symbol).toBe('HOOD');
-  });
-
-  it('is OFF at 0 — every name passes, exactly as before this existed', () => {
-    expect(generateSignal(quiet, { ...cfg, maxRiskAtrFraction: 0 })).not.toBeNull();
-  });
-
-  it('measures against the stop ACTUALLY used, not a fixed ATR minimum', () => {
-    // Same quiet name, but with the percentage cap off: the stop is now
-    // 1.5x ATR by construction, so 1R costs 1.5x ATR -- still over a 0.7 bar,
-    // and still refused. The rule follows the stop rather than duplicating it.
-    expect(generateSignal(quiet, { ...cfg, maxStopDistancePct: 0 })).toBeNull();
-    // ...and a bar loose enough to admit a 1.5x-ATR stop lets it through,
-    // proving the two move together rather than being independent numbers.
-    expect(generateSignal(quiet, { ...cfg, maxStopDistancePct: 0, maxRiskAtrFraction: 1.6 })).not.toBeNull();
-  });
-
-  it('keeps the real 2026-09-01 boundary cases on the right sides', () => {
-    // CF 3.85% ATR -> 1R = 0.65x (kept); DE 3.16% -> 0.79x (refused).
-    const mk = (atrPct: number) => candidate({ price: 100, indicators: ind({ atr: atrPct }) });
-    expect(generateSignal(mk(3.85), cfg)).not.toBeNull();
-    expect(generateSignal(mk(3.16), cfg)).toBeNull();
+    expect(sig!.atr).toBe(1);
   });
 });
