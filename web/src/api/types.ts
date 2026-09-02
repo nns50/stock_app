@@ -1744,7 +1744,7 @@ export interface AutotradeScreenResult {
   excluded: { symbol: string; reason: string }[];
   skipped: { symbol: string; reason: string }[];
   errors: { symbol: string; message: string }[];
-  discovery: { universeCount: number; moversCount: number; scannedCount: number };
+  discovery: { universeCount: number; moversCount: number; scannedCount: number; moversError: string | null };
 }
 
 export type AutotradeStage = 'screen' | 'decision' | 'risk_check' | 'execution' | 'config';
@@ -2209,6 +2209,14 @@ export interface LoopTickSummary {
    *  (0 on most cycles — a symbol needs several distinct days of recurrence
    *  first; see the About page / docs/AUTOTRADING_SPEC.md). */
   moversAutoPromoted: number;
+  /** Distinct symbols the premarket movers lists contributed to this tick's
+   *  scan, and how many of them survived screening. Read the pair together:
+   *  `moversDiscovered` high with `moversCandidates` 0 means discovery works
+   *  and the gappers it finds don't pass the filters; both 0 with
+   *  `moversFetchError` set means the fetch itself is broken. */
+  moversDiscovered: number;
+  moversCandidates: number;
+  moversFetchError: string | null;
 }
 
 /** The automated loop's most recently completed tick, persisted rather than

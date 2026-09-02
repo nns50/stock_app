@@ -129,6 +129,9 @@ describe('getAutotradeDashboard', () => {
       liveEntriesOpened: 0,
       liveOptionsEntriesOpened: 0,
       moversAutoPromoted: 0,
+      moversDiscovered: 0,
+      moversCandidates: 0,
+      moversFetchError: null,
     });
     const dash = getAutotradeDashboard();
     expect(dash.lastTick).not.toBeNull();

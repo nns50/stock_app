@@ -1524,7 +1524,12 @@ equally-weighted cards in the order they happened to be built:
   re-discovered and re-scored from scratch every day. Only ever runs from the background
   loop, never from a manual **Run screen**; each promotion shows up in **Recent
   activity**, and once added, a symbol you later remove is never re-added by this
-  mechanism.
+  mechanism. Note what the threshold actually counts: a mover has to **pass screening**
+  on each of those days to earn an occurrence, so the promotion rate is bounded by how
+  many movers survive your filters, not by how many the provider returns. A failed
+  movers fetch now also logs a **movers fetch failed** entry in **Recent activity**
+  (once per day per distinct error, so a day-long outage doesn't flood the feed) —
+  screening continues universe-only, but no occurrences accrue while it's down.
   **Auto-tune from realized edge** (2026-07-18, off by default) closes the loop between
   the Journal's own analytics and what the loop actually does: once a day, it nudges
   **risk-per-trade** toward a Kelly suggestion computed over the **loop's own
@@ -1820,7 +1825,16 @@ because the loop is the only caller that is always flat by the bell, so it is
   turned into signals (equity and options), how many paper/live entries it opened, how
   many exits it checked/closed, and any movers promoted that cycle — persisted from the
   actual last tick (not recomputed), so it reads "hasn't run yet" only before the loop's
-  very first cycle, and survives the page being closed and reopened. If that cycle
+  very first cycle, and survives the page being closed and reopened. The same line now
+  reports **how many of the premarket movers fetched actually became candidates**
+  ("Movers discovery contributed 1 of 35 fetched"), or, if the fetch itself failed, says
+  so in amber with the reason. Read the pair together: a high fetched count with zero
+  contributed means discovery is working and the gappers it finds aren't passing your
+  screening filters — most often the **min price** floor, since premarket movers skew
+  heavily sub-$5 — while a fetch error means the movers half of discovery is off the air
+  entirely and screening is running universe-only. Before this, both cases looked
+  identical from every page in the app, which is how zero auto-promotions over two weeks
+  went unexplained. If that cycle
   didn't place any entries, the exact reason (kill switch engaged, market closed,
   within the session buffer, etc.) shows first, in place of the funnel. Below that, a **Books**
   table reads the loop's current state directly — one row per metric, one column per

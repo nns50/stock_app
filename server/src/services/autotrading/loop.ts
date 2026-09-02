@@ -51,6 +51,11 @@ import { listMacroEvents } from '../../db/macroEvents';
 import { runWebullPositionsSync } from '../../providers/webull/positions';
 import { processMoversForPromotion } from './moversPromotion';
 import { checkForRecentSplits } from './splitCheck';
+import { etToday } from '../../util/marketDate';
+
+/** `${etDay}|${message}` of the last journaled movers-fetch failure — the
+ *  once-per-day-per-message throttle for 'movers_fetch_failed'. */
+let lastMoversFailureKey: string | null = null;
 
 // ---------------------------------------------------------------------------
 // The autonomous execution loop (docs/AUTOTRADING_SPEC.md — EXECUTION LOOP):
@@ -160,6 +165,22 @@ export interface LoopTickSummary {
    *  promotion also gets its own 'universe_auto_promoted' journal entry with
    *  the occurrence/threshold detail; this is just the rollup count. */
   moversAutoPromoted: number;
+  /** Distinct symbols Webull's premarket movers lists contributed to this
+   *  tick's scan (0 when moversDiscoveryEnabled is off, Webull isn't
+   *  configured, or the fetch failed — moversFetchError separates the last
+   *  case from the first two). */
+  moversDiscovered: number;
+  /** Of this tick's screen candidates, how many came from movers rather than
+   *  the persistent universe. Paired with moversDiscovered deliberately: the
+   *  two together are the only way to tell "movers discovery is broken" from
+   *  "movers discovery works and the gappers it finds don't pass screening".
+   *  Both were invisible until 2026-09-02, when zero auto-promotions in 2+
+   *  weeks turned out to be the SECOND case — 35 fetched, 1 candidate — and
+   *  the journal could not distinguish it from the first. */
+  moversCandidates: number;
+  /** Why the movers fetch produced nothing, when it failed rather than
+   *  returned an empty list. Null on success and when no fetch was made. */
+  moversFetchError: string | null;
 }
 
 /** Ticker-level volatility pre-filter, applied between Screen and Decision —
@@ -215,6 +236,9 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     liveEntriesOpened: 0,
     liveOptionsEntriesOpened: 0,
     moversAutoPromoted: 0,
+    moversDiscovered: 0,
+    moversCandidates: 0,
+    moversFetchError: null,
   };
 }
 
@@ -624,6 +648,40 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       summary.moversAutoPromoted = promotion.promoted.length;
     } catch (e) {
       console.error('[autotrade-loop] movers auto-promotion failed:', (e as Error).message);
+    }
+
+    // Derived from the screen result rather than from processMoversForPromotion's
+    // `recorded` on purpose: these two numbers exist to answer "is movers
+    // discovery contributing anything", and that question is at its most
+    // urgent precisely when the promotion call above has just thrown. Reading
+    // them from the promotion result would have made the diagnostic go dark
+    // in the one case it is for.
+    summary.moversDiscovered = screenResult.discovery.moversCount;
+    summary.moversCandidates = screenResult.candidates.filter((c) => c.discoverySource === 'movers').length;
+
+    // A movers fetch that THREW (as opposed to returning an empty premarket)
+    // used to be swallowed by a bare catch in screen.ts, so a broken provider
+    // was indistinguishable from a quiet one. Journaled here rather than at
+    // the throw site because the loop is what runs every 60s: a persistent
+    // outage would otherwise write ~390 identical rows a session, so this is
+    // throttled to once per ET day per distinct message. The throttle lives
+    // in module state and so resets on restart — one extra row after a
+    // deploy is the intended trade for not persisting a suppression ledger.
+    if (screenResult.discovery.moversError) {
+      summary.moversFetchError = screenResult.discovery.moversError;
+      const key = `${etToday()}|${screenResult.discovery.moversError}`;
+      if (key !== lastMoversFailureKey) {
+        lastMoversFailureKey = key;
+        logAutotradeEvent({
+          stage: 'screen',
+          action: 'movers_fetch_failed',
+          detail: {
+            message: screenResult.discovery.moversError,
+            note: 'universe-only screening continued; movers-sourced candidates and auto-promotion are unavailable until this clears',
+          },
+          riskProfile: config.riskProfile,
+        });
+      }
     }
 
     const volCfg: VolatilityFilterConfig = {

@@ -3760,3 +3760,80 @@ that cannot execute cannot be wrong yet.** The three config guards prove a field
 is read; they say nothing about whether the path that reads it has ever run.
 Before enabling any long-disabled flag, audit its path as untested code — because
 that is what it is.
+
+---
+
+## 2026-09-02 — Movers discovery: working, contributing ~nothing, and unobservable
+
+`universe_auto_promoted` had fired **zero times in 2+ weeks** while both
+`moversDiscoveryEnabled` and `autoPromoteMoversEnabled` were on. Four separate
+layers made the cause unknowable from inside the app:
+
+1. The movers fetch swallowed every error with a bare `catch {}` — "provider
+   broken for weeks" and "quiet premarket" produced the identical observation.
+2. `discovery.moversCount` was returned by `runAutotradeScreen` and read by
+   nothing.
+3. `discoverySource` was computed per candidate, **drove real behaviour on both
+   sides** (promotion counts only `'movers'`; the options decision considers only
+   `'universe'`), and was journaled nowhere — absent from all 400 sampled
+   `candidate_found` rows.
+4. Promotions themselves were the only signal, and they were zero.
+
+### What it actually was
+
+Measured directly against the live book on 2026-09-02 via `POST /api/autotrade/screen`:
+
+| Quantity | Value |
+|---|---|
+| Universe symbols | 528 |
+| Movers fetched (unusual + gainers, deduped) | 35 |
+| Symbols scanned | 563 |
+| Candidates | 225 |
+| **Candidates sourced from movers** | **1** (WETO, short) |
+
+The provider works. The gappers it finds mostly don't clear screening: of the 35
+movers, only 11 were priced **at or above the $5 `minPrice` floor** (sample
+prices 0.24, 0.30, 0.32, 0.36, 0.75, 0.79, 0.83, 0.95, 1.34 …), and
+`minAvgVolume` 1,000,000 cuts further. Webull's premarket movers skew hard
+toward sub-$5 names by construction — that is what a premarket gapper list is.
+
+So auto-promotion is not broken. `recordMoverOccurrence` fires only for
+movers-sourced candidates that **passed** screening, and it needs the SAME symbol
+on 3 distinct days inside a 10-day window. At roughly one surviving mover per
+day, drawn from a set that rotates daily, three repeats is a rare coincidence
+rather than a threshold anything approaches.
+
+### Fixed
+
+- `discoverSymbols` returns `moversError`; the bare catch keeps the screen
+  running (movers remain an enhancement, never required) but no longer discards
+  the reason.
+- `candidate_found` journals `discoverySource`, so the fetched-vs-survived ratio
+  is measurable over time instead of by hand.
+- `LoopTickSummary` gains `moversDiscovered` / `moversCandidates` /
+  `moversFetchError`, surfaced on the Monitoring **Last cycle** line.
+- The loop journals `movers_fetch_failed`, throttled to once per ET day per
+  distinct message — the loop ticks every 60s, so an unthrottled outage would
+  write ~390 identical rows a session.
+
+`moversDiscovered` and `moversCandidates` are derived from the **screen result**,
+not from `processMoversForPromotion`'s return: the diagnostic's whole purpose is
+answering "is movers discovery contributing", and reading it from the promotion
+result would have made it go dark in the one case it exists for — a throwing
+promotion call.
+
+### Not changed, deliberately
+
+`minPrice: 5` is the direct cause of the thin contribution and is **left alone**.
+Lowering it to reach premarket gappers means routing real money into sub-$5
+names, whose bid-ask/slippage tax is exactly what that floor exists to avoid —
+that is a risk decision, not a bug fix. The observability above is what makes it
+a decision that can now be made against measured numbers instead of a guess.
+
+### The pattern, again — one layer up from config
+
+CLAUDE.md's rule is *assert at the consumer, not the producer*. This is the same
+disease at the observability layer: **a value that is computed, returned, and
+read by nothing is indistinguishable from a value that is wrong.** `moversCount`
+and `discoverySource` were both live, both correct, and both unable to answer
+the one question anyone asked of them for two weeks.

@@ -271,6 +271,9 @@ function loopSummaryFixture(overrides: Partial<LoopTickSummary> = {}): LoopTickS
     liveEntriesOpened: 0,
     liveOptionsEntriesOpened: 0,
     moversAutoPromoted: 0,
+    moversDiscovered: 0,
+    moversCandidates: 0,
+    moversFetchError: null,
     ...overrides,
   };
 }
@@ -1082,7 +1085,7 @@ describe('AutoTradePage', () => {
         excluded: [{ symbol: 'VNQ', reason: 'On the real-estate exclusion list' }],
         skipped: [{ symbol: 'XYZ', reason: 'sector/industry could not be determined this cycle' }],
         errors: [],
-        discovery: { universeCount: 124, moversCount: 5, scannedCount: 129 },
+        discovery: { universeCount: 124, moversCount: 5, scannedCount: 129, moversError: null },
       },
       decision: {
         signals: [
@@ -1265,7 +1268,7 @@ describe('AutoTradePage', () => {
         excluded: [],
         skipped: [],
         errors: [],
-        discovery: { universeCount: 2, moversCount: 0, scannedCount: 2 },
+        discovery: { universeCount: 2, moversCount: 0, scannedCount: 2, moversError: null },
       },
       decision: { signals: [], skipped: [] },
       optionsDecision: { signals: [], skipped: [] },
@@ -1319,7 +1322,7 @@ describe('AutoTradePage', () => {
         excluded: [],
         skipped: [],
         errors: [],
-        discovery: { universeCount: 124, moversCount: 5, scannedCount: 129 },
+        discovery: { universeCount: 124, moversCount: 5, scannedCount: 129, moversError: null },
       },
       decision: { signals: [], skipped: [{ symbol: 'AAPL', reason: 'no usable volatility history' }] },
       optionsDecision: {
@@ -1421,7 +1424,7 @@ describe('AutoTradePage', () => {
         excluded: [],
         skipped: [],
         errors: [],
-        discovery: { universeCount: 124, moversCount: 5, scannedCount: 129 },
+        discovery: { universeCount: 124, moversCount: 5, scannedCount: 129, moversError: null },
       },
       decision: { signals: [], skipped: [] },
       optionsDecision: { signals: [], skipped: [] },
@@ -1474,7 +1477,7 @@ describe('AutoTradePage', () => {
         excluded: [],
         skipped: [],
         errors: [],
-        discovery: { universeCount: 124, moversCount: 0, scannedCount: 124 },
+        discovery: { universeCount: 124, moversCount: 0, scannedCount: 124, moversError: null },
       },
       decision: {
         signals: [
@@ -1562,7 +1565,7 @@ describe('AutoTradePage', () => {
         excluded: [],
         skipped: [],
         errors: [],
-        discovery: { universeCount: 124, moversCount: 0, scannedCount: 124 },
+        discovery: { universeCount: 124, moversCount: 0, scannedCount: 124, moversError: null },
       },
       decision: { signals: [], skipped: [{ symbol: 'MU', reason: 'insufficient volatility history (ATR)' }] },
       optionsDecision: { signals: [], skipped: [] },

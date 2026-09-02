@@ -1120,6 +1120,9 @@ describe('health (integration)', () => {
       liveEntriesOpened: 0,
       liveOptionsEntriesOpened: 0,
       moversAutoPromoted: 0,
+      moversDiscovered: 0,
+      moversCandidates: 0,
+      moversFetchError: null,
     });
     const after = (await getJson('/api/health')) as { loopLastTickAgeMs: number | null };
     expect(after.loopLastTickAgeMs).toBeGreaterThanOrEqual(0);

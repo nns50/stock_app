@@ -334,7 +334,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
+      discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
     mockExecute.mockResolvedValue([]);
@@ -353,7 +353,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
+      discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
     mockExecute.mockResolvedValue([]);
@@ -406,7 +406,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
     mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
@@ -447,7 +447,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
     mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
@@ -484,7 +484,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
     mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
@@ -521,7 +521,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
     mockExecute.mockResolvedValue([]);
@@ -548,7 +548,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
     mockExecute.mockResolvedValue([]);
@@ -559,6 +559,88 @@ describe('runAutotradeLoopTick', () => {
     expect(summary.moversAutoPromoted).toBe(1);
   });
 
+  // The consumer half of the movers-observability fix (2026-09-02): screen.ts
+  // now CARRIES the discovery counts and any fetch error out, but that proves
+  // nothing about whether the loop reads them. Zero auto-promotions in 2+
+  // weeks was a fetch that worked (35 movers) whose gappers didn't survive
+  // screening (1 candidate) — and no vantage point in the app could tell that
+  // apart from a broken provider. These assert the pair reaches the summary.
+  it('carries the movers fetched-vs-survived pair into the tick summary', async () => {
+    // The live shape on 2026-09-02, scaled down: many movers fetched, exactly
+    // one of them surviving screening alongside the universe names.
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2), { ...candidate('WETO', 2), discoverySource: 'movers' as const }],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      relVolMedian: null,
+      discovery: { universeCount: 1, moversCount: 35, scannedCount: 36, moversError: null },
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+    mockMoversPromotion.mockReturnValue({ recorded: ['WETO'], promoted: [], atCap: [] });
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(summary.moversDiscovered).toBe(35);
+    expect(summary.moversCandidates).toBe(1);
+    expect(summary.moversFetchError).toBeNull();
+  });
+
+  it('still reports the movers pair when auto-promotion itself throws', async () => {
+    // The diagnostic must not go dark in the exact case it exists for.
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [{ ...candidate('WETO', 2), discoverySource: 'movers' as const }],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      relVolMedian: null,
+      discovery: { universeCount: 1, moversCount: 35, scannedCount: 36, moversError: null },
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+    mockMoversPromotion.mockImplementation(() => {
+      throw new Error('db is locked');
+    });
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(summary.moversAutoPromoted).toBe(0);
+    expect(summary.moversDiscovered).toBe(35);
+    expect(summary.moversCandidates).toBe(1);
+  });
+
+  it('journals movers_fetch_failed once per day and surfaces the reason on the summary', async () => {
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      relVolMedian: null,
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: 'webull session expired' },
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+    mockMoversPromotion.mockReturnValue({ recorded: [], promoted: [], atCap: [] });
+
+    const summary = await runAutotradeLoopTick();
+    expect(summary.moversFetchError).toBe('webull session expired');
+
+    const failures = () => mockLogEvent.mock.calls.filter((c) => c[0].action === 'movers_fetch_failed');
+    expect(failures()).toHaveLength(1);
+    expect(failures()[0][0].detail).toMatchObject({ message: 'webull session expired' });
+
+    // The loop runs every 60s; an outage lasting a session would otherwise
+    // write ~390 identical rows. The SECOND tick with the same failure must
+    // still report it on the summary but must not re-journal it.
+    const second = await runAutotradeLoopTick();
+    expect(second.moversFetchError).toBe('webull session expired');
+    expect(failures()).toHaveLength(1);
+  });
+
   it('defaults moversAutoPromoted to 0 when nothing was promoted this cycle', async () => {
     mockScreen.mockResolvedValue({
       generatedAt: Date.now(),
@@ -567,7 +649,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
+      discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
     mockExecute.mockResolvedValue([]);
@@ -594,7 +676,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
     mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
@@ -615,7 +697,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
     mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
@@ -644,7 +726,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
     mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
@@ -679,7 +761,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
     mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
@@ -732,7 +814,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
+      discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
     mockExecute.mockResolvedValue([]);
@@ -750,7 +832,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
     mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
@@ -779,7 +861,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
     mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
@@ -810,7 +892,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
     mockLiveExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
@@ -831,7 +913,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
     mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
@@ -895,7 +977,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 1, moversCount: 1, scannedCount: 2 },
+      discovery: { universeCount: 1, moversCount: 1, scannedCount: 2, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL'), signal('GME')], skipped: [] });
     mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
@@ -936,7 +1018,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 2, moversCount: 0, scannedCount: 2 },
+      discovery: { universeCount: 2, moversCount: 0, scannedCount: 2, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('CALM')], skipped: [] });
     mockExecute.mockResolvedValue([{ symbol: 'CALM', ok: true }]);
@@ -962,7 +1044,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 2, moversCount: 0, scannedCount: 2 },
+      discovery: { universeCount: 2, moversCount: 0, scannedCount: 2, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('CALM'), signal('WILD')], skipped: [] });
     mockExecute.mockResolvedValue([]);
@@ -982,7 +1064,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
     mockExecute.mockResolvedValue([]);
@@ -1004,7 +1086,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
     mockExecute.mockResolvedValue([]);
@@ -1029,7 +1111,7 @@ describe('runAutotradeLoopTick', () => {
       skipped: [],
       errors: [],
       relVolMedian: null,
-      discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
+      discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
     mockExecute.mockResolvedValue([]);
@@ -1102,7 +1184,7 @@ describe('runAutotradeLoopTick', () => {
         skipped: [],
         errors: [],
         relVolMedian: null,
-        discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+        discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
       };
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -1129,7 +1211,7 @@ describe('runAutotradeLoopTick', () => {
         skipped: [],
         errors: [],
         relVolMedian: null,
-        discovery: { universeCount: 0, moversCount: 0, scannedCount: 0 },
+        discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
       };
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -1149,7 +1231,7 @@ describe('runAutotradeLoopTick', () => {
         skipped: [],
         errors: [],
         relVolMedian: null,
-        discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+        discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
       });
       mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
     }
@@ -1245,7 +1327,7 @@ describe('runAutotradeLoopTick', () => {
           skipped: [],
           errors: [],
           relVolMedian: null,
-          discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+          discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
         };
       });
       mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -1274,7 +1356,7 @@ describe('runAutotradeLoopTick', () => {
         skipped: [],
         errors: [],
         relVolMedian: null,
-        discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+        discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
       });
       mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
       mockOptionsDecide.mockResolvedValue({ signals: [optionSignal('AAPL')], skipped: [] });
@@ -1379,7 +1461,7 @@ describe('runAutotradeLoopTick', () => {
           skipped: [],
           errors: [],
           relVolMedian: null,
-          discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+          discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
         };
       });
       mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -1427,7 +1509,7 @@ describe('startAutotradeLoop / stopAutotradeLoop', () => {
         skipped: [],
         errors: [],
         relVolMedian: null,
-        discovery: { universeCount: 1, moversCount: 0, scannedCount: 1 },
+        discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
       };
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });

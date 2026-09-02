@@ -6204,6 +6204,16 @@ export default function AutoTradePage() {
                     {loopSummary.moversAutoPromoted > 0 && (
                       <>{loopSummary.moversAutoPromoted} recurring mover(s) promoted to the universe. </>
                     )}
+                    {loopSummary.moversFetchError ? (
+                      <span className="text-amber-400">
+                        Movers discovery failed this tick ({loopSummary.moversFetchError}) — universe-only.{' '}
+                      </span>
+                    ) : (
+                      <>
+                        Movers discovery contributed {loopSummary.moversCandidates} of {loopSummary.moversDiscovered}{' '}
+                        fetched.{' '}
+                      </>
+                    )}
                   </>
                 )}
                 Exits checked: {loopSummary.exitsChecked} ({loopSummary.exitsClosed} closed) — options:{' '}

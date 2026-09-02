@@ -32,6 +32,9 @@ function summary(overrides: Partial<LoopTickSummary> = {}): LoopTickSummary {
     liveEntriesOpened: 0,
     liveOptionsEntriesOpened: 0,
     moversAutoPromoted: 0,
+    moversDiscovered: 0,
+    moversCandidates: 0,
+    moversFetchError: null,
     ...overrides,
   };
 }
