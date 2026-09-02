@@ -4365,3 +4365,74 @@ Confirmed NOT contaminating live sizing: paper lives in
 `autotrade_paper_positions`, while `methodSizing` and the expectancy
 multipliers read `listPositions()` (the live `positions` table) filtered to the
 `autotrade` tag.
+
+---
+
+## 2026-09-02 — Auditing `liveScaleInEnabled` BEFORE turning it on
+
+The flag is off and its code has never executed. Given that four of the day's
+bugs were in exactly that shape, this audits it in advance instead of finding
+out on the session it is enabled.
+
+`placeLiveScaleInAddOn` gives the added shares their **own** bracket rather than
+resizing the original one. That is a good decision on its own terms — it
+sidesteps the OCO-modify problem entirely, and the original shares stay
+protected while the add is placed. But it means a scaled-in position rests
+**two brackets / four exit legs**, and two mechanisms assume one.
+
+### 1. The scale-out would oversell into a short — FIXED
+
+`checkLiveEquityScaleOuts` computes ONE whole-position number:
+
+```ts
+const keepQty = pos.remainingQuantity - decision.quantity;
+```
+
+…and applies it to every resting leg. With a single bracket (take-profit +
+stop-loss, exactly one of which fills) that is correct. With **two** brackets it
+leaves each protecting `keepQty`, so when the stop fills **both** stop legs sell
+`keepQty` against a position of `keepQty` — and the account ends up **short by
+`keepQty`**. That is the accidental short the function's own
+reduce-legs-before-selling ordering exists to prevent, arriving through a door
+that ordering does not cover.
+
+Splitting `keepQty` across lots correctly would require knowing which bracket
+protects which shares, which nothing tracks. So the scale-out now **refuses**
+when more than two exit legs are resting, journaling
+`live_scale_out_blocked` with the leg ids — the same fail-closed posture
+`restingStopLeg` already takes for the same ambiguity.
+
+Guarded by a pair: a four-leg book must resize nothing and sell nothing, and a
+two-leg book must still scale out normally. Reverting the guard fails the first
+and passes the second.
+
+### 2. Scale-in and the trailing stop are mutually exclusive — DOCUMENTED
+
+`restingStopLeg` requires exactly one identifiable STOP_LOSS leg and otherwise
+returns:
+
+> `${stops.length} resting STOP_LOSS legs — ambiguous, not guessing which protects this lot`
+
+A scaled-in position has two. So **any position that scales in permanently loses
+its breakeven and trailing stop** — the mechanism repaired hours earlier in
+PR #467.
+
+This one is left as-is deliberately. The refusal is fail-closed: it declines to
+move a stop, which costs a feature but never risks money, and the alternative
+(guessing which lot a stop protects) is how you drag a target down onto the
+price. Fixing it properly means per-lot bracket tracking, which is a real piece
+of work and should not be smuggled in beside a safety fix.
+
+**The consequence to hold onto: turning on `liveScaleInEnabled` silently turns
+off trailing stops for exactly the positions doing best** — the winners that
+earned an add-on. That trade is very unlikely to be worth it until per-lot
+tracking exists.
+
+### The general lesson
+
+Both findings come from the same root: a dormant flag whose code was written
+against a one-bracket world, while the rest of the system has since grown
+mechanisms that walk the resting legs. Nothing here was wrong when it was
+written. It became wrong when the scale-out and the ratchet started reading
+brackets — and neither could notice, because both were themselves broken until
+today.
