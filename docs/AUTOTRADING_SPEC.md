@@ -4198,3 +4198,95 @@ so essentially every contract fails that rule at that hour regardless of how it
 would look at 10:00. Nothing about the entry rules should be inferred from it.
 Re-measure during market hours before touching delta band, spread cap, or the
 liquidity floors.
+
+---
+
+## 2026-09-02 (session review) — Two profit-protection mechanisms had never once executed
+
+Reviewing the live session — 8 trades, 4W/4L, **+$32.78 (+0.6%)** against a 3%
+target, trade cap hit at 13:00 — found that **both** mechanisms designed to
+protect gains on a winner were broken at the broker layer, and had been since
+they shipped.
+
+The pattern is the one this file already names: **a branch that cannot execute
+cannot be wrong yet.** Lowering the scale-out trigger from 1.0R to 0.30R is what
+finally made the code reachable, and it turned out never to have worked.
+
+### 1. The scale-out — 89 broker rejections, 0 placements — FIXED
+
+Every one:
+
+> *"The number of take-profit orders and the number of stop-loss orders must be
+> the same."*
+
+`checkLiveEquityScaleOuts` reduced the resting bracket **one leg at a time**:
+
+```ts
+for (const leg of resting) await webullReplaceOrder(accountId, leg.clientOrderId!, { quantity: keepQty });
+```
+
+Webull validates an OCO group's balance **per request**, so reducing a
+take-profit without its stop-loss in the same call unbalances the group and is
+refused. `modify_orders` has always been an array in the API — every caller
+simply sent one element.
+
+Fixed with `webullReplaceOrders(accountId, patches[])`, which sends every leg in
+one request; `webullReplaceOrder` is now a one-element call into it. Distribution
+of the 89 refusals: DELL 74, GTLB 12, HPQ 3 — exactly the three trades that got
+above the 0.30R trigger.
+
+This also closes a real hole in the loop it replaces: that loop broke on the
+first failure **without rolling back legs it had already modified**, so a partial
+success would leave a bracket whose take-profit covered the reduced size while
+the stop still covered the full one. One request cannot half-apply.
+
+### 2. The trailing / breakeven stop — never moved a stop — FIXED
+
+> *"no resting leg identifiable as STOP_LOSS among 2 exit order(s)"*
+
+`restingStopLeg` filters the resting exit legs for `combo_type === 'STOP_LOSS'`
+and matched **zero of two, every tick**. `mapOpenOrder` read `combo_type` off the
+**sub-order**, but this file's own `WebullOrderLeg` comment already documents
+the real shape:
+
+> a bracket comes back as THREE SEPARATE top-level envelopes sharing a
+> `combo_order_id`, each wrapping its own single leg, with `combo_type` carried
+> on the **ENVELOPE** … `combo_type` was looked for one level below where it
+> lives, so every `comboType` filter matched nothing.
+
+That fix was applied to `webullOrderStatus` and **never to
+`listWebullOpenOrders`**. So every `WebullOpenOrder.comboType` was `undefined`.
+`mapOpenOrder` now falls back to the envelope (sub-order first, so a nested
+response keeps working).
+
+DELL asked to ratchet 434.52 → 449.58 on a position that ran to +2.07R, and was
+refused on every tick.
+
+### What it cost, measured
+
+| Sym | MFE | realized | captured |
+|---|---|---|---|
+| HPQ | **+0.75R** | **−0.33R** | **−44%** |
+| BBY | +0.29R | +0.20R | 69% |
+| GTLB (2nd) | +0.10R | −0.51R | −510% |
+
+HPQ went three-quarters of the way to target and gave all of it back. A working
+0.30R scale-out makes it roughly breakeven instead of −$18.
+
+Seven of the eight exits were the 90-minute stagnation cut at under 0.5R. Only
+DELL cleared 0.5R inside 90 minutes, escaped the cut, and ran to target for
+**+2.07R / +$67.62 — more than the entire day's net**. The other seven together
+lost $34.84.
+
+### Consequence for the open experiment
+
+The plan to "judge the ATR floor and 0.30R scale-out after 3 sessions" was
+measuring **nothing** on the scale-out half: the mechanism had never run. That
+clock restarts from the first session after this deploy.
+
+### Not a bug: capacity was the binding constraint
+
+267 live risk blocks — `max_concurrent_positions` 189,
+`max_aggregate_open_risk` 174, `max_trades_per_day` 69. The book ran out of
+slots, risk budget and trades, not ideas. Worth revisiting only after the two
+fixes above have a session's worth of evidence.
