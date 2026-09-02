@@ -3643,3 +3643,47 @@ decision was unexercised — by tests, by production, and by every previous audi
 **Turning on a long-disabled flag is not a config change; it is shipping an
 untested code path into live money.** Audit the path first, and prefer rules
 keyed on what the order DOES (open/close) over what it looks like (buy/sell).
+
+---
+
+## Pre-committed: what to do if trades START RUNNING
+
+Written 2026-09-02, before the ATR floor has had a session. Every exit
+parameter in force was tuned against a book whose median intraday peak was
+**0.23R** — trades that went nowhere. If selection now works, those same
+parameters become wrong in the opposite direction, and the failure mode flips
+from "holds losers too long" to "cuts winners too early". That is a good
+problem, and it needs a rule before it arrives, not after.
+
+**The anti-stall machinery is already aggressive and already working.** The
+stagnation exit cuts anything under `stagnationExitMinR` (0.5R) after
+`stagnationExitMinutes` (90), and it fired on **16 of the last 25 exits**.
+Trades were not being allowed to stall — they were stalling, and the exit was
+cutting them correctly. That is why the 2026-09-01 fixes went upstream into
+SELECTION rather than into the exit.
+
+### The signal that trades have started running
+
+Not P&L, and not the median alone. Two counts, together:
+
+- median intraday MFE clears **0.45R** (task #20's A1), **and**
+- the `time_exit` share of closed trades falls below **50%** (baseline: 16/25 = 64%).
+
+The exit-reason mix is the more trustworthy half: it is a count, not an average,
+so a single outlier cannot move it.
+
+### The rules
+
+| # | Reading | Response |
+|---|---|---|
+| T1 | Trades running, **and** ≥30% of stagnation exits show `progressR` between 0.35R and the 0.5R bar | They were cut just short while working. **Lower `stagnationExitMinR`** toward the observed cluster — the bar is wrong, not the clock. |
+| T2 | Trades running, **and** stagnation exits show LOW `progressR` (<0.35R) but the surviving trades peak late in the hold | The trades need more time, not a lower bar. **Raise `stagnationExitMinutes`** (90 → 120). Never both knobs in one week. |
+| T3 | Partials fire often **and** the remainder routinely reaches the target | The ladder is working as designed. **Change nothing** — this is the intended shape. |
+| T4 | Partials fire often **and** the remainder routinely scratches | The partial is capturing the whole move and the runner is dead weight. Raise `partialExitRMultiple` toward the observed MFE median rather than lowering it again. |
+| T5 | Trades reach 1.0R regularly, so `breakevenTriggerRMultiple` / `trailStartRMultiple` finally ARM | Measure whether the breakeven stop is cutting trades that continued, before assuming the ratchet helps. It has never once fired in production — an unexercised mechanism is not a proven one. |
+
+**T1 and T2 are deliberately mutually exclusive** and keyed on the same
+measurement, because the tempting move when winners get cut is to loosen both
+the clock and the bar at once, which makes the result uninterpretable.
+
+Minimum sample, as everywhere else: **3 sessions**, and one parameter per week.
