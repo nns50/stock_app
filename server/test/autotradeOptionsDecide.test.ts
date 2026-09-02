@@ -317,6 +317,51 @@ describe('generateOptionsSignal', () => {
     }
   });
 
+  // A FAILED candle fetch and a genuinely short price history are different
+  // facts, and `.catch(() => [])` made them the same one. Measured on the live
+  // book: TXN, AMD, INTC, NOW and PLTR all reported "not enough price history"
+  // inside a 20-symbol batch while /api/candles returned 200 daily bars for
+  // each, and every one cleared the gate when decided alone — provider rate
+  // limiting under batch load, described as missing data.
+  describe('a failed candle fetch is not a short price history', () => {
+    it('names the fetch failure rather than blaming the price history', async () => {
+      mockGetProvider.mockReturnValue({
+        getOptionsExpirations: vi.fn(async () => [expirationDaysOut(21)]),
+        getOptionsChain: vi.fn(async () => chainFor(expirationDaysOut(21), { mark: 3 })),
+        getCandles: vi.fn(async () => {
+          throw new Error('Too many requests');
+        }),
+      } as unknown as ReturnType<typeof getProvider>);
+
+      const result = await generateOptionsSignal(candidate());
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toMatch(/FAILED/);
+        expect(result.reason).toMatch(/Too many requests/);
+        expect(result.reason).not.toMatch(/not enough price history/i);
+      }
+    });
+
+    it('still blames the price history when the fetch SUCCEEDS and returns too little', async () => {
+      // The other half — without this, the test above would pass even if the
+      // message had simply been reworded for every case.
+      mockGetProvider.mockReturnValue({
+        getOptionsExpirations: vi.fn(async () => [expirationDaysOut(21)]),
+        getOptionsChain: vi.fn(async () => chainFor(expirationDaysOut(21), { mark: 3 })),
+        getCandles: vi.fn(async () => candlesFor(5)), // real answer, genuinely too short
+      } as unknown as ReturnType<typeof getProvider>);
+
+      const result = await generateOptionsSignal(candidate());
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toMatch(/not enough price history/i);
+        expect(result.reason).not.toMatch(/FAILED/);
+      }
+    });
+  });
+
   it('skips when the expirations fetch itself fails', async () => {
     mockGetProvider.mockReturnValue({
       getOptionsExpirations: vi.fn(async () => {
