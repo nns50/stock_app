@@ -3739,11 +3739,19 @@ the broker (600 > 471). `webullAccountState` already returns
 `optionBuyingPowerUsd` as its own field, so the data is in hand and simply not
 used. `liveOptionsExecute` contains **zero** references to buying power.
 
-This was deferred deliberately on 2026-08-27 ("belongs at use time, in
-`liveOptionsExecute`... live options is off, so it gates nothing today"). It is
-still off, so it still gates nothing — and it must be closed **before**
-`liveOptionsEnabled` is turned on, exactly as the short buying-power hole was
-closed before `liveAllowNakedShort`.
+**CLOSED 2026-09-02.** `liveOptionsExecute` now overrides `buyingPowerUsd` with
+`acct.optionBuyingPowerUsd` on the AccountState it hands to `evaluateGuardrails`,
+so an opening premium order is valued against the pool it actually draws on.
+
+Fails **open**: the provider already falls back `option_buying_power ->
+buying_power -> cash`, so a broker reporting no option pool yields the equity
+figure and behaviour is exactly as before. The override only ever NARROWS the
+check, never widens it. Exits are unaffected — the guardrail values only
+OPENING orders since the open/close fix earlier the same day.
+
+Fixed while live options was still OFF, deliberately: the same order as the
+short buying-power hole, which was closed before `liveAllowNakedShort` was
+turned on. A gap found is cheaper to fix than a gap remembered.
 
 ### The recurring pattern, third instance
 
