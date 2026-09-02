@@ -4290,3 +4290,78 @@ clock restarts from the first session after this deploy.
 `max_aggregate_open_risk` 174, `max_trades_per_day` 69. The book ran out of
 slots, risk budget and trades, not ideas. Worth revisiting only after the two
 fixes above have a session's worth of evidence.
+
+---
+
+## 2026-09-02 (workflow audit) — The R denominator moves when the ratchet moves
+
+Auditing the paths that PR #467 is about to make reachable. Both fixes there
+mutate inputs that other code assumed were constant, and neither assumption had
+ever been tested — because neither mechanism had ever run.
+
+### `initialRiskOf` read the CURRENT stop — FIXED
+
+```ts
+const risk = Math.abs(p.entryPrice - p.stopPrice) * p.quantity * p.multiplier;
+```
+
+`p.stopPrice` is what the breakeven/trailing ratchet **mutates**. `p.quantity`
+is what a scale-out leaves stale. So one function answered two opposite
+questions and, from tomorrow, gets both wrong:
+
+| question | wants | had |
+|---|---|---|
+| **R denominator** (what did I originally risk?) | initial stop, original qty | **current** stop, original qty |
+| **open risk** (what am I risking now?) | current stop, remaining qty | current stop, **original** qty |
+
+The magnitude is not cosmetic. DELL on 2026-09-02 asked to ratchet 434.52 →
+449.58 against a 445.40 entry. Once that succeeds the denominator goes from
+|445.40−434.52| = 10.88 to |445.40−449.58| = 4.18, and **every R figure on the
+position inflates 2.6×** — its real +2.07R would report as +5.4R.
+
+Four consumers read it as an R denominator: `rMultipleOf`, `methodSizing`,
+`computeGradeExpectancyMultipliers` (twice — riskCheck and liveExecute), and
+the journal's MAE/MFE excursions, which `computeExcursionTune` then feeds to
+the auto-tuner. A fifth, `getLivePortfolioSnapshot`'s `openRisk`, wanted the
+other question entirely.
+
+Split into two functions:
+- `initialRiskOf` — `initialStopPrice ?? stopPrice`, ORIGINAL quantity. Frozen.
+- `openRiskOf` — `stopPrice ?? initialStopPrice`, REMAINING quantity. Current.
+
+`openRisk` in the live snapshot now calls `openRiskOf`; everything else keeps
+`initialRiskOf`, which is now genuinely frozen. `routes/journal.ts` passes
+`initialStopPrice ?? stopPrice` into the excursion so `mfeR`/`maeR`/
+`realizedR`/`capturedPct` stay measured against the risk actually taken.
+
+`initialStopPrice` is backfilled from the first stop a position receives
+(`db/positions.ts`), so the fallback only covers rows predating that column.
+
+**Why this matters for the open experiment:** Task #20 judges the ATR floor and
+the 0.30R scale-out by R and capturedPct. Left unfixed, the first successful
+ratchet would have inflated exactly the numbers that experiment reads — and it
+would have looked like the change worked.
+
+### Paper is not a control for exits — REPORTED, not changed
+
+The paper book has **no stagnation exit at all**: `PaperExitReason` is
+`'stop' | 'target' | 'time_exit' | 'manual'`, and `execute.ts` computes only
+stop / target / maxHoldDays. Live cut all seven of 2026-09-02's losers at ~91
+minutes on the 90-minute / 0.5R stagnation rule; paper carried DDOG 322 minutes
+and GTLB 140 and re-entered GTLB **one minute** after stopping out of it (the
+90-minute re-entry cooldown is live-only too).
+
+Entry gates are deliberately live-only so paper stays a clean counterfactual —
+that reasoning is documented for the ATR reachability floor. The exit divergence
+carries no such comment, so it reads as an omission rather than a decision.
+
+Left alone for now because it is genuinely arguable both ways: a paper book that
+runs positions to end-of-day IS the counterfactual for "does cutting at 90
+minutes help?", which is a question worth having an answer to. But it should be
+a written-down decision rather than an accident, and until it is, paper-vs-live
+P&L comparisons are not measuring what they appear to.
+
+Confirmed NOT contaminating live sizing: paper lives in
+`autotrade_paper_positions`, while `methodSizing` and the expectancy
+multipliers read `listPositions()` (the live `positions` table) filtered to the
+`autotrade` tag.

@@ -41,10 +41,50 @@ export function realizedPnlOf(p: Position): number {
   return grossRealized - exitFees - p.fees; // all entry fees count once the math is whole-position
 }
 
-/** Dollars at risk if the logged stop is hit: |entry−stop| × qty × multiplier. */
+/**
+ * The trade's ORIGINAL risk — the R denominator. Frozen: it uses
+ * `initialStopPrice` and the ORIGINAL quantity, so it does not move when the
+ * breakeven/trailing ratchet raises the stop or a scale-out sells part of the
+ * position.
+ *
+ * It used to read `p.stopPrice`, which the ratchet MUTATES. That was harmless
+ * only because the ratchet had never once succeeded (a combo_type bug meant it
+ * could not identify the stop leg — fixed 2026-09-02 in PR #467). The moment
+ * it starts working the denominator shrinks and every R figure computed from
+ * it inflates: DELL on 2026-09-02 asked to move its stop 434.52 -> 449.58 on a
+ * 445.40 entry, which would have taken the denominator from |445.40-434.52| =
+ * 10.88 to |445.40-449.58| = 4.18 and reported its real +2.07R as +5.4R.
+ *
+ * That number is not cosmetic — it feeds method/grade expectancy sizing, the
+ * journal's MAE/MFE excursions, and the auto-tuner that reads them.
+ *
+ * `initialStopPrice` is backfilled from the first stop a position is given
+ * (db/positions.ts), so the fallback to `stopPrice` only covers rows written
+ * before that column existed.
+ */
 export function initialRiskOf(p: Position): number | null {
-  if (p.stopPrice == null || !p.entryPrice) return null;
-  const risk = Math.abs(p.entryPrice - p.stopPrice) * p.quantity * p.multiplier;
+  const stop = p.initialStopPrice ?? p.stopPrice;
+  if (stop == null || !p.entryPrice) return null;
+  const risk = Math.abs(p.entryPrice - stop) * p.quantity * p.multiplier;
+  return risk > 0 ? risk : null;
+}
+
+/**
+ * What the position is risking RIGHT NOW — current stop, remaining quantity.
+ * The opposite question to initialRiskOf, and the one an open-risk budget
+ * asks: a ratcheted stop genuinely reduces exposure, and shares already sold
+ * in a scale-out are no longer at risk at all.
+ *
+ * Split out 2026-09-02. Open risk used to call initialRiskOf, which answered
+ * neither question correctly once either mechanism worked: it used the CURRENT
+ * stop (right here, wrong for R) and the ORIGINAL quantity (right for R, wrong
+ * here). A 50% scale-out would have kept charging the aggregate-risk budget
+ * for shares that had already been sold.
+ */
+export function openRiskOf(p: Position): number | null {
+  const stop = p.stopPrice ?? p.initialStopPrice;
+  if (stop == null || !p.entryPrice) return null;
+  const risk = Math.abs(p.entryPrice - stop) * p.remainingQuantity * p.multiplier;
   return risk > 0 ? risk : null;
 }
 
