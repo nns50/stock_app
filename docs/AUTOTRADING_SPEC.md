@@ -3687,3 +3687,68 @@ measurement, because the tempting move when winners get cut is to loosen both
 the clock and the bar at once, which makes the result uninterpretable.
 
 Minimum sample, as everywhere else: **3 sessions**, and one parameter per week.
+
+---
+
+## Full-path audit: long, short, options (2026-09-02)
+
+Ordered sanity check of all three instruments against the standing goal — 3% of
+starting ET-day equity, long/short stock plus calls/puts, without over-risking.
+
+### Verified correct
+
+| area | finding |
+|---|---|
+| Realized P&L | `realizedPnlOf` applies `sideSign`; `initialRiskOf` uses `abs`. Correct for both sides. |
+| Excursions | `computeExcursion` picks the LOW as favourable for a short and the HIGH as adverse, with the sign applied to the dollar math. |
+| Live options wiring | Short-dated ladder, combined risk via `combinedLiveOpenRisk`, daily target, end-of-day flatten, entry-window gate and the max-1 gate are all present and reached. |
+| End-of-day flatten | Called by BOTH `liveExecute` and `liveOptionsExecute`. A 0DTE cannot be left to expire because one book forgot. |
+| Daily target | Active and tracking: baseline, target equity, gain %, give-back arm/floor, `entriesHalted`. |
+
+### Fixed by this audit
+
+**A short entry was still not buying-power SIZED.** PR #460 taught
+`buyingPowerMaxQuantity` that an opening sell consumes margin, and fixed the
+guardrail. But `liveExecute.buyingPowerForSide` returned `undefined` for any
+sell, so production handed the sizer no figure at all and `undefined` reads as
+"no constraint". The guardrail still refused an unfundable short — *after* a
+full-size order had been built, which is precisely the build-then-refuse loop
+the buying-power sizer exists to end (627 refusals, zero entries, 2026-08-28).
+
+The earlier "verified end to end" claim was wrong: that check passed
+`buyingPowerUsd` into the risk context by hand and never exercised
+`buyingPowerForSide`. **A fix verified by calling the fixed function is not
+verified; it has to be reached the way production reaches it.**
+
+The lazy-fetch optimisation the guard was protecting is intact — a short only
+reaches that code when `liveAllowNakedShort` is ON, because the short-entry skip
+returns first when it is off, so a disabled-shorts book still pays for no broker
+round-trip. Both properties now have tests.
+
+### Open gap — blocks enabling LIVE OPTIONS
+
+**An options order is buying-power checked against the WRONG POOL.**
+`liveOptionsExecute` passes `acct.state` to `evaluateGuardrails`, whose
+`buying_power` rule compares premium notional against `buyingPowerUsd` — the
+EQUITY/day figure. Options are bought from **option** buying power, a separate
+and far smaller pool: measured 2026-08-27 at **$471.41 against a day BP of
+$8,644.72**, an ~18x difference.
+
+So a $600 premium order passes the check (600 < 8,644) and is then refused by
+the broker (600 > 471). `webullAccountState` already returns
+`optionBuyingPowerUsd` as its own field, so the data is in hand and simply not
+used. `liveOptionsExecute` contains **zero** references to buying power.
+
+This was deferred deliberately on 2026-08-27 ("belongs at use time, in
+`liveOptionsExecute`... live options is off, so it gates nothing today"). It is
+still off, so it still gates nothing — and it must be closed **before**
+`liveOptionsEnabled` is turned on, exactly as the short buying-power hole was
+closed before `liveAllowNakedShort`.
+
+### The recurring pattern, third instance
+
+Shorts, live options, and now the short sizer are all the same shape: **a branch
+that cannot execute cannot be wrong yet.** The three config guards prove a field
+is read; they say nothing about whether the path that reads it has ever run.
+Before enabling any long-disabled flag, audit its path as untested code — because
+that is what it is.

@@ -949,7 +949,19 @@ export async function runLiveExecution(
   let buyingPowerLoaded = false;
   let availableBuyingPowerUsd: number | undefined;
   const buyingPowerForSide = async (side: 'buy' | 'sell'): Promise<number | undefined> => {
-    if (side !== 'buy') return undefined;
+    // Both sides need a figure. An opening SHORT consumes margin exactly as a
+    // buy consumes cash, so returning undefined for a sell left the sizer
+    // unconstrained on every short — buyingPowerMaxQuantity reads undefined as
+    // "no constraint". The guardrail caught an unfundable short, but only
+    // after a full-size order had been built, which is the very
+    // build-then-refuse loop the buying-power sizer exists to end (627 refusals
+    // in one session, zero entries).
+    //
+    // The lazy fetch this guard was protecting is still intact: a short only
+    // reaches here when liveAllowNakedShort is ON, because the short-entry skip
+    // above returns first when it is off. So a disabled-shorts book still never
+    // pays for the broker round-trip.
+    void side;
     if (!buyingPowerLoaded) {
       buyingPowerLoaded = true;
       if (cfg.liveAccountId) {
