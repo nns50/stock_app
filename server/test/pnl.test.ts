@@ -3,6 +3,8 @@ import { Position, PositionExit } from '../src/db/positions';
 import {
   computePositionPnl,
   realizedPnlOf,
+  initialRiskOf,
+  openRiskOf,
   computeJournalStats,
   kellySuggestion,
   computeStreaksAndDrawdown,
@@ -637,5 +639,102 @@ describe('computeJournalStats — trades with no entry date', () => {
     const stats = computeJournalStats([closedTrade({ entryDate: null })]);
     expect(stats.byWeekday.reduce((s, g) => s + g.trades, 0)).toBe(1);
     expect(stats.byHold.reduce((s, g) => s + g.trades, 0)).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// initialRiskOf vs openRiskOf (2026-09-02). These answer OPPOSITE questions and
+// used to be one function. It was harmless only because neither mechanism that
+// moves the inputs had ever executed: the breakeven/trailing ratchet could not
+// identify its stop leg, and the scale-out was refused by the broker every
+// time. Both were fixed in PR #467, so both inputs start moving.
+// ---------------------------------------------------------------------------
+describe('initialRiskOf — the FROZEN R denominator', () => {
+  const ratcheted = () =>
+    makePosition({
+      assetType: 'stock',
+      side: 'long',
+      quantity: 3,
+      entryPrice: 445.4,
+      initialStopPrice: 434.52,
+      stopPrice: 449.58, // the ratchet moved it ABOVE entry, locking in profit
+    });
+
+  it('uses the initial stop, not the ratcheted one', () => {
+    // DELL's real numbers on 2026-09-02. |445.40-434.52| x 3 = 32.64.
+    // Against the ratcheted stop it would be |445.40-449.58| x 3 = 12.54,
+    // which would have reported its true +2.07R as roughly +5.4R.
+    expect(initialRiskOf(ratcheted())).toBeCloseTo(32.64, 2);
+  });
+
+  it('keeps the ORIGINAL quantity after a scale-out', () => {
+    const scaled = makePosition({
+      assetType: 'stock',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      initialStopPrice: 95,
+      stopPrice: 95,
+      exits: [{ id: 1, positionId: 1, quantity: 5, exitPrice: 101, exitDate: '2026-01-02', fees: 0 } as PositionExit],
+    });
+    // R is measured against what you ORIGINALLY risked: 5 x 10 = 50.
+    expect(initialRiskOf(scaled)).toBe(50);
+  });
+
+  it('falls back to stopPrice for rows written before initialStopPrice existed', () => {
+    const legacy = makePosition({
+      assetType: 'stock',
+      side: 'long',
+      quantity: 2,
+      entryPrice: 100,
+      stopPrice: 90,
+    });
+    expect(initialRiskOf(legacy)).toBe(20);
+  });
+});
+
+describe('openRiskOf — what is at risk RIGHT NOW', () => {
+  it('shrinks when the ratchet raises the stop', () => {
+    const p = makePosition({
+      assetType: 'stock',
+      side: 'long',
+      quantity: 3,
+      entryPrice: 445.4,
+      initialStopPrice: 434.52,
+      stopPrice: 440,
+    });
+    expect(openRiskOf(p)).toBeCloseTo(16.2, 2); // |445.40-440| x 3
+    // ...and is genuinely different from the R denominator.
+    expect(openRiskOf(p)).not.toBeCloseTo(initialRiskOf(p) as number, 2);
+  });
+
+  it('charges only the REMAINING shares after a scale-out', () => {
+    const p = makePosition({
+      assetType: 'stock',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      initialStopPrice: 95,
+      stopPrice: 95,
+      exits: [{ id: 1, positionId: 1, quantity: 5, exitPrice: 101, exitDate: '2026-01-02', fees: 0 } as PositionExit],
+    });
+    // 5 shares still on: 5 x 5 = 25, not the original 50. Charging the full 50
+    // to the aggregate-risk budget would block entries against shares already
+    // sold.
+    expect(openRiskOf(p)).toBe(25);
+    expect(initialRiskOf(p)).toBe(50);
+  });
+
+  it('is null once nothing is left open', () => {
+    const p = makePosition({
+      assetType: 'stock',
+      side: 'long',
+      quantity: 4,
+      entryPrice: 100,
+      initialStopPrice: 95,
+      stopPrice: 95,
+      exits: [{ id: 1, positionId: 1, quantity: 4, exitPrice: 101, exitDate: '2026-01-02', fees: 0 } as PositionExit],
+    });
+    expect(openRiskOf(p)).toBeNull();
   });
 });

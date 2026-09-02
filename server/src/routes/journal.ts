@@ -171,7 +171,11 @@ journalRouter.get(
             entryPrice: p.entryPrice,
             quantity: p.quantity,
             multiplier: p.multiplier,
-            stopPrice: p.stopPrice,
+            // The FROZEN stop — this is the excursion's R denominator, and the
+            // ratchet mutates p.stopPrice (see initialRiskOf in services/pnl.ts).
+            // Using the live value would inflate every mfeR/maeR/realizedR the
+            // moment a trailing stop moves.
+            stopPrice: p.initialStopPrice ?? p.stopPrice,
             realizedPnl: realizedPnlOf(p),
             entryDate: p.entryDate,
             exitDate: lastExitDate(p),

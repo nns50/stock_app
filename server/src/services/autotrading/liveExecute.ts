@@ -86,7 +86,7 @@ import {
   ratchetPositionStop,
   updatePositionBestPrice,
 } from '../../db/positions';
-import { realizedPnlOf, initialRiskOf, computeStreaksAndDrawdown } from '../pnl';
+import { realizedPnlOf, initialRiskOf, openRiskOf, computeStreaksAndDrawdown } from '../pnl';
 import { etTimeOfDay } from '../../util/marketDate';
 import { TradeSignal, convictionGrade } from './decide';
 import {
@@ -334,7 +334,10 @@ export function getLivePortfolioSnapshot(): LivePortfolioSnapshot {
   const tradesToday =
     openPositions.filter((p) => p.entryDate === today).length +
     closedAutotrade.filter((p) => p.entryDate === today).length;
-  const openRisk = openPositions.reduce((s, p) => s + (initialRiskOf(p) ?? 0), 0);
+  // Current risk, not the frozen R denominator: a ratcheted stop really has
+  // reduced exposure, and shares sold in a scale-out are no longer at risk.
+  // See openRiskOf vs initialRiskOf in services/pnl.ts.
+  const openRisk = openPositions.reduce((s, p) => s + (openRiskOf(p) ?? 0), 0);
 
   // Equity-curve de-risk from the live book's OWN full realized history — the
   // cumulative curve, dated by each trade's last exit, the MA filter needs.
