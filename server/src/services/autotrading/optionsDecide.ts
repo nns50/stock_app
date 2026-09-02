@@ -268,17 +268,38 @@ export async function generateOptionsSignal(
   // labeled proxy (ivContext.method), never silently presented as real
   // history — see the rationale string below.
   let candles: Candle[] = [];
+  // A FAILED candle fetch is not the same fact as a symbol with a short price
+  // history, and the two used to be indistinguishable here: `.catch(() => [])`
+  // discarded the reason, and the skip message below then asserted "not enough
+  // price history" for names that have decades of it. Measured 2026-09-02 —
+  // TXN, AMD, INTC, NOW and PLTR all reported it inside a 20-symbol batch while
+  // /api/candles returned 200 daily bars for every one of them, and each
+  // cleared the gate when decided alone. The cause was provider rate limiting
+  // under batch load; the message named the wrong thing and sent the
+  // investigation after missing data that was never missing.
+  let candlesError: string | null = null;
+  const fetchDailyCandles = async (): Promise<Candle[]> => {
+    try {
+      return await provider.getCandles(symbol, 'daily', { limit: 260 });
+    } catch (e) {
+      candlesError = e instanceof Error ? e.message : String(e);
+      return [];
+    }
+  };
   if (history.length < 15 && atmIv !== undefined) {
-    candles = await provider.getCandles(symbol, 'daily', { limit: 260 }).catch(() => []);
+    candles = await fetchDailyCandles();
   }
   const ivContext = computeIvContext(atmIv, history, candles);
   if (ivContext.ivRank === null) {
+    const samples = `${ivContext.samples} real IV-rank sample${ivContext.samples === 1 ? '' : 's'} (need 15)`;
     return {
       ok: false,
-      reason:
-        `Insufficient IV data for ${chain.underlying} — ${ivContext.samples} real IV-rank sample` +
-        `${ivContext.samples === 1 ? '' : 's'} (need 15) and not enough price history for a realized-` +
-        `volatility estimate either — skipped rather than guessed`,
+      reason: candlesError
+        ? `Insufficient IV data for ${chain.underlying} — ${samples}, and the daily-candle fetch for the ` +
+          `realized-volatility fallback FAILED (${candlesError}) — this is a data-availability problem, not a ` +
+          `short price history; it usually clears on the next cycle`
+        : `Insufficient IV data for ${chain.underlying} — ${samples} and not enough price history for a realized-` +
+          `volatility estimate either — skipped rather than guessed`,
     };
   }
   const ivRankNote = ivContext.method === 'hv-estimate' ? ' (estimated from realized volatility)' : '';
@@ -294,16 +315,21 @@ export async function generateOptionsSignal(
     // The candles fetch above is lazy (only when real IV history is short) —
     // the gate needs the daily series regardless, so top it up here.
     if (!candles.length) {
-      candles = await provider.getCandles(symbol, 'daily', { limit: 260 }).catch(() => []);
+      candles = await fetchDailyCandles();
     }
     const rvSeries = realizedVolSeries(candles);
     const realizedVol = rvSeries.length ? rvSeries[rvSeries.length - 1] : undefined;
     if (atmIv === undefined || realizedVol === undefined || realizedVol <= 0) {
+      // Same distinction as the IV-rank skip above: blaming "insufficient
+      // daily price history" for what is actually a failed fetch sends the
+      // reader after data that is not missing.
       return {
         ok: false,
-        reason:
-          'IV/RV cheapness gate is on but the 20-day realized volatility could not be computed ' +
-          '(insufficient daily price history) — skipped rather than guessed',
+        reason: candlesError
+          ? `IV/RV cheapness gate is on but the daily-candle fetch FAILED (${candlesError}) — a data-` +
+            `availability problem, not a short price history; it usually clears on the next cycle`
+          : 'IV/RV cheapness gate is on but the 20-day realized volatility could not be computed ' +
+            '(insufficient daily price history) — skipped rather than guessed',
       };
     }
     const ratio = atmIv / realizedVol;

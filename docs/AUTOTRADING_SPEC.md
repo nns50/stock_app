@@ -4139,3 +4139,62 @@ Whether it binds in practice is now measurable rather than theoretical: with the
 DTE gate fixed, ~218 candidates a tick reach it instead of 4, and
 `live_options_risk_blocked` records what refuses them. Re-measure before
 changing it.
+
+
+---
+
+## 2026-09-02 (later) — Measuring the DTE fix in production, and what it exposed
+
+Re-ran `POST /api/autotrade/decide` against the deployed build.
+
+**The DTE fix works.** Skips for "No expiration within the configured DTE
+window" went from **214 of 218 (98%)** to **1 of 17 (6%)** — the one remaining
+being a name that genuinely has no expiry inside `[0, 2]`.
+
+### The DTE bug had been starving IV-rank history
+
+`recordAtmIv()` sits **downstream of the DTE gate** in `generateOptionsSignal`.
+So for the whole period the window was broken, 98% of candidates returned early
+and never recorded an IV sample. The observed sample counts match exactly —
+TXN 1, SOFI 1, NCLH 3, AMD 3, MRVL 5, PLTR 5, INTC 6, NOW 7 — with the highest
+counts on the names carrying M/W/F expirations, which slipped through the broken
+window most often.
+
+Self-healing now that the gate admits ~94%: every screened symbol records a
+sample per session, and the 15-sample requirement clears in roughly 15 sessions.
+No further code change needed for it.
+
+### A failed candle fetch was reported as a short price history — FIXED
+
+Eight symbols reported *"…and not enough price history for a realized-volatility
+estimate either"*. That claim was **false**: `/api/candles/<SYM>?timeframe=daily`
+returned **200 daily bars** for TXN, AMD, INTC, NOW and PLTR, and
+`realizedVolSeries` over 200 bars yields ~170 samples against a requirement of
+15.
+
+The cause was `.catch(() => [])` on the daily-candle fetch, swallowing provider
+rate limiting under batch load. Decided **alone**, TXN and AMD both cleared the
+gate and moved on to the entry rules; decided in a 20-symbol batch, both
+reported missing data that was never missing.
+
+Same family as the movers `catch {}` fixed earlier the same day, with an extra
+harm: the message did not merely omit the reason, it **asserted the wrong one**,
+pointing the reader at absent history rather than at a failed request. Both skip
+paths (IV-rank and the IV/RV gate) now distinguish the two, and say plainly when
+it is a fetch failure that "usually clears on the next cycle".
+
+This matters more in production than in the measurement: the loop decides the
+whole universe in one tick, which is the batch condition, not the single-symbol
+one.
+
+### What is NOT concluded here
+
+The largest remaining bucket was *"No contract passed entry rules
+(liquidity/spread/delta/IV band)"* — 8 of 17, and both isolated re-runs.
+
+**That measurement was taken at ~03:00 ET, with the market closed.**
+`optionsMinVolume` is 10 and the day's contract volume is 0 outside the session,
+so essentially every contract fails that rule at that hour regardless of how it
+would look at 10:00. Nothing about the entry rules should be inferred from it.
+Re-measure during market hours before touching delta band, spread cap, or the
+liquidity floors.
