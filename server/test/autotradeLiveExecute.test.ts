@@ -885,6 +885,41 @@ describe('runLiveExecution — level-aware exits', () => {
 // once and both books consume the same signals — so it silently filtered the
 // PAPER control book too, leaving the experiment that depends on it with no
 // counterfactual. Every other entry gate here is live-only for that reason.
+// buyingPowerForSide returned undefined for ANY sell, so even after the
+// sizer learned that an opening short consumes margin (PR #460), production
+// handed it no figure and buyingPowerMaxQuantity read that as "no constraint".
+// The guardrail still caught an unfundable short, but only after a full-size
+// order had been built — the exact build-then-refuse loop the buying-power
+// sizer exists to end.
+describe('runLiveExecution — a SHORT entry is buying-power sized', () => {
+  it('fetches buying power for a short once shorts are enabled', async () => {
+    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false, liveAllowNakedShort: true });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SHORT' });
+
+    await runLiveExecution([{ signal: signal({ side: 'sell', stop: 105, target: 90 }) }]);
+
+    // The broker WAS asked — previously it was skipped for every sell.
+    expect(mockAccountState).toHaveBeenCalled();
+  });
+
+  it('still never calls the broker for a short while shorts are OFF', async () => {
+    // The lazy-fetch optimization this guard originally protected: with
+    // liveAllowNakedShort false the short-entry skip returns first, so a
+    // disabled-shorts book pays for no round-trip.
+    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false, liveAllowNakedShort: false });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NONE' });
+
+    const outcomes = await runLiveExecution([{ signal: signal({ side: 'sell', stop: 105, target: 90 }) }]);
+
+    expect(outcomes[0]).toMatchObject({ ok: false });
+    expect(outcomes[0].reason).toMatch(/liveAllowNakedShort is off/);
+    expect(mockAccountState).not.toHaveBeenCalled();
+  });
+});
+
 describe('runLiveExecution — 1R must be reachable on the name', () => {
   // The fixture signal is entry 100 / stop 95, so 1R costs 5 in price terms.
   // Against a 0.7 bar the name needs ATR >= 7.14 to qualify.
