@@ -918,6 +918,70 @@ describe('runLiveExecution — a SHORT entry is buying-power sized', () => {
     expect(outcomes[0].reason).toMatch(/liveAllowNakedShort is off/);
     expect(mockAccountState).not.toHaveBeenCalled();
   });
+
+  // The half the fix above missed. buyingPowerForSide (the READ) was corrected
+  // to hand a short a figure; the batch loop's WRITE-BACK still decremented
+  // only for `side === 'buy'`, on the premise that "sells free buying power".
+  // That is true of a CLOSING sell and false of every signal reaching this
+  // function — runLiveExecution is the ENTRY batch, where 'sell' means OPEN A
+  // SHORT, which consumes margin exactly as a buy consumes cash. So a batch
+  // that opened a short handed the NEXT candidate money the short had already
+  // spent: the double-spend the decrement exists to prevent.
+  const wideOpen = () => ({
+    ...liveConfig(),
+    levelExitsEnabled: false,
+    liveAllowNakedShort: true,
+    liveProbationTrades: 0,
+    maxConcurrentPositions: 5,
+    maxAggregateOpenRiskPct: 100,
+    maxCorrelatedExposurePct: 1000,
+    maxSectorExposurePct: 1000,
+    maxTradesPerDay: 20,
+    correlationThreshold: 1.1, // nothing counts as correlated
+  });
+
+  /** Short AAPL then long MSFT, against `bp` dollars of buying power. Every
+   *  risk-check cap is opened wide so the buying-power decrement is the only
+   *  thing that can affect the SECOND order. */
+  async function shortThenLong(bp: number) {
+    setAutotradeConfig(wideOpen());
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100, MSFT: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, buyingPowerUsd: bp, exposureUsd: 0 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-BATCH' });
+
+    await runLiveExecution([
+      { signal: signal({ symbol: 'AAPL', side: 'sell', stop: 105, target: 90 }) },
+      { signal: signal({ symbol: 'MSFT', side: 'buy' }) },
+    ]);
+    const orders = mockPlaceOrder.mock.calls.map((c) => c[1] as { symbol: string; quantity: number });
+    return { short: orders.find((i) => i.symbol === 'AAPL'), long: orders.find((i) => i.symbol === 'MSFT') };
+  }
+
+  it('a filled SHORT spends buying power for the rest of the batch', async () => {
+    // $100k equity at 1% risk over a $5 stop sizes 200 shares = $20,000 per
+    // entry. $25,000 funds the short and leaves $5,000 — a quarter of what the
+    // long wants, which the min-funded-size floor then declines rather than
+    // take a token position. Before the fix the short decremented NOTHING, so
+    // the long was sized against the untouched $25,000 and went out at full
+    // size on money that was already committed.
+    const { short, long } = await shortThenLong(25_000);
+
+    expect(short?.quantity).toBe(200);
+    expect(long, "the long must not go out on the short's money").toBeUndefined();
+  });
+
+  it('but does not block a long the account can genuinely afford — the control', async () => {
+    // Same batch, $45,000: enough for both at full size. Without this pair the
+    // test above would also pass if the decrement over-subtracted, or if
+    // shorts had simply been broken in some other way.
+    const { short, long } = await shortThenLong(45_000);
+
+    expect(short?.quantity).toBe(200);
+    expect(long?.quantity).toBe(200);
+  });
 });
 
 describe('runLiveExecution — 1R must be reachable on the name', () => {

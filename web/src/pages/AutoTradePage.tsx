@@ -1824,6 +1824,16 @@ function MonitoringDashboard({
               {dash.lastTick.summary.moversAutoPromoted > 0 &&
                 ` · ${dash.lastTick.summary.moversAutoPromoted} movers promoted`}
             </p>
+            {dash.lastTick.summary.moversFetchError ? (
+              <p className="text-amber-400">
+                Movers discovery failed — {dash.lastTick.summary.moversFetchError}. Screening ran universe-only.
+              </p>
+            ) : (
+              <p>
+                Movers discovery: {dash.lastTick.summary.moversCandidates} of {dash.lastTick.summary.moversDiscovered}{' '}
+                fetched became candidates
+              </p>
+            )}
           </div>
         )}
       </div>

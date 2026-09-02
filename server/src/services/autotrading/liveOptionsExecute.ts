@@ -407,6 +407,12 @@ export interface LiveOptionsExecutionOutcome {
   ok: boolean;
   reason?: string;
   intentId?: number;
+  /** This refusal already wrote its own journal row (placeLiveOptionsOrder's
+   *  live_options_entry_blocked / live_options_entry_failed), so the batch
+   *  loop must not write a second one for it. Absent on the orderly refusals
+   *  that journal nowhere else — which is exactly the set the batch loop
+   *  exists to cover. */
+  journaled?: boolean;
 }
 
 /**
@@ -563,7 +569,8 @@ export async function attemptLiveOptionsEntry(
     // Record the order row even when the outcome is UNKNOWN: that is what keeps
     // it pollable by reconcileLiveOptionsOrders and what stops the next cycle
     // placing the same real order again. Only a KNOWN refusal returns early.
-    if (!placed.ok && !placed.ambiguous) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId };
+    if (!placed.ok && !placed.ambiguous)
+      return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId, journaled: true };
 
     recordLiveOptionsEntryOrder({
       intentId: placed.intentId,
@@ -581,7 +588,7 @@ export async function attemptLiveOptionsEntry(
       ...entryContext,
     });
 
-    if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId };
+    if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId, journaled: true };
     return finishEntryPlacement(symbol, intent, 'debit_spread', placed, riskProfile);
   }
 
@@ -635,7 +642,8 @@ export async function attemptLiveOptionsEntry(
   // Record the order row even when the outcome is UNKNOWN: that is what keeps
   // it pollable by reconcileLiveOptionsOrders and what stops the next cycle
   // placing the same real order again. Only a KNOWN refusal returns early.
-  if (!placed.ok && !placed.ambiguous) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId };
+  if (!placed.ok && !placed.ambiguous)
+    return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId, journaled: true };
 
   recordLiveOptionsEntryOrder({
     intentId: placed.intentId,
@@ -651,7 +659,7 @@ export async function attemptLiveOptionsEntry(
     ...entryContext,
   });
 
-  if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId };
+  if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId, journaled: true };
   return finishEntryPlacement(symbol, intent, 'single_leg', placed, riskProfile);
 }
 
@@ -897,6 +905,43 @@ export async function runLiveOptionsExecution(
     };
     const result = evaluateOptionsRiskCheck(signal, ctx);
     if (!result.ok) {
+      // Journaled for the same reason the equity path's live_risk_blocked is
+      // (2026-09-02): every refusal here was previously returned as the bare
+      // string 'Risk check blocked' into an outcomes array the loop counts and
+      // discards, so a LIVE options refusal left no row anywhere — the exact
+      // blindness that made 'why has this never traded' unanswerable for the
+      // equity book. Only refusals are journaled; a pass produces its own
+      // live_options_order_placed / live_options_entry_blocked downstream.
+      //
+      // `quantity` matters more here than it does for equity. The single-leg
+      // sizer treats the FULL premium as the risk (optionsRiskCheck passes
+      // stopPrice: 0 — a long option's real worst case is expiring
+      // worthless), so contracts = floor(riskBudget / (premium * 100)). At
+      // the 2026-09-02 book — $5,074.68 equity, 1.25% per trade — that budget
+      // is $63.43 and the 'quantity' rule refuses ANY contract priced above
+      // $0.634/share. All four options positions this app has ever opened
+      // were 1 contract at 0.54, 0.57, 0.59 and 0.62. Without this row, that
+      // ceiling is invisible: the book just looks quiet.
+      // Throttled to once per symbol per ET day, unlike equity's unthrottled
+      // twin. The options decision emits far more signals than the equity one
+      // does — 184 in a single tick on 2026-08-27 — and a refusal like the
+      // premium ceiling below is a PERMANENT condition, identical on every
+      // 60s tick for every symbol. Unthrottled that is tens of thousands of
+      // rows a session saying one thing. Same helper the cooldown and
+      // finish-line skips already use for the same reason.
+      journalEntrySkipOncePerDay(
+        symbol,
+        'live_options_risk_blocked',
+        {
+          failedRules: result.checks.filter((c) => !c.passed).map((c) => c.rule),
+          checks: result.checks,
+          quantity:
+            'suggestedContracts' in result.sizing ? result.sizing.suggestedContracts : result.sizing.suggestedQuantity,
+          premium: signal.kind === 'debit_spread' ? signal.netDebit : signal.premium,
+        },
+        Date.now(),
+        'risk_check',
+      );
       outcomes.push({ symbol, ok: false, reason: 'Risk check blocked' });
       continue;
     }
@@ -921,7 +966,22 @@ export async function runLiveOptionsExecution(
     } catch (err) {
       const reason = `Unexpected error placing order: ${(err as Error).message}`;
       logAutotradeEvent({ symbol, stage: 'execution', action: 'live_options_entry_failed', detail: { reason } });
-      outcome = { symbol, ok: false, reason };
+      outcome = { symbol, ok: false, reason, journaled: true };
+    }
+    // Same gap, one layer down: attemptLiveOptionsEntry refuses for its own
+    // reasons AFTER the risk check passes — probation flooring the size to 0,
+    // a stale last-trade-only quote, a vanished net debit, a failed quote
+    // fetch — and every one of those returned ok:false into this array
+    // without writing a row. Only a THROW was journaled, so the orderly
+    // refusals (the common ones) were the invisible ones. Refusals the entry
+    // path has already journaled itself carry `journaled` and are skipped
+    // here rather than written twice.
+    if (!outcome.ok && !outcome.journaled) {
+      // Throttled for the same reason as the risk block above: the refusals
+      // this covers are steady-state conditions, not events. Probation
+      // flooring a 1-contract size to 0, in particular, refuses every
+      // candidate on every tick for the whole probation window.
+      journalEntrySkipOncePerDay(symbol, 'live_options_entry_refused', { reason: outcome.reason });
     }
     outcomes.push(outcome);
     if (outcome.ok) {

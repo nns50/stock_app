@@ -937,11 +937,12 @@ export async function runLiveExecution(
   // (see buyingPowerSizing.ts -- 627 such refusals and zero entries on
   // 2026-08-28).
   //
-  // Loaded LAZILY, and only for a buy: an unplaceable short must still cost no
-  // broker round-trip, which is the whole point of the skip below it. Read once
-  // per batch and then decremented by each fill, so two entries in the same
-  // tick cannot both be sized against the same dollars -- the broker's own
-  // figure only catches up on the next tick.
+  // Loaded LAZILY: an unplaceable short must still cost no broker round-trip,
+  // which is the whole point of the skip below it — a short only gets this far
+  // when liveAllowNakedShort is ON. Read once per batch and then decremented by
+  // each fill (either side — an opening short consumes margin too), so two
+  // entries in the same tick cannot both be sized against the same dollars;
+  // the broker's own figure only catches up on the next tick.
   //
   // Best-effort throughout: no account id, a failed read, or a payload without
   // the field all leave it undefined, which imposes no constraint and restores
@@ -1329,11 +1330,26 @@ export async function runLiveExecution(
         notional,
         side: signal.side === 'buy' ? 'long' : 'short',
       });
-      // A filled BUY has spent this money — the next candidate in the same
+      // A filled ENTRY has spent this money — the next candidate in the same
       // batch must not be sized against it too. The broker's own figure only
-      // catches up on the next tick's read. (Sells free buying power rather
-      // than consuming it, matching guardrails.ts, so they leave it alone.)
-      if (availableBuyingPowerUsd !== undefined && signal.side === 'buy') {
+      // catches up on the next tick's read.
+      //
+      // Both sides decrement (2026-09-02). This used to read `signal.side ===
+      // 'buy'` on the premise that "sells free buying power rather than
+      // consuming it, matching guardrails.ts" — true of a CLOSING sell, and
+      // false of every signal that reaches here. `runLiveExecution` is the
+      // ENTRY batch: `side: 'sell'` means OPEN A SHORT, which consumes margin
+      // exactly as a buy consumes cash. Left as it was, a batch that opened a
+      // short would hand the next candidate buying power the short had
+      // already spent — precisely the double-spend this decrement exists to
+      // prevent.
+      //
+      // Fourth site of the same confusion, and the one the earlier three
+      // missed: guardrails.ts and buyingPowerSizing.ts were both moved from
+      // `side` to `openClose`, and buyingPowerForSide above was fixed to
+      // return a figure for both sides — but fixing the READ left this
+      // WRITE-BACK on the old premise. Assert at the consumer.
+      if (availableBuyingPowerUsd !== undefined) {
         availableBuyingPowerUsd = Math.max(0, availableBuyingPowerUsd - notional);
       }
       skipSymbols.add(symbol);

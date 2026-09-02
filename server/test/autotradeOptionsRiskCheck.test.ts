@@ -146,6 +146,42 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
     expect(findCheck(result, 'quantity').passed).toBe(false);
   });
 
+  // Characterization, not a preference (2026-09-02). The full-premium risk
+  // model above is deliberate — a long option really can expire worthless —
+  // but at THIS account's size it has a consequence nobody had measured:
+  // contracts = floor(budget / (premium x 100)), so with $5,074.68 equity at
+  // 1.25% per trade the budget is $63.43 and the tradeable premium ceiling is
+  // $0.634/share. Every options position this app has ever opened is inside
+  // it: 4 positions, 1 contract each, premiums 0.54 / 0.57 / 0.59 / 0.62.
+  //
+  // Pinned here so that if anyone changes the risk model, widens the budget,
+  // or the account grows, this test says out loud what the ceiling moved to
+  // instead of the change landing silently in a live options book.
+  describe('the premium ceiling this risk model implies (live book, 2026-09-02)', () => {
+    const liveBook = () => baseCtx({ equity: 5074.68, riskPerTradePct: 1.25 });
+
+    it('sizes exactly 1 contract just under the $0.634 ceiling', () => {
+      const result = evaluateOptionsRiskCheck(optionSignal({ premium: 0.62 }), liveBook());
+      expect(result.ok).toBe(true);
+      expect(sz(result).suggestedQuantity).toBe(1);
+    });
+
+    it('refuses on the quantity rule just above it', () => {
+      const result = evaluateOptionsRiskCheck(optionSignal({ premium: 0.65 }), liveBook());
+      expect(result.ok).toBe(false);
+      expect(findCheck(result, 'quantity').passed).toBe(false);
+    });
+
+    it('refuses a typical 0-2 DTE premium outright', () => {
+      // The configured window is optionsMinDte 0 / maxDte 2 at 0.25-0.40
+      // delta, where a liquid underlying's contract is routinely $1-$3.
+      for (const premium of [1, 1.5, 2, 3]) {
+        const result = evaluateOptionsRiskCheck(optionSignal({ premium }), liveBook());
+        expect(sz(result).suggestedQuantity, `premium ${premium}`).toBe(0);
+      }
+    });
+  });
+
   describe('step-down sizing', () => {
     it('cuts size by stepDownSizeCutPct once the consecutive-loss threshold is reached', () => {
       const result = evaluateOptionsRiskCheck(optionSignal(), baseCtx({ consecutiveLosses: 2 }));

@@ -1030,7 +1030,14 @@ equally-weighted cards in the order they happened to be built:
   split into an **Equity** and an **Options** half with the same one-line
   open/closed/realized/unrealized ledger above each table.
 - **History** — **Recent activity**, the journal of what the loop actually did, most
-  recent first.
+  recent first. Live **options** refusals appear here too (2026-09-02): a blocked risk
+  check logs **options risk blocked** naming the rule that failed and the premium and
+  contract count it sized, and a refusal after that point — a stale quote, a probation
+  cut that rounds the size to zero — logs **options entry refused** with the reason.
+  Both are written **once per symbol per day**: they describe steady conditions, not
+  moments, and the options decision can emit well over a hundred signals in a single
+  minute-long cycle. Before this, a live options book that never traded looked exactly
+  like a quiet one.
 - **Tools** — **Research, Screen & Decide** and **Backtest & walk-forward**. Both are
   run on demand and neither places an order, so both ship **collapsed**: they produce a
   screenful of output each, and the dashboard is meant to open on state rather than on
