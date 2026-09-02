@@ -1021,6 +1021,41 @@ describe('checkLiveEquityScaleOuts', () => {
     expect(placed.quantity).toBeLessThan(quantity);
   });
 
+  // A scale-in gives the added shares their OWN bracket, so a scaled-in
+  // position rests FOUR exit legs. keepQty is a single whole-position number:
+  // applying it to all four leaves two brackets each protecting keepQty, and if
+  // the stop fills BOTH sell keepQty against a position of keepQty — leaving the
+  // account short. Found auditing liveScaleInEnabled before enabling it.
+  it('refuses to resize a MULTI-LOT bracket rather than overselling into a short', async () => {
+    await armed(200);
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [restingLeg('STOP-1'), restingLeg('TGT-1'), restingLeg('STOP-2'), restingLeg('TGT-2')],
+    });
+    mockReplaceOrders.mockResolvedValue({ ok: true });
+
+    const out = await checkLiveEquityScaleOuts();
+
+    expect(out[0]).toMatchObject({ requested: false });
+    expect(out[0].reason).toMatch(/ambiguous|multi-lot/i);
+    expect(mockReplaceOrders).not.toHaveBeenCalled(); // nothing resized
+    expect(mockPlaceOrder).not.toHaveBeenCalled(); // and nothing sold
+    const ev = listAutotradeEvents({ limit: 50 }).find((e) => e.action === 'live_scale_out_blocked');
+    expect(JSON.parse(ev!.detail as string).reason).toMatch(/more than one lot/i);
+  });
+
+  it('still scales out normally against a single two-leg bracket', async () => {
+    // The control: the refusal above must not have disabled the ordinary case.
+    const { quantity } = await armed(200);
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1'), restingLeg('TGT-1')] });
+    mockReplaceOrders.mockResolvedValue({ ok: true });
+
+    const out = await checkLiveEquityScaleOuts();
+
+    expect(out[0]).toMatchObject({ requested: true });
+    expect(mockPlaceOrder.mock.calls[0][1].quantity).toBe(Math.floor(quantity / 2));
+  });
+
   it('ABANDONS the scale-out — selling nothing — when a leg cannot be reduced', async () => {
     // The position stays fully protected. This is the branch that must never
     // fall through to a sell.

@@ -2764,6 +2764,44 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
       continue;
     }
 
+    // A single bracket rests as at most TWO exit legs — a take-profit and a
+    // stop-loss, of which exactly one can fill. MORE than two means this symbol
+    // carries more than one LOT's protection, which is precisely what a
+    // scale-in creates: placeLiveScaleInAddOn gives the added shares their OWN
+    // bracket rather than resizing the original one.
+    //
+    // keepQty is a single whole-position number, so applying it to every leg
+    // would leave TWO brackets each protecting keepQty. If the stop then fills,
+    // both stop legs sell keepQty against a position of keepQty and the account
+    // ends up SHORT by keepQty — the accidental short this function's ordering
+    // is otherwise so careful to avoid.
+    //
+    // Splitting keepQty across lots correctly would mean tracking which bracket
+    // protects which shares, which nothing here does. So refuse, exactly as
+    // restingStopLeg refuses when it finds more than one STOP_LOSS leg for the
+    // same reason. Found 2026-09-02 auditing liveScaleInEnabled BEFORE turning
+    // it on; unreachable while scale-in is off.
+    if (resting.length > 2) {
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: 'live_scale_out_blocked',
+        detail: {
+          positionId: pos.id,
+          reason: `${resting.length} resting exit legs — more than one lot's bracket, cannot attribute the reduction`,
+          legs: resting.map((l) => l.clientOrderId),
+        },
+        riskProfile: cfg.riskProfile,
+      });
+      outcomes.push({
+        symbol,
+        positionId: pos.id,
+        requested: false,
+        reason: `${resting.length} resting exit legs — ambiguous, not resizing a multi-lot bracket`,
+      });
+      continue;
+    }
+
     // --- 2. reduce every leg to the remainder FIRST ------------------------
     // ONE request carrying every leg, not a replace per leg. The broker checks
     // the OCO group's balance per request, so reducing a take-profit without
