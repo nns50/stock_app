@@ -1396,8 +1396,15 @@ equally-weighted cards in the order they happened to be built:
   **live options positions too**, which since 2026-08-25 also honour **max hold
   days** (see "Live options trading" below). It
   Since 2026-08-28 the flatten also closes the **entry** side of that window:
-  no new live equity position opens within **the flatten window plus 15 minutes**
-  of the close (a 5-minute flatten therefore stops entries from 15:40). One
+  no new live equity position opens within **the flatten window plus a runway**
+  of the close. Since 2026-09-02 that runway is **however long the stagnation
+  exit needs to reach a verdict** (**Stagnation exit minutes**, 90 by default),
+  floored at 15 minutes for a book running with stagnation off — so a 5-minute
+  flatten with a 90-minute stagnation window stops new entries from **14:25**.
+  The runway used to be a flat 15 minutes, which asked whether a trade could
+  reach its *target*; but the target is not what closes most of these trades,
+  the stagnation rule is, and a position opened with less time than that rule
+  needs is decided by the clock instead of by its thesis. One
   refusal is journalled per batch as `entry_window_closed`. Without it the loop
   could open a position the flatten immediately closed — on 2026-08-28 it opened
   ESTC at 15:56:04 and flattened it at 15:57:12, 68 seconds later, after another

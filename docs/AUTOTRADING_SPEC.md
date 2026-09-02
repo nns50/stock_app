@@ -4436,3 +4436,68 @@ mechanisms that walk the resting legs. Nothing here was wrong when it was
 written. It became wrong when the scale-out and the ratchet started reading
 brackets — and neither could notice, because both were themselves broken until
 today.
+
+---
+
+## 2026-09-02 (post-close) — The entry runway asked the wrong question
+
+Raising `maxTradesPerDay` 8 → 14 mid-session had a measurable negative effect,
+and it uncovered a real gap rather than creating one.
+
+| entries before the raise (~15:26) | 8 | **+$32.78** |
+|---|---|---|
+| entries after (MOS, BBY, SWKS) | 3 | **−$36.29** |
+| **day** | **11** | **−$3.51 (−0.11%)** |
+
+All three landed at 15:26–15:27 and were force-closed by the 15:57 flatten
+about 30 minutes later.
+
+### Not a missing gate — a mis-sized one
+
+An entry cutoff already existed (2026-08-28, `evaluateEntryCutoff`), derived as
+`endOfDayFlattenMinutes + ENTRY_RUNWAY_MINUTES` = 5 + 15 = **20 minutes**. The
+three entries had 33–34 minutes left, so they cleared it correctly. Adding a
+second, parallel no-entry config field — the first thing tried here — would have
+been exactly the duplicated-quantity mistake CLAUDE.md warns about; it was
+reverted before going further.
+
+The bug is in the runway's *size*, and specifically in the question it asked.
+Its comment said:
+
+> with maxStopDistancePct 2.5 and a 2R target, a position needs a ~5% move to
+> pay out, and 15 minutes is already generous for that
+
+Both halves have stopped holding. `maxStopDistancePct` is now **0**, and far
+more importantly **the target is not what closes these trades**. The stagnation
+exit is: 10 of 11 exits on 2026-09-02, 7 of 8 the day before. That rule gives a
+position **90 session-minutes** to reach 0.5R and cuts it otherwise — so a trade
+opened with less than 90 minutes left can never reach its own verdict. The
+flatten decides it on the clock rather than on the thesis.
+
+### Fixed by derivation, not by a new number
+
+`entryRunwayMinutes(cfg)` = `max(ENTRY_RUNWAY_MINUTES, stagnationExitMinutes)`.
+At the live config that is `max(15, 90)` = 90, so the cutoff becomes 95 minutes
+and the last entry of the day is **14:25 ET**.
+
+Derived for the same reason the cutoff is already derived from the flatten
+window: two numbers that must agree should not be able to disagree. Change
+`stagnationExitMinutes` and the runway follows. The 15-minute constant survives
+as the floor, which is also the whole runway when stagnation is off.
+
+Checked against the actual session: the new cutoff blocks exactly the three late
+entries and allows all eight earlier ones — including GTLB's 13:00 entry, which
+ran 93 minutes and was closed by the stagnation rule on its merits. A gate that
+swallowed that one would just be an afternoon shutdown.
+
+A test pins the counterfactual too: under the old flat runway those same three
+instants are NOT blocked, so the change is demonstrably what bites.
+
+### Note on attribution
+
+The three trades lost money, but that is not the argument — fitting a rule to
+one day's P&L is how you overfit. The argument is structural: a position that
+cannot survive to its own decision rule is decided by the clock, and that is
+true whichever way the three had gone. The cap raise did not cause this; it
+removed the accident that had been hiding it, since the 8-trade limit had been
+exhausting itself by 13:00 every day.
