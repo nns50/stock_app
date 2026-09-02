@@ -85,6 +85,37 @@ const ZERO_SPREAD_SIZING: SpreadSizingResult = {
 // EVERY call (tens of microseconds each), dominant enough to matter across
 // the thousands of evaluateOptionsRiskCheck calls a large options/combined
 // backtest makes. Same output, reusing one Intl.NumberFormat via .format().
+/** Standard equity-option contract multiplier. */
+const OPTION_MULTIPLIER = 100;
+
+/**
+ * Capital an OPEN options position has deployed — NET premium paid, times
+ * contracts, times the multiplier. This is the number the correlated- and
+ * sector-exposure checks want, and it is NOT the position's riskAmount.
+ *
+ * Those checks used to read `riskAmount` for it, which was correct only by
+ * coincidence: while single-leg sizing assumed the whole premium was at risk,
+ * risk and cost were the same number. Sizing against the disaster stop
+ * (2026-09-02) broke that identity for a single leg — riskAmount became 70% of
+ * cost — and reading it as notional would have understated those positions'
+ * exposure by 30%. Exported so both books compute it the same way instead of
+ * each reaching for a convenient sibling field.
+ *
+ * `entryPrice` is the LONG leg's premium, not the net debit, so a spread must
+ * subtract the credit its short leg brought in — otherwise this overstates a
+ * spread's cost by the whole short premium (the fixture that caught it: long 3,
+ * short 1, 2 contracts — $400 deployed, not $600). A single leg carries no
+ * short leg and nets to its own premium, unchanged. A spread's max loss IS its
+ * net debit, so for that shape risk and notional legitimately remain equal.
+ */
+export function optionsPositionNotionalUsd(p: {
+  entryPrice: number;
+  quantity: number;
+  shortEntryPrice?: number | null;
+}): number {
+  return (p.entryPrice - (p.shortEntryPrice ?? 0)) * p.quantity * OPTION_MULTIPLIER;
+}
+
 const usdFormatter = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function usd(n: number): string {
   return `$${usdFormatter.format(n)}`;
@@ -176,13 +207,28 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
   );
 
   // Sizing itself is the one place single-leg and spread genuinely differ:
-  //   - single_leg: a long option's real worst case is expiring worthless —
-  //     losing the ENTIRE premium paid. Passing stopPrice: 0 to the exact
-  //     same computeRiskSizing() the equity path uses turns "stop distance"
-  //     into "the full premium," which IS this signal's own defined-risk
-  //     structure (see optionsDecide.ts's analyzeStrategy() backstop) — not a
-  //     new formula. side: 'long' means long the CONTRACT itself, regardless
-  //     of call/put direction.
+  //   - single_leg: sized against the deepest premium loss the exit ladder
+  //     will actually hold through — optionsDisasterStopPct, the
+  //     `disaster_stop` shortDatedOptionsExit enforces on both books — by
+  //     passing that price as the stop to the exact same computeRiskSizing()
+  //     the equity path uses. side: 'long' means long the CONTRACT itself,
+  //     regardless of call/put direction.
+  //
+  //     This used to pass stopPrice: 0, i.e. "the whole premium is at risk."
+  //     That reads as the conservative choice and is really a unit mismatch
+  //     with the exit path (CLAUDE.md: two places deriving the same quantity
+  //     must agree by construction). riskPerTradePct is defined as what you
+  //     lose WHEN THE STOP HITS; sizing to a 100% loss the exit path never
+  //     allows meant hitting the real stop cost only 0.7x the stated appetite,
+  //     and one contract is indivisible, so at $5,074.68 equity and 1.25% the
+  //     $63.43 budget bought nothing priced above $0.634/share. Every options
+  //     position this app had ever opened was 1 contract at 0.54-0.62.
+  //
+  //     A gap through the disaster stop still loses more than the budget —
+  //     which is why the basis is the DISASTER stop (70%) and not the soft
+  //     optionsStopLossPct (40%) that usually fires first, and not the 0.5%
+  //     underlying stop that usually fires before either. The margin between
+  //     70% and 100% is what absorbs slippage.
   //   - debit_spread: no price stop either — a spread's loss is structural
   //     and capped by its own construction (see optionsDecide.ts), so
   //     computeSpreadSizing() sizes by max loss per spread directly, exactly
@@ -214,11 +260,15 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
       ? `${spreadSizing.suggestedContracts} spread${spreadSizing.suggestedContracts === 1 ? '' : 's'}`
       : 'risk budget is too small to size even one spread at this width/net debit';
   } else {
+    // Fails SAFE to the old full-premium basis: an absent, zero, or >=100
+    // disaster stop all mean "no enforced floor", so assume the whole premium.
+    const disasterPct = ctx.optionsDisasterStopPct;
+    const maxLossFraction = disasterPct !== undefined && disasterPct > 0 && disasterPct < 100 ? disasterPct / 100 : 1;
     const legSizing = computeRiskSizing({
       accountSize: ctx.equity,
       riskPct: effectiveRiskPct,
       entryPrice: signal.premium,
-      stopPrice: 0,
+      stopPrice: Math.round(signal.premium * (1 - maxLossFraction) * 10000) / 10000,
       assetType: 'option',
       side: 'long',
     });
@@ -227,8 +277,10 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
     positionNotional = legSizing.positionCost;
     qtyOk = legSizing.suggestedQuantity > 0;
     qtyDetail = qtyOk
-      ? `${legSizing.suggestedQuantity} contract${legSizing.suggestedQuantity === 1 ? '' : 's'}`
-      : 'risk budget is too small to size even one contract at this premium';
+      ? `${legSizing.suggestedQuantity} contract${legSizing.suggestedQuantity === 1 ? '' : 's'} — risking ${Math.round(maxLossFraction * 100)}% of premium`
+      : `risk budget is too small to size even one contract at ${usd(signal.premium)} premium (risking ${Math.round(
+          maxLossFraction * 100,
+        )}% of it)`;
   }
   check('quantity', qtyOk, qtyDetail);
   if (!qtyOk) return blocked(sizing, stepDownActive, regimeActive);
@@ -371,6 +423,11 @@ export async function runOptionsRiskCheck(
       maxConcurrentPositions: config.maxConcurrentPositions,
       correlatedNotional: correlated,
       riskPerTradePct: config.riskPerTradePct,
+      // Single-leg options size against the loss the exit ladder actually
+      // enforces, not against a 100% wipeout it never permits. Threaded from
+      // config at every options caller so the sizer and the exit path cannot
+      // drift apart.
+      optionsDisasterStopPct: config.optionsDisasterStopPct,
       maxDailyDrawdownPct: config.maxDailyDrawdownPct,
       stepDownAfterLosses: config.stepDownAfterLosses,
       stepDownSizeCutPct: config.stepDownSizeCutPct,

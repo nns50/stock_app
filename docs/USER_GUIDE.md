@@ -1502,7 +1502,12 @@ equally-weighted cards in the order they happened to be built:
   money. **Options max spread (%)** caps (ask − bid) / mid; **options min open
   interest** and **options min volume** are independent liquidity floors; **options
   min/max days to expiration** bound the DTE window a contract's expiration must fall
-  within; **options IV rank ceiling** skips an underlying whose IV rank (0-100)
+  within — counted in **whole calendar days on the US-market calendar**, so from a
+  Wednesday a Friday expiry is 2 and a same-day expiry is 0, at any hour of the
+  session (before 2026-09-02 these were compared against fractional time-to-expiry
+  instead, which scored that same Friday contract 2.27 and put it outside a 0-2
+  window until Thursday — on a weekly-expiry name, which is most of the market,
+  options could only ever open on Thursday and Friday); **options IV rank ceiling** skips an underlying whose IV rank (0-100)
   exceeds it — this loop only ever buys premium, so guarding against an
   already-expensive underlying is the direction that matters — and **options IV rank
   floor** (2026-07-27) is the other end of that same band, 0 = no floor. **Options
@@ -1697,7 +1702,12 @@ because the loop is the only caller that is always flat by the bell, so it is
   live." Its own dedicated **guardrail caps** (max order, max daily loss, max
   orders/day, fat-finger %) and **probation** window, separate from the equity live
   caps above, since options can go live weeks after equity and size differently
-  (premium-based, not share-count-based). A single-leg entry places a plain limit
+  (premium-based, not share-count-based). Note that **probation cannot cut below one
+  contract** — a contract is indivisible, so where the size cut would round an approved
+  single contract down to nothing, the entry goes out at that one contract and logs
+  **options probation at minimum** in **Recent activity** instead. Before 2026-09-02 it
+  rounded to zero and refused the entry, which meant switching probation on quietly
+  turned the options book off entirely. A single-leg entry places a plain limit
   order; a debit spread places **one** combo order for both legs together, never two
   separate orders. Both **skip any contract with no live bid/ask** — where the only price
   available is an old last-trade print, an entry is declined rather than opened at a limit
@@ -1956,9 +1966,10 @@ because the loop is the only caller that is always flat by the bell, so it is
   IV rank at signal time decides its shape, so a high-IV-rank name and a low-IV-rank name
   in the same screen can resolve differently; hover a row's rationale to see which way it
   went and why. Each options signal is
-  also risk-checked — a single leg sized by full premium paid (contracts × $100, the
-  option's real worst case), a debit spread sized by max loss per spread instead (there's
-  no price stop for either shape) — against the same configured risk caps, showing an
+  also risk-checked — a single leg sized against the **disaster stop** (the deepest
+  premium loss the exit ladder will hold a position through, **Options disaster stop
+  (%)** below; contracts × $100 × that fraction), a debit spread sized by max loss per
+  spread instead — against the same configured risk caps, showing an
   **approved/blocked** badge and the sized contract (or spread) count right below its
   contract details. This draws from **one combined risk budget** shared with the
   equity signals in the same run, not a separate options-only pool: an approved equity

@@ -3988,3 +3988,154 @@ premise, not for the function.* The string `side === 'buy'` was the defect;
 three of its four occurrences were fixed by reasoning about buying power, and
 the fourth survived because it lived in a batch-accounting line nobody was
 thinking about buying power in.
+
+---
+
+## 2026-09-02 — Making the options book actually tradable
+
+Three changes, in descending order of how much they were blocking. The first is
+a unit bug and dwarfs the other two.
+
+### 1. The DTE window was measured in the wrong unit — FIXED
+
+`optionsMinDte` / `optionsMaxDte` are configured in **whole days**. Both places
+that gate on them compared against `daysToExpiration()`, which is **fractional
+time-to-expiry**:
+
+```ts
+const dte = daysToExpiration(exp, now); // 2.27 on a Wednesday, for Friday
+return dte >= minDte && dte <= maxDte;  // maxDte = 2  ->  rejected
+```
+
+On a Wednesday, every Friday weekly contract in the market scores between 2.00
+(at the closing bell) and 2.83 (at midnight), so a `[0, 2]` window admitted it
+**only from Thursday onward**. For a weekly-expiry name — which is nearly the
+whole universe — options could open on **Thursday and Friday only**.
+
+Measured on the live book, Wednesday 2026-09-02:
+
+| Outcome | Count |
+|---|---|
+| Options candidates considered | 218 |
+| **Skipped: "No expiration within the configured DTE window [0, 2] days"** | **214** |
+| Skipped: IV/RV above max | 4 |
+| Signals generated | **0** |
+
+…while `GET /api/options/DE/expirations` and `/TXN/expirations` both listed
+`2026-09-04` — the very contract the window was meant to admit.
+
+`entryRules.ts` had been printing the contradiction on its own rule line the
+whole time: the comparison used the fraction, but the detail string rendered
+`dte.toFixed(0)`, so a failing rule displayed as **"2d ≤ 2d"**.
+
+The four paper options positions this app has ever opened confirm the pattern
+exactly — three opened on a **Friday** (same-day expiry) and one on a Tuesday
+(INTC, which carries M/W/F expirations):
+
+| Symbol | Entry (ET) | Weekday |
+|---|---|---|
+| RKLB | 2026-08-28 10:23 | Friday |
+| NOW | 2026-08-28 11:04 | Friday |
+| MRVL | 2026-08-28 12:00 | Friday |
+| INTC | 2026-09-01 10:04 | Tuesday |
+
+Fixed with a new `calendarDaysToExpiration()` used by **both** window gates —
+`optionsDecide`'s expiration filter and `entryRules`' min/max DTE rules — so the
+two agree by construction. It is anchored to the **ET** calendar day, not the
+server's, so the answer doesn't shift with deployment timezone.
+
+`daysToExpiration()` is untouched and still used for pricing, Greeks, and the
+decay-sensitive exit rules, where a fraction of a day genuinely matters. Both
+functions now carry doc comments saying which is for which, since reaching for
+the wrong one is the entire bug.
+
+### 2. Single-leg sizing assumed a 100% loss the exit path never allows — FIXED
+
+Sizing passed `stopPrice: 0` — "the whole premium is at risk." That reads as
+conservative and is really a **unit mismatch with the exit path**
+(CLAUDE.md: two places deriving the same quantity must agree by construction).
+`riskPerTradePct` is defined as *what you lose when the stop hits*, and the stop
+that actually fires is `optionsDisasterStopPct` (70%), enforced by
+`shortDatedOptionsExit`'s `disaster_stop` on **both** books.
+
+So a position sized on a 100% assumption risked only 0.7x the stated appetite
+when the real stop fired — and because a contract is indivisible, at a $63.43
+budget that meant nothing above **$0.634/share** could be bought at all.
+
+Now sized against the disaster stop. At $5,074.68 equity and 1.25%:
+
+| | ceiling | loss if the disaster stop hits |
+|---|---|---|
+| before (100% of premium) | $0.634/share | 0.87% of account |
+| after (70% disaster stop) | **$0.906/share** | **1.24% of account** |
+
+The second column is the point: the new sizing *matches* the configured 1.25%
+risk-per-trade instead of undershooting it. This is a correction, not a
+loosening — a test asserts `approvedRiskAmount <= budget` across the premium
+range, and `$1.00+` premiums are still refused.
+
+The basis is deliberately the **disaster** stop (70%) and not the soft
+`optionsStopLossPct` (40%) that usually fires first, nor the 0.5% underlying
+stop that usually fires before either. The margin between 70% and 100% is what
+absorbs a gap through the stop.
+
+Fails **safe**: an absent, zero, or >=100 `optionsDisasterStopPct` all fall back
+to the full-premium assumption — exactly the previous behaviour. Threaded from
+config at all three options callers (preview route, paper, live).
+
+### 3. Probation could not cut a one-contract size — FIXED
+
+`Math.floor(rawQuantity * multiplier)` turned an approved 1 contract into **0**
+at any multiplier below 1. Since the sizer produces roughly one contract at this
+account size, switching options probation on — the obvious careful move before
+going live — would have refused **every** options entry for the whole window,
+reported as *"Probation-adjusted quantity rounded to 0"* as though it were an
+arithmetic accident rather than a permanent state.
+
+Clamped to the minimum tradeable size instead: probation's job is to cut size,
+and at one contract there is nothing left to cut. The clamp journals
+`options_probation_at_minimum` when it binds, so "probation is not actually
+cutting anything" is visible rather than inferred from an order size. A signal
+the risk check genuinely sized at zero still refuses, with a reason that no
+longer blames probation for it.
+
+### The coupling the sizing change broke — and the fix
+
+`riskAmount` and notional were the **same number** for an options position while
+sizing assumed the whole premium was at risk. Three correlated/sector-exposure
+call sites relied on that identity:
+
+```ts
+positions: snapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.riskAmount, ... }))
+```
+
+Sizing against the disaster stop makes `riskAmount` 70% of capital deployed, so
+those sites would have silently understated every options position's exposure by
+30% — with no test noticing, because each one was correct the day it was
+written. Exactly CLAUDE.md's "when a derived struct grows a field, assert its
+consumer reads *that* field rather than a sibling", except here the field did
+not grow: its **meaning** changed underneath a consumer that had every reason to
+trust it.
+
+All three now call one exported `optionsPositionNotionalUsd(p)` — premium (or
+net debit) paid x contracts x 100 — so both books compute it the same way. A
+test asserts `approvedNotional` (1,200) and `approvedRiskAmount` (840) are no
+longer equal, so they cannot quietly collapse back into one number.
+
+### The likely NEXT constraint — measured, not changed
+
+Of the four candidates that got *past* the DTE gate on 2026-09-02, **all four**
+failed `optionsMaxIvRvRatio` (INTC 1.41, GOOGL 1.14, AVGO 4.86, AAPL 1.36).
+
+That field **defaults to 0 (off)** and is set to **1** on this book, so it is a
+deliberate choice, not a default — left alone for that reason. But note what it
+asks of a 0-2 DTE contract: that its annualized implied vol be at or below the
+symbol's **20-day realized** vol. Short-dated options carry an event/gamma
+premium almost by definition, so this comparison is close to structurally
+unsatisfiable in that DTE window, and it is not an apples-to-apples "is this
+option expensive" test the way it is for a 30-60 day contract.
+
+Whether it binds in practice is now measurable rather than theoretical: with the
+DTE gate fixed, ~218 candidates a tick reach it instead of 4, and
+`live_options_risk_blocked` records what refuses them. Re-measure before
+changing it.

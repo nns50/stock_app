@@ -1,6 +1,6 @@
 import { getProvider, getProviderStatus } from '../../providers';
 import { defaultEntryConfig, EntryStrategyConfig, scanEntries } from '../../options/entryRules';
-import { daysToExpiration } from '../../options/blackScholes';
+import { calendarDaysToExpiration } from '../../options/blackScholes';
 import { analyzeStrategy } from '../../options/optionStrategy';
 import { atmIvOfChain, computeIvContext, realizedVolSeries } from '../ivRank';
 import { getIvHistory, recordAtmIv } from '../../db/ivHistory';
@@ -231,7 +231,12 @@ export async function generateOptionsSignal(
     .slice()
     .sort() // "YYYY-MM-DD" sorts lexicographically = chronologically
     .filter((exp) => {
-      const dte = daysToExpiration(exp, now);
+      // CALENDAR days, not fractional time-to-expiry (2026-09-02). minDte/
+      // maxDte are whole-day settings; measuring them against a fraction meant
+      // a 0-2 window rejected every Friday contract on a Wednesday (2.27 > 2),
+      // and only Thursday and Friday could ever open a position on a
+      // weekly-expiry name. See calendarDaysToExpiration's own comment.
+      const dte = calendarDaysToExpiration(exp, now);
       return dte >= minDte && dte <= maxDte;
     });
   const expiration = inWindow[0];

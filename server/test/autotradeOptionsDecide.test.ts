@@ -268,6 +268,55 @@ describe('generateOptionsSignal', () => {
     if (!result.ok) expect(result.reason).toMatch(/no expiration within the configured dte window/i);
   });
 
+  // The DTE window is configured in whole days and used to be compared against
+  // FRACTIONAL time-to-expiry, so on a Wednesday every Friday contract in the
+  // market scored 2.27 against a maxDte of 2 and was rejected. Measured on the
+  // live book that Wednesday: 214 of 218 candidates skipped for "No expiration
+  // within the configured DTE window [0, 2] days", while DE, TXN and the rest
+  // all listed the 2026-09-04 expiry the window was supposed to admit.
+  it('admits a Friday expiry from a Wednesday under a 0-2 DTE window', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-09-02T13:35:00Z')); // Wed 09:35 ET
+      fillIvHistory('AAPL', 20);
+      mockGetProvider.mockReturnValue({
+        getOptionsExpirations: vi.fn(async () => ['2026-09-04']), // the Friday weekly
+        getOptionsChain: vi.fn(async () => chainFor('2026-09-04', { mark: 3 })),
+        getCandles: vi.fn(async () => candlesFor(40)),
+      } as unknown as ReturnType<typeof getProvider>);
+
+      const result = await generateOptionsSignal(candidate(), {
+        entryConfig: { minDaysToExpiration: 0, maxDaysToExpiration: 2 },
+      });
+
+      expect(result.ok, !result.ok ? result.reason : '').toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still rejects a Friday expiry from a Monday under the same window', async () => {
+    // The window must still MEAN something — 4 calendar days is outside [0, 2].
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-08-31T13:35:00Z')); // Mon 09:35 ET
+      fillIvHistory('AAPL', 20);
+      mockGetProvider.mockReturnValue({
+        getOptionsExpirations: vi.fn(async () => ['2026-09-04']),
+        getOptionsChain: vi.fn(),
+      } as unknown as ReturnType<typeof getProvider>);
+
+      const result = await generateOptionsSignal(candidate(), {
+        entryConfig: { minDaysToExpiration: 0, maxDaysToExpiration: 2 },
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toMatch(/no expiration within the configured dte window/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('skips when the expirations fetch itself fails', async () => {
     mockGetProvider.mockReturnValue({
       getOptionsExpirations: vi.fn(async () => {

@@ -37,7 +37,7 @@ import { RiskProfileName, OptionsStrategyType } from '../../db/autotradeConfig';
 import { getHistoricalOptionContracts } from './optionsHistoricalData';
 import { getHistoricalBars } from './historicalData';
 import { OptionContractRef } from './polygonOptionsClient';
-import { impliedVol, bsGreeks, yearsToExpiration, daysToExpiration } from '../../options/blackScholes';
+import { impliedVol, bsGreeks, yearsToExpiration, calendarDaysBetween } from '../../options/blackScholes';
 import { computeIvContext, realizedVolSeries } from '../ivRank';
 import { evaluateExit, unrealizedReturnPct } from '../../options/exitRules';
 
@@ -249,11 +249,17 @@ export function pickReferenceContract(
   minDte: number,
   maxDte: number,
 ): OptionContractRef | null {
-  const asOf = new Date(`${asOfDate}T00:00:00Z`);
   let best: OptionContractRef | null = null;
   for (const c of contracts) {
     if (c.contractType !== side) continue;
-    const dte = daysToExpiration(c.expiration, asOf);
+    // WHOLE calendar days, matching the live/paper window gates exactly
+    // (2026-09-02). This used to build a midnight-UTC Date from asOfDate and
+    // measure fractional time-to-expiry against it, which scored a Friday
+    // contract 2.83 from a Wednesday and put it outside a 0-2 window — the
+    // same unit bug the live path had. Fixing only the live side would have
+    // been worse than leaving both broken: a backtest would then have been
+    // selecting different contracts than the loop it is supposed to model.
+    const dte = calendarDaysBetween(asOfDate, c.expiration);
     if (dte < minDte || dte > maxDte) continue;
     if (!best || Math.abs(c.strike - underlyingClose) < Math.abs(best.strike - underlyingClose)) best = c;
   }

@@ -2060,7 +2060,13 @@ describe('autotrade options risk-check route (integration)', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { results: { ok: boolean; sizing: { suggestedQuantity: number } }[] };
     expect(body.results[0].ok).toBe(true);
-    expect(body.results[0].sizing.suggestedQuantity).toBe(3); // 1% of $100k / $300 per contract
+    // 1% of $100k = $1,000, over $3 premium x 100 x the 70% disaster-stop
+    // basis = $210 of risk per contract -> 4. It was 3 while sizing assumed
+    // the whole premium was at risk (2026-09-02). Asserted through the real
+    // route, not the helper: the sizing basis is threaded from config at the
+    // call site, and a route that forgot to thread it would still return 200
+    // with the old number.
+    expect(body.results[0].sizing.suggestedQuantity).toBe(4);
   });
 
   it('accepts a debit_spread signal body (kind discriminant) and sizes by max loss per spread', async () => {

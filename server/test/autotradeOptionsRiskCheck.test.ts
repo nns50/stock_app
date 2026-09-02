@@ -3,7 +3,11 @@ import { initDb, db } from '../src/db';
 import { createPosition } from '../src/db/positions';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
-import { evaluateOptionsRiskCheck, runOptionsRiskCheck } from '../src/services/autotrading/optionsRiskCheck';
+import {
+  evaluateOptionsRiskCheck,
+  optionsPositionNotionalUsd,
+  runOptionsRiskCheck,
+} from '../src/services/autotrading/optionsRiskCheck';
 import { runAutotradeRiskCheck, RiskCheckContext } from '../src/services/autotrading/riskCheck';
 import { DebitSpreadOptionsSignal, SingleLegOptionsSignal } from '../src/services/autotrading/optionsDecide';
 import { TradeSignal } from '../src/services/autotrading/decide';
@@ -146,40 +150,102 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
     expect(findCheck(result, 'quantity').passed).toBe(false);
   });
 
-  // Characterization, not a preference (2026-09-02). The full-premium risk
-  // model above is deliberate — a long option really can expire worthless —
-  // but at THIS account's size it has a consequence nobody had measured:
-  // contracts = floor(budget / (premium x 100)), so with $5,074.68 equity at
-  // 1.25% per trade the budget is $63.43 and the tradeable premium ceiling is
-  // $0.634/share. Every options position this app has ever opened is inside
-  // it: 4 positions, 1 contract each, premiums 0.54 / 0.57 / 0.59 / 0.62.
-  //
-  // Pinned here so that if anyone changes the risk model, widens the budget,
-  // or the account grows, this test says out loud what the ceiling moved to
-  // instead of the change landing silently in a live options book.
+  // The premium ceiling this risk model implies, at THIS account's size
+  // (2026-09-02). Single-leg sizing is `contracts = floor(budget / (premium x
+  // 100 x maxLossFraction))`, so the ceiling is exactly what the budget buys
+  // one contract of. Pinned so a change to the risk model, the budget, or the
+  // account size says out loud where the ceiling moved instead of landing
+  // silently in a live options book.
   describe('the premium ceiling this risk model implies (live book, 2026-09-02)', () => {
-    const liveBook = () => baseCtx({ equity: 5074.68, riskPerTradePct: 1.25 });
+    // $5,074.68 at 1.25% = a $63.43 budget. Against the 70% disaster stop the
+    // system actually enforces, that funds one contract up to $0.906/share.
+    const liveBook = () => baseCtx({ equity: 5074.68, riskPerTradePct: 1.25, optionsDisasterStopPct: 70 });
 
-    it('sizes exactly 1 contract just under the $0.634 ceiling', () => {
-      const result = evaluateOptionsRiskCheck(optionSignal({ premium: 0.62 }), liveBook());
+    it('sizes one contract just under the $0.906 ceiling', () => {
+      const result = evaluateOptionsRiskCheck(optionSignal({ premium: 0.9 }), liveBook());
       expect(result.ok).toBe(true);
       expect(sz(result).suggestedQuantity).toBe(1);
     });
 
     it('refuses on the quantity rule just above it', () => {
-      const result = evaluateOptionsRiskCheck(optionSignal({ premium: 0.65 }), liveBook());
+      const result = evaluateOptionsRiskCheck(optionSignal({ premium: 0.92 }), liveBook());
       expect(result.ok).toBe(false);
       expect(findCheck(result, 'quantity').passed).toBe(false);
     });
 
-    it('refuses a typical 0-2 DTE premium outright', () => {
-      // The configured window is optionsMinDte 0 / maxDte 2 at 0.25-0.40
-      // delta, where a liquid underlying's contract is routinely $1-$3.
-      for (const premium of [1, 1.5, 2, 3]) {
+    // The whole point of the change: these four were the ONLY premiums the
+    // app had ever traded, and all of them sat under the old $0.634 ceiling.
+    it('still sizes every premium the paper book actually traded', () => {
+      for (const premium of [0.54, 0.57, 0.59, 0.62]) {
         const result = evaluateOptionsRiskCheck(optionSignal({ premium }), liveBook());
-        expect(sz(result).suggestedQuantity, `premium ${premium}`).toBe(0);
+        expect(sz(result).suggestedQuantity, `premium ${premium}`).toBeGreaterThanOrEqual(1);
       }
     });
+
+    it('opens up the 0.63-0.90 band that the full-premium basis refused outright', () => {
+      for (const premium of [0.65, 0.75, 0.9]) {
+        const withStop = evaluateOptionsRiskCheck(optionSignal({ premium }), liveBook());
+        const fullPremium = evaluateOptionsRiskCheck(
+          optionSignal({ premium }),
+          baseCtx({ equity: 5074.68, riskPerTradePct: 1.25 }), // no disaster stop -> old behaviour
+        );
+        expect(sz(withStop).suggestedQuantity, `premium ${premium}`).toBe(1);
+        expect(sz(fullPremium).suggestedQuantity, `premium ${premium}`).toBe(0);
+      }
+    });
+
+    it('a sized position still loses no more than the risk budget at the stop', () => {
+      // The invariant that makes this a sizing FIX rather than a loosening:
+      // whatever it buys, hitting the disaster stop costs <= riskPerTradePct.
+      for (const premium of [0.35, 0.5, 0.75, 0.9]) {
+        const result = evaluateOptionsRiskCheck(optionSignal({ premium }), liveBook());
+        expect(result.approvedRiskAmount, `premium ${premium}`).toBeLessThanOrEqual(63.43);
+      }
+    });
+
+    it('a $1+ premium is still out of reach — this is not a blank cheque', () => {
+      for (const premium of [1, 1.5, 3]) {
+        expect(sz(evaluateOptionsRiskCheck(optionSignal({ premium }), liveBook())).suggestedQuantity).toBe(0);
+      }
+    });
+  });
+
+  // riskAmount and notional used to be the SAME number for an options
+  // position, because sizing assumed the whole premium was at risk. Sizing
+  // against the disaster stop breaks that identity, and three
+  // correlated/sector-exposure call sites were reading riskAmount as a stand-in
+  // for notional — which would have silently understated every options
+  // position's exposure by 30%. Asserted here so the two can never quietly
+  // become the same thing again.
+  it('separates risk from capital deployed once the two differ', () => {
+    const ctx = baseCtx({ optionsDisasterStopPct: 70 });
+    const result = evaluateOptionsRiskCheck(optionSignal({ premium: 3 }), ctx);
+
+    // 4 contracts x $3 x 100 = $1,200 of premium paid; 70% of that is at risk.
+    expect(result.approvedNotional).toBe(1200);
+    expect(result.approvedRiskAmount).toBe(840);
+    expect(result.approvedRiskAmount).not.toBe(result.approvedNotional);
+    expect(optionsPositionNotionalUsd({ entryPrice: 3, quantity: 4 })).toBe(1200);
+  });
+
+  // Fails SAFE: anything that isn't a usable disaster-stop percentage falls
+  // back to assuming the whole premium is at risk, which is exactly the
+  // behaviour that shipped before this field existed.
+  describe('single-leg sizing basis falls back to full premium', () => {
+    const cases: [string, number | undefined][] = [
+      ['absent (every pre-2026-09-02 caller, and every backtest)', undefined],
+      ['zero — no disaster stop configured', 0],
+      ['100 — a disaster stop at the full premium is the same assumption', 100],
+    ];
+    for (const [label, pct] of cases) {
+      it(`when optionsDisasterStopPct is ${label}`, () => {
+        const ctx = baseCtx(pct === undefined ? {} : { optionsDisasterStopPct: pct });
+        const result = evaluateOptionsRiskCheck(optionSignal({ premium: 3 }), ctx);
+        // $1000 budget / ($3 x 100) = 3 contracts, the pre-change number.
+        expect(sz(result).suggestedQuantity).toBe(3);
+        expect(result.approvedRiskAmount).toBe(900);
+      });
+    }
   });
 
   describe('step-down sizing', () => {
@@ -464,12 +530,19 @@ describe('runOptionsRiskCheck — batch orchestration', () => {
   });
 
   it('accumulates a single leg and a debit spread against the SAME running budget, in one batch', async () => {
-    // MODERATE aggregate cap = $2000. The single leg risks $900; the spread
-    // risks $1000 (5 spreads x $200 max loss/spread). 900+1000=1900<=2000
-    // both pass; a third signal of either shape would now push over the cap.
+    // MODERATE aggregate cap = $2000. The single leg risks $840 (4 contracts
+    // x $3 premium x 100 x the 70% disaster-stop basis); the spread risks
+    // $1000 (5 spreads x $200 max loss/spread). 840+1000=1840<=2000 so both
+    // pass; a third signal of either shape would now push over the cap.
+    //
+    // The leg's figure was $900 before single-leg sizing moved off the
+    // full-premium assumption (2026-09-02): the $1000 budget used to buy 3
+    // contracts risking the whole $300 each, and now buys 4 risking $210 each.
+    // More capital deployed ($1,200 vs $900 of premium), LESS risked at the
+    // stop the exit ladder actually enforces — which is the point.
     const results = await runOptionsRiskCheck([optionSignal({ symbol: 'ONE' }), spreadSignal({ symbol: 'TWO' })]);
     expect(results.map((r) => r.ok)).toEqual([true, true]);
-    expect(results[0].approvedRiskAmount).toBe(900);
+    expect(results[0].approvedRiskAmount).toBe(840);
     expect(results[1].approvedRiskAmount).toBe(1000);
 
     const overCap = await runOptionsRiskCheck([

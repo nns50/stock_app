@@ -60,7 +60,7 @@ import { computeStreaksAndDrawdown } from '../pnl';
 import { defaultExitConfig, evaluateExit } from '../../options/exitRules';
 import { convictionGrade } from './decide';
 import { OptionsTradeSignal } from './optionsDecide';
-import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from './optionsRiskCheck';
+import { evaluateOptionsRiskCheck, OptionsRiskCheckResult, optionsPositionNotionalUsd } from './optionsRiskCheck';
 import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
@@ -467,10 +467,20 @@ export async function attemptLiveOptionsEntry(
     'suggestedContracts' in riskResult.sizing
       ? riskResult.sizing.suggestedContracts
       : riskResult.sizing.suggestedQuantity;
-  const quantity = Math.floor(rawQuantity * probation.multiplier);
-  // Scale the recorded risk to the contracts actually ORDERED. For options the
-  // premium IS the risk, so an unscaled approvedRiskAmount overstates it by the
-  // full probation cut — and unlike equity, whose position risk is re-derived
+  // A contract is indivisible, so probation cannot cut below ONE of them.
+  // Math.floor alone turned an approved 1 into 0 at every multiplier under 1 —
+  // and since the single-leg sizer produces exactly 1 contract at this account
+  // size, switching options probation on (the obvious careful move before
+  // going live) would have refused EVERY entry for the whole window, reported
+  // as "rounded to 0" as though it were an arithmetic accident. Clamped to the
+  // minimum tradeable size instead: probation's job is to cut size, and at one
+  // contract there is nothing left to cut. Journaled by the caller when the
+  // clamp binds, so "probation is not actually cutting anything" is visible
+  // rather than inferred. Genuinely zero-sized signals still return 0.
+  const probationClamped = rawQuantity > 0 && Math.floor(rawQuantity * probation.multiplier) < 1;
+  const quantity = rawQuantity > 0 ? Math.max(1, Math.floor(rawQuantity * probation.multiplier)) : 0;
+  // Scale the recorded risk to the contracts actually ORDERED — an unscaled
+  // approvedRiskAmount overstates it by the full probation cut — and unlike equity, whose position risk is re-derived
   // from the real fill by initialRiskOf, this figure is STORED on the position
   // and read for its whole life by getLiveOptionsPortfolioSnapshot and
   // combinedLiveOpenRisk. At the default 0.5x probation every live options
@@ -478,11 +488,19 @@ export async function attemptLiveOptionsEntry(
   // blocking equity and options entries that were actually within it.
   const orderedRiskAmount =
     rawQuantity > 0 ? (riskResult.approvedRiskAmount * quantity) / rawQuantity : riskResult.approvedRiskAmount;
+  if (probationClamped) {
+    journalEntrySkipOncePerDay(symbol, 'options_probation_at_minimum', {
+      multiplier: probation.multiplier,
+      rawQuantity,
+      quantity,
+      note: 'one contract is the minimum tradeable size — probation cannot cut below it, so this entry goes out at full (minimum) size',
+    });
+  }
   if (quantity <= 0) {
     return {
       symbol,
       ok: false,
-      reason: `Probation-adjusted quantity rounded to 0 (multiplier ${probation.multiplier})`,
+      reason: `Risk-checked quantity was 0 before probation (multiplier ${probation.multiplier})`,
     };
   }
 
@@ -778,7 +796,11 @@ export async function runLiveOptionsExecution(
   // candidateSide below) correctly nets against an existing SHORT equity
   // position instead of piling onto it.
   const runningPositions: { symbol: string; notional: number; side: 'long' | 'short' }[] = [
-    ...optSnapshot.openPositions.map((p) => ({ symbol: p.symbol, notional: p.riskAmount, side: 'long' as const })),
+    ...optSnapshot.openPositions.map((p) => ({
+      symbol: p.symbol,
+      notional: optionsPositionNotionalUsd(p),
+      side: 'long' as const,
+    })),
     ...eqSnapshot.openPositions.map((p) => ({
       symbol: p.symbol,
       notional: p.entryPrice * p.quantity,
@@ -886,6 +908,11 @@ export async function runLiveOptionsExecution(
       maxConcurrentPositions: slotCap,
       correlatedNotional: correlated,
       riskPerTradePct: cfg.riskPerTradePct,
+      // Single-leg options size against the loss the exit ladder actually
+      // enforces, not against a 100% wipeout it never permits. Threaded from
+      // config at every options caller so the sizer and the exit path cannot
+      // drift apart.
+      optionsDisasterStopPct: cfg.optionsDisasterStopPct,
       maxDailyDrawdownPct: cfg.maxDailyDrawdownPct,
       stepDownAfterLosses: cfg.stepDownAfterLosses,
       stepDownSizeCutPct: cfg.stepDownSizeCutPct,
