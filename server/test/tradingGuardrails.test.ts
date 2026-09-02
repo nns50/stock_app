@@ -664,3 +664,37 @@ describe('max_orders_per_day never blocks a close', () => {
     expect(failed(r)).toContain('kill_switch');
   });
 });
+
+// A naked SHORT is an OPENING sell: it consumes margin. The buying-power rule
+// used to key on `side` and wave every sell through as "frees cash" — true of
+// closing a long, false of opening a short. Inert only while
+// liveAllowNakedShort was off; live money the moment it was switched on.
+describe('buying_power — opening vs closing, not buy vs sell', () => {
+  it('REFUSES a short entry that exceeds buying power', () => {
+    const r = evaluateGuardrails(
+      order({ side: 'sell', openClose: 'open', quantity: 100, limitPrice: 50 }),
+      acct({ buyingPowerUsd: 1_000 }),
+      cfg({ allowNakedShort: true, maxOrderUsd: 1_000_000 }),
+    );
+    expect(check(r, 'buying_power').passed).toBe(false); // $5,000 vs $1,000
+  });
+
+  it('still waves a CLOSING sell through', () => {
+    const r = evaluateGuardrails(
+      order({ side: 'sell', openClose: 'close', quantity: 100, limitPrice: 50 }),
+      acct({ buyingPowerUsd: 1_000 }),
+      cfg({ allowNakedShort: true, maxOrderUsd: 1_000_000 }),
+    );
+    expect(check(r, 'buying_power').passed).toBe(true);
+    expect(check(r, 'buying_power').detail).toMatch(/closing frees/);
+  });
+
+  it('a long entry is unchanged by the fix', () => {
+    const r = evaluateGuardrails(
+      order({ side: 'buy', openClose: 'open', quantity: 100, limitPrice: 50 }),
+      acct({ buyingPowerUsd: 1_000 }),
+      cfg({ maxOrderUsd: 1_000_000 }),
+    );
+    expect(check(r, 'buying_power').passed).toBe(false);
+  });
+});

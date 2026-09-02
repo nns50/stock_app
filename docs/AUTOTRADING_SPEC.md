@@ -3600,3 +3600,46 @@ A gate's PLACEMENT in the pipeline is part of its meaning. Above the split it
 gates the experiment; below it, it gates one arm. The config guards cover
 whether a field is read and by what — they say nothing about whether the reader
 sits on the right side of a fork the whole evidence design depends on.
+
+---
+
+## A short entry was not buying-power checked at either layer (2026-09-01)
+
+Found while auditing the short path **before** enabling `liveAllowNakedShort`,
+rather than after. Both buying-power checks keyed on `side` and treated every
+`sell` as closing a long:
+
+- `buyingPowerSizing.buyingPowerMaxQuantity` — `if (side !== 'buy') return none`,
+  i.e. no constraint at all.
+- `guardrails.ts` — `if (intent.side === 'buy') { ...check... } else
+  block('buying_power', true, 'n/a (sell frees buying power)')`.
+
+"A sell frees cash" is true of **closing a long** and false of **opening a
+short**, which consumes margin like any other opening order. `riskCheck` sizes
+ENTRIES, so a `sell` reaching it is always a short entry, never a close.
+
+Both now key on `openClose`: **opening consumes, closing frees — regardless of
+side.** That is the correct rule for all four combinations, including covering a
+short (a closing buy, which frees margin).
+
+**This was inert only because shorts were disabled.** With `tradeDirection:
+both` the screener was generating them the whole time — 723 of 1,000 signals on
+2026-09-01, 72% — and the naked-short skip refused them at the live layer. The
+day the flag flipped, every short entry would have been sized and cleared with
+no buying-power check anywhere in the chain. The remaining backstops
+(`liveMaxOrderUsd`, the exposure cap) would have caught the extreme cases and
+nothing else.
+
+Verified end to end on a synthetic short after the fix: stop above entry, target
+below, R = 2.00, and `buying_power_sizing` now sizes 500 shares down to 49
+against $5,000 of buying power and then skips it as a token position. Before the
+fix that rule reported "inactive".
+
+### The pattern this belongs to
+
+A branch that cannot execute cannot be wrong yet. `liveAllowNakedShort` had been
+false for the whole life of this code, so the short half of every side-keyed
+decision was unexercised — by tests, by production, and by every previous audit.
+**Turning on a long-disabled flag is not a config change; it is shipping an
+untested code path into live money.** Audit the path first, and prefer rules
+keyed on what the order DOES (open/close) over what it looks like (buy/sell).

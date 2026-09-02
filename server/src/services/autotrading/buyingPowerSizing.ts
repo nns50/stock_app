@@ -47,10 +47,17 @@ export interface BuyingPowerSizingInput {
   buyingPowerUsd: number | undefined;
   /** The price the order will be valued at (the sizer's entry price). */
   entryPrice: number;
-  /** Only a BUY consumes buying power; a sell frees it. Mirrors the same rule
-   *  in guardrails.ts so the two cannot disagree about which orders are
-   *  constrained. */
-  side: 'buy' | 'sell';
+  /** Whether this order OPENS exposure or closes it.
+   *
+   *  Opening consumes buying power and closing frees it — regardless of side.
+   *  This used to key on `side`, constraining buys and waving every sell
+   *  through as "a sell frees cash". True of closing a long, FALSE of opening a
+   *  short: a naked short consumes margin like any other opening order. The
+   *  distinction never mattered while liveAllowNakedShort was off, and would
+   *  have become live money the moment it was switched on — riskCheck sizes
+   *  ENTRIES, so a `sell` reaching it is a short entry, never a close.
+   *  Mirrors guardrails.ts, which keys on the same field. */
+  openClose: 'open' | 'close';
 }
 
 export interface BuyingPowerSizingResult {
@@ -71,8 +78,8 @@ export interface BuyingPowerSizingResult {
  */
 export function buyingPowerMaxQuantity(input: BuyingPowerSizingInput): BuyingPowerSizingResult {
   const none: BuyingPowerSizingResult = { maxQuantity: undefined, usableUsd: undefined };
-  const { buyingPowerUsd, entryPrice, side } = input;
-  if (side !== 'buy') return none;
+  const { buyingPowerUsd, entryPrice, openClose } = input;
+  if (openClose !== 'open') return none;
   if (buyingPowerUsd === undefined || !Number.isFinite(buyingPowerUsd)) return none;
   if (!(entryPrice > 0)) return none;
 

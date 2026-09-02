@@ -395,15 +395,19 @@ export function evaluateGuardrails(
   } else {
     block('order_notional', notional <= config.maxOrderUsd, `${usd(notional)} vs cap ${usd(config.maxOrderUsd)}`);
 
-    // Buying power is only consumed by buys; sells free cash.
-    if (intent.side === 'buy') {
+    // OPENING consumes buying power, closing frees it — for either side. This
+    // used to key on `side`, which waved every sell through as "frees cash":
+    // true of closing a long, false of opening a SHORT, which consumes margin
+    // like any other opening order. Inert while naked shorts were disabled;
+    // real money the moment they were enabled.
+    if (intent.openClose === 'open') {
       block(
         'buying_power',
         notional <= account.buyingPowerUsd,
         `${usd(notional)} vs ${usd(account.buyingPowerUsd)} available`,
       );
     } else {
-      block('buying_power', true, 'n/a (sell frees buying power)');
+      block('buying_power', true, 'n/a (closing frees buying power)');
     }
 
     // Opening adds exposure; closing does not increase it.
