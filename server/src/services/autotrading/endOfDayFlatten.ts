@@ -37,6 +37,11 @@ import { AutotradeConfig } from '../../db/autotradeConfig';
 
 export type EndOfDayFlattenConfig = Pick<AutotradeConfig, 'endOfDayFlattenMinutes'>;
 
+/** What evaluateEntryCutoff needs: the flatten window, plus the stagnation
+ *  window the runway is derived from. Separate from EndOfDayFlattenConfig so
+ *  evaluateEndOfDayFlatten's own signature stays exactly as narrow as it was. */
+export type EntryCutoffConfig = EndOfDayFlattenConfig & Pick<AutotradeConfig, 'stagnationExitMinutes'>;
+
 // ---------------------------------------------------------------------------
 // Entry cutoff before that flatten (2026-08-28).
 //
@@ -58,15 +63,42 @@ export type EndOfDayFlattenConfig = Pick<AutotradeConfig, 'endOfDayFlattenMinute
 // 210m is a strategy choice about decay; this one is a correctness guard about
 // a clock the flatten already owns.)
 //
-// The runway on top is what separates "not doomed" from "not worth taking":
-// with maxStopDistancePct 2.5 and a 2R target, a position needs a ~5% move to
-// pay out, and 15 minutes is already generous for that. It also comfortably
-// clears the loop's own ~1-2 minute tick, so an entry can never land inside
-// the window through a slow fill.
+// The runway on top is what separates "not doomed" from "not worth taking",
+// and 2026-09-02 showed the original 15 minutes answered the wrong question.
+//
+// That 15 came from asking whether a trade could reach its TARGET: "with
+// maxStopDistancePct 2.5 and a 2R target, a position needs a ~5% move to pay
+// out". Both halves have since stopped holding. maxStopDistancePct is now 0,
+// and far more importantly the target is not what closes these trades — the
+// STAGNATION exit is. On 2026-09-02 it took 10 of 11 exits; the day before, 7
+// of 8. That rule gives a position 90 session-minutes to reach 0.5R and cuts
+// it otherwise, so a trade opened with less than 90 minutes left cannot reach
+// its own verdict. The flatten decides it instead, on the clock rather than
+// on the thesis.
+//
+// What that cost: on 2026-09-02 the trade cap was raised mid-session and three
+// entries landed at 15:26-15:27 with 33-34 minutes left — comfortably outside
+// the old 20-minute cutoff, and every one force-closed by the 15:57 flatten
+// about 30 minutes later. Together they lost $36.29, turning a +$32.78 day
+// into -$3.51. The old 8-trade cap had been exhausting itself by 13:00, which
+// is the only reason this had not surfaced before.
+//
+// So the runway is now DERIVED from stagnationExitMinutes, floored at the
+// original 15 for books that run with stagnation off. Derived rather than
+// configured for the same reason the cutoff itself is derived from the flatten
+// window: two numbers that must agree should not be able to disagree.
 // ---------------------------------------------------------------------------
 
-/** Minutes of runway a new position needs BEYOND the flatten window. */
+/** Floor for the runway — also the whole runway when stagnation is off. Still
+ *  comfortably clears the loop's own ~1-2 minute tick, so an entry can never
+ *  land inside the flatten window through a slow fill. */
 export const ENTRY_RUNWAY_MINUTES = 15;
+
+/** Minutes of runway a new position needs BEYOND the flatten window: enough to
+ *  reach the stagnation exit's own verdict, never less than the floor. */
+export function entryRunwayMinutes(cfg: EntryCutoffConfig): number {
+  return Math.max(ENTRY_RUNWAY_MINUTES, cfg.stagnationExitMinutes > 0 ? cfg.stagnationExitMinutes : 0);
+}
 
 export interface EntryCutoffDecision {
   /** True when a new entry must not be opened this close to the bell. */
@@ -87,8 +119,9 @@ export interface EntryCutoffDecision {
  * about how late the loop trades. Outside the regular session it also declines
  * to block: entries there are the market-open guard's business, not this one's.
  */
-export function evaluateEntryCutoff(cfg: EndOfDayFlattenConfig, now: number): EntryCutoffDecision {
-  const cutoffMinutes = cfg.endOfDayFlattenMinutes > 0 ? cfg.endOfDayFlattenMinutes + ENTRY_RUNWAY_MINUTES : 0;
+export function evaluateEntryCutoff(cfg: EntryCutoffConfig, now: number): EntryCutoffDecision {
+  const runway = entryRunwayMinutes(cfg);
+  const cutoffMinutes = cfg.endOfDayFlattenMinutes > 0 ? cfg.endOfDayFlattenMinutes + runway : 0;
   const minutesLeft = minutesUntilClose(now);
   if (cutoffMinutes === 0 || minutesLeft === null || minutesLeft > cutoffMinutes) {
     return { blocked: false, minutesLeft, cutoffMinutes, reason: null };
@@ -99,8 +132,8 @@ export function evaluateEntryCutoff(cfg: EndOfDayFlattenConfig, now: number): En
     cutoffMinutes,
     reason:
       `${minutesLeft}m to the close — past the ${cutoffMinutes}m entry cutoff ` +
-      `(${cfg.endOfDayFlattenMinutes}m flatten + ${ENTRY_RUNWAY_MINUTES}m runway); ` +
-      `a position opened now would be flattened before it could reach its stop or target`,
+      `(${cfg.endOfDayFlattenMinutes}m flatten + ${runway}m runway); ` +
+      `a position opened now would be flattened before its stagnation window could judge it`,
   };
 }
 
