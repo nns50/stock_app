@@ -586,3 +586,18 @@ describe('checkPaperExits', () => {
     });
   });
 });
+
+// The whole reason the reachability gate is LIVE-only: paper must keep trading
+// the names live refuses, so there is a control group to judge the filter
+// against. This asserts the property directly rather than trusting placement.
+describe('runPaperExecution — the ATR reachability gate does NOT apply here', () => {
+  it('takes a low-ATR name that the live path would refuse', async () => {
+    // entry 100 / stop 95 with atr 1: 1R costs 5x the daily range, which
+    // liveExecute rejects at maxRiskAtrFraction 0.7. Paper is the control
+    // track (same stance symbolCooldown.ts takes) and must still trade it.
+    setAutotradeConfig({ accountEquityUsd: 100_000, riskProfile: 'MODERATE', maxRiskAtrFraction: 0.7 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as never);
+    const outcomes = await runPaperExecution([{ signal: { ...signal(), atr: 1 } }]);
+    expect(outcomes[0]).toMatchObject({ ok: true });
+  });
+});

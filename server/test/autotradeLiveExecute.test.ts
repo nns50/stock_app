@@ -880,6 +880,61 @@ describe('runLiveExecution — level-aware exits', () => {
 // failed to move: 4 of 26 live entries since 08-24 were same-day re-entries
 // (ANF, ESTC, CRWD, DE). symbolCooldown cannot see it — it needs two LOSING
 // closed trades and a stagnation scratch is not a loss.
+// The reachability gate is LIVE-ONLY on purpose. It first shipped inside
+// generateSignal, which sits ABOVE the paper/live split — loop.ts calls decide
+// once and both books consume the same signals — so it silently filtered the
+// PAPER control book too, leaving the experiment that depends on it with no
+// counterfactual. Every other entry gate here is live-only for that reason.
+describe('runLiveExecution — 1R must be reachable on the name', () => {
+  // The fixture signal is entry 100 / stop 95, so 1R costs 5 in price terms.
+  // Against a 0.7 bar the name needs ATR >= 7.14 to qualify.
+  const lowAtr = () => ({ ...signal(), atr: 1 }); // 1R = 5x the daily range
+  const goodAtr = () => ({ ...signal(), atr: 10 }); // 1R = 0.5x — comfortable
+
+  it('refuses a name whose 1R costs more than its daily range', async () => {
+    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false, maxRiskAtrFraction: 0.7 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LOWATR' });
+
+    const outcomes = await runLiveExecution([{ signal: lowAtr() }]);
+
+    expect(outcomes[0]).toMatchObject({ ok: false });
+    expect(outcomes[0].reason).toMatch(/daily range/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    const ev = listAutotradeEvents({ actions: ['risk_atr_unreachable_skipped'] });
+    expect(ev).toHaveLength(1);
+    expect(JSON.parse(ev[0].detail!)).toMatchObject({ maxRiskAtrFraction: 0.7 });
+  });
+
+  it('takes a name that can travel 1R', async () => {
+    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false, maxRiskAtrFraction: 0.7 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OKATR' });
+
+    const outcomes = await runLiveExecution([{ signal: goodAtr() }]);
+    expect(outcomes[0]).toMatchObject({ ok: true });
+    expect(mockPlaceOrder).toHaveBeenCalled();
+  });
+
+  it('is off at 0, and imposes nothing when the signal carries no ATR', async () => {
+    for (const sig of [
+      { ...signal(), atr: 1 },
+      { ...signal(), atr: null },
+    ]) {
+      db.exec('DELETE FROM order_intents; DELETE FROM autotrade_live_orders; DELETE FROM autotrade_events;');
+      const frac = sig.atr === null ? 0.7 : 0; // no-ATR case keeps the gate ON
+      setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false, maxRiskAtrFraction: frac });
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OFF' });
+      const outcomes = await runLiveExecution([{ signal: sig }]);
+      expect(outcomes[0]).toMatchObject({ ok: true }); // never guesses a cap
+    }
+  });
+});
+
 describe('runLiveExecution — same-session re-entry cooldown', () => {
   /** A closed autotrade position in `symbol`, exited `minutesAgo`. */
   function closedAgo(symbol: string, minutesAgo: number) {
