@@ -4594,3 +4594,83 @@ realized P&L — realized outcome confounds selection with the exit ladder, whic
 is itself mid-change. If no component separates, the honest conclusion is that
 the screen does not predict intraday movement on this universe, and the answer
 is a different signal rather than a reweighting of this one.
+
+---
+
+## 2026-09-03 — the protective stack sat above the distribution
+
+Measured over the 24 closed autotrade trades with genuine intraday-candle
+excursion data. The 14 rows the excursions endpoint returns at `daily`
+resolution were excluded: a daily bar's high includes hours the position was not
+open, and including them inflates the endpoint's headline `avgMfeR` from 0.482
+to 1.09 — more than double.
+
+**The book, restricted to measurable day trades: 24 trades, −0.72R.** The
+all-time autotrade figure of +$109.78 is carried by older multi-day holds. Of
+these 24, exactly one (DELL, 2026-09-02) reached its target; without it the
+other 23 lose 2.79R between them.
+
+**The leak.** Mean MFE +0.482R, mean realized −0.030R — a mean giveback of
+0.512R per trade, or 12.3R of favourable movement across the sample converted
+into nothing.
+
+**Why.** Every protective threshold was set above the range these trades reach:
+
+| Rule | Setting | Reached by |
+| --- | --- | --- |
+| `partialExitRMultiple` | 0.30R | 38% |
+| `stagnationExitMinR` | 0.50R | 25% |
+| `breakevenTriggerRMultiple` / `trailStartRMultiple` | 1.00R | 17% |
+| `targetRMultiple` | 2.00R | 8% |
+
+Median MFE is +0.25R. With breakeven at 1.00R the stop never moved on 83% of
+trades. The trail was worse still: 1.5R behind the best price starting at 1.0R
+locks in nothing until +1.5R, which 8% of trades reach.
+
+**Counterfactual.** Because MFE is a high-water mark measured to the actual
+exit, any threshold below a trade's peak did trade, so a resting order fills —
+this is a simulation rather than a fit. Taking the whole position at +X beats
+the actual result for **every** X from 0.15R to 2.0R, worst case +1.87R over 24
+trades, and leave-one-out does not break it. The argmax (0.75R, +3.50R) rests on
+six trades and the row-to-row wobble is noise; the robust claim is that taking
+something beats taking nothing. Holding past +0.25R has been worth −0.22R on
+average (−0.16R excluding DELL).
+
+Partial-plus-breakeven beats the actual result in every cell tested, including
+under a pessimistic assumption where the breakeven stop whipsaws out at zero on
+every trade that ever dipped below entry.
+
+### The bug this surfaced
+
+`evaluateScaleOut` measured R against `pos.stopPrice`; `evaluateStopAdjust`
+measures against `pos.initialStopPrice`. The loop ratchets stops **before** it
+scales out (deliberately — see the ordering comment in `loop.ts`), so once the
+breakeven rule fires, `stopPrice === entryPrice`, risk is 0, and the scale-out
+returns "degenerate risk" for the life of that position.
+
+This was invisible while the triggers were 1.0R and 0.3R apart, because the
+scale-out effectively always ran first. Setting both to the same R — which is
+what the recalibration does — would have killed the scale-out outright on every
+position that ratcheted. A pre-existing test actively encoded the bug, asserting
+that a position whose stop sits at the entry price can never scale out.
+
+Both paths now derive R from the initial stop. This is the CLAUDE.md invariant
+"when two places derive the same quantity, they must agree by construction",
+and the trigger for it was a *config change*, not a code change — worth noting,
+because a settings edit is not usually treated as something that can expose a
+latent code bug.
+
+### What this does NOT claim
+
+The recalibration produces roughly +0.046R to +0.090R per trade on this sample.
+At 14 trades a day that is 0.7%–1.4%, against a 3% daily target that needs
++0.19R per trade. **It roughly triples a system sitting at zero and still lands
+at about half the target.** The gap cannot be closed with size.
+
+It has to close on the entry side, and the entry score currently has no
+detectable relationship with how far a trade travels: corr(entryScore, MFE) =
+−0.083 over 22 scored trades, negative across every leave-one-out subsample,
+with the above-median half averaging +0.366R of MFE against +0.378R for the
+below-median half. The best trade in the sample scored 74.8; the highest-scoring
+trade, at 92.8, realized −0.51R. That is what the `entry_components` work above
+exists to interrogate, and it needs its 30 closed trades first.

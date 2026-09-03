@@ -728,6 +728,49 @@ the provider has no data for. When any of that applies it says so above the tabl
 a target on the second is a decision made from noise. If the excluded count is large,
 treat the averages as a hint and read the individual rows instead.
 
+### Put the protective thresholds inside the distribution you actually get
+
+The excursion numbers are not just for widening a target — they tell you whether your
+protective rules can fire at all. A threshold set above the range your trades travel is
+not a conservative setting; it is an absent one.
+
+Measured on 2026-09-03 over the 24 closed autotrade day trades with true intraday
+excursion data (the 14 daily-resolution rows were excluded — see the sanity check above):
+
+| Where a rule sat | What it was set to | Share of trades that ever got there |
+| --- | --- | --- |
+| Partial exit (`partialExitRMultiple`) | 0.30R | 38% |
+| Stagnation bar (`stagnationExitMinR`) | 0.50R | 25% |
+| Breakeven + trail start | 1.00R | 17% |
+| Target (`targetRMultiple`) | 2.00R | 8% |
+
+The median trade's best moment was **+0.25R**. Mean MFE was +0.482R against a mean
+realized of −0.030R — **the average trade went half an R in favour and gave back all of
+it**, a mean giveback of 0.512R. With breakeven at 1.00R the stop never moved on 83% of
+trades, so those positions carried full initial risk right up until the clock closed them.
+
+The lesson generalises past these particular numbers:
+
+- **Set the breakeven trigger near the median MFE, not near the target.** It is the rule
+  that converts giveback into a floor, and it only works if trades reach it.
+- **A trailing stop that trails further than your trades travel is decoration.** Trailing
+  1.5R behind the best price, starting at 1.0R, locks in nothing until +1.5R.
+- **Leave the target alone when your expectancy lives in a tail.** Lowering it to match
+  the median caps the rare trade that pays for the rest. Protect the runner with the
+  trail instead of amputating it with a nearer target.
+- **Check reach before tuning value.** "What fraction of trades ever touched this level?"
+  is the first question, and a threshold nothing reaches cannot be judged by its results
+  because it has none.
+
+**One R, one denominator.** When a partial exit and a stop ratchet share a trigger value,
+they must compute R the same way or they mean different things by the same number. Both
+now measure against the **initial** stop. Measuring against the *current* stop is a live
+bug: the loop ratchets stops before it scales out, so once breakeven fires the current
+stop equals the entry price, risk is zero, and the scale-out is dead for the life of that
+position. It stayed hidden while the two triggers were 1.0R and 0.3R apart — the
+scale-out simply always went first — and would have surfaced the moment they were set
+equal.
+
 ---
 
 ## Reducing slippage with execution quality
