@@ -849,6 +849,12 @@ export interface WebullOpenOrder {
   side?: 'buy' | 'sell';
   status?: string;
   comboType?: string;
+  /** The broker's id for the combo GROUP this leg belongs to, off the envelope.
+   *  Two legs of one bracket share it; two legs of different brackets do not.
+   *  `restingExitOrders` matches on symbol and side alone, so without this a
+   *  leftover resting order on the same symbol can be picked up as though it
+   *  were part of the current position's bracket. */
+  comboOrderId?: string;
   /** LIMIT / STOP_LOSS / ... — the leg's own order_type, which together with
    *  comboType is what tells a take-profit leg from a stop-loss one. Both legs
    *  of a LONG bracket are `sell`, so side cannot do it. */
@@ -953,6 +959,13 @@ export function buildBracketResizePatches(legs: WebullOpenOrder[], quantity: num
     const only = patch(legs[0]!);
     return only ? [only] : null;
   }
+  // Two legs must belong to the SAME combo group. restingExitOrders matches on
+  // symbol and side alone, so a stale resting order on this symbol — a leftover
+  // from an earlier position, or a hand-placed one — would otherwise be resized
+  // as though it were this bracket's take-profit. When both ids are readable and
+  // differ, these are not one bracket and nothing here may touch them.
+  const ids = legs.map((l) => l.comboOrderId).filter((v): v is string => !!v);
+  if (ids.length === 2 && ids[0] !== ids[1]) return null;
   const kinds = legs.map(exitLegKind);
   if (!(kinds.includes('tp') && kinds.includes('sl'))) return null;
   const out = legs.map(patch);
@@ -1021,6 +1034,9 @@ function mapOpenOrder(o: Record<string, unknown>, env?: Record<string, unknown>)
     side: normalizeSide(o.side ?? o.action ?? o.order_side ?? o.buy_sell ?? o.trade_side ?? o.direction),
     status: o.status ? String(o.status).toUpperCase() : undefined,
     comboType,
+    // Off the ENVELOPE, like combo_type — a bracket is three envelopes sharing
+    // one combo_order_id, so the group id never lives on the leg.
+    comboOrderId: pickStr((env ?? {}) as Record<string, unknown>, ['combo_order_id', 'comboOrderId']),
     // Same lenient reading as everything else here: the response shape is only
     // partly confirmed, so every key the broker might plausibly use is tried and
     // an unreadable field stays undefined rather than becoming a wrong number.

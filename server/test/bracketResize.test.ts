@@ -11,6 +11,7 @@ const tp = (over: Partial<WebullOpenOrder> = {}): WebullOpenOrder => ({
   side: 'sell',
   status: 'OPEN',
   comboType: 'STOP_PROFIT',
+  comboOrderId: 'COMBO-1',
   orderType: 'LIMIT',
   limitPrice: 110,
   quantity: 10,
@@ -22,6 +23,7 @@ const sl = (over: Partial<WebullOpenOrder> = {}): WebullOpenOrder => ({
   side: 'sell',
   status: 'OPEN',
   comboType: 'STOP_LOSS',
+  comboOrderId: 'COMBO-1',
   orderType: 'STOP_LOSS',
   stopPrice: 96,
   quantity: 10,
@@ -105,6 +107,24 @@ describe('buildBracketResizePatches', () => {
       { clientOrderId: 'B', side: 'sell' as const },
     ];
     expect(buildBracketResizePatches(blind, 4)).toBeNull();
+  });
+
+  // restingExitOrders matches on symbol and side alone. A stale resting order on
+  // the same symbol — a leftover from an earlier position, or a hand-placed one
+  // — would otherwise be resized as if it were this bracket's take-profit.
+  // A bracket is several envelopes sharing one combo_order_id.
+  it('refuses two legs from DIFFERENT combo groups — that is not one bracket', () => {
+    expect(buildBracketResizePatches([tp(), sl({ comboOrderId: 'COMBO-2' })], 4)).toBeNull();
+  });
+
+  it('still resizes when both legs share a group, or when the group id is unreadable', () => {
+    expect(buildBracketResizePatches([tp(), sl()], 4)).toHaveLength(2);
+    // Lenient parsing may not surface the id at all; that must not disable the
+    // ordinary case, only a POSITIVE mismatch refuses.
+    expect(
+      buildBracketResizePatches([tp({ comboOrderId: undefined }), sl({ comboOrderId: undefined })], 4),
+    ).toHaveLength(2);
+    expect(buildBracketResizePatches([tp({ comboOrderId: undefined }), sl()], 4)).toHaveLength(2);
   });
 
   it('refuses a leg with no client order id — there is nothing to modify by', () => {

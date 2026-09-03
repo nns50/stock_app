@@ -4833,6 +4833,17 @@ take-profit orders and the number of stop-loss orders must be the same" appears
 nowhere in the reference, so *why* the group check fires is still deduced from
 which call the broker accepts.
 
+A HOLE THE COMBO EXAMPLES EXPOSED. Every documented combo request carries
+`client_combo_order_id` at the REQUEST level — a sibling of `new_orders`, not a
+per-leg field — and a bracket comes back as several envelopes sharing one
+`combo_order_id`. Meanwhile `restingExitOrders` matches on symbol and side
+alone. So a stale resting order on the same symbol (a leftover from an earlier
+position, or one placed by hand) could be picked up as though it were the
+current bracket's take-profit and silently resized. `WebullOpenOrder` now
+carries `comboOrderId` off the envelope, and two legs whose group ids are
+readable and DIFFERENT are refused. An unreadable id still resizes — only a
+positive mismatch refuses, so lenient parsing cannot disable the ordinary case.
+
 NEXT HYPOTHESIS, deliberately NOT acted on yet. `client_combo_order_id` is
 documented as **required when `combo_type` is not NORMAL**, and this client
 generates one at placement (`buildOrderRequest`) and then throws it away — it is
