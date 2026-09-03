@@ -2855,6 +2855,7 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
           legs: resting.map((l) => ({
             clientOrderId: l.clientOrderId ?? null,
             comboType: l.comboType ?? null,
+            comboOrderId: l.comboOrderId ?? null,
             orderType: l.orderType ?? null,
             limitPrice: l.limitPrice ?? null,
             stopPrice: l.stopPrice ?? null,

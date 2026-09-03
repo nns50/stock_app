@@ -11,6 +11,7 @@ const tp = (over: Partial<WebullOpenOrder> = {}): WebullOpenOrder => ({
   side: 'sell',
   status: 'OPEN',
   comboType: 'STOP_PROFIT',
+  comboOrderId: 'COMBO-1',
   orderType: 'LIMIT',
   limitPrice: 110,
   quantity: 10,
@@ -22,6 +23,7 @@ const sl = (over: Partial<WebullOpenOrder> = {}): WebullOpenOrder => ({
   side: 'sell',
   status: 'OPEN',
   comboType: 'STOP_LOSS',
+  comboOrderId: 'COMBO-1',
   orderType: 'STOP_LOSS',
   stopPrice: 96,
   quantity: 10,
@@ -34,12 +36,15 @@ describe('exitLegKind', () => {
     expect(exitLegKind(sl())).toBe('sl');
   });
 
-  // Webull's API reference documents order_type (LIMIT / STOP_LOSS /
-  // STOP_LOSS_LIMIT / MARKET / TRAILING_STOP_LOSS) but documents combo orders
-  // only as OTO / OCO / OTOCO — the string "STOP_PROFIT" does not appear in it
-  // once, even though that is what this client sends. So order_type leads and
-  // combo_type corroborates, not the other way round.
-  it('leads with order_type, the vocabulary the vendor actually documents', () => {
+  // Both fields are documented. The Stock Orders reference gives them together:
+  //   MASTER order_type LIMIT / BUY, STOP_PROFIT LIMIT / SELL, STOP_LOSS
+  //   STOP_LOSS / SELL — and combo_type's enum is NORMAL / MASTER /
+  //   STOP_PROFIT / STOP_LOSS / OTO / OCO / OTOCO.
+  // order_type leads because its meaning is fixed by the order rather than by
+  // its role in a group. It does NOT separate MASTER from STOP_PROFIT (both
+  // LIMIT), so it is only safe here because the caller has already filtered to
+  // the exit side and a long bracket's MASTER is a BUY.
+  it('leads with order_type, whose meaning does not depend on group role', () => {
     expect(exitLegKind(tp({ comboType: undefined }))).toBe('tp');
     expect(exitLegKind(sl({ comboType: undefined }))).toBe('sl');
     expect(exitLegKind(sl({ comboType: undefined, orderType: 'STOP_LOSS_LIMIT' }))).toBe('sl');
@@ -102,6 +107,24 @@ describe('buildBracketResizePatches', () => {
       { clientOrderId: 'B', side: 'sell' as const },
     ];
     expect(buildBracketResizePatches(blind, 4)).toBeNull();
+  });
+
+  // restingExitOrders matches on symbol and side alone. A stale resting order on
+  // the same symbol — a leftover from an earlier position, or a hand-placed one
+  // — would otherwise be resized as if it were this bracket's take-profit.
+  // A bracket is several envelopes sharing one combo_order_id.
+  it('refuses two legs from DIFFERENT combo groups — that is not one bracket', () => {
+    expect(buildBracketResizePatches([tp(), sl({ comboOrderId: 'COMBO-2' })], 4)).toBeNull();
+  });
+
+  it('still resizes when both legs share a group, or when the group id is unreadable', () => {
+    expect(buildBracketResizePatches([tp(), sl()], 4)).toHaveLength(2);
+    // Lenient parsing may not surface the id at all; that must not disable the
+    // ordinary case, only a POSITIVE mismatch refuses.
+    expect(
+      buildBracketResizePatches([tp({ comboOrderId: undefined }), sl({ comboOrderId: undefined })], 4),
+    ).toHaveLength(2);
+    expect(buildBracketResizePatches([tp({ comboOrderId: undefined }), sl()], 4)).toHaveLength(2);
   });
 
   it('refuses a leg with no client order id — there is nothing to modify by', () => {

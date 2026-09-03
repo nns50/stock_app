@@ -4806,21 +4806,53 @@ A quantity change carries the order's defining price alongside it, which is
 exactly what `buildBracketResizePatches` now sends. The vendor's example is the
 shape; the previous quantity-only call was not.
 
-CHANGED — which field identifies a leg. `order_type` is documented vocabulary
-(LIMIT / STOP_LOSS / STOP_LOSS_LIMIT / MARKET / TRAILING_STOP_LOSS). `combo_type`
-is not: the reference documents combo orders as **OTO / OCO / OTOCO**, and the
-string `STOP_PROFIT` does not appear in it once — even though that is what this
-client sends and what real brackets place with. The first draft of the
-classifier led with `combo_type`, i.e. with the value the vendor never wrote
-down. It now leads with `order_type`, keeps `combo_type` as corroboration, and
-returns null when the two disagree rather than believing the less-documented
-one — because trusting a mislabelled `combo_type` would send `stop_price` for a
-limit order.
+CORRECTION (same day, from the real Stock Orders page rather than a partial HTML
+dump): **`combo_type` IS documented**, with the enum NORMAL / MASTER /
+STOP_PROFIT / STOP_LOSS / OTO / OCO / OTOCO, and the reference's own bracket
+example uses STOP_PROFIT and STOP_LOSS exactly as this client sends them. An
+earlier note here claimed STOP_PROFIT appeared nowhere in the docs. That was
+read off an incomplete extraction and it was wrong.
+
+The classifier still leads with `order_type`, but for a narrower and honest
+reason: `order_type` is fixed by the order itself rather than by its role in a
+group. It does NOT distinguish MASTER from STOP_PROFIT — the documented example
+gives both `order_type: LIMIT` — so it is only safe because the caller has
+already filtered to the EXIT side and a long bracket's MASTER is a BUY.
+`combo_type` is the more discriminating field. What actually makes either choice
+safe is the guard that returns null when the two disagree.
+
+ALSO CONFIRMED — replace covers quantity. The documented order lifecycle is
+Preview / Place / **Replace — modify price or quantity while the order is
+open** / Cancel / Query. A search summary circulating elsewhere claims combo
+legs must instead be cancelled and re-placed to change price or quantity; that
+is contradicted both by this line and by the 6 successful in-place `stop_price`
+modifies on resting bracket legs on 2026-09-03. It was not acted on.
 
 STILL INFERRED — the OCO balance rule itself. The error string "the number of
-take-profit orders and the number of stop-loss orders must be the same" does not
-appear in the reference at all, so *why* the group check fires remains deduced
-from which call the broker accepts. So the refusal path now journals the full leg shapes
+take-profit orders and the number of stop-loss orders must be the same" appears
+nowhere in the reference, so *why* the group check fires is still deduced from
+which call the broker accepts.
+
+A HOLE THE COMBO EXAMPLES EXPOSED. Every documented combo request carries
+`client_combo_order_id` at the REQUEST level — a sibling of `new_orders`, not a
+per-leg field — and a bracket comes back as several envelopes sharing one
+`combo_order_id`. Meanwhile `restingExitOrders` matches on symbol and side
+alone. So a stale resting order on the same symbol (a leftover from an earlier
+position, or one placed by hand) could be picked up as though it were the
+current bracket's take-profit and silently resized. `WebullOpenOrder` now
+carries `comboOrderId` off the envelope, and two legs whose group ids are
+readable and DIFFERENT are refused. An unreadable id still resizes — only a
+positive mismatch refuses, so lenient parsing cannot disable the ordinary case.
+
+NEXT HYPOTHESIS, deliberately NOT acted on yet. `client_combo_order_id` is
+documented as **required when `combo_type` is not NORMAL**, and this client
+generates one at placement (`buildOrderRequest`) and then throws it away — it is
+persisted nowhere. Neither it nor `combo_type` appears in the modify entries the
+scale-out sends. If the replace endpoint wants a combo leg identified by its
+group the way placement does, that is the missing piece. It is not being added
+now on purpose: one experiment is already in flight, and changing the payload
+again before it runs would test two things at once. The refusal journal will
+show the leg shapes either way. So the refusal path now journals the full leg shapes
 — `comboType`, `orderType`, both prices, quantity, status — with absent values
 recorded as **null rather than undefined**, because `JSON.stringify` drops
 undefined keys and a missing field is exactly the evidence being collected.
