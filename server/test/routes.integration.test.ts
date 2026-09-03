@@ -2935,10 +2935,52 @@ describe('autotrade monitoring dashboard + kill switch routes (integration)', ()
     expect(summary[0]!.date).toBe(etToday());
 
     // Same filters as the row endpoint.
-    const none = (await getJson('/api/autotrade/events/summary?actions=__does_not_exist__')) as { summary: [] };
+    const none = (await getJson('/api/autotrade/events/summary?actions=__does_not_exist__')) as {
+      summary: [];
+      actionsNeverSeen?: string[];
+    };
     expect(none.summary).toEqual([]);
+    // ...and it SAYS the name was never recorded, rather than letting an empty
+    // summary pass for a measured zero. On 2026-09-03 that ambiguity produced a
+    // wrong conclusion: the post-close review had been counting
+    // `live_stop_adjusted` for months and reading the zero as "the stop ratchet
+    // never fires", when nothing has ever emitted that name — the success event
+    // is `live_stop_ratcheted` while the failures are live_stop_adjust_blocked
+    // and _failed, so the verb differs between them.
+    expect(none.actionsNeverSeen).toEqual(['__does_not_exist__']);
+
     const future = (await getJson(`/api/autotrade/events/summary?since=${Date.now() + 60_000}`)) as { summary: [] };
     expect(future.summary).toEqual([]);
+  });
+
+  it('flags only the unseen names, and stays silent when every action is real', async () => {
+    await post('/api/autotrade/kill-switch', { on: true });
+    await post('/api/autotrade/kill-switch', { on: false });
+
+    // A mix: one real name, one typo. Only the typo is named, so a caller
+    // reading a partly-empty result knows which half to distrust.
+    const mixed = (await getJson('/api/autotrade/events/summary?actions=kill_switch_engaged,live_stop_adjusted')) as {
+      summary: { action: string }[];
+      actionsNeverSeen?: string[];
+    };
+    expect(mixed.actionsNeverSeen).toEqual(['live_stop_adjusted']);
+    expect(mixed.summary.some((r) => r.action === 'kill_switch_engaged')).toBe(true);
+
+    // Nothing to report => the key is absent entirely, so a healthy response is
+    // byte-for-byte what it was before this existed.
+    const clean = (await getJson('/api/autotrade/events/summary?actions=kill_switch_engaged')) as Record<
+      string,
+      unknown
+    >;
+    expect('actionsNeverSeen' in clean).toBe(false);
+
+    // The row endpoint carries the same signal — the two are read together.
+    const rows = (await getJson('/api/autotrade/events?actions=live_stop_adjusted')) as {
+      events: unknown[];
+      actionsNeverSeen?: string[];
+    };
+    expect(rows.events).toEqual([]);
+    expect(rows.actionsNeverSeen).toEqual(['live_stop_adjusted']);
   });
 
   it('POST /daily-target/reset clears the sticky halt flags, and can re-base the day', async () => {

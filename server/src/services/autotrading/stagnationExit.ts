@@ -37,7 +37,9 @@ import { AutotradeConfig } from '../../db/autotradeConfig';
 //     liquidity.
 //   - A position with no stop (or a degenerate zero risk distance) has no R
 //     to measure — never triggered, same "no guessed R" discipline as every
-//     other realized-R consumer.
+//     other realized-R consumer. "No stop" means neither the initial nor the
+//     current one is usable; a stop that has merely RATCHETED is still fully
+//     measurable, against the frozen initial distance. See progressR.
 //   - 0 minutes = feature off. The known cost, accepted with eyes open: this
 //     will sometimes scratch a slow winner (the book's winners pay ~4:1, so
 //     the audit trail matters) — every trigger journals heldMinutes and the
@@ -53,10 +55,27 @@ import { AutotradeConfig } from '../../db/autotradeConfig';
 export type StagnationConfig = Pick<AutotradeConfig, 'stagnationExitMinutes' | 'stagnationExitMinR'>;
 
 /** Realized-so-far progress of an open position in R, at `price`. Null when
- *  the position has no stop or a degenerate zero risk distance. */
-export function progressR(pos: Pick<Position, 'side' | 'entryPrice' | 'stopPrice'>, price: number): number | null {
-  if (pos.stopPrice === null) return null;
-  const risk = Math.abs(pos.entryPrice - pos.stopPrice);
+ *  the position has no stop at all or a degenerate zero risk distance.
+ *
+ *  The denominator is the INITIAL stop, never the current one. execute.ts's
+ *  applyPositionManagement has said so since the paper ratchet shipped, and
+ *  this module did not follow it: measuring against a stop that the ratchet
+ *  moves means the risk unit shrinks as the stop tightens, and at breakeven it
+ *  hits ZERO — so `risk > 0` fails, progress reads null, and evaluateStagnation
+ *  answers "no measurable R progress" and never scratches that position again.
+ *  A breakeven-ratcheted position would then hold its slot until the end-of-day
+ *  flatten, which is precisely the slot starvation this module exists to end.
+ *
+ *  Latent until 2026-09-03: breakeven triggered at 1.0R, which 17% of trades
+ *  reached. At the recalibrated 0.25R it is ~50%, so this would have silently
+ *  disabled the stagnation exit on half the book from the next session on. */
+export function progressR(
+  pos: Pick<Position, 'side' | 'entryPrice' | 'stopPrice' | 'initialStopPrice'>,
+  price: number,
+): number | null {
+  const stop = pos.initialStopPrice ?? pos.stopPrice;
+  if (stop === null) return null;
+  const risk = Math.abs(pos.entryPrice - stop);
   if (!(risk > 0) || !Number.isFinite(price) || price <= 0) return null;
   const move = pos.side === 'short' ? pos.entryPrice - price : price - pos.entryPrice;
   return Math.round((move / risk) * 100) / 100;
@@ -134,7 +153,7 @@ export interface StagnationDecision {
  * the current price and clock, and has already checked the session is open.
  */
 export function evaluateStagnation(
-  pos: Pick<Position, 'side' | 'entryPrice' | 'stopPrice' | 'createdAt'>,
+  pos: Pick<Position, 'side' | 'entryPrice' | 'stopPrice' | 'initialStopPrice' | 'createdAt'>,
   price: number,
   cfg: StagnationConfig,
   now: number,

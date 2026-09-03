@@ -193,3 +193,27 @@ export function countAutotradeEventsByDay(
   // Newest day first, then biggest bucket — the order a report reads in.
   return [...buckets.values()].sort((a, b) => (a.date === b.date ? b.count - a.count : a.date < b.date ? 1 : -1));
 }
+
+/**
+ * Every distinct `action` the journal has ever recorded.
+ *
+ * Exists so a caller can tell "this action never happened" apart from "I asked
+ * for an action name that does not exist". Both come back from a filtered read
+ * as an empty result, and on 2026-09-03 that ambiguity produced a wrong answer:
+ * the post-close review queried `live_stop_adjusted` for months, got zero every
+ * time, and read it as "the stop ratchet never fires". The success event is
+ * actually named `live_stop_ratcheted` — the failure events are
+ * live_stop_adjust_blocked / _failed, so the verb changes between the failure
+ * and success cases and the plausible-looking name was never emitted by
+ * anything. The count was zero by construction, not by measurement.
+ *
+ * Cheap enough to run per request (the journal is small and this is one grouped
+ * scan), and it cannot drift the way a hand-maintained registry of action names
+ * would.
+ */
+export function listKnownAutotradeEventActions(): string[] {
+  const rows = db.prepare('SELECT DISTINCT action FROM autotrade_events ORDER BY action').all() as {
+    action: string;
+  }[];
+  return rows.map((r) => r.action);
+}

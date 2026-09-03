@@ -4674,3 +4674,77 @@ with the above-median half averaging +0.366R of MFE against +0.378R for the
 below-median half. The best trade in the sample scored 74.8; the highest-scoring
 trade, at 92.8, realized −0.51R. That is what the `entry_components` work above
 exists to interrogate, and it needs its 30 closed trades first.
+
+---
+
+## 2026-09-03 (later) — what the recalibration made reachable
+
+Lowering the breakeven trigger from 1.0R to 0.25R moved the stop ratchet from
+firing on 17% of trades to roughly 50%. Three defects downstream of a ratcheted
+stop had been latent behind that rarity. All three are the same mistake as
+PR #472: deriving R from the CURRENT stop, which the ratchet moves, instead of
+the frozen initial one.
+
+The correct rule was already written down. `execute.ts`'s
+`applyPositionManagement` has carried it since the paper ratchet shipped —
+"measured in R-multiples of the position's OWN initialStopPrice, never the
+current, possibly-already-ratcheted stopPrice". The paper path obeyed it; the
+live modules did not.
+
+### 1. The stagnation exit switched itself off at breakeven (high)
+
+`stagnationExit.progressR` divided by `entryPrice - stopPrice`. At breakeven
+that distance is exactly zero, so `risk > 0` fails and progress returns null —
+and `evaluateStagnation` reads null as "no measurable R progress ... never
+scratched on a guess" and declines to act, permanently, for that position.
+
+A breakeven-ratcheted position that then went nowhere would have held its slot
+until the end-of-day flatten. With `maxConcurrentPositions` at 3, that is a
+third of the book's capacity lost to one zombie — and the module exists
+specifically to stop slot starvation. The failure was also silent and its
+journalled reason actively misleading: it says "no stop on this position" about
+a position that has a stop, at breakeven.
+
+Now derives from the initial stop. "No stop" now means neither stop is usable.
+
+### 2. `live_stop_adjusted` is not an event this system emits (high)
+
+The post-close review had been counting `live_stop_adjusted` and reading zero as
+"the stop ratchet has never fired". No code has ever emitted that name. The
+success event is `live_stop_ratcheted`; the failures are
+`live_stop_adjust_blocked` and `live_stop_adjust_failed` — the verb changes
+between the failure and success cases, and the plausible-looking symmetric name
+belongs to neither.
+
+The conclusion happened to be right (`live_stop_ratcheted` is genuinely 0 across
+the whole journal, verified), but it was right by luck: the query could not have
+returned anything else. Tonight's review would have reported the ratchet as
+still broken no matter what it did, and that verdict feeds the shorts gate.
+
+`/api/autotrade/events` and `/events/summary` now return `actionsNeverSeen`
+listing any requested action the journal has never recorded, so a zero says
+which kind of zero it is. The key is omitted when every name has been seen, so
+a healthy response is unchanged. It deliberately does not distinguish "typo"
+from "real action that has never fired" — both are things a caller must not read
+as a measured zero.
+
+### 3. `overrunR` degraded once stops ratcheted (medium)
+
+`/api/journal/stop-overrun` compared the exit against the live stop (correct —
+that is the stop that was in force) but also used it as the R denominator. On a
+trailed trade that inflates `overrunR`; on a breakeven-ratcheted one the
+denominator is zero and the row reports null. `StopOverrunInput` now carries
+both stops, with a comment on each saying which question it answers.
+
+### Not bugs, checked and left alone
+
+- `riskCheck.ts` and `dashboard.ts` derive open risk from the CURRENT stop and
+  `remainingQuantity`. That is right: a breakeven position genuinely risks
+  nothing, and the aggregate cap is about live exposure, not historical R.
+  Expect `max_aggregate_open_risk` to bind less often now — 174 blocks on
+  09-02 — with `maxConcurrentPositions` (3) becoming the binding constraint.
+- `excursion.ts` looks like it divides by the live stop, but its caller passes
+  `initialStopPrice ?? stopPrice` with a comment explaining why. Correct.
+- The ratchet writes the DB only after the broker confirms the replace, and
+  treats an ambiguous replace as a failure. So a stop that exists only locally
+  cannot make `openRiskOf` under-report real exposure.

@@ -290,6 +290,9 @@ journalRouter.get(
             date: e.exitDate,
             entryPrice: p.entryPrice,
             stopPrice,
+            // The overrun COMPARISON uses the live stop above; the R
+            // denominator uses the frozen one. Different units, same row.
+            initialStopPrice: p.initialStopPrice,
             exitPrice: e.exitPrice,
             quantity: e.quantity,
             basis,
