@@ -881,13 +881,44 @@ export interface WebullOpenOrder {
  * fail-closed rule restingStopLeg already applies.
  */
 export function exitLegKind(o: WebullOpenOrder): 'tp' | 'sl' | null {
-  const combo = o.comboType?.toUpperCase();
-  if (combo === 'STOP_PROFIT') return 'tp';
-  if (combo === 'STOP_LOSS') return 'sl';
-  const type = o.orderType?.toUpperCase();
-  if (type === 'LIMIT') return 'tp';
-  if (type === 'STOP_LOSS' || type === 'STOP_LOSS_LIMIT') return 'sl';
-  return null;
+  // ORDER_TYPE FIRST, and combo_type only as a corroborating fallback.
+  //
+  // That ordering is deliberate and comes from Webull's own API reference:
+  // `order_type` is documented vocabulary (LIMIT / STOP_LOSS /
+  // STOP_LOSS_LIMIT / MARKET / TRAILING_STOP_LOSS) and is what bracketExit
+  // sets per leg. `combo_type` is not: the reference documents combo orders as
+  // OTO / OCO / OTOCO and the string "STOP_PROFIT" does not appear in it once,
+  // even though that is what this client sends and what real brackets place
+  // with. So the value we would be trusting most is the one the vendor never
+  // wrote down, and if the broker ever normalises or mislabels it, leading
+  // with it would classify a take-profit as a stop and send stop_price for a
+  // limit order.
+  const byType = ((): 'tp' | 'sl' | null => {
+    switch (o.orderType?.toUpperCase()) {
+      case 'LIMIT':
+        return 'tp';
+      case 'STOP_LOSS':
+      case 'STOP_LOSS_LIMIT':
+        return 'sl';
+      default:
+        return null;
+    }
+  })();
+  const byCombo = ((): 'tp' | 'sl' | null => {
+    switch (o.comboType?.toUpperCase()) {
+      case 'STOP_PROFIT':
+        return 'tp';
+      case 'STOP_LOSS':
+        return 'sl';
+      default:
+        return null;
+    }
+  })();
+  // When both speak and disagree, believe NEITHER. A leg we cannot describe
+  // consistently is one we must not resize — the caller refuses and journals
+  // the shapes instead.
+  if (byType && byCombo && byType !== byCombo) return null;
+  return byType ?? byCombo;
 }
 
 /**
