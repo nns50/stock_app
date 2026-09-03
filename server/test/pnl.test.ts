@@ -37,6 +37,7 @@ function makePosition(
     sourceIntentId: null,
     accountId: null,
     entryScore: null,
+    entryComponents: null,
     marketRegime: null,
     marketAtrPct: null,
     entryVwap: null,

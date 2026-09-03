@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS autotrade_paper_positions (
   exit_price    REAL,
   exit_at       INTEGER,
   exit_reason   TEXT CHECK(exit_reason IN ('stop','target','time_exit','manual') OR exit_reason IS NULL),
+  entry_components        TEXT,          -- JSON {componentKey: score} at entry; see the migrate() note
   initial_stop_price      REAL,          -- snapshot of stop_price at open; never mutated again
   best_price_since_entry  REAL,          -- running high/low-water mark since entry
   partial_exit_taken      INTEGER NOT NULL DEFAULT 0,
@@ -891,6 +892,30 @@ function migrate(): void {
   if (!has('target_price')) db.exec('ALTER TABLE positions ADD COLUMN target_price REAL');
   if (!has('entry_time')) db.exec('ALTER TABLE positions ADD COLUMN entry_time TEXT');
   if (!has('source_intent_id')) db.exec('ALTER TABLE positions ADD COLUMN source_intent_id INTEGER');
+  // 2026-09-02: the screener's PER-COMPONENT scores at entry, as JSON
+  // {componentKey: score}. entry_score (the weighted total) has been stored
+  // all along, and the components have been journaled on `candidate_found`
+  // since 2026-08-26 — but the events endpoint is newest-first with no
+  // backward paging, so a component could never be joined to the trade it
+  // produced once it scrolled out. The attribution that would tell you WHICH
+  // part of the score predicts a move was therefore unreachable by
+  // construction.
+  //
+  // Measured on 2026-09-02 with the total alone (n=22 modern trades with an
+  // intraday peak): corr(entryScore, peak R) = -0.083, and the higher-scoring
+  // half moved LESS (0.21R mean peak vs 0.46R). No evidence of edge in the
+  // total. Whether that is because some components carry edge and others
+  // cancel it out is exactly the question this column exists to answer.
+  if (!has('entry_components')) db.exec('ALTER TABLE positions ADD COLUMN entry_components TEXT');
+
+  const paperPosCols = db.prepare('PRAGMA table_info(autotrade_paper_positions)').all() as { name: string }[];
+  if (!paperPosCols.some((c) => c.name === 'entry_components')) {
+    db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN entry_components TEXT');
+  }
+  const liveOrderCols = db.prepare('PRAGMA table_info(autotrade_live_orders)').all() as { name: string }[];
+  if (!liveOrderCols.some((c) => c.name === 'entry_components')) {
+    db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN entry_components TEXT');
+  }
 
   const aloEqCols = db.prepare('PRAGMA table_info(autotrade_live_orders)').all() as { name: string }[];
   if (!aloEqCols.some((c) => c.name === 'account_id')) {

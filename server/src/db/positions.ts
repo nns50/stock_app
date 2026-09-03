@@ -3,6 +3,19 @@ import { safeJsonParse } from '../util/json';
 
 export type AssetType = 'stock' | 'option';
 export type Side = 'long' | 'short';
+
+/** entry_components is stored as JSON. A malformed blob yields null rather
+ *  than throwing — this is an analysis field, and one bad row must never make
+ *  a position unreadable. */
+function parseComponents(raw: string | null): Record<string, number> | null {
+  if (!raw) return null;
+  try {
+    const v: unknown = JSON.parse(raw);
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, number>) : null;
+  } catch {
+    return null;
+  }
+}
 export type OptionType = 'call' | 'put';
 
 /** One acknowledged pre-trade discipline rule, recorded with the entry. */
@@ -43,6 +56,11 @@ export interface PositionInput {
   /** At-entry context, stamped by autotrade's live materialization (see the
    *  positions DDL comment in db/index.ts). Omit for manual/imported trades. */
   entryScore?: number | null;
+  /** The screener's PER-COMPONENT scores at entry, {componentKey: score}.
+   *  entryScore is their weighted total; this is the breakdown, kept so an
+   *  attribution can ask which component predicted a move rather than only
+   *  whether the total did. */
+  entryComponents?: Record<string, number> | null;
   /** 'risk-on' | 'neutral' | 'risk-off' — the market regime label at entry. */
   marketRegime?: string | null;
   /** Market (SPY) ATR% the loop read the cycle this entry was placed. */
@@ -105,6 +123,7 @@ export interface Position {
   /** At-entry context — autotrade-stamped, null for manual/imported trades
    *  and rows that predate these columns (see the DDL comment in db/index.ts). */
   entryScore: number | null;
+  entryComponents: Record<string, number> | null;
   marketRegime: string | null;
   marketAtrPct: number | null;
   entryVwap: number | null;
@@ -147,6 +166,7 @@ interface PositionRow {
   source_intent_id: number | null;
   account_id: string | null;
   entry_score: number | null;
+  entry_components: string | null;
   market_regime: string | null;
   market_atr_pct: number | null;
   entry_vwap: number | null;
@@ -240,6 +260,9 @@ function mapPosition(row: PositionRow, exits?: PositionExit[]): Position {
     sourceIntentId: row.source_intent_id,
     accountId: row.account_id,
     entryScore: row.entry_score ?? null,
+    // Tolerates a malformed blob rather than throwing: this is an analysis
+    // field, and a bad row must never make a position unreadable.
+    entryComponents: parseComponents(row.entry_components),
     marketRegime: row.market_regime ?? null,
     marketAtrPct: row.market_atr_pct ?? null,
     entryVwap: row.entry_vwap ?? null,
@@ -340,9 +363,9 @@ export function createPosition(input: PositionInput): Position {
         (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
          option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
          stop_price, target_price, source_intent_id, account_id,
-         entry_score, market_regime, market_atr_pct, entry_vwap,
+         entry_score, entry_components, market_regime, market_atr_pct, entry_vwap,
          initial_stop_price, best_price_since_entry, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       input.assetType,
@@ -366,6 +389,7 @@ export function createPosition(input: PositionInput): Position {
       input.sourceIntentId ?? null,
       input.accountId ?? null,
       input.entryScore ?? null,
+      input.entryComponents ? JSON.stringify(input.entryComponents) : null,
       input.marketRegime ?? null,
       input.marketAtrPct ?? null,
       input.entryVwap ?? null,
@@ -401,6 +425,7 @@ export interface PositionPatch {
    *  reconciled its own fill — can be backfilled from the order that placed
    *  it (2026-08-24). Nothing else ever sets these after creation. */
   entryScore?: number | null;
+  entryComponents?: Record<string, number> | null;
   marketRegime?: string | null;
   marketAtrPct?: number | null;
   entryVwap?: number | null;
@@ -480,6 +505,8 @@ export function updatePosition(id: number, patch: PositionPatch): Position | und
   if (patch.targetPrice !== undefined) set('target_price', patch.targetPrice);
   if (patch.accountId !== undefined) set('account_id', patch.accountId);
   if (patch.entryScore !== undefined) set('entry_score', patch.entryScore);
+  if (patch.entryComponents !== undefined)
+    set('entry_components', patch.entryComponents ? JSON.stringify(patch.entryComponents) : null);
   if (patch.marketRegime !== undefined) set('market_regime', patch.marketRegime);
   if (patch.marketAtrPct !== undefined) set('market_atr_pct', patch.marketAtrPct);
   if (patch.entryVwap !== undefined) set('entry_vwap', patch.entryVwap);

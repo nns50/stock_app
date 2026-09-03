@@ -4501,3 +4501,96 @@ cannot survive to its own decision rule is decided by the clock, and that is
 true whichever way the three had gone. The cap raise did not cause this; it
 removed the accident that had been hiding it, since the 8-trade limit had been
 exhausting itself by 13:00 every day.
+
+---
+
+## 2026-09-02 — Storing the per-component scores, and why
+
+### What the trade record actually says
+
+54 closed live autotrade positions over 14 sessions. Split by era, because the
+July cohort predates the entryDate/entryTime fix and a different parameter set:
+
+| | July (n=29) | since 07-29 (n=25) |
+|---|---|---|
+| mean R | −0.134 | **+0.053** |
+| win rate | 24% | **44%** |
+| trades worse than −1R | **5** | **0** |
+
+Stop discipline works now. That is real progress and nothing here should undo
+it.
+
+But the gap to the goal is wide: 3%/day is **+2.40R/day**, and the modern
+cohort runs about **+0.42R/day** — roughly **18% of target**.
+
+### The finding: the score shows no edge
+
+Joining the intraday excursions to the positions that produced them (n=22
+modern trades with both a score and a peak):
+
+- **corr(entryScore, peak R) = −0.083** — indistinguishable from zero
+- score **< 75** → mean peak **0.46R**
+- score **≥ 75** → mean peak **0.21R**
+
+The higher-scoring half moved *less*. Individual rows agree: GTLB scored 92.8
+(the day's highest) and peaked at 0.10R before realizing −0.51R, the worst trade
+of the day; DELL scored 74.8 and peaked at 2.24R.
+
+**Caveat, held firmly:** n=22, one session supplies half of it, and this is not
+statistically conclusive. It is the absence of evidence for edge, not proof of
+its absence.
+
+### Why that outranks every exit parameter
+
+The exit apparatus sits above where these trades live:
+
+| mechanism | fires at | share of trades reaching it |
+|---|---|---|
+| scale-out | 0.30R | ~40% |
+| stagnation bar | 0.50R | 25% |
+| breakeven + trail | 1.00R | **16.7%** |
+| target | 2.00R | **8.3%** |
+
+Median intraday peak is **0.25R**. Tuning exits redistributes a distribution; it
+cannot manufacture edge. If selection is uncorrelated with movement, better
+exits reduce bleed but never reach +2.40R/day.
+
+### The blocker, and the fix
+
+The screener computes **8 component scores** per candidate. `entry_score` — the
+weighted total — has been stored on the position all along. The components have
+been journaled on `candidate_found` since 2026-08-26. But the events endpoint is
+newest-first with **no backward paging**, so a component could never be joined
+to the trade it produced once it scrolled out of reach. The attribution that
+would say *which* component predicts a move was unreachable by construction.
+
+Same shape as this file's other findings: a value computed, journaled, and not
+available where the question is asked.
+
+Now stored as `entry_components` (JSON `{componentKey: score}`) on `positions`,
+`autotrade_paper_positions` and `autotrade_live_orders`, carried on
+`TradeSignal.components` from the candidate, and written to the position at
+materialization — the same three-hop path `entry_score` already travels. Added
+to the CSV export so the attribution can be run outside the app.
+
+A malformed blob parses to null rather than throwing: this is an analysis field,
+and one bad row must never make a position unreadable.
+
+Covered at the **end** of the chain, not the middle — a test drives
+`attemptLiveEntry` → `reconcileLiveOrders` and asserts the components arrive on
+the materialized position. Breaking any single hop fails it; verified by
+nulling the first one.
+
+### What this does NOT do
+
+It stores nothing retroactively. Positions opened before today have
+`entry_components` null, so the attribution starts accumulating from the next
+session. At ~8 trades a day a usable sample is a few weeks out — and the rule
+below should hold when it arrives.
+
+**Pre-committed:** do not drop or reweight a component on fewer than 30 closed
+trades carrying components, and compare **peak-R by component decile**, not
+realized P&L — realized outcome confounds selection with the exit ladder, which
+is itself mid-change. If no component separates, the honest conclusion is that
+the screen does not predict intraday movement on this universe, and the answer
+is a different signal rather than a reweighting of this one.

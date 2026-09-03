@@ -28,6 +28,7 @@ function makePosition(
     accountId: null,
     entryTime: null,
     entryScore: null,
+    entryComponents: null,
     marketRegime: null,
     marketAtrPct: null,
     entryVwap: null,

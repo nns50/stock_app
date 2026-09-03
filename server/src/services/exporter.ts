@@ -46,6 +46,7 @@ const POSITION_COLUMNS = [
   'realizedPnl',
   'grade',
   'entryScore',
+  'entryComponents',
   'marketRegime',
   'marketAtrPct',
   'entryVwap',
@@ -81,6 +82,9 @@ function positionRow(p: Position): unknown[] {
     Number(realizedPnlOf(p).toFixed(2)),
     p.grade ?? '',
     p.entryScore ?? '',
+    // JSON, so the CSV carries the breakdown a component attribution needs
+    // without a second export shape.
+    p.entryComponents ? JSON.stringify(p.entryComponents) : '',
     p.marketRegime ?? '',
     p.marketAtrPct ?? '',
     p.entryVwap ?? '',

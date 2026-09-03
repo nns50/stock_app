@@ -153,3 +153,55 @@ describe('exit mutations are atomic with the position status they derive', () =>
     expect(after.status).toBe('closed'); // still consistent with the surviving exit
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-component screener scores on the position (2026-09-02).
+//
+// entry_score (the weighted TOTAL) has been stored all along, and the
+// components have been journaled on candidate_found since 2026-08-26 — but the
+// events endpoint is newest-first with no backward paging, so a component
+// could never be joined to the trade it produced once it scrolled out.
+//
+// Measured with the total alone over 22 modern trades: corr(entryScore, peak
+// R) = -0.083, and the higher-scoring half moved LESS (0.21R mean peak against
+// 0.46R). Whether some individual component carries edge that the weighted
+// total washes out is the question this column exists to answer, and it could
+// not be asked from the journal.
+// ---------------------------------------------------------------------------
+describe('entry_components — the per-component breakdown, through the real DB', () => {
+  const comps = { momentum: 81.2, relativeVolume: 64, rsi: 55.5, trend: 90 };
+
+  it('round-trips through createPosition -> getPosition', () => {
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'DELL',
+      side: 'long',
+      quantity: 3,
+      entryPrice: 445.4,
+      entryDate: '2026-09-02',
+      fees: 0,
+      entryScore: 74.8,
+      entryComponents: comps,
+    });
+    const read = getPosition(p.id)!;
+    expect(read.entryComponents).toEqual(comps);
+    // The total and the breakdown are BOTH kept — neither is derivable from
+    // the other, which is the whole point.
+    expect(read.entryScore).toBe(74.8);
+  });
+
+  it('is null for a manually logged trade with no screener behind it', () => {
+    const p = makePosition('MANUAL');
+    expect(getPosition(p.id)!.entryComponents).toBeNull();
+  });
+
+  it('survives a malformed blob rather than making the position unreadable', () => {
+    // An analysis field must never be able to break a read path.
+    const p = makePosition('BADJSON');
+    db.prepare('UPDATE positions SET entry_components = ? WHERE id = ?').run('{not json', p.id);
+    const read = getPosition(p.id);
+    expect(read).not.toBeNull();
+    expect(read!.entryComponents).toBeNull();
+    expect(read!.symbol).toBe('BADJSON');
+  });
+});

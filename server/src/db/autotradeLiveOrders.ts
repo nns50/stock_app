@@ -46,6 +46,7 @@ export interface LiveOrderMeta {
   /** Entry rows: at-entry context carried to the same-named positions columns
    *  at materialization, exactly like grade. Null for exit/legacy rows. */
   entryScore: number | null;
+  entryComponents: Record<string, number> | null;
   marketRegime: string | null;
   marketAtrPct: number | null;
   /** Session VWAP at placement (2026-08-22 observer), carried to
@@ -68,6 +69,7 @@ interface Row {
   addon_of_position_id: number | null;
   grade: string | null;
   entry_score: number | null;
+  entry_components: string | null;
   market_regime: string | null;
   market_atr_pct: number | null;
   entry_vwap: number | null;
@@ -88,6 +90,15 @@ function mapRow(r: Row): LiveOrderMeta {
     addonOfPositionId: r.addon_of_position_id ?? null,
     grade: r.grade ?? null,
     entryScore: r.entry_score ?? null,
+    entryComponents: (() => {
+      if (!r.entry_components) return null;
+      try {
+        const v: unknown = JSON.parse(r.entry_components);
+        return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, number>) : null;
+      } catch {
+        return null;
+      }
+    })(),
     marketRegime: r.market_regime ?? null,
     marketAtrPct: r.market_atr_pct ?? null,
     entryVwap: r.entry_vwap ?? null,
@@ -112,14 +123,15 @@ export function recordLiveOrder(input: {
   /** At-entry context, carried to positions once the fill materializes —
    *  same lifecycle as grade above. */
   entryScore?: number | null;
+  entryComponents?: Record<string, number> | null;
   marketRegime?: string | null;
   marketAtrPct?: number | null;
   entryVwap?: number | null;
 }): LiveOrderMeta {
   const now = Date.now();
   db.prepare(
-    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, grade, entry_score, market_regime, market_atr_pct, entry_vwap, created_at)
-     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, grade, entry_score, entry_components, market_regime, market_atr_pct, entry_vwap, created_at)
+     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.intentId,
     input.symbol.toUpperCase(),
@@ -130,6 +142,7 @@ export function recordLiveOrder(input: {
     input.accountId ?? null,
     input.grade ?? null,
     input.entryScore ?? null,
+    input.entryComponents ? JSON.stringify(input.entryComponents) : null,
     input.marketRegime ?? null,
     input.marketAtrPct ?? null,
     input.entryVwap ?? null,
