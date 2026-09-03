@@ -4794,10 +4794,33 @@ One leg is legitimate (a filled target leaves the stop resting alone) and is
 resized on its own. Two must be exactly one of each. Anything else returns null
 and the caller refuses.
 
-### This is inference, and it is built to say so if it is wrong
+### Then the API reference arrived, and moved one thing and sharpened another
 
-The mechanism above is deduced from which call the broker accepts, not confirmed
-against its documentation. So the refusal path now journals the full leg shapes
+CONFIRMED — the payload shape. Webull's own `/order/replace` sample is:
+
+```python
+modify_orders = [{ "client_order_id": client_order_id, "quantity": "2", "limit_price": "179" }]
+```
+
+A quantity change carries the order's defining price alongside it, which is
+exactly what `buildBracketResizePatches` now sends. The vendor's example is the
+shape; the previous quantity-only call was not.
+
+CHANGED — which field identifies a leg. `order_type` is documented vocabulary
+(LIMIT / STOP_LOSS / STOP_LOSS_LIMIT / MARKET / TRAILING_STOP_LOSS). `combo_type`
+is not: the reference documents combo orders as **OTO / OCO / OTOCO**, and the
+string `STOP_PROFIT` does not appear in it once — even though that is what this
+client sends and what real brackets place with. The first draft of the
+classifier led with `combo_type`, i.e. with the value the vendor never wrote
+down. It now leads with `order_type`, keeps `combo_type` as corroboration, and
+returns null when the two disagree rather than believing the less-documented
+one — because trusting a mislabelled `combo_type` would send `stop_price` for a
+limit order.
+
+STILL INFERRED — the OCO balance rule itself. The error string "the number of
+take-profit orders and the number of stop-loss orders must be the same" does not
+appear in the reference at all, so *why* the group check fires remains deduced
+from which call the broker accepts. So the refusal path now journals the full leg shapes
 — `comboType`, `orderType`, both prices, quantity, status — with absent values
 recorded as **null rather than undefined**, because `JSON.stringify` drops
 undefined keys and a missing field is exactly the evidence being collected.

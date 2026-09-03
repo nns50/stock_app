@@ -29,15 +29,35 @@ const sl = (over: Partial<WebullOpenOrder> = {}): WebullOpenOrder => ({
 });
 
 describe('exitLegKind', () => {
-  it('prefers combo_type, which is what the broker actually labels the leg with', () => {
+  it('classifies a well-formed leg from either signal', () => {
     expect(exitLegKind(tp())).toBe('tp');
     expect(exitLegKind(sl())).toBe('sl');
   });
 
-  it('falls back to order_type when combo_type is absent', () => {
+  // Webull's API reference documents order_type (LIMIT / STOP_LOSS /
+  // STOP_LOSS_LIMIT / MARKET / TRAILING_STOP_LOSS) but documents combo orders
+  // only as OTO / OCO / OTOCO — the string "STOP_PROFIT" does not appear in it
+  // once, even though that is what this client sends. So order_type leads and
+  // combo_type corroborates, not the other way round.
+  it('leads with order_type, the vocabulary the vendor actually documents', () => {
     expect(exitLegKind(tp({ comboType: undefined }))).toBe('tp');
     expect(exitLegKind(sl({ comboType: undefined }))).toBe('sl');
     expect(exitLegKind(sl({ comboType: undefined, orderType: 'STOP_LOSS_LIMIT' }))).toBe('sl');
+    // An undocumented / normalised combo label does not override a clear type.
+    expect(exitLegKind(tp({ comboType: 'OTOCO' }))).toBe('tp');
+    expect(exitLegKind(sl({ comboType: 'OCO' }))).toBe('sl');
+  });
+
+  it('still uses combo_type when order_type is unreadable', () => {
+    expect(exitLegKind(tp({ orderType: undefined }))).toBe('tp');
+    expect(exitLegKind(sl({ orderType: undefined }))).toBe('sl');
+  });
+
+  it('believes NEITHER when the two disagree — a leg described inconsistently is not resized', () => {
+    // The hazard this guards: trusting a mislabelled combo_type would send
+    // stop_price for a limit order.
+    expect(exitLegKind(tp({ comboType: 'STOP_LOSS' }))).toBeNull();
+    expect(exitLegKind(sl({ comboType: 'STOP_PROFIT' }))).toBeNull();
   });
 
   it('is null when neither says anything — never guesses a leg it cannot read', () => {
