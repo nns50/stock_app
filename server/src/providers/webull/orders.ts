@@ -881,18 +881,25 @@ export interface WebullOpenOrder {
  * fail-closed rule restingStopLeg already applies.
  */
 export function exitLegKind(o: WebullOpenOrder): 'tp' | 'sl' | null {
-  // ORDER_TYPE FIRST, and combo_type only as a corroborating fallback.
+  // Both signals are documented, and the Stock Orders reference gives them
+  // together in one bracket example:
   //
-  // That ordering is deliberate and comes from Webull's own API reference:
-  // `order_type` is documented vocabulary (LIMIT / STOP_LOSS /
-  // STOP_LOSS_LIMIT / MARKET / TRAILING_STOP_LOSS) and is what bracketExit
-  // sets per leg. `combo_type` is not: the reference documents combo orders as
-  // OTO / OCO / OTOCO and the string "STOP_PROFIT" does not appear in it once,
-  // even though that is what this client sends and what real brackets place
-  // with. So the value we would be trusting most is the one the vendor never
-  // wrote down, and if the broker ever normalises or mislabels it, leading
-  // with it would classify a take-profit as a stop and send stop_price for a
-  // limit order.
+  //   MASTER       order_type LIMIT       side BUY    (the entry)
+  //   STOP_PROFIT  order_type LIMIT       side SELL   (take-profit)
+  //   STOP_LOSS    order_type STOP_LOSS   side SELL   (stop-loss)
+  //
+  // combo_type's documented enum is NORMAL / MASTER / STOP_PROFIT / STOP_LOSS /
+  // OTO / OCO / OTOCO. (An earlier revision of this comment claimed
+  // STOP_PROFIT was undocumented — that was read off an incomplete HTML dump of
+  // the reference, and it is wrong. Both fields are official.)
+  //
+  // order_type leads anyway, for one narrow reason: it is the field whose
+  // meaning is fixed by the order itself rather than by its role in a group, so
+  // it survives a broker that normalises combo labels on read-back. Note it
+  // does NOT distinguish MASTER from STOP_PROFIT — both are LIMIT — so it is
+  // only safe here because the caller has already filtered to the EXIT side and
+  // the MASTER of a long bracket is a BUY. combo_type is the more discriminating
+  // field; the disagreement guard below is what makes leading with either safe.
   const byType = ((): 'tp' | 'sl' | null => {
     switch (o.orderType?.toUpperCase()) {
       case 'LIMIT':
