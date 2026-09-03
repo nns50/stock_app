@@ -849,6 +849,76 @@ export interface WebullOpenOrder {
   side?: 'buy' | 'sell';
   status?: string;
   comboType?: string;
+  /** LIMIT / STOP_LOSS / ... — the leg's own order_type, which together with
+   *  comboType is what tells a take-profit leg from a stop-loss one. Both legs
+   *  of a LONG bracket are `sell`, so side cannot do it. */
+  orderType?: string;
+  /** The leg's resting prices, echoed back so a modify can restate the one that
+   *  defines it. Reading them is not about changing them — see
+   *  webullReplaceOrders. */
+  limitPrice?: number;
+  stopPrice?: number;
+  quantity?: number;
+}
+
+/**
+ * Tell a resting bracket's take-profit leg from its stop-loss leg.
+ *
+ * Needed because BOTH legs of a long bracket are `sell`, so every filter that
+ * went by side alone treated them as interchangeable. The live scale-out then
+ * sent each leg a quantity-only modify and the broker refused the pair with
+ * "The number of take-profit orders and the number of stop-loss orders must be
+ * the same" — it could not tell which was which either.
+ *
+ * `comboType` is the primary signal (STOP_PROFIT / STOP_LOSS) and is confirmed
+ * to sit on the ENVELOPE of a real /order/open response. `orderType` is the
+ * fallback: a bracket's take-profit is placed as LIMIT and its stop as
+ * STOP_LOSS (see bracketExit), so the two agree by construction.
+ *
+ * Returns null unless the legs resolve to EXACTLY one of each. Anything else —
+ * two stops, an unlabelled pair, three legs — is a bracket this code does not
+ * understand, and the caller must refuse rather than guess. That is the same
+ * fail-closed rule restingStopLeg already applies.
+ */
+export function exitLegKind(o: WebullOpenOrder): 'tp' | 'sl' | null {
+  const combo = o.comboType?.toUpperCase();
+  if (combo === 'STOP_PROFIT') return 'tp';
+  if (combo === 'STOP_LOSS') return 'sl';
+  const type = o.orderType?.toUpperCase();
+  if (type === 'LIMIT') return 'tp';
+  if (type === 'STOP_LOSS' || type === 'STOP_LOSS_LIMIT') return 'sl';
+  return null;
+}
+
+/**
+ * Build the modify entries that resize a resting bracket to `quantity`.
+ *
+ * Each entry restates the price that DEFINES its leg — limit_price for the
+ * take-profit, stop_price for the stop — using the value just read back from
+ * the broker, so it is an exact echo that moves nothing.
+ *
+ * One leg is legitimate (the target already filled, only the stop rests) and is
+ * resized on its own. Two must be exactly one of each. Returns null for
+ * anything else, including a pair whose kinds cannot be read: a bracket this
+ * code cannot describe is one it must not resize.
+ */
+export function buildBracketResizePatches(legs: WebullOpenOrder[], quantity: number): ReplaceOrderPatch[] | null {
+  if (legs.length === 0 || legs.length > 2) return null;
+  const patch = (o: WebullOpenOrder): ReplaceOrderPatch | null => {
+    const kind = exitLegKind(o);
+    if (!o.clientOrderId || !kind) return null;
+    return kind === 'tp'
+      ? { clientOrderId: o.clientOrderId, quantity, limitPrice: o.limitPrice }
+      : { clientOrderId: o.clientOrderId, quantity, stopPrice: o.stopPrice };
+  };
+  if (legs.length === 1) {
+    const only = patch(legs[0]!);
+    return only ? [only] : null;
+  }
+  const kinds = legs.map(exitLegKind);
+  if (!(kinds.includes('tp') && kinds.includes('sl'))) return null;
+  const out = legs.map(patch);
+  return out.every((p): p is ReplaceOrderPatch => p !== null) ? out : null;
 }
 
 export interface WebullOpenOrdersResult {
@@ -913,6 +983,13 @@ function mapOpenOrder(o: Record<string, unknown>, env?: Record<string, unknown>)
     side: normalizeSide(o.side ?? o.action ?? o.order_side ?? o.buy_sell ?? o.trade_side ?? o.direction),
     status: o.status ? String(o.status).toUpperCase() : undefined,
     comboType,
+    // Same lenient reading as everything else here: the response shape is only
+    // partly confirmed, so every key the broker might plausibly use is tried and
+    // an unreadable field stays undefined rather than becoming a wrong number.
+    orderType: pickStr(o, ['order_type', 'orderType'])?.toUpperCase(),
+    limitPrice: num(o.limit_price ?? o.limitPrice ?? o.price),
+    stopPrice: num(o.stop_price ?? o.stopPrice ?? o.aux_price),
+    quantity: num(o.quantity ?? o.qty ?? o.total_quantity),
   };
 }
 

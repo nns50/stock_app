@@ -947,7 +947,17 @@ describe('checkLiveEquityTimeExits — end-of-day flatten', () => {
 // sell shares no longer owned — for a long, a SHORT nobody opened.
 // ---------------------------------------------------------------------------
 describe('checkLiveEquityScaleOuts', () => {
-  const restingLeg = (cid: string) => openOrder({ clientOrderId: cid });
+  // A real resting bracket leg carries what tells it apart from its sibling:
+  // combo_type (STOP_PROFIT / STOP_LOSS, on the envelope of a live
+  // /order/open) and order_type. Both legs of a long bracket are `sell`, so
+  // without these the pair is indistinguishable — which is exactly the payload
+  // the broker refused 9 times on 2026-09-03.
+  const restingLeg = (cid: string, kind: 'sl' | 'tp' = 'sl') =>
+    openOrder(
+      kind === 'sl'
+        ? { clientOrderId: cid, comboType: 'STOP_LOSS', orderType: 'STOP_LOSS', stopPrice: 96 }
+        : { clientOrderId: cid, comboType: 'STOP_PROFIT', orderType: 'LIMIT', limitPrice: 130 },
+    );
 
   /** A working exit order on its own intent, as a real close-in-flight looks. */
   function exitInFlightFor(positionId: number) {
@@ -990,7 +1000,7 @@ describe('checkLiveEquityScaleOuts', () => {
     // number of stop-loss orders must be the same" — which is what happened 89
     // times on 2026-09-02, and why no scale-out had ever executed.
     const { position, quantity } = await armed(200); // well past 1.5R
-    mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1'), restingLeg('TGT-1')] });
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1', 'sl'), restingLeg('TGT-1', 'tp')] });
     mockReplaceOrders.mockResolvedValue({ ok: true });
 
     const out = await checkLiveEquityScaleOuts();
@@ -998,9 +1008,13 @@ describe('checkLiveEquityScaleOuts', () => {
     expect(out[0]).toMatchObject({ positionId: position.id, requested: true });
     const keep = quantity - Math.floor(quantity / 2);
     expect(mockReplaceOrders).toHaveBeenCalledTimes(1);
+    // Each leg also restates the price that DEFINES it, echoed back from the
+    // broker. Batching alone was NOT enough: the quantity-only version of this
+    // call was refused with the same OCO-balance message 9 times on
+    // 2026-09-03, because nothing in it said which leg was which.
     expect(mockReplaceOrders).toHaveBeenCalledWith('ACC1', [
-      { clientOrderId: 'STOP-1', quantity: keep },
-      { clientOrderId: 'TGT-1', quantity: keep },
+      { clientOrderId: 'STOP-1', quantity: keep, stopPrice: 96 },
+      { clientOrderId: 'TGT-1', quantity: keep, limitPrice: 130 },
     ]);
     // ...and the sell happened AFTER it. This ordering is the difference
     // between a scale-out and an accidental short.
@@ -1030,7 +1044,12 @@ describe('checkLiveEquityScaleOuts', () => {
     await armed(200);
     mockOpenOrders.mockResolvedValue({
       ok: true,
-      orders: [restingLeg('STOP-1'), restingLeg('TGT-1'), restingLeg('STOP-2'), restingLeg('TGT-2')],
+      orders: [
+        restingLeg('STOP-1', 'sl'),
+        restingLeg('TGT-1', 'tp'),
+        restingLeg('STOP-2', 'sl'),
+        restingLeg('TGT-2', 'tp'),
+      ],
     });
     mockReplaceOrders.mockResolvedValue({ ok: true });
 
@@ -1044,10 +1063,35 @@ describe('checkLiveEquityScaleOuts', () => {
     expect(JSON.parse(ev!.detail as string).reason).toMatch(/more than one lot/i);
   });
 
+  it('refuses — and records the leg shapes — when it cannot tell the legs apart', async () => {
+    // The 2026-09-03 failure looked identical to the already-fixed one because
+    // the journal recorded only ids and the broker's message. Without the leg
+    // shapes there was no way to see that the pair carried nothing identifying,
+    // so the next occurrence has to carry them.
+    await armed(200);
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [openOrder({ clientOrderId: 'A' }), openOrder({ clientOrderId: 'B' })],
+    });
+    mockReplaceOrders.mockResolvedValue({ ok: true });
+
+    const out = await checkLiveEquityScaleOuts();
+
+    expect(out[0]).toMatchObject({ requested: false });
+    expect(mockReplaceOrders).not.toHaveBeenCalled(); // nothing resized...
+    expect(mockPlaceOrder).not.toHaveBeenCalled(); // ...and nothing sold
+    const ev = listAutotradeEvents({ limit: 50 }).find((e) => e.action === 'live_scale_out_blocked');
+    const detail = JSON.parse(ev!.detail as string);
+    expect(detail.reason).toMatch(/take-profit leg from the stop-loss leg/i);
+    expect(detail.legs).toHaveLength(2);
+    expect(detail.legs[0]).toHaveProperty('comboType');
+    expect(detail.legs[0]).toHaveProperty('orderType');
+  });
+
   it('still scales out normally against a single two-leg bracket', async () => {
     // The control: the refusal above must not have disabled the ordinary case.
     const { quantity } = await armed(200);
-    mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1'), restingLeg('TGT-1')] });
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1', 'sl'), restingLeg('TGT-1', 'tp')] });
     mockReplaceOrders.mockResolvedValue({ ok: true });
 
     const out = await checkLiveEquityScaleOuts();

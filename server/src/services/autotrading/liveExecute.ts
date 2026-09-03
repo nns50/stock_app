@@ -22,6 +22,7 @@ import {
   webullReplaceOrder,
   webullReplaceOrders,
   isExitLeg,
+  buildBracketResizePatches,
   WebullOpenOrder,
 } from '../../providers/webull/orders';
 import { ackUnknownPlacement, canRetireUnknownPlacement, canStillFill, mapWebullStatus } from '../trading/reconcile';
@@ -2817,10 +2818,61 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
     // first failure without undoing legs it had already changed, which could
     // leave the target covering the reduced size while the stop still covered
     // the full one. A single request cannot half-apply.
-    const replaced = await webullReplaceOrders(
-      accountId,
-      resting.map((leg) => ({ clientOrderId: leg.clientOrderId!, quantity: keepQty })),
-    );
+    //
+    // 2026-09-03: batching was necessary but NOT sufficient. The batched
+    // quantity-only modify was refused with the SAME message, 9 times, on the
+    // first day the ratchet worked. What separates the two replace calls this
+    // system makes is which fields they carry:
+    //
+    //   ratchet    { client_order_id, stop_price }            -> 6/6 accepted
+    //   scale-out  { client_order_id, quantity } x2            -> 0/9 accepted
+    //
+    // The accepted one names the price that DEFINES its leg; the refused one
+    // names nothing that identifies either leg as a take-profit or a stop-loss.
+    // Both legs of a long bracket are `sell`, and until now nothing here read
+    // order_type or combo_type, so we could not say which was which either —
+    // the broker's complaint was literally true of the request we sent.
+    //
+    // So each leg now restates its own defining price alongside the new
+    // quantity: limit_price for the take-profit, stop_price for the stop. The
+    // price sent is the one just READ BACK from the broker, so it is an exact
+    // echo and moves nothing — this is identification, not a price change.
+    const patches = buildBracketResizePatches(resting, keepQty);
+    if (!patches) {
+      // Fail closed, and make the next occurrence self-diagnosing: without the
+      // leg shapes this failure is indistinguishable from the one above, which
+      // is how it went a full session looking like an already-fixed bug.
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: 'live_scale_out_blocked',
+        detail: {
+          positionId: pos.id,
+          reason: 'Could not tell the take-profit leg from the stop-loss leg — not resizing a bracket blind',
+          // null, not undefined: JSON.stringify DROPS undefined keys, and an
+          // absent comboType/orderType is precisely the thing being diagnosed
+          // here — recording it as a missing key would hide the evidence.
+          legs: resting.map((l) => ({
+            clientOrderId: l.clientOrderId ?? null,
+            comboType: l.comboType ?? null,
+            orderType: l.orderType ?? null,
+            limitPrice: l.limitPrice ?? null,
+            stopPrice: l.stopPrice ?? null,
+            quantity: l.quantity ?? null,
+            status: l.status ?? null,
+          })),
+        },
+        riskProfile: cfg.riskProfile,
+      });
+      outcomes.push({
+        symbol,
+        positionId: pos.id,
+        requested: false,
+        reason: 'exit legs not classifiable as take-profit + stop-loss',
+      });
+      continue;
+    }
+    const replaced = await webullReplaceOrders(accountId, patches);
     const reduceFailed = replaced.ok
       ? null
       : `${resting.map((l) => l.clientOrderId).join(', ')}: ${replaced.error ?? 'replace failed'}`;
@@ -2829,7 +2881,13 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
         symbol,
         stage: 'execution',
         action: 'live_scale_out_blocked',
-        detail: { positionId: pos.id, reason: `Could not reduce the resting bracket: ${reduceFailed}` },
+        detail: {
+          positionId: pos.id,
+          reason: `Could not reduce the resting bracket: ${reduceFailed}`,
+          // The shapes we sent, so a repeat refusal names the field the broker
+          // is unhappy with instead of just repeating its message back at us.
+          sent: patches,
+        },
         riskProfile: cfg.riskProfile,
       });
       outcomes.push({ symbol, positionId: pos.id, requested: false, reason: reduceFailed });

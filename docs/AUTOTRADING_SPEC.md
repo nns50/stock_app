@@ -4748,3 +4748,60 @@ both stops, with a comment on each saying which question it answers.
 - The ratchet writes the DB only after the broker confirms the replace, and
   treats an ambiguous replace as a failure. So a stop that exists only locally
   cannot make `openRiskOf` under-report real exposure.
+
+---
+
+## 2026-09-03 (session) — the scale-out, second refusal
+
+The recalibration worked. `live_stop_ratcheted` went from 0 to **6**, the first
+successful stop ratchet in this system's history, with zero refusals against 62
+the day before. Three of four trades exited at or above their entry — TSLA and
+NOW both closed via `stop` for roughly nothing, where the same shape of trade
+had bled −0.33R to −0.61R the previous session.
+
+The scale-out did NOT work: 9 attempts, 0 placed, and the refusal was the same
+sentence PR #467 was supposed to have fixed — "The number of take-profit orders
+and the number of stop-loss orders must be the same."
+
+### Batching was necessary but not sufficient
+
+The two replace calls this system makes differ in what they carry:
+
+| call | payload | 2026-09-03 |
+| --- | --- | --- |
+| ratchet | `{ client_order_id, stop_price }` | 6 accepted, 0 refused |
+| scale-out | `{ client_order_id, quantity }` × 2 | 0 accepted, 9 refused |
+
+The accepted one names the price that DEFINES its leg. The refused one names
+nothing identifying either leg — and it could not, because
+`restingExitOrders()` filtered on symbol and side alone, and **both legs of a
+long bracket are `sell`**. `WebullOpenOrder` carried no `order_type` and no
+prices, so this code genuinely could not tell a take-profit from a stop-loss.
+The broker's complaint was literally true of the request being sent.
+
+### The fix
+
+`WebullOpenOrder` now carries `orderType`, `limitPrice`, `stopPrice` and
+`quantity`, parsed as leniently as the rest of that mapper.
+`buildBracketResizePatches()` classifies each leg — `combo_type`
+(STOP_PROFIT / STOP_LOSS, confirmed to sit on the envelope of a real
+`/order/open`) first, `order_type` (LIMIT / STOP_LOSS, how `bracketExit` places
+them) as fallback — and restates each leg's own defining price alongside the new
+quantity. The price sent is the one just read back from the broker, so it is an
+exact echo: **this identifies a leg, it does not move a stop.**
+
+One leg is legitimate (a filled target leaves the stop resting alone) and is
+resized on its own. Two must be exactly one of each. Anything else returns null
+and the caller refuses.
+
+### This is inference, and it is built to say so if it is wrong
+
+The mechanism above is deduced from which call the broker accepts, not confirmed
+against its documentation. So the refusal path now journals the full leg shapes
+— `comboType`, `orderType`, both prices, quantity, status — with absent values
+recorded as **null rather than undefined**, because `JSON.stringify` drops
+undefined keys and a missing field is exactly the evidence being collected.
+
+That is the part that matters regardless of whether the fix lands. Today's
+failure was indistinguishable from the one already fixed, because the journal
+held only order ids and the broker's message. The next one names the field.
