@@ -49,6 +49,32 @@ describe('computeStopOverrun', () => {
     expect(row.totalUsd).toBe(20);
   });
 
+  // The ratchet moves stopPrice but never the risk unit. The comparison
+  // ("did it land past the stop?") wants the LIVE stop; overrunR divides by
+  // the FROZEN one. Feeding the live stop to both understates the denominator
+  // on a trailed trade and zeroes it outright at breakeven.
+  it('measures overrunR against the initial stop, not a ratcheted one', () => {
+    // Entry 10, opened with stop 9 ($1 risk), stop later trailed up to 9.8.
+    // Exit at 9.6 is $0.20 past the live stop. Against the $1 initial risk
+    // that is 0.2R; against the trailed $0.20 distance it would read a
+    // nonsensical 1.0R.
+    const row = computeStopOverrun(input({ stopPrice: 9.8, initialStopPrice: 9, exitPrice: 9.6 }));
+    expect(row.overrunPerShare).toBeCloseTo(0.2, 6);
+    expect(row.overrunR).toBe(0.2);
+  });
+
+  it('still reports an overrunR once the stop has ratcheted to breakeven', () => {
+    // stopPrice === entryPrice makes the live-stop denominator exactly zero,
+    // which returned null and silently dropped the row from the report.
+    const row = computeStopOverrun(input({ stopPrice: 10, initialStopPrice: 9, exitPrice: 9.8 }));
+    expect(row.overrunR).toBe(0.2);
+  });
+
+  it('falls back to the live stop when no initial stop was recorded', () => {
+    expect(computeStopOverrun(input({ initialStopPrice: null })).overrunR).toBe(0.2);
+    expect(computeStopOverrun(input({ initialStopPrice: undefined })).overrunR).toBe(0.2);
+  });
+
   it('signs a short stop overrun positive when the exit lands ABOVE the stop', () => {
     const row = computeStopOverrun(input({ side: 'short', entryPrice: 9, stopPrice: 10, exitPrice: 10.5 }));
     expect(row.overrunPerShare).toBe(0.5);

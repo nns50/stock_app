@@ -34,7 +34,18 @@ export interface StopOverrunInput {
   /** The exit's date — null when the exit is undated. */
   date: string | null;
   entryPrice: number;
+  /** The stop IN FORCE at the exit — this is what "did it overrun?" compares
+   *  against, so a ratcheted stop is the right value here. */
   stopPrice: number;
+  /** The stop the position OPENED with, frozen. Separate from `stopPrice`
+   *  because the two answer different questions and carry different units: the
+   *  comparison above is a price, while `overrunR` below divides by a RISK
+   *  distance, and the ratchet moves one without moving the other. Dividing by
+   *  the live stop shrinks the risk unit as the stop tightens — inflating
+   *  overrunR on a trailed trade and making it exactly zero, hence null, on a
+   *  breakeven-ratcheted one. Optional: falls back to `stopPrice` for rows that
+   *  predate the column. */
+  initialStopPrice?: number | null;
   exitPrice: number;
   quantity: number;
   /** 'recorded' = the exit row says exitReason 'stop'; 'inferred' = a legacy
@@ -75,7 +86,7 @@ export function classifyStopExit(
 
 export function computeStopOverrun(input: StopOverrunInput): StopOverrunRow {
   const overrunPerShare = input.side === 'long' ? input.stopPrice - input.exitPrice : input.exitPrice - input.stopPrice;
-  const riskPerShare = Math.abs(input.entryPrice - input.stopPrice);
+  const riskPerShare = Math.abs(input.entryPrice - (input.initialStopPrice ?? input.stopPrice));
   return {
     ...input,
     overrunPerShare: round2(overrunPerShare),

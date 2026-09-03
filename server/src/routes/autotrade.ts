@@ -17,6 +17,7 @@ import {
   AutotradeStage,
   countAutotradeEventsByDay,
   listAutotradeEvents,
+  listKnownAutotradeEventActions,
   logAutotradeEvent,
 } from '../db/autotradeEvents';
 import { runAutotradeScreen } from '../services/autotrading/screen';
@@ -1935,6 +1936,28 @@ const eventsQuery = z.object({
  *  during market hours is ~3 hours of the busiest actions — so a multi-day
  *  distribution (what docs/OPTIONS_TUNING_PLAN.md decides on) is not reachable
  *  by paging rows and needs this instead. */
+/** Which of the requested action names the journal has never recorded.
+ *
+ *  A filtered read returns nothing both when an action has genuinely never
+ *  fired and when the caller mistyped its name — and on 2026-09-03 that
+ *  ambiguity cost a real conclusion: months of checks for `live_stop_adjusted`
+ *  read zero and were taken as "the ratchet never fires", when no code has ever
+ *  emitted that name (the success event is `live_stop_ratcheted`, while the
+ *  failures are live_stop_adjust_blocked/_failed — the verb changes between
+ *  them). Reporting the never-seen names makes a zero say WHICH kind of zero it
+ *  is, instead of leaving the caller to assume the flattering one.
+ *
+ *  Note it does not distinguish the two cases by itself — a real action that
+ *  has genuinely never fired is also listed, which is exactly the other thing a
+ *  caller must not silently read as a measured zero. Omitted entirely when
+ *  every requested name has been seen, so a healthy response is unchanged. */
+function neverSeen(list: string[] | undefined): { actionsNeverSeen?: string[] } {
+  if (!list || list.length === 0) return {};
+  const known = new Set(listKnownAutotradeEventActions());
+  const missing = list.filter((a) => !known.has(a));
+  return missing.length ? { actionsNeverSeen: missing } : {};
+}
+
 autotradeRouter.get(
   '/events/summary',
   asyncHandler(async (req, res) => {
@@ -1945,7 +1968,10 @@ autotradeRouter.get(
           .map((a) => a.trim())
           .filter(Boolean)
       : undefined;
-    res.json({ summary: countAutotradeEventsByDay({ ...q, ...(list ? { actions: list } : {}) }) });
+    res.json({
+      summary: countAutotradeEventsByDay({ ...q, ...(list ? { actions: list } : {}) }),
+      ...neverSeen(list),
+    });
   }),
 );
 
@@ -1959,6 +1985,9 @@ autotradeRouter.get(
           .map((a) => a.trim())
           .filter(Boolean)
       : undefined;
-    res.json({ events: listAutotradeEvents({ ...q, ...(list ? { actions: list } : {}) }) });
+    res.json({
+      events: listAutotradeEvents({ ...q, ...(list ? { actions: list } : {}) }),
+      ...neverSeen(list),
+    });
   }),
 );

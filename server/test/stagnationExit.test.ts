@@ -6,8 +6,14 @@ import { evaluateStagnation, progressR, sessionMinutesBetween } from '../src/ser
 // session minutes agree for the first six hours and the intent of each case
 // stays readable.
 const ENTRY = Date.parse('2026-08-24T14:00:00Z');
-const longPos = { side: 'long' as const, entryPrice: 100, stopPrice: 95, createdAt: ENTRY };
-const shortPos = { side: 'short' as const, entryPrice: 100, stopPrice: 105, createdAt: ENTRY };
+const longPos = { side: 'long' as const, entryPrice: 100, stopPrice: 95, initialStopPrice: 95, createdAt: ENTRY };
+const shortPos = {
+  side: 'short' as const,
+  entryPrice: 100,
+  stopPrice: 105,
+  initialStopPrice: 105,
+  createdAt: ENTRY,
+};
 
 const cfg = { stagnationExitMinutes: 90, stagnationExitMinR: 0.5 };
 const MIN = 60_000;
@@ -23,10 +29,51 @@ describe('progressR', () => {
   });
 
   it('is null with no stop, zero risk distance, or a junk price — no guessed R', () => {
-    expect(progressR({ ...longPos, stopPrice: null }, 102)).toBeNull();
-    expect(progressR({ ...longPos, stopPrice: 100 }, 102)).toBeNull();
+    // "No stop" means NEITHER stop is usable. A null current stop alone is not
+    // enough while the frozen initial one survives.
+    expect(progressR({ ...longPos, stopPrice: null, initialStopPrice: null }, 102)).toBeNull();
+    expect(progressR({ ...longPos, stopPrice: 100, initialStopPrice: 100 }, 102)).toBeNull();
     expect(progressR(longPos, NaN)).toBeNull();
     expect(progressR(longPos, 0)).toBeNull();
+  });
+
+  // The ratchet moves stopPrice; the risk unit must not move with it. At
+  // breakeven the current stop equals the entry, so a current-stop denominator
+  // is exactly zero and progress reads null — which made evaluateStagnation
+  // answer "unmeasurable" and stop scratching that position for the rest of
+  // the day. These pin the denominator to the initial stop.
+  it('keeps measuring after the stop has ratcheted to breakeven', () => {
+    const ratcheted = { ...longPos, stopPrice: 100 }; // breakeven, initial still 95
+    expect(progressR(ratcheted, 102.5)).toBe(0.5);
+    expect(progressR(ratcheted, 100)).toBe(0);
+  });
+
+  it('does not inflate progress when a trailing stop has tightened', () => {
+    // Trailed 95 -> 98. Against the current stop +2.5 would read 1.25R; the
+    // true progress on the frozen $5 risk is 0.5R.
+    expect(progressR({ ...longPos, stopPrice: 98 }, 102.5)).toBe(0.5);
+  });
+
+  it('falls back to the current stop for rows with no initial stop recorded', () => {
+    expect(progressR({ ...longPos, initialStopPrice: null }, 102.5)).toBe(0.5);
+  });
+});
+
+describe('evaluateStagnation after a ratchet', () => {
+  it('still scratches a breakeven-ratcheted position that is going nowhere', () => {
+    // The regression that mattered: breakeven fires at 0.25R on ~half of
+    // trades, and this position would otherwise hold its slot until the
+    // end-of-day flatten.
+    const ratcheted = { ...longPos, stopPrice: 100 };
+    const d = evaluateStagnation(ratcheted, 100.5, cfg, after(90));
+    expect(d.progress).toBe(0.1);
+    expect(d.triggered).toBe(true);
+    expect(d.detail).not.toMatch(/no measurable R progress/);
+  });
+
+  it('still spares a ratcheted position that IS working', () => {
+    const ratcheted = { ...longPos, stopPrice: 100 };
+    expect(evaluateStagnation(ratcheted, 103, cfg, after(90)).triggered).toBe(false);
   });
 });
 
@@ -53,8 +100,10 @@ describe('evaluateStagnation', () => {
     expect(evaluateStagnation(longPos, 104, cfg, after(300)).triggered).toBe(false);
   });
 
-  it('never scratches a position whose R cannot be measured (no stop)', () => {
-    const d = evaluateStagnation({ ...longPos, stopPrice: null }, 100, cfg, after(300));
+  it('never scratches a position whose R cannot be measured (no stop at all)', () => {
+    // Both stops gone. A null CURRENT stop with a live initial one is still
+    // measurable — see the ratchet cases above.
+    const d = evaluateStagnation({ ...longPos, stopPrice: null, initialStopPrice: null }, 100, cfg, after(300));
     expect(d.triggered).toBe(false);
     expect(d.detail).toMatch(/no measurable R/);
   });
@@ -119,6 +168,7 @@ describe('evaluateStagnation with session minutes', () => {
       side: 'long' as const,
       entryPrice: 100,
       stopPrice: 95,
+      initialStopPrice: 95,
       createdAt: Date.parse('2026-08-24T19:50:00Z'),
     };
     const d = evaluateStagnation(pos, 100, cfg, Date.parse('2026-08-25T13:35:00Z'));
@@ -132,6 +182,7 @@ describe('evaluateStagnation with session minutes', () => {
       side: 'long' as const,
       entryPrice: 100,
       stopPrice: 95,
+      initialStopPrice: 95,
       createdAt: Date.parse('2026-08-24T19:50:00Z'),
     };
     const d = evaluateStagnation(pos, 100, cfg, Date.parse('2026-08-25T15:10:00Z'));
