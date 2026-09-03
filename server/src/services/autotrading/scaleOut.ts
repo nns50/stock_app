@@ -34,6 +34,11 @@ import { AutotradeConfig } from '../../db/autotradeConfig';
 // tick with the position still fully protected. Never the other order, never a
 // partial sell against a full-size bracket.
 //
+// R DENOMINATOR: the initial stop, never the current one — see the comment at
+// the risk calculation below. This module and stopAdjust.ts must agree by
+// construction about what one R is, because the same config value now drives
+// both triggers.
+//
 // Gated behind its own liveScaleOutEnabled flag rather than reusing
 // partialExitRMultiple alone: that value is already 1.5 in production from the
 // paper path, so wiring live scale-outs to it would have switched them on for
@@ -68,7 +73,10 @@ const notTriggered = (detail: string, rMultiple: number | null = null): ScaleOut
  * without a flag that could drift from the exits it describes.
  */
 export function evaluateScaleOut(
-  pos: Pick<Position, 'side' | 'entryPrice' | 'stopPrice' | 'quantity' | 'remainingQuantity' | 'exits'>,
+  pos: Pick<
+    Position,
+    'side' | 'entryPrice' | 'stopPrice' | 'initialStopPrice' | 'quantity' | 'remainingQuantity' | 'exits'
+  >,
   price: number,
   cfg: ScaleOutConfig,
 ): ScaleOutDecision {
@@ -80,9 +88,19 @@ export function evaluateScaleOut(
     return notTriggered(`scale-out % must be between 0 and 100 (is ${cfg.partialExitPct})`);
   }
   if (pos.exits.length > 0) return notTriggered('already scaled out once');
-  if (pos.stopPrice === null) return notTriggered('no measurable R progress (no stop on this position)');
+  // R is measured against the INITIAL stop, exactly as stopAdjust.ts measures
+  // it. Both must derive the denominator the same way or they disagree about
+  // what "+0.25R" means. Using the CURRENT stop here was a live bug: the loop
+  // ratchets stops BEFORE it scales out (deliberately — see loop.ts), so once
+  // the breakeven rule fires, pos.stopPrice === entryPrice, risk is 0, and
+  // every subsequent scale-out on that position returns "degenerate risk"
+  // forever. It stayed invisible only because breakeven triggered at 1.0R
+  // while the scale-out triggered at 0.3R, so the scale-out almost always went
+  // first. Setting the two triggers to the same R surfaces it immediately.
+  const stopForRisk = pos.initialStopPrice ?? pos.stopPrice;
+  if (stopForRisk === null) return notTriggered('no measurable R progress (no stop on this position)');
 
-  const risk = Math.abs(pos.entryPrice - pos.stopPrice);
+  const risk = Math.abs(pos.entryPrice - stopForRisk);
   if (!(risk > 0) || !Number.isFinite(price) || price <= 0) {
     return notTriggered('no measurable R progress (degenerate risk or price)');
   }
