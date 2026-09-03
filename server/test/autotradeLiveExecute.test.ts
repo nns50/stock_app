@@ -1668,6 +1668,43 @@ describe('reconcileLiveOrders vs a position-sync row for the same fill', () => {
     expect(open).toHaveLength(2);
     expect(open.find((p) => p.accountId === 'OTHER-ACCOUNT')!.tags).not.toContain('autotrade');
   });
+
+  // The whole chain, asserted at the END of it. The components are set on the
+  // signal, carried onto the live order row, and only written to the position
+  // when the fill materializes — three hops, any of which could drop them and
+  // still leave every unit test green. entry_score already travels this path;
+  // this proves the breakdown does too.
+  //
+  // Why it matters: measured over 22 modern trades, corr(entryScore, peak R)
+  // = -0.083 and the higher-scoring half moved LESS. The total shows no edge.
+  // Asking whether a COMPONENT does requires the breakdown joined to realized
+  // outcomes, which is only possible if it lands here.
+  it('carries the per-component scores from signal to the materialized position', async () => {
+    const comps = { momentum: 81.2, relativeVolume: 64, rsi: 55.5, trend: 90 };
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-COMP' });
+
+    const sig = signal({ components: comps });
+    const okResult = evaluateRiskCheck(sig, baseRiskCtx());
+    await attemptLiveEntry(sig, okResult, 'MODERATE', liveConfig());
+
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: okResult.sizing.suggestedQuantity,
+      filledPrice: 100,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+
+    const pos = listPositions({ status: 'open', symbol: 'AAPL' }).find((p) => p.tags.includes('autotrade'));
+    expect(pos, 'the fill should have materialized a position').toBeDefined();
+    expect(pos!.entryComponents).toEqual(comps);
+    expect(pos!.entryScore).toBe(sig.score); // and the total still travels too
+  });
 });
 
 describe('reconcileLiveOrders', () => {

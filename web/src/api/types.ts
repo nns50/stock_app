@@ -341,6 +341,9 @@ export interface Position {
    *  'neutral' | 'risk-off'), and the market (SPY) ATR% at entry. All null
    *  for manual/imported trades and rows that predate these fields. */
   entryScore: number | null;
+  /** Per-component screener scores at entry, {componentKey: 0..100}. Null on
+   *  positions opened before 2026-09-02, and on manually logged trades. */
+  entryComponents: Record<string, number> | null;
   marketRegime: string | null;
   marketAtrPct: number | null;
   /** Session VWAP at entry (2026-08-22 observer) — evidence for a possible

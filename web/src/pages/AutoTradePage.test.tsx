@@ -3510,6 +3510,7 @@ describe('AutoTradePage', () => {
         stopPrice: 95,
         targetPrice: 110,
         entryScore: null,
+        entryComponents: null,
         marketRegime: null,
         marketAtrPct: null,
         entryVwap: null,

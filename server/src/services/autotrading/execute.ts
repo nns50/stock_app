@@ -149,6 +149,7 @@ export async function attemptPaperEntry(
       rationale: signal.rationale,
       grade,
       entryScore: signal.score,
+      entryComponents: signal.components ?? null,
       marketRegime,
       marketAtrPct,
     });

@@ -40,6 +40,7 @@ export interface OpenPaperPositionInput {
   grade?: string | null;
   /** The raw screener total (0-100) the grade was bucketed from, or null. */
   entryScore?: number | null;
+  entryComponents?: Record<string, number> | null;
   /** Market regime label at entry ('risk-on' | 'neutral' | 'risk-off'), or
    *  null when the best-effort regime read failed that cycle. */
   marketRegime?: string | null;
@@ -85,6 +86,7 @@ export interface PaperPosition {
   /** At-entry context — null for rows that predate these columns or where the
    *  best-effort regime read failed. See the DDL comment in db/index.ts. */
   entryScore: number | null;
+  entryComponents: Record<string, number> | null;
   marketRegime: string | null;
   marketAtrPct: number | null;
   createdAt: number;
@@ -120,6 +122,7 @@ interface Row {
   add_ons_taken: number;
   grade: string | null;
   entry_score: number | null;
+  entry_components: string | null;
   market_regime: string | null;
   market_atr_pct: number | null;
   created_at: number;
@@ -149,6 +152,16 @@ function map(r: Row): PaperPosition {
     addOnsTaken: r.add_ons_taken ?? 0,
     grade: r.grade ?? null,
     entryScore: r.entry_score ?? null,
+    entryComponents: (() => {
+      const raw = (r as { entry_components?: string | null }).entry_components;
+      if (!raw) return null;
+      try {
+        const v: unknown = JSON.parse(raw);
+        return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, number>) : null;
+      } catch {
+        return null;
+      }
+    })(),
     marketRegime: r.market_regime ?? null,
     marketAtrPct: r.market_atr_pct ?? null,
     createdAt: r.created_at,
@@ -167,8 +180,8 @@ export function openPaperPosition(input: OpenPaperPositionInput): PaperPosition 
       `INSERT INTO autotrade_paper_positions
          (symbol, side, quantity, entry_price, entry_at, stop_price, target_price,
           risk_amount, risk_profile, rationale, status, initial_stop_price,
-          best_price_since_entry, grade, entry_score, market_regime, market_atr_pct, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)`,
+          best_price_since_entry, grade, entry_score, entry_components, market_regime, market_atr_pct, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.symbol.toUpperCase(),
@@ -185,6 +198,7 @@ export function openPaperPosition(input: OpenPaperPositionInput): PaperPosition 
       input.entryPrice,
       input.grade ?? null,
       input.entryScore ?? null,
+      input.entryComponents ? JSON.stringify(input.entryComponents) : null,
       input.marketRegime ?? null,
       input.marketAtrPct ?? null,
       now,

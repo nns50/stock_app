@@ -28,6 +28,7 @@ function opt(over: Partial<Position>): Position {
     sourceIntentId: null,
     accountId: null,
     entryScore: null,
+    entryComponents: null,
     marketRegime: null,
     marketAtrPct: null,
     entryVwap: null,

@@ -99,6 +99,12 @@ export interface TradeSignal {
   rationale: string;
   /** The screener's 0..100 total score, carried over for sorting/display. */
   score: number;
+  /** The per-component scores behind `score`, {componentKey: 0..100}. Stored
+   *  on the position at entry so an attribution can ask which COMPONENT
+   *  predicted a move — the total alone showed no edge on 2026-09-02
+   *  (corr(score, peak R) = -0.083 over 22 trades), and the journal's copy on
+   *  candidate_found cannot be paged back to join it to a trade. */
+  components?: Record<string, number> | null;
   /** ~20-day average daily volume (shares) from the candidate's indicators,
    *  carried so the risk check can apply an ADV participation size cap without
    *  re-fetching. Null/absent when the screener couldn't resolve it. */
@@ -194,6 +200,12 @@ export function generateSignal(
     rMultiple: cfg.targetRMultiple,
     rationale,
     score: candidate.total,
+    // The per-component breakdown behind `score`, carried for the same reason
+    // avgVolume and relVolPace are: the execution path stores it on the
+    // position, and re-deriving it downstream would be a second,
+    // differently-timed measurement of the same quantity. Rounded to one
+    // decimal, matching what candidate_found already journals.
+    components: Object.fromEntries(candidate.components.map((c) => [c.key, Math.round(c.score * 10) / 10])),
     avgVolume: candidate.indicators.avgVolume,
     relVolPace: candidate.relVolPace ?? null,
     atr,

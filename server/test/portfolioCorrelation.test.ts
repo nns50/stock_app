@@ -37,6 +37,7 @@ function makePosition(over: Partial<Position> & Pick<Position, 'symbol'>): Posit
     sourceIntentId: null,
     accountId: null,
     entryScore: null,
+    entryComponents: null,
     marketRegime: null,
     marketAtrPct: null,
     entryVwap: null,
