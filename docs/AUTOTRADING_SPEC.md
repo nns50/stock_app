@@ -5187,3 +5187,61 @@ quantity that this codebase's invariants already warn about.
 When this does gate, it has to MOVE: the live path computes session context
 deliberately AFTER the broker placement so measurement can never delay or fail a
 real order. A blocking version must run ahead of placement.
+
+## 2026-09-04 — per-lot bracket tracking, first slice (observer)
+
+`restingExitOrders` matches on symbol and exit side alone. That is fine while a
+position rests exactly one bracket and wrong the moment it rests two — nothing
+downstream can say which legs protect which shares. Three mechanisms paper over
+it by assuming a single bracket:
+
+- the **scale-out** refuses outright above two legs, because one whole-position
+  `keepQty` applied to two brackets would leave each protecting `keepQty`, and a
+  stop fill would then sell 2x the holding — the accidental short the
+  reduce-first ordering exists to prevent;
+- the **close path** cancels every resting exit leg on the symbol;
+- **bracket protection** reads "any leg resting" as "protected", which is true of
+  the symbol and says nothing about whether a given lot is covered.
+
+Two brackets on one symbol are not hypothetical: the 2026-07-09 cross-tick
+double-open put two OCO pairs on a real account, `placeLiveScaleInAddOn` creates
+them by design, and the two-lot entry under consideration for the scale-out would
+create them deliberately.
+
+`bracketGroups.ts` groups resting legs by the broker's `combo_order_id` — the id
+off the ENVELOPE, which two legs of one bracket share and two legs of different
+brackets do not. Pure function of already-parsed data, 14 tests.
+
+### The attribution assumption, kept explicit
+
+Attributing a group to a POSITION rests on something no live account has
+confirmed: a bracket is several envelopes sharing one `combo_order_id`, and
+`webullPlaceOrder` resolves the placed order's `brokerOrderId` as
+`order_id ?? combo_order_id`, so the entry intent's stored `brokerOrderId`
+SHOULD equal its exit legs' `comboOrderId`.
+
+"Should" is doing real work there. Four payload shapes were refused this week on
+reasoning equally sound on paper. So `attributeByEntryOrder` matches only on a
+positive equality, returns null on every ambiguity (no id, no group, or more than
+one group carrying it — which would itself disprove the premise), and **nothing
+in the live path is switched over to it.**
+
+Instead `bracket_groups_observed` journals, once per position per ET day, what
+the grouping actually looks like and whether `attributedByEntryOrderId` came back
+true. A false on a one-group book with a non-null id says the two ids are not the
+same key and the plan needs a different link — which is exactly what has to be
+known before any consumer depends on it.
+
+Fail-closed throughout: a leg whose group id cannot be read is `unattributable`
+and is never folded into the nearest group, because mis-attributing a stop leg is
+how a bracket gets resized or cancelled against the wrong lot. `isSingleBracket`
+is false for a parse miss even with one readable group, so the old single-bracket
+assumptions cannot be satisfied by unreadable data.
+
+### Note on the entry link
+
+The id comes from the INTENT (`orders.broker_order_id`, set by placeOrder), not
+from `autotrade_live_orders` — `LiveOrderMeta` has no such field, which the
+typecheck caught on the first wiring attempt. `positions.sourceIntentId` is the
+route, and it is non-null by the same candidate filter bracket protection already
+applies.
