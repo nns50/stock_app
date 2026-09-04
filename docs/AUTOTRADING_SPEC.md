@@ -5435,3 +5435,51 @@ stays absent, so it IS the "how long have we been waiting" counter.
 
 Both halves are mutation-verified — removing the defer fails the deferral test,
 making it unbounded fails the bound test.
+
+## 2026-09-04 — cancel-and-replace, built and left OFF
+
+In-place quantity modification of a resting combo leg is closed: four payload
+shapes, 100+ refusals, confirmed when IOT's attempt carried per-leg `combo_type`
+AND a real `client_combo_order_id` and drew the byte-identical rejection.
+
+Cancel-and-replace is the only other route, and it exists now behind
+`liveScaleOutCancelReplaceEnabled`, **default false**.
+
+### Why a second flag rather than reusing liveScaleOutEnabled
+
+It changes the FAILURE MODE from safe to unsafe, so it has to be a separate
+decision:
+
+| | worst case |
+|---|---|
+| today (in-place refuses) | a missed partial — measured at **+0.183R** on IOT — with the position **fully protected** |
+| cancel-and-replace | the position is **NAKED** between the cancel and the new bracket, and `checkLiveBracketProtection` only REPORTS that |
+
+### The ordering rule, which is stricter than the in-place path's
+
+1. cancel BOTH legs
+2. **RE-READ the broker and confirm both are gone.** A cancel is an accepted
+   REQUEST, not a completed action; selling against a leg that is still resting
+   is the accidental short the whole scale-out design exists to prevent
+3. only then sell the partial
+4. immediately re-bracket the remainder
+5. if 4 fails, force-close the remainder rather than leave unhedged exposure
+
+Step 2 cannot be skipped for latency. If the confirmation read fails or is
+ambiguous the correct move is to abandon — back to a protected position and a
+missed partial, exactly where the in-place path already leaves us. `verifyLegsGone`
+treats an unreadable book identically to a still-resting leg: unknown is never
+"probably fine" here.
+
+`safePartialQuantity` re-derives the sell quantity from what the broker says is
+held NOW rather than the number computed before the cancel, because the cancel
+window is precisely when a racing fill would change the holding, and selling a
+stale quantity is how a partial becomes an oversell.
+
+### This is NOT the preferred route
+
+Two brackets placed at entry — 67% with a 0.25R target, 33% with the full target
+— needs no modification and never leaves the position naked. That waits only on
+whether the broker accepts two simultaneous OTOCO groups on one symbol, which a
+one-share test settles. **Turn this flag on only if that answer is no.** It is
+built so the decision is available, not because it is the right one.

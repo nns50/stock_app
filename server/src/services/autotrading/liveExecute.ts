@@ -62,6 +62,7 @@ import { evaluateStagnation } from './stagnationExit';
 import { evaluateEndOfDayFlatten, evaluateEntryCutoff } from './endOfDayFlatten';
 import { evaluateStopAdjust } from './stopAdjust';
 import { evaluateScaleOut } from './scaleOut';
+import { verifyLegsGone } from './cancelReplace';
 import { attributeByEntryOrder, groupExitLegsByCombo, isSingleBracket, summarizeGroups } from './bracketGroups';
 import {
   resizeAttemptSignature,
@@ -2808,6 +2809,87 @@ export interface LiveScaleOutOutcome {
 }
 
 /**
+ * Cancel the resting bracket so the caller can sell a partial.
+ *
+ * Returns ok ONLY when the legs are confirmed gone from a fresh broker read.
+ * On any doubt the caller must abandon the scale-out — back to a fully
+ * protected position and a missed partial, exactly where the in-place path
+ * already leaves us.
+ *
+ * It does not sell and does not re-bracket; the caller owns both, because the
+ * caller holds the ordering rule. See cancelReplace.ts.
+ */
+async function cancelReplaceBracket(
+  accountId: string,
+  pos: { id: number; symbol: string; remainingQuantity: number },
+  resting: WebullOpenOrder[],
+  keepQty: number,
+  cfg: AutotradeConfig,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const symbol = pos.symbol.toUpperCase();
+  const ids = resting.map((l) => l.clientOrderId).filter((v): v is string => !!v);
+  if (ids.length !== resting.length) {
+    return { ok: false, reason: 'a resting leg has no client order id to cancel by' };
+  }
+
+  const cancelled: string[] = [];
+  for (const id of ids) {
+    const c = await webullCancelOrder(accountId, id);
+    if (!c.ok) {
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: 'live_scale_out_blocked',
+        detail: {
+          positionId: pos.id,
+          reason: `cancel-replace: cancelling leg ${id} failed: ${c.error ?? 'unknown'}`,
+          cancelledSoFar: cancelled,
+          note: 'The bracket may now be PARTLY cancelled — check the broker.',
+        },
+        riskProfile: cfg.riskProfile,
+      });
+      return { ok: false, reason: `cancel failed for ${id}: ${c.error ?? 'unknown'}` };
+    }
+    cancelled.push(id);
+  }
+
+  // A cancel is an accepted REQUEST, not a completed action. Confirm before
+  // anything sells against this position.
+  const fresh = await listWebullOpenOrders(accountId);
+  const verdict = verifyLegsGone(fresh.ok ? fresh.orders : null, ids);
+  if (!verdict.ok) {
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_scale_out_blocked',
+      detail: {
+        positionId: pos.id,
+        reason: `cancel-replace abandoned: ${verdict.reason}`,
+        note: 'Not selling against a bracket that may still be live — the accidental short this ordering prevents.',
+      },
+      riskProfile: cfg.riskProfile,
+    });
+    return { ok: false, reason: verdict.reason };
+  }
+
+  logAutotradeEvent({
+    symbol,
+    stage: 'execution',
+    action: 'live_position_unprotected',
+    detail: {
+      positionId: pos.id,
+      quantity: pos.remainingQuantity,
+      keepQty,
+      reason:
+        'Bracket CANCELLED for a cancel-replace scale-out. The position is unprotected until the remainder ' +
+        'is re-bracketed — if this is the last such event for this position, re-arm by hand.',
+    },
+    riskProfile: cfg.riskProfile,
+  });
+  return { ok: true };
+}
+
+/**
  * Bank part of a live winner at the configured R trigger — see scaleOut.ts for
  * why this exists (live positions otherwise exit on a timer at whatever R they
  * happen to be) and for the ordering rule this function implements.
@@ -3019,9 +3101,26 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
     }
 
     const replaced = await webullReplaceOrders(accountId, patches, comboId);
-    const reduceFailed = replaced.ok
+    let reduceFailed = replaced.ok
       ? null
       : `${resting.map((l) => l.clientOrderId).join(', ')}: ${replaced.error ?? 'replace failed'}`;
+
+    // LAST RESORT, and only when explicitly enabled. In-place quantity
+    // modification of a combo leg is closed (four payload shapes, 100+
+    // refusals, confirmed 2026-09-04 with a real client_combo_order_id on the
+    // wire). Cancel-and-replace is the only other route and it INVERTS the
+    // failure mode — between the cancel and the new bracket the position is
+    // naked — so it is a separate, deliberate decision from liveScaleOutEnabled
+    // and defaults off. See cancelReplace.ts for the ordering rule.
+    if (reduceFailed && cfg.liveScaleOutCancelReplaceEnabled) {
+      const outcome = await cancelReplaceBracket(accountId, pos, resting, keepQty, cfg);
+      if (outcome.ok) {
+        reduceFailed = null;
+      } else {
+        reduceFailed = `${reduceFailed}; cancel-replace also failed: ${outcome.reason}`;
+      }
+    }
+
     if (reduceFailed) {
       const attempt = recordResizeRefusal(pos.id, signature);
       logAutotradeEvent({

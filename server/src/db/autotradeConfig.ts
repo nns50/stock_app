@@ -330,6 +330,32 @@ export interface AutotradeConfig {
    *  has been 1.5 since the paper-only implementation, so reusing it alone
    *  would have switched live scale-outs on the moment this deployed. */
   liveScaleOutEnabled: boolean;
+  /** LAST-RESORT scale-out route: CANCEL the resting bracket, sell the partial,
+   *  then place a fresh bracket for the remainder.
+   *
+   *  Off by default, and this flag is not the usual caution — it changes the
+   *  FAILURE MODE of the scale-out from safe to unsafe, so it must be a
+   *  deliberate, separate decision from liveScaleOutEnabled.
+   *
+   *  Today a scale-out that cannot reduce the bracket ABANDONS itself with the
+   *  position fully protected: the worst case is a missed partial (measured at
+   *  +0.183R on IOT, 2026-09-04). Cancel-and-replace inverts that. Between the
+   *  cancel and the new bracket the position is NAKED, and
+   *  checkLiveBracketProtection only REPORTS a naked position — it journals
+   *  live_position_unprotected and tells you to re-arm by hand. A failure
+   *  after the cancel is real unhedged exposure, not a missed opportunity.
+   *
+   *  Why it exists at all: across four payload shapes and 100+ refusals the
+   *  broker will not modify the QUANTITY of a resting combo leg, confirmed
+   *  2026-09-04 when IOT's attempt carried a real client_combo_order_id and
+   *  drew the byte-identical rejection. In-place resize is closed.
+   *
+   *  The PREFERRED route is not this one — it is two brackets placed at entry
+   *  (67% with a 0.25R target, 33% with the full target), which needs no
+   *  modification and never leaves the position naked. That waits on whether
+   *  Webull accepts two simultaneous OTOCO groups on one symbol. Turn this on
+   *  only if that answer is no. */
+  liveScaleOutCancelReplaceEnabled: boolean;
   /** LIVE stop ratchet (services/autotrading/stopAdjust.ts): let
    *  breakevenTriggerRMultiple / trailStartRMultiple / trailStopRMultiple move
    *  the stop on a LIVE equity position, by REPLACING the resting bracket's
@@ -1057,6 +1083,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     stopAtrMultiple: 1.5,
     maxStopDistancePct: 0,
     liveScaleOutEnabled: false,
+    liveScaleOutCancelReplaceEnabled: false,
     liveTrailingEnabled: false,
     dayProtectiveStopEnabled: false,
     shortDatedOptionsEnabled: false,
@@ -1299,6 +1326,10 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     maxStopDistancePct: nonNeg(input.maxStopDistancePct, d.maxStopDistancePct),
     liveScaleOutEnabled:
       typeof input.liveScaleOutEnabled === 'boolean' ? input.liveScaleOutEnabled : d.liveScaleOutEnabled,
+    liveScaleOutCancelReplaceEnabled:
+      typeof input.liveScaleOutCancelReplaceEnabled === 'boolean'
+        ? input.liveScaleOutCancelReplaceEnabled
+        : d.liveScaleOutCancelReplaceEnabled,
     liveTrailingEnabled:
       typeof input.liveTrailingEnabled === 'boolean' ? input.liveTrailingEnabled : d.liveTrailingEnabled,
     dayProtectiveStopEnabled:

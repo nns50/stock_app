@@ -203,6 +203,7 @@ const configBody = z.object({
   stopAtrMultiple: z.number().positive().optional(),
   maxStopDistancePct: z.number().min(0).max(100).optional(),
   liveScaleOutEnabled: z.boolean().optional(),
+  liveScaleOutCancelReplaceEnabled: z.boolean().optional(),
   liveTrailingEnabled: z.boolean().optional(),
   dayProtectiveStopEnabled: z.boolean().optional(),
   shortDatedOptionsEnabled: z.boolean().optional(),
@@ -463,6 +464,8 @@ autotradeRouter.put(
     if (body.stopAtrMultiple !== undefined) patch.stopAtrMultiple = body.stopAtrMultiple;
     if (body.maxStopDistancePct !== undefined) patch.maxStopDistancePct = body.maxStopDistancePct;
     if (body.liveScaleOutEnabled !== undefined) patch.liveScaleOutEnabled = body.liveScaleOutEnabled;
+    if (body.liveScaleOutCancelReplaceEnabled !== undefined)
+      patch.liveScaleOutCancelReplaceEnabled = body.liveScaleOutCancelReplaceEnabled;
     if (body.liveTrailingEnabled !== undefined) patch.liveTrailingEnabled = body.liveTrailingEnabled;
     if (body.dayProtectiveStopEnabled !== undefined) patch.dayProtectiveStopEnabled = body.dayProtectiveStopEnabled;
     if (body.shortDatedOptionsEnabled !== undefined) patch.shortDatedOptionsEnabled = body.shortDatedOptionsEnabled;
