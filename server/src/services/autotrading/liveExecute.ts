@@ -69,7 +69,8 @@ import {
   clearResizeLatch,
   pruneResizeLatches,
 } from './resizeRetryLatch';
-import { fetchTodayVwap } from './vwap';
+import { fetchTodaySessionContext } from './vwap';
+import { evaluateEntryExtension, REFERENCE_MAX_PCT_OF_RANGE, REFERENCE_MAX_VWAP_EXT_PCT } from './entryExtension';
 import { detectLevels } from '../../indicators/levels';
 import { reentryCooldownFor } from './reentryCooldown';
 import { atr } from '../../indicators/indicators';
@@ -788,7 +789,42 @@ export async function attemptLiveEntry(
   // AFTER the placement call so it cannot delay or fail a real order (VWAP is
   // cumulative; a few hundred ms later is the same number), and null on any
   // failure rather than a guess.
-  const entryVwap = await fetchTodayVwap(symbol);
+  const sessionCtx = await fetchTodaySessionContext(symbol);
+  const entryVwap = sessionCtx.vwap;
+
+  // Entry-extension SHADOW (entryExtension.ts): journals how far into the day's
+  // move this entry landed, and what the reference thresholds WOULD have done.
+  // It changes nothing — the order is already placed by this line. Raw numbers
+  // are recorded alongside the verdict so the cut can be re-chosen from the
+  // journal without a deploy.
+  const extension = evaluateEntryExtension({
+    side: isShort ? 'short' : 'long',
+    price: signal.entry,
+    vwap: sessionCtx.vwap,
+    range: sessionCtx.range,
+  });
+  logAutotradeEvent({
+    symbol,
+    stage: 'execution',
+    action: 'entry_extension_shadow',
+    detail: {
+      side: isShort ? 'short' : 'long',
+      entry: signal.entry,
+      vwap: sessionCtx.vwap,
+      sessionHigh: sessionCtx.range?.high ?? null,
+      sessionLow: sessionCtx.range?.low ?? null,
+      vwapExtPct: extension.vwapExtPct,
+      pctOfRange: extension.pctOfRange,
+      wouldBlock: extension.wouldBlock,
+      reasons: extension.reasons,
+      // Names the cut this verdict used, so a later journal read is not left
+      // guessing which thresholds produced it if they are ever changed.
+      referenceMaxPctOfRange: REFERENCE_MAX_PCT_OF_RANGE,
+      referenceMaxVwapExtPct: REFERENCE_MAX_VWAP_EXT_PCT,
+    },
+    riskProfile,
+  });
+
   const orderRow = {
     intentId: intentRec.id,
     symbol,
