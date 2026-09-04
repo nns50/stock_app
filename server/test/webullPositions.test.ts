@@ -16,7 +16,7 @@ import {
 import { priceMap } from '../src/services/quotes';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { createIntent } from '../src/db/orders';
-import { recordLiveExitOrder } from '../src/db/autotradeLiveOrders';
+import { recordLiveExitOrder, recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
 import { etToday } from '../src/util/marketDate';
 
 vi.mock('../src/services/quotes', () => ({ priceMap: vi.fn() }));
@@ -1281,6 +1281,102 @@ describe('syncClosedWebullPositions vs an autotrade close already in flight', ()
     expect(JSON.parse(skipped[0].detail!)).toMatchObject({ reason: 'autotrade_exit_in_flight' });
     // And it must NOT have been booked at a fabricated price.
     expect(listAutotradeEvents({ actions: ['position_reconciled_from_broker'] })).toHaveLength(0);
+  });
+
+  // 2026-09-04: the guard above covers a closing order the loop PLACED
+  // (role='exit'). It did NOT cover the ordinary exit — a resting BRACKET leg,
+  // which lives under the role='entry' row. DELL 587's stop filled when the
+  // 10:30 bar traded through it; this sync got there first and wrote a quoted
+  // 514.995 tagged 'manual' over what was really a 'stop' at the fill, above
+  // the stop price and so flattering the day's largest loss.
+  it('defers a position whose resting BRACKET leg just filled, so the real fill books it', async () => {
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'DELL',
+      side: 'long',
+      quantity: 7,
+      entryPrice: 529.79,
+      entryDate: etToday(),
+      tags: ['live', 'autotrade'],
+      accountId: 'ACC1',
+    });
+    const intent = createIntent(
+      {
+        symbol: 'DELL',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 7,
+        orderType: 'limit',
+        limitPrice: 531.3,
+        bracket: { takeProfitPrice: 553.35, stopLossPrice: 513.21 },
+      },
+      'cid-dell-entry',
+    );
+    expect(intent.isBracket).toBe(true);
+    recordLiveOrder({
+      intentId: intent.id,
+      symbol: 'DELL',
+      stopPrice: 513.21,
+      targetPrice: 553.35,
+      riskAmount: 116,
+      riskProfile: 'MODERATE',
+      accountId: 'ACC1',
+    });
+    setLiveOrderPositionId(intent.id, p.id);
+    mockPositions([]);
+
+    await syncClosedWebullPositions('ACC1'); // miss 1
+    await syncClosedWebullPositions('ACC1'); // would normally close here
+
+    expect(getPosition(p.id)!.status).toBe('open');
+    const skipped = listAutotradeEvents({ actions: ['position_reconcile_skipped'] });
+    expect(skipped).toHaveLength(1);
+    expect(JSON.parse(skipped[0].detail!)).toMatchObject({ reason: 'bracket_leg_reconcile_pending' });
+  });
+
+  // Deferring forever is its own bug — the expired-option branch exists because
+  // a position once stayed open FOREVER. The grace window is bounded.
+  it('closes at the estimate anyway once the bracket grace window is spent', async () => {
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'DELL',
+      side: 'long',
+      quantity: 7,
+      entryPrice: 529.79,
+      entryDate: etToday(),
+      tags: ['live', 'autotrade'],
+      accountId: 'ACC1',
+    });
+    const intent = createIntent(
+      {
+        symbol: 'DELL',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 7,
+        orderType: 'limit',
+        limitPrice: 531.3,
+        bracket: { takeProfitPrice: 553.35, stopLossPrice: 513.21 },
+      },
+      'cid-dell-entry-2',
+    );
+    recordLiveOrder({
+      intentId: intent.id,
+      symbol: 'DELL',
+      stopPrice: 513.21,
+      targetPrice: 553.35,
+      riskAmount: 116,
+      riskProfile: 'MODERATE',
+      accountId: 'ACC1',
+    });
+    setLiveOrderPositionId(intent.id, p.id);
+    mockPositions([]);
+
+    // MISS_CONFIRM_THRESHOLD (2) + BRACKET_RECONCILE_GRACE_SYNCS (2)
+    for (let i = 0; i < 4; i++) await syncClosedWebullPositions('ACC1');
+
+    expect(getPosition(p.id)!.status).toBe('closed');
   });
 
   it('still closes a position with no autotrade order behind it, and labels the exit manual', async () => {
