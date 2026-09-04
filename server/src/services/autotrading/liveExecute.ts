@@ -2396,14 +2396,13 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
   // we cannot say which one an unassigned row belongs to, so we cannot judge
   // whether a missing stop is real.
   const otherAccountKnown = listKnownAccountIds().some((a) => a !== accountId);
-  const candidates = listAutotradeLivePositions({ status: 'open' }).filter(
-    (p) =>
-      p.assetType === 'stock' &&
-      p.sourceIntentId !== null &&
-      (p.accountId === accountId || (p.accountId === null && !otherAccountKnown)) &&
-      now - p.createdAt >= BRACKET_PROTECTION_GRACE_MS &&
-      (getIntent(p.sourceIntentId)?.isBracket ?? false),
-  );
+  const candidates = listAutotradeLivePositions({ status: 'open' }).filter((p) => {
+    if (p.assetType !== 'stock') return false;
+    if (!(p.accountId === accountId || (p.accountId === null && !otherAccountKnown))) return false;
+    if (now - p.createdAt < BRACKET_PROTECTION_GRACE_MS) return false;
+    const intentId = entryIntentIdForPosition(p);
+    return intentId !== null && (getIntent(intentId)?.isBracket ?? false);
+  });
   if (candidates.length === 0) return [];
 
   const open = await listWebullOpenOrders(accountId);
@@ -2434,7 +2433,8 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
       // there, and webullPlaceOrder resolves that as order_id ?? combo_order_id
       // — so for a bracket it IS the envelope's combo group id. sourceIntentId
       // is non-null by the candidate filter above.
-      const entryBrokerOrderId = getIntent(pos.sourceIntentId!)?.brokerOrderId ?? null;
+      const obsIntentId = entryIntentIdForPosition(pos);
+      const entryBrokerOrderId = obsIntentId === null ? null : (getIntent(obsIntentId)?.brokerOrderId ?? null);
       const attributed = attributeByEntryOrder(grouped, entryBrokerOrderId);
       logAutotradeEvent({
         symbol,
@@ -2451,7 +2451,7 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
           // different link before anything is switched over to it.
           attributedByEntryOrderId: attributed !== null,
         },
-        riskProfile: getLiveOrder(pos.sourceIntentId!)?.riskProfile ?? cfg.riskProfile,
+        riskProfile: getLiveEntryOrderForPosition(pos.id)?.riskProfile ?? cfg.riskProfile,
       });
     }
 
@@ -2477,11 +2477,38 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
             `${exitSide} order on ${symbol} — its stop may never have been accepted, or was cancelled. ` +
             'Check the broker and re-arm protection by hand.',
         },
-        riskProfile: getLiveOrder(pos.sourceIntentId!)?.riskProfile ?? cfg.riskProfile,
+        riskProfile: getLiveEntryOrderForPosition(pos.id)?.riskProfile ?? cfg.riskProfile,
       });
     }
   }
   return outcomes;
+}
+
+/**
+ * The ENTRY intent behind a live position, by EITHER link.
+ *
+ * `positions.source_intent_id` is set only when a fill materializes through
+ * materializeEntryFill's create path. A position ADOPTED from the broker sync
+ * never gets one — adoption deliberately does not patch it, because a null
+ * source_intent_id is itself the "orphan, needs linking" signal that path
+ * matches on. What adoption DOES establish is the reverse link:
+ * setLiveOrderPositionId writes position_id onto the entry order row.
+ *
+ * Reading only source_intent_id therefore makes every adopted position
+ * invisible, and this is the SECOND time that has cost something. The first was
+ * an adopted CTVA position that failed its stagnation close 21 ticks running
+ * (see getLiveEntryOrderForPosition's own doc comment). The second was
+ * checkLiveBracketProtection: from 2026-09-01, when the book flipped to almost
+ * entirely adopted positions, it found ZERO candidates and returned before ever
+ * querying the broker — so the naked-position alarm went quiet for ten days
+ * while reading exactly like "nothing is wrong".
+ *
+ * Prefer source_intent_id when present (it is the precise link), fall back to
+ * the entry order's own intentId, and return null only when neither exists.
+ */
+function entryIntentIdForPosition(pos: { id: number; sourceIntentId: number | null }): number | null {
+  if (pos.sourceIntentId !== null) return pos.sourceIntentId;
+  return getLiveEntryOrderForPosition(pos.id)?.intentId ?? null;
 }
 
 function alreadyObservedGroupsToday(positionId: number): boolean {
@@ -3402,7 +3429,10 @@ async function placeLiveScaleInAddOn(
   const accountId = getAutotradeConfig().liveAccountId;
   if (!accountId) return { symbol, positionId: pos.id, requested: false, reason: 'No liveAccountId configured' };
   const side: 'buy' | 'sell' = pos.side === 'long' ? 'buy' : 'sell';
-  const riskProfile = getLiveOrder(pos.sourceIntentId!)?.riskProfile ?? cfg.riskProfile;
+  // Same either-link lookup as bracket protection: an ADOPTED position has no
+  // source_intent_id, and reading only that silently fell back to the config's
+  // profile instead of the one the entry was actually sized under.
+  const riskProfile = getLiveEntryOrderForPosition(pos.id)?.riskProfile ?? cfg.riskProfile;
 
   const buffer = 1 + (side === 'buy' ? 1 : -1) * (MARKETABLE_LIMIT_BUFFER_PCT / 100);
   const limitPrice = Math.round(last * buffer * 100) / 100;
