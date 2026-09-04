@@ -62,6 +62,7 @@ import { evaluateStagnation } from './stagnationExit';
 import { evaluateEndOfDayFlatten, evaluateEntryCutoff } from './endOfDayFlatten';
 import { evaluateStopAdjust } from './stopAdjust';
 import { evaluateScaleOut } from './scaleOut';
+import { attributeByEntryOrder, groupExitLegsByCombo, isSingleBracket, summarizeGroups } from './bracketGroups';
 import {
   resizeAttemptSignature,
   shouldSkipResize,
@@ -2420,7 +2421,41 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
       outcomes.push({ positionId: pos.id, symbol, protectedAtBroker: false, unknown: unreadable });
       continue;
     }
-    if (restingExitOrders(open.orders, symbol, exitSide).length > 0) {
+    const restingLegs = restingExitOrders(open.orders, symbol, exitSide);
+
+    // Per-lot bracket OBSERVER (bracketGroups.ts). Changes nothing: it records
+    // how the resting legs actually group, and whether the entry order's stored
+    // brokerOrderId equals its exit legs' comboOrderId — the attribution link
+    // the per-lot work depends on and which no live account has yet confirmed.
+    // Once per position per ET day, so a persistent shape does not bury the log.
+    if (restingLegs.length > 0 && !alreadyObservedGroupsToday(pos.id)) {
+      const grouped = groupExitLegsByCombo(restingLegs);
+      // The intent, not the live-order row: placeOrder stores broker.orderId
+      // there, and webullPlaceOrder resolves that as order_id ?? combo_order_id
+      // — so for a bracket it IS the envelope's combo group id. sourceIntentId
+      // is non-null by the candidate filter above.
+      const entryBrokerOrderId = getIntent(pos.sourceIntentId!)?.brokerOrderId ?? null;
+      const attributed = attributeByEntryOrder(grouped, entryBrokerOrderId);
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: 'bracket_groups_observed',
+        detail: {
+          positionId: pos.id,
+          ...summarizeGroups(grouped),
+          singleBracket: isSingleBracket(grouped),
+          entryBrokerOrderId,
+          // The whole point of the observation: did the entry order's id match a
+          // resting group? A false here with a non-null id on a one-group book
+          // says the ids are NOT the same key, and the attribution plan needs a
+          // different link before anything is switched over to it.
+          attributedByEntryOrderId: attributed !== null,
+        },
+        riskProfile: getLiveOrder(pos.sourceIntentId!)?.riskProfile ?? cfg.riskProfile,
+      });
+    }
+
+    if (restingLegs.length > 0) {
       outcomes.push({ positionId: pos.id, symbol, protectedAtBroker: true });
       continue;
     }
@@ -2447,6 +2482,18 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
     }
   }
   return outcomes;
+}
+
+function alreadyObservedGroupsToday(positionId: number): boolean {
+  const today = etDateStr();
+  return listAutotradeEvents({ stage: 'execution', actions: ['bracket_groups_observed'], limit: 200 }).some((e) => {
+    if (etDateStr(e.createdAt) !== today) return false;
+    try {
+      return (JSON.parse(e.detail ?? '{}') as { positionId?: unknown }).positionId === positionId;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function alreadyReportedUnprotectedToday(positionId: number): boolean {
