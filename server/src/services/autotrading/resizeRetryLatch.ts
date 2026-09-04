@@ -48,13 +48,52 @@ const latches = new Map<number, LatchEntry>();
 /**
  * The request we are about to send, reduced to a comparable string.
  *
- * Built from the patches themselves rather than from a hand-picked subset of
- * fields: a patch that grows a field must change the signature, or the first
- * attempt carrying that new field would be skipped as a duplicate — the exact
- * failure this module exists to avoid.
+ * SHAPE, not echoed prices — corrected 2026-09-04 after a full session of
+ * production data showed the first version suppressing almost nothing.
+ *
+ * The original signature was `JSON({comboId, patches})`, on the reasoning that
+ * any change at all should be re-attempted so a payload experiment could never
+ * be skipped. That is right about experiments and wrong about this request,
+ * because the patches restate each leg's defining price READ BACK from the
+ * broker — identification, not a change. On a trailing position the ratchet
+ * moves the stop nearly every tick, so the price moved and the signature moved
+ * with it:
+ *
+ *   11:45 stop=39.51   12:02 stop=39.55   12:08 stop=39.97   12:24 stop=40.11
+ *   12:00 stop=39.53   12:06 stop=39.75   12:16 stop=40.10
+ *
+ * Twenty-four refusals after the latch shipped, every one `attempt: 1`. The
+ * latch was behaving exactly as specified; the specification was wrong.
+ *
+ * What the broker's refusal actually depends on is the SHAPE of the request —
+ * which legs, what quantities, what roles, which fields are present, and which
+ * combo group is named. It has nothing to do with where the stop happens to sit,
+ * and the message has never varied across four payload shapes and 100+
+ * refusals. So the signature now carries:
+ *
+ *   - the combo group id (its VALUE — a real id appearing is the experiment);
+ *   - per leg: clientOrderId, quantity, comboType;
+ *   - per leg: the sorted KEY NAMES present, so a patch that grows a field
+ *     still changes the signature and is always re-attempted.
+ *
+ * and deliberately omits the numeric limitPrice / stopPrice VALUES.
+ *
+ * That last pair is the whole correction: keys in, values out. A new field
+ * appearing (`comboType` in #478) changes the key set and is attempted; a stop
+ * ratcheting from 39.51 to 39.53 does not and is suppressed.
  */
 export function resizeAttemptSignature(patches: ReplaceOrderPatch[], comboId: string | undefined): string {
-  return JSON.stringify({ comboId: comboId ?? null, patches });
+  return JSON.stringify({
+    comboId: comboId ?? null,
+    legs: patches.map((p) => ({
+      clientOrderId: p.clientOrderId,
+      quantity: p.quantity,
+      comboType: p.comboType ?? null,
+      // Key NAMES only. A patch gaining a field must re-attempt; the same field
+      // carrying a re-read price must not.
+      keys: Object.keys(p).sort(),
+    })),
+  });
 }
 
 /**

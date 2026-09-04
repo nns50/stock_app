@@ -5245,3 +5245,103 @@ from `autotrade_live_orders` — `LiveOrderMeta` has no such field, which the
 typecheck caught on the first wiring attempt. `positions.sourceIntentId` is the
 route, and it is non-null by the same candidate filter bracket protection already
 applies.
+
+## 2026-09-04 — the naked-position alarm had been checking nothing since 09-01
+
+Found while investigating why `bracket_groups_observed` produced no rows: it
+hangs off `checkLiveBracketProtection`, and that function had no candidates at
+all.
+
+Its filter required `p.sourceIntentId !== null`. Every open live position has it
+null, so `candidates.length === 0` and the function returned **before** calling
+`listWebullOpenOrders` — it did not merely skip those positions, it never asked
+the broker anything.
+
+```
+live stock positions by entry date:
+  2026-07-23:  intent-linked  4   NULL  0
+  ...
+  2026-08-24:  intent-linked  2   NULL  0
+  2026-09-01:  intent-linked  0   NULL  6     <-- flips here
+  2026-09-02:  intent-linked  1   NULL 10
+  2026-09-03:  intent-linked  0   NULL  4
+  2026-09-04:  intent-linked  1   NULL  8
+```
+
+`positions.source_intent_id` is set only when a fill materializes through
+materializeEntryFill's CREATE path. A position ADOPTED from the broker sync
+never gets one, and that is deliberate: a null source_intent_id is itself the
+"orphan, needs linking" signal the adoption path matches on. From 2026-09-01 the
+book flipped to almost entirely adopted rows (`notes: "Imported from Webull"`),
+and the alarm went silent.
+
+The last `live_position_unprotected` event is **2026-08-25**. Ten days of silence
+that read exactly like "no naked positions" and actually meant "nothing was
+eligible to be checked". Worth being precise about severity: positions were NOT
+unprotected — brackets rested at Webull throughout, SMCI ratcheted and IOT's stop
+filled the same day. What was dead is the DETECTOR.
+
+### The fix, and the precedent for it
+
+Adoption does establish a link, just the reverse one: `setLiveOrderPositionId`
+writes `position_id` onto the entry order row. So `entryIntentIdForPosition`
+prefers `source_intent_id` when present and falls back to
+`getLiveEntryOrderForPosition(pos.id)?.intentId`.
+
+This is the SECOND time this exact lookup has cost something. The first is
+recorded in `getLiveEntryOrderForPosition`'s own doc comment: an adopted CTVA
+position failed its stagnation close on 21 consecutive ticks "because the only
+lookup was via source_intent_id". That function was written to fix this disease;
+`checkLiveBracketProtection` was simply never migrated to it. `placeLiveScaleInAddOn`
+had the same weakness in its `riskProfile` lookup — degrading silently to the
+config default rather than the profile the entry was sized under — and is fixed
+here too.
+
+Regression test asserts an adopted position (no `sourceIntentId`, linked only via
+its entry order) is CONSIDERED; reverting the filter to the `source_intent_id`
+form fails it. Verified, not assumed.
+
+### Consequence for the observer
+
+`bracket_groups_observed` could not have fired on the current book. Its
+attribution was also routed through `getIntent(pos.sourceIntentId!)`, null for
+every one of these positions, so it would have recorded
+`attributedByEntryOrderId: false` across the board and looked like the broker ids
+disagreeing rather than a null link. Both now use the either-link lookup.
+
+### Correction, same day: the latch signature was wrong
+
+The latch shipped keyed on `JSON({comboId, patches})` — any change at all
+re-attempts — on the reasoning that a payload experiment must never be
+suppressed. Right about experiments, wrong about this request. The patches
+restate each leg's defining price READ BACK from the broker: identification, not
+a change. On a trailing position the ratchet moves the stop nearly every tick:
+
+```
+11:45 stop=39.51   12:02 stop=39.55   12:08 stop=39.97   12:24 stop=40.11
+12:00 stop=39.53   12:06 stop=39.75   12:16 stop=40.10
+```
+
+Twenty-four refusals after the latch shipped, **every one `attempt: 1`** — the
+signature moved with the stop, so nothing was ever suppressed. (The single
+genuine repeat, at 12:20:09, coincides exactly with deploy #389 completing at
+12:20:09 ET: a restart clearing latches, which is documented behaviour.) The
+latch did what it was told; what it was told was wrong.
+
+Reported to the user as a correction, because the earlier "latch is working"
+claim had been made off a three-minute quiet window rather than the session.
+
+The signature now carries the request's SHAPE: the combo group id's value, and
+per leg the clientOrderId, quantity, comboType, and the sorted KEY NAMES
+present. It omits the numeric `limitPrice` / `stopPrice` values. Keys in, values
+out — a new field appearing (comboType in #478) changes the key set and is
+attempted; a stop ratcheting 39.51 → 39.53 does not and is suppressed.
+
+**`keys` was nearly dead on arrival.** The existing "gains a new field" test used
+`comboType`, which the signature names individually, so deleting
+`Object.keys(p).sort()` left all 13 tests green. A future patch field the
+signature does not name would have been invisible, and the first request
+carrying it skipped as a duplicate — the exact failure the module exists to
+prevent. A test now covers a field the signature does NOT name, and deleting
+`keys` fails it. Same disease as the invariants warn about: a value computed and
+consumed by nothing, caught only by asserting at the consumer.

@@ -56,11 +56,36 @@ describe('resize retry latch', () => {
     expect(shouldSkipResize(589, withId).skip).toBe(false);
   });
 
-  it('ALWAYS attempts after the stop ratchets the leg price', () => {
+  // CORRECTED 2026-09-04. This case originally asserted the opposite — that a
+  // ratcheted stop must re-attempt — and a full session showed that made the
+  // latch useless: SMCI's stop moved 39.51 -> 39.53 -> 39.55 -> 39.75 -> 39.97
+  // -> 40.10 -> 40.11 and produced 24 refusals, every one attempt=1. The price
+  // is an echo the request restates for identification; it is not what the
+  // broker is refusing.
+  it('SUPPRESSES a repeat whose only difference is a ratcheted stop price', () => {
     const before = resizeAttemptSignature(patches(15, 38.59), undefined);
     recordResizeRefusal(589, before);
     const after = resizeAttemptSignature(patches(15, 39.48), undefined);
-    expect(shouldSkipResize(589, after).skip).toBe(false);
+    expect(shouldSkipResize(589, after).skip).toBe(true);
+  });
+
+  it('SUPPRESSES a repeat whose only difference is a re-read take-profit price', () => {
+    const a = resizeAttemptSignature([tp(15), sl(15)], undefined);
+    recordResizeRefusal(589, a);
+    const moved: ReplaceOrderPatch[] = [{ ...tp(15), limitPrice: 41.99 }, sl(15)];
+    expect(shouldSkipResize(589, resizeAttemptSignature(moved, undefined)).skip).toBe(true);
+  });
+
+  // The real-world sequence that made this correction necessary, end to end.
+  it('suppresses a whole ratcheting session but still attempts the new payload', () => {
+    let sig = resizeAttemptSignature(patches(15, 39.51), undefined);
+    recordResizeRefusal(589, sig);
+    for (const stop of [39.53, 39.55, 39.75, 39.97, 40.1, 40.11]) {
+      sig = resizeAttemptSignature(patches(15, stop), undefined);
+      expect(shouldSkipResize(589, sig).skip).toBe(true);
+    }
+    // ...and the moment a real combo group id is carried, it goes through.
+    expect(shouldSkipResize(589, resizeAttemptSignature(patches(15, 40.11), 'GRP-1')).skip).toBe(false);
   });
 
   it('ALWAYS attempts when keepQty changes', () => {
@@ -76,6 +101,22 @@ describe('resize retry latch', () => {
     const bare = resizeAttemptSignature([{ clientOrderId: 'x', quantity: 15 }], undefined);
     recordResizeRefusal(589, bare);
     const richer = resizeAttemptSignature([{ clientOrderId: 'x', quantity: 15, comboType: 'STOP_PROFIT' }], undefined);
+    expect(shouldSkipResize(589, richer).skip).toBe(false);
+  });
+
+  // `keys` must be in the signature. comboType happens to be named individually,
+  // so the test above passes with or without it — deleting `keys` left all 13
+  // green. A future patch field the signature does NOT name would then be
+  // invisible, and the first request carrying it would be skipped as a
+  // duplicate: precisely the failure this module exists to prevent, and exactly
+  // how #478's comboType would have been suppressed had it not been named.
+  it('ALWAYS attempts when a patch gains a field the signature does not name', () => {
+    const bare = resizeAttemptSignature([{ clientOrderId: 'x', quantity: 15, stopPrice: 39.5 }], undefined);
+    recordResizeRefusal(589, bare);
+    const richer = resizeAttemptSignature(
+      [{ clientOrderId: 'x', quantity: 15, stopPrice: 39.5, timeInForce: 'GTC' } as unknown as ReplaceOrderPatch],
+      undefined,
+    );
     expect(shouldSkipResize(589, richer).skip).toBe(false);
   });
 

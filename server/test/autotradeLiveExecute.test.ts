@@ -9,6 +9,11 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
   return {
     ...actual,
     webullPlaceOrder: vi.fn(),
+    // Defaults to the same result the unmocked call already produced in tests
+    // (webullConfigured() is false here), so existing expectations are
+    // unchanged — but it is now overridable by a test that needs the broker to
+    // answer.
+    listWebullOpenOrders: vi.fn(async () => ({ ok: false, orders: [], error: 'Webull is not configured.' })),
     webullOrderStatus,
     webullOrderStatusBatch: batchFromSingle(webullOrderStatus),
   };
@@ -26,7 +31,12 @@ vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) =>
 import { config } from '../src/config';
 import { getProvider } from '../src/providers';
 import { webullAccountState } from '../src/providers/webull/accountState';
-import { webullPlaceOrder, webullOrderStatus, WebullOrderStatus } from '../src/providers/webull/orders';
+import {
+  webullPlaceOrder,
+  webullOrderStatus,
+  listWebullOpenOrders,
+  WebullOrderStatus,
+} from '../src/providers/webull/orders';
 import { initDb, db } from '../src/db';
 import {
   setAutotradeConfig,
@@ -38,7 +48,12 @@ import { setTradingConfig } from '../src/db/trading';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { listPositions, createPosition } from '../src/db/positions';
 import * as positionsDb from '../src/db/positions';
-import { getLiveOrder, listPendingLiveOrders, countLiveAddOns } from '../src/db/autotradeLiveOrders';
+import {
+  getLiveOrder,
+  getLiveEntryOrderForPosition,
+  listPendingLiveOrders,
+  countLiveAddOns,
+} from '../src/db/autotradeLiveOrders';
 import { getIntent, listIntents, transitionIntent } from '../src/db/orders';
 import { UNKNOWN_PLACEMENT_RETIRE_GRACE_MS } from '../src/services/trading/reconcile';
 import { evaluateRiskCheck, RiskCheckResult } from '../src/services/autotrading/riskCheck';
@@ -1415,6 +1430,52 @@ describe('adoptOrphanedLivePositions', () => {
       now,
     );
   }
+
+  // 2026-09-04: bracket protection required source_intent_id, which an ADOPTED
+  // position never has. From 2026-09-01 the live book was almost entirely
+  // adopted (09-01 0/6 intent-linked, 09-02 1/11, 09-03 0/4, 09-04 1/9), so the
+  // filter produced ZERO candidates and returned before ever querying the
+  // broker. The naked-position alarm went quiet for ten days and read exactly
+  // like "nothing is wrong". Adoption does establish the reverse link
+  // (setLiveOrderPositionId), so the lookup must accept EITHER.
+  it('considers an ADOPTED position, which has no sourceIntentId but is linked via its entry order', async () => {
+    await pendingEntryFor('AAPL');
+    insertOrphan('AAPL', ['webull']);
+    expect(adoptOrphanedLivePositions()).toEqual({ adopted: 1 });
+
+    const pos = listPositions({ status: 'open', symbol: 'AAPL' })[0];
+    // The precondition that broke it: no source_intent_id on the adopted row.
+    expect(pos.sourceIntentId).toBeNull();
+    // ...but the entry order does point back at the position.
+    expect(getLiveEntryOrderForPosition(pos.id)?.intentId).toBeGreaterThan(0);
+
+    // Age past the protection grace window, which is measured from created_at.
+    db.prepare('UPDATE positions SET created_at = ? WHERE id = ?').run(Date.now() - 60 * 60 * 1000, pos.id);
+
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    // The broker reports a resting SELL leg for AAPL, so the position reads as
+    // protected. Which verdict it reaches is not the point — REACHING one is.
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({
+      ok: true,
+      orders: [
+        {
+          clientOrderId: 'sl-1',
+          comboOrderId: 'GRP-1',
+          symbol: 'AAPL',
+          side: 'sell',
+          status: 'OPEN',
+          orderType: 'STOP_LOSS',
+          stopPrice: 95,
+          quantity: 10,
+        },
+      ],
+    });
+    const outcomes = await checkLiveBracketProtection();
+    // Reaching an outcome AT ALL is the assertion: before the fix the filter
+    // yielded no candidates and the function returned [] without asking the
+    // broker anything.
+    expect(outcomes.map((o) => o.symbol)).toContain('AAPL');
+  });
 
   it('adopts an orphaned webull-only position that matches a pending autotrade entry, backfilling its missing stop/target', async () => {
     await pendingEntryFor('AAPL'); // stop 95, target 110 (signal() fixture defaults)
