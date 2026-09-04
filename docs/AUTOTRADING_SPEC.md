@@ -4999,3 +4999,76 @@ REPORTS a naked position — it journals `live_position_unprotected` and says to
 re-arm by hand. Today's failure mode is a missed scale-out with the position
 fully protected; that one's is a naked live position. It needs an explicit
 decision, plus a forced close if the re-place fails.
+
+## 2026-09-04 (intraday) — `combo_type` alone is not enough, and the retry loop is now latched
+
+Two findings, one of them a non-result that matters as much as a result.
+
+### The combo-id half of #478 has not run yet
+
+SMCI refused six times between 11:07 and 11:21 ET, all after the 11:01:39 ET
+deploy, and the message is byte-identical to the previous 101:
+
+> The number of take-profit orders and the number of stop-loss orders must be
+> the same.
+
+The new code IS live — each leg now carries its `comboType`:
+
+```json
+"sent": [
+  { "clientOrderId": "df80304c…", "quantity": 15, "limitPrice": 41.56, "comboType": "STOP_PROFIT" },
+  { "clientOrderId": "c8e31a03…", "quantity": 15, "stopPrice":  39.48, "comboType": "STOP_LOSS"   }
+],
+"clientComboOrderId": null
+```
+
+`clientComboOrderId` is **null**, and correctly so. SMCI (position 589) was
+created at 10:41:37 ET, twenty minutes BEFORE the deploy that started persisting
+the group id, so there was no id to read back — exactly what #478 predicted for
+brackets opened before it shipped.
+
+So what these six refusals establish is narrower than it looks: **`combo_type`
+on its own does not satisfy the group check.** Whether the group ID does is
+still untested, because it has never been on the wire. The first post-deploy
+bracket is IOT (position 590, created 11:15:11 ET); its scale-out attempt is the
+real test, and its refusal detail will carry a non-null `clientComboOrderId`
+which simultaneously proves the placement-side plumbing persisted.
+
+Do not read the growing refusal count as accumulating evidence against the combo
+id. It is evidence against `combo_type` alone, repeated.
+
+### The retry loop was inflating that count
+
+`checkLiveEquityScaleOuts` runs every tick, so a triggered position re-attempted
+the resize roughly every two minutes for the rest of its life. Since the refusal
+is deterministic in the request, every retry after the first cost a broker
+round-trip and a journal row and taught us nothing. SMCI: 6 identical refusals
+in 12 minutes. DELL on 2026-09-03: 31 in an hour. The headline "101 refusals"
+was never 101 pieces of evidence — it was three distinct requests in a loop.
+
+`resizeRetryLatch.ts` keys on the REQUEST rather than the position:
+
+```
+signature = JSON({ comboId, patches })
+```
+
+An identical request is skipped without calling the broker. A request that
+differs in ANY way is always attempted. That second half is the design, not a
+nicety — a blanket per-position latch would have suppressed the IOT test above,
+which is the one attempt we actually want. The signature changes when the stop
+ratchets a leg price, when keepQty changes, when the combo id appears, and when
+a patch grows a field it did not carry before.
+
+Four of the eleven tests assert exactly that non-suppression, and all four fail
+if the latch is mutated to ignore the signature — verified, not assumed.
+
+State is per-process, so a deploy clears every latch and each open position gets
+one fresh attempt against the newly deployed payload. That is the wanted
+behaviour from a restart rather than an accident of where the state lives.
+
+Journal consequence, and it is a real one: `live_scale_out_blocked` rows now
+count DISTINCT refused requests, not ticks. The detail carries `attempt` and
+`identicalRetriesSuppressed: true` so a later reader cannot mistake the row
+count for the number of times the condition was hit. The per-tick count is still
+visible in the outcome each sweep returns, which reports how many identical
+retries the latch has absorbed.
