@@ -276,7 +276,9 @@ export function getAutotradeDashboard(): AutotradeDashboard {
   const snapshot = getPaperPortfolioSnapshot();
   const optionsSnapshot = getOptionsPaperPortfolioSnapshot();
   const liveSnapshot = getLivePortfolioSnapshot();
-  const liveOptionsSnapshot = getLiveOptionsPortfolioSnapshot();
+  // null = every account, deliberately: the dashboard reports the whole book.
+  // Anything that GATES an order must pass the trading account instead.
+  const liveOptionsSnapshot = getLiveOptionsPortfolioSnapshot(null);
   const now = new Date();
 
   return {

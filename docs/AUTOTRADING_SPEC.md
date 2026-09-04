@@ -5345,3 +5345,50 @@ carrying it skipped as a duplicate — the exact failure the module exists to
 prevent. A test now covers a field the signature does NOT name, and deleting
 `keys` fails it. Same disease as the invariants warn about: a value computed and
 consumed by nothing, caught only by asserting at the consumer.
+
+## 2026-09-04 — the live options gate was account-blind
+
+`getLiveOptionsPortfolioSnapshot` read `listOpenLiveOptionsPositions()` with no
+filter, while `syncLiveOptionsPositionsFromBroker` 1800 lines below in the same
+file already scoped strictly to one account. So the "max 1 short-dated at a
+time" gate and the open-risk budget counted options positions from **every
+account on the login**.
+
+A cash and a margin account on one Webull login is the ordinary case — the
+equity path's own comment says so, and it scopes accordingly. The operator held
+a SMCI 0DTE call in the CASH account on 2026-09-04 while the loop traded the
+MARGIN account. Had live options been enabled, that contract would have held the
+gate shut against an account it has nothing to do with.
+
+Latent rather than fired: `liveOptionsEnabled` was off, and that holding lived in
+`positions` (a plain `['webull']` broker import) rather than in
+`autotrade_live_options_positions`, which is the table this gate reads. Both
+options tables were empty of open rows. Fixed before it could be reached.
+
+### The parameter is required, and null means "every account"
+
+Not optional — an optional parameter is how the unscoped read got here, and a
+future caller omitting it would silently reintroduce the bug. `null` is
+available and means the whole book, which is right for the dashboard and the
+portfolio-greeks route and wrong for anything gating an order. The execution
+path and the loop's risk seed pass `cfg.liveAccountId`.
+
+### Unassigned rows: the OPPOSITE of the close path, deliberately
+
+Both fail closed; "closed" points in different directions:
+
+| | ambiguity means |
+|---|---|
+| closing a position | **don't** — acting on a row we cannot attribute risks closing someone else's holding |
+| gating a new entry | **do count it** — ignoring it risks opening a second position against exposure we already have |
+
+So this read passes `includeUnassignedAccount: true` while the close path
+deliberately does not. A legacy row with no `account_id` still holds the gate
+shut and still consumes open-risk budget.
+
+Getting this backwards first — excluding unassigned rows here by symmetry with
+the close path — broke the existing "allows only ONE short-dated position at a
+time" test, whose fixture has no account. That test earned its keep.
+
+Regression tests: a cash-account contract does not gate the margin account,
+an unassigned row does, and reverting to the account-blind read fails the first.
