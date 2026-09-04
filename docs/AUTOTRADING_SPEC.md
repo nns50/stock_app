@@ -5308,3 +5308,40 @@ attribution was also routed through `getIntent(pos.sourceIntentId!)`, null for
 every one of these positions, so it would have recorded
 `attributedByEntryOrderId: false` across the board and looked like the broker ids
 disagreeing rather than a null link. Both now use the either-link lookup.
+
+### Correction, same day: the latch signature was wrong
+
+The latch shipped keyed on `JSON({comboId, patches})` — any change at all
+re-attempts — on the reasoning that a payload experiment must never be
+suppressed. Right about experiments, wrong about this request. The patches
+restate each leg's defining price READ BACK from the broker: identification, not
+a change. On a trailing position the ratchet moves the stop nearly every tick:
+
+```
+11:45 stop=39.51   12:02 stop=39.55   12:08 stop=39.97   12:24 stop=40.11
+12:00 stop=39.53   12:06 stop=39.75   12:16 stop=40.10
+```
+
+Twenty-four refusals after the latch shipped, **every one `attempt: 1`** — the
+signature moved with the stop, so nothing was ever suppressed. (The single
+genuine repeat, at 12:20:09, coincides exactly with deploy #389 completing at
+12:20:09 ET: a restart clearing latches, which is documented behaviour.) The
+latch did what it was told; what it was told was wrong.
+
+Reported to the user as a correction, because the earlier "latch is working"
+claim had been made off a three-minute quiet window rather than the session.
+
+The signature now carries the request's SHAPE: the combo group id's value, and
+per leg the clientOrderId, quantity, comboType, and the sorted KEY NAMES
+present. It omits the numeric `limitPrice` / `stopPrice` values. Keys in, values
+out — a new field appearing (comboType in #478) changes the key set and is
+attempted; a stop ratcheting 39.51 → 39.53 does not and is suppressed.
+
+**`keys` was nearly dead on arrival.** The existing "gains a new field" test used
+`comboType`, which the signature names individually, so deleting
+`Object.keys(p).sort()` left all 13 tests green. A future patch field the
+signature does not name would have been invisible, and the first request
+carrying it skipped as a duplicate — the exact failure the module exists to
+prevent. A test now covers a field the signature does NOT name, and deleting
+`keys` fails it. Same disease as the invariants warn about: a value computed and
+consumed by nothing, caught only by asserting at the consumer.
