@@ -4860,3 +4860,61 @@ undefined keys and a missing field is exactly the evidence being collected.
 That is the part that matters regardless of whether the fix lands. Today's
 failure was indistinguishable from the one already fixed, because the journal
 held only order ids and the broker's message. The next one names the field.
+
+---
+
+## 2026-09-03 — SPY and QQQ were in the universe and never once scored
+
+Added 2026-08-27 to give the book an index instrument, after a hand-taken SPY
+0DTE call carried a whole day while the loop screened 34 names and no index ETF.
+Six sessions later, every journal row for both was `skipped_unknown_sector` —
+200 of 200 for each, right through 15:54 on 09-03. Neither was ever scored.
+
+The universe addition itself was fine:
+
+```
+{'symbol': 'SPY', 'name': None, 'sector': None, 'addedAt': 1787849233852}
+{'symbol': 'QQQ', 'name': None, 'sector': None, 'addedAt': 1787849233852}
+```
+
+`classifySector` reads the universe row's own `sector` FIRST and short-circuits.
+With it NULL it fell through to the Yahoo fundamentals fallback, which returns
+no sector or industry for an ETF, so the classification came back `unknown` —
+and the screen skips every unknown, a conservative default that is right for a
+company it cannot verify is not a REIT.
+
+**A NULL sector is normal and self-healing for an ordinary company** — 21 of 528
+rows have one, including names that have traded (ADVB, PGY, NWL, VALE, SKYQ),
+because fundamentals fills it in. For an ETF it can never heal.
+
+### Why the sector could not simply be corrected
+
+`addSymbols` was `INSERT OR IGNORE`, so a POST carrying a sector for an existing
+symbol was discarded silently and returned `added: 0` — indistinguishable from a
+duplicate. There is no update route. The only ways to set it were DELETE and
+re-add, or `replaceUniverse`, which wipes all 528 rows.
+
+So the data fix was unreachable through the API, which is why the condition
+survived six sessions of daily reviews.
+
+`addSymbols` now backfills a NULL `name`/`sector` on an existing row and reports
+`backfilled` alongside `added`. **COALESCE, never overwrite:** a stored value
+always wins, so re-adding a symbol cannot clobber a curated sector with a blank
+or a guess.
+
+### Label ETFs by what they track, never generically
+
+`classify()` tests the sector/industry string against `/real estate|\breit\b/i`.
+A generic "ETF" label on everything would walk VNQ, XLRE or IYR straight past
+the real-estate exclusion — the one thing that filter exists to stop. SPY and
+QQQ take an index label; a real-estate ETF takes "Real Estate" and is correctly
+excluded. `isExcluded()`'s explicit list is a second line of defence and should
+not be the first.
+
+### What this does not settle
+
+Whether an index ETF actually clears a screen built for single-name volatility
+breakouts is still open — `minChangePct` 1 alone is a percent move an index
+rarely makes. Reaching the screen is not the same as passing it. The next
+sessions measure how far SPY and QQQ get now that they are evaluated at all;
+per docs/OPTIONS_TUNING_PLAN.md no gate is loosened to make room for them.
