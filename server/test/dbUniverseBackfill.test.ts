@@ -66,3 +66,61 @@ describe('universe table', () => {
     expect(cols.map((c) => c.name)).toEqual(expect.arrayContaining(['symbol', 'name', 'sector']));
   });
 });
+
+describe('recordLiveOrder — client_combo_order_id', () => {
+  it('stores the combo group id and reads it back', async () => {
+    const { createIntent } = await import('../src/db/orders');
+    const { recordLiveOrder, getLiveOrder } = await import('../src/db/autotradeLiveOrders');
+    const rec = createIntent(
+      {
+        symbol: 'ZZCMB',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 1,
+        orderType: 'limit',
+        limitPrice: 10,
+      },
+      `cid-${Date.now()}`,
+    );
+    // The whole point: a modify cannot name its combo group unless placement
+    // kept the id it minted. buildOrderRequest used to spread it into the
+    // request body and drop it.
+    recordLiveOrder({
+      intentId: rec.id,
+      symbol: 'ZZCMB',
+      stopPrice: 9,
+      targetPrice: 12,
+      riskAmount: 1,
+      riskProfile: 'balanced',
+      clientComboOrderId: 'COMBO-ABC',
+    });
+    expect(getLiveOrder(rec.id)?.clientComboOrderId).toBe('COMBO-ABC');
+  });
+
+  it('is null when the order carried no bracket', async () => {
+    const { createIntent } = await import('../src/db/orders');
+    const { recordLiveOrder, getLiveOrder } = await import('../src/db/autotradeLiveOrders');
+    const rec = createIntent(
+      {
+        symbol: 'ZZCMB2',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 1,
+        orderType: 'limit',
+        limitPrice: 10,
+      },
+      `cid2-${Date.now()}`,
+    );
+    recordLiveOrder({
+      intentId: rec.id,
+      symbol: 'ZZCMB2',
+      stopPrice: 9,
+      targetPrice: 12,
+      riskAmount: 1,
+      riskProfile: 'balanced',
+    });
+    expect(getLiveOrder(rec.id)?.clientComboOrderId).toBeNull();
+  });
+});

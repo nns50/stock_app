@@ -1012,10 +1012,16 @@ describe('checkLiveEquityScaleOuts', () => {
     // broker. Batching alone was NOT enough: the quantity-only version of this
     // call was refused with the same OCO-balance message 9 times on
     // 2026-09-03, because nothing in it said which leg was which.
-    expect(mockReplaceOrders).toHaveBeenCalledWith('ACC1', [
-      { clientOrderId: 'STOP-1', quantity: keep, stopPrice: 96 },
-      { clientOrderId: 'TGT-1', quantity: keep, limitPrice: 130 },
-    ]);
+    expect(mockReplaceOrders).toHaveBeenCalledWith(
+      'ACC1',
+      [
+        { clientOrderId: 'STOP-1', quantity: keep, stopPrice: 96, comboType: 'STOP_LOSS' },
+        { clientOrderId: 'TGT-1', quantity: keep, limitPrice: 130, comboType: 'STOP_PROFIT' },
+      ],
+      // The combo group id is the third argument — undefined for a bracket
+      // opened before it was persisted, which is every pre-2026-09-04 row.
+      undefined,
+    );
     // ...and the sell happened AFTER it. This ordering is the difference
     // between a scale-out and an accidental short.
     const lastReplace = Math.max(...mockReplaceOrders.mock.invocationCallOrder);

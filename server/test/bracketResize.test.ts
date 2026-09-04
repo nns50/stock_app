@@ -79,9 +79,13 @@ describe('buildBracketResizePatches', () => {
   // ratchet's own single-leg modify carries stop_price and was accepted 6/6.
   it('restates each leg’s DEFINING price alongside the new quantity', () => {
     const out = buildBracketResizePatches([tp(), sl()], 4);
+    // combo_type names each leg's ROLE. Added 2026-09-04 after the
+    // price-restating payload was also refused: the reference lists combo_type
+    // as required on an order, and the broker's complaint is precisely that it
+    // cannot tell the take-profit from the stop-loss.
     expect(out).toEqual([
-      { clientOrderId: 'TGT-1', quantity: 4, limitPrice: 110 },
-      { clientOrderId: 'STOP-1', quantity: 4, stopPrice: 96 },
+      { clientOrderId: 'TGT-1', quantity: 4, limitPrice: 110, comboType: 'STOP_PROFIT' },
+      { clientOrderId: 'STOP-1', quantity: 4, stopPrice: 96, comboType: 'STOP_LOSS' },
     ]);
   });
 
@@ -92,8 +96,12 @@ describe('buildBracketResizePatches', () => {
   });
 
   it('resizes a lone surviving leg — a filled target legitimately leaves one', () => {
-    expect(buildBracketResizePatches([sl()], 2)).toEqual([{ clientOrderId: 'STOP-1', quantity: 2, stopPrice: 96 }]);
-    expect(buildBracketResizePatches([tp()], 2)).toEqual([{ clientOrderId: 'TGT-1', quantity: 2, limitPrice: 110 }]);
+    expect(buildBracketResizePatches([sl()], 2)).toEqual([
+      { clientOrderId: 'STOP-1', quantity: 2, stopPrice: 96, comboType: 'STOP_LOSS' },
+    ]);
+    expect(buildBracketResizePatches([tp()], 2)).toEqual([
+      { clientOrderId: 'TGT-1', quantity: 2, limitPrice: 110, comboType: 'STOP_PROFIT' },
+    ]);
   });
 
   it('refuses a pair that is not one of each — two stops is not a bracket', () => {
