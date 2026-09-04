@@ -37,8 +37,10 @@ universeRouter.post(
   '/',
   asyncHandler(async (req, res) => {
     const body = parseBody(symbolsBody, req);
-    const added = addSymbols(normalize(body.symbols));
-    res.json({ added, symbols: listUniverse() });
+    const { added, backfilled } = addSymbols(normalize(body.symbols));
+    // backfilled is reported so a caller correcting a NULL sector on an
+    // existing row sees that it landed — added:0 alone reads as a no-op.
+    res.json({ added, backfilled, symbols: listUniverse() });
   }),
 );
 
