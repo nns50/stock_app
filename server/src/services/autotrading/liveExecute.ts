@@ -62,6 +62,13 @@ import { evaluateStagnation } from './stagnationExit';
 import { evaluateEndOfDayFlatten, evaluateEntryCutoff } from './endOfDayFlatten';
 import { evaluateStopAdjust } from './stopAdjust';
 import { evaluateScaleOut } from './scaleOut';
+import {
+  resizeAttemptSignature,
+  shouldSkipResize,
+  recordResizeRefusal,
+  clearResizeLatch,
+  pruneResizeLatches,
+} from './resizeRetryLatch';
 import { fetchTodayVwap } from './vwap';
 import { detectLevels } from '../../indicators/levels';
 import { reentryCooldownFor } from './reentryCooldown';
@@ -2720,6 +2727,9 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
 
   const open = listAutotradeLivePositions({ status: 'open' });
   if (open.length === 0) return [];
+  // Closed positions can never resize again; drop their latches so the map
+  // tracks the open book rather than every position the process has seen.
+  pruneResizeLatches(open.map((p) => p.id));
   const pendingExitPositionIds = new Set(
     listPendingLiveOrders()
       .filter((o) => o.role === 'exit' && o.positionId !== null)
@@ -2881,11 +2891,29 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
     // 2026-09-04; null for any bracket opened before that, which simply sends
     // the request without it exactly as before.
     const comboId = getLiveEntryOrderForPosition(pos.id)?.clientComboOrderId ?? undefined;
+
+    // A refusal here is deterministic in the request, so retrying an IDENTICAL
+    // one every tick adds a broker round-trip and a journal row and no
+    // information. Skip only an exact repeat — any change to the patches or the
+    // group id is attempted, so a payload experiment is never suppressed.
+    const signature = resizeAttemptSignature(patches, comboId);
+    const repeat = shouldSkipResize(pos.id, signature);
+    if (repeat.skip) {
+      outcomes.push({
+        symbol,
+        positionId: pos.id,
+        requested: false,
+        reason: `bracket resize refused ${repeat.priorRefusals}x with this same request — not retrying until it changes`,
+      });
+      continue;
+    }
+
     const replaced = await webullReplaceOrders(accountId, patches, comboId);
     const reduceFailed = replaced.ok
       ? null
       : `${resting.map((l) => l.clientOrderId).join(', ')}: ${replaced.error ?? 'replace failed'}`;
     if (reduceFailed) {
+      const attempt = recordResizeRefusal(pos.id, signature);
       logAutotradeEvent({
         symbol,
         stage: 'execution',
@@ -2893,6 +2921,12 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
         detail: {
           positionId: pos.id,
           reason: `Could not reduce the resting bracket: ${reduceFailed}`,
+          // Attempt number for THIS request. Identical retries after it are
+          // skipped and never journaled, so a reader must not take the row
+          // count as the number of ticks that hit this — it is the number of
+          // DISTINCT requests refused.
+          attempt,
+          identicalRetriesSuppressed: true,
           // The shapes we sent, so a repeat refusal names the field the broker
           // is unhappy with instead of just repeating its message back at us.
           sent: patches,
@@ -2905,6 +2939,11 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
       outcomes.push({ symbol, positionId: pos.id, requested: false, reason: reduceFailed });
       continue;
     }
+
+    // The resize was ACCEPTED, so the latch has nothing left to suppress. Clear
+    // it rather than leaving a stale signature that could skip a later partial
+    // on this same position.
+    clearResizeLatch(pos.id);
 
     // --- 3. and only now sell the difference -------------------------------
     const buffer = 1 + (exitSide === 'buy' ? 1 : -1) * (MARKETABLE_LIMIT_BUFFER_PCT / 100);
