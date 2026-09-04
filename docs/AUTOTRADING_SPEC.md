@@ -4918,3 +4918,84 @@ breakouts is still open — `minChangePct` 1 alone is a percent move an index
 rarely makes. Reaching the screen is not the same as passing it. The next
 sessions measure how far SPY and QQQ get now that they are evaluated at all;
 per docs/OPTIONS_TUNING_PLAN.md no gate is loosened to make room for them.
+
+---
+
+## 2026-09-04 — the price-restating payload was refused too
+
+First session with #474/#475/#476 live. The diagnostic did its job on the very
+first refusal, at 09:37 ET:
+
+```
+sent: [
+  {"clientOrderId": "43aa…", "quantity": 31, "limitPrice": 43.89},   take-profit
+  {"clientOrderId": "e425…", "quantity": 31, "stopPrice":  42.09}    stop-loss
+]
+reason: "…The number of take-profit orders and the number of stop-loss orders
+         must be the same."
+```
+
+Leg classification worked — one leg took `limitPrice`, the other `stopPrice`,
+`keepQty` 31 of 92 is a correct 67% partial, the pair is balanced and batched in
+one request, and the shape matches the vendor's own `modify_orders` sample.
+**Everything on this side was right and the broker still refused it.** The
+hypothesis that restating the defining price is what the group check wants is
+therefore wrong.
+
+Without the `sent` array this would have been an identical error string for the
+third session running, and the natural conclusion would have been "the fix did
+not deploy". That is what the diagnostic bought.
+
+### The dichotomy the journal now shows
+
+| call | modifies | result across 3 sessions |
+| --- | --- | --- |
+| ratchet | `stop_price` | **9 accepted, 0 refused** |
+| scale-out | `quantity` | **0 accepted, 101 refused** |
+
+Price modifies on a resting bracket leg work. Quantity modifies have never
+worked, under three payload shapes: leg-by-leg (89), batched quantity-only (9),
+batched with each leg's defining price (3).
+
+### What is being tried next, and why
+
+`combo_type` is listed in the reference's Key Parameters as required on an
+order, with `client_combo_order_id` required alongside whenever combo_type is
+not NORMAL. Every modify this client has ever sent omitted **both** — and the
+broker's complaint is precisely that it cannot tell one leg's role from the
+other's, which is what `combo_type` states.
+
+So each modify entry now carries `combo_type` (STOP_PROFIT / STOP_LOSS, from the
+classification that already works), and the request carries
+`client_combo_order_id` at the REQUEST level — a sibling of `modify_orders`,
+where every documented combo request puts it, never inside a leg.
+
+Getting that id required keeping it: `buildOrderRequest` mints one per bracket
+and it was spread straight into the place request and discarded.
+`webullPlaceOrder` now returns it, `autotrade_live_orders.client_combo_order_id`
+stores it, and the scale-out reads it back for the position. It is stored on the
+AMBIGUOUS placement path too — an order whose outcome is unknown may well have
+reached the broker, and a later modify would still need its group.
+
+Brackets opened before this deploys have no id and send the request without one,
+exactly as before. Only the `combo_type` half applies to them.
+
+### A test gap this exposed, of the exact kind CLAUDE.md warns about
+
+`bracketResize.test.ts` and `liveEquityTimeExit.test.ts` both pin the PATCH
+objects. Deleting the two lines that copy `comboType` and `clientComboOrderId`
+into the HTTP body left **all 77 of those tests green** — a field the broker
+never receives, invisible to every test that exercises the thing which builds
+it. `webullReplaceBody.test.ts` now asserts the request body itself, and both
+new cases were verified to fail with those lines removed.
+
+### If this one is refused too
+
+The remaining explanation is that quantity modification of a combo leg is simply
+unsupported, and the route is cancel-and-replace. That carries a real cost and
+is not to be taken silently: between cancelling the legs and placing the
+replacement the position is UNPROTECTED, and `checkLiveBracketProtection` only
+REPORTS a naked position — it journals `live_position_unprotected` and says to
+re-arm by hand. Today's failure mode is a missed scale-out with the position
+fully protected; that one's is a naked live position. It needs an explicit
+decision, plus a forced close if the re-place fails.

@@ -917,6 +917,18 @@ function migrate(): void {
     db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN entry_components TEXT');
   }
 
+  // 2026-09-04: the `client_combo_order_id` this client generated for the
+  // bracket. buildOrderRequest mints one per bracket and it used to be spread
+  // straight into the place request and discarded, so a later modify had no way
+  // to name the combo group — and every scale-out attempt (101 of them) was
+  // refused with "The number of take-profit orders and the number of stop-loss
+  // orders must be the same". The reference lists client_combo_order_id as
+  // required whenever combo_type is not NORMAL.
+  const aloComboCols = db.prepare('PRAGMA table_info(autotrade_live_orders)').all() as { name: string }[];
+  if (!aloComboCols.some((c) => c.name === 'client_combo_order_id')) {
+    db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN client_combo_order_id TEXT');
+  }
+
   const aloEqCols = db.prepare('PRAGMA table_info(autotrade_live_orders)').all() as { name: string }[];
   if (!aloEqCols.some((c) => c.name === 'account_id')) {
     db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN account_id TEXT');

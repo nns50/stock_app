@@ -799,6 +799,10 @@ export async function attemptLiveEntry(
     marketRegime,
     marketAtrPct,
     entryVwap,
+    // The combo group id this client minted for the bracket. Stored on BOTH
+    // paths below — including the ambiguous one, where the order may well have
+    // reached the broker and a later modify would still need to name its group.
+    clientComboOrderId: broker.clientComboOrderId ?? null,
   };
   if (!broker.ok && broker.ambiguous) {
     // We do NOT know whether this order reached the broker, so it must not be
@@ -2873,7 +2877,11 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
       });
       continue;
     }
-    const replaced = await webullReplaceOrders(accountId, patches);
+    // The combo group id, when we have one. Persisted at placement since
+    // 2026-09-04; null for any bracket opened before that, which simply sends
+    // the request without it exactly as before.
+    const comboId = getLiveEntryOrderForPosition(pos.id)?.clientComboOrderId ?? undefined;
+    const replaced = await webullReplaceOrders(accountId, patches, comboId);
     const reduceFailed = replaced.ok
       ? null
       : `${resting.map((l) => l.clientOrderId).join(', ')}: ${replaced.error ?? 'replace failed'}`;
@@ -2888,6 +2896,9 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
           // The shapes we sent, so a repeat refusal names the field the broker
           // is unhappy with instead of just repeating its message back at us.
           sent: patches,
+          // Which group id accompanied the request, so a repeat refusal says
+          // whether it was sent at all rather than leaving that to be inferred.
+          clientComboOrderId: comboId ?? null,
         },
         riskProfile: cfg.riskProfile,
       });

@@ -425,6 +425,12 @@ export interface WebullPlaceResult {
   ok: boolean;
   /** The broker's order id, once placed. */
   orderId?: string;
+  /** The `client_combo_order_id` this client GENERATED for a bracket, returned
+   *  so the caller can persist it. buildOrderRequest mints one per bracket and
+   *  it was previously spread straight into the request body and lost — which
+   *  left no way to name the combo group on a later modify. Undefined for a
+   *  plain (non-combo) order. */
+  clientComboOrderId?: string;
   raw?: unknown;
   error?: string;
   /** The placement's outcome is UNKNOWN, not known-rejected: the request may or
@@ -459,8 +465,9 @@ export async function webullPlaceOrder(
   isShort = false,
 ): Promise<WebullPlaceResult> {
   if (!webullConfigured()) return { ok: false, error: 'Webull is not configured.' };
+  const request = buildOrderRequest(intent, clientOrderId, isShort);
   const r = await webullClient().call('POST', '/openapi/trade/order/place', {
-    body: { account_id: accountId, ...buildOrderRequest(intent, clientOrderId, isShort) },
+    body: { account_id: accountId, ...request },
     surface: 'trade',
     // Never transparently retry a placement — a lost response could hide a fill,
     // and a retry would double-submit. Reconcile against broker state instead.
@@ -480,7 +487,12 @@ export async function webullPlaceOrder(
       ambiguous: r.status === 0 || r.status === 429 || r.status >= 500,
     };
   }
-  return { ok: true, orderId: pickOrderId(r.data), raw: r.data };
+  return {
+    ok: true,
+    orderId: pickOrderId(r.data),
+    clientComboOrderId: request.client_combo_order_id,
+    raw: r.data,
+  };
 }
 
 /** One sub-order within a combo (bracket MASTER/STOP_PROFIT/STOP_LOSS, or a
@@ -952,8 +964,8 @@ export function buildBracketResizePatches(legs: WebullOpenOrder[], quantity: num
     const kind = exitLegKind(o);
     if (!o.clientOrderId || !kind) return null;
     return kind === 'tp'
-      ? { clientOrderId: o.clientOrderId, quantity, limitPrice: o.limitPrice }
-      : { clientOrderId: o.clientOrderId, quantity, stopPrice: o.stopPrice };
+      ? { clientOrderId: o.clientOrderId, quantity, limitPrice: o.limitPrice, comboType: 'STOP_PROFIT' }
+      : { clientOrderId: o.clientOrderId, quantity, stopPrice: o.stopPrice, comboType: 'STOP_LOSS' };
   };
   if (legs.length === 1) {
     const only = patch(legs[0]!);
@@ -1130,6 +1142,18 @@ export async function webullReplaceOrder(
 /** One order's worth of modification, for the batch form below. */
 export interface ReplaceOrderPatch extends ReplacePatch {
   clientOrderId: string;
+  /**
+   * The leg's role in its combo — STOP_PROFIT or STOP_LOSS.
+   *
+   * Added 2026-09-04, after a third payload shape was refused. The reference's
+   * Key Parameters table lists `combo_type` as REQUIRED on an order, with
+   * `client_combo_order_id` required alongside it whenever combo_type is not
+   * NORMAL. Every modify this client has ever sent omitted both, and the broker
+   * has answered all 101 attempts with "The number of take-profit orders and
+   * the number of stop-loss orders must be the same" — a complaint about not
+   * being able to tell the legs apart, which is exactly what combo_type says.
+   */
+  comboType?: string;
 }
 
 /**
@@ -1155,18 +1179,28 @@ export interface ReplaceOrderPatch extends ReplacePatch {
 export async function webullReplaceOrders(
   accountId: string,
   patches: ReplaceOrderPatch[],
+  /** The combo group these legs belong to. Sent at the REQUEST level, a sibling
+   *  of `modify_orders`, which is where every documented combo request puts it
+   *  — never on the individual leg. Omitted when unknown, since sending a wrong
+   *  or invented id is worse than sending none. */
+  clientComboOrderId?: string,
 ): Promise<WebullReplaceResult> {
   if (!webullConfigured()) return { ok: false, error: 'Webull is not configured.' };
   if (patches.length === 0) return { ok: false, error: 'No orders to replace.' };
   const modifyOrders = patches.map((patch) => {
     const modify: Record<string, string> = { client_order_id: patch.clientOrderId };
+    if (patch.comboType !== undefined) modify.combo_type = patch.comboType;
     if (patch.quantity !== undefined) modify.quantity = String(patch.quantity);
     if (patch.limitPrice !== undefined) modify.limit_price = priceStr(patch.limitPrice);
     if (patch.stopPrice !== undefined) modify.stop_price = priceStr(patch.stopPrice);
     return modify;
   });
   const r = await webullClient().call('POST', '/openapi/trade/order/replace', {
-    body: { account_id: accountId, modify_orders: modifyOrders },
+    body: {
+      account_id: accountId,
+      ...(clientComboOrderId ? { client_combo_order_id: clientComboOrderId } : {}),
+      modify_orders: modifyOrders,
+    },
     surface: 'trade',
     // A modify is a state change on a live order; don't blind-retry a lost
     // response (the first may have applied). Reconcile instead.

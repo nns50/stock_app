@@ -47,6 +47,10 @@ export interface LiveOrderMeta {
    *  at materialization, exactly like grade. Null for exit/legacy rows. */
   entryScore: number | null;
   entryComponents: Record<string, number> | null;
+  /** The client_combo_order_id this client generated for the bracket, so a
+   *  later modify can name the combo group. Null for pre-2026-09-04 rows and
+   *  for orders placed without a bracket. */
+  clientComboOrderId: string | null;
   marketRegime: string | null;
   marketAtrPct: number | null;
   /** Session VWAP at placement (2026-08-22 observer), carried to
@@ -70,6 +74,7 @@ interface Row {
   grade: string | null;
   entry_score: number | null;
   entry_components: string | null;
+  client_combo_order_id: string | null;
   market_regime: string | null;
   market_atr_pct: number | null;
   entry_vwap: number | null;
@@ -90,6 +95,7 @@ function mapRow(r: Row): LiveOrderMeta {
     addonOfPositionId: r.addon_of_position_id ?? null,
     grade: r.grade ?? null,
     entryScore: r.entry_score ?? null,
+    clientComboOrderId: r.client_combo_order_id ?? null,
     entryComponents: (() => {
       if (!r.entry_components) return null;
       try {
@@ -127,11 +133,12 @@ export function recordLiveOrder(input: {
   marketRegime?: string | null;
   marketAtrPct?: number | null;
   entryVwap?: number | null;
+  clientComboOrderId?: string | null;
 }): LiveOrderMeta {
   const now = Date.now();
   db.prepare(
-    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, grade, entry_score, entry_components, market_regime, market_atr_pct, entry_vwap, created_at)
-     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, grade, entry_score, entry_components, market_regime, market_atr_pct, entry_vwap, client_combo_order_id, created_at)
+     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.intentId,
     input.symbol.toUpperCase(),
@@ -146,6 +153,7 @@ export function recordLiveOrder(input: {
     input.marketRegime ?? null,
     input.marketAtrPct ?? null,
     input.entryVwap ?? null,
+    input.clientComboOrderId ?? null,
     now,
   );
   return getLiveOrder(input.intentId)!;
