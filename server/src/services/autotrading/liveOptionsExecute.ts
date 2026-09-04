@@ -234,9 +234,48 @@ export interface LiveOptionsPortfolioSnapshot {
  *  autotrade_live_options_positions instead. Consumed by
  *  runLiveOptionsExecution()'s own batch below, and (from Step D onward) by
  *  the monitoring dashboard. */
-export function getLiveOptionsPortfolioSnapshot(): LiveOptionsPortfolioSnapshot {
+export function getLiveOptionsPortfolioSnapshot(
+  /**
+   * The account this snapshot is ABOUT. Required, not optional, so every call
+   * site has to decide — an optional parameter is how the unscoped read got
+   * here, and a future caller omitting it would silently reintroduce the bug.
+   *
+   * Pass null ONLY to mean "every account", which is right for a display that
+   * shows the whole book and wrong for anything that gates an order.
+   *
+   * WHY THIS EXISTS (2026-09-04). The open-position read was account-blind,
+   * while the close path 1800 lines below already scoped strictly to one
+   * account for exactly the reason its own comment gives. So the "max 1
+   * short-dated at a time" gate and the open-risk budget both counted
+   * positions from EVERY account on the login. A cash and a margin account on
+   * one Webull login is the ordinary case — the operator held a SMCI 0DTE in
+   * the cash account on 2026-09-04 while the loop traded the margin account —
+   * and a contract in an account the loop does not trade would have suppressed
+   * entries in the account it does. Latent rather than fired: liveOptionsEnabled
+   * was off and that holding lived in `positions`, not this table. Fixed before
+   * it could be reached rather than after.
+   */
+  accountId: string | null,
+): LiveOptionsPortfolioSnapshot {
   const today = etDateStr();
-  const openPositions = listOpenLiveOptionsPositions();
+  // This account's rows AND unassigned ones — and note that this is the
+  // OPPOSITE of what syncLiveOptionsPositionsFromBroker does 1800 lines below,
+  // deliberately. Both fail closed; "closed" points in different directions:
+  //
+  //   closing a position  — acting on a row we cannot attribute risks closing
+  //                         someone else's holding, so ambiguity means DON'T.
+  //   gating a new entry  — ignoring a row we cannot attribute risks opening
+  //                         a second position against exposure we already
+  //                         have, so ambiguity means DO count it.
+  //
+  // A legacy row with no account_id must therefore still hold the "max 1 at a
+  // time" gate shut and still consume open-risk budget. Getting this backwards
+  // first — excluding unassigned rows here by symmetry with the close path —
+  // made an existing test fail, which is exactly what that test is for.
+  const openPositions =
+    accountId === null
+      ? listOpenLiveOptionsPositions()
+      : listOpenLiveOptionsPositions({ accountId, includeUnassignedAccount: true });
   const recent = listLiveOptionsPositions({ limit: 500 });
   const closedTodayChrono = recent
     .filter((p) => p.status === 'closed' && p.exitAt !== null && etDateStr(p.exitAt) === today)
@@ -738,7 +777,9 @@ export interface LiveOptionsRiskSeed {
 }
 
 export function liveOptionsSeedForEquity(
-  snapshot: ReturnType<typeof getLiveOptionsPortfolioSnapshot> = getLiveOptionsPortfolioSnapshot(),
+  /** No default: this seeds a RISK decision, so the account must be chosen by
+   *  the caller rather than silently defaulting to every account. */
+  snapshot: ReturnType<typeof getLiveOptionsPortfolioSnapshot>,
 ): LiveOptionsRiskSeed {
   return {
     dailyPnl: snapshot.dailyPnl,
@@ -765,7 +806,8 @@ export async function runLiveOptionsExecution(
   // equity paths get from their snapshots (methodSizing.ts).
   const methodMultipliers = journalMethodMultipliers(cfg);
 
-  const optSnapshot = getLiveOptionsPortfolioSnapshot();
+  // The account this loop actually trades — the gate below refuses on it.
+  const optSnapshot = getLiveOptionsPortfolioSnapshot(cfg.liveAccountId ?? null);
   const eqSnapshot = getLivePortfolioSnapshot();
 
   const dailyPnl = optSnapshot.dailyPnl + eqSnapshot.dailyPnl;

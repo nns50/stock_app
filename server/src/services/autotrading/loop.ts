@@ -33,6 +33,7 @@ import {
   reconcileLiveOptionsOrders,
   syncLiveOptionsPositionsFromBroker,
   liveOptionsSeedForEquity,
+  getLiveOptionsPortfolioSnapshot,
 } from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures, maybeAlertLiveAmbiguity } from './liveFailureAlert';
 import { reanchorLiveCapsIfDrifted } from './liveCapsReanchor';
@@ -829,7 +830,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         // exactly as the paper batch is seeded from the options paper book just
         // above. The live options batch already folds equity in the other
         // direction; this closes the one-way gap.
-        liveOptionsSeedForEquity(),
+        liveOptionsSeedForEquity(getLiveOptionsPortfolioSnapshot(getAutotradeConfig().liveAccountId ?? null)),
         regimeLabel,
       );
       summary.liveEntriesOpened = liveOutcomes.filter((o) => o.ok).length;

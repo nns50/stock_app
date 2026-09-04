@@ -32,6 +32,17 @@ vi.mock('../src/services/autotrading/liveOptionsExecute', () => ({
   // EQUITY batch's risk gates; neutral here so these tests keep asserting the
   // wiring they are about.
   liveOptionsSeedForEquity: vi.fn(() => ({ dailyPnl: 0, consecutiveLosses: 0, tradesToday: 0 })),
+  // The loop reads this to scope the options seed to the account it trades
+  // (2026-09-04 account-scoping fix); neutral here for the same reason.
+  getLiveOptionsPortfolioSnapshot: vi.fn(() => ({
+    today: '2026-09-04',
+    openPositions: [],
+    openRisk: 0,
+    openPositionsCount: 0,
+    dailyPnl: 0,
+    consecutiveLosses: 0,
+    tradesToday: 0,
+  })),
 }));
 vi.mock('../src/providers/webull/positions', () => ({ runWebullPositionsSync: vi.fn() }));
 // Deterministic regime for the at-entry-context threading assertions below —

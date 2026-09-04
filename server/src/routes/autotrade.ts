@@ -1888,7 +1888,8 @@ autotradeRouter.get(
   '/portfolio-greeks',
   asyncHandler(async (_req, res) => {
     const paperOptions = getOptionsPaperPortfolioSnapshot().openPositions;
-    const liveOptions = getLiveOptionsPortfolioSnapshot().openPositions;
+    // null = every account: portfolio greeks describe the whole book.
+    const liveOptions = getLiveOptionsPortfolioSnapshot(null).openPositions;
     res.json(await computeAutotradeOptionsGreeks(paperOptions, liveOptions));
   }),
 );

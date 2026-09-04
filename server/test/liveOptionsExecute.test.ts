@@ -708,10 +708,78 @@ describe('getLiveOptionsPortfolioSnapshot', () => {
       riskProfile: 'MODERATE',
       rationale: 'fixture',
     });
-    const snap = getLiveOptionsPortfolioSnapshot();
+    const snap = getLiveOptionsPortfolioSnapshot(null);
     expect(snap.openPositionsCount).toBe(1);
     expect(snap.openRisk).toBe(600);
     expect(snap.dailyPnl).toBe(0); // nothing closed
+  });
+
+  // 2026-09-04: the open-position read was account-blind while the close path
+  // in the same file scoped strictly to one account. So the "max 1 short-dated
+  // at a time" gate and the open-risk budget counted positions from EVERY
+  // account on the login. A cash and a margin account on one Webull login is
+  // the ordinary case, and a contract in an account the loop does not trade
+  // would have suppressed entries in the account it does.
+  it('counts only the named account, so another account cannot gate this one', () => {
+    createLiveOptionsPosition({
+      symbol: 'SMCI',
+      side: 'call',
+      contractSymbol: 'SMCI-cash',
+      strike: 41,
+      expiration: '2026-09-04',
+      quantity: 4,
+      entryPrice: 0.19,
+      riskAmount: 76,
+      riskProfile: 'MODERATE',
+      rationale: 'held in the CASH account',
+      accountId: 'CASH-ACCT',
+    });
+    createLiveOptionsPosition({
+      symbol: 'AAPL',
+      side: 'call',
+      contractSymbol: 'AAPL-margin',
+      strike: 100,
+      expiration: '2026-09-18',
+      quantity: 1,
+      entryPrice: 2,
+      riskAmount: 200,
+      riskProfile: 'MODERATE',
+      rationale: 'the account the loop trades',
+      accountId: 'MARGIN-ACCT',
+    });
+
+    // The trading account sees only its own -> the max-1 gate stays open for it.
+    const margin = getLiveOptionsPortfolioSnapshot('MARGIN-ACCT');
+    expect(margin.openPositionsCount).toBe(1);
+    expect(margin.openRisk).toBe(200);
+
+    const cash = getLiveOptionsPortfolioSnapshot('CASH-ACCT');
+    expect(cash.openPositionsCount).toBe(1);
+    expect(cash.openRisk).toBe(76);
+
+    // null still means "every account", for displays that report the whole book.
+    expect(getLiveOptionsPortfolioSnapshot(null).openPositionsCount).toBe(2);
+  });
+
+  // The OPPOSITE of the close path, deliberately. Both fail closed, but in
+  // different directions: refusing to CLOSE an unattributable row protects
+  // someone else's holding, while refusing to COUNT one would let a second
+  // position open against exposure we already have. A gate counts it.
+  it('counts an unassigned row against a named account, so it still gates', () => {
+    createLiveOptionsPosition({
+      symbol: 'NVDA',
+      side: 'call',
+      contractSymbol: 'NVDA-legacy',
+      strike: 500,
+      expiration: '2026-09-18',
+      quantity: 1,
+      entryPrice: 1,
+      riskAmount: 100,
+      riskProfile: 'MODERATE',
+      rationale: 'legacy row with no account',
+    });
+    expect(getLiveOptionsPortfolioSnapshot('MARGIN-ACCT').openPositionsCount).toBe(1);
+    expect(getLiveOptionsPortfolioSnapshot(null).openPositionsCount).toBe(1);
   });
 });
 
