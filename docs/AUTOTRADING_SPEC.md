@@ -5483,3 +5483,55 @@ Two brackets placed at entry — 67% with a 0.25R target, 33% with the full targ
 whether the broker accepts two simultaneous OTOCO groups on one symbol, which a
 one-share test settles. **Turn this flag on only if that answer is no.** It is
 built so the decision is available, not because it is the right one.
+
+## 2026-09-04 — exit geometry: the target HOLDS, and the real lever is elsewhere
+
+Operator decision, recorded so a later review does not re-litigate it: **leave
+`targetRMultiple` at 2.0 until there are 20 winning trades with excursion data.**
+
+### First, a correction the reviews should stop repeating
+
+The post-close routine's prompt says "breakevenTriggerRMultiple and
+trailStartRMultiple are both 1.0R". That is STALE. Live config is:
+
+```
+partialExitRMultiple  0.25    partialExitPct  67
+breakevenTrigger      0.25    trailStart/Stop 0.5 / 0.5
+targetRMultiple       2.0
+```
+
+The claim that "the protective apparatus sits above where these trades live" was
+true of the pre-recalibration config and is no longer true of breakeven or the
+trail. Only the TARGET is still misaligned.
+
+### The geometry is calibrated; it does not execute
+
+A 0.25R partial against a 0.32R median intraday peak is the right shape — it
+would fire on **13 of 18** trades. The breakeven ratchet at 0.25R demonstrably
+works (36 ratchets). The scale-out has **never executed once in 141 attempts**.
+
+Counterfactual over the 18 intraday trades with excursion data:
+
+```
+ACTUAL                      sum +1.06R   avg +0.059R   wins  9/18
+WITH the scale-out working  sum +1.76R   avg +0.098R   wins 12/18
+difference                      +0.70R        +0.039R per trade
+```
+
+Three losers become winners. **Fixing the scale-out IS the exit-geometry fix**,
+it needs no larger sample, and it is what the two-lot OTOCO test unlocks.
+
+### Why the target waits
+
+`autoTuneExitsEnabled` needs 20 winners with excursion data; there are **16**
+intraday (20 combined, but daily-resolution rows overstate MFE for an intraday
+trade and must not be counted). When the gate opens, report what the tuner
+PROPOSES — 0.8 x winners' average peak, ~0.67R on today's numbers — and
+recommend enabling it. Do not hand-set the multiple from a sim.
+
+The sensitivity curves are why. At n=18 the partial trigger scores +1.76R at
+0.25R but only +1.37R at 0.30R, WORSE than +1.32R at 0.20R — non-monotone, i.e.
+noise. And the fraction table's apparent optimum of banking **100%** (+2.10R) is
+curve-fitting to a window containing no large runner: it optimises away exactly
+the BIAF-shaped trade (+2.60R peak) that pays for a month of scratches. 67% is
+defensible from reasoning; 100% is fitted to 18 rows.
