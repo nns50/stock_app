@@ -739,6 +739,20 @@ async function finishEntryPlacement(
       quantity: intent.quantity,
       limitPrice: intent.limitPrice,
       orderId: placed.brokerOrderId,
+      // SLIPPAGE PROBE (2026-09-04). referencePrice is the MARK this order was
+      // decided against; limitPrice already carries a marketable buffer, so it
+      // is not the same number and cannot stand in for it. It is not persisted
+      // on the intent, so this event is the only place it survives — pair it
+      // with the entryPrice on live_options_position_opened, joined by
+      // intentId, to get the realised cost of crossing the spread.
+      //
+      // Why it matters: the paper book fills at the quote by construction, so
+      // its +$173 over 13 trades is the OPTIMISTIC bound. That edge is still
+      // positive at 3c/side ($+65) and NEGATIVE at 5c ($-7) — on $0.21-$0.91
+      // contracts, which is exactly the range where the spread decides it.
+      // Paper cannot answer this; only real fills can.
+      intentId: placed.intentId,
+      referencePrice: intent.referencePrice ?? null,
     },
     riskProfile,
   });
@@ -1946,7 +1960,18 @@ function materializeOptionsEntryFill(
     symbol: intent.symbol,
     stage: 'execution',
     action: 'live_options_position_opened',
-    detail: { kind: meta.kind, quantity: filledQty, entryPrice: filledPrice, riskAmount: meta.riskAmount },
+    detail: {
+      kind: meta.kind,
+      quantity: filledQty,
+      entryPrice: filledPrice,
+      riskAmount: meta.riskAmount,
+      // Joins to live_options_order_placed's referencePrice — see the slippage
+      // probe note there. limitPrice is carried too so a fill can be read
+      // against both the mark it was decided on and the price we were willing
+      // to pay.
+      intentId: intent.id,
+      limitPrice: intent.limitPrice ?? null,
+    },
     riskProfile: meta.riskProfile,
   });
   return 'entry_filled';
