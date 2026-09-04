@@ -5535,3 +5535,58 @@ noise. And the fraction table's apparent optimum of banking **100%** (+2.10R) is
 curve-fitting to a window containing no large runner: it optimises away exactly
 the BIAF-shaped trade (+2.60R peak) that pays for a month of scratches. 67% is
 defensible from reasoning; 100% is fitted to 18 rows.
+
+## 2026-09-04 — reading the vendor docs properly, and what it changes
+
+`developer.webull.com` serves machine-readable docs that this project had not been
+using: an index at `developer.webull.com/apis/llms.txt`, and **any page fetchable
+as raw markdown by appending `.md`** (e.g.
+`/apis/docs/reference/common-order-place.md`). Every earlier conclusion here came
+from HTML dumps or pasted excerpts, which is how #475 came to assert that
+`STOP_PROFIT` was undocumented when it is in the enum.
+
+### The standalone bracket is DOCUMENTED — the two-lot design gets simpler
+
+Place Order, verbatim:
+
+> "To sell and close an existing position with take-profit/stop-loss, submit only
+> STOP_PROFIT/STOP_LOSS sub-orders (side = SELL)… no MASTER order is required."
+
+This was treated on 2026-09-04 as an unverified assumption to design around, and
+the two-lot plan was shaped to avoid it by splitting the ENTRY into two bracketed
+orders. That was unnecessary, and worse:
+
+| | |
+|---|---|
+| split entry (planned) | two fills, two entry prices, a blended entry every R calculation downstream has to agree on |
+| **one entry + two standalone bracket groups** | one fill, one entry price, no modification, no naked window |
+
+The second is what the docs endorse. It also confirms cancel-and-replace's step 4
+(re-bracketing the remainder) is a supported call rather than a hope.
+
+### What the docs still cannot answer
+
+**Whether two concurrent combo groups on ONE symbol are accepted.** Neither
+permitted nor forbidden — Place Order documents no per-symbol combo limit, and
+Open Orders is silent: two groups "would appear as separate array items with
+different `combo_order_id` values", but nothing says the broker will create them.
+The Tuesday test stands; the docs narrowed the design, not the unknown.
+
+### Two corrections to things already built
+
+**`client_combo_order_id` is NOT in the Open Orders response schema.** The
+envelope carries `combo_order_id`; the id we generate does not come back. Parsing
+it back from open orders was the designated fallback if
+`bracket_groups_observed` reports `attributedByEntryOrderId: false` — that
+fallback is a dead end and must not be attempted.
+
+**`combo_type` is an ORDER-level field, not a leg field.** `WebullOpenOrder`'s
+mapper reads it and `exitLegKind` corroborates with it, which is safe because
+that function leads with `order_type` — but the corroboration may be ABSENT
+rather than disagreeing. Read a refusal accordingly: a null `comboType` on a leg
+is the documented shape, not evidence of a parse failure.
+
+### Standing instruction
+
+Fetch the `.md` reference before reasoning about this API. Four payload shapes
+were burned on inference this week; the authoritative schema was one URL away.
