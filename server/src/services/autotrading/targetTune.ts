@@ -574,6 +574,7 @@ export const NEVER_TUNED_KEYS = [
   'momentumIntradayOnly',
   'maxStopDistancePct',
   'liveScaleOutEnabled',
+  'liveScaleOutCancelReplaceEnabled',
   'liveTrailingEnabled',
   'dayProtectiveStopEnabled',
   'shortDatedOptionsEnabled',

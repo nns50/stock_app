@@ -17,6 +17,7 @@ import { webullClient, webullConfigured } from './account';
 import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../db/webullMissStreak';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { listPendingLiveOrders } from '../../db/autotradeLiveOrders';
+import { getIntent } from '../../db/orders';
 import { classifyExpiredOptions, ExpiredOptionFinding } from '../../services/expiredOptions';
 import { resolveExpiryCloses } from '../../services/expiredOptionsSweep';
 
@@ -561,6 +562,14 @@ const NOTE_EXPIRED_AUTO_CLOSED =
  * gap is NOT acted on immediately; see webull_miss_streak (db/index.ts) for
  * the consecutive-confirmation debounce that guards against exactly that.
  */
+/** Extra sync passes a position gets, beyond MISS_CONFIRM_THRESHOLD, when its
+ *  entry order is still pending and bracketed — i.e. a resting stop/target leg
+ *  looks to have filled and reconcileLiveOrders should book it properly. Two
+ *  passes at the sync's cadence is a small delay against a wrong price and a
+ *  wrong exit reason on the position, and it stays BOUNDED so a leg the broker
+ *  never reports FILLED cannot leave the row open forever. */
+const BRACKET_RECONCILE_GRACE_SYNCS = 2;
+
 async function closePositionsFromPreview(
   preview: PositionsPreview,
 ): Promise<{ closed: number; closedSymbols: string[] }> {
@@ -600,7 +609,14 @@ async function closePositionsFromPreview(
 
   const toClose = new Map<
     string,
-    { lots: Position[]; qty: number; journalQtyBefore: number; brokerQty: number; justConfirmed: boolean }
+    {
+      lots: Position[];
+      qty: number;
+      journalQtyBefore: number;
+      brokerQty: number;
+      justConfirmed: boolean;
+      streak: number;
+    }
   >();
   for (const [key, lots] of lotsByKey) {
     // FIFO: oldest first. An undated lot orders by the day it was recorded
@@ -628,6 +644,11 @@ async function closePositionsFromPreview(
           // "confirmed gone but couldn't price it" diagnostic below logs once
           // per stuck episode rather than on every subsequent sync.
           justConfirmed: streak === MISS_CONFIRM_THRESHOLD,
+          // Carried so the bracket-leg defer below can BOUND itself: the
+          // streak keeps climbing every sync the contract stays absent, so it
+          // is already the "how long have we been waiting" counter and needs
+          // no state of its own.
+          streak,
         });
     } else {
       // Fully accounted for in this preview — any earlier miss streak was wrong.
@@ -679,9 +700,64 @@ async function closePositionsFromPreview(
       .map((o) => o.positionId as number),
   );
 
+  // The SAME disease, through the door the 2026-08-24 fix left open.
+  //
+  // That fix covers a closing order the loop PLACED (role='exit'). It does not
+  // cover the ordinary exit: a resting BRACKET leg. Those legs are placed
+  // inside the entry's OTOCO and live under the role='entry' row, so when a
+  // stop fills, loopClosingPositionIds is empty for that position and this
+  // sync closes it at a quoted ESTIMATE tagged 'manual'.
+  //
+  // Measured 2026-09-04: DELL 587's stop (513.21) filled when the 10:30 bar
+  // traded to 512.03; reconcileLiveOrders would have booked it as 'stop' at
+  // the real fill, but this sync got there first at 10:32:06 and wrote
+  // 514.995 / 'manual' — a price ABOVE the stop, flattering the day's largest
+  // loss by roughly $12 and misfiling its reason. 1 of 11 exits that day, so
+  // it is a RACE this sync usually loses, not a systematic failure.
+  //
+  // BOUNDED, because deferring forever is its own bug: if the broker never
+  // reports the leg FILLED, an unbounded defer would leave the position open
+  // in the journal permanently — exactly the "stuck open FOREVER" failure the
+  // expired-option branch above was written to end. So give the loop's own
+  // reconcile BRACKET_RECONCILE_GRACE_SYNCS extra passes and then close with
+  // the estimate as before, which is strictly today's behaviour, just later.
+  const bracketPendingPositionIds = new Set(
+    listPendingLiveOrders()
+      .filter((o) => o.role === 'entry' && o.positionId !== null && (getIntent(o.intentId)?.isBracket ?? false))
+      .map((o) => o.positionId as number),
+  );
+
   const closedSymbols = new Set<string>();
   let closed = 0;
-  for (const [key, { lots, qty, journalQtyBefore, brokerQty, justConfirmed }] of toClose) {
+  for (const [key, { lots, qty, journalQtyBefore, brokerQty, justConfirmed, streak }] of toClose) {
+    // A resting bracket leg just filled and the entry order's own reconcile has
+    // not caught up yet — give it a few passes before guessing a price.
+    if (
+      lots.some((l) => bracketPendingPositionIds.has(l.id)) &&
+      streak < MISS_CONFIRM_THRESHOLD + BRACKET_RECONCILE_GRACE_SYNCS
+    ) {
+      if (justConfirmed) {
+        logAutotradeEvent({
+          symbol: lots[0].symbol,
+          stage: 'execution',
+          action: 'position_reconcile_skipped',
+          detail: {
+            via: 'broker_sync',
+            accountId: preview.accountId,
+            reason: 'bracket_leg_reconcile_pending',
+            journalQty: journalQtyBefore,
+            brokerQty,
+            streak,
+            closesAfterStreak: MISS_CONFIRM_THRESHOLD + BRACKET_RECONCILE_GRACE_SYNCS,
+            note:
+              "A resting bracket leg appears to have filled. Leaving it for the entry order's own reconcile, " +
+              'which books the real fill price and whether it was the stop or the target. Closes here at an ' +
+              'estimate if that reconcile has not happened within the grace window.',
+          },
+        });
+      }
+      continue;
+    }
     if (lots.some((l) => loopClosingPositionIds.has(l.id))) {
       if (justConfirmed) {
         logAutotradeEvent({
