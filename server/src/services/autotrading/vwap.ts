@@ -2,6 +2,7 @@ import { getProvider } from '../../providers';
 import { Candle } from '../../providers/types';
 import { TtlCache } from '../cache';
 import { etToday } from '../../util/marketDate';
+import { computeSessionRange, SessionRange } from './entryExtension';
 
 // ---------------------------------------------------------------------------
 // Session VWAP, as an OBSERVER (2026-08-22) — deliberately not a filter yet.
@@ -70,18 +71,44 @@ const vwapCache = new TtlCache<number | null>(5 * 60 * 1000);
 /** Today's session VWAP for `symbol`, from the provider's 5-minute bars.
  *  Cached; NEVER throws — every failure reads as null (unmeasured). */
 export async function fetchTodayVwap(symbol: string, now: number = Date.now()): Promise<number | null> {
+  return (await fetchTodaySessionContext(symbol, now)).vwap;
+}
+
+/** Session VWAP and the session high/low, from ONE candle fetch. */
+export interface SessionContext {
+  vwap: number | null;
+  range: SessionRange | null;
+}
+
+// Keyed by symbol; same 5-minute TTL and the same reasoning as vwapCache.
+const contextCache = new TtlCache<SessionContext>(5 * 60 * 1000);
+
+/**
+ * Today's session VWAP *and* range for `symbol`, from a single 5-minute fetch.
+ *
+ * The range is derived from the SAME bars as the VWAP on purpose: two separate
+ * fetches could straddle a bar boundary and describe slightly different
+ * sessions, which is exactly the sort of quiet disagreement between two
+ * derivations of one quantity this codebase has been bitten by. One fetch, one
+ * session, both numbers.
+ *
+ * Cached; NEVER throws — every failure reads as nulls (unmeasured), never an
+ * invented value, so a provider hiccup can never fabricate an entry context.
+ */
+export async function fetchTodaySessionContext(symbol: string, now: number = Date.now()): Promise<SessionContext> {
   const key = `${symbol.toUpperCase()}:${etToday(now)}`;
-  const cached = vwapCache.get(key);
+  const cached = contextCache.get(key);
   if (cached !== undefined) return cached;
-  let vwap: number | null;
+  let ctx: SessionContext;
   try {
     // A full session is 78 five-minute bars; 90 leaves margin for providers
     // that pad the range with pre-market bars (the session filter drops them).
     const candles = await getProvider().getCandles(symbol, '5min', { limit: 90 });
-    vwap = computeSessionVwap(candles, now);
+    ctx = { vwap: computeSessionVwap(candles, now), range: computeSessionRange(candles, now) };
   } catch {
-    vwap = null;
+    ctx = { vwap: null, range: null };
   }
-  vwapCache.set(key, vwap);
-  return vwap;
+  contextCache.set(key, ctx);
+  vwapCache.set(key, ctx.vwap);
+  return ctx;
 }

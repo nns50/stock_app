@@ -5072,3 +5072,118 @@ count DISTINCT refused requests, not ticks. The detail carries `attempt` and
 count for the number of times the condition was hit. The per-tick count is still
 visible in the outcome each sweep returns, which reports how many identical
 retries the latch has absorbed.
+
+## 2026-09-04 (12:04 ET) — the combo group id was sent, and refused
+
+IOT (position 590), the first bracket opened after the id started persisting,
+reached its scale-out trigger and produced the decisive attempt:
+
+```
+clientComboOrderId: 840fc47a8c85412fbca47eebffa5d374   <- real, not null
+sent: [{ clientOrderId: 1461775e…, quantity: 15, limitPrice: 42.55, comboType: "STOP_PROFIT" },
+       { clientOrderId: faed9520…, quantity: 15, stopPrice:  40.50, comboType: "STOP_LOSS"   }]
+reason: The number of take-profit orders and the number of stop-loss orders must be the same.
+```
+
+A balanced take-profit/stop-loss pair, each leg restating its own defining
+price, each tagged with its `comboType`, and a genuine `client_combo_order_id`
+at request level — every field the vendor's reference names for a combo modify.
+The rejection is byte-identical to the one produced with none of them.
+
+The placement-side plumbing is confirmed working by the same event: a non-null
+id came back on the first post-deploy bracket, so #478's mint → store → read-back
+chain is sound. That was untestable until a post-deploy position triggered.
+
+**The elimination is now complete.** Across four sessions:
+
+| modify | result |
+|---|---|
+| `stop_price` on a resting bracket leg | 9 accepted, 0 refused |
+| `quantity`, bare | refused |
+| `quantity` + restated defining price | refused |
+| `quantity` + `combo_type` | refused |
+| `quantity` + `combo_type` + `client_combo_order_id` | refused |
+
+Four distinct payload shapes, one unchanging message. The remaining explanation
+is the plain one: **Webull does not support changing the quantity of a resting
+combo leg**, and its error text is generic rather than diagnostic — it names the
+group-balance rule regardless of what actually failed.
+
+The latch shipped an hour earlier is what made this attempt happen. It fired
+with `attempt: 1` because the signature changed the moment a real group id
+appeared; a blanket per-position latch would have suppressed the single most
+informative request in four sessions. That was the stated design argument and it
+paid off in production the same day.
+
+### What remains, and why it is not built
+
+Cancel-and-replace is the only route left, and it INVERTS the risk. Today's
+failure mode is a missed partial with the position fully protected. Cancel and
+re-place leaves it NAKED between the two calls, and `checkLiveBracketProtection`
+only reports that — it journals `live_position_unprotected` and says to re-arm by
+hand. It needs an explicit decision plus a forced close if the re-place fails,
+so it stays unbuilt pending that decision.
+
+## 2026-09-04 — entry extension, as an observer
+
+The book's read was that entries land at the top of the day and then spend the
+session playing catch-up. Measured against 5-minute candles for every closed
+intraday trade's entry day, the literal claim does not hold:
+
+```
+entry position in the range formed so far:  mean 60.2   median 65.9
+  lower half 6 | 50-80% 6 | 80-95% 4 | 95-100% 2
+room left above entry: median 2.41%; trades with <0.25% room: 0/18
+room above entry as a share of the full day range: median 53%
+```
+
+Only 2 of 18 entered in the top 5% of the range, every trade had room above it,
+and the median trade still had over half the day's eventual range ahead of it.
+
+What IS true is weaker and real:
+
+```
+entered in the lower 60% of range   n=9   avg realR +0.183   avg mfeR 0.794
+entered in the upper 40% of range   n=9   avg realR -0.066   avg mfeR 0.317
+corr(position in range, mfeR) = -0.501
+```
+
+The same effect appears independently against VWAP — 68% of entries are above
+it, and those average mfeR 0.32 against 0.75 for entries at or below. Both
+splits survive leave-one-out at **0/18 sign flips** on both metrics, and both
+stay positive with the single big winner (BIAF) dropped entirely.
+
+So the accurate statement is not "we buy the top" but "we buy the upper middle,
+after the first half of the move, and what is left does not pay for a 2.5% stop
+plus a 2R target."
+
+### A correlation checked and REJECTED
+
+Day range looked like the strongest predictor of realised R — corr +0.588, and
+names with >8% day range averaged +0.300R, which would argue for an ATR floor.
+Under leave-one-out that gap is **+0.004 with 9/18 sign flips**: one trade was
+carrying all of it. Recorded so it is not rediscovered and believed. No range
+floor on this evidence.
+
+### Why this ships as a shadow, not a gate
+
+1. n=18 over four sessions is a direction, not a season.
+2. Position-in-range is confounded with time of day — 8 of the 10 near-VWAP
+   entries were before 10:00, when VWAP has barely diverged from price. "Enter
+   cheap" and "enter early" cannot be separated at this sample size, and they
+   imply different fixes.
+
+`entryExtension.ts` measures and `entry_extension_shadow` journals; nothing
+blocks. The RAW `vwapExtPct` and `pctOfRange` are recorded alongside the verdict
+precisely so the cut can be re-chosen from the journal without a deploy, rather
+than letting this session's guess at 60% / 0.4% quietly become the answer. The
+event also names the thresholds that produced its verdict.
+
+`fetchTodaySessionContext` derives VWAP and the session range from ONE candle
+fetch. Two fetches could straddle a bar boundary and describe slightly different
+sessions — the same class of quiet disagreement between two derivations of one
+quantity that this codebase's invariants already warn about.
+
+When this does gate, it has to MOVE: the live path computes session context
+deliberately AFTER the broker placement so measurement can never delay or fail a
+real order. A blocking version must run ahead of placement.
