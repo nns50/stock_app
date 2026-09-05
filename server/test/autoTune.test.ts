@@ -208,6 +208,87 @@ describe('maybeAutoTune', () => {
       expect(events[0].message).toMatch(/riskPerTradePct 1% → 1\.3% \(Kelly suggests/);
     });
 
+    // riskPerTradePct and maxAggregateOpenRiskPct are two expressions of one
+    // budget — targetTune.ts derives the second as risk x maxConcurrentPositions.
+    // Auto-tune moved the first alone, so it could break that invariant: at the
+    // live config (aggregate 4.28%, concurrency 3) a single 0.5pp step from
+    // 1.25% to 1.75% needs 5.25% of aggregate risk, and the THIRD concurrent
+    // position could never open again — visible only as max_aggregate_open_risk
+    // refusals with no obvious cause.
+    it('journals that a risk increase has quietly cut how many positions fit', async () => {
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneMinTrades: 2,
+        autoTuneMaxStepPct: 0.5,
+        riskPerTradePct: 1.25,
+        maxConcurrentPositions: 3,
+        maxAggregateOpenRiskPct: 4.28, // the live value: 3 x 1.4267
+        autoTuneRequireOosConfirmation: false,
+      });
+      closedTrade(100, '2026-08-01');
+      closedTrade(-50, '2026-08-02'); // an edge that wants MORE risk
+
+      await maybeAutoTune(ET_DAY_1);
+
+      // The increase still applies — clamping it would stop auto-tune raising
+      // risk at all under the shipped defaults (1% x 2 = 2%, zero slack), and
+      // widening the aggregate cap is the operator's call, not a tuner's.
+      const after = getAutotradeConfig().riskPerTradePct;
+      expect(after).toBeCloseTo(1.75, 2);
+      // But the consequence is now on the record: 3 x 1.75 = 5.25 > 4.28, so
+      // only two full-size positions fit where three were configured.
+      const note = listAutotradeEvents({ stage: 'config' }).find((e) => e.action === 'auto_tune_concurrency_reduced');
+      expect(note, 'the silent concurrency cut must be journalled').toBeDefined();
+      expect(JSON.parse(note!.detail!)).toMatchObject({
+        fullSizePositionsThatNowFit: 2,
+        maxConcurrentPositions: 3,
+      });
+    });
+
+    it('says nothing when every configured slot still fits', async () => {
+      // No false alarm on a book with room — the note must mean something.
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneMinTrades: 2,
+        autoTuneMaxStepPct: 0.3,
+        riskPerTradePct: 1,
+        maxConcurrentPositions: 2,
+        maxAggregateOpenRiskPct: 20, // plenty of room
+        autoTuneRequireOosConfirmation: false,
+      });
+      closedTrade(100, '2026-08-01');
+      closedTrade(-50, '2026-08-02');
+
+      await maybeAutoTune(ET_DAY_1);
+
+      expect(getAutotradeConfig().riskPerTradePct).toBeGreaterThan(1);
+      expect(
+        listAutotradeEvents({ stage: 'config' }).find((e) => e.action === 'auto_tune_concurrency_reduced'),
+      ).toBeUndefined();
+    });
+
+    it('never warns on a risk DECREASE — a smaller risk always fits', async () => {
+      // The note is about increases only; cutting risk can only free up slots.
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneMinTrades: 2,
+        autoTuneMaxStepPct: 0.3,
+        riskPerTradePct: 2,
+        maxConcurrentPositions: 3,
+        maxAggregateOpenRiskPct: 0.5, // absurdly tight; must not stop a cut
+        autoTuneRequireOosConfirmation: false,
+      });
+      closedTrade(50, '2026-08-01');
+      closedTrade(-100, '2026-08-02'); // poor payoff -> Kelly wants less risk
+
+      await maybeAutoTune(ET_DAY_1);
+
+      expect(getAutotradeConfig().riskPerTradePct).toBeLessThan(2);
+      expect(
+        listAutotradeEvents({ stage: 'config' }).find((e) => e.action === 'auto_tune_concurrency_reduced'),
+      ).toBeUndefined();
+    });
+
     it('nudges risk-per-trade DOWN toward the Kelly suggestion, clamped to the max daily step', async () => {
       setAutotradeConfig({ autoTuneEnabled: true, autoTuneMinTrades: 2, autoTuneMaxStepPct: 0.3, riskPerTradePct: 2 });
       closedTrade(50, '2026-08-01');
