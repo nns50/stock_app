@@ -980,9 +980,12 @@ export function buildBracketResizePatches(legs: WebullOpenOrder[], quantity: num
   const patch = (o: WebullOpenOrder): ReplaceOrderPatch | null => {
     const kind = exitLegKind(o);
     if (!o.clientOrderId || !kind) return null;
+    // orderType is spread in only when the broker actually reported one, so an
+    // unreported type stays absent rather than becoming the string "undefined".
+    const identity = o.orderType ? { orderType: o.orderType } : {};
     return kind === 'tp'
-      ? { clientOrderId: o.clientOrderId, quantity, limitPrice: o.limitPrice, comboType: 'STOP_PROFIT' }
-      : { clientOrderId: o.clientOrderId, quantity, stopPrice: o.stopPrice, comboType: 'STOP_LOSS' };
+      ? { clientOrderId: o.clientOrderId, quantity, limitPrice: o.limitPrice, comboType: 'STOP_PROFIT', ...identity }
+      : { clientOrderId: o.clientOrderId, quantity, stopPrice: o.stopPrice, comboType: 'STOP_LOSS', ...identity };
   };
   if (legs.length === 1) {
     const only = patch(legs[0]!);
@@ -1171,6 +1174,35 @@ export interface ReplaceOrderPatch extends ReplacePatch {
    * being able to tell the legs apart, which is exactly what combo_type says.
    */
   comboType?: string;
+  /**
+   * The leg's own `order_type`, echoed back unchanged.
+   *
+   * Added 2026-09-05 as the fifth payload shape, and the first one built from
+   * the REPLACE endpoint's documented schema rather than the place endpoint's.
+   * reference/common-order-replace lists exactly what a `modify_orders` item
+   * accepts — client_order_id, time_in_force, stop_price, limit_price,
+   * quantity, order_type, trailing fields, legs — and `combo_type` is NOT among
+   * them, while `order_type` is. So every previous attempt identified the legs
+   * using a field this endpoint does not document, and never sent the one it
+   * does.
+   *
+   * That matters for this specific refusal. "The number of take-profit orders
+   * and the number of stop-loss orders must be the same" is a complaint about
+   * CLASSIFYING the two legs, and order_type is what separates them on the
+   * wire: the take-profit is a LIMIT, the stop is a STOP_LOSS (or
+   * STOP_LOSS_LIMIT). Both legs of a long bracket are `sell`, so without it
+   * there is nothing in a quantity-only modify that says which is which.
+   *
+   * ECHOED, never derived: whatever the broker reported for this leg is what
+   * goes back. Deriving 'STOP_LOSS' from the leg's role would silently convert
+   * a STOP_LOSS_LIMIT into a plain stop — changing the order while claiming to
+   * identify it. Omitted when the broker reported nothing.
+   *
+   * This is still a hypothesis, not a confirmed fix; the docs describe the
+   * schema, not this validator. It is cheap and documented, which is more than
+   * the previous four shapes could claim.
+   */
+  orderType?: string;
 }
 
 /**
@@ -1207,6 +1239,7 @@ export async function webullReplaceOrders(
   const modifyOrders = patches.map((patch) => {
     const modify: Record<string, string> = { client_order_id: patch.clientOrderId };
     if (patch.comboType !== undefined) modify.combo_type = patch.comboType;
+    if (patch.orderType !== undefined) modify.order_type = patch.orderType;
     if (patch.quantity !== undefined) modify.quantity = String(patch.quantity);
     if (patch.limitPrice !== undefined) modify.limit_price = priceStr(patch.limitPrice);
     if (patch.stopPrice !== undefined) modify.stop_price = priceStr(patch.stopPrice);

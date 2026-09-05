@@ -60,6 +60,34 @@ import type {
   WalkForwardWindowResult,
 } from '../api/types';
 
+/**
+ * The live-side actions a loop tick actually took, as short phrases — empty
+ * when the tick did nothing live, so a quiet cycle stays quiet.
+ *
+ * Added 2026-09-05. All six counters have been computed by loop.ts, persisted
+ * with the tick and served in the dashboard payload since they were written,
+ * and NOTHING rendered any of them: the "Last cycle" card showed screening,
+ * entries and PAPER exits only. So a live tick that ratcheted a stop, fired a
+ * time exit or placed a scale-out looked identical to one that did nothing,
+ * and the only way to answer "did the scale-out fire?" was to curl
+ * /api/autotrade/events. Exactly the shape CLAUDE.md warns about — a value
+ * computed and read by nothing — one layer above the config guards.
+ *
+ * Zero-valued entries are dropped rather than printed as "0 x": the useful
+ * signal is which of these fired at all, and six always-zero counters is the
+ * noise that gets a panel ignored.
+ */
+export function liveActionSummary(s: LoopTickSummary): string[] {
+  const parts: [number, string][] = [
+    [s.liveStopsRatcheted, 'stop ratcheted'],
+    [s.liveScaleOutsRequested, 'scale-out placed'],
+    [s.liveScaleInsRequested, 'scale-in placed'],
+    [s.liveTimeExitsRequested, 'time exit placed'],
+    [s.liveOptionsExitsRequested, 'options exit placed'],
+  ];
+  return parts.filter(([n]) => n > 0).map(([n, label]) => `${n} ${label}`);
+}
+
 // Regime-conditional scoring weights (2026-07-24): the three regime presets and
 // the six core screener weights each preset governs. relativeStrength/sentiment
 // are intentionally absent — they stay driven by their own weight fields above.
@@ -1819,11 +1847,26 @@ function MonitoringDashboard({
               {dash.lastTick.summary.liveOptionsEntriesOpened} options live
             </p>
             <p>
-              Exits: {dash.lastTick.summary.exitsClosed}/{dash.lastTick.summary.exitsChecked} equity,{' '}
+              Paper exits: {dash.lastTick.summary.exitsClosed}/{dash.lastTick.summary.exitsChecked} equity,{' '}
               {dash.lastTick.summary.optionsExitsClosed}/{dash.lastTick.summary.optionsExitsChecked} options
               {dash.lastTick.summary.moversAutoPromoted > 0 &&
                 ` · ${dash.lastTick.summary.moversAutoPromoted} movers promoted`}
             </p>
+            {/* The LIVE side of the tick. Every number below was already
+                computed, stored and served — and rendered nowhere, so this
+                panel showed a live cycle as if only its paper half had
+                happened, and the line above (unqualified "Exits") read as the
+                whole picture. Answering "did the scale-out fire?" meant
+                curling the events endpoint. */}
+            <p>
+              Live: {dash.lastTick.summary.liveOrdersReconciled} orders reconciled →{' '}
+              {dash.lastTick.summary.livePositionsClosed} closed
+              {dash.lastTick.summary.liveOptionsOrdersReconciled > 0 &&
+                ` · ${dash.lastTick.summary.liveOptionsOrdersReconciled} options orders → ${dash.lastTick.summary.liveOptionsPositionsClosed} closed`}
+            </p>
+            {liveActionSummary(dash.lastTick.summary).length > 0 && (
+              <p className="text-sky-300">Live actions: {liveActionSummary(dash.lastTick.summary).join(' · ')}</p>
+            )}
             {dash.lastTick.summary.moversFetchError ? (
               <p className="text-amber-400">
                 Movers discovery failed — {dash.lastTick.summary.moversFetchError}. Screening ran universe-only.
@@ -2304,6 +2347,67 @@ const BAND_LABEL: Record<TuneBand, string> = {
  * shape of "Suggest from equity" — every field stays editable afterward. Gated
  * on equity being set, since every derived number scales with it.
  */
+/**
+ * Every configured setting, rendered straight from the server payload.
+ *
+ * Added 2026-09-05. The settings UI is one hand-written control per field, and
+ * 28 of the 151 AutotradeConfig fields never got one — so they appear NOWHERE
+ * in the app. Not read-only, not greyed out: absent. That list is not
+ * incidental either, it is most of the live exit machinery —
+ * `levelExitsEnabled`, `maxRiskAtrFraction`, `symbolReentryCooldownMinutes`,
+ * `liveTrailingEnabled`, `liveScaleOutEnabled`, `endOfDayFlattenMinutes` and
+ * the whole short-dated options ladder. Three of those are ON in production
+ * and shaping real trades, and the only way to see their values was to curl
+ * the API.
+ *
+ * So this renders the CONFIG OBJECT rather than a list of fields. A setting
+ * added tomorrow shows up here with no code change, which is the point: the
+ * failure was not "28 fields were forgotten", it was that forgetting one was
+ * invisible. Editing still lives in the typed panels above — this exists so
+ * that what the loop is actually running can always be read off the screen.
+ */
+export function AllSettingsSection({ config }: { config: AutotradeConfig }) {
+  const [filter, setFilter] = useState('');
+  const rows = Object.entries(config as unknown as Record<string, unknown>)
+    .filter(([k]) => k.toLowerCase().includes(filter.trim().toLowerCase()))
+    .sort(([a], [b]) => a.localeCompare(b));
+
+  return (
+    <CollapsibleCard id="autotrade.config.all" title="All settings (read-only)" defaultCollapsed>
+      <p className="text-xs text-slate-400 mb-2">
+        Every field the server is running, straight from <code>/api/autotrade/config</code>. Editing lives in the panels
+        above; some fields have no editor yet and can only be changed through the API.
+      </p>
+      <input
+        className="input mb-2 w-full sm:w-64"
+        placeholder="Filter by name…"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        aria-label="Filter settings"
+      />
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <tbody>
+            {rows.map(([key, value]) => (
+              <tr key={key} className="border-t border-ink-700">
+                <td className="py-1 pr-3 font-mono text-slate-300 align-top">{key}</td>
+                <td className="py-1 font-mono text-slate-100 break-all">
+                  {value === null || value === undefined
+                    ? '—'
+                    : typeof value === 'object'
+                      ? JSON.stringify(value)
+                      : String(value)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {rows.length === 0 && <p className="text-xs text-slate-500">No setting matches that filter.</p>}
+    </CollapsibleCard>
+  );
+}
+
 export function TuneFromTargetSection({
   config,
   onApply,
@@ -3983,6 +4087,8 @@ export default function AutoTradePage() {
               {config.data && (
                 <TuneFromTargetSection config={config.data} onApply={applyTunePatch} applying={applyingTune} />
               )}
+
+              {config.data && <AllSettingsSection config={config.data} />}
 
               <CollapsibleCard id="autotrade.config.risk" title="Position sizing & risk guardrails">
                 <div className="grid sm:grid-cols-2 gap-3 items-end">

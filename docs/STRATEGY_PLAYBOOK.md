@@ -979,6 +979,28 @@ rather than being read as a normal one. Below **25%** of the intended size it sk
 instead: a token position still costs a concurrency slot and one of the day's trades, and
 returns almost nothing for them.
 
+**The same lesson, finished (2026-09-05).** That fix taught the sizer about buying power
+and stopped there — but a live entry is refused on **three** dollar tests, not one: the
+per-order notional cap, buying power, and the account exposure cap. The other two were
+still discovered only after a full-size order had been built, so the build-then-refuse
+loop simply moved. Over the four sessions after the buying-power fix the journal shows 23
+refused live entries, **18 of them on exposure**, and the misses were small enough to be
+galling: DELL over its cap by **$10.84**, SNDK by $60, DG by $120 — refused six times in
+eleven minutes for the same $120, each attempt a wasted broker round-trip. Trimming a
+couple of shares would have taken every one of those trades.
+
+The sizer now aims at all three bounds and takes the tightest, and it values the order the
+way the guardrail will — at its **marketable limit price**, not the raw signal entry, since
+a buy's limit sits above the quote and that gap alone is most of a $10.84 miss. Within a
+single cycle each fill now also spends down the exposure headroom, not just buying power,
+so a second candidate can't be sized against room the first one already took.
+
+This is the general rule, and it is worth more than the specific fix: **when two places
+derive the same quantity, they have to agree by construction.** Raising a ceiling because
+orders keep bumping it — which is what happened to the exposure cap on 2026-08-27, after
+two correctly-sized positions were refused by 39 cents — treats the symptom, because the
+sizer is still aiming wherever it likes and the guardrail is still judging after the fact.
+
 **"What happens when the app isn't sure?"** Worth knowing, because it shapes what you'll
 see: every live-order decision made under an unknown resolves toward **doing less**, not
 toward assuming the convenient answer. A fill the app can't fully account for is booked

@@ -1014,9 +1014,11 @@ describe('checkLiveEquityScaleOuts', () => {
     // 2026-09-03, because nothing in it said which leg was which.
     expect(mockReplaceOrders).toHaveBeenCalledWith(
       'ACC1',
+      // order_type joins them from 2026-09-05 — the field the REPLACE
+      // endpoint's schema actually documents, echoed from the leg itself.
       [
-        { clientOrderId: 'STOP-1', quantity: keep, stopPrice: 96, comboType: 'STOP_LOSS' },
-        { clientOrderId: 'TGT-1', quantity: keep, limitPrice: 130, comboType: 'STOP_PROFIT' },
+        { clientOrderId: 'STOP-1', quantity: keep, stopPrice: 96, comboType: 'STOP_LOSS', orderType: 'STOP_LOSS' },
+        { clientOrderId: 'TGT-1', quantity: keep, limitPrice: 130, comboType: 'STOP_PROFIT', orderType: 'LIMIT' },
       ],
       // The combo group id is the third argument — undefined for a bracket
       // opened before it was persisted, which is every pre-2026-09-04 row.

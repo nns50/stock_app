@@ -670,6 +670,18 @@ export interface LiveExecutionOutcome {
   ok: boolean;
   reason?: string;
   intentId?: number;
+  /** What the placed order ACTUALLY consumes: its final quantity (after the
+   *  probation cut) at its limit price — the same figure guardrails.ts valued
+   *  it at. Set only on a successful placement.
+   *
+   *  The batch below decrements buying power and exposure by this. It used to
+   *  recompute `signal.entry * result.sizing.suggestedQuantity`, which is the
+   *  PRE-probation quantity at the PRE-buffer price — two differences from the
+   *  order that was really sent, in opposite directions. With probation at
+   *  0.5x that over-charged the next candidate in the batch by roughly double:
+   *  measured in a test, $14,600 deducted for a $7,336 order, which then
+   *  refused the next candidate for having only $392 left. */
+  placedNotionalUsd?: number;
 }
 
 /**
@@ -919,7 +931,7 @@ export async function attemptLiveEntry(
       message: `Autotrade LIVE ${signal.side === 'buy' ? 'BUY' : 'SELL'}: ${quantity} ${symbol} @ ~$${limitPrice.toFixed(2)} (stop ${signal.stop.toFixed(2)}, target ${signal.target.toFixed(2)})`,
     },
   ]);
-  return { symbol, ok: true, intentId: intentRec.id };
+  return { symbol, ok: true, intentId: intentRec.id, placedNotionalUsd: quantity * limitPrice };
 }
 
 /**
@@ -1004,6 +1016,18 @@ export async function runLiveExecution(
   // the previous behaviour exactly.
   let buyingPowerLoaded = false;
   let availableBuyingPowerUsd: number | undefined;
+  // Room left under the ACCOUNT EXPOSURE cap, loaded from the same account read
+  // and decremented alongside buying power below.
+  //
+  // guardrails.ts refuses an entry on three dollar tests, and until 2026-09-05
+  // only ONE of them (buying power) was known to the sizer — so the other two
+  // were discovered after a full-size order had been built, which is the
+  // build-then-refuse loop the sizer exists to end. The live journal for the
+  // four sessions after the buying-power fix: 23 blocks, 18 of them
+  // account_exposure, several within $11-$120 of the cap, and DG refused six
+  // times in eleven minutes for the same ~$120.
+  let exposureHeadroomUsd: number | undefined;
+  const liveTradingCfg = buildLiveTradingConfig(cfg);
   const buyingPowerForSide = async (side: 'buy' | 'sell'): Promise<number | undefined> => {
     // Both sides need a figure. An opening SHORT consumes margin exactly as a
     // buy consumes cash, so returning undefined for a sell left the sizer
@@ -1025,6 +1049,12 @@ export async function runLiveExecution(
           const acct = await webullAccountState(cfg.liveAccountId);
           if (acct.ok && acct.state) {
             availableBuyingPowerUsd = withDayBuyingPower(acct.state, cfg).buyingPowerUsd;
+            // Same rearrangement the guardrail does, one step earlier:
+            // exposureAfter <= maxExposureUsd becomes notional <= headroom.
+            // maxExposureUsd is 0 when equity is unset, which fails closed
+            // there and must fail closed here too — a 0 headroom sizes to 0
+            // rather than silently ignoring the cap.
+            exposureHeadroomUsd = liveTradingCfg.maxExposureUsd - acct.state.exposureUsd;
           }
         } catch {
           /* leave undefined — unconstrained, exactly as before */
@@ -1304,6 +1334,15 @@ export async function runLiveExecution(
       equityCurveDeriskCutPct: cfg.equityCurveDeriskCutPct,
       maxAdvParticipationPct: cfg.maxAdvParticipationPct,
       buyingPowerUsd: await buyingPowerForSide(signal.side),
+      // The other two dollar bounds the guardrail will apply to this very
+      // order, so the sizer AIMS at them instead of being judged by them.
+      // Read after the await above, which is what populates exposureHeadroomUsd.
+      maxOrderUsd: liveTradingCfg.maxOrderUsd,
+      exposureHeadroomUsd,
+      // Value the order the way the guardrail will — at its marketable limit,
+      // not the raw signal entry. Signed: a buy's limit is above the quote and
+      // a short's below, matching attemptLiveEntry's own buffer exactly.
+      limitBufferPct: (signal.side === 'buy' ? 1 : -1) * MARKETABLE_LIMIT_BUFFER_PCT,
       expectancyMultiplier:
         snapshot.gradeExpectancyMultipliers[
           convictionGrade(signal.score, {
@@ -1379,7 +1418,10 @@ export async function runLiveExecution(
     if (outcome.ok) {
       runningRisk += result.approvedRiskAmount;
       runningCount += 1;
-      const notional = signal.entry * result.sizing.suggestedQuantity;
+      // What the order really costs, straight from the placement. The
+      // fallback keeps the old estimate for any path that somehow reports no
+      // figure, rather than silently decrementing nothing.
+      const notional = outcome.placedNotionalUsd ?? signal.entry * result.sizing.suggestedQuantity;
       runningPositions.push({
         symbol,
         notional,
@@ -1406,6 +1448,14 @@ export async function runLiveExecution(
       // WRITE-BACK on the old premise. Assert at the consumer.
       if (availableBuyingPowerUsd !== undefined) {
         availableBuyingPowerUsd = Math.max(0, availableBuyingPowerUsd - notional);
+      }
+      // Exposure moves with the same notional and for the same reason: a
+      // second entry in this tick must not be sized against headroom the
+      // first one already consumed. Leaving this out would reproduce the
+      // double-spend the buying-power decrement above exists to prevent,
+      // one bound over.
+      if (exposureHeadroomUsd !== undefined) {
+        exposureHeadroomUsd = Math.max(0, exposureHeadroomUsd - notional);
       }
       skipSymbols.add(symbol);
     }

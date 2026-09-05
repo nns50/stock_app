@@ -801,6 +801,118 @@ describe('runLiveExecution — funding capacity and unplaceable shorts', () => {
 // 16.27 with resistance at 15.375 — 0.33R of actual headroom — and the stock
 // topped at 15.22, never reaching even the capped target.
 // ---------------------------------------------------------------------------
+// The build-then-refuse loop, one bound over. guardrails.ts refuses an entry on
+// THREE dollar tests and until 2026-09-05 only buying power reached the sizer,
+// so order_notional and account_exposure were still discovered after a
+// full-size order had been built. Live journal, the four sessions after the
+// buying-power fix: 23 blocks, 18 account_exposure, and the misses were tiny —
+// DELL over its cap by $10.84, SNDK by $60, DG by $120 six times in eleven
+// minutes.
+//
+// Asserted at the CONSUMER throughout: what reaches the broker, not what the
+// sizer returns. A test on fundableMaxQuantity alone would have stayed green
+// through the entire bug, because the value was correct and nobody read it.
+describe('runLiveExecution — sizing to every dollar bound the guardrail applies', () => {
+  const cfgFields = {
+    accountEquityUsd: 100_000,
+    riskProfile: 'MODERATE' as const,
+    liveAccountId: 'ACC1',
+    liveTradingEnabled: true,
+    liveEnabledAt: Date.now(),
+    liveMaxDailyLossUsd: 5_000,
+    liveMaxOrdersPerDay: 20,
+    killSwitch: false,
+  };
+  // The fixture signal sizes to 200 shares @ ~$100 = ~$20k of notional.
+  const placedNotional = () => {
+    // webullPlaceOrder(accountId, intent, clientOrderId) — the intent is arg 1.
+    const intent = mockPlaceOrder.mock.calls[0][1] as { quantity: number; limitPrice?: number };
+    return intent.quantity * (intent.limitPrice ?? 0);
+  };
+
+  it('trims the order to fit the per-order notional cap instead of being refused by it', async () => {
+    // Cap well under the ~$20k the risk sizer wants. Before the fix the order
+    // was built at 200 shares and the guardrail refused it on order_notional.
+    setAutotradeConfig({ ...cfgFields, liveMaxOrderUsd: 10_000, liveMaxExposurePct: 1_000 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CAP' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0].ok, `expected an entry, got: ${outcomes[0].reason}`).toBe(true);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+    expect(placedNotional()).toBeLessThanOrEqual(10_000);
+  });
+
+  it('trims the order to the room left under the account exposure cap', async () => {
+    // The DELL shape: an account already most of the way to its exposure cap.
+    // Equity 100k at 17% = a $17,000 cap, with $9,000 already deployed — so
+    // $8,000 of headroom against a signal that wants $10,050. Unbounded, the
+    // guardrail would see $19,050 against the cap and refuse the entry.
+    setAutotradeConfig({ ...cfgFields, liveMaxOrderUsd: 50_000, liveMaxExposurePct: 17 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, exposureUsd: 9_000 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-EXP' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0].ok, `expected an entry, got: ${outcomes[0].reason}`).toBe(true);
+    // Fits the headroom the guardrail will measure: 9_000 + notional <= 17_000.
+    expect(9_000 + placedNotional()).toBeLessThanOrEqual(17_000);
+  });
+
+  it('values the order at the marketable limit, not the raw signal entry', async () => {
+    // The two derivations of one quantity. The guardrail values an order at its
+    // LIMIT price (entry × 1.005 for a buy); the sizer used signal.entry. Sized
+    // to exactly the cap on the cheaper price, the order overshoots on the
+    // dearer one — which is most of the distance in a $10.84 miss.
+    setAutotradeConfig({ ...cfgFields, liveMaxOrderUsd: 10_000, liveMaxExposurePct: 1_000 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-VAL' });
+
+    await runLiveExecution([{ signal: signal() }]);
+
+    const intent = mockPlaceOrder.mock.calls[0][1] as { quantity: number; limitPrice: number };
+    expect(intent.limitPrice).toBeGreaterThan(100); // marketable buy limit
+    // Valued at the LIMIT — the price guardrails.ts will use — it still fits.
+    expect(intent.quantity * intent.limitPrice).toBeLessThanOrEqual(10_000);
+  });
+
+  it('does not hand the second entry in a tick headroom the first already spent', async () => {
+    // The same double-spend the buying-power decrement exists to prevent, one
+    // bound over: without decrementing exposure per fill, both candidates size
+    // against the full headroom and together blow the cap.
+    setAutotradeConfig({
+      ...cfgFields,
+      liveMaxOrderUsd: 50_000,
+      liveMaxExposurePct: 15, // $15,000 cap, nothing deployed — fits ONE $10,050 order
+      maxConcurrentPositions: 5,
+      maxAggregateOpenRiskPct: 50,
+    });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAA: 100, BBB: 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-TWO' });
+
+    await runLiveExecution([{ signal: signal({ symbol: 'AAA' }) }, { signal: signal({ symbol: 'BBB' }) }]);
+
+    const placed = mockPlaceOrder.mock.calls.map((call) => call[1] as { quantity: number; limitPrice: number });
+    expect(placed.length).toBe(2);
+    // The discriminating assertion. Totals alone are too loose to catch this —
+    // two probation-halved orders fit under most caps by luck — but the SECOND
+    // order can only be smaller if the first one's notional was taken out of
+    // the headroom. Without the decrement both size against the full cap and
+    // come out identical.
+    expect(placed[1].quantity).toBeLessThan(placed[0].quantity);
+    const total = placed.reduce((sum, i) => sum + i.quantity * i.limitPrice, 0);
+    expect(total).toBeLessThanOrEqual(15_000);
+  });
+});
+
 describe('runLiveExecution — level-aware exits', () => {
   const liveCfgFields = {
     accountEquityUsd: 100_000,

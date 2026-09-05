@@ -10,7 +10,7 @@ import { getMarketAtrPct } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
 import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
-import { buyingPowerMaxQuantity, isTooSmallToFund, MIN_FUNDED_SIZE_FRACTION } from './buyingPowerSizing';
+import { fundableMaxQuantity, isTooSmallToFund, MIN_FUNDED_SIZE_FRACTION } from './buyingPowerSizing';
 import { listLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
 import { TradeSignal, convictionGrade } from './decide';
 
@@ -398,6 +398,16 @@ export interface RiskCheckContext {
    *  before. See buyingPowerSizing.ts for why the sizer, not just the
    *  guardrail, has to see this. */
   buyingPowerUsd?: number;
+  /** Per-order notional ceiling the guardrail will enforce (order_notional).
+   *  LIVE only — paper and the preview route have no such guardrail, which is
+   *  a written-down decision, not an omission: they place nothing. */
+  maxOrderUsd?: number;
+  /** Room left under the account exposure cap (account_exposure), i.e.
+   *  maxExposureUsd − exposureUsd. LIVE only, same reason. */
+  exposureHeadroomUsd?: number;
+  /** Signed marketable-limit buffer % the placed order will carry, so the
+   *  sizer values the order at the same price the guardrail will. LIVE only. */
+  limitBufferPct?: number;
   /** Expectancy-weighted sizing multiplier (2026-07-24) for THIS candidate's
    *  conviction grade, pre-computed by the caller from the book's realized
    *  per-grade edge (services/autotrading/expectancySizing.ts). Optional — only
@@ -561,9 +571,15 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   // 2026-08-28 this was checked only at the guardrail, on an already-sized
   // order, so an unfundable order was built in full and then blocked — 627
   // times in one session, for zero entries.
-  const bp = buyingPowerMaxQuantity({
+  const bp = fundableMaxQuantity({
     buyingPowerUsd: ctx.buyingPowerUsd,
+    // The other two dollar bounds guardrails.ts will apply. Passed here so the
+    // order is BUILT to fit them; before 2026-09-05 only buying power reached
+    // the sizer and the other two were discovered after the order existed.
+    maxOrderUsd: ctx.maxOrderUsd,
+    exposureHeadroomUsd: ctx.exposureHeadroomUsd,
     entryPrice: signal.entry,
+    limitBufferPct: ctx.limitBufferPct,
     // A TradeSignal is always an ENTRY, so this is 'open' for a long AND for a
     // short: both consume buying power. Passing signal.side here used to let
     // every short entry through unconstrained.

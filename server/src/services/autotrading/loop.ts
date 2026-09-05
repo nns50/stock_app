@@ -323,9 +323,9 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
   // built, in which case there's nothing meaningful yet to persist.
   let summary: LoopTickSummary | undefined;
   try {
-    const exitOutcomes = await checkPaperExits();
-    const optionsExitOutcomes = await checkOptionsPaperExits();
-    const liveReconcileOutcomes = await reconcileLiveOrders();
+    const exitOutcomes = await runStage('paper exits', checkPaperExits, []);
+    const optionsExitOutcomes = await runStage('paper options exits', checkOptionsPaperExits, []);
+    const liveReconcileOutcomes = await runStage('live order reconcile', reconcileLiveOrders, []);
     // Backstop for the order-based reconcile just above: reconcileLiveOrders()
     // only detects an exit via the SPECIFIC bracket order it placed and is
     // tracking (webullOrderStatus() on that one order's idempotencyKey) — an
@@ -345,7 +345,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       const liveCfg = getAutotradeConfig();
       if (liveCfg.liveAccountId) await runWebullPositionsSync(liveCfg.liveAccountId);
     } catch (e) {
-      console.error('[autotrade-loop] live position-truth sync failed:', (e as Error).message);
+      journalStageFailure('live position-truth sync', e);
     }
     // Runs right after the sync above so a position it just imported
     // untracked (tagged 'webull' only) gets a chance to be healed the SAME
@@ -358,7 +358,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     try {
       adoptOrphanedLivePositions();
     } catch (e) {
-      console.error('[autotrade-loop] adopting orphaned live positions failed:', (e as Error).message);
+      journalStageFailure('adopting orphaned live positions', e);
     }
     // Runs after the reconcile/sync above for the same reason checkLiveOptionsExits
     // runs after ITS OWN reconcile/sync below: a position closed (or found
@@ -377,7 +377,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     try {
       await checkLiveBracketProtection();
     } catch (e) {
-      console.error('[autotrade-loop] bracket protection check failed:', (e as Error).message);
+      journalStageFailure('bracket protection check', e);
     }
     // Ratchet live stops BEFORE the scale-out and the time exits. Order
     // matters in both directions: the scale-out places a partial sell, which
@@ -390,7 +390,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     try {
       liveStopAdjustOutcomes = await checkLiveEquityStopAdjusts();
     } catch (e) {
-      console.error('[autotrade-loop] live stop ratchet failed:', (e as Error).message);
+      journalStageFailure('live stop ratchet', e);
     }
     // Scale out of a live winner BEFORE the time exits below. Order matters:
     // a scale-out is skipped entirely once an exit order is working, so running
@@ -402,9 +402,9 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     try {
       liveScaleOutOutcomes = await checkLiveEquityScaleOuts();
     } catch (e) {
-      console.error('[autotrade-loop] live scale-out check failed:', (e as Error).message);
+      journalStageFailure('live scale-out check', e);
     }
-    const liveEquityTimeExitOutcomes = await checkLiveEquityTimeExits();
+    const liveEquityTimeExitOutcomes = await runStage('live equity time exits', checkLiveEquityTimeExits, []);
     // Scale into winners on LIVE positions — gated like an ENTRY (it ADDS risk
     // to real money), so behind isLiveEntryActive (kill switch + master gates)
     // ON TOP OF checkLiveScaleIns' own liveScaleInEnabled/cap checks AND its
@@ -428,7 +428,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     try {
       dailyTarget = updateDailyTarget();
     } catch (e) {
-      console.error('[autotrade-loop] daily-target check failed:', (e as Error).message);
+      journalStageFailure('daily-target check', e);
     }
     const liveScaleInOutcomes =
       isLiveEntryActive(getAutotradeConfig()) && !dailyTarget.entriesHalted ? await checkLiveScaleIns() : [];
@@ -437,7 +437,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // filled) so a position closed by reconcile this same tick is already
     // gone from listOpenLiveOptionsPositions() by the time checkLiveOptionsExits
     // runs, rather than raising a question of re-triggering it in the same pass.
-    const liveOptionsReconcileOutcomes = await reconcileLiveOptionsOrders();
+    const liveOptionsReconcileOutcomes = await runStage('live options order reconcile', reconcileLiveOptionsOrders, []);
     // Backstop for reconcileLiveOptionsOrders() just above, mirroring the
     // equity backstop above it — but MORE necessary here: an options position
     // often has NO order watching it at all for most of its life (a closing
@@ -456,7 +456,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       const liveOptionsCfg = getAutotradeConfig();
       if (liveOptionsCfg.liveAccountId) await syncLiveOptionsPositionsFromBroker(liveOptionsCfg.liveAccountId);
     } catch (e) {
-      console.error('[autotrade-loop] live options position-truth sync failed:', (e as Error).message);
+      journalStageFailure('live options position-truth sync', e);
     }
     // An option held THROUGH expiry never produces a closing order, and neither
     // of the two mechanisms above can retire it: the reconcile has no order to
@@ -470,9 +470,9 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     try {
       if (hasExpiredLiveOptions()) await sweepExpiredLiveOptions();
     } catch (e) {
-      console.error('[autotrade-loop] expired live options sweep failed:', (e as Error).message);
+      journalStageFailure('expired live options sweep', e);
     }
-    const liveOptionsExitOutcomes = await checkLiveOptionsExits();
+    const liveOptionsExitOutcomes = await runStage('live options exits', checkLiveOptionsExits, []);
     // Keep accountEquityUsd fresh every tick instead of requiring the
     // Configuration tile's "Sync from Webull" button — read-only toward the
     // broker and, like the reconciles above, independent of every gate (see
@@ -488,7 +488,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     try {
       await syncAccountEquityFromBroker({ log: false });
     } catch (e) {
-      console.error('[autotrade-loop] equity sync failed:', (e as Error).message);
+      journalStageFailure('equity sync', e);
     }
     // Right after the sync so it sees this tick's equity: re-derive the four
     // equity-scaled DOLLAR caps once equity has drifted ≥15% from the equity
@@ -500,7 +500,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     try {
       reanchorLiveCapsIfDrifted();
     } catch (e) {
-      console.error('[autotrade-loop] live-caps re-anchor failed:', (e as Error).message);
+      journalStageFailure('live-caps re-anchor', e);
     }
     // Re-measure the daily-gain goal with THIS tick's just-synced equity, so
     // the entry gates below see the freshest number (the first measurement
@@ -512,7 +512,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     try {
       dailyTarget = updateDailyTarget();
     } catch (e) {
-      console.error('[autotrade-loop] daily-target refresh failed:', (e as Error).message);
+      journalStageFailure('daily-target refresh', e);
     }
     // Detection only (never adjusts a position's own quantity/price) — see
     // splitCheck.ts's own header comment. Self-gated to once per ET day, so
@@ -521,7 +521,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     try {
       await checkForRecentSplits();
     } catch (e) {
-      console.error('[autotrade-loop] split check failed:', (e as Error).message);
+      journalStageFailure('split check', e);
     }
     summary = {
       ...emptySummary(),
@@ -648,7 +648,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       const promotion = processMoversForPromotion(screenResult.candidates, config);
       summary.moversAutoPromoted = promotion.promoted.length;
     } catch (e) {
-      console.error('[autotrade-loop] movers auto-promotion failed:', (e as Error).message);
+      journalStageFailure('movers auto-promotion', e);
     }
 
     // Derived from the screen result rather than from processMoversForPromotion's
@@ -881,6 +881,54 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
 
 let timer: NodeJS.Timeout | null = null;
 let started = false;
+
+/** Log AND journal a stage failure. See runStage for why both: console alone
+ *  goes to a hosted log nobody reads, so a stage failing every tick was
+ *  indistinguishable from a stage with nothing to do. */
+function journalStageFailure(stage: string, e: unknown): void {
+  const reason = e instanceof Error ? e.message : String(e);
+  console.error(`[autotrade-loop] ${stage} failed:`, reason);
+  try {
+    logAutotradeEvent({ stage: 'execution', action: 'loop_stage_failed', detail: { loopStage: stage, reason } });
+  } catch {
+    /* journalling must never be the thing that takes the tick down */
+  }
+}
+
+/**
+ * Run one stage of the tick so that its failure cannot take down the stages
+ * after it, and so that the failure is VISIBLE.
+ *
+ * Both halves matter and both were broken (2026-09-05).
+ *
+ * Isolation: the tick body is `try { … } finally { … }` with no catch, so a
+ * throw anywhere in it abandons everything below. Most stages were already
+ * individually caught for exactly that reason ("caught so a broker hiccup here
+ * can't take down anything else in this tick") — but the six that were NOT
+ * caught were the most consequential ones: both live reconciles and both live
+ * exit sweeps. A single better-sqlite3 write error inside
+ * checkLiveEquityTimeExits would have skipped the live OPTIONS exit sweep, the
+ * equity sync and every entry for that tick, and a persistent one would have
+ * disabled them indefinitely while the loop looked like it was running. Exits
+ * not running is the worst failure this system has: positions sit past the
+ * conditions that were supposed to close them, in real money.
+ *
+ * Visibility: the existing catches only console.error. On a hosted deployment
+ * that goes to a log nobody is reading, so a stage failing every tick looks
+ * exactly like a stage with nothing to do. Journaling it puts the failure in
+ * the events feed, where "why did nothing exit today?" is actually asked.
+ *
+ * The fallback keeps the tick's arithmetic honest: a stage that failed reports
+ * zero of whatever it counts, rather than the previous tick's number.
+ */
+async function runStage<T>(stage: string, fn: () => Promise<T> | T, fallback: T): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    journalStageFailure(stage, e);
+    return fallback;
+  }
+}
 
 async function loop(): Promise<void> {
   try {

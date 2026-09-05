@@ -300,6 +300,61 @@ afterEach(() => {
   config.trading.placeEnabled = origPlaceEnabled;
 });
 
+describe('runAutotradeLoopTick — one failing stage must not take down the rest', () => {
+  // The tick body is try/finally with NO catch, so before 2026-09-05 a throw in
+  // any of the six uncaught stages abandoned everything below it. The six
+  // uncaught ones were the worst possible choice: both live reconciles and both
+  // live exit sweeps. A better-sqlite3 write error inside the equity time-exit
+  // would have skipped the live OPTIONS exit sweep, the equity sync and every
+  // entry that tick — and a persistent one would have disabled them
+  // indefinitely while the loop still looked like it was running.
+  //
+  // Exits not running is the worst failure mode this system has: positions sit
+  // past the conditions meant to close them, in real money.
+  it('still runs the live OPTIONS exit sweep when the equity time exit throws', async () => {
+    // Session closed so the tick stops before screening — every exit stage runs
+    // BEFORE that gate, which is the contract being checked here.
+    mockSessionWindow.mockReturnValue({ ok: false, reason: 'Market is closed' });
+    mockCheckLiveTimeExits.mockRejectedValue(new Error('better-sqlite3: database is locked'));
+    mockCheckLiveOptionsExits.mockResolvedValue([]);
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(mockCheckLiveOptionsExits).toHaveBeenCalledTimes(1);
+    expect(summary.liveTimeExitsRequested).toBe(0); // failed stage counts zero, not stale
+  });
+
+  it('still reaches the exits when the live order reconcile throws', async () => {
+    // Reconcile is the FIRST live stage, so a throw there used to abandon the
+    // entire remainder of the tick.
+    mockSessionWindow.mockReturnValue({ ok: false, reason: 'Market is closed' });
+    mockReconcileLive.mockRejectedValue(new Error('broker payload unparseable'));
+    mockCheckLiveOptionsExits.mockResolvedValue([]);
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(mockCheckLiveTimeExits).toHaveBeenCalledTimes(1);
+    expect(mockCheckLiveOptionsExits).toHaveBeenCalledTimes(1);
+    expect(summary.liveOrdersReconciled).toBe(0);
+  });
+
+  it('JOURNALS the failure, so a stage failing every tick is not silent', async () => {
+    // console.error alone goes to a hosted log nobody reads, which made a stage
+    // failing on every tick look exactly like a stage with nothing to do.
+    mockSessionWindow.mockReturnValue({ ok: false, reason: 'Market is closed' });
+    mockCheckLiveOptionsExits.mockRejectedValue(new Error('boom'));
+
+    await runAutotradeLoopTick();
+
+    expect(mockLogEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'loop_stage_failed',
+        detail: expect.objectContaining({ loopStage: 'live options exits', reason: 'boom' }),
+      }),
+    );
+  });
+});
+
 describe('runAutotradeLoopTick', () => {
   it('always checks exits, even when the session window blocks new entries', async () => {
     mockSessionWindow.mockReturnValue({ ok: false, reason: 'Market is closed' });

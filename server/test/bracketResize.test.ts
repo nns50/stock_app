@@ -83,10 +83,28 @@ describe('buildBracketResizePatches', () => {
     // price-restating payload was also refused: the reference lists combo_type
     // as required on an order, and the broker's complaint is precisely that it
     // cannot tell the take-profit from the stop-loss.
+    // order_type joins them from 2026-09-05: it is the field the REPLACE
+    // endpoint's own schema documents (combo_type is not), and it is what tells
+    // a LIMIT take-profit from a STOP_LOSS stop when both legs are `sell`.
     expect(out).toEqual([
-      { clientOrderId: 'TGT-1', quantity: 4, limitPrice: 110, comboType: 'STOP_PROFIT' },
-      { clientOrderId: 'STOP-1', quantity: 4, stopPrice: 96, comboType: 'STOP_LOSS' },
+      { clientOrderId: 'TGT-1', quantity: 4, limitPrice: 110, comboType: 'STOP_PROFIT', orderType: 'LIMIT' },
+      { clientOrderId: 'STOP-1', quantity: 4, stopPrice: 96, comboType: 'STOP_LOSS', orderType: 'STOP_LOSS' },
     ]);
+  });
+
+  it('ECHOES order_type rather than deriving it from the leg role', () => {
+    // A stop reported as STOP_LOSS_LIMIT must go back as STOP_LOSS_LIMIT.
+    // Deriving 'STOP_LOSS' from "this is the stop leg" would convert a
+    // stop-limit into a plain stop — changing a live protective order while
+    // claiming only to identify it.
+    const out = buildBracketResizePatches([sl({ orderType: 'STOP_LOSS_LIMIT' })], 3);
+    expect(out![0]!.orderType).toBe('STOP_LOSS_LIMIT');
+  });
+
+  it('omits order_type when the broker reported none, rather than inventing one', () => {
+    const out = buildBracketResizePatches([sl({ orderType: undefined })], 3);
+    expect(out![0]).not.toHaveProperty('orderType');
+    expect(out![0]!.comboType).toBe('STOP_LOSS'); // still classifiable by combo_type
   });
 
   it('echoes the price the broker reported — this identifies, it does not move a stop', () => {
@@ -97,10 +115,10 @@ describe('buildBracketResizePatches', () => {
 
   it('resizes a lone surviving leg — a filled target legitimately leaves one', () => {
     expect(buildBracketResizePatches([sl()], 2)).toEqual([
-      { clientOrderId: 'STOP-1', quantity: 2, stopPrice: 96, comboType: 'STOP_LOSS' },
+      { clientOrderId: 'STOP-1', quantity: 2, stopPrice: 96, comboType: 'STOP_LOSS', orderType: 'STOP_LOSS' },
     ]);
     expect(buildBracketResizePatches([tp()], 2)).toEqual([
-      { clientOrderId: 'TGT-1', quantity: 2, limitPrice: 110, comboType: 'STOP_PROFIT' },
+      { clientOrderId: 'TGT-1', quantity: 2, limitPrice: 110, comboType: 'STOP_PROFIT', orderType: 'LIMIT' },
     ]);
   });
 
