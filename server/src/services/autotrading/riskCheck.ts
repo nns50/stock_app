@@ -10,6 +10,7 @@ import { getMarketAtrPct } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
 import {
   cutFactor,
+  factorState,
   effectiveRiskPct as computeEffectiveRiskPct,
   isRegimeActive,
   isStepDownActive,
@@ -516,26 +517,41 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     }),
     finishLine: finishLineFactor,
   });
+  // Each of these three describes itself from its own FACTOR, not from the
+  // trigger: a threshold firing and a size actually changing are different
+  // facts, and reporting "active" for the first is how a status comes to lie.
+  // See factorState — regimeAtrThresholdPct 3 with regimeSizeCutPct 0 was live
+  // when this was written.
+  const stepDownState = factorState(stepDownActive, cutFactor(stepDownActive, ctx.stepDownSizeCutPct));
+  const regimeState = factorState(regimeActive, cutFactor(regimeActive, ctx.regimeSizeCutPct));
+  const equityCurveState = factorState(equityCurveDeriskActive, cutFactor(equityCurveDeriskActive, equityCurveCutPct));
+  const sizingAt = `sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}%`;
   check(
     'step_down_sizing',
     true,
-    stepDownActive
-      ? `active — ${ctx.consecutiveLosses} consecutive losses, sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}% (${ctx.stepDownSizeCutPct}% cut)`
-      : `inactive — ${ctx.consecutiveLosses} consecutive losses (triggers at ${ctx.stepDownAfterLosses})`,
+    stepDownState === 'active'
+      ? `active — ${ctx.consecutiveLosses} consecutive losses, ${sizingAt} (${ctx.stepDownSizeCutPct}% cut)`
+      : stepDownState === 'triggered-but-neutral'
+        ? `triggered at ${ctx.consecutiveLosses} consecutive losses, but the configured cut is 0% — size unchanged`
+        : `inactive — ${ctx.consecutiveLosses} consecutive losses (triggers at ${ctx.stepDownAfterLosses})`,
   );
   check(
     'regime_sizing',
     true,
-    regimeActive
-      ? `active — market ATR ${ctx.marketAtrPct!.toFixed(1)}% exceeds ${ctx.regimeAtrThresholdPct}%, sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}% (${ctx.regimeSizeCutPct}% cut)`
-      : `inactive — market ATR ${ctx.marketAtrPct == null ? 'unavailable' : ctx.marketAtrPct.toFixed(1) + '%'} (triggers above ${ctx.regimeAtrThresholdPct}%)`,
+    regimeState === 'active'
+      ? `active — market ATR ${ctx.marketAtrPct!.toFixed(1)}% exceeds ${ctx.regimeAtrThresholdPct}%, ${sizingAt} (${ctx.regimeSizeCutPct}% cut)`
+      : regimeState === 'triggered-but-neutral'
+        ? `triggered — market ATR ${ctx.marketAtrPct!.toFixed(1)}% exceeds ${ctx.regimeAtrThresholdPct}%, but the configured cut is 0% — size unchanged`
+        : `inactive — market ATR ${ctx.marketAtrPct == null ? 'unavailable' : ctx.marketAtrPct.toFixed(1) + '%'} (triggers above ${ctx.regimeAtrThresholdPct}%)`,
   );
   check(
     'equity_curve_derisk',
     true,
-    equityCurveDeriskActive
-      ? `active — strategy equity below its recent average, sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}% (${equityCurveCutPct}% cut)`
-      : 'inactive — strategy equity at/above its recent average (or disabled)',
+    equityCurveState === 'active'
+      ? `active — strategy equity below its recent average, ${sizingAt} (${equityCurveCutPct}% cut)`
+      : equityCurveState === 'triggered-but-neutral'
+        ? 'triggered — strategy equity below its recent average, but the configured cut is 0% — size unchanged'
+        : 'inactive — strategy equity at/above its recent average (or disabled)',
   );
   check(
     'expectancy_sizing',

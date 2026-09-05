@@ -13,6 +13,8 @@ import {
   RiskCheckRule,
 } from './riskCheck';
 import {
+  cutFactor,
+  factorState,
   effectiveRiskPct as computeEffectiveRiskPct,
   isRegimeActive,
   isStepDownActive,
@@ -218,12 +220,20 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
     }),
     finishLine: finishLineFactor,
   });
+  // Described from the FACTOR, not the trigger — same reasoning as the equity
+  // book's copy (see factorState): a threshold firing and a size actually
+  // changing are different facts.
+  const stepDownState = factorState(stepDownActive, cutFactor(stepDownActive, ctx.stepDownSizeCutPct));
+  const regimeState = factorState(regimeActive, cutFactor(regimeActive, ctx.regimeSizeCutPct));
+  const sizingAt = `sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}%`;
   check(
     'step_down_sizing',
     true,
-    stepDownActive
-      ? `active — ${ctx.consecutiveLosses} consecutive losses, sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}% (${ctx.stepDownSizeCutPct}% cut)`
-      : `inactive — ${ctx.consecutiveLosses} consecutive losses (triggers at ${ctx.stepDownAfterLosses})`,
+    stepDownState === 'active'
+      ? `active — ${ctx.consecutiveLosses} consecutive losses, ${sizingAt} (${ctx.stepDownSizeCutPct}% cut)`
+      : stepDownState === 'triggered-but-neutral'
+        ? `triggered at ${ctx.consecutiveLosses} consecutive losses, but the configured cut is 0% — size unchanged`
+        : `inactive — ${ctx.consecutiveLosses} consecutive losses (triggers at ${ctx.stepDownAfterLosses})`,
   );
   check(
     'method_sizing',
@@ -243,9 +253,11 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
   check(
     'regime_sizing',
     true,
-    regimeActive
-      ? `active — market ATR ${ctx.marketAtrPct!.toFixed(1)}% exceeds ${ctx.regimeAtrThresholdPct}%, sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}% (${ctx.regimeSizeCutPct}% cut)`
-      : `inactive — market ATR ${ctx.marketAtrPct == null ? 'unavailable' : ctx.marketAtrPct.toFixed(1) + '%'} (triggers above ${ctx.regimeAtrThresholdPct}%)`,
+    regimeState === 'active'
+      ? `active — market ATR ${ctx.marketAtrPct!.toFixed(1)}% exceeds ${ctx.regimeAtrThresholdPct}%, ${sizingAt} (${ctx.regimeSizeCutPct}% cut)`
+      : regimeState === 'triggered-but-neutral'
+        ? `triggered — market ATR ${ctx.marketAtrPct!.toFixed(1)}% exceeds ${ctx.regimeAtrThresholdPct}%, but the configured cut is 0% — size unchanged`
+        : `inactive — market ATR ${ctx.marketAtrPct == null ? 'unavailable' : ctx.marketAtrPct.toFixed(1) + '%'} (triggers above ${ctx.regimeAtrThresholdPct}%)`,
   );
 
   // Sizing itself is the one place single-leg and spread genuinely differ:
