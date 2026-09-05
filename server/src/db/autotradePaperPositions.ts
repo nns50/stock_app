@@ -15,11 +15,18 @@ import { db } from './index';
 // matter how far stopPrice has since ratcheted. A partial exit
 // (partialClosePaperPosition) reduces `quantity` in place and sets
 // partialExitTaken — the row stays 'open' with reduced size; the partial
-// fill itself is only journaled as an autotradeEvent, not a second row here
-// (this table remains one row per position, not a split position/exits
-// table — riskAmount stays fixed at its original full-size value throughout,
-// same convention as db/positions.ts's own remainingQuantity-vs-original-risk
-// split).
+// fill itself is not a second row here (this table remains one row per
+// position, not a split position/exits table — riskAmount stays fixed at its
+// original full-size value throughout, same convention as db/positions.ts's
+// own remainingQuantity-vs-original-risk split).
+//
+// It follows that the row's own (exitPrice - entryPrice) * quantity describes
+// only the FINAL slice, and reading P&L that way silently deletes every
+// partial. It did, for every scaled-out paper trade, until 2026-09-05 —
+// $356.99 across 17 of 70 closed rows, always positive because the partial
+// only fires at a profit. `realizedPartialPnl` now banks those slices on the
+// row, and **paperRealizedPnl() below is the only correct way to read this
+// table's P&L**. Do not open-code the subtraction.
 // ---------------------------------------------------------------------------
 
 export type PaperSide = 'buy' | 'sell';
@@ -78,6 +85,10 @@ export interface PaperPosition {
   bestPriceSinceEntry: number | null;
   /** Whether the one-time partial-exit trigger has already fired. */
   partialExitTaken: boolean;
+  /** P&L already BANKED by partial exits, in dollars. 0 for a trade that never
+   *  scaled out. Must be ADDED to the remainder's P&L — the row's quantity is
+   *  only what is left. Use paperRealizedPnl() rather than doing that by hand. */
+  realizedPartialPnl: number;
   /** How many times this position has been scaled into (pyramided). */
   addOnsTaken: number;
   /** Conviction grade (A/B/C) from the screener score at entry, or null for a
@@ -119,6 +130,7 @@ interface Row {
   initial_stop_price: number | null;
   best_price_since_entry: number | null;
   partial_exit_taken: number;
+  realized_partial_pnl: number | null;
   add_ons_taken: number;
   grade: string | null;
   entry_score: number | null;
@@ -149,6 +161,7 @@ function map(r: Row): PaperPosition {
     initialStopPrice: r.initial_stop_price,
     bestPriceSinceEntry: r.best_price_since_entry,
     partialExitTaken: r.partial_exit_taken === 1,
+    realizedPartialPnl: r.realized_partial_pnl ?? 0,
     addOnsTaken: r.add_ons_taken ?? 0,
     grade: r.grade ?? null,
     entryScore: r.entry_score ?? null,
@@ -269,27 +282,68 @@ export interface PartialClosePaperPositionInput {
   exitPrice: number;
 }
 
-/** Scale out of an open position: reduces quantity in place and marks
- *  partial_exit_taken so the trigger doesn't re-fire next cycle. The
- *  position stays 'open' with the remainder — riskAmount is deliberately
- *  left untouched (it's the ORIGINAL full-size dollar risk, the R-multiple
- *  denominator for the life of the trade, same convention as
- *  db/positions.ts's remainingQuantity-vs-original-risk split). The closed
- *  slice itself isn't written anywhere structured beyond the caller's own
- *  journal event — this table stays one row per position, not a split
- *  position/exits table. No-op (returns null) if `id` isn't open or
- *  `quantity` isn't strictly less than the current quantity. */
+/** Scale out of an open position: reduces quantity in place, BANKS the closed
+ *  slice's P&L into realized_partial_pnl, and marks partial_exit_taken so the
+ *  trigger doesn't re-fire next cycle. The position stays 'open' with the
+ *  remainder — riskAmount is deliberately left untouched (it's the ORIGINAL
+ *  full-size dollar risk, the R-multiple denominator for the life of the
+ *  trade, same convention as db/positions.ts's remainingQuantity-vs-original-
+ *  risk split). This table stays one row per position, not a split
+ *  position/exits table.
+ *
+ *  The slice's P&L is computed HERE, from the row's own entry_price and side,
+ *  rather than taken as an argument. The caller used to compute it for its
+ *  journal event and the row kept nothing, which is how every scaled-out
+ *  trade came to report its final leg alone; a `pnl` parameter would just be
+ *  a second derivation of the same quantity, free to disagree. Callers that
+ *  want the figure read it back off the returned row instead.
+ *
+ *  No-op (returns null) if `id` isn't open or `quantity` isn't strictly less
+ *  than the current quantity. */
 export function partialClosePaperPosition(id: number, input: PartialClosePaperPositionInput): PaperPosition | null {
   const now = Date.now();
   const info = db
     .prepare(
       `UPDATE autotrade_paper_positions
-       SET quantity = quantity - ?, partial_exit_taken = 1, updated_at = ?
+       SET quantity = quantity - ?,
+           realized_partial_pnl =
+             realized_partial_pnl + (? - entry_price) * ? * (CASE side WHEN 'buy' THEN 1 ELSE -1 END),
+           partial_exit_taken = 1,
+           updated_at = ?
        WHERE id = ? AND status = 'open' AND ? < quantity`,
     )
-    .run(input.quantity, now, id, input.quantity);
+    .run(input.quantity, input.exitPrice, input.quantity, now, id, input.quantity);
   if (info.changes === 0) return null;
   return map(db.prepare('SELECT * FROM autotrade_paper_positions WHERE id = ?').get(id) as Row);
+}
+
+/**
+ * The realized P&L of a paper position, in dollars — the ONLY correct reading
+ * of this table's P&L, and the one function every caller must use.
+ *
+ * `quantity` is what REMAINS after any scale-out and `exitPrice` is the final
+ * slice's price, so `(exitPrice - entryPrice) * quantity` alone is the last leg
+ * and nothing else. Three call sites in execute.ts open-coded exactly that —
+ * the paper daily P&L, the equity-curve de-risk input, and the realized R that
+ * feeds grade-expectancy SIZING — so a trade that scaled out at +0.25R and
+ * trailed to breakeven recorded as a scratch instead of a winner, and the book
+ * was sized down off its own deleted profits.
+ *
+ * Returns 0 for a position that is still open (nothing is realized yet) except
+ * for whatever partials have already banked.
+ */
+export function paperRealizedPnl(p: PaperPosition): number {
+  const remainder = p.exitPrice === null ? 0 : (p.exitPrice - p.entryPrice) * p.quantity * (p.side === 'buy' ? 1 : -1);
+  return remainder + p.realizedPartialPnl;
+}
+
+/** The realized R-multiple of a paper position — P&L over the ORIGINAL
+ *  full-size dollar risk. Null when there is no usable denominator, so a
+ *  caller cannot silently divide by zero into an Infinity that then flows
+ *  into an expectancy multiplier. */
+export function paperRealizedR(p: PaperPosition): number | null {
+  if (!(p.riskAmount > 0)) return null;
+  return paperRealizedPnl(p) / p.riskAmount;
 }
 
 export interface AddToPaperPositionInput {

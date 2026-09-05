@@ -807,6 +807,25 @@ position. It stayed hidden while the two triggers were 1.0R and 0.3R apart — t
 scale-out simply always went first — and would have surfaced the moment they were set
 equal.
 
+**A scale-out you don't count is a scale-out that looks like it doesn't work.** The same
+trade shape has a second failure mode, and it is about measurement rather than triggers.
+Scaling out reduces the position's size in place, so the obvious P&L reading — exit price
+minus entry, times quantity — silently becomes *the final leg only*, and the banked slice
+disappears. Through 2026-09-05 that is exactly what every paper P&L read did: $356.99
+across 17 of 70 closed trades, and always in the same direction, because a partial only
+fires at a profit. The trades hurt worst were the strategy's own designed wins — take 67%
+off at +0.25R, trail the rest to breakeven — which recorded as flat scratches.
+
+Two lessons, both general:
+
+- **The number that sizes you is the number to check first.** Realized R fed the
+  per-grade expectancy multiplier, so the book was being sized *down* off profits it had
+  made and then deleted. A reporting bug that touches sizing is not a reporting bug.
+- **Never evaluate a mechanism with data that drops the mechanism's own contribution.**
+  The pending verdict on this very scale-out would have been read from a book where the
+  scale-out's every dollar was missing. Before judging a feature, confirm the evidence
+  can see it.
+
 ---
 
 ## Reducing slippage with execution quality

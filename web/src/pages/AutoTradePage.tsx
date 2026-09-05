@@ -425,15 +425,24 @@ function CombinedBacktestWindowResult({
   );
 }
 
-/** Realized P&L for a closed position (from its own exitPrice); unrealized
- *  P&L for an open one, from the live quote the server resolved this request
+/** Realized P&L for a closed position; unrealized P&L for an open one, from
+ *  the live quote the server resolved this request
  *  (server/src/routes/autotrade.ts's withLivePrices) — null only when that
- *  quote itself couldn't be resolved (provider down, nothing cached either). */
+ *  quote itself couldn't be resolved (provider down, nothing cached either).
+ *
+ *  The closed branch ADDS realizedPartialPnl. `quantity` is only what remained
+ *  after a scale-out and `exitPrice` only the final slice, so the subtraction
+ *  alone is the last leg: a trade that took 67% off at +0.25R and trailed the
+ *  rest to breakeven displayed as a $0 scratch instead of the winner it was.
+ *
+ *  The open branch does NOT add it, deliberately: unrealizedPnl means
+ *  mark-to-market on what is still held, and banked dollars are realized. The
+ *  banked figure is shown beside it instead. */
 function paperPnl(p: PaperPosition): number | null {
   if (p.status === 'open') return p.unrealizedPnl;
   if (p.exitPrice === null) return null;
   const sign = p.side === 'buy' ? 1 : -1;
-  return (p.exitPrice - p.entryPrice) * p.quantity * sign;
+  return (p.exitPrice - p.entryPrice) * p.quantity * sign + p.realizedPartialPnl;
 }
 
 /** Every poll tick hands these tables a brand-new array/object graph even
@@ -566,6 +575,12 @@ interface OptionsValueShape {
   shortExitPrice: number | null;
   quantity: number;
   unrealizedPnl: number | null;
+  /** P&L banked by earlier scale-outs. OPTIONAL because the two books that
+   *  satisfy this shape differ: the paper book scales out and always carries
+   *  the field, the LIVE options book has no partial-exit concept at all and
+   *  has no such column. Absent therefore means "this book cannot scale out",
+   *  which is genuinely 0 banked — not a missing number. */
+  realizedPartialPnl?: number;
 }
 
 function optionsPaperEntryValue(p: OptionsValueShape): number {
@@ -595,7 +610,11 @@ function optionsPaperPnl(p: OptionsValueShape): number | null {
   if (p.status === 'open') return p.unrealizedPnl;
   const exitValue = optionsPaperExitValue(p);
   if (exitValue === null) return null;
-  return (exitValue - optionsPaperEntryValue(p)) * p.quantity * 100;
+  // `quantity` is only what REMAINED after any scale-out and exitValue only
+  // the final slice, so the banked partials have to be added back. Same
+  // correction as the equity paperPnl above, and the same reason: the equity
+  // book lost $356.99 of realized profit to this before 2026-09-05.
+  return (exitValue - optionsPaperEntryValue(p)) * p.quantity * 100 + (p.realizedPartialPnl ?? 0);
 }
 
 const OptionsPaperPositionsTable = memo(

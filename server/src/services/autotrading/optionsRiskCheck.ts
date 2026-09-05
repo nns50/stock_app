@@ -12,6 +12,7 @@ import {
   RiskCheckResult,
   RiskCheckRule,
 } from './riskCheck';
+import { cutFactor, effectiveRiskPct as computeEffectiveRiskPct, NEUTRAL } from './effectiveRisk';
 
 // ---------------------------------------------------------------------------
 // The options counterpart to riskCheck.ts (docs/AUTOTRADING_SPEC.md, phase 10)
@@ -192,12 +193,21 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
   // the argument against is that an option's R is premium paid while the grade
   // is scored from the UNDERLYING's screener total, so the two are further
   // apart than they are for a stock.
-  const effectiveRiskPct =
-    ctx.riskPerTradePct *
-    (stepDownActive ? 1 - ctx.stepDownSizeCutPct / 100 : 1) *
-    (regimeActive ? 1 - ctx.regimeSizeCutPct / 100 : 1) *
-    methodMultiplier *
-    finishLineFactor;
+  // Through the SAME SizingFactors the equity path uses. Both books used to
+  // carry their own copy of this product, which is how the two omissions below
+  // became invisible: an absent factor looks like nothing at all. Now each one
+  // is a written NEUTRAL with a reason, and a new factor does not compile here
+  // until this book says what it does with it.
+  const effectiveRiskPct = computeEffectiveRiskPct(ctx.riskPerTradePct, {
+    stepDown: cutFactor(stepDownActive, ctx.stepDownSizeCutPct),
+    regime: cutFactor(regimeActive, ctx.regimeSizeCutPct),
+    // Equity-only, as the blocked() path a few lines up already states.
+    equityCurveDerisk: NEUTRAL,
+    // Off by decision, not by omission — see the block above.
+    expectancy: NEUTRAL,
+    method: methodMultiplier,
+    finishLine: finishLineFactor,
+  });
   check(
     'step_down_sizing',
     true,

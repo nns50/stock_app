@@ -2205,6 +2205,12 @@ export interface PaperPosition {
   exitPrice: number | null;
   exitAt: number | null;
   exitReason: PaperExitReason | null;
+  /** P&L in dollars already BANKED by partial exits (scale-outs). `quantity`
+   *  above is only what REMAINS, and `exitPrice` only the final slice, so this
+   *  must be ADDED to get the trade's realized P&L. 0 for a trade that never
+   *  scaled out. Before 2026-09-05 the banked slice was stored nowhere and
+   *  every scaled-out trade displayed its final leg alone. */
+  realizedPartialPnl: number;
   createdAt: number;
   updatedAt: number;
   /** A live quote as of the request — null for a closed position (its own
@@ -2308,6 +2314,13 @@ export interface OptionsPaperPosition {
   shortExitPrice: number | null;
   exitAt: number | null;
   exitReason: OptionsPaperExitReason | null;
+  /** P&L in dollars already BANKED by partial exits (contracts x 100 already
+   *  applied). `quantity` is only what REMAINS and `exitPrice` only the final
+   *  slice, so this must be ADDED for the trade's realized P&L. 0 for a
+   *  position that never scaled out — which, as of 2026-09-05, is all of them:
+   *  the column was added before this book took its first partial, after the
+   *  equity twin lost $356.99 to the same hole. */
+  realizedPartialPnl: number;
   createdAt: number;
   updatedAt: number;
   /** A live contract mark as of the request (long leg, for a spread) — null
