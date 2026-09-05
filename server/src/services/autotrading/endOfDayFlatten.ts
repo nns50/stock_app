@@ -30,9 +30,23 @@ import { AutotradeConfig } from '../../db/autotradeConfig';
 // GRMN's case above — and letting it rest unfilled is how a position gets
 // carried by an exit that already decided to leave.
 //
-// LIVE EQUITY only, consistent with the rest of the goal-protection stack.
-// Options carry their own %-of-premium exits and an expiry of their own; paper
-// has no overnight risk worth the churn.
+// Options carry their own %-of-premium exits and an expiry of their own, so
+// they are not flattened here.
+//
+// PAPER equity DOES flatten, as of 2026-09-05, on this same window. The
+// original reasoning — "paper has no overnight risk worth the churn" — was
+// right about risk and wrong about measurement. With no flatten, every paper
+// position opened late in the session necessarily became an overnight hold:
+// all twelve such entries were carried, ten of twelve stopped out the next
+// morning, and those alone were -6.03R against a whole-book total of -2.49R.
+// A paper book that cannot reproduce the live book's exits is not evidence
+// about the live book.
+//
+// The ENTRY CUTOFF below stays live-only, deliberately. Paper keeps opening
+// late entries and now exits them the way live would, which makes it the
+// control group for the question the live book cannot answer about itself:
+// whether the cutoff is buying anything, or just closing a quarter of the
+// session.
 // ---------------------------------------------------------------------------
 
 export type EndOfDayFlattenConfig = Pick<AutotradeConfig, 'endOfDayFlattenMinutes'>;

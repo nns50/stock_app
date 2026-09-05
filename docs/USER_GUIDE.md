@@ -1430,7 +1430,22 @@ equally-weighted cards in the order they happened to be built:
   before the 16:00 ET close** and every open live position is closed through
   that same cancel-bracket-then-close path rather than carried overnight —
   **live options positions too**, which since 2026-08-25 also honour **max hold
-  days** (see "Live options trading" below). It
+  days** (see "Live options trading" below). Since 2026-09-05 the **paper**
+  equity book flattens on the same window and the same setting: not for risk (a
+  simulated overnight hold costs nothing) but so paper measures the strategy
+  live actually runs. Without it every paper position opened late in the session
+  necessarily became an overnight hold — all twelve such trades were carried,
+  ten stopped out the next morning, and those alone accounted for more than the
+  paper book's entire net loss. Paper copies the exits that are **structural**
+  — the ones live applies to every position whatever the trade is doing — and
+  deliberately leaves off the three rules that are themselves the open question:
+  the **entry cutoff**, the **stagnation exit** and the **symbol re-entry
+  cooldown**. Paper keeps taking those trades and now exits them the way live
+  would, which is the only way to find out what each of those three rules is
+  actually buying — live can't answer that about itself, since it closed the
+  trade. Anything else that differs between the two books is a bug, not a
+  comparison.
+  It
   Since 2026-08-28 the flatten also closes the **entry** side of that window:
   no new live equity position opens within **the flatten window plus a runway**
   of the close. Since 2026-09-02 that runway is **however long the stagnation

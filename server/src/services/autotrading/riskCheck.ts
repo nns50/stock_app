@@ -707,11 +707,15 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   // sectorNotional()'s own doc comment. Skipped entirely (no rule added, not
   // a passing one) when the candidate has no sector classification, since
   // there's nothing to compare it against. Truthy check (not `!== null`)
-  // deliberately also treats a MISSING field as "skip" — a hand-built
-  // RiskCheckContext fixture that predates this field (test files aren't
-  // type-checked, see web/tsconfig.json's own precedent) gets `undefined`,
-  // not `null`, and `undefined !== null` would otherwise slip past the guard
-  // and run the check against NaN-derived numbers.
+  // deliberately also treats a MISSING field as "skip": `undefined !== null`
+  // would slip past the guard and run the check against NaN-derived numbers.
+  //
+  // The reason originally given here — that test fixtures escape type-checking
+  // — stopped being true on 2026-07-28, when typecheck started covering test
+  // files in BOTH workspaces (server's tsconfig.test.json, and web's tsconfig
+  // never excluded them). The guard stays regardless: this field comes off a
+  // context four different callers assemble, and a check that silently
+  // compares NaN is a check that passes everything.
   if (ctx.candidateSector) {
     const sectorCap = (ctx.maxSectorExposurePct / 100) * ctx.equity;
     const sectorOk = ctx.sectorNotional <= sectorCap;
