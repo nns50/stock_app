@@ -5590,3 +5590,71 @@ is the documented shape, not evidence of a parse failure.
 
 Fetch the `.md` reference before reasoning about this API. Four payload shapes
 were burned on inference this week; the authoritative schema was one URL away.
+
+## 2026-09-04 — deep-dive sweep: the same lookup bug, third occurrence
+
+Prompted by a request to find everything at once rather than one bug per change.
+Two real defects, both in the class this codebase keeps reproducing.
+
+### 1. The manual close button was broken for every adopted position
+
+`closeLivePosition` gated its bracket cancel on `pos.sourceIntentId !== null`:
+
+```ts
+if (pos.sourceIntentId !== null) {
+  const entryIntent = getIntent(pos.sourceIntentId);
+  if (entryIntent?.isBracket) await cancelLiveBracketExitLegs(entryIntent, accountId);
+}
+```
+
+An ADOPTED position never has `source_intent_id` — adoption deliberately leaves
+it null, because that null is the "orphan, needs linking" signal the adoption
+path matches on — and from 2026-09-01 essentially the whole live book is adopted.
+So the cancel was skipped for every live position, and
+`cancelLiveBracketExitLegs`' own comment records the cost:
+
+> "a close was rejected as 'will reverse an existing position' until the resting
+> stop/target was cancelled by hand"
+
+Best case the broker refuses the close and the button simply fails. Worse, if a
+close is accepted, the resting legs outlive the position and the next fill sells
+shares no longer held.
+
+**Third occurrence of this exact lookup bug**, after the CTVA stagnation close
+(21 consecutive failures) and `checkLiveBracketProtection` (ten days of a dead
+alarm). `entryIntentIdForPosition` is now exported and shared rather than
+re-derived per call site. The `riskProfile` lookup beside it had the same
+weakness and silently used the config default instead of the profile the entry
+was sized under.
+
+Regression test asserts an adopted position's bracket IS cancelled; reverting to
+`pos.sourceIntentId` fails it.
+
+### 2. The options exit sweep closed other accounts' positions
+
+`checkLiveOptionsExits` read `listOpenLiveOptionsPositions()` unscoped and then
+placed each close against `freshCfg.liveAccountId` — so a row belonging to
+another account on the same login would be closed against the TRADING account,
+an order to sell contracts that account does not hold. Same class as the
+snapshot fix earlier today; latent while one account is in use, and reachable now
+that live options are on.
+
+**Unassigned rows are deliberately KEPT here**, which looks like it contradicts
+the "closing means don't act on ambiguity" rule stated for the snapshot. It does
+not — excluding them DEADLOCKS against that gate. The snapshot counts an
+unassigned row, holding "max 1 at a time" shut; an exit sweep that refused to
+close one would leave it blocking every future options entry forever with nothing
+able to clear it. A legacy row without `account_id` was written by this same
+loop, so closing it in the configured account is the safe reading. A row
+positively belonging to a DIFFERENT account is the dangerous case, and that is
+what is now excluded.
+
+### Checked and found CORRECT
+
+- `accountState.ts` reads `asset.buying_power` off the per-currency asset with an
+  `overnight_buying_power` fallback. The vendor docs list `buying_power` and
+  `settled_cash` as per-currency fields, but this account's wire payload omits
+  both — the captured shape is authoritative over the docs for what a given
+  account actually returns, and the fallback chain already handles it.
+- Every other `sourceIntentId` gate: the adoption paths (where null IS the
+  signal) and the OR-conditions that still pass via tags.

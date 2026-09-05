@@ -1411,7 +1411,27 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
   if (!config.trading.placeEnabled) return [];
   if (!getAutotradeConfig().liveAccountId) return [];
 
-  const open = listOpenLiveOptionsPositions();
+  // Scoped to the account this sweep will actually PLACE the close in
+  // (freshCfg.liveAccountId below). Unscoped, a row belonging to another
+  // account on the same login is closed against the TRADING account — an order
+  // to sell contracts that account does not hold. Same class as the snapshot
+  // fix above; latent while one account is in use, and live options went on
+  // 2026-09-04, so it is now reachable.
+  //
+  // Unassigned rows are KEPT, and note this looks like it contradicts the
+  // "closing means don't act on ambiguity" rule stated in the snapshot's
+  // comment. It does not, because excluding them here DEADLOCKS against that
+  // gate: the snapshot counts an unassigned row (holding "max 1 at a time"
+  // shut), so an exit sweep that refused to close one would leave it blocking
+  // every future options entry forever with no mechanism able to clear it. A
+  // legacy row without account_id was written by this same loop, so closing it
+  // in the configured account is the safe reading; a row positively belonging
+  // to a DIFFERENT account is the dangerous one, and that is what is now
+  // excluded.
+  const sweepAccountId = getAutotradeConfig().liveAccountId;
+  const open = sweepAccountId
+    ? listOpenLiveOptionsPositions({ accountId: sweepAccountId, includeUnassignedAccount: true })
+    : listOpenLiveOptionsPositions();
   if (open.length === 0) return [];
 
   const pendingExitPositionIds = new Set(

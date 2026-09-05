@@ -3,10 +3,10 @@ import { OrderIntent } from './guardrails';
 import { placeOrder, PlaceResult } from './placeOrder';
 import { getIntent } from '../../db/orders';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
-import { recordLiveExitOrder, getLiveOrder } from '../../db/autotradeLiveOrders';
+import { recordLiveExitOrder, getLiveEntryOrderForPosition } from '../../db/autotradeLiveOrders';
 import { recordLiveOptionsExitOrder } from '../../db/autotradeLiveOptionsOrders';
 import { LiveOptionsPosition } from '../../db/autotradeLiveOptionsPositions';
-import { cancelLiveBracketExitLegs, isAutotradePosition } from '../autotrading/liveExecute';
+import { cancelLiveBracketExitLegs, isAutotradePosition, entryIntentIdForPosition } from '../autotrading/liveExecute';
 import { fetchContractMark, fetchContractQuote, validPremium } from '../autotrading/optionsExecute';
 import { getProvider } from '../../providers';
 
@@ -138,8 +138,23 @@ export async function closeLivePosition(
   }
 
   let bracketCancelled: boolean | undefined;
-  if (pos.sourceIntentId !== null) {
-    const entryIntent = getIntent(pos.sourceIntentId);
+  // EITHER link, not source_intent_id alone. An ADOPTED position never carries
+  // source_intent_id (adoption deliberately does not set it — a null is the
+  // "orphan, needs linking" signal that path matches on), and since 2026-09-01
+  // essentially every live position is adopted. Gating on it therefore SKIPPED
+  // the bracket cancel for the whole live book, and cancelLiveBracketExitLegs'
+  // own comment records what that costs: "a close was rejected as 'will reverse
+  // an existing position' until the resting stop/target was cancelled by hand".
+  // So this button was broken for every adopted position — and if the broker
+  // ever accepts such a close, the resting legs outlive the position and the
+  // next fill sells shares we no longer own.
+  //
+  // Third occurrence of this exact lookup bug (after the CTVA stagnation close
+  // and checkLiveBracketProtection), which is why the helper is shared now
+  // rather than re-derived per call site.
+  const entryIntentId = entryIntentIdForPosition(pos);
+  if (entryIntentId !== null) {
+    const entryIntent = getIntent(entryIntentId);
     if (entryIntent?.isBracket) {
       const cancelled = await cancelLiveBracketExitLegs(entryIntent, accountId);
       if (cancelled.raced) {
@@ -186,9 +201,10 @@ export async function closeLivePosition(
   // Positions), so an options position reachable from THIS route can never
   // be one the autotrade options loop is also watching.
   if (result.placed && result.intent && pos.assetType === 'stock' && isAutotradePosition(pos)) {
-    const riskProfile = pos.sourceIntentId
-      ? (getLiveOrder(pos.sourceIntentId)?.riskProfile ?? getAutotradeConfig().riskProfile)
-      : getAutotradeConfig().riskProfile;
+    // Same either-link reasoning: an adopted position has no source_intent_id,
+    // and reading only that silently used the config default instead of the
+    // profile this entry was actually sized under.
+    const riskProfile = getLiveEntryOrderForPosition(pos.id)?.riskProfile ?? getAutotradeConfig().riskProfile;
     recordLiveExitOrder({ intentId: result.intent.id, symbol: pos.symbol, riskProfile, positionId: pos.id });
   }
 

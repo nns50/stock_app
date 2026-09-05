@@ -26,7 +26,7 @@ import { initDb, db } from '../src/db';
 import { setTradingConfig } from '../src/db/trading';
 import { createPosition, Position } from '../src/db/positions';
 import { createIntent } from '../src/db/orders';
-import { getLiveOrder } from '../src/db/autotradeLiveOrders';
+import { getLiveOrder, recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
 import { getLiveOptionsOrder } from '../src/db/autotradeLiveOptionsOrders';
 import { createLiveOptionsPosition, LiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
 import { closeLivePosition, closeLiveOptionsAutotradePosition } from '../src/services/trading/closePosition';
@@ -190,6 +190,44 @@ describe('closeLivePosition', () => {
     expect(r).toMatchObject({ placed: false, reason: 'not_confirmed' });
     expect(mockCancelOrder).not.toHaveBeenCalled();
     expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  // 2026-09-04: the bracket cancel was gated on pos.sourceIntentId !== null. An
+  // ADOPTED position never has one — adoption deliberately leaves it null, since
+  // that null is the "orphan, needs linking" signal the adoption path matches on
+  // — and from 2026-09-01 essentially the whole live book is adopted. So this
+  // button skipped the cancel for every live position, and
+  // cancelLiveBracketExitLegs' own comment records the cost: "a close was
+  // rejected as 'will reverse an existing position' until the resting stop/
+  // target was cancelled by hand". Third occurrence of this lookup bug, after
+  // the CTVA stagnation close and checkLiveBracketProtection.
+  it('cancels the bracket of an ADOPTED position, which is linked only through its entry order', async () => {
+    const entry = bracketEntryIntent();
+    const pos = longStock({ tags: ['live', 'autotrade'] }); // sourceIntentId stays null
+    expect(pos.sourceIntentId).toBeNull();
+    recordLiveOrder({
+      intentId: entry.id,
+      symbol: 'AAPL',
+      stopPrice: 85,
+      targetPrice: 110,
+      riskAmount: 500,
+      riskProfile: 'MODERATE',
+    });
+    setLiveOrderPositionId(entry.id, pos.id);
+
+    mockOpenOrders
+      .mockResolvedValueOnce({ ok: true, orders: [openOrder({ clientOrderId: 'STOP-ADOPTED' })] })
+      .mockResolvedValueOnce(noOpenOrders);
+    mockCancelOrder.mockResolvedValue({ ok: true });
+    mockAccountState.mockResolvedValue(accountStateWith(100) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE-ADOPTED' });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+
+    // The assertion that fails without the fix: the resting bracket IS cleared
+    // before the close goes out.
+    expect(r).toMatchObject({ bracketCancelled: true });
+    expect(mockCancelOrder).toHaveBeenCalledWith('ACC1', 'STOP-ADOPTED');
   });
 
   it('closes a long with no bracket directly — sells the full remaining quantity, no cancel attempted', async () => {
