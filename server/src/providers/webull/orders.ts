@@ -94,8 +94,25 @@ export function buildWebullStockOrder(intent: OrderIntent, clientOrderId: string
  * support LIMIT / STOP_LOSS / STOP_LOSS_LIMIT (no MARKET — enforced upstream by
  * the guardrails). Key points the docs make explicit (and that live previews
  * confirmed): `side`, `market` and `symbol` are carried at the ORDER level, AND
- * the leg repeats `side`, `symbol`, `market` and `instrument_type:'OPTION'`. No
- * `position_intent` — the broker derives it.
+ * the leg repeats `side`, `symbol`, `market` and `instrument_type:'OPTION'`.
+ *
+ * `position_intent` is deliberately omitted, but note WHY, because the reason is
+ * weaker than it looks: the docs (reference/common-order-place) list it as an
+ * optional order-level field with BUY_TO_OPEN / BUY_TO_CLOSE / SELL_TO_OPEN /
+ * SELL_TO_CLOSE, and say NOTHING about how the broker infers it when absent —
+ * the options trading guide doesn't mention it at all, and shows no
+ * close-a-long example. So "the broker derives it" (as this comment used to
+ * assert) is an inference from the fact that entries and exits both place
+ * successfully, not something the vendor documents.
+ *
+ * It matters most on an option SELL, where the two readings are materially
+ * different positions: SELL_TO_CLOSE flattens a long, SELL_TO_OPEN writes a
+ * naked short. We track open/close ourselves (`intent.openClose`, consumed by
+ * guardrails and reconcile) and it has never gone wrong in practice, which is
+ * why this is left alone rather than changed on a hunch. To settle it, preview
+ * an options CLOSE against a real held contract and read the estimated cost /
+ * margin back — an order the broker thought was opening a short would price
+ * very differently.
  */
 export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: string): WebullOrderPayload {
   const symbol = intent.symbol.toUpperCase();

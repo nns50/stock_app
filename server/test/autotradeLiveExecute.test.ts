@@ -1696,6 +1696,60 @@ describe('reconcileLiveOrders vs a position-sync row for the same fill', () => {
     expect(getLiveOrder(intentId)?.positionId).toBe(imported.id);
   });
 
+  // The healing block writes six at-entry fields onto an untagged orphan, and
+  // until 2026-09-04 entryComponents was the only one of the six written
+  // WITHOUT an `adopted.X ??` preserve-existing prefix — so it was the only one
+  // that could overwrite a real value with null. This pins the rule for all six
+  // at the consumer: healing an orphan backfills what is missing and destroys
+  // nothing. (Reachability is a separate question — see the comment on the line
+  // itself. The asymmetry is worth closing regardless of whether a caller
+  // currently walks into it.)
+  it("backfills the orphan's missing at-entry fields without clobbering the ones it has", async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-KEEP' });
+    // The ORDER carries no components — the only case where a missing
+    // preserve-existing prefix actually destroys rather than merely duplicates.
+    const sig = signal({ components: null });
+    const okResult = evaluateRiskCheck(sig, baseRiskCtx());
+    await attemptLiveEntry(sig, okResult, 'MODERATE', liveConfig());
+    const intentId = listIntents()[0].id;
+    expect(getLiveOrder(intentId)?.entryComponents).toBeNull();
+
+    const existing = { momentum: 95.2, rsi: 94.2, trend: 100 };
+    const imported = createPosition({
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: okResult.sizing.suggestedQuantity,
+      entryPrice: 100.5,
+      entryDate: '2026-08-24',
+      tags: ['webull'],
+      accountId: 'ACC1',
+      entryComponents: existing,
+    });
+
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: okResult.sizing.suggestedQuantity,
+      filledPrice: 100.5,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+
+    const healed = listPositions({ status: 'open', symbol: 'AAPL' });
+    expect(healed).toHaveLength(1);
+    expect(healed[0].id).toBe(imported.id);
+    // Kept, not overwritten with the order's null.
+    expect(healed[0].entryComponents).toEqual(existing);
+    // ...while the fields it genuinely lacked were still backfilled.
+    expect(healed[0].entryScore).toBe(sig.score);
+    expect(healed[0].stopPrice).toBe(95);
+  });
+
   it('does not adopt a row belonging to a different account', async () => {
     setAutotradeConfig({ liveAccountId: 'ACC1' });
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);

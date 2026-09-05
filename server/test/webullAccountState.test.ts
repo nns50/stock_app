@@ -352,6 +352,51 @@ describe('webullAccountState — the real payload has no `buying_power` key', ()
     expect(res.state!.settledCashUsd).toBeUndefined();
   });
 
+  // Two ways this payload lies quietly, both found 2026-09-05 by reading the
+  // vendor docs (reference/account-balance) rather than the captured sample.
+  it('picks the currency asset by currency, not by array position', async () => {
+    // The docs list account_id as the ONLY query parameter — total_asset_currency
+    // is a response field and filters nothing — and put a REQUIRED `currency` on
+    // each entry with no promised ordering. A non-USD entry sorting first used
+    // to become the source of every dollar figure, silently.
+    const multi = {
+      ...REAL_BALANCE,
+      account_currency_assets: [
+        { currency: 'HKD', cash_balance: '11.00', overnight_buying_power: '11.00', market_value: '0.00' },
+        ...REAL_BALANCE.account_currency_assets,
+      ],
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp(multi));
+    const res = await webullAccountState('ACC1');
+    expect(res.state!.buyingPowerUsd).toBe(4_900.4); // the USD row, not HKD's 11
+    expect(res.state!.dayBuyingPowerUsd).toBe(9_800.8);
+  });
+
+  it('treats a BLANK buying-power string as absent and keeps falling back', async () => {
+    // `num(a ?? b)` could not see this: '' is not nullish, so it short-circuits
+    // the chain, and Number('') is a perfectly finite 0. Buying power read as
+    // $0 — which now BOUNDS every live order, so the whole book would size to
+    // zero and journal it as a legitimate refusal.
+    const blank = {
+      ...REAL_BALANCE,
+      account_currency_assets: [{ ...REAL_BALANCE.account_currency_assets[0], buying_power: '   ' }],
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp(blank));
+    const res = await webullAccountState('ACC1');
+    expect(res.state!.buyingPowerUsd).toBe(4_900.4); // overnight, not 0
+  });
+
+  it('still honours a genuine zero buying power', async () => {
+    // The fallback must not paper over a real "you cannot buy anything".
+    const broke = {
+      ...REAL_BALANCE,
+      account_currency_assets: [{ ...REAL_BALANCE.account_currency_assets[0], buying_power: '0.00' }],
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp(broke));
+    const res = await webullAccountState('ACC1');
+    expect(res.state!.buyingPowerUsd).toBe(0);
+  });
+
   it('falls back to cash only when the broker reports no buying-power field at all', async () => {
     const noBp = {
       ...REAL_BALANCE,

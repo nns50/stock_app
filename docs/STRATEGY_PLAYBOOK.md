@@ -237,7 +237,8 @@ when a name's volume can't be resolved rather than blocking the trade. Options a
 A-grade setups actually out-earn your C-grade ones — and the Monitoring card's **method
 performance** table answers the same question per instrument: whether long stock, short
 stock, calls, or puts is currently carrying the daily goal (**method-weighted sizing**
-leans size toward the answer, without ever switching a method off); **expectancy-weighted sizing** (Config →
+leans size toward the answer, without ever switching a method off — scored from the live
+record and applied to every book, so the paper run sizes the way live would); **expectancy-weighted sizing** (Config →
 risk settings, off by default) is what acts on that answer instead of leaving it on a chart.
 When it's on, each conviction grade is sized by its _own_ realized edge — a grade whose closed
 trades average a positive R risks more, a grade that bleeds risks less, breakeven stays flat
