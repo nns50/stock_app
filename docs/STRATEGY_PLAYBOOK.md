@@ -807,6 +807,49 @@ position. It stayed hidden while the two triggers were 1.0R and 0.3R apart — t
 scale-out simply always went first — and would have surfaced the moment they were set
 equal.
 
+**Your control group has to run the same rules you do.** The paper book existed to
+say what the live strategy would have done — but it had no end-of-day flatten, on the
+reasonable-sounding ground that a simulated overnight hold risks nothing. It risks
+nothing and it *measures* something else entirely: with no flatten, a paper position
+opened late in the session could only become an overnight hold, which the live book
+never takes. Every one of the twelve paper entries opened inside the last 95 minutes
+was carried; ten of the twelve stopped out, nine of them before noon the next morning,
+and those trades alone were **-6.03R against a whole-book total of -2.49R**. The
+paper headline was dominated by trades the live strategy could not have held, and
+excluding them the book is *positive*.
+
+The trap is that this looks like useful evidence right up until you check the hold
+times. "Late entries average -0.50R" reads as a clean case for an entry cutoff; the
+same rows, read with their exits, say something different — that *carrying overnight*
+is expensive, which the live flatten already prevents. Before drawing a conclusion
+from a book, confirm the book plays by the rules the conclusion is about.
+
+The corollary matters as much as the fix. A control group that adopts every
+restriction of the live path stops being able to test any of them, so the rule is not
+"paper mirrors live" — it is:
+
+> Copy the exits that are **structural** — the ones live applies to every position
+> regardless of how the trade is going — and leave off the ones that **are** the open
+> question.
+
+The flatten is structural: a fact about the clock, not a judgement about the trade.
+Paper is now live minus exactly three things, each of which is a question someone is
+trying to answer:
+
+| Left off paper | The question it exists to answer |
+|---|---|
+| Entry cutoff (95 min) | Is closing the last quarter of the session buying anything? |
+| Stagnation exit (90 min / 0.5R) | Does scratching a slow position help? |
+| Symbol re-entry cooldown (90 min) | Does refusing a re-entry protect anything? |
+
+The stagnation row is the sharpest case. The live book **cannot** answer that question
+about itself: it closed the trade, so what the trade would have gone on to do is
+unobservable there. A paper book running the same setups to stop, target or the
+flatten is the missing half — and it only became a *valid* missing half once the
+flatten landed, because before that "ran on" silently meant "held overnight."
+
+Anything else that diverges is a bug, not a counterfactual.
+
 **A sizing rule that reasons about size must read the size that will be used.** The
 finish-line trim asks "would a full-size winner overshoot what is left to the goal?"
 — and its own answer is then one of six multipliers applied to the entry, beside the

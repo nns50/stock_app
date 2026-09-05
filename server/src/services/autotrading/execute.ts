@@ -31,6 +31,7 @@ import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { journalMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { getProvider } from '../../providers';
 import { mapPool } from '../../util/async';
+import { evaluateEndOfDayFlatten } from './endOfDayFlatten';
 
 // ---------------------------------------------------------------------------
 // The Execution stage of the Phase 6 paper loop (docs/AUTOTRADING_SPEC.md —
@@ -498,6 +499,62 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 export async function checkPaperExits(): Promise<ExitCheckOutcome[]> {
   const cfg = getAutotradeConfig();
   const { maxHoldDays } = cfg;
+  // END-OF-DAY FLATTEN, on the same clock and the same config field as live
+  // (2026-09-05). The paper book used to have none, on the reasoning that
+  // simulated positions carry no real overnight risk. True about risk, and
+  // wrong about MEASUREMENT: with no flatten, every paper position opened late
+  // in the session necessarily became an overnight hold, and the live book
+  // never takes one.
+  //
+  // It is not a rounding difference. All twelve paper entries opened inside the
+  // last 95 minutes were carried overnight -- not one closed same-day -- and
+  // ten of the twelve stopped out — nine of those before noon the next
+  // morning, on the opening gap the flatten exists to avoid — for
+  // -6.03R against a whole-book total of -2.49R. The paper book's headline was
+  // dominated by trades the live strategy could not have held, which is the
+  // same disease as reading a scale-out's P&L without its banked slice: judging
+  // a book with data that does not reflect what it actually does.
+  //
+  // Deliberately NOT paired with evaluateEntryCutoff, which stays live-only.
+  // That asymmetry is the point: paper keeps opening late entries and now exits
+  // them the way live would, so it is the control group for the one question
+  // the live book cannot answer about itself -- whether a 95-minute cutoff is
+  // buying anything, or just closing a quarter of the session.
+  // ---------------------------------------------------------------------
+  // WHAT PAPER DELIBERATELY DOES NOT COPY (written down 2026-09-05, resolving
+  // a divergence that until now read as an omission).
+  //
+  // The rule is not "paper mirrors live". It is:
+  //
+  //   copy the exits that are STRUCTURAL — ones live applies to every position
+  //   regardless of how the trade is going — and leave off the ones that ARE
+  //   the open question.
+  //
+  // The flatten above is structural: it is a fact about the clock, not a
+  // judgement about the trade, and without it paper could only ever produce
+  // overnight holds live never takes.
+  //
+  // These two stay OFF, and that is the counterfactual, not an oversight:
+  //
+  //   - the STAGNATION EXIT (90 min / 0.5R). "Does scratching a slow position
+  //     help?" is a live open question, and the live book cannot answer it
+  //     about itself — it closed the trade, so what the trade would have done
+  //     is unobservable there. A paper book that lets the same setups run to
+  //     stop, target or the flatten is exactly that missing half. It only
+  //     became a VALID counterfactual when the flatten landed; before that
+  //     "ran on" meant "held overnight".
+  //
+  //   - the SYMBOL RE-ENTRY COOLDOWN (90 min). Same shape: whether refusing a
+  //     re-entry protects anything is only answerable against a book that
+  //     takes them.
+  //
+  // The live-only ENTRY gates (evaluateEntryCutoff, the finish-line score bar)
+  // are off here for the same reason.
+  //
+  // So paper is live minus exactly three things, each of which is a question
+  // someone is trying to answer. Anything else that diverges is a bug.
+  // ---------------------------------------------------------------------
+  const flatten = evaluateEndOfDayFlatten(cfg, Date.now());
   const open = listOpenPaperPositions();
   return mapPool(open, 6, async (pos): Promise<ExitCheckOutcome> => {
     let last: number;
@@ -511,12 +568,23 @@ export async function checkPaperExits(): Promise<ExitCheckOutcome[]> {
     const stopHit = long ? last <= pos.stopPrice : last >= pos.stopPrice;
     const targetHit = long ? last >= pos.targetPrice : last <= pos.targetPrice;
     const timeHit = !stopHit && !targetHit && maxHoldDays > 0 && Date.now() - pos.entryAt >= maxHoldDays * MS_PER_DAY;
-    if (!stopHit && !targetHit && !timeHit) {
+    // Last, so a stop or target that genuinely hit this tick still books as
+    // itself: the flatten is what happens to a position nothing else closed.
+    const flattenHit = !stopHit && !targetHit && !timeHit && flatten.active;
+    if (!stopHit && !targetHit && !timeHit && !flattenHit) {
       applyPositionManagement(pos, last, cfg);
       return { symbol: pos.symbol, closed: false };
     }
 
-    const exitReason: PaperExitReason = stopHit ? 'stop' : targetHit ? 'target' : 'time_exit';
+    const exitReason: PaperExitReason = stopHit
+      ? 'stop'
+      : targetHit
+        ? 'target'
+        : // Both the hold-days cut and the flatten are the clock closing a
+          // position nothing else did. The table's exit_reason CHECK allows
+          // four values, so they share 'time_exit'; the journal detail below
+          // carries which one it was.
+          'time_exit';
     const exitPrice = stopHit ? pos.stopPrice : targetHit ? pos.targetPrice : last;
     const closed = closePaperPosition(pos.id, { exitPrice, exitReason });
     if (closed) {
@@ -529,7 +597,14 @@ export async function checkPaperExits(): Promise<ExitCheckOutcome[]> {
         symbol: pos.symbol,
         stage: 'execution',
         action: 'paper_position_closed',
-        detail: { exitReason, exitPrice, pnl, realizedPartialPnl: closed.realizedPartialPnl },
+        detail: {
+          exitReason,
+          exitPrice,
+          pnl,
+          realizedPartialPnl: closed.realizedPartialPnl,
+          // Which clock closed it — 'time_exit' covers both.
+          ...(flattenHit ? { closedBy: 'end_of_day_flatten', minutesLeft: flatten.minutesLeft } : {}),
+        },
         riskProfile: pos.riskProfile,
       });
     }

@@ -1,6 +1,15 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 
 vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
+// checkPaperExits gained the end-of-day flatten (2026-09-05), and these tests
+// run at whatever wall-clock CI happens to be at — inside the last few minutes
+// of a weekday session it would close positions these cases expect to stay
+// open. Pinned inactive by default, exactly as autotradeLiveExecute.test.ts
+// pins checkSessionWindow; the flatten gets its own file.
+vi.mock('../src/services/autotrading/endOfDayFlatten', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/autotrading/endOfDayFlatten')>()),
+  evaluateEndOfDayFlatten: vi.fn(() => ({ active: false, minutesLeft: null, detail: 'pinned off in tests' })),
+}));
 
 import { getProvider } from '../src/providers';
 import { initDb, db } from '../src/db';
