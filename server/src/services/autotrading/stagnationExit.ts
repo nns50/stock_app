@@ -1,4 +1,5 @@
 import { Position } from '../../db/positions';
+import { isMarketHoliday, sessionCloseMinute } from '../trading/marketCalendar';
 import { AutotradeConfig } from '../../db/autotradeConfig';
 
 // ---------------------------------------------------------------------------
@@ -82,8 +83,8 @@ export function progressR(
 }
 
 const SESSION_OPEN_MIN = 9 * 60 + 30;
-const SESSION_CLOSE_MIN = 16 * 60;
-const SESSION_MINUTES_PER_DAY = SESSION_CLOSE_MIN - SESSION_OPEN_MIN; // 390
+// No local close constant: the day's own close comes from marketCalendar, so a
+// half-day is 210 session minutes and a holiday is none.
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const etParts = new Intl.DateTimeFormat('en-US', {
@@ -107,15 +108,20 @@ function etDayInfo(ms: number): { minutes: number; weekday: boolean } {
 /**
  * Minutes the REGULAR SESSION was open between `from` and `to` — the honest
  * measure of how long a position has had to prove itself. Walks ET day by day
- * and intersects each weekday's 9:30–16:00 with the interval, so overnight
- * gaps, weekends and after-hours contribute nothing.
+ * and intersects each trading day's real hours with the interval, so overnight
+ * gaps, weekends, holidays and after-hours contribute nothing.
  *
- * Holidays are NOT known here (the same documented heuristic limit
- * isUsEquityMarketOpen carries): a market holiday inside the span is counted
- * as a full session, which can only ever make a position look STALER than it
- * is. That errs toward scratching a dead trade slightly early rather than
- * holding a genuinely stagnant one longer, and the cost is bounded at one
- * session per holiday.
+ * Holidays and early closes come from marketCalendar.ts as of 2026-09-05. They
+ * did not before, and the note here argued the error was acceptable because
+ * counting a holiday as a full session "can only ever make a position look
+ * STALER than it is", erring toward scratching a dead trade early. That was a
+ * fair trade when the alternative was no calendar at all; it is not one worth
+ * keeping now. A position carried over a holiday would accrue a phantom 390
+ * minutes and be scratched on the next open after perhaps half an hour of real
+ * market — the same shape as the wall-clock bug this function was written to
+ * fix, one layer up. Latent today only because the end-of-day flatten leaves
+ * nothing open overnight, and that flatten is a config field someone can set
+ * to 0.
  */
 export function sessionMinutesBetween(from: number, to: number): number {
   if (!(to > from)) return 0;
@@ -127,10 +133,13 @@ export function sessionMinutesBetween(from: number, to: number): number {
     // Where this ET day's session ends, in ms from `cursor`.
     const endOfDayMs = cursor + (24 * 60 - startMin) * 60_000;
     const dayEnd = Math.min(to, endOfDayMs);
-    if (weekday) {
+    if (weekday && !isMarketHoliday(cursor)) {
+      // This day's OWN close — 13:00 on an early close, 16:00 otherwise — so a
+      // half-day contributes 210 minutes rather than 390.
+      const closeMin = sessionCloseMinute(cursor);
       const spanEndMin = startMin + Math.round((dayEnd - cursor) / 60_000);
-      const overlap = Math.min(spanEndMin, SESSION_CLOSE_MIN) - Math.max(startMin, SESSION_OPEN_MIN);
-      if (overlap > 0) total += Math.min(overlap, SESSION_MINUTES_PER_DAY);
+      const overlap = Math.min(spanEndMin, closeMin) - Math.max(startMin, SESSION_OPEN_MIN);
+      if (overlap > 0) total += Math.min(overlap, closeMin - SESSION_OPEN_MIN);
     }
     cursor = dayEnd === to ? to : endOfDayMs;
     // Defensive: a pathological clock must not spin this loop forever.

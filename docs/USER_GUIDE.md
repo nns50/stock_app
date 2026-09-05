@@ -1416,8 +1416,11 @@ equally-weighted cards in the order they happened to be built:
   direction: a close placed alongside a stop that's still working can fill twice,
   which for a long leaves you **short**. Its intraday sibling is the **stagnation
   exit** (2026-08-22, live equity only, default off): a position that has made less
-  than the configured **R progress** after the configured **minutes** — evaluated only
-  while the regular session is open — is scratched at market through the same
+  than the configured **R progress** after the configured **minutes** — counted as
+  minutes the market was actually **open**, so overnight gaps, weekends, holidays
+  and half-day afternoons contribute nothing (holidays and early closes since
+  2026-09-05; before that a position carried over one arrived at the next open
+  already past its bar) — is scratched at market through the same
   careful cancel-bracket-then-close path, freeing its concurrent-position slot and
   its share of the open-risk budget for fresh signals (the journal showed two
   stalled positions once blocking ~1,000 candidate checks in two hours). Progress is
