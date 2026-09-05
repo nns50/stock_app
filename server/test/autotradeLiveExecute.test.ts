@@ -1656,6 +1656,96 @@ describe('adoptOrphanedLivePositions', () => {
     expect(outcomes.map((o) => o.symbol)).toContain('AAPL');
   });
 
+  // -------------------------------------------------------------------------
+  // "Is THIS position's stop still there", not "is anything resting".
+  //
+  // This check used to accept ANY resting exit-side order as protection, and
+  // the reason was written down: combo_type per leg was UNCONFIRMED (see
+  // scripts/captureBrokerFields.ts Q3). Settled 2026-09-05 against 12 real
+  // orders, so the precise question is answerable — and it matters, because a
+  // bracket has TWO exit legs and only one of them is protection.
+  // -------------------------------------------------------------------------
+  async function agedProtectionCandidate(symbol = 'AAPL') {
+    await pendingEntryFor(symbol);
+    insertOrphan(symbol, ['webull']);
+    adoptOrphanedLivePositions();
+    const pos = listPositions({ status: 'open', symbol })[0];
+    db.prepare('UPDATE positions SET created_at = ? WHERE id = ?').run(Date.now() - 60 * 60 * 1000, pos.id);
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    return pos;
+  }
+  const restingLeg = (over: Record<string, unknown>) => ({
+    clientOrderId: 'leg-1',
+    comboOrderId: 'GRP-1',
+    symbol: 'AAPL',
+    side: 'sell' as const,
+    status: 'OPEN',
+    quantity: 10,
+    ...over,
+  });
+  const unprotectedEvents = () =>
+    listAutotradeEvents({ limit: 50 }).filter((e) => e.action === 'live_position_unprotected');
+
+  it('reports a lone resting TARGET as UNPROTECTED — a take-profit is not a stop', async () => {
+    // Reachable: cancelReplaceBracket cancels legs one at a time and returns
+    // early if the second fails, journaling "the bracket may now be PARTLY
+    // cancelled". That leaves exactly this state, and it used to read as
+    // protected on every subsequent tick, so the standing alert never fired.
+    await agedProtectionCandidate();
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({
+      ok: true,
+      orders: [restingLeg({ comboType: 'STOP_PROFIT', orderType: 'LIMIT', limitPrice: 110 })],
+    });
+
+    const outcomes = await checkLiveBracketProtection();
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', protectedAtBroker: false });
+    expect(outcomes[0].unknown).toBeUndefined(); // positively identified, not a parse miss
+    const detail = JSON.parse(unprotectedEvents()[0].detail ?? '{}') as Record<string, unknown>;
+    expect(detail.restingExitLegs).toBe(1);
+    expect(String(detail.reason)).toMatch(/TAKE-PROFIT leg is still resting.*but its STOP is not/s);
+  });
+
+  it('reports a resting STOP as protected', async () => {
+    await agedProtectionCandidate();
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({
+      ok: true,
+      orders: [restingLeg({ comboType: 'STOP_LOSS', orderType: 'STOP_LOSS', stopPrice: 95 })],
+    });
+    expect((await checkLiveBracketProtection())[0]).toMatchObject({ protectedAtBroker: true });
+    expect(unprotectedEvents()).toHaveLength(0);
+  });
+
+  it('identifies the stop by order_type when combo_type did not parse', async () => {
+    // The PR #467 failure shape: combo_type undefined on every leg. The
+    // position is genuinely protected and must not be alarmed about.
+    await agedProtectionCandidate();
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({
+      ok: true,
+      orders: [
+        restingLeg({ clientOrderId: 'a', comboType: undefined, orderType: 'STOP_LOSS', stopPrice: 95 }),
+        restingLeg({ clientOrderId: 'b', comboType: undefined, orderType: 'LIMIT', limitPrice: 110 }),
+      ],
+    });
+    expect((await checkLiveBracketProtection())[0]).toMatchObject({ protectedAtBroker: true });
+    expect(unprotectedEvents()).toHaveLength(0);
+  });
+
+  it('stays SILENT when legs rest but none can be classified — a parse miss is not a naked position', async () => {
+    // The cry-wolf guard. An alert that fires on healthy positions is worse
+    // than no alert, which is why this takes the same "say nothing" path as
+    // unreadableOpenOrders rather than reporting unprotected.
+    await agedProtectionCandidate();
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({
+      ok: true,
+      orders: [restingLeg({ comboType: undefined, orderType: undefined })],
+    });
+
+    const outcomes = await checkLiveBracketProtection();
+    expect(outcomes[0]).toMatchObject({ protectedAtBroker: false });
+    expect(outcomes[0].unknown).toMatch(/none identifiable as stop or target/);
+    expect(unprotectedEvents()).toHaveLength(0); // no alert on an unreadable book
+  });
+
   it('adopts an orphaned webull-only position that matches a pending autotrade entry, backfilling its missing stop/target', async () => {
     await pendingEntryFor('AAPL'); // stop 95, target 110 (signal() fixture defaults)
     insertOrphan('AAPL', ['webull']); // no stop/target of its own — mapWebullPosition() never sets these

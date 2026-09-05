@@ -2261,6 +2261,32 @@ function restingExitOrders(orders: WebullOpenOrder[], symbol: string, exitSide: 
 }
 
 /**
+ * Which half of a bracket a resting exit leg is: the protective STOP, the
+ * profit TARGET, or unreadable.
+ *
+ * Two independent markers, both confirmed against 12 real orders on the live
+ * account (2026-09-05): the envelope's `combo_type` (STOP_LOSS / STOP_PROFIT)
+ * and the leg's own `order_type` (STOP_LOSS for the stop, LIMIT for the
+ * target). combo_type is tried first because it names the ROLE; order_type is
+ * the fallback for exactly the failure that has happened before — combo_type
+ * read from the wrong nesting level (PR #467), which made it parse as
+ * undefined on every leg.
+ *
+ * 'unknown' is a real answer and must stay one. Collapsing it into either
+ * bucket is how a parse miss becomes either a false naked-position alert or a
+ * false all-clear.
+ */
+function classifyExitLeg(o: WebullOpenOrder): 'stop' | 'target' | 'unknown' {
+  const combo = (o.comboType ?? '').toUpperCase();
+  if (combo === 'STOP_LOSS') return 'stop';
+  if (combo === 'STOP_PROFIT') return 'target';
+  const type = (o.orderType ?? '').toUpperCase();
+  if (type === 'STOP_LOSS' || type === 'STOP_LOSS_LIMIT') return 'stop';
+  if (type === 'LIMIT') return 'target';
+  return 'unknown';
+}
+
+/**
  * Why an empty restingExitOrders() result CANNOT be trusted to mean the exit
  * side is clear — undefined when it can be.
  *
@@ -2573,8 +2599,39 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
       });
     }
 
-    if (restingLegs.length > 0) {
+    // "Is THIS position's stop still there", not "is anything resting".
+    //
+    // This used to accept ANY resting exit-side order as protection, and the
+    // reason was written down: combo_type per leg was UNCONFIRMED (see
+    // scripts/captureBrokerFields.ts's Q3, which exists to settle exactly this
+    // and notes it is answerable "only once the account has actually placed a
+    // BRACKET"). Answered on 2026-09-05 against 12 real orders: combo_type
+    // rides the envelope and mapOpenOrder already lifts it, and the stop leg
+    // additionally carries order_type STOP_LOSS. So the precise question is
+    // answerable now.
+    //
+    // It matters because a bracket has TWO exit legs and only one of them is
+    // protection. A position whose STOP was cancelled while its TARGET still
+    // rests was reported protected — silently, forever — and that state is
+    // reachable: cancelReplaceBracket cancels legs one at a time and returns
+    // early if the second cancel fails, journaling "the bracket may now be
+    // PARTLY cancelled". The standing alert would then never fire on it.
+    const roles = restingLegs.map(classifyExitLeg);
+    if (roles.includes('stop')) {
       outcomes.push({ positionId: pos.id, symbol, protectedAtBroker: true });
+      continue;
+    }
+    if (restingLegs.length > 0 && !roles.includes('target')) {
+      // Legs are resting but none could be classified either way. That is a
+      // parse miss, not a missing stop, and it takes the same "say nothing"
+      // path as unreadableOpenOrders above — an alert that fires on healthy
+      // positions is worse than no alert.
+      outcomes.push({
+        positionId: pos.id,
+        symbol,
+        protectedAtBroker: false,
+        unknown: `${restingLegs.length} resting exit leg(s) on ${symbol}, none identifiable as stop or target`,
+      });
       continue;
     }
     outcomes.push({ positionId: pos.id, symbol, protectedAtBroker: false });
@@ -2590,10 +2647,15 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
           positionId: pos.id,
           quantity: pos.remainingQuantity,
           recordedStop: pos.stopPrice,
+          restingExitLegs: restingLegs.length,
           reason:
-            'This position was opened with a bracket, but the broker shows no resting ' +
-            `${exitSide} order on ${symbol} — its stop may never have been accepted, or was cancelled. ` +
-            'Check the broker and re-arm protection by hand.',
+            restingLegs.length === 0
+              ? 'This position was opened with a bracket, but the broker shows no resting ' +
+                `${exitSide} order on ${symbol} — its stop may never have been accepted, or was cancelled. ` +
+                'Check the broker and re-arm protection by hand.'
+              : `This position's TAKE-PROFIT leg is still resting on ${symbol}, but its STOP is not. ` +
+                'The position is running with no downside protection while looking like it has a bracket. ' +
+                'Check the broker and re-arm the stop by hand.',
         },
         riskProfile: getLiveEntryOrderForPosition(pos.id)?.riskProfile ?? cfg.riskProfile,
       });
