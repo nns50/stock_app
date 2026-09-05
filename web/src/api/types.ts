@@ -2195,6 +2195,14 @@ export interface LoopTickSummary {
   liveOptionsOrdersReconciled: number;
   liveOptionsPositionsClosed: number;
   liveOptionsExitsRequested: number;
+  /** Live EQUITY closing orders placed this tick (maxHoldDays firing). */
+  liveTimeExitsRequested: number;
+  /** Live scale-in add-ons placed at the broker this tick. */
+  liveScaleInsRequested: number;
+  /** Live equity scale-out orders placed this tick. */
+  liveScaleOutsRequested: number;
+  /** Live stops moved by breakeven/trailing this tick (stopAdjust.ts). */
+  liveStopsRatcheted: number;
   candidatesScreened: number;
   candidatesPassedVolatility: number;
   signalsGenerated: number;

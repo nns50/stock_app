@@ -261,6 +261,10 @@ function loopSummaryFixture(overrides: Partial<LoopTickSummary> = {}): LoopTickS
     liveOptionsOrdersReconciled: 0,
     liveOptionsPositionsClosed: 0,
     liveOptionsExitsRequested: 0,
+    liveTimeExitsRequested: 0,
+    liveScaleInsRequested: 0,
+    liveScaleOutsRequested: 0,
+    liveStopsRatcheted: 0,
     candidatesScreened: 0,
     candidatesPassedVolatility: 0,
     signalsGenerated: 0,
@@ -3102,6 +3106,16 @@ describe('AutoTradePage', () => {
               optionsExitsChecked: 1,
               optionsExitsClosed: 1,
               moversAutoPromoted: 1,
+              // The LIVE half of the tick. Every one of these was computed,
+              // stored and served long before anything rendered it, so a live
+              // cycle showed only its paper half — which is why "did the
+              // scale-out fire?" could only be answered by curling the events
+              // endpoint.
+              liveOrdersReconciled: 4,
+              livePositionsClosed: 1,
+              liveStopsRatcheted: 2,
+              liveScaleOutsRequested: 1,
+              liveTimeExitsRequested: 1,
             }),
           },
         }),
@@ -3111,7 +3125,13 @@ describe('AutoTradePage', () => {
         await screen.findByText(/12 screened → 7 passed volatility → 3 signals \(\+1 options\)/),
       ).toBeInTheDocument();
       expect(screen.getByText(/Opened: 2 equity \+ 1 options paper, 0 equity \+ 0 options live/)).toBeInTheDocument();
-      expect(screen.getByText(/Exits: 2\/5 equity, 1\/1 options · 1 movers promoted/)).toBeInTheDocument();
+      // "Paper exits", not "Exits" — unqualified, it read as the whole picture
+      // while showing only the simulated book.
+      expect(screen.getByText(/Paper exits: 2\/5 equity, 1\/1 options · 1 movers promoted/)).toBeInTheDocument();
+      expect(screen.getByText(/Live: 4 orders reconciled → 1 closed/)).toBeInTheDocument();
+      expect(
+        screen.getByText(/Live actions: 2 stop ratcheted · 1 scale-out placed · 1 time exit placed/),
+      ).toBeInTheDocument();
     });
 
     it('surfaces a skip reason from the last cycle prominently', async () => {

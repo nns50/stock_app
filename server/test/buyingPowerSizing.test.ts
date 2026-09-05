@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  buyingPowerMaxQuantity,
+  fundableMaxQuantity,
   isTooSmallToFund,
   MIN_FUNDED_SIZE_FRACTION,
 } from '../src/services/autotrading/buyingPowerSizing';
@@ -11,10 +11,58 @@ import {
 // produced zero live entries.
 const BP = 2_161.18;
 
-describe('buyingPowerMaxQuantity', () => {
+describe('fundableMaxQuantity — every dollar bound, tightest wins', () => {
+  const base = { entryPrice: 100, openClose: 'open' as const };
+
+  it('takes the tightest of the three bounds and names it', () => {
+    // Buying power is roomy, the per-order cap is tighter, exposure headroom
+    // tighter still. Before 2026-09-05 only the first was even passed in.
+    const r = fundableMaxQuantity({
+      ...base,
+      buyingPowerUsd: 50_000,
+      maxOrderUsd: 20_000,
+      exposureHeadroomUsd: 5_000,
+    });
+    expect(r.boundBy).toBe('account_exposure');
+    expect(r.maxQuantity).toBe(Math.floor((5_000 * 0.98) / 100));
+  });
+
+  it('values the order at the marketable limit when one is supplied', () => {
+    // The guardrail values at the LIMIT price, so the sizer must too — this is
+    // the whole "two places deriving one quantity" hazard.
+    const atEntry = fundableMaxQuantity({ ...base, buyingPowerUsd: 10_000 });
+    const atLimit = fundableMaxQuantity({ ...base, buyingPowerUsd: 10_000, limitBufferPct: 0.5 });
+    expect(atLimit.maxQuantity!).toBeLessThan(atEntry.maxQuantity!);
+    expect(atLimit.maxQuantity).toBe(Math.floor((10_000 * 0.98) / 100.5));
+  });
+
+  it('a short values cheaper, matching its limit sitting BELOW the quote', () => {
+    const long = fundableMaxQuantity({ ...base, buyingPowerUsd: 10_000, limitBufferPct: 0.5 });
+    const short = fundableMaxQuantity({ ...base, buyingPowerUsd: 10_000, limitBufferPct: -0.5 });
+    expect(short.maxQuantity!).toBeGreaterThan(long.maxQuantity!);
+  });
+
+  it('treats zero exposure headroom as a real zero, not as unknown', () => {
+    // An account AT its cap has genuinely no room. Reading that as "no
+    // constraint" would size as if the cap did not exist — the exact failure
+    // this exists to stop.
+    const r = fundableMaxQuantity({ ...base, buyingPowerUsd: 50_000, exposureHeadroomUsd: 0 });
+    expect(r.maxQuantity).toBe(0);
+    expect(r.boundBy).toBe('account_exposure');
+  });
+
+  it('still imposes nothing when no bound is known at all', () => {
+    expect(fundableMaxQuantity({ ...base, buyingPowerUsd: undefined })).toEqual({
+      maxQuantity: undefined,
+      usableUsd: undefined,
+    });
+  });
+});
+
+describe('fundableMaxQuantity', () => {
   it('caps the size to what the account can actually fund', () => {
     // PGY on the day: the sizer wanted $3,607.74 of stock.
-    const r = buyingPowerMaxQuantity({ buyingPowerUsd: BP, entryPrice: 36.08, openClose: 'open' });
+    const r = fundableMaxQuantity({ buyingPowerUsd: BP, entryPrice: 36.08, openClose: 'open' });
     // 2% reserve => $2,117.96 usable => 58 shares ($2,092.64), inside BP.
     expect(r.maxQuantity).toBe(58);
     expect(r.maxQuantity! * 36.08).toBeLessThan(BP);
@@ -24,7 +72,7 @@ describe('buyingPowerMaxQuantity', () => {
     // Sizing to exactly the available figure leaves a fundable order one tick
     // of drift from a broker rejection, because the guardrail values the order
     // at its limit price.
-    const r = buyingPowerMaxQuantity({ buyingPowerUsd: 1_000, entryPrice: 100, openClose: 'open' });
+    const r = fundableMaxQuantity({ buyingPowerUsd: 1_000, entryPrice: 100, openClose: 'open' });
     expect(r.maxQuantity).toBe(9); // not 10
     expect(r.usableUsd).toBeCloseTo(980, 6);
   });
@@ -32,7 +80,7 @@ describe('buyingPowerMaxQuantity', () => {
   it('imposes NO constraint when buying power is unknown', () => {
     // Paper, or a failed broker read. Must behave exactly as before this
     // module existed, rather than guessing a cap that shrinks every order.
-    expect(buyingPowerMaxQuantity({ buyingPowerUsd: undefined, entryPrice: 50, openClose: 'open' })).toEqual({
+    expect(fundableMaxQuantity({ buyingPowerUsd: undefined, entryPrice: 50, openClose: 'open' })).toEqual({
       maxQuantity: undefined,
       usableUsd: undefined,
     });
@@ -42,7 +90,7 @@ describe('buyingPowerMaxQuantity', () => {
     // Mirrors guardrails.ts, so the two cannot disagree about which orders are
     // constrained.
     expect(
-      buyingPowerMaxQuantity({ buyingPowerUsd: 10, entryPrice: 500, openClose: 'close' }).maxQuantity,
+      fundableMaxQuantity({ buyingPowerUsd: 10, entryPrice: 500, openClose: 'close' }).maxQuantity,
     ).toBeUndefined();
   });
 
@@ -51,30 +99,30 @@ describe('buyingPowerMaxQuantity', () => {
     // "frees cash". True of closing a long, false of opening a short. It was
     // inert only because liveAllowNakedShort was off, and would have become
     // live money the moment shorts were enabled.
-    const r = buyingPowerMaxQuantity({ buyingPowerUsd: 1_000, entryPrice: 100, openClose: 'open' });
+    const r = fundableMaxQuantity({ buyingPowerUsd: 1_000, entryPrice: 100, openClose: 'open' });
     expect(r.maxQuantity).toBe(9);
   });
 
   it('returns 0 — not undefined — when not even one share is affordable', () => {
     // 0 is a real answer that must block the trade; undefined would wave it
     // through unconstrained, which is the opposite.
-    const r = buyingPowerMaxQuantity({ buyingPowerUsd: 100, entryPrice: 500, openClose: 'open' });
+    const r = fundableMaxQuantity({ buyingPowerUsd: 100, entryPrice: 500, openClose: 'open' });
     expect(r.maxQuantity).toBe(0);
   });
 
   it('refuses to invent a cap from unusable inputs', () => {
     for (const bad of [0, -10, Number.NaN]) {
-      expect(buyingPowerMaxQuantity({ buyingPowerUsd: 1_000, entryPrice: bad, openClose: 'open' }).maxQuantity).toBe(
+      expect(fundableMaxQuantity({ buyingPowerUsd: 1_000, entryPrice: bad, openClose: 'open' }).maxQuantity).toBe(
         undefined,
       );
     }
-    expect(buyingPowerMaxQuantity({ buyingPowerUsd: Number.NaN, entryPrice: 50, openClose: 'open' }).maxQuantity).toBe(
+    expect(fundableMaxQuantity({ buyingPowerUsd: Number.NaN, entryPrice: 50, openClose: 'open' }).maxQuantity).toBe(
       undefined,
     );
   });
 
   it('treats negative buying power as zero rather than a negative size', () => {
-    expect(buyingPowerMaxQuantity({ buyingPowerUsd: -500, entryPrice: 50, openClose: 'open' }).maxQuantity).toBe(0);
+    expect(fundableMaxQuantity({ buyingPowerUsd: -500, entryPrice: 50, openClose: 'open' }).maxQuantity).toBe(0);
   });
 });
 

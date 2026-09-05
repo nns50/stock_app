@@ -60,6 +60,34 @@ import type {
   WalkForwardWindowResult,
 } from '../api/types';
 
+/**
+ * The live-side actions a loop tick actually took, as short phrases — empty
+ * when the tick did nothing live, so a quiet cycle stays quiet.
+ *
+ * Added 2026-09-05. All six counters have been computed by loop.ts, persisted
+ * with the tick and served in the dashboard payload since they were written,
+ * and NOTHING rendered any of them: the "Last cycle" card showed screening,
+ * entries and PAPER exits only. So a live tick that ratcheted a stop, fired a
+ * time exit or placed a scale-out looked identical to one that did nothing,
+ * and the only way to answer "did the scale-out fire?" was to curl
+ * /api/autotrade/events. Exactly the shape CLAUDE.md warns about — a value
+ * computed and read by nothing — one layer above the config guards.
+ *
+ * Zero-valued entries are dropped rather than printed as "0 x": the useful
+ * signal is which of these fired at all, and six always-zero counters is the
+ * noise that gets a panel ignored.
+ */
+export function liveActionSummary(s: LoopTickSummary): string[] {
+  const parts: [number, string][] = [
+    [s.liveStopsRatcheted, 'stop ratcheted'],
+    [s.liveScaleOutsRequested, 'scale-out placed'],
+    [s.liveScaleInsRequested, 'scale-in placed'],
+    [s.liveTimeExitsRequested, 'time exit placed'],
+    [s.liveOptionsExitsRequested, 'options exit placed'],
+  ];
+  return parts.filter(([n]) => n > 0).map(([n, label]) => `${n} ${label}`);
+}
+
 // Regime-conditional scoring weights (2026-07-24): the three regime presets and
 // the six core screener weights each preset governs. relativeStrength/sentiment
 // are intentionally absent — they stay driven by their own weight fields above.
@@ -1819,11 +1847,26 @@ function MonitoringDashboard({
               {dash.lastTick.summary.liveOptionsEntriesOpened} options live
             </p>
             <p>
-              Exits: {dash.lastTick.summary.exitsClosed}/{dash.lastTick.summary.exitsChecked} equity,{' '}
+              Paper exits: {dash.lastTick.summary.exitsClosed}/{dash.lastTick.summary.exitsChecked} equity,{' '}
               {dash.lastTick.summary.optionsExitsClosed}/{dash.lastTick.summary.optionsExitsChecked} options
               {dash.lastTick.summary.moversAutoPromoted > 0 &&
                 ` · ${dash.lastTick.summary.moversAutoPromoted} movers promoted`}
             </p>
+            {/* The LIVE side of the tick. Every number below was already
+                computed, stored and served — and rendered nowhere, so this
+                panel showed a live cycle as if only its paper half had
+                happened, and the line above (unqualified "Exits") read as the
+                whole picture. Answering "did the scale-out fire?" meant
+                curling the events endpoint. */}
+            <p>
+              Live: {dash.lastTick.summary.liveOrdersReconciled} orders reconciled →{' '}
+              {dash.lastTick.summary.livePositionsClosed} closed
+              {dash.lastTick.summary.liveOptionsOrdersReconciled > 0 &&
+                ` · ${dash.lastTick.summary.liveOptionsOrdersReconciled} options orders → ${dash.lastTick.summary.liveOptionsPositionsClosed} closed`}
+            </p>
+            {liveActionSummary(dash.lastTick.summary).length > 0 && (
+              <p className="text-sky-300">Live actions: {liveActionSummary(dash.lastTick.summary).join(' · ')}</p>
+            )}
             {dash.lastTick.summary.moversFetchError ? (
               <p className="text-amber-400">
                 Movers discovery failed — {dash.lastTick.summary.moversFetchError}. Screening ran universe-only.
