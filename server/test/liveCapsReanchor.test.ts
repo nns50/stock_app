@@ -251,16 +251,15 @@ describe('the per-order cap and the position sizer cannot contradict each other'
     expect(cap).toBe(2_500); // 25% of equity, not the 750 the sizer floor would give
   });
 
-  it('is bounded by buying power when the caller knows it', () => {
-    // A cap above what the account can fund is not a cap worth having — the
-    // broker refuses the order anyway and the cap only hides the refusal.
+  it('depends on nothing this module cannot itself observe', () => {
+    // The re-anchor has no broker call, by design — it re-derives from config
+    // alone. A cap derived from anything else (buying power was the 2026-09-05
+    // case) reads as hand-edited here and freezes out of re-anchoring forever.
+    // See targetTune.test.ts for the end-to-end version of this.
     const cfg = { ...defaultAutotradeConfig(), ...sizing, riskProfile: 'MODERATE' as const };
-    const unbounded = deriveDollarCaps(cfg, 10_000).liveMaxOrderUsd;
-    const bounded = deriveDollarCaps(cfg, 10_000, 3_000).liveMaxOrderUsd;
-    expect(bounded).toBe(3_000);
-    expect(bounded).toBeLessThan(unbounded);
-    // 0/undefined leaves it unbounded.
-    expect(deriveDollarCaps(cfg, 10_000, 0).liveMaxOrderUsd).toBe(unbounded);
+    const caps = deriveDollarCaps(cfg, 10_000);
+    expect(caps.liveMaxOrderUsd).toBe(Math.round(10_000 * 0.5 * 1.5));
+    expect(deriveDollarCaps(cfg, 10_000)).toEqual(caps); // no hidden inputs
   });
 
   it('re-anchors on a BLOCKING cap even when drift is far inside the threshold', () => {

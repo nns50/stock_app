@@ -10,6 +10,10 @@ import {
   deriveDollarCaps,
   handEditedDollarCaps,
 } from '../src/services/autotrading/targetTune';
+// The consumer of the caps a tune stores. Imported here on purpose: the
+// freeze-out this file guards against is a disagreement BETWEEN these two
+// modules, so a test that only ever exercises one of them cannot see it.
+import { decideLiveCapsReanchor } from '../src/services/autotrading/liveCapsReanchor';
 import { defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
 
 const base = (over: {
@@ -268,13 +272,23 @@ describe('tunable/never-tuned classification', () => {
 // exactly that state.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// Funding bounds on the per-order caps. Both were plumbed before anything fed
-// them: deriveDollarCaps took buyingPowerUsd from 2026-08-27, but its only
-// production caller (/tune/preview) omitted the argument, so the bound existed
-// and never applied. These pin the arithmetic; routes.integration covers the
-// route actually passing it.
+// Funding must NOT reach a stored cap (2026-09-05). deriveDollarCaps briefly
+// bounded its per-order caps by buying power. The premise was reasonable -- an
+// order the account cannot fund is not a cap worth having -- but it made the
+// function's output depend on a number only ONE of its three call sites can
+// observe. The tune apply has a broker call; handEditedDollarCaps and
+// liveCapsReanchor work from config alone, by design. So on any day funding
+// actually bound the cap, the tune STORED the smaller figure while the anchor
+// check re-derived the larger one, the two disagreed, and the cap was flagged
+// hand-edited and skipped by every future re-anchor -- frozen for good by one
+// afternoon's buying power. That is the exact trap the options twin's own
+// comment already described.
+//
+// The bound lives at decision time now (fundableMaxQuantity, PR #492), where
+// the live figure is genuinely in hand. Buying power still reaches the tune,
+// but only to WARN.
 // ---------------------------------------------------------------------------
-describe('deriveDollarCaps — funding bounds', () => {
+describe('deriveDollarCaps — funding never binds a stored cap', () => {
   const cfg = {
     maxDailyDrawdownPct: 6.42,
     riskProfile: 'MODERATE' as const,
@@ -284,41 +298,95 @@ describe('deriveDollarCaps — funding bounds', () => {
   // The real 2026-08-27 account: sizer floor is 1.25/2.5 = 50% of equity, so
   // bySizer (x1.5) = 75% wins over the moderate band's 25%.
   const EQUITY = 5_161.18;
-  const UNBOUNDED = Math.round(EQUITY * 0.5 * 1.5); // 3871
+  const DERIVED = Math.round(EQUITY * 0.5 * 1.5); // 3871
 
-  it('leaves the caps unbounded when no funding is known', () => {
+  it('derives from equity and the percentages alone', () => {
     const caps = deriveDollarCaps(cfg, EQUITY);
-    expect(caps.liveMaxOrderUsd).toBe(UNBOUNDED);
-    expect(caps.liveOptionsMaxOrderUsd).toBe(UNBOUNDED);
+    expect(caps.liveMaxOrderUsd).toBe(DERIVED);
+    expect(caps.liveOptionsMaxOrderUsd).toBe(DERIVED);
   });
 
-  it('bounds the per-order cap by buying power — an unfundable cap is not a cap', () => {
-    const caps = deriveDollarCaps(cfg, EQUITY, 2_000);
-    expect(caps.liveMaxOrderUsd).toBe(2_000);
+  it('takes exactly two arguments — there is no funding input to pass', () => {
+    // Pinned as a signature, because the freeze-out below is invisible to any
+    // test that only ever calls this function one way. Restoring a third
+    // parameter must break something here rather than in production a month on.
+    expect(deriveDollarCaps.length).toBe(2);
   });
 
   it('keeps the options twin equal to the equity cap, on purpose', () => {
     // Option BP is a much smaller pool ($322-471 that day against a day BP of
     // $8,644), but these are STORED caps and liveCapsReanchor re-derives them
-    // from config alone, with no broker call. A cap bound to a figure only the
-    // tune can see -- and which moved 32% in an hour -- would read as
-    // hand-edited to the re-anchor and freeze out of re-anchoring forever.
-    for (const bp of [undefined, 2_000, 8_644.72]) {
-      const caps = deriveDollarCaps(cfg, EQUITY, bp);
-      expect(caps.liveOptionsMaxOrderUsd).toBe(caps.liveMaxOrderUsd);
-    }
+    // from config alone, with no broker call. Same reasoning that removed the
+    // equity-side bound; the options side never grew one.
+    const caps = deriveDollarCaps(cfg, EQUITY);
+    expect(caps.liveOptionsMaxOrderUsd).toBe(caps.liveMaxOrderUsd);
   });
 
-  it('ignores a zero or missing buying power rather than zeroing the cap', () => {
-    expect(deriveDollarCaps(cfg, EQUITY, 0).liveMaxOrderUsd).toBe(UNBOUNDED);
-    expect(deriveDollarCaps(cfg, EQUITY, undefined).liveMaxOrderUsd).toBe(UNBOUNDED);
-  });
-
-  it('never lets a funding bound touch the daily-loss caps', () => {
-    // Those track the tuned drawdown %, not what the account can fund today.
-    const caps = deriveDollarCaps(cfg, EQUITY, 100);
+  it('leaves the daily-loss caps tracking the tuned drawdown %', () => {
+    const caps = deriveDollarCaps(cfg, EQUITY);
     expect(caps.liveMaxDailyLossUsd).toBe(Math.round(EQUITY * 0.0642));
     expect(caps.liveOptionsMaxDailyLossUsd).toBe(caps.liveMaxDailyLossUsd);
+  });
+});
+
+// The consumer-level assertion, which is the one that actually mattered: what
+// a tune STORES must still read as derived to the re-anchor. Asserting the
+// arithmetic of deriveDollarCaps proved nothing about this -- the bug lived in
+// the disagreement between two callers, not inside either one.
+describe('a tune run under tight funding does not freeze its caps', () => {
+  const EQUITY = 5_161.18;
+  const STARVED_BP = 900; // well below the ~$3.9k the shape derives
+
+  const applied = (): AutotradeConfig => {
+    const { patch } = computeTargetTune({
+      equityUsd: EQUITY,
+      targetDailyGainPct: 3,
+      basis: 'expected',
+      config: { ...defaultAutotradeConfig(), liveCapsAnchorEquityUsd: null },
+      buyingPowerUsd: STARVED_BP,
+    });
+    // What applying the patch leaves in the database: the tuned fields, plus
+    // the anchor every apply stamps.
+    return { ...defaultAutotradeConfig(), ...patch, liveCapsAnchorEquityUsd: EQUITY };
+  };
+
+  it('stores caps the re-anchor still recognises as its own', () => {
+    expect(handEditedDollarCaps(applied())).toEqual([]);
+  });
+
+  it('so a later re-anchor moves them instead of skipping them', () => {
+    // 20% growth, past REANCHOR_THRESHOLD_PCT. Before the fix the per-order
+    // caps sat at $900 while the anchor derived ~$3.9k, so both were named in
+    // skippedHandEdited and stayed at $900 through every future re-anchor.
+    const grown = EQUITY * 1.2;
+    const d = decideLiveCapsReanchor({ ...applied(), accountEquityUsd: grown }, grown);
+    expect(d.action).toBe('reanchor');
+    if (d.action !== 'reanchor') throw new Error('unreachable');
+    expect(d.handEdited).toEqual([]);
+    expect(d.patch.liveMaxOrderUsd).toBe(deriveDollarCaps(applied(), grown).liveMaxOrderUsd);
+  });
+
+  it('warns about the funding gap rather than silently shrinking the cap', () => {
+    const { patch, warnings } = computeTargetTune({
+      equityUsd: EQUITY,
+      targetDailyGainPct: 3,
+      basis: 'expected',
+      config: { ...defaultAutotradeConfig(), liveCapsAnchorEquityUsd: null },
+      buyingPowerUsd: STARVED_BP,
+    });
+    expect(patch.liveMaxOrderUsd).toBeGreaterThan(STARVED_BP);
+    expect(warnings.some((w) => w.includes('buying power'))).toBe(true);
+  });
+
+  it('says nothing about funding when the cap fits inside it', () => {
+    const { warnings } = computeTargetTune({
+      equityUsd: EQUITY,
+      targetDailyGainPct: 3,
+      basis: 'expected',
+      config: { ...defaultAutotradeConfig(), liveCapsAnchorEquityUsd: null },
+      buyingPowerUsd: 1_000_000,
+    });
+    expect(warnings.some((w) => w.includes('buying power'))).toBe(false);
   });
 });
 

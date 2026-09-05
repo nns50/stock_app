@@ -2,20 +2,24 @@ import { AutotradeConfig } from '../../db/autotradeConfig';
 import { webullAccountState } from '../../providers/webull/accountState';
 
 /**
- * Best-effort live buying power for the tune's dollar caps.
+ * Best-effort live buying power for the tune preview's funding WARNING.
  *
- * deriveDollarCaps has bounded its per-order caps by buying power since
- * 2026-08-27, but NOTHING EVER PASSED IT: its only production caller is the
- * /tune/preview route, and that route omitted the argument, so the bound was
- * plumbed and dead — the exact "shipped, validated, displayed, and never read"
- * failure CLAUDE.md's three-guard section is about, one layer down from config.
- * This module exists so the wiring itself is testable: a helper living inside
- * the route would have left the same gap unguarded one level up.
+ * It used to bound the derived per-order cap. It must not, and no longer does
+ * (2026-09-05, see deriveDollarCaps): this figure is visible to the tune and
+ * invisible to liveCapsReanchor, which re-derives the same caps from config
+ * alone. On any day funding actually bound the cap, the tune would store the
+ * smaller number, the re-anchor would re-derive the larger one, and the
+ * mismatch would flag the cap hand-edited — freezing it out of re-anchoring
+ * for good. The bound survives where the live figure is genuinely in hand:
+ * fundableMaxQuantity, at decision time.
+ *
+ * So what reaches computeTargetTune is advisory — it produces a warning when
+ * the cap about to be stored is above what today can actually fund.
  *
  * Fails soft on purpose. No live account, a broker error, a missing field —
- * all return {} and the caps derive exactly as they did before, rather than
- * failing a tune the operator asked for over a number that only ever tightens
- * the result.
+ * all return {} and the preview is simply one warning shorter, rather than
+ * failing a tune the operator asked for over a number that cannot change the
+ * patch anyway.
  */
 export async function tuneBuyingPower(cfg: AutotradeConfig): Promise<{ buyingPowerUsd?: number }> {
   if (!cfg.liveAccountId) return {};
@@ -32,8 +36,10 @@ export async function tuneBuyingPower(cfg: AutotradeConfig): Promise<{ buyingPow
       equityBp !== undefined && cfg.liveDayBuyingPowerUsd > 0
         ? Math.min(equityBp, cfg.liveDayBuyingPowerUsd)
         : equityBp;
-    // Option BP is deliberately NOT returned: see deriveDollarCaps for why a
-    // stored cap must not be bound to a figure only one derivation path can see.
+    // Option BP is deliberately NOT returned: the options cap tracks the equity
+    // cap on purpose (see deriveDollarCaps), so there is nothing here for it to
+    // warn against — and returning it would invite someone to bind a cap to a
+    // figure only one derivation path can see.
     return capped !== undefined ? { buyingPowerUsd: capped } : {};
   } catch {
     return {};

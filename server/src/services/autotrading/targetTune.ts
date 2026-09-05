@@ -312,11 +312,6 @@ export function sizerFloorFraction(cfg: Pick<AutotradeConfig, 'riskPerTradePct' 
 export function deriveDollarCaps(
   cfg: Pick<AutotradeConfig, 'maxDailyDrawdownPct' | 'riskProfile' | 'riskPerTradePct' | 'maxStopDistancePct'>,
   equityUsd: number,
-  /** Available buying power, when known. The cap is bounded by it because an
-   *  order the account cannot fund is not a cap worth having — the broker
-   *  would refuse it anyway, and a cap above real capacity only hides the
-   *  refusal. Omitted (or 0) leaves the cap unbounded by funding. */
-  buyingPowerUsd?: number,
 ): DollarCaps {
   const dailyLossUsd = Math.round(equityUsd * (cfg.maxDailyDrawdownPct / 100));
   // The larger of the fat-finger intent and what the sizer actually makes.
@@ -324,7 +319,26 @@ export function deriveDollarCaps(
   // which is not caution, it is a system that cannot trade.
   const byProfile = equityUsd * maxOrderEquityFractionFor(cfg.riskProfile);
   const bySizer = equityUsd * sizerFloorFraction(cfg) * ORDER_CAP_SIZER_HEADROOM;
-  const orderUsd = boundByFunding(Math.max(byProfile, bySizer), buyingPowerUsd);
+  // NOT bounded by buying power any more (2026-09-05). The bound was added on
+  // the reasonable premise that "an order the account cannot fund is not a cap
+  // worth having" — but it made this function's output depend on a number only
+  // ONE of its three call sites can see, and that is precisely the trap the
+  // comment below already describes for the options twin.
+  //
+  // The tune apply passes buying power (it has a broker call). handEditedDollarCaps
+  // and liveCapsReanchor cannot — the re-anchor works from config alone, by
+  // design. So on any day funding actually bound the cap, the tune would STORE
+  // the smaller figure while the anchor check re-derived the larger one, the
+  // two would disagree, and the cap would be flagged hand-edited and skipped by
+  // every future re-anchor. Frozen for good by an argument about one afternoon's
+  // buying power.
+  //
+  // It is also redundant now. Since the sizer learned every dollar bound
+  // (fundableMaxQuantity), buying power is enforced where the live figure is
+  // actually in hand — at decision time, alongside the per-order and exposure
+  // caps — which is exactly where the options comment below argues it belongs.
+  // A stored cap should describe intent; funding is a fact about right now.
+  const orderUsd = Math.max(byProfile, bySizer);
   // The options twin deliberately tracks the equity cap rather than option
   // buying power, even though option BP is a far smaller pool ($322-471 against
   // a day BP of $8,644 on 2026-08-27). These are STORED caps, re-derived
@@ -341,14 +355,6 @@ export function deriveDollarCaps(
     liveOptionsMaxOrderUsd: Math.round(orderUsd),
     liveOptionsMaxDailyLossUsd: dailyLossUsd,
   };
-}
-
-/** Cap a dollar figure by an available-funding number, ignoring an unknown or
- *  non-positive one. An order the account cannot fund is not a cap worth
- *  having -- the broker refuses it anyway, and a cap above real capacity only
- *  hides the refusal. */
-function boundByFunding(usd: number, fundingUsd: number | undefined): number {
-  return fundingUsd !== undefined && fundingUsd > 0 ? Math.min(usd, fundingUsd) : usd;
 }
 
 /** The config a hand-edit check needs: the caps themselves, the percentages
@@ -655,7 +661,6 @@ function shapeToPatch(
    *  the order cap above what the sizer can actually produce; the tune itself
    *  does not set it, so it is threaded in from live config. */
   maxStopDistancePct: number,
-  buyingPowerUsd?: number,
   /** Whether the live book takes a partial exit — threaded in from live config
    *  for the same reason maxStopDistancePct is: the tune does not set it, but
    *  the order cap it derives is wrong without it. */
@@ -680,7 +685,6 @@ function shapeToPatch(
   const caps = deriveDollarCaps(
     { maxDailyDrawdownPct, riskProfile: shape.riskProfile, riskPerTradePct, maxStopDistancePct },
     equityUsd,
-    buyingPowerUsd,
   );
   const dailyLossUsd = caps.liveMaxDailyLossUsd;
   const orderUsd = caps.liveMaxOrderUsd;
@@ -759,8 +763,12 @@ export interface ComputeTargetTuneInput {
    *  (the auto-tuners), and to spot dollar caps a human set deliberately so
    *  this tune preserves them instead of reverting them. */
   config: Pick<AutotradeConfig, 'autoTuneEnabled' | 'autoTuneExitsEnabled' | 'liveScaleOutEnabled'> & DollarCapConfig;
-  /** Available buying power, when the caller knows it — bounds the per-order
-   *  cap, since an order the account cannot fund is not a cap worth having. */
+  /** Available buying power, when the caller knows it. WARNS only — it must
+   *  never bound a stored cap (see deriveDollarCaps): this figure is visible
+   *  to the tune and invisible to liveCapsReanchor, so a cap derived from it
+   *  would read as hand-edited to the re-anchor and freeze forever. Funding is
+   *  enforced at decision time by the sizer; here it only tells the operator
+   *  the cap they are about to store is above what today can actually fund. */
   buyingPowerUsd?: number;
 }
 
@@ -782,7 +790,6 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
     riskPerTradePct,
     targetDailyGainPct,
     input.config.maxStopDistancePct,
-    input.buyingPowerUsd,
     input.config.liveScaleOutEnabled,
   );
 
@@ -799,6 +806,16 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
   if (preserved.length > 0) {
     warnings.push(
       `Kept your own ${preserved.join(', ')} instead of the equity-derived value — these were set by hand, so this tune leaves them alone. Clear them back to the suggested figures if you want the tune to size them again.`,
+    );
+  }
+  // Funding is a fact about today, not a property of the shape being stored,
+  // so it informs rather than binds. The sizer (fundableMaxQuantity) already
+  // trims a real order to what buying power supports; this only stops the
+  // preview from showing a per-order cap the operator would read as spendable.
+  const bp = input.buyingPowerUsd;
+  if (bp !== undefined && bp > 0 && patch.liveMaxOrderUsd > bp) {
+    warnings.push(
+      `The $${patch.liveMaxOrderUsd.toLocaleString()} per-order cap is above your current buying power ($${Math.round(bp).toLocaleString()}), so today's orders will be trimmed to what the account can fund. The cap is deliberately NOT lowered to match — it is a stored ceiling on intent, and pinning it to one afternoon's buying power would freeze it out of future re-anchoring.`,
     );
   }
   if (rawRiskPerTradePct > MAX_SUGGESTED_RISK_PER_TRADE_PCT) {
@@ -836,13 +853,8 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
  *  Deliberately NOT identical to defaultAutotradeConfig() — see the note on
  *  BANDS above for the three fields that differ and why. "Moderate" here means
  *  the band, not the shipped defaults. */
-export function resetToModerate(
-  equityUsd: number,
-  maxStopDistancePct: number,
-  buyingPowerUsd?: number,
-  scaleOutEnabled = false,
-): TunablePatch {
+export function resetToModerate(equityUsd: number, maxStopDistancePct: number, scaleOutEnabled = false): TunablePatch {
   // No declared goal — the moderate baseline is a risk shape, not a promise;
   // writing null here also DISARMS the daily-goal tracker until the next tune.
-  return shapeToPatch(BANDS.moderate, equityUsd, 1, null, maxStopDistancePct, buyingPowerUsd, scaleOutEnabled);
+  return shapeToPatch(BANDS.moderate, equityUsd, 1, null, maxStopDistancePct, scaleOutEnabled);
 }
