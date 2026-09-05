@@ -42,14 +42,24 @@ import {
 //        field. A snapshot can't answer this — `--watch` polls one order over
 //        time and reports whether the value ever decreases.
 //
-//   Q3 — is `combo_type` echoed back PER LEG? WebullOrderLeg marks this
-//        UNCONFIRMED, and it is load-bearing: it gates the both-legs-FILLED
-//        ambiguity detection, and it is why checkLiveBracketProtection has to
-//        ask "is any exit-side order resting on this symbol" instead of the
-//        precise "is THIS position's stop still there". Unlike Q1/Q2 this is
-//        answerable from a plain snapshot — but only once the account has
-//        actually placed a BRACKET (a spread's legs carry no MASTER/exit roles
-//        and cannot settle it).
+//   Q3 — is `combo_type` echoed back PER LEG?
+//        ANSWERED 2026-09-05, against 12 real orders on the live account (three
+//        complete brackets). The answer is NO, and the shape is:
+//          - a bracket is THREE ENVELOPES sharing one `combo_order_id`, each
+//            carrying ONE leg — not one envelope with three nested legs
+//          - `combo_type` rides the ENVELOPE (MASTER / STOP_PROFIT / STOP_LOSS)
+//            and is null on the leg. mapOpenOrder already lifts it from there,
+//            so WebullOpenOrder.comboType IS reliably populated. This is
+//            precisely the nesting PR #467 got wrong.
+//          - the stop leg ALSO carries `order_type: STOP_LOSS` on the leg
+//            itself, so there is a second, independent identifier
+//          - `client_order_id` is per leg and always present (12/12 distinct)
+//        Consequence: checkLiveBracketProtection no longer has to settle for
+//        "is any exit-side order resting on this symbol". It now asks the
+//        precise "is THIS position's STOP still there" — which matters, because
+//        a bracket has two exit legs and a lone resting TARGET was reading as
+//        protection on a position with no stop.
+//        The watch stays useful as a regression check on the broker's shape.
 //
 // Usage:
 //   npm run capture:broker
@@ -296,9 +306,9 @@ async function main(): Promise<void> {
       },
       q3_comboLegSemantics: {
         appAssumes:
-          'combo_type MAY be echoed per leg — WebullOrderLeg (providers/webull/orders.ts) marks this UNCONFIRMED, and every bracket-exit branch that filters on it is written to fail closed if it is not.',
+          'ANSWERED 2026-09-05: combo_type is NOT per leg — it rides the ENVELOPE, and mapOpenOrder lifts it from there (the nesting PR #467 got wrong). The stop leg also carries order_type STOP_LOSS as a second identifier.',
         whyItMatters:
-          'It gates the both-legs-FILLED ambiguity detection, and it is why checkLiveBracketProtection has to ask "is any exit-side order resting on this symbol" rather than "is THIS position\'s stop still there".',
+          'It gates the both-legs-FILLED ambiguity detection. It also USED to be why checkLiveBracketProtection settled for "is any exit-side order resting on this symbol"; now that the roles are readable it asks the precise "is THIS position\'s STOP still there", so a lone resting take-profit no longer reads as protection.',
         evidence,
         verdict: comboVerdict,
       },
