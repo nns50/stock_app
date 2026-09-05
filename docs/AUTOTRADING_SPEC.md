@@ -5658,3 +5658,33 @@ what is now excluded.
   account actually returns, and the fallback chain already handles it.
 - Every other `sourceIntentId` gate: the adoption paths (where null IS the
   signal) and the OR-conditions that still pass via tags.
+
+### 3. The auto-tuner measured R against a stop the ratchet had moved
+
+Two derivations of one quantity, disagreeing — the invariant CLAUDE.md names:
+
+```
+routes/journal.ts:178   stopPrice: p.initialStopPrice ?? p.stopPrice   <- frozen, correct
+autoTune.ts:164         stopPrice: p.stopPrice                          <- MUTATED by the ratchet
+```
+
+The journal route was corrected for exactly this and carries a comment saying
+why. `autoTune.ts` was never updated, so the two callers of `excursionForTrade`
+computed different R for the same trade.
+
+It matters most here of all the places it could have happened. A winner whose
+stop was pulled to breakeven has `stopPrice === entryPrice`, so the denominator
+is **zero**, `initialRisk` comes back null, and the trade is dropped from the
+excursion set entirely. The ratchet fired **36 times on 2026-09-04**, and it only
+fires on trades that go far enough to trigger it — so the rows silently discarded
+were precisely the WINNERS the tuner exists to learn from. Every proposed
+`stopAtrMultiple` / `targetRMultiple` would have been fitted to whatever
+losers survived.
+
+This has been latent because `autoTuneExitsEnabled` is off. It would have
+mattered the moment it was switched on, which is the pending decision at 20
+winners (task #32).
+
+Regression test ratchets two winners to breakeven and asserts the tune lands on
+the same multiples as the un-ratcheted case. Reverting to `p.stopPrice` makes
+`exitsAdjusted` false — the tuner finds no usable winners at all.
