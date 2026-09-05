@@ -636,6 +636,15 @@ nudge, not a blocker — you can still save with items unchecked.
     **exit** (or delete the row if the trade never happened). Guessing here would write a
     realized P&L number that never occurred, which is worse than a row you can see is stale.
   Positions on their own expiration day are left alone — they're still tradeable all session.
+
+  Auto-trade's **live options book** keeps its own table and gets the same treatment from a
+  background sweep, with one difference: it acts without a button, because a stuck row there
+  consumes shared aggregate-risk headroom and a concurrent-position slot from the *equity*
+  book too. Clearly-worthless contracts are closed at $0 automatically; anything in the money
+  or unpriceable is **never** closed and instead **pushes you a notification** (2026-09-05) —
+  an in-the-money expiry was exercised or assigned, so the account may hold stock the app
+  doesn't track, and that tends to happen at Friday's close when nobody is reading a journal.
+  The push fires once per position, not once per loop tick.
   An expired-but-open option shows `—` in the Price column: an expired contract has no live
   mark, and the app no longer asks a provider for one (2026-07-28 — the provider would
   silently substitute the *nearest live* chain, where the same strike usually still matches,
