@@ -12,6 +12,7 @@ import {
 import { isUsEquityMarketOpen } from '../src/services/trading/marketHours';
 import { minutesUntilClose, evaluateEndOfDayFlatten } from '../src/services/autotrading/endOfDayFlatten';
 import { checkSessionWindow } from '../src/services/autotrading/executionGuards';
+import { sessionMinutesBetween } from '../src/services/autotrading/stagnationExit';
 
 // ---------------------------------------------------------------------------
 // The market calendar (2026-09-05). Nothing in this app knew about holidays or
@@ -201,5 +202,43 @@ describe('sessionCloseMinute', () => {
     expect(sessionCloseMinute(et(2026, 9, 8, 11, 0))).toBe(16 * 60);
     expect(sessionCloseMinute(Date.parse('2026-11-27T11:00:00-05:00'))).toBe(EARLY_CLOSE_MINUTES);
     expect(sessionCloseMinute(Date.parse('2026-12-24T11:00:00-05:00'))).toBe(EARLY_CLOSE_MINUTES);
+  });
+});
+
+describe('sessionMinutesBetween', () => {
+  const at = (iso: string) => Date.parse(iso);
+
+  it('counts an ordinary session normally', () => {
+    // 10:00 to 12:00 on a Tuesday = 120 minutes.
+    expect(sessionMinutesBetween(at('2026-09-08T10:00:00-04:00'), at('2026-09-08T12:00:00-04:00'))).toBe(120);
+    // A whole session is 390.
+    expect(sessionMinutesBetween(at('2026-09-08T09:30:00-04:00'), at('2026-09-08T16:00:00-04:00'))).toBe(390);
+  });
+
+  it('counts a full holiday as ZERO session minutes', () => {
+    // Labor Day, 09:30 to 16:00. Counted as a full 390-minute session before
+    // the calendar existed, so a position carried across it arrived at the next
+    // open already past a 90-minute stagnation bar with barely any real market.
+    expect(sessionMinutesBetween(at('2026-09-07T09:30:00-04:00'), at('2026-09-07T16:00:00-04:00'))).toBe(0);
+  });
+
+  it('gives a half-day 210 minutes, not 390', () => {
+    expect(sessionMinutesBetween(at('2026-11-27T09:30:00-05:00'), at('2026-11-27T16:00:00-05:00'))).toBe(210);
+  });
+
+  it('skips the holiday inside a span that brackets it', () => {
+    // Friday 15:00 -> Tuesday 10:00 over Labor Day weekend:
+    //   Friday   15:00-16:00 =  60
+    //   Sat/Sun/Mon(holiday) =   0
+    //   Tuesday  09:30-10:00 =  30
+    const total = sessionMinutesBetween(at('2026-09-04T15:00:00-04:00'), at('2026-09-08T10:00:00-04:00'));
+    expect(total).toBe(90);
+    // Without the holiday skip this was 90 + 390 = 480.
+    expect(total).toBeLessThan(480);
+  });
+
+  it('still contributes nothing for weekends and after-hours', () => {
+    expect(sessionMinutesBetween(at('2026-09-05T10:00:00-04:00'), at('2026-09-06T10:00:00-04:00'))).toBe(0);
+    expect(sessionMinutesBetween(at('2026-09-08T16:30:00-04:00'), at('2026-09-08T18:00:00-04:00'))).toBe(0);
   });
 });
