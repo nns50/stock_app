@@ -58,6 +58,7 @@ import { computeEquityCurveDerisk } from './equityCurveDerisk';
 import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
+import { isUnparseableSymbolError, markUnplaceableSymbol, unplaceableReason } from './unplaceableSymbols';
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
 import { evaluateStagnation } from './stagnationExit';
 import { evaluateEndOfDayFlatten, evaluateEntryCutoff } from './endOfDayFlatten';
@@ -889,11 +890,17 @@ export async function attemptLiveEntry(
   }
   if (!broker.ok) {
     transitionIntent(intentRec.id, 'rejected', { detail: `broker rejected: ${broker.error}` });
+    // Learn a symbol the TRADING api cannot parse, so the next candidate for it
+    // is skipped before any of this is spent again. Webull quotes BF.B and
+    // BRK.B happily and then refuses to place an order for either, so market
+    // data alone is not evidence that a symbol is tradable.
+    const unparseable = isUnparseableSymbolError(symbol, broker.error);
+    if (unparseable) markUnplaceableSymbol(symbol, broker.error ?? 'broker cannot parse this symbol');
     logAutotradeEvent({
       symbol,
       stage: 'execution',
       action: 'live_entry_failed',
-      detail: { reason: broker.error },
+      detail: { reason: broker.error, ...(unparseable ? { symbolUnplaceable: true } : {}) },
       riskProfile,
     });
     return { symbol, ok: false, reason: `Broker rejected: ${broker.error}`, intentId: intentRec.id };
@@ -1129,6 +1136,18 @@ export async function runLiveExecution(
     // the day's live attempts went to orders that were never placeable.
     // Skipping here changes no outcome, only the work and the journal noise —
     // and it re-opens itself the moment liveAllowNakedShort is turned on.
+    // A symbol the broker has already refused to parse cannot be traded, no
+    // matter how well it scores. Skipping here rather than at placement saves
+    // the correlation lookup, the sector lookup, the risk check, the quote and
+    // the round-trip — and, because a rejected placement still creates an
+    // order intent, it stops a guaranteed failure from spending one of the
+    // day's maxOrdersPerDay allowance.
+    const unplaceable = unplaceableReason(symbol);
+    if (unplaceable) {
+      journalEntrySkipOncePerDay(symbol, 'symbol_unplaceable_skipped', { reason: unplaceable });
+      outcomes.push({ symbol, ok: false, reason: `broker cannot trade this symbol: ${unplaceable}` });
+      continue;
+    }
     if (candidateSignal.side === 'sell' && !cfg.liveAllowNakedShort) {
       outcomes.push({
         symbol,
